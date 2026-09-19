@@ -2047,3 +2047,212 @@ fn the_retained_chain_verifies_across_an_interior_eviction_and_still_names_an_ed
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+// --- the snapshot window ------------------------------------------------------
+//
+// The count ceiling bounds the working set by size; until 2026-09-19 nothing
+// bounded it by age, so a quiet deployment that never reached the ceiling
+// held every book snapshot it had ever recorded. The blueprint's retention
+// for event-anchored book state is ninety days rolling (§54.2, §22.1). These
+// tests hold the roll to three properties: it takes only the replaceable
+// class, it can never take a permanent record, and a replay across the roll
+// still verifies — including after a restart, where the roll is re-derived
+// from the file rather than remembered.
+
+/// A day's worth of records: one replaceable snapshot, one permanent audit
+/// record, one observation. Three classes, so a roll that took the wrong
+/// one has something to take.
+fn a_day_of_records(ctx: &Context, at: Timestamp, day: i64, log: &mut EventLog) {
+    log.append(&erased(ctx, at, tick(&format!("SNAP{day}"))))
+        .unwrap();
+    log.append(&erased(
+        ctx,
+        at,
+        Fill {
+            order: format!("FILL{day}"),
+        },
+    ))
+    .unwrap();
+    log.append(&erased(
+        ctx,
+        at,
+        Trade {
+            symbol: format!("TR{day}"),
+            size: 1,
+        },
+    ))
+    .unwrap();
+}
+
+#[test]
+fn the_snapshot_window_rolls_replaceable_records_by_age_and_never_a_permanent_one() {
+    let (ctx, start) = context();
+    let mut log = EventLog::in_memory();
+    assert_eq!(
+        log.snapshot_window(),
+        Duration::from_days(90),
+        "premise: the default window is the blueprint's ninety days"
+    );
+
+    // Nine days of records spread over eighty days, all inside one window
+    // of each other, so nothing has rolled yet and the premise is clean.
+    for day in (0..=80).step_by(10) {
+        a_day_of_records(
+            &ctx,
+            start.saturating_add(Duration::from_days(day)),
+            day,
+            &mut log,
+        );
+    }
+    assert_eq!(log.len(), 27, "premise: every record is retained");
+    assert_eq!(log.by_topic(Topic::MarketTick).len(), 9);
+    assert_eq!(log.by_topic(Topic::OrderFilled).len(), 9);
+    assert_eq!(log.by_topic(Topic::MarketTrade).len(), 9);
+    assert_eq!(log.rolled_by_age(), 0, "premise: nothing has aged out yet");
+
+    // Day 200. Every snapshot recorded before day 110 is now past the
+    // window; nothing else is a candidate whatever its age.
+    log.append(&erased(
+        &ctx,
+        start.saturating_add(Duration::from_days(200)),
+        tick("SNAP200"),
+    ))
+    .unwrap();
+
+    assert_eq!(
+        log.rolled_by_age(),
+        9,
+        "the nine stale snapshots roll off, and are counted as a roll"
+    );
+    assert_eq!(
+        log.by_topic(Topic::MarketTick).len(),
+        1,
+        "only the snapshot inside the window remains"
+    );
+    assert_eq!(
+        log.by_topic(Topic::OrderFilled).len(),
+        9,
+        "a permanent record is never a candidate for the roll, however old"
+    );
+    assert_eq!(
+        log.by_topic(Topic::MarketTrade).len(),
+        9,
+        "an observation is the fallback series' business and is not rolled by this window"
+    );
+    assert_eq!(
+        log.evicted_replaceable() + log.evicted_observations(),
+        0,
+        "the roll is retention working as stated, not pressure, and is counted apart"
+    );
+
+    // A replay across the roll: every retained record still hashes to what
+    // it claimed, every retained link still holds, and the order is the
+    // order things happened in.
+    assert_eq!(log.verify_retained_chain(), Ok(()));
+    let mut sequences = Vec::new();
+    let visited = log
+        .replay(|event| {
+            sequences.push(event.sequence);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(visited, log.len());
+    assert!(
+        sequences.windows(2).all(|pair| pair[0] < pair[1]),
+        "a replay across the roll must still be in sequence order: {sequences:?}"
+    );
+}
+
+#[test]
+fn a_reopened_log_re_derives_the_roll_from_its_file_and_still_verifies() {
+    // The roll is of the index, not the file. A restart reads the file back
+    // and must arrive at the same working set the writer held — the stale
+    // snapshots rolled, every permanent record present — rather than at the
+    // whole file, and the retained span must verify across the gaps the roll
+    // left.
+    let dir = std::env::temp_dir().join(format!("qip-log-snapshot-window-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("events.jsonl");
+    let (ctx, start) = context();
+
+    let written = {
+        let mut log = EventLog::open(&path).unwrap();
+        for day in (0..=80).step_by(10) {
+            a_day_of_records(
+                &ctx,
+                start.saturating_add(Duration::from_days(day)),
+                day,
+                &mut log,
+            );
+        }
+        log.append(&erased(
+            &ctx,
+            start.saturating_add(Duration::from_days(200)),
+            tick("SNAP200"),
+        ))
+        .unwrap();
+        assert_eq!(
+            log.rolled_by_age(),
+            9,
+            "premise: the writer rolled nine snapshots"
+        );
+        log.len()
+    };
+
+    let reopened = EventLog::open(&path).unwrap();
+    assert_eq!(
+        reopened.len(),
+        written,
+        "the reopened log must hold what the writer held, not the whole file"
+    );
+    assert_eq!(
+        reopened.rolled_by_age(),
+        9,
+        "the roll is re-derived from the file, not remembered"
+    );
+    assert_eq!(reopened.by_topic(Topic::MarketTick).len(), 1);
+    assert_eq!(
+        reopened.by_topic(Topic::OrderFilled).len(),
+        9,
+        "no permanent record was lost across the restart"
+    );
+    assert_eq!(reopened.verify_retained_chain(), Ok(()));
+    assert_eq!(
+        reopened.replay(|_| Ok(())).unwrap(),
+        written,
+        "a replay after the restart visits exactly the retained span"
+    );
+
+    // The honest limit, pinned so it is not mistaken for a gap that closed:
+    // the file is still append-only and every line ever written is on it.
+    // Bounding disk is the segmenting change the module doc says needs an
+    // ADR.
+    drop(reopened);
+    let lines = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    assert_eq!(lines, 28, "the roll bounds the index, not the file");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_snapshot_window_that_retains_nothing_is_refused_rather_than_read_as_a_policy() {
+    // Zero could mean "roll everything" or "roll nothing"; either reading is
+    // a retention policy nobody wrote down.
+    for window in [Duration::ZERO, Duration::from_days(-1)] {
+        let error = EventLog::in_memory()
+            .with_snapshot_window(window)
+            .err()
+            .unwrap_or_else(|| panic!("a window of {window:?} was accepted"));
+        assert!(
+            error.message().contains("positive duration"),
+            "the refusal must say what to give instead: {}",
+            error.message()
+        );
+    }
+    let widened = EventLog::in_memory()
+        .with_snapshot_window(Duration::from_days(365))
+        .unwrap();
+    assert_eq!(widened.snapshot_window(), Duration::from_days(365));
+}

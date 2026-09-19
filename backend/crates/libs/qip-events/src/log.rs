@@ -55,16 +55,50 @@
 //!   anchoring gap), so what either check proves is that the bytes read are
 //!   the bytes written, not that nobody with write access rewrote them.
 //! * **The JSONL file is still append-only.** Nothing here truncates or rolls
-//!   it, so a file-backed log bounds memory but not disk. Segmenting the file
-//!   — sealing a segment, recording its final hash as the next segment's
+//!   it, so a file-backed log bounds memory but not disk — the snapshot
+//!   window below rolls the *index*, and a reopened file is rolled again as
+//!   it loads, but every line ever appended is still on disk. Segmenting the
+//!   file — sealing a segment, recording its final hash as the next segment's
 //!   genesis, and archiving it — is the remaining half of retention and is a
 //!   separate change; it needs an ADR because it changes what "the log" means
 //!   to a replay. Until then, disk is bounded only by the refusal above and by
 //!   whatever the deployment archives out of band.
+//!
+//! # The snapshot window rolls replaceable records by age
+//!
+//! The count ceiling above bounds the working set by *size*; nothing bounded
+//! it by *age*. A quiet deployment — one whose traffic never reached the
+//! ceiling — held every book snapshot it had ever recorded, so what the
+//! platform kept depended on how busy it had been rather than on any stated
+//! retention, and the blueprint's stated retention for event-anchored book
+//! state is ninety days rolling (§54.2, §22.1). So a second bound now runs
+//! beside the first: a replaceable record ([`Topic::is_lossy_tolerable`])
+//! older than [`EventLog::snapshot_window`] behind the newest instant the log
+//! has recorded is rolled off the index and counted in
+//! [`EventLog::rolled_by_age`]. Three things about its shape are deliberate.
+//!
+//! * **Only the replaceable class rolls.** A trade, a bar or a filing is an
+//!   observation the fallback series keeps for three years, and the audit
+//!   trail is never touched by any retention path in this module — the roll
+//!   filters on the same predicate the pressure eviction spends first, so
+//!   the two bounds cannot disagree about what is cheap to lose.
+//! * **Age is measured against the log's own newest `recorded_at`, not a
+//!   clock.** A library that read the wall clock could not be replayed, and
+//!   a roll driven by the caller's clock would need a caller. The roll runs
+//!   at most once per [`ROLL_CADENCE`] of recorded time, so a hot append
+//!   path does not scan a million records per event, and only a record at
+//!   or past the due instant triggers it — which is what makes that record
+//!   the newest the log holds, and what stops an out-of-order older record
+//!   from pulling the window back.
+//! * **A replay across the roll still verifies.** The chain is over what was
+//!   written, so a rolled record leaves a gap in the retained sequence
+//!   exactly as a pressure eviction does, and [`EventLog::verify_retained_chain`]
+//!   reads it as one: every retained record still hashes to what it claimed
+//!   and every retained link still holds.
 
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256_hex;
-use qip_core::{CorrelationId, EventId, Timestamp};
+use qip_core::{CorrelationId, Duration, EventId, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
@@ -122,6 +156,13 @@ pub struct EventLog {
     evicted_replaceable: u64,
     evicted_observations: u64,
     appends_refused: u64,
+    /// How long a replaceable record is kept behind the newest recorded
+    /// instant. Always set, for the same reason `capacity` is.
+    snapshot_window: Duration,
+    /// The recorded instant at or after which the next roll runs. `None`
+    /// until the first record arrives.
+    next_roll_due: Option<Timestamp>,
+    rolled_by_age: u64,
     /// The highest sequence ever indexed, and the hash of the record that
     /// carried it. Held separately from `records` because eviction can empty
     /// the tail: deriving either from the last retained record would restart
@@ -148,6 +189,21 @@ pub struct EventLog {
 /// deliberately, because a million retained records is a gigabyte-scale
 /// working set.
 pub const DEFAULT_CAPACITY: usize = 1_000_000;
+
+/// How long a replaceable record is retained behind the log's newest recorded
+/// instant, by default: the blueprint's ninety-day rolling snapshot window
+/// (§54.2), which its own arithmetic sizes at 4.5 million events for a busy
+/// day's order flow. Widen it with [`EventLog::with_snapshot_window`] where a
+/// model class demonstrably needs longer — the blueprint's stated revisit
+/// condition — and say why at the call site.
+pub const DEFAULT_SNAPSHOT_WINDOW: Duration = Duration::from_days(90);
+
+/// How much recorded time passes between two scans for records past the
+/// window. One day against a ninety-day window means a record lives at most
+/// ninety-one days, which is the granularity "ninety days rolling" was
+/// written at; a scan per append would read the whole index on every tick.
+/// A window shorter than a day scans every window instead.
+pub const ROLL_CADENCE: Duration = Duration::from_days(1);
 
 /// Whether an appended record has reached the disk when `append` returns.
 ///
@@ -214,6 +270,9 @@ impl EventLog {
             evicted_replaceable: 0,
             evicted_observations: 0,
             appends_refused: 0,
+            snapshot_window: DEFAULT_SNAPSHOT_WINDOW,
+            next_roll_due: None,
+            rolled_by_age: 0,
             last_sequence: 0,
             last_hash: GENESIS_HASH.to_string(),
             lock: None,
@@ -398,6 +457,11 @@ impl EventLog {
             // load with `by_event_id` silently pointing at only the
             // later of the two records.
             self.reject_duplicate_event_id(record.event.event_id.as_str())?;
+            // The window is applied as the file loads, before the count
+            // ceiling is consulted, so a reopened log holds what the log
+            // that wrote it held and a stale snapshot is counted as rolled
+            // rather than as evicted under a pressure that never existed.
+            self.roll_if_due(record.event.recorded_at);
             // Make room before indexing, so loading a file larger than the
             // ceiling never puts the whole file in memory first — which is
             // the failure the ceiling exists to prevent, arriving at
@@ -441,6 +505,40 @@ impl EventLog {
     /// The retention ceiling in force.
     pub const fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    /// Bound how long a replaceable record is retained behind the newest
+    /// recorded instant. See the module doc's snapshot-window section.
+    ///
+    /// A zero or negative window is refused rather than read as "roll
+    /// everything" or "roll nothing": either reading is a retention policy
+    /// nobody wrote down, and the refusal at construction is the one
+    /// somebody can fix.
+    pub fn with_snapshot_window(mut self, window: Duration) -> Result<Self> {
+        if window <= Duration::ZERO {
+            return Err(Error::invalid(format!(
+                "an event log snapshot window of {} nanoseconds retains no replaceable record \
+                 at all; give with_snapshot_window a positive duration — the blueprint's \
+                 default is ninety days",
+                window.as_nanos()
+            )));
+        }
+        self.snapshot_window = window;
+        Ok(self)
+    }
+
+    /// How long a replaceable record is retained behind the newest recorded
+    /// instant.
+    pub const fn snapshot_window(&self) -> Duration {
+        self.snapshot_window
+    }
+
+    /// Replaceable records rolled off the index because they aged past the
+    /// snapshot window. Counted apart from [`Self::evicted_replaceable`]
+    /// because the two say different things: this is retention working as
+    /// stated, and that is retention too small for the traffic.
+    pub const fn rolled_by_age(&self) -> u64 {
+        self.rolled_by_age
     }
 
     /// Replaceable records — ticks, quotes, books, features — dropped to stay
@@ -503,6 +601,7 @@ impl EventLog {
             ));
         }
         self.reject_duplicate_event_id(event.event_id.as_str())?;
+        self.roll_if_due(event.recorded_at);
         self.make_room(event.topic)?;
         let sequence = self.next_sequence();
         let previous_hash = self.last_hash.clone();
@@ -636,6 +735,51 @@ impl EventLog {
             self.rebuild_indexes();
         }
         Ok(())
+    }
+
+    /// Roll if `recorded_at` is at or past the instant the next roll fell
+    /// due.
+    ///
+    /// The record that triggers a roll is, by construction, the newest the
+    /// log has ever indexed: every record since the last roll was recorded
+    /// before the due instant and this one at or after it, and each roll
+    /// pushes the due instant a cadence past its own trigger. So the window
+    /// is measured from the newest recorded instant without a separate
+    /// high-water mark to keep, and a record arriving late — a backfill, a
+    /// redelivery — can never trigger a roll and so can never pull the
+    /// window back. The first record a log sees always triggers one, which
+    /// over an empty index is free and over a loading file is the pass that
+    /// applies the window to what the previous process left.
+    fn roll_if_due(&mut self, recorded_at: Timestamp) {
+        if !self.next_roll_due.is_none_or(|due| recorded_at >= due) {
+            return;
+        }
+        self.roll(recorded_at);
+        let cadence = if self.snapshot_window < ROLL_CADENCE {
+            self.snapshot_window
+        } else {
+            ROLL_CADENCE
+        };
+        self.next_roll_due = Some(recorded_at.saturating_add(cadence));
+    }
+
+    /// Drop every replaceable record recorded more than the window before
+    /// `newest`. Nothing else is a candidate: an observation is the fallback
+    /// series' business and a permanent record is the audit trail's, and
+    /// this filters on the same predicate the pressure eviction spends
+    /// first so the two bounds agree about what is cheap to lose.
+    fn roll(&mut self, newest: Timestamp) {
+        let cutoff = newest.saturating_sub(self.snapshot_window);
+        let before = self.records.len();
+        self.records.retain(|record| {
+            !(record.event.topic.is_lossy_tolerable() && record.event.recorded_at < cutoff)
+        });
+        let rolled = before.saturating_sub(self.records.len());
+        if rolled == 0 {
+            return;
+        }
+        self.rolled_by_age = self.rolled_by_age.saturating_add(rolled as u64);
+        self.rebuild_indexes();
     }
 
     fn rebuild_indexes(&mut self) {
