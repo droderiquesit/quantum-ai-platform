@@ -628,6 +628,24 @@ fn run() -> Result<()> {
                         );
                     }
                 }
+                // The other direction of the same fact, and it is not the
+                // same list. The lines above are per model against the sample
+                // that model was fitted on; these are per model against a
+                // feature the estimators say has moved further than their own
+                // error can explain. An operator asked to re-evaluate three
+                // models needs to know whether one feature carried all three,
+                // because then there is one thing to look at and not three.
+                for (reference, features) in &round.degraded {
+                    println!(
+                        "    degraded: {reference} reads {}, which drifted past the estimators' \
+                         own bound",
+                        features
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
             }
             if let Some(assessment) = &outcome.discovery {
                 println!(

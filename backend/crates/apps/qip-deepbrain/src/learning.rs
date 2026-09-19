@@ -30,7 +30,19 @@
 //!    its reference. Each later round compares the current window against it
 //!    with [`DriftReport::compare`] and records the largest population
 //!    stability index across features.
-//! 4. **Distil.** `qip_training::distill::distil` had the same shape of gap:
+//! 4. **Watch the features age, which is not the same question.** Step 3
+//!    asks how far each model is from its own training sample. This asks
+//!    whether a *feature* has moved further than the estimators watching it
+//!    can explain, and then marks every card naming that feature —
+//!    `qip_training::estimators::degraded_models`, §21.1's "one that drifts
+//!    past its bound marks every model depending on it as degraded". The two
+//!    disagree in both directions: a model's maximum across five features
+//!    hides a sixth that moved less than the worst but still past the
+//!    estimators' floor, and a card the desk kept no sample for is invisible
+//!    to step 3 entirely. The larger of the two readings is what
+//!    `record_drift` is given, never the later of the two — a wire that could
+//!    lower a drift score is a control rewired to fire less.
+//! 5. **Distil.** `qip_training::distill::distil` had the same shape of gap:
 //!    fully implemented, well tested, and reachable only from its own crate's
 //!    tests -- nothing ever turned a registered teacher into the
 //!    [`qip_strategy::model::DistilledModel`] the execution path is actually
@@ -67,9 +79,10 @@ use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
 use qip_training::dataset::TrainingDataset;
 use qip_training::distill::{Distillation, FidelityPolicy, StudentForm, distil};
+use qip_training::estimators::{DRIFT_BUCKETS, FeatureEstimators, StreamingDrift, degraded_models};
 use qip_training::job::TrainingSpec;
 use qip_training::local::{LocalTrainer, ModelFamily, SkillPolicy};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The features a bar-derived model reads, in the order the dataset carries
 /// them.
@@ -128,6 +141,17 @@ pub struct LearningRound {
     pub registration: Option<ModelRegistration>,
     /// Drift measured against each standing model's own reference sample.
     pub drift: Vec<DriftObservation>,
+    /// Models degraded because a feature they read has moved further than the
+    /// estimators watching it can explain, and which of their features did.
+    ///
+    /// §21.1's "one that drifts past its bound marks every model depending on
+    /// it as degraded", as the join
+    /// [`qip_training::estimators::degraded_models`] computes. Distinct from
+    /// [`Self::drift`], which is each model against *its own* fitted sample: a
+    /// model can be absent from this map and present there, and the reverse —
+    /// a card fitted before the desk last took a stream reference is measured
+    /// here even though the desk kept no sample for it.
+    pub degraded: BTreeMap<String, BTreeSet<String>>,
     /// Models the registry will no longer let inform a decision, with why.
     pub ineligible: Vec<String>,
     /// The student distilled from this round's teacher onto the same holdout
@@ -165,12 +189,26 @@ impl LearningRound {
             subject: subject.as_str().to_string(),
             registration: None,
             drift: Vec::new(),
+            degraded: BTreeMap::new(),
             ineligible: Vec::new(),
             distillation: None,
             distillation_refusal: None,
             campaign: None,
             refused_by_door: Some(reason.into()),
         }
+    }
+
+    /// Every feature that degraded at least one model this round.
+    ///
+    /// The union of [`Self::degraded`]'s values rather than a second field:
+    /// two claims about which features drifted would disagree eventually, and
+    /// the one that reaches an operator would be the wrong one.
+    pub fn drifted_features(&self) -> BTreeSet<&str> {
+        self.degraded
+            .values()
+            .flatten()
+            .map(String::as_str)
+            .collect()
     }
 
     pub fn describe(&self) -> String {
@@ -202,9 +240,18 @@ impl LearningRound {
             Some(campaign) => format!("; {}", campaign.describe()),
             None => String::new(),
         };
+        let degraded = if self.degraded.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; {} model(s) degraded by {} drifted feature(s)",
+                self.degraded.len(),
+                self.drifted_features().len()
+            )
+        };
         format!(
-            "learning: {registered}; {} model(s) measured for drift, {} ineligible{distilled}\
-             {campaign}",
+            "learning: {registered}; {} model(s) measured for drift, {} ineligible{degraded}\
+             {distilled}{campaign}",
             self.drift.len(),
             self.ineligible.len()
         )
@@ -260,6 +307,28 @@ pub struct LearningDesk {
     /// data's recent stability rather than this model's distance from its
     /// training set.
     reference: BTreeMap<String, BTreeMap<String, Vec<f64>>>,
+    /// The feature stream as it stood when the desk last fitted, held as
+    /// summaries rather than as the stream.
+    ///
+    /// The reference the *stream-level* drift is taken against, and
+    /// deliberately not the same thing as `reference` above. That map answers
+    /// "how far is this model from the sample it was fitted on", which is a
+    /// question per model and needs the model's own rows. This answers "has
+    /// this feature moved further than the estimators watching it can
+    /// explain", which is a question about the feature and has one answer for
+    /// every model that reads it — which is what makes
+    /// [`degraded_models`]' join sound. A drifted set derived per model could
+    /// not be joined onto another model's card without asserting that one
+    /// model's distance from its own training window says something about a
+    /// second model's, which it does not.
+    ///
+    /// Refreshed on every successful fit, so the comparison is always against
+    /// the most recent distribution the desk trained on. A card fitted before
+    /// that is compared against a reference newer than its own, which can
+    /// only mark it degraded where its own window would not have — the
+    /// direction a control is allowed to be wrong in, and it is re-measured
+    /// from scratch every round rather than latched.
+    stream_reference: Option<FeatureEstimators>,
     /// Fits attempted, which is what a model's version is drawn from.
     fits: u64,
     seed: u64,
@@ -283,6 +352,7 @@ impl LearningDesk {
             policy: SkillPolicy::default(),
             registry: ModelRegistry::new(),
             reference: BTreeMap::new(),
+            stream_reference: None,
             fits: 0,
             seed,
             stats: LearningStats::default(),
@@ -376,30 +446,70 @@ impl LearningDesk {
         // fit joins the registry. Measuring a model against a window that
         // includes the data a newer model was fitted on would be comparing two
         // different questions.
-        let mut drift = Vec::new();
+        //
+        // Two independent readings feed one score per model, and they are
+        // merged by `max` rather than by whichever ran last. A model's own
+        // comparison against the sample it was fitted on can be calm while a
+        // feature it reads has moved past what the estimators watching it can
+        // explain — the maximum across a model's features hides a feature that
+        // moved less than another one did. Letting the second reading *lower*
+        // the first would be the `MaxExpectedShortfall` failure inverted: not
+        // a control that cannot fire, but one rewired to fire less than it did
+        // before the wire was added.
+        let (stream, current) = self.stream_drift(&columns)?;
+        let drifted: BTreeSet<String> = stream.keys().cloned().collect();
+        // Collected before the registry is borrowed mutably below, and owned
+        // because `record_drift` needs the mutable borrow while the join's
+        // result is still being read.
+        let dependencies: Vec<(String, Vec<String>)> = self
+            .registry
+            .iter()
+            .map(|card| (card.reference(), card.features.clone()))
+            .collect();
+        let degraded = degraded_models(
+            &drifted,
+            dependencies
+                .iter()
+                .map(|(reference, features)| (reference.as_str(), features.as_slice())),
+        );
+
+        let mut measured: BTreeMap<String, (f64, String)> = BTreeMap::new();
         for (reference, fitted_on) in &self.reference {
-            let Some((worst_feature, index)) =
+            if let Some((worst_feature, index)) =
                 worst_drift(fitted_on, &columns, self.config.drift_bins)
-            else {
-                continue;
-            };
+            {
+                measured.insert(reference.clone(), (index, worst_feature));
+            }
+        }
+        for (reference, features) in &degraded {
+            for feature in features {
+                let Some(observed) = stream.get(feature) else {
+                    continue;
+                };
+                let index = observed.population_stability_index;
+                let entry = measured
+                    .entry(reference.clone())
+                    .or_insert_with(|| (index, feature.clone()));
+                if index > entry.0 {
+                    *entry = (index, feature.clone());
+                }
+            }
+        }
+
+        let mut drift = Vec::new();
+        for (reference, (index, worst_feature)) in measured {
+            self.registry.record_drift(&reference, index)?;
+            let above_threshold = self
+                .registry
+                .get(&reference)
+                .is_some_and(|card| index > card.drift_threshold);
+            self.stats.drift_measurements += 1;
             drift.push(DriftObservation {
-                reference: reference.clone(),
+                reference,
                 population_stability_index: index,
                 worst_feature,
-                above_threshold: false,
+                above_threshold,
             });
-        }
-        for observation in &mut drift {
-            self.registry.record_drift(
-                &observation.reference,
-                observation.population_stability_index,
-            )?;
-            observation.above_threshold = self
-                .registry
-                .get(&observation.reference)
-                .is_some_and(|card| observation.population_stability_index > card.drift_threshold);
-            self.stats.drift_measurements += 1;
         }
 
         let (registration, distillation, distillation_refusal) =
@@ -412,6 +522,12 @@ impl LearningDesk {
                     }
                     self.reference
                         .insert(registration.reference.clone(), columns);
+                    // The stream reference moves forward only on a round that
+                    // fitted. A round that could not fit leaves it where it
+                    // was, so the next comparison is still against a
+                    // distribution some model was actually trained on rather
+                    // than against the last window that happened to arrive.
+                    self.stream_reference = Some(current);
                     (Some(registration), distillation, distillation_refusal)
                 }
                 // A round that could not fit is not a round that found
@@ -424,6 +540,7 @@ impl LearningDesk {
                         subject: subject.as_str().to_string(),
                         registration: None,
                         drift,
+                        degraded,
                         ineligible: vec![error.message().to_string()],
                         distillation: None,
                         distillation_refusal: None,
@@ -444,12 +561,56 @@ impl LearningDesk {
             subject: subject.as_str().to_string(),
             registration,
             drift,
+            degraded,
             ineligible,
             distillation,
             distillation_refusal,
             campaign: None,
             refused_by_door: None,
         })
+    }
+
+    /// The features whose distribution has moved further than the estimators
+    /// watching them can explain, and the summaries this round produced.
+    ///
+    /// §21.1's streaming half, as the thing it is for. The four estimators
+    /// each declare their own error;
+    /// [`StreamingDrift::is_material`] compares the index against the floor
+    /// those errors imply, so a feature is "drifted" only when the shift is
+    /// larger than two digests of one distribution could manufacture between
+    /// them. A fixed threshold here would be comparing signal plus estimator
+    /// noise against a number chosen without knowing how much noise there was.
+    ///
+    /// Empty on the first round of a desk's life, and after any round that
+    /// could not fit, because there is no reference to compare against. That
+    /// is reported as "nothing measured" by there being no entry, not as
+    /// "nothing moved" by an index of zero.
+    ///
+    /// The returned summaries are the caller's to install as the next
+    /// reference, and are deliberately *not* installed here: a round that
+    /// fails to fit must not move the reference, and a function that both
+    /// measures and advances the thing it measures against cannot be asked
+    /// for one without the other.
+    fn stream_drift(
+        &mut self,
+        columns: &BTreeMap<String, Vec<f64>>,
+    ) -> Result<(BTreeMap<String, StreamingDrift>, FeatureEstimators)> {
+        let seed = self.seed;
+        let mut current = FeatureEstimators::standard(seed)?;
+        for (name, values) in columns {
+            for value in values {
+                current.observe(name, *value)?;
+            }
+        }
+        let material = match &mut self.stream_reference {
+            None => BTreeMap::new(),
+            Some(reference) => current
+                .drift_against(reference, DRIFT_BUCKETS)?
+                .into_iter()
+                .filter(|(_, drift)| drift.is_material())
+                .collect(),
+        };
+        Ok((material, current))
     }
 
     fn fit(
@@ -870,9 +1031,19 @@ mod tests {
              from a minimum",
             highest.1
         );
+        // `>=` and not equality, and the difference is the wire added for
+        // §21.1's degraded-model join. The index recorded is now the larger
+        // of this per-model reading and the feature's own drift against the
+        // estimators' reference, and the second can exceed the first —
+        // deliberately, because a wire allowed to *lower* a drift score is a
+        // control rewired to fire less than it did before. The property this
+        // assertion exists for is untouched: with `highest > lowest` asserted
+        // immediately above, a number at or beyond the maximum cannot be a
+        // mean, and the mean is the failure it was written against.
         assert!(
-            (observation.population_stability_index - highest.1).abs() < 1e-9,
-            "the reported index {:.6} is not the largest across features ({:.6} on {})",
+            observation.population_stability_index >= highest.1 - 1e-9,
+            "the reported index {:.6} is below the largest across features ({:.6} on {}), so \
+             something averaged it away",
             observation.population_stability_index,
             highest.1,
             highest.0
@@ -889,6 +1060,192 @@ mod tests {
             "the measurement did not reach the card: {:.3} against {:.3}",
             card.drift_score,
             card.drift_threshold
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_feature_that_drifts_past_the_estimators_bound_degrades_every_model_that_reads_it()
+    -> Result<()> {
+        // §21.1's sentence, as the property rather than as the function:
+        // "one that drifts past its bound marks *every* model depending on
+        // it as degraded". The failure this guards is a join that returns
+        // the first match, or the model the round happened to fit, and
+        // leaves a second card reading the same moved feature reported as
+        // calm. `degraded_models` was built, tested and called by nothing
+        // until this wire, so nothing had ever asserted the "every" part
+        // against a registry holding more than one card.
+        let mut desk = learning_desk();
+        let calm = super::tests_support::learnable(400);
+
+        let first = desk
+            .maybe_learn(&subject(), &calm, 1, at())?
+            .ok_or_else(|| Error::not_found("the first round"))?;
+        // Premise: a desk with no stream reference measures nothing, and
+        // reports that by an empty map rather than by a zero index. Without
+        // this the assertions below would pass on a desk that never compared
+        // anything.
+        assert!(
+            first.degraded.is_empty(),
+            "the first round degraded {} model(s) against no reference at all",
+            first.degraded.len()
+        );
+
+        // A second fit on the same calm series, so the registry holds two
+        // cards reading the same five features before anything moves.
+        let second = desk
+            .maybe_learn(&subject(), &calm, 2, at())?
+            .ok_or_else(|| Error::not_found("the second round"))?;
+        drop(second);
+        assert!(
+            desk.registry().len() >= 2,
+            "the registry holds {} card(s); the 'every model' property cannot be tested \
+             against one",
+            desk.registry().len()
+        );
+
+        // Now a regime none of them was fitted on.
+        let shocked = super::tests_support::shocked(400);
+        let third = desk
+            .maybe_learn(&subject(), &shocked, 3, at())?
+            .ok_or_else(|| Error::not_found("the third round"))?;
+
+        // Premise: something actually drifted past the estimators' own
+        // floor. An empty drifted set would make every assertion below
+        // vacuously true, which is the shape of test this repository has
+        // already been burnt by.
+        let drifted = third.drifted_features();
+        assert!(
+            !drifted.is_empty(),
+            "no feature moved past the estimators' floor, so this proves nothing about the \
+             join; the shocked fixture is not a regime change"
+        );
+
+        // The property. Every card naming a drifted feature is in the map,
+        // and nothing else is -- except this round's own fit, which joined
+        // the registry *after* the comparison ran. Measuring a model against
+        // a window that includes the rows it was fitted on is the question
+        // the module refuses to ask, so its absence is the behaviour and not
+        // a gap in the join.
+        let fitted_this_round = third
+            .registration
+            .as_ref()
+            .map(|registration| registration.reference.clone());
+        for card in desk.registry().iter() {
+            if fitted_this_round.as_deref() == Some(card.reference().as_str()) {
+                continue;
+            }
+            let reads_a_drifted_feature = card
+                .features
+                .iter()
+                .any(|feature| drifted.contains(feature.as_str()));
+            assert_eq!(
+                reads_a_drifted_feature,
+                third.degraded.contains_key(&card.reference()),
+                "{} reads {:?}; the drifted set is {:?} and the degraded map {} it",
+                card.reference(),
+                card.features,
+                drifted,
+                if third.degraded.contains_key(&card.reference()) {
+                    "holds"
+                } else {
+                    "omits"
+                }
+            );
+        }
+
+        // And the join's own entries name only features the card declares,
+        // so a model is never degraded by a feature it does not read.
+        for (reference, features) in &third.degraded {
+            let card = desk
+                .registry()
+                .get(reference)
+                .ok_or_else(|| Error::not_found(format!("a card for {reference}")))?;
+            assert!(
+                features.iter().all(|f| card.features.contains(f)),
+                "{reference} was degraded by {features:?}, which is not a subset of the {:?} \
+                 it reads",
+                card.features
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_model_the_desk_kept_no_sample_for_is_still_degraded_by_a_feature_it_reads() -> Result<()> {
+        // The half of §21.1 the per-model comparison structurally cannot
+        // reach. A card the desk holds no fitted sample for is invisible to
+        // `worst_drift`, so its `drift_score` stays at the 0.0 it was
+        // created with for ever and `decision_eligibility`'s drift branch
+        // can never refuse it -- the exact shape of `MaxExpectedShortfall`,
+        // a control connected to a value nothing writes. The feature-level
+        // join is the only thing in this desk that can write it.
+        let mut desk = learning_desk();
+        let calm = super::tests_support::learnable(400);
+        desk.maybe_learn(&subject(), &calm, 1, at())?
+            .ok_or_else(|| Error::not_found("the first round"))?;
+
+        // A card from somewhere else entirely: same feature vocabulary, no
+        // fitted sample on this desk.
+        let stranger = qip_ai::registry::ModelCard::new(
+            qip_core::ids::ModelId::from_string("MDL0000000000000000000BBB"),
+            "stranger",
+            "1.0.0",
+            "another-desk",
+            at(),
+        )
+        .with_features(FEATURES.iter().map(|f| (*f).to_string()).collect());
+        let stranger_reference = stranger.reference();
+        let tracked_before = desk.tracked();
+        desk.registry_mut().register(stranger);
+
+        // Premise, in three parts: the desk kept exactly one fitted sample,
+        // the registry now holds two cards -- so one of them has no sample
+        // and `worst_drift` cannot reach it -- and the stranger's drift
+        // score is the zero nobody wrote.
+        assert_eq!(
+            tracked_before, 1,
+            "the desk kept {tracked_before} fitted sample(s); this test needs exactly the one \
+             it fitted so that the second card is provably unsampled"
+        );
+        assert_eq!(
+            desk.registry().len(),
+            2,
+            "the registry holds {} card(s) against one fitted sample",
+            desk.registry().len()
+        );
+        assert_eq!(
+            desk.tracked(),
+            tracked_before,
+            "registering a card gave the desk a fitted sample for it"
+        );
+        assert_eq!(
+            desk.registry()
+                .get(&stranger_reference)
+                .map(|card| card.drift_score),
+            Some(0.0),
+            "the stranger arrived with a drift score somebody had already written"
+        );
+
+        let shocked = super::tests_support::shocked(400);
+        let round = desk
+            .maybe_learn(&subject(), &shocked, 2, at())?
+            .ok_or_else(|| Error::not_found("the second round"))?;
+
+        assert!(
+            round.degraded.contains_key(&stranger_reference),
+            "a regime change left {stranger_reference} undegraded; the degraded map is {:?}",
+            round.degraded.keys().collect::<Vec<_>>()
+        );
+        let score = desk
+            .registry()
+            .get(&stranger_reference)
+            .map(|card| card.drift_score)
+            .ok_or_else(|| Error::not_found("the stranger's card"))?;
+        assert!(
+            score > 0.0,
+            "the join named {stranger_reference} as degraded and its card still reads \
+             {score:.6}; the measurement did not reach the value the eligibility check reads"
         );
         Ok(())
     }
