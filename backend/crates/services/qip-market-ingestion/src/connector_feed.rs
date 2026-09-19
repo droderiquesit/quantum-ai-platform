@@ -27,7 +27,7 @@ use crate::connector::transport::{HttpSourceTransport, SourceTransport};
 use crate::connector::{SourceConnector, manifest::SourceManifest};
 use crate::connectors::{
     AlpacaBarsConnector, CoinbaseTickerConnector, EcbKeyRatesConnector, FrankfurterRatesConnector,
-    KalshiMarketsConnector, NyFedEffrConnector,
+    KalshiMarketsConnector, NwsStationObservationsConnector, NyFedEffrConnector,
 };
 use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
@@ -52,6 +52,7 @@ pub const KNOWN_SOURCES: &[&str] = &[
     FrankfurterRatesConnector::SOURCE_ID,
     EcbKeyRatesConnector::SOURCE_ID,
     NyFedEffrConnector::SOURCE_ID,
+    NwsStationObservationsConnector::SOURCE_ID,
     KalshiMarketsConnector::SOURCE_ID,
     AlpacaBarsConnector::SOURCE_ID,
 ];
@@ -82,6 +83,7 @@ fn topic_for(source_id: &str) -> Result<Topic> {
         FrankfurterRatesConnector::SOURCE_ID => Ok(Topic::MacroUpdated),
         EcbKeyRatesConnector::SOURCE_ID => Ok(Topic::MacroUpdated),
         NyFedEffrConnector::SOURCE_ID => Ok(Topic::MacroUpdated),
+        NwsStationObservationsConnector::SOURCE_ID => Ok(Topic::AlternativeDataReceived),
         KalshiMarketsConnector::SOURCE_ID => Ok(Topic::MarketQuote),
         AlpacaBarsConnector::SOURCE_ID => Ok(Topic::MarketBar),
         other => Err(Error::invalid(format!(
@@ -104,6 +106,9 @@ pub fn shipped_manifest(source_id: &str) -> Result<SourceManifest> {
         FrankfurterRatesConnector::SOURCE_ID => FrankfurterRatesConnector::shipped_manifest(),
         EcbKeyRatesConnector::SOURCE_ID => EcbKeyRatesConnector::shipped_manifest(),
         NyFedEffrConnector::SOURCE_ID => NyFedEffrConnector::shipped_manifest(),
+        NwsStationObservationsConnector::SOURCE_ID => {
+            NwsStationObservationsConnector::shipped_manifest()
+        }
         KalshiMarketsConnector::SOURCE_ID => KalshiMarketsConnector::shipped_manifest(),
         AlpacaBarsConnector::SOURCE_ID => AlpacaBarsConnector::shipped_manifest(),
         other => Err(Error::invalid(format!(
@@ -201,6 +206,11 @@ impl ConnectorFeed {
                 NyFedEffrConnector::SOURCE_ID => {
                     let manifest = NyFedEffrConnector::shipped_manifest()?;
                     let connector = NyFedEffrConnector::new(manifest.clone())?;
+                    (Box::new(connector), manifest)
+                }
+                NwsStationObservationsConnector::SOURCE_ID => {
+                    let manifest = NwsStationObservationsConnector::shipped_manifest()?;
+                    let connector = NwsStationObservationsConnector::new(manifest.clone())?;
                     (Box::new(connector), manifest)
                 }
                 KalshiMarketsConnector::SOURCE_ID => {

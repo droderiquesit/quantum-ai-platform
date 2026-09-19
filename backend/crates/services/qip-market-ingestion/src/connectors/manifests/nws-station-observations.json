@@ -1,0 +1,32 @@
+{
+  "source_id": "nws-station-observations",
+  "provider": "The United States National Weather Service's public API (api.weather.gov), serving surface observations reported by an individual observing station — temperature, dewpoint, wind, pressure, visibility and humidity, each carrying the publisher's own quality-control grade. Free, unauthenticated, no signup.",
+  "asset_class": "alternative",
+  "region": "north_america",
+  "protocol": "poll",
+  "schema": {
+    "version": "1.0",
+    "required_fields": [{ "path": "features", "kind": "array" }],
+    "unknown_fields": "ignore"
+  },
+  "auth": { "scheme": "none" },
+  "endpoint": {
+    "path": "/stations/KORD/observations",
+    "query": { "limit": "12" },
+    "health_path": "/stations/KORD/observations"
+  },
+  "rate_limit": { "requests": 1, "per_ms": 60000, "burst": 2 },
+  "retry": {
+    "max_attempts": 3,
+    "initial_backoff_ms": 1000,
+    "max_backoff_ms": 60000,
+    "multiplier": 4,
+    "jitter_basis_points": 2000
+  },
+  "poll_interval_ms": 3600000,
+  "freshness_sla_ms": 21600000,
+  "publication_delay_ms": 3600000,
+  "licensing": "public",
+  "max_events_per_batch": 128,
+  "category": "physical_and_geospatial"
+}

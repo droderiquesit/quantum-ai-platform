@@ -14,7 +14,8 @@ use qip_market_ingestion::connector::manifest::{AuthScheme, AuthSpec, SchemaVers
 use qip_market_ingestion::connector::transport::HttpSourceTransport;
 use qip_market_ingestion::connector::{Protocol, SourceManifest};
 use qip_market_ingestion::connectors::{
-    alpaca_bars, coinbase_ticker, ecb_key_rates, frankfurter_rates, kalshi_markets, nyfed_effr,
+    alpaca_bars, coinbase_ticker, ecb_key_rates, frankfurter_rates, kalshi_markets,
+    nws_station_observations, nyfed_effr,
 };
 
 #[test]
@@ -793,9 +794,19 @@ fn every_shipped_manifest_declares_the_category_its_authors_place_it_in() -> Res
             kalshi_markets::KalshiMarketsConnector::shipped_manifest()?,
             SourceCategory::Marketplace,
         ),
+        (
+            nws_station_observations::NwsStationObservationsConnector::shipped_manifest()?,
+            // §7.6.1's own table names "weather services" under this category,
+            // and the blueprint's §7.1 Physical row names weather among
+            // shipping rates and satellite imagery. Not `government_and_trade`
+            // even though the publisher is a government agency: the category
+            // is what the source is *about*, and this one is about the
+            // physical world rather than about a statistical release.
+            SourceCategory::PhysicalAndGeospatial,
+        ),
     ];
-    // Premise: the table above covers every source the build can open, so a
-    // seventh connector added without a declaration is caught here rather than
+    // Premise: the table above covers every source the build can open, so an
+    // eighth connector added without a declaration is caught here rather than
     // at the door.
     assert_eq!(
         expected.len(),

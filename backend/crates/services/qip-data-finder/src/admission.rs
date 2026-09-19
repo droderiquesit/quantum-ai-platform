@@ -290,6 +290,69 @@ impl LicensingDecision {
 /// from the published terms and not from a negotiated agreement — there is no
 /// contract to read.
 ///
+/// # nws-station-observations
+///
+/// Surface weather observations from one United States National Weather
+/// Service station, served unauthenticated by `api.weather.gov`. The terms
+/// read for this evaluation are the NWS disclaimer at
+/// `https://www.weather.gov/disclaimer`, fetched and read on 2026-09-19,
+/// together with the appropriate-use guidance published on the same page.
+///
+/// **The grant.** "The information on National Weather Service (NWS) Web
+/// pages are in the public domain, unless specifically noted otherwise, and
+/// may be used without charge for any lawful purpose". Public domain with no
+/// charge and no field-of-use limit is `Public`, and it is the broadest grant
+/// in this catalogue: unlike the ECB and New York Fed entries, which are
+/// permissive licences, this is an absence of copyright under 17 U.S.C. § 105
+/// rather than a permission granted. `Redistribute` follows from "for any
+/// lawful purpose" rather than from an enumerated permission.
+///
+/// **The three conditions, all of which attach.** A user may not "claim it is
+/// your own (e.g., by claiming copyright for NWS information)"; may not "use
+/// it in a manner that implies an endorsement or affiliation with NOAA/NWS";
+/// and may not "modify its content and then present it as official government
+/// material", nor "present information of your own in a way that makes it
+/// appear to be official government information". The completed attribution
+/// and non-endorsement sentence is
+/// `qip_market_ingestion::connectors::NwsStationObservationsConnector::ATTRIBUTION`,
+/// written once, and every record this connector produces carries the
+/// `nws-station-observations` source identifier in its `Provenance`. That is a
+/// mechanism rather than a comment, and it is still **not compliance**: the
+/// first two conditions attach to *presentation*, and nothing displays these
+/// readings today. Whoever first does owns them, exactly as the ECB and New
+/// York Fed entries say about their own display obligations.
+///
+/// **Two further obligations recorded and unenforceable by any check here.**
+/// 17 U.S.C. § 403 requires a third party producing a copyrighted work
+/// consisting predominantly of NWS material to identify the NWS material and
+/// state that it is not subject to copyright protection; this platform
+/// publishes no such work today. And the NWS name and visual identifier are
+/// protected under trademark law — this platform uses neither, and the
+/// connector is named for the source rather than after it.
+///
+/// **The appropriate-use guidance is an operational obligation, and it is the
+/// one this entry can point at code for.** The NWS asks a client to "know your
+/// data refresh frequency" and to "request only the data that you need", and
+/// reserves the right to block an IP address that impacts service delivery.
+/// The shipped manifest polls hourly against a rate limit of one request per
+/// minute, and asks for one station's last twelve observations rather than the
+/// network-wide feed; `NwsStationObservationsConnector::new` refuses a
+/// manifest pointed at the network-wide path by name. That is the guidance
+/// held by a refusal rather than by an intention.
+///
+/// **One obligation this platform cannot discharge, stated plainly.** The
+/// NWS's API documentation asks a client to identify itself in a `User-Agent`
+/// and recommends including a contact address. `qip_transport` writes its own
+/// fixed `user-agent` and a manifest cannot override it, so a request from
+/// this platform is identified and carries no contact. Changing that is a
+/// decision about every connector rather than about this one. Nothing is
+/// deployed and no process of this platform has an outbound path to this host,
+/// so no request has ever been made.
+///
+/// No expiry is stated, so the entry carries none. The NWS may revise its
+/// disclaimer without notice, so a change in those terms is a change to this
+/// entry, reviewed like code, and no code here will notice it.
+///
 /// # kalshi-markets and alpaca-daily-bars — refused until their terms are read
 ///
 /// The two remaining ADR 0034 candidates. Both connectors exist and both are
@@ -357,6 +420,19 @@ pub fn catalogue() -> Result<Vec<CatalogueEntry>> {
             expected_class: LicensingClass::Public,
             posture: LicensingPosture::declared(SourceLicense::new(
                 "nyfed-terms-of-use-reference-rates",
+                [
+                    Usage::Research,
+                    Usage::Derive,
+                    Usage::Trade,
+                    Usage::Redistribute,
+                ],
+            )?),
+        },
+        CatalogueEntry {
+            source_id: "nws-station-observations",
+            expected_class: LicensingClass::Public,
+            posture: LicensingPosture::declared(SourceLicense::new(
+                "nws-public-domain-with-attribution-conditions",
                 [
                     Usage::Research,
                     Usage::Derive,
@@ -1003,6 +1079,69 @@ mod tests {
             "the decision does not say what admitted the source: {line}"
         );
         Ok(())
+    }
+
+    /// §7.1's Physical class, through the same gate as every other entry.
+    ///
+    /// The point of asserting it here rather than trusting the catalogue table
+    /// is the domain rule's ordering: licensing posture is evaluated *before*
+    /// a source is used. A connector on `KNOWN_SOURCES` with no catalogue
+    /// entry is refused by `admit` — correct, but for the wrong reason, and an
+    /// operator reading that refusal would go looking for a missing entry
+    /// rather than for the terms. This proves the entry exists, that it was
+    /// written from terms somebody read, and that no arm of the gate was
+    /// relaxed to let a new source class in.
+    #[test]
+    fn the_weather_services_observations_are_admitted_for_trade_under_a_public_domain_grant()
+    -> Result<()> {
+        // Premise: the class the gate is handed is the shipped manifest's, so
+        // this is the call a composition root makes and not a class chosen to
+        // make the entry agree.
+        let class =
+            qip_market_ingestion::connector_feed::shipped_class("nws-station-observations")?;
+        assert_eq!(class, LicensingClass::Public);
+        let decision = admit("nws-station-observations", class, now())?;
+        assert_eq!(
+            decision.licence,
+            "nws-public-domain-with-attribution-conditions"
+        );
+        assert_eq!(decision.usages, vec![Usage::Derive, Usage::Trade]);
+        assert_eq!(decision.registration, RegistrationStanding::Keyless);
+        // The banner line, which is the only way an operator can tell this
+        // gate ran from a gate that never did.
+        let line = decision.describe();
+        assert!(
+            line.contains("nws-public-domain-with-attribution-conditions")
+                && line.contains("derive and trade")
+                && line.contains("keyless; no registration needed"),
+            "the decision does not say what admitted the source: {line}"
+        );
+        Ok(())
+    }
+
+    /// The non-endorsement condition is one the NWS terms state and this
+    /// platform can only hold by carrying the words.
+    ///
+    /// Matched on the load-bearing clauses rather than on a length or one
+    /// word: "public domain" alone would be satisfied by a sentence that
+    /// claimed the content *as this platform's own*, which is the first thing
+    /// the terms forbid.
+    #[test]
+    fn the_weather_attribution_names_the_publisher_and_disclaims_endorsement() {
+        let attribution =
+            qip_market_ingestion::connectors::NwsStationObservationsConnector::ATTRIBUTION;
+        assert!(
+            attribution.contains("National Weather Service"),
+            "the attribution does not name the publisher: {attribution}"
+        );
+        assert!(
+            attribution.contains("public domain"),
+            "the attribution does not state the content is not this platform's own: {attribution}"
+        );
+        assert!(
+            attribution.contains("not affiliated") && attribution.contains("not endorsed"),
+            "the attribution does not disclaim the endorsement or affiliation the terms forbid              implying: {attribution}"
+        );
     }
 
     /// The obligation the Terms attach to *presentation* has to be a thing the

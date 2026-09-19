@@ -312,6 +312,10 @@ impl RegistrationRegistry {
             )
             .with_requirement("ecb-key-interest-rates", RegistrationRequirement::Keyless)
             .with_requirement("nyfed-effr", RegistrationRequirement::Keyless)
+            // The National Weather Service serves its observations with no
+            // account and no key, and its own guidance asks for politeness
+            // rather than for registration.
+            .with_requirement("nws-station-observations", RegistrationRequirement::Keyless)
             .with_requirement("alpaca-daily-bars", RegistrationRequirement::Account)
             .with_requirement("kalshi-markets", RegistrationRequirement::Account)
     }
