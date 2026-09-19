@@ -19,7 +19,7 @@ use qip_core::{Decimal, dec};
 use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
-use qip_edge_node::gateway::SimulatedGateway;
+use qip_edge_node::gateway::{DEFAULT_RELEASE_TOLERANCE, SimulatedGateway};
 use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::features::BookPressure;
@@ -1566,5 +1566,162 @@ fn an_exit_signal_is_a_sell_at_the_matching_engine_filling_against_bids_and_rest
         joined, 1,
         "the sell did not rest beside the offer it could not trade with"
     );
+    Ok(())
+}
+// --- ADR 0084: the release instant, honoured by the pass ---------------------
+
+#[test]
+fn an_order_placed_for_a_later_instant_is_held_and_matched_on_the_first_pass_that_reaches_it_and_not_before()
+-> Result<()> {
+    // The failure this prevents: a gateway that reads `at` as "when it was
+    // sent" and matches at once, so a leg the cell held back four
+    // milliseconds to meet a slower venue arrives four milliseconds early —
+    // and the schedule the cell computed changes nothing. The order must not
+    // reach the venue before its instant, and must reach it on the first
+    // pass at or after it, driven by the pass instant alone.
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(
+        &object("ACME"),
+        Side::Sell,
+        dec!("100"),
+        dec!("100"),
+        start(),
+    )?;
+    let release = start().saturating_add(Duration::from_millis(4));
+
+    gateway.place(
+        "order-held",
+        &object("ACME"),
+        &venue("XLON"),
+        BookSide::Ask,
+        dec!("10"),
+        dec!("100"),
+        release,
+    )?;
+    assert_eq!(gateway.held_count(), 1, "the order was not held");
+    assert_eq!(
+        gateway.submitted_count(),
+        0,
+        "the order reached the venue before its release instant"
+    );
+    assert!(
+        gateway.execution_reports().is_empty(),
+        "a held order produced a fill"
+    );
+
+    gateway.advance_to(start().saturating_add(Duration::from_millis(3)))?;
+    assert_eq!(
+        gateway.held_count(),
+        1,
+        "a pass one millisecond short released it"
+    );
+    assert_eq!(gateway.submitted_count(), 0);
+
+    gateway.advance_to(release)?;
+    assert_eq!(
+        gateway.held_count(),
+        0,
+        "the pass at the instant did not release it"
+    );
+    assert_eq!(
+        gateway.submitted_count(),
+        1,
+        "the released order did not reach the venue"
+    );
+    let reports = gateway.execution_reports();
+    assert_eq!(
+        reports.len(),
+        1,
+        "the released order did not fill against the seeded touch"
+    );
+    assert_eq!(reports[0].order_id, "order-held");
+    // The exchange stamps its fill its own matching latency after the
+    // submission, so the exact instant is the venue's; what must hold is
+    // that nothing filled before the order was released.
+    assert!(
+        reports[0].at >= release,
+        "the fill at {} predates the release instant {}",
+        reports[0].at.to_rfc3339(),
+        release.to_rfc3339()
+    );
+    assert!(
+        gateway.unreleased().is_empty(),
+        "an order released within tolerance was reported withdrawn"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_held_order_whose_instant_a_pass_finds_past_the_tolerance_is_withdrawn_not_sent_late()
+-> Result<()> {
+    // ADR 0084 §4: refusing rather than guessing. A leg that arrives outside
+    // the window its cycle was admitted on is the exposure the schedule was
+    // computed to prevent, so a gateway that sent it late would be spending
+    // the mechanism's whole benefit to look busy.
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(
+        &object("ACME"),
+        Side::Sell,
+        dec!("100"),
+        dec!("100"),
+        start(),
+    )?;
+    let release = start().saturating_add(Duration::from_millis(4));
+    gateway.place(
+        "order-late",
+        &object("ACME"),
+        &venue("XLON"),
+        BookSide::Ask,
+        dec!("10"),
+        dec!("100"),
+        release,
+    )?;
+    assert_eq!(
+        gateway.held_count(),
+        1,
+        "the premise failed: the order was not held"
+    );
+
+    let late = t(10);
+    assert!(
+        late.since(release) > DEFAULT_RELEASE_TOLERANCE,
+        "the premise failed: the pass is inside the tolerance"
+    );
+    gateway.advance_to(late)?;
+    assert_eq!(
+        gateway.submitted_count(),
+        0,
+        "an order ten seconds past its release instant was sent anyway"
+    );
+    assert_eq!(gateway.held_count(), 0, "the late order is still held");
+    let withdrawn = gateway.unreleased();
+    assert_eq!(withdrawn.len(), 1, "the withdrawal was not reported");
+    assert_eq!(withdrawn[0].order_id, "order-late");
+    assert_eq!(withdrawn[0].scheduled, release);
+    assert_eq!(withdrawn[0].lag, late.since(release));
+    assert_eq!(withdrawn[0].tolerance, DEFAULT_RELEASE_TOLERANCE);
+    assert!(
+        gateway.unreleased().is_empty(),
+        "the withdrawal was reported twice"
+    );
+    assert_eq!(
+        gateway.resting_count(),
+        1,
+        "the seeded touch was taken by an order never sent"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_pass_instant_earlier_than_the_last_is_refused_by_the_gateway() -> Result<()> {
+    // Held orders are keyed on instants the cell computed from an earlier
+    // pass; a pass that ran backwards would release them against a `now`
+    // that predates the decision.
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.advance_to(t(5))?;
+    let error = gateway
+        .advance_to(t(4))
+        .expect_err("a pass that ran backwards was accepted");
+    assert_eq!(error.code(), "invalid", "{}", error.message());
     Ok(())
 }

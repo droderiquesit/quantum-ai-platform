@@ -636,6 +636,92 @@ mod tests {
     }
 
     #[test]
+    fn the_schedule_holds_the_fast_venue_back_by_the_difference_in_medians_and_releases_the_slow_one_first()
+    -> Result<()> {
+        // The blueprint's own arithmetic, `send at (max - own)`. The failure
+        // this prevents is an offset on the wrong venue: hold the slow one
+        // back and the legs arrive further apart than they would have with
+        // no schedule at all.
+        let mut history = history()?;
+        fill(&mut history, &fast(), 1, 3);
+        fill(&mut history, &slow(), 30, 3);
+        let schedule = history.release_schedule(&[fast(), slow()]);
+        assert!(
+            schedule.unmeasured().is_empty(),
+            "the premise failed: a venue with three fills is unmeasured: {schedule:?}"
+        );
+        assert!(
+            schedule.equalised(),
+            "two measured venues read as unequalised"
+        );
+        assert_eq!(schedule.offset(&fast()), Duration::from_millis(29));
+        assert_eq!(schedule.offset(&slow()), Duration::ZERO);
+        assert_eq!(
+            schedule.offsets().len(),
+            2,
+            "the schedule lost or duplicated a venue"
+        );
+        // A duplicate venue in the set contributes nothing new.
+        assert_eq!(
+            history.release_schedule(&[fast(), slow(), fast()]),
+            schedule,
+            "a leg repeated at one venue changed the schedule"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unmeasured_venue_makes_the_schedule_unequalised_with_every_offset_zero_and_is_named()
+    -> Result<()> {
+        // The failure this prevents: treating an absent median as zero, which
+        // would make the venue nobody has ever filled at the fastest one and
+        // hold every measured leg back to meet a leg whose arrival nobody has
+        // measured. The schedule says instead that it could not equalise.
+        let mut history = history()?;
+        fill(&mut history, &fast(), 1, 3);
+        fill(&mut history, &slow(), 30, 2);
+        assert_eq!(
+            history.median(slow().as_str()),
+            None,
+            "the premise failed: two fills already counted as a measured venue"
+        );
+        let schedule = history.release_schedule(&[fast(), slow()]);
+        assert!(
+            !schedule.equalised(),
+            "a schedule with an unmeasured venue claims to be equalised"
+        );
+        assert_eq!(
+            schedule.unmeasured().iter().cloned().collect::<Vec<_>>(),
+            vec![slow()],
+            "the unmeasured venue is not named"
+        );
+        assert_eq!(
+            schedule.offset(&fast()),
+            Duration::ZERO,
+            "the measured venue was held back to meet a venue with no median"
+        );
+        assert_eq!(schedule.offset(&slow()), Duration::ZERO);
+        Ok(())
+    }
+
+    #[test]
+    fn a_single_venue_schedule_is_trivially_equalised_whatever_its_measurement() -> Result<()> {
+        // Rule 22 says "wherever more than one venue is involved"; one venue
+        // is equalised rather than exempt, so a net's journal entry does not
+        // read as a cycle that failed to equalise.
+        let history = history()?;
+        let schedule = history.release_schedule(&[fast()]);
+        assert!(schedule.equalised());
+        assert_eq!(schedule.offset(&fast()), Duration::ZERO);
+        assert_eq!(
+            schedule.unmeasured().len(),
+            1,
+            "the schedule hides that its one venue is unmeasured"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_policy_that_could_not_fire_is_refused_at_configuration() {
         assert!(
             DispersionPolicy::new(Duration::ZERO, 3, 8).is_err(),
