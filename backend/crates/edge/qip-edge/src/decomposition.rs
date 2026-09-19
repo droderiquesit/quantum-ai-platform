@@ -147,12 +147,15 @@ pub enum Completion {
     Unviable { fraction: Decimal, minimum: Decimal },
 }
 
+// There is deliberately no `carries_on` predicate here. One was written and
+// removed before this shipped, because nothing outside the tests called it:
+// the decision to stop a cycle is taken by [`Decomposition::size_for`] on the
+// *next* leg rather than on this verdict, and it has to be, since a last leg
+// that completes short has no next leg to refuse and stopping a cycle that is
+// already whole would be wrong. A predicate that reads as the decision and is
+// consulted by nothing is the shape of control this repository has shipped
+// once before and now refuses to.
 impl Completion {
-    /// Whether the rest of the cycle may be sent at all.
-    pub const fn carries_on(self) -> bool {
-        !matches!(self, Self::Unviable { .. })
-    }
-
     /// The label this outcome is counted under. A source-file literal per
     /// arm, so `qip_edge_cycle_legs_total{completion}` is bounded by this
     /// enum and never by anything a venue said.
@@ -457,14 +460,17 @@ mod tests {
             "a leg that completed under half the cycle was sized down rather than stopped"
         );
         assert!(
-            !completion.carries_on(),
+            matches!(completion, Completion::Unviable { .. }),
             "an unviable completion said the rest of the cycle could still be sent"
         );
         // The boundary itself, because a minimum tested only well inside and
         // well outside is satisfied by any threshold between the two.
         let mut exact = Decomposition::new(half());
         assert!(
-            exact.observe(d("100"), d("50"))?.carries_on(),
+            !matches!(
+                exact.observe(d("100"), d("50"))?,
+                Completion::Unviable { .. }
+            ),
             "a leg that completed exactly the minimum was stopped"
         );
         Ok(())
