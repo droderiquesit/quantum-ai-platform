@@ -115,11 +115,17 @@ label, and this file said it was until 2026-09-06; `telemetry.rs`'s module doc
 was corrected in `dde60ca` itself and this one was outside that lane's
 territory. Recount both sites rather than trusting the prose:
 `grep -n 'metrics\.refusal(' backend/crates/edge/qip-edge/src/cell.rs`
-printed two lines on 2026-09-06 and **three** on 2026-09-15 — the `gate`
-argument inside `Cell::refuse`, `GATE_LIVE_VENUE` inside `Cell::send`, and
-since §29.2's quoting lane `GATE_QUOTE_BUDGET` inside the withdrawal seam,
-which like `Cell::send` has no `WorkReport` to push a refusal onto and so
-records directly.
+printed two lines on 2026-09-06, **three** on 2026-09-15, and **four** on
+2026-09-19 — the `gate` argument inside `Cell::refuse`, `GATE_LIVE_VENUE`
+inside `Cell::send`, `GATE_QUOTE_BUDGET` inside the withdrawal seam, and since
+the requote lane a second `GATE_QUOTE_BUDGET` inside `Cell::spend_requote`,
+which charges the budget the two messages a requote sends and refuses when it
+cannot fund both. Two lanes disagreed about three-versus-four on the same day
+because one was working on a base that predated the requote seam; the
+disagreement is the reason this paragraph carries dates and not a number. The
+fourth site passes the same `pub const` as the third, so the site count moved
+and the set of label values did not — which is the property the next
+paragraph says is the one to check.
 
 The cardinality bound still holds, and the previous sentence here got the
 reason wrong in a way worth naming. It said "a third recording site added at a
