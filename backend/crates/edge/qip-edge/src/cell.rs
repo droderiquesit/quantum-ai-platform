@@ -34,6 +34,7 @@ use qip_contracts::capital::{CapitalGrant, Utilisation};
 use qip_contracts::degradation::{DegradationState, StrategyClass};
 use qip_contracts::intent::{Contributor, CycleLeg, Intent, NetIntent, net, netting_ratio};
 use qip_contracts::message::{BookSide, MarketMessage};
+use qip_contracts::policy::Dispositions;
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
 use qip_contracts::venue::{VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
@@ -55,7 +56,7 @@ use qip_sequencing::tracker::{ReorderPolicy, Sequencer};
 use qip_strategy::compile::CompiledStrategy;
 use qip_strategy::program::{Node, Op, Program};
 use qip_strategy::runtime::StrategyRuntime;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// The gate a cell refuses under when the gateway it was handed is not a
 /// simulated venue.
@@ -252,6 +253,39 @@ pub const GATE_CYCLE_RESTING: &str = "cycle_resting";
 /// [`Cell::require_reconciliation_before_resuming`] for what arms it and
 /// [`Cell::observe_venue_account`] for the only thing that clears it.
 pub const GATE_AWAITING_RECONCILIATION: &str = "awaiting_reconciliation";
+
+/// The gate a cell refuses a disposition under (ADR 0080): the centre named
+/// a retired strategy's lot for this cell to unwind, and the cell will not
+/// unwind it as named.
+///
+/// One literal for every reason — the cell holds nothing for that strategy
+/// in that instrument, the instruction names no quantity, or its sign would
+/// increase the lot or carry it through flat — because the operational
+/// reading is the same for all of them: the centre's attribution and this
+/// cell's book disagree, and nothing moves until they agree. That is the
+/// discipline `disposition_for` applies at the centre when a reported book
+/// disagrees with the attribution, applied at the other end of the wire, and
+/// the refusal rides the delta so both ends are seen to disagree. The reason
+/// string says which. A disposition that fails a *routing* gate — no venue,
+/// no book, a stale one, no pricing policy — is refused under that gate's
+/// own literal, as a signal would be, and the report line names it.
+///
+/// The same literal refuses a **signal** from a strategy the applied slot
+/// names. The centre has retired it; an envelope it still holds here is one
+/// that expires and is never renewed (ADR 0075), and a directional intent
+/// raised on it would net against the strategy's own unwind and hide it.
+///
+/// A literal like every other gate name, refused through [`Cell::refuse`]
+/// and therefore counted at the one pass-time recording site rather than a
+/// new one, so `qip_edge_refusals_total{gate}` gains a value and no seam.
+pub const GATE_DISPOSITION: &str = "disposition";
+
+/// How long a disposition's intent is good for once built. It enters the
+/// netting set in the same pass, so this is documentation of the intent's
+/// scope rather than a bound anything waits on: the instruction is re-read
+/// from the applied slot on every pass, and a lot still open next pass gets
+/// a new intent from the book as it then stands.
+const DISPOSITION_VALIDITY: Duration = Duration::from_secs(60);
 
 /// How a cell is identified and what it is allowed to reach.
 #[derive(Clone, Debug)]
@@ -633,7 +667,43 @@ pub struct WorkReport {
     /// correctly waiting for its inventory band, which are a configuration
     /// fault and a normal market state respectively.
     pub paths: Vec<RoutedCycle>,
+    /// ADR 0080: one line per disposition the applied policy named this
+    /// pass, acted on or refused, in the slot's own order. A refusal is also
+    /// in [`Self::refusals`] under [`GATE_DISPOSITION`] or the routing gate
+    /// that refused it; this is the line that pairs the instruction with
+    /// what the cell held and what it built, which the refusal pair cannot
+    /// carry. Empty on a pass whose applied policy names nothing.
+    pub dispositions: Vec<DispositionLine>,
     pub halted: bool,
+}
+
+/// What the cell did with one disposition the centre shipped (ADR 0080).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DispositionLine {
+    pub strategy: StrategyId,
+    pub object_id: ObjectId,
+    /// The signed quantity the centre named: negative flattens a long,
+    /// positive a short.
+    pub flatten_by: Decimal,
+    /// The signed lot this cell held for the strategy in the instrument at
+    /// the instant it read the instruction, summed over its venues.
+    pub held: Decimal,
+    pub verdict: DispositionVerdict,
+}
+
+/// The two things a disposition can become at the cell.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DispositionVerdict {
+    /// A reduce-only intent of this signed size, at this venue, entered the
+    /// netting set. Not an order: the feasibility gate and the placement
+    /// path may still refuse it, under their own literals.
+    Intent {
+        signed_size: Decimal,
+        venue: VenueId,
+    },
+    /// Refused under this gate for this reason; nothing entered the netting
+    /// set for it.
+    Refused { gate: String, reason: String },
 }
 
 /// One found cycle and the execution path §30.2 assigns it.
@@ -1812,13 +1882,22 @@ impl Cell {
         format!("{}/{}", venue.as_str(), object_id.as_str())
     }
 
-    /// The signed lot one strategy holds on one instrument at one venue from
-    /// internal crosses settled at this cell: bought positive, sold negative.
+    /// The signed lot one strategy holds on one instrument at one venue at
+    /// this cell: bought positive, sold negative. From two sources, both
+    /// facts of this cell — internal crosses settled here, and the
+    /// strategy's pro-rata share of every fill the venue confirmed here.
     ///
-    /// Crosses only. A venue fill is attributed to its contributors at the
-    /// centre (`CentralPlane::ingest`) and is not booked here, so this is
-    /// not a strategy's whole position — it is the part that never reached a
-    /// venue and that no other record would otherwise hold.
+    /// The fill share was not booked here until ADR 0080, and the reason it
+    /// is now is the reason that record gives: the cell unwinds a retired
+    /// strategy's lot **against the lot it holds for that strategy**, and a
+    /// book that held only the crossed part would have refused every
+    /// disposition for a lot built at a venue as "holds nothing". The same
+    /// fills are attributed at the centre (`CentralPlane::ingest`) from the
+    /// same shares, so this is one fact — the fill — read at both ends and
+    /// not a second source of truth: the centre's lot for a strategy at this
+    /// cell and this book agree by construction, and the sum of this book
+    /// over the strategies at one venue is [`Self::position`] there, since
+    /// the crosses net to zero.
     pub fn strategy_position(
         &self,
         strategy: &StrategyId,
@@ -1840,6 +1919,18 @@ impl Cell {
             .get(strategy.as_str())
             .copied()
             .unwrap_or(Decimal::ZERO)
+    }
+
+    /// The signed lot one strategy holds on one instrument at this cell,
+    /// summed over every venue the cell reaches — the quantity ADR 0080's
+    /// disposition is judged against, because the centre keys its books by
+    /// cell, strategy and instrument and names no venue.
+    pub fn strategy_lot(&self, strategy: &StrategyId, object_id: &ObjectId) -> Decimal {
+        self.config
+            .venues
+            .iter()
+            .map(|venue| self.strategy_position(strategy, venue, object_id))
+            .sum()
     }
 
     fn strategy_position_key(
@@ -2857,14 +2948,41 @@ impl Cell {
         // formatted into a journal string and discarded.
         self.metrics.narrowing(&narrowing);
 
-        let vector = self.features.evaluate(now)?;
-        let strategy_ids: Vec<String> = self.deployed.keys().cloned().collect();
         // Phase one collects; phase two nets; phase three sends. The split is
         // the blueprint's, and §28 is why the per-strategy gates stay in phase
         // one rather than moving onto the net.
         let mut intents: Vec<Intent> = Vec::new();
 
+        // ADR 0080: the retired strategies' lots the centre has asked this
+        // cell to unwind, before the strategy loop and after every halt gate
+        // above — so a halted cell unwinds nothing, and an unwind is in the
+        // netting set before any live strategy's opposite intent so the two
+        // can cross under §27.1's cap. Placed ahead of the feature
+        // evaluation, deliberately: reducing a lot needs no feature vector,
+        // and a feature-engine fault that stops every signal should not also
+        // stop the one intent that only lowers gross.
+        let retired = self.disposition_intents(now, &mut report, &mut intents);
+
+        let vector = self.features.evaluate(now)?;
+        let strategy_ids: Vec<String> = self.deployed.keys().cloned().collect();
+
         for id in strategy_ids {
+            // A strategy the applied policy names as retired evaluates
+            // nothing. See `GATE_DISPOSITION` for why its own signal is
+            // refused rather than run: a directional intent on its stale
+            // envelope would net against its own unwind.
+            if retired.contains(&id) {
+                self.refuse(
+                    &mut report,
+                    GATE_DISPOSITION,
+                    &format!(
+                        "strategy {id} is retired at the centre and its lot here is being \
+                         unwound; it evaluates no signal while the applied policy names it"
+                    ),
+                    now,
+                );
+                continue;
+            }
             // A paused strategy does not evaluate at all. Refusing before the
             // run rather than after keeps the journal honest about why the
             // cell was quiet: no signal existed, because the capability the
@@ -2977,6 +3095,280 @@ impl Cell {
         Ok(report)
     }
 
+    /// Build a reduce-only intent for each lot the applied policy's
+    /// dispositions slot names, or refuse it (ADR 0080, decision four).
+    ///
+    /// For each `(strategy, instrument, flatten_by)` the cell reads the lot
+    /// *it* holds for that strategy in that instrument — its own book, never
+    /// the centre's claim — and refuses under [`GATE_DISPOSITION`] when it
+    /// holds nothing, when the instruction names no quantity, or when the
+    /// instruction's sign would increase the lot or carry it through flat.
+    /// Otherwise the intent is sized to the smaller of the instruction and
+    /// the lot, so it can never overshoot flat whichever of the two claims
+    /// is stale, and taken through the routing gates a signal meets
+    /// (`route_for`) and the autonomy gate.
+    ///
+    /// **Two gates are skipped, and only here.** The capital envelope: a
+    /// retired strategy can never again receive one (ADR 0075), and the
+    /// intent commits no new notional — the sign check above makes it
+    /// structurally reduce-only, so it can only lower gross, and that is the
+    /// whole of why an intent with no envelope is admissible at all. The
+    /// region hold: a hold reserves capital for exposure being *added*, and
+    /// this adds none. The degradation multiplier is not applied either,
+    /// because it narrows new risk and an unwind is the removal of risk;
+    /// what bounds the size instead is the lot and, after this, the
+    /// feasibility gate's reading of the ladder.
+    ///
+    /// The intent enters the netting set as `Nettable`, so it can cross
+    /// internally against a peer strategy's opposite intent — the cheapest
+    /// exit there is — and its fill is attributed to the retired strategy
+    /// through the same contributor vector as every other fill.
+    ///
+    /// Returns every strategy the slot named, acted on or refused, so the
+    /// strategy loop can decline to evaluate them this pass.
+    fn disposition_intents(
+        &mut self,
+        now: Timestamp,
+        report: &mut WorkReport,
+        intents: &mut Vec<Intent>,
+    ) -> BTreeSet<String> {
+        let mut named = BTreeSet::new();
+        // Copied out of the applied payload so the loop can take `&mut self`
+        // to journal and count each refusal.
+        let instructions: Vec<(StrategyId, String, Decimal)> = match self.dispositions() {
+            Some(dispositions) => dispositions
+                .unwinds
+                .iter()
+                .flat_map(|(strategy, lots)| {
+                    lots.iter().map(move |(instrument, flatten_by)| {
+                        (strategy.clone(), instrument.clone(), *flatten_by)
+                    })
+                })
+                .collect(),
+            None => return named,
+        };
+        for (strategy, instrument, flatten_by) in instructions {
+            named.insert(strategy.as_str().to_string());
+            let object_id = ObjectId::from_string(&instrument);
+            let held = self.strategy_lot(&strategy, &object_id);
+            let line = |verdict: DispositionVerdict| DispositionLine {
+                strategy: strategy.clone(),
+                object_id: object_id.clone(),
+                flatten_by,
+                held,
+                verdict,
+            };
+
+            // The sign check, and the two readings that make it undecidable.
+            // A lot of zero has no sign to reduce against; an instruction of
+            // zero asks for nothing. Both are the centre's claim and this
+            // book disagreeing, and both are refused rather than read.
+            let refusal = if flatten_by.is_zero() {
+                Some(format!(
+                    "the disposition for strategy {} on {} names no quantity; nothing is unwound \
+                     on an instruction to trade nothing",
+                    strategy.as_str(),
+                    object_id.as_str()
+                ))
+            } else if held.is_zero() {
+                Some(format!(
+                    "this cell holds no lot for strategy {} on {}, so there is nothing to unwind \
+                     by {flatten_by}; the centre's attribution and this book disagree and nothing \
+                     moves until they agree",
+                    strategy.as_str(),
+                    object_id.as_str()
+                ))
+            } else if flatten_by.is_positive() == held.is_positive() {
+                Some(format!(
+                    "the disposition for strategy {} on {} would trade {flatten_by} against a lot \
+                     of {held}, which increases the lot rather than reducing it; a disposition \
+                     is reduce-only and this one is refused on its sign",
+                    strategy.as_str(),
+                    object_id.as_str()
+                ))
+            } else {
+                None
+            };
+            if let Some(reason) = refusal {
+                self.refuse(report, GATE_DISPOSITION, &reason, now);
+                report.dispositions.push(line(DispositionVerdict::Refused {
+                    gate: GATE_DISPOSITION.to_string(),
+                    reason,
+                }));
+                continue;
+            }
+
+            // The smaller of what was asked and what is held, in the
+            // instruction's direction — which the check above has just made
+            // the lot's opposite. Never `flatten_by` alone: an instruction
+            // derived from a book one fill behind this one would carry the
+            // lot through flat, and that is the one thing this path may not do.
+            let size = flatten_by.abs().min(held.abs());
+            let signed_size = if flatten_by.is_positive() {
+                size
+            } else {
+                -size
+            };
+
+            let Some((venue, price)) = self.route_for(strategy.as_str(), &object_id, now, report)
+            else {
+                // `route_for` refused, journaled and counted under the
+                // routing gate's own literal; the line carries which.
+                let (gate, reason) = report
+                    .refusals
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| (GATE_DISPOSITION.to_string(), "refused".to_string()));
+                report
+                    .dispositions
+                    .push(line(DispositionVerdict::Refused { gate, reason }));
+                continue;
+            };
+            if self.autonomy.level() == AutonomyLevel::Observation {
+                let reason = "the cell is at observation and sends nothing".to_string();
+                self.refuse(report, "autonomy", &reason, now);
+                report.dispositions.push(line(DispositionVerdict::Refused {
+                    gate: "autonomy".to_string(),
+                    reason,
+                }));
+                continue;
+            }
+            let intent = match Intent::new(
+                strategy.clone(),
+                object_id.clone(),
+                venue.clone(),
+                signed_size,
+                price,
+                now.saturating_add(DISPOSITION_VALIDITY),
+            ) {
+                Ok(intent) => intent,
+                Err(error) => {
+                    // Unreachable while `size` is the minimum of two non-zero
+                    // magnitudes, and refused rather than unwrapped because
+                    // the constructor is the one that decides.
+                    let reason = error.message().to_string();
+                    self.refuse(report, GATE_DISPOSITION, &reason, now);
+                    report.dispositions.push(line(DispositionVerdict::Refused {
+                        gate: GATE_DISPOSITION.to_string(),
+                        reason,
+                    }));
+                    continue;
+                }
+            };
+            self.journal.record(
+                Decision::DispositionIntent {
+                    strategy: strategy.as_str().to_string(),
+                    object: object_id.as_str().to_string(),
+                    venue: venue.as_str().to_string(),
+                    flatten_by: flatten_by.to_string(),
+                    held: held.to_string(),
+                    signed_size: signed_size.to_string(),
+                },
+                now,
+            );
+            report
+                .dispositions
+                .push(line(DispositionVerdict::Intent { signed_size, venue }));
+            intents.push(intent);
+        }
+        named
+    }
+
+    /// The venue and reference price an intent for `strategy` on `object_id`
+    /// would be reasoned at, through the routing gates every intent passes
+    /// before its size is bounded: venue selection, book presence, book
+    /// staleness, venue status, a usable mid, and the strategy's stated
+    /// pricing policy. `None` when any of them refused, journaled and counted
+    /// under that gate's own literal.
+    ///
+    /// Shared by [`Self::intent_for`] and the disposition path (ADR 0080) so
+    /// the two cannot drift: an unwind meets exactly the routing gates a
+    /// signal does, in the same order, and a gate added here is added to
+    /// both. What the disposition path does **not** share — the degradation
+    /// multiplier, the capital envelope and the region hold — is left in
+    /// `intent_for` on purpose, and the ADR says why each is skipped.
+    fn route_for(
+        &mut self,
+        strategy: &str,
+        object_id: &ObjectId,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) -> Option<(VenueId, Decimal)> {
+        let Some(venue) = self.venue_for(object_id, now) else {
+            self.refuse(
+                report,
+                "venue_selection",
+                "no venue this cell may reach quotes the instrument",
+                now,
+            );
+            return None;
+        };
+
+        // A stale or unpriceable book routes nothing. The book already refuses
+        // to serve a mid; routing against one anyway would use a price from
+        // before the gap that made it stale.
+        // Read everything needed from the book in one borrow, so the refusal
+        // path below can take `&mut self` to journal why it refused.
+        let assessment = self.liquidity.get(&venue, object_id).map(|state| {
+            (
+                state.is_stale(),
+                state
+                    .reset_reason()
+                    .unwrap_or("the book is awaiting resynchronisation")
+                    .to_string(),
+                state.status(),
+                state.mid(),
+            )
+        });
+        let Some((stale, reset_reason, status, mid)) = assessment else {
+            self.refuse(
+                report,
+                "book",
+                "the cell holds no book for the instrument",
+                now,
+            );
+            return None;
+        };
+        if stale {
+            self.refuse(report, "stale_book", &reset_reason, now);
+            return None;
+        }
+        if !status.accepts_orders() {
+            self.refuse(
+                report,
+                "venue_status",
+                &format!("the venue is {}", status.as_str()),
+                now,
+            );
+            return None;
+        }
+        let Some(price) = mid else {
+            self.refuse(report, "pricing", "the book serves no usable price", now);
+            return None;
+        };
+        // The price the intent is *reasoned* at is the mid; the price it is
+        // *sent* at is decided by the strategy's policy when the net is
+        // placed, and a strategy that stated none is refused here, before
+        // it can contribute to a net that another strategy's policy would
+        // then price.
+        if self.pricing_of(strategy).is_none() {
+            self.refuse(
+                report,
+                "pricing",
+                &format!(
+                    "strategy {} was deployed with no pricing policy; deploy it with \
+                     deploy_with_pricing naming marketable or rest-at-mid with a time to live, \
+                     because an intent with no stated pricing is never sent",
+                    strategy
+                ),
+                now,
+            );
+            return None;
+        }
+
+        Some((venue, price))
+    }
+
     /// Take one signal through every per-strategy gate to an intent, or
     /// refuse it.
     ///
@@ -3000,77 +3392,11 @@ impl Cell {
             return Ok(None);
         }
 
-        let Some(venue) = self.venue_for(&signal.object_id, now) else {
-            self.refuse(
-                report,
-                "venue_selection",
-                "no venue this cell may reach quotes the instrument",
-                now,
-            );
+        let Some((venue, price)) =
+            self.route_for(signal.strategy.as_str(), &signal.object_id, now, report)
+        else {
             return Ok(None);
         };
-
-        // A stale or unpriceable book routes nothing. The book already refuses
-        // to serve a mid; routing against one anyway would use a price from
-        // before the gap that made it stale.
-        // Read everything needed from the book in one borrow, so the refusal
-        // path below can take `&mut self` to journal why it refused.
-        let assessment = self.liquidity.get(&venue, &signal.object_id).map(|state| {
-            (
-                state.is_stale(),
-                state
-                    .reset_reason()
-                    .unwrap_or("the book is awaiting resynchronisation")
-                    .to_string(),
-                state.status(),
-                state.mid(),
-            )
-        });
-        let Some((stale, reset_reason, status, mid)) = assessment else {
-            self.refuse(
-                report,
-                "book",
-                "the cell holds no book for the instrument",
-                now,
-            );
-            return Ok(None);
-        };
-        if stale {
-            self.refuse(report, "stale_book", &reset_reason, now);
-            return Ok(None);
-        }
-        if !status.accepts_orders() {
-            self.refuse(
-                report,
-                "venue_status",
-                &format!("the venue is {}", status.as_str()),
-                now,
-            );
-            return Ok(None);
-        }
-        let Some(price) = mid else {
-            self.refuse(report, "pricing", "the book serves no usable price", now);
-            return Ok(None);
-        };
-        // The price the intent is *reasoned* at is the mid; the price it is
-        // *sent* at is decided by the strategy's policy when the net is
-        // placed, and a strategy that stated none is refused here, before
-        // it can contribute to a net that another strategy's policy would
-        // then price.
-        if self.pricing_of(signal.strategy.as_str()).is_none() {
-            self.refuse(
-                report,
-                "pricing",
-                &format!(
-                    "strategy {} was deployed with no pricing policy; deploy it with \
-                     deploy_with_pricing naming marketable or rest-at-mid with a time to live, \
-                     because an intent with no stated pricing is never sent",
-                    signal.strategy.as_str()
-                ),
-                now,
-            );
-            return Ok(None);
-        }
 
         let side = match signal.kind {
             SignalKind::Enter => BookSide::Ask,
@@ -4167,6 +4493,25 @@ impl Cell {
             .positions
             .entry(Self::position_key(&fill.venue, &fill.object_id))
             .or_insert(Decimal::ZERO) += signed;
+        // Each contributor's share of the same fill, to its own lot at this
+        // cell. `split_fill` makes the shares sum to the fill, so the
+        // per-strategy book and the venue-facing aggregate move by the same
+        // total; see `strategy_position` for why the share is booked here.
+        for (strategy, share) in &fill.shares {
+            let signed_share = if matches!(fill.side, BookSide::Ask) {
+                *share
+            } else {
+                -*share
+            };
+            *self
+                .strategy_positions
+                .entry(Self::strategy_position_key(
+                    strategy,
+                    &fill.venue,
+                    &fill.object_id,
+                ))
+                .or_insert(Decimal::ZERO) += signed_share;
+        }
         self.journal.record(
             Decision::Filled {
                 order_id: fill.order_id.clone(),
@@ -6865,6 +7210,16 @@ impl Cell {
     /// cell's sizing on the slot's staleness; refusing to read the slot as
     /// well would be a second control on the same fact with a different
     /// threshold.
+    /// ADR 0080's slot as the applied payload carries it, if the applied
+    /// payload carries one. Read from the payload `apply_policy` swapped in,
+    /// so a payload refused there — replayed, re-addressed, unverified — is
+    /// never read here.
+    pub fn dispositions(&self) -> Option<&Dispositions> {
+        self.policy
+            .as_ref()
+            .and_then(|policy| policy.payload().dispositions.value())
+    }
+
     fn feasibility_constraints(&self) -> Option<&qip_contracts::policy::FeasibilityConstraints> {
         self.policy
             .as_ref()

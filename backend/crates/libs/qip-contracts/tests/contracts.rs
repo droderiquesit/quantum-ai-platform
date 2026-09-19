@@ -2497,3 +2497,149 @@ fn a_dark_region_set_is_absent_from_the_wire_when_empty_and_present_once_a_regio
         "a payload naming a region lit was decoded, so the wire can clear a darkness"
     );
 }
+
+// --- ADR 0080: the thirteenth slot, absent while it says nothing ------------
+
+use qip_contracts::policy::Dispositions;
+
+fn one_disposition(strategy: &str, instrument: &str, flatten_by: Decimal) -> Dispositions {
+    let mut lots = BTreeMap::new();
+    lots.insert(instrument.to_string(), flatten_by);
+    let mut unwinds = BTreeMap::new();
+    unwinds.insert(StrategyId::new(strategy), lots);
+    Dispositions { unwinds }
+}
+
+#[test]
+fn a_payload_with_nothing_to_unwind_signs_and_serialises_exactly_as_it_did_before_the_thirteenth_slot()
+-> Result<()> {
+    // The failure this prevents is the one `withdrawn_venues` was written
+    // against and is documented on that field: a required field on a signed
+    // cross-process contract is a breaking change to it. `qip-api` and
+    // `qip-edge-node` deploy separately, so a payload that says nothing about
+    // dispositions must sign and serialise to the byte as it did before the
+    // slot existed — or every cell built before it refuses every payload from
+    // a centre built after it, all twelve slots degraded on a field that
+    // carried nothing.
+    //
+    // Premise: the item exists, is enumerated, and maps to no §6.2 row, so
+    // producing it can widen nothing.
+    assert!(
+        PolicyItem::all().contains(&PolicyItem::Dispositions),
+        "the thirteenth item is not enumerated, so `narrowing` and every exhaustive walk \
+         would skip it"
+    );
+    assert_eq!(PolicyItem::Dispositions.as_str(), "dispositions");
+    assert_eq!(
+        PolicyItem::Dispositions.capability(),
+        None,
+        "a stale instruction to reduce is still an instruction to reduce; the slot must map \
+         to no capability"
+    );
+
+    let unproduced = PolicyPayload::unproduced(7, "cell-1", t(0));
+    let wire = serde_json::to_string(&unproduced).expect("serialisable");
+    assert!(
+        !wire.contains("\"dispositions\""),
+        "an unproduced dispositions slot is written to the wire, so every payload from a new \
+         centre fails `deny_unknown_fields` at a cell built before the field: {wire}"
+    );
+    let signing = unproduced.signing_payload()?;
+    assert!(
+        !signing.contains("dispositions="),
+        "an unproduced dispositions slot is in the signing string, so every signature moved: \
+         {signing}"
+    );
+    // Exactly the twelve digests §41.5's table has, and no thirteenth.
+    assert_eq!(
+        signing.split('|').filter(|part| part.contains('=')).count(),
+        12,
+        "the signing string does not carry exactly the twelve slot digests: {signing}"
+    );
+
+    // A produced slot naming no lot is the same statement as none — off the
+    // wire and out of the signature by the same predicate — so a producer
+    // that shipped an empty map could not break an old cell either.
+    let mut empty = unproduced.clone();
+    empty.dispositions = Slot::produced(Dispositions::default(), t(0));
+    assert!(
+        empty
+            .dispositions
+            .value()
+            .is_some_and(Dispositions::is_empty)
+    );
+    assert_eq!(
+        serde_json::to_string(&empty).expect("serialisable"),
+        wire,
+        "a produced-but-empty slot is on the wire"
+    );
+    assert_eq!(empty.signing_payload()?, signing);
+    let signed_unproduced = unproduced.clone().signed(&payload_key())?;
+    let signed_empty = empty.signed(&payload_key())?;
+    assert_eq!(signed_unproduced.signature, signed_empty.signature);
+
+    // The wire form a pre-field centre produced decodes with the slot
+    // unproduced, reads unavailable, and is equal to the payload it came from.
+    let decoded: PolicyPayload = serde_json::from_str(&wire).expect("a pre-field payload decodes");
+    assert!(decoded.dispositions.is_unproduced());
+    assert_eq!(decoded, unproduced);
+    assert_eq!(
+        decoded.freshness(PolicyItem::Dispositions, t(1)),
+        Freshness::Unavailable
+    );
+    Ok(())
+}
+
+#[test]
+fn a_disposition_is_on_the_wire_and_under_the_signature_once_there_is_one() -> Result<()> {
+    // The other half, which keeps the deploy order honest: once the centre
+    // has something to unwind, the field is present, the digest is in the
+    // signing string, and a disposition cannot be altered on a payload that
+    // still verifies. An old cell refuses the whole payload then, and that is
+    // the fail-closed direction — cells upgrade before the centre.
+    let mut payload = PolicyPayload::unproduced(8, "cell-1", t(0));
+    let base = payload.signing_payload()?;
+    let dispositions = one_disposition("alpha", "obj-ACME", dec!("-100"));
+    assert_eq!(dispositions.len(), 1);
+    assert!(!dispositions.is_empty());
+    payload.dispositions = Slot::produced(dispositions.clone(), t(0));
+
+    let signing = payload.signing_payload()?;
+    assert_ne!(signing, base, "a named lot did not move the signing string");
+    assert!(
+        signing.contains("|dispositions="),
+        "the dispositions digest is not in the signing string: {signing}"
+    );
+    assert_eq!(
+        signing.split('|').filter(|part| part.contains('=')).count(),
+        13,
+        "the signing string does not carry thirteen slot digests once a lot is named"
+    );
+    assert_eq!(
+        payload.freshness(PolicyItem::Dispositions, t(10)),
+        Freshness::Fresh
+    );
+
+    let wire = serde_json::to_string(&payload).expect("serialisable");
+    assert!(
+        wire.contains("\"dispositions\":{\"value\":{\"unwinds\":{\"alpha\":{\"obj-ACME\":"),
+        "the lot is not on the wire keyed strategy then instrument: {wire}"
+    );
+    let decoded: PolicyPayload = serde_json::from_str(&wire).expect("own wire form decodes");
+    assert_eq!(decoded.dispositions.value(), Some(&dispositions));
+    assert_eq!(
+        decoded.signing_payload()?,
+        signing,
+        "the receiver derives a different signing string from the same wire bytes"
+    );
+
+    // One unit different is a different signature.
+    let mut altered = payload.clone();
+    altered.dispositions = Slot::produced(one_disposition("alpha", "obj-ACME", dec!("-99")), t(0));
+    assert_ne!(
+        altered.signing_payload()?,
+        signing,
+        "a disposition altered by one unit still signs the same"
+    );
+    Ok(())
+}

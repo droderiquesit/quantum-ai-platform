@@ -1,10 +1,15 @@
-//! The policy payload a region receives — twelve typed slots, one signature.
+//! The policy payload a region receives — twelve typed slots, one signature,
+//! and a thirteenth slot beside them (ADR 0080).
 //!
 //! Blueprint §41.5 names twelve things the centre ships to every region, from
 //! trained models down to adversary profiles. This module is the wire shape of
 //! that list: an envelope carrying **a typed slot for each of the twelve**,
 //! signed as one fact, applied as one fact, and narrowed per §6.2 as its items
-//! go stale.
+//! go stale. ADR 0080 adds a thirteenth, [`Dispositions`], which is not in
+//! §41.5's table and is a stated deviation from it: the retired strategies'
+//! open lots the centre wants a cell to unwind. It rides this payload rather
+//! than a topic of its own so it inherits the one sequence, signature and
+//! replay discipline the twelve already have.
 //!
 //! # A slot with no producer is stale from birth
 //!
@@ -47,6 +52,7 @@
 
 use crate::degradation::{Capability, DegradationState, Freshness};
 use crate::message::BookSide;
+use crate::signal::StrategyId;
 use crate::venue::VenueClass;
 use qip_core::error::{Error, Result};
 use qip_core::hash::{sha256_hex, to_hex};
@@ -54,11 +60,14 @@ use qip_core::{Decimal, Duration, Timestamp, hmac_sha256};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The twelve items of blueprint §41.5, in its order.
+/// The twelve items of blueprint §41.5, in its order, and ADR 0080's
+/// thirteenth after them.
 ///
-/// An enum rather than twelve booleans so a caller can iterate the list and a
-/// match on it is exhaustive — adding a thirteenth item forces every decision
-/// about it to be made explicitly.
+/// An enum rather than thirteen booleans so a caller can iterate the list and
+/// a match on it is exhaustive — adding an item forces every decision about
+/// it to be made explicitly. The thirteenth did exactly that: its time to
+/// live, its capability mapping and its place in the signing string were each
+/// decided by a compiler error rather than a default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyItem {
@@ -74,6 +83,9 @@ pub enum PolicyItem {
     InventoryTargets,
     FeasibilityConstraints,
     AdversaryProfiles,
+    /// ADR 0080: the retired strategies' lots this cell is to unwind. Not in
+    /// §41.5's table; see [`Dispositions`].
+    Dispositions,
 }
 
 impl PolicyItem {
@@ -91,10 +103,11 @@ impl PolicyItem {
             Self::InventoryTargets => "inventory_targets",
             Self::FeasibilityConstraints => "feasibility_constraints",
             Self::AdversaryProfiles => "adversary_profiles",
+            Self::Dispositions => "dispositions",
         }
     }
 
-    pub const fn all() -> [Self; 12] {
+    pub const fn all() -> [Self; 13] {
         [
             Self::TrainedModels,
             Self::CompiledPlan,
@@ -108,6 +121,7 @@ impl PolicyItem {
             Self::InventoryTargets,
             Self::FeasibilityConstraints,
             Self::AdversaryProfiles,
+            Self::Dispositions,
         ]
     }
 
@@ -120,12 +134,18 @@ impl PolicyItem {
     /// silence before narrowing.
     pub const fn time_to_live(&self) -> Duration {
         match self {
-            // "on promotion" / "on change" / "on re-estimation".
+            // "on promotion" / "on change" / "on re-estimation". A
+            // disposition changes on a retirement or a fill, so it takes the
+            // "on change" day; its consumer reads it whatever its freshness
+            // (a stale instruction to reduce is still an instruction to
+            // reduce), so the figure bounds nothing at the cell and is here
+            // so the item is not the one with no stated cadence.
             Self::TrainedModels
             | Self::CompiledPlan
             | Self::CausalDigest
             | Self::RegimeState
-            | Self::FeasibilityConstraints => Duration::from_secs(86_400),
+            | Self::FeasibilityConstraints
+            | Self::Dispositions => Duration::from_secs(86_400),
             // "seconds to minutes" — the conservative end is minutes.
             Self::BeliefPriors => Duration::from_secs(300),
             // "minutes".
@@ -150,7 +170,10 @@ impl PolicyItem {
     /// table). Ingestion and counterfactual scoring are deliberately absent:
     /// ingestion staleness is the cell's own feed watermark, not something the
     /// centre ships, and counterfactual scoring never ships at all because
-    /// §6.2 gives its loss no trading impact whatsoever.
+    /// §6.2 gives its loss no trading impact whatsoever. Dispositions map to
+    /// nothing for the reason ADR 0080 gives: a stale instruction to reduce
+    /// is still an instruction to reduce, and it narrows nothing that was
+    /// not already narrowed.
     pub const fn capability(&self) -> Option<Capability> {
         match self {
             Self::BeliefPriors => Some(Capability::BeliefState),
@@ -174,6 +197,15 @@ pub struct Slot<T> {
     produced_at: Option<Timestamp>,
 }
 
+/// The default slot is the unproduced one, so a payload field that is absent
+/// from the wire (`#[serde(default)]`) reads as "nothing produced" — the same
+/// fail-closed value every slot starts at — and never as a value.
+impl<T> Default for Slot<T> {
+    fn default() -> Self {
+        Self::unproduced()
+    }
+}
+
 impl<T> Slot<T> {
     /// A slot nothing has produced.
     pub const fn unproduced() -> Self {
@@ -181,6 +213,11 @@ impl<T> Slot<T> {
             value: None,
             produced_at: None,
         }
+    }
+
+    /// Whether nothing produced this slot.
+    pub const fn is_unproduced(&self) -> bool {
+        self.value.is_none()
     }
 
     /// A produced slot. The timestamp is the producer's, not the shipper's:
@@ -466,7 +503,77 @@ pub struct AdversaryProfiles {
     pub venues: BTreeMap<String, serde_json::Value>,
 }
 
-/// The signed twelve-item payload one region receives.
+/// ADR 0080's thirteenth slot: the lots this cell holds for strategies the
+/// centre has retired, and the signed quantity that flattens each.
+///
+/// Keyed strategy, then instrument, to a signed `flatten_by` — exactly
+/// `CentralPlane::scheduled_unwinds`' shape filtered to the one cell the
+/// payload is for, with the cell prefix dropped from the instrument key
+/// because the payload already names its cell. Negative flattens a long,
+/// positive a short. `Decimal`, because it is a quantity of a position.
+///
+/// # What the cell may do with it, and what it may not
+///
+/// A cell reads this to build **reduce-only** intents against the lot *it*
+/// holds for that strategy in that instrument, and refuses — never trades —
+/// when it holds nothing, or when the sign would increase the lot or carry
+/// it through flat. That sign check is what lets this slot ride a wire that
+/// authenticates only the centre: the worst a forged or replayed payload can
+/// do with it is close a position the platform holds, which is a loss of
+/// edge and never a widening of risk (ADR 0062, ADR 0073: the policy wire
+/// may subtract and never add). A retired strategy can never again receive
+/// a capital envelope (ADR 0075), so the one intent this slot produces is
+/// the one intent in a cell that passes with none, and it is safe for
+/// exactly as long as the sign check holds.
+///
+/// # Absent from the wire when it says nothing
+///
+/// Skipped when unproduced or empty and defaulted to unproduced when absent,
+/// exactly as [`FeasibilityConstraints::withdrawn_venues`] is and for the
+/// same reason: a payload signed before the slot existed decodes, serialises
+/// and digests as it always did, and so keeps its signature. The skew is the
+/// same too — once the centre has something to say the field is present and
+/// a cell built before it refuses the whole payload under
+/// `deny_unknown_fields`, so **cells upgrade before the centre**. That is the
+/// fail-closed direction: an old cell applies no new policy and keeps the
+/// last it applied, rather than applying twelve slots and silently ignoring
+/// an instruction to reduce.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Dispositions {
+    /// Strategy, then instrument, to the signed quantity that brings the lot
+    /// the cell holds for that strategy to zero. `BTreeMap` twice because the
+    /// slot is digested and signed, and a map that serialised in two orders
+    /// would sign as two payloads.
+    pub unwinds: BTreeMap<StrategyId, BTreeMap<String, Decimal>>,
+}
+
+impl Dispositions {
+    /// Whether this names no lot at all.
+    pub fn is_empty(&self) -> bool {
+        self.unwinds.values().all(BTreeMap::is_empty)
+    }
+
+    /// How many lots this names, across every strategy.
+    pub fn len(&self) -> usize {
+        self.unwinds.values().map(BTreeMap::len).sum()
+    }
+}
+
+/// Whether the dispositions slot says nothing — unproduced, or produced with
+/// no lot in it — and so stays off the wire and out of the signing string.
+///
+/// One predicate for both, deliberately: the signer and the verifier each
+/// derive the signing string from their own copy, so the rule that decides
+/// what the wire carries and the rule that decides what is signed have to be
+/// the same function or a payload could sign on one side and not verify on
+/// the other.
+fn dispositions_unstated(slot: &Slot<Dispositions>) -> bool {
+    slot.value().is_none_or(Dispositions::is_empty)
+}
+
+/// The signed twelve-item payload one region receives, plus ADR 0080's
+/// thirteenth slot.
 ///
 /// Unknown fields are refused on deserialisation. That is half of the
 /// guarantee that this cannot carry an autonomy ceiling — the other half is
@@ -502,6 +609,12 @@ pub struct PolicyPayload {
     pub inventory_targets: Slot<InventoryTargets>,
     pub feasibility_constraints: Slot<FeasibilityConstraints>,
     pub adversary_profiles: Slot<AdversaryProfiles>,
+    /// ADR 0080's thirteenth slot. Off the wire and out of the signing
+    /// string while it says nothing, so every payload signed before it
+    /// existed keeps its digest; see [`Dispositions`] for the deploy order
+    /// that follows.
+    #[serde(default, skip_serializing_if = "dispositions_unstated")]
+    pub dispositions: Slot<Dispositions>,
     /// Hex MAC over [`Self::signing_payload`]. Empty until signed.
     pub signature: String,
 }
@@ -528,6 +641,7 @@ impl PolicyPayload {
             inventory_targets: Slot::unproduced(),
             feasibility_constraints: Slot::unproduced(),
             adversary_profiles: Slot::unproduced(),
+            dispositions: Slot::unproduced(),
             signature: String::new(),
         }
     }
@@ -551,6 +665,7 @@ impl PolicyPayload {
             PolicyItem::InventoryTargets => self.inventory_targets.freshness(item, now),
             PolicyItem::FeasibilityConstraints => self.feasibility_constraints.freshness(item, now),
             PolicyItem::AdversaryProfiles => self.adversary_profiles.freshness(item, now),
+            PolicyItem::Dispositions => self.dispositions.freshness(item, now),
         };
         let expired = now > self.issued_at.saturating_add(self.valid_for) || now < self.issued_at;
         if expired && own == Freshness::Fresh {
@@ -584,6 +699,14 @@ impl PolicyPayload {
     /// slot swapped while the rest still verify. Slot digests are over the
     /// serialised slot, and every map inside a slot is a `BTreeMap`, so the
     /// serialisation is deterministic and a digest names exactly one value.
+    ///
+    /// The thirteenth slot's digest is appended only when the slot says
+    /// something, by the same predicate that keeps it off the wire. A
+    /// payload with nothing to unwind therefore signs to the byte as it did
+    /// before the slot existed, which is what lets the centre and the cells
+    /// upgrade separately; and a payload with something to unwind signs over
+    /// it, so a disposition cannot be added to, removed from or altered on a
+    /// payload that still verifies.
     pub fn signing_payload(&self) -> Result<String> {
         let mut parts = vec![
             self.sequence.to_string(),
@@ -616,7 +739,7 @@ impl PolicyPayload {
             })?;
             Ok((item.as_str(), sha256_hex(&bytes)))
         }
-        Ok(vec![
+        let mut digests = vec![
             digest(PolicyItem::TrainedModels, &self.trained_models)?,
             digest(PolicyItem::CompiledPlan, &self.compiled_plan)?,
             digest(PolicyItem::BeliefPriors, &self.belief_priors)?,
@@ -632,7 +755,11 @@ impl PolicyPayload {
                 &self.feasibility_constraints,
             )?,
             digest(PolicyItem::AdversaryProfiles, &self.adversary_profiles)?,
-        ])
+        ];
+        if !dispositions_unstated(&self.dispositions) {
+            digests.push(digest(PolicyItem::Dispositions, &self.dispositions)?);
+        }
+        Ok(digests)
     }
 
     /// Sign with the shared trust root — the same key, and the same keyed MAC,

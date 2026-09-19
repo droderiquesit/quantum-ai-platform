@@ -590,16 +590,57 @@ impl CentralPlane {
     /// listed rather than discovered.
     pub fn scheduled_unwinds(&self) -> BTreeMap<StrategyId, BTreeMap<String, Decimal>> {
         let mut scheduled: BTreeMap<StrategyId, BTreeMap<String, Decimal>> = BTreeMap::new();
-        for ((cell, strategy, instrument), lot) in self.strategy_books() {
-            if lot.quantity.is_zero() || self.factory().stage_of(strategy) != GateStage::Retired {
+        for (cell, strategy, instrument, flatten_by) in self.retired_lots() {
+            scheduled
+                .entry(strategy.clone())
+                .or_default()
+                .insert(format!("{cell}/{instrument}"), flatten_by);
+        }
+        scheduled
+    }
+
+    /// [`Self::scheduled_unwinds`] for one cell, keyed by instrument alone —
+    /// the shape ADR 0080's payload slot carries
+    /// (`qip_contracts::policy::Dispositions`), because the payload already
+    /// names its cell and a cell prefix inside it would be the same fact
+    /// twice.
+    ///
+    /// Derived on every call, like the whole schedule and for the same
+    /// reason: the producer that ships this reads it once per cycle, and a
+    /// lot the last delta's fill closed is absent from the next payload by
+    /// the arithmetic that closed it. Empty for a cell where no retired
+    /// strategy holds anything, and the producer ships nothing then rather
+    /// than an empty instruction.
+    pub fn scheduled_unwinds_for(
+        &self,
+        cell: &str,
+    ) -> BTreeMap<StrategyId, BTreeMap<String, Decimal>> {
+        let mut scheduled: BTreeMap<StrategyId, BTreeMap<String, Decimal>> = BTreeMap::new();
+        for (lot_cell, strategy, instrument, flatten_by) in self.retired_lots() {
+            if lot_cell != cell {
                 continue;
             }
             scheduled
                 .entry(strategy.clone())
                 .or_default()
-                .insert(format!("{cell}/{instrument}"), -lot.quantity);
+                .insert(instrument.to_string(), flatten_by);
         }
         scheduled
+    }
+
+    /// Every non-zero lot whose strategy stands at `Retired`, with the signed
+    /// quantity that flattens it — the one definition of "orphaned" the
+    /// centre has (ADR 0080, decision one), read from the ledger and the
+    /// books rather than stored beside them.
+    fn retired_lots(&self) -> impl Iterator<Item = (&str, &StrategyId, &str, Decimal)> {
+        self.strategy_books()
+            .iter()
+            .filter(|((_, strategy, _), lot)| {
+                !lot.quantity.is_zero() && self.factory().stage_of(strategy) == GateStage::Retired
+            })
+            .map(|((cell, strategy, instrument), lot)| {
+                (cell.as_str(), strategy, instrument.as_str(), -lot.quantity)
+            })
     }
 
     /// Update the allocator's evidence for one strategy.

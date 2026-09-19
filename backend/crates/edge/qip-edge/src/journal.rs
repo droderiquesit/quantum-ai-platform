@@ -354,6 +354,24 @@ pub enum Decision {
         venue: String,
         candidates: Vec<(String, String)>,
     },
+    /// ADR 0080: the applied policy named a retired strategy's lot and the
+    /// cell built a reduce-only intent for it. Its own kind rather than a
+    /// `SignalRaised`, because no strategy raised anything: the instruction
+    /// came down the policy wire and the size came from this cell's book.
+    /// `flatten_by` is what the centre asked, `held` what the cell held, and
+    /// `signed_size` the smaller of the two in the instruction's direction —
+    /// three numbers because a reader of a partial unwind needs to see that
+    /// the cell chose the lot over the instruction, not that it misread one.
+    /// Every quantity is a `Decimal` rendered to text, as `Filled` renders
+    /// its own.
+    DispositionIntent {
+        strategy: String,
+        object: String,
+        venue: String,
+        flatten_by: String,
+        held: String,
+        signed_size: String,
+    },
 }
 
 impl Decision {
@@ -386,6 +404,7 @@ impl Decision {
             Self::ReconciliationRequired { .. } => "reconciliation_required",
             Self::VenueReconciled { .. } => "venue_reconciled",
             Self::VenueChosen { .. } => "venue_chosen",
+            Self::DispositionIntent { .. } => "disposition_intent",
         }
     }
 }
