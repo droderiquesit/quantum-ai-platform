@@ -375,6 +375,14 @@ pub struct Platform {
     /// of the process. Bounded by the instruments observed, which
     /// `bar_history` already holds one series per.
     fallback_refused: BTreeSet<String>,
+    /// §7.6.4's freshness as measured rather than assumed: which source
+    /// stated each fact first, and by how much, over the macro releases and
+    /// fundamental figures every feed delivers through [`Platform::observe`].
+    /// Reported by the SENSE stage once any fact has been seen from two
+    /// sources. Reads nothing back into a score or a routing class — a
+    /// measured lead is evidence for a person deciding which sources to
+    /// keep, not a control.
+    source_leads: qip_data_finder::freshness::LeadLedger,
     /// What datasets *do* exist. Fed from the finder's own registrations, so
     /// the two answers cannot drift apart.
     catalog: Catalog,
@@ -3809,6 +3817,7 @@ impl Platform {
             references: Self::resume_references(&event_log)?,
             fallback: qip_data_finder::retention::FallbackSeries::bounded(),
             fallback_refused: BTreeSet::new(),
+            source_leads: qip_data_finder::freshness::LeadLedger::new(),
             catalog: Catalog::new(),
             chain: None,
             confirmations: Confirmations::exactly(config.chain_confirmations),
@@ -7242,6 +7251,11 @@ impl Platform {
         // quadratic in the series they build.
         let mut bars: Vec<Box<Bar>> = Vec::new();
         for record in records {
+            // Before the record is taken apart by kind: a fact a second
+            // source has already stated is measured here, at the seam where
+            // the platform learns it, because nothing downstream keeps the
+            // source beside the figure.
+            self.source_leads.observe(&record);
             match record {
                 SensedRecord::Bar(bar) => {
                     let key = bar.object_id.as_str().to_string();
@@ -8382,12 +8396,22 @@ impl Platform {
         } else {
             surfaces.join(", ")
         };
+        // §7.6.4's ranking, only once a fact has been seen from two sources:
+        // a source's lead is a measurement or it is nothing, and a clause
+        // that said "no lead measured" on every cycle would read as a finding
+        // about the sources rather than about the overlap so far.
+        let leads = self.source_leads.describe();
+        let leads = if leads.is_empty() {
+            String::new()
+        } else {
+            format!("; {leads}")
+        };
         StageOutcome::ran(
             Stage::Sense,
             held,
             format!(
                 "{held} observation(s) held from {absorbed} absorbed: \
-                 {breakdown}{sourced}{corporate}"
+                 {breakdown}{sourced}{corporate}{leads}"
             ),
         )
     }
@@ -14133,6 +14157,13 @@ impl Platform {
     /// The source registry: what this deployment has decided to collect.
     pub fn data_finder(&self) -> &DataFinder {
         &self.data_finder
+    }
+
+    /// §7.6.4's ranking of sources on measured lead — how far in advance
+    /// each source's facts preceded the same fact arriving from another —
+    /// best lead first. Empty until a fact has been seen from two sources.
+    pub fn source_lead_ranking(&self) -> Vec<qip_data_finder::freshness::SourceLeadSummary> {
+        self.source_leads.ranking()
     }
 
     /// Sources currently registered, by identifier.
