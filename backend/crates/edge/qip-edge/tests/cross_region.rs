@@ -55,7 +55,8 @@ use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::arbitrage::ArbitrageDesk;
 use qip_edge::cell::{
-    Cell, CellConfig, GATE_DARK_REGION, GATE_PATH_EXTENSION, GATE_PATH_ROUTER, Placer, WorkReport,
+    Cell, CellConfig, GATE_CENTRE_DARK_REGION, GATE_DARK_REGION, GATE_PATH_EXTENSION,
+    GATE_PATH_ROUTER, Placer, WorkReport,
 };
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
@@ -1115,6 +1116,133 @@ fn a_cycle_whose_mirrored_leg_reaches_a_dark_region_is_suspended_under_its_own_g
     assert!(
         report.paths.is_empty(),
         "a suspended cycle was still assigned a path"
+    );
+    assert!(gateway.placed.is_empty(), "a suspended mirror still sent");
+    Ok(())
+}
+
+/// The same policy with slot 11 produced, naming `dark` as the regions the
+/// centre has derived dark (ADR 0079).
+fn policy_with_dark_regions(
+    issued_at: Timestamp,
+    targets: Option<(&Distributed, Timestamp)>,
+    dark: &[&str],
+) -> Result<VerifiedPolicy> {
+    let mut payload = PolicyPayload::unproduced(1, CELL, issued_at);
+    payload.belief_priors = Slot::produced(
+        BeliefPriors {
+            priors: BTreeMap::new(),
+        },
+        issued_at,
+    );
+    payload.causal_digest = Slot::produced(
+        CausalDigest {
+            active_edges: Vec::new(),
+        },
+        issued_at,
+    );
+    payload.episodic_digest = Slot::produced(
+        EpisodicDigest {
+            digest: "d".to_string(),
+            episodes: 0,
+        },
+        issued_at,
+    );
+    if let Some((distributed, produced_at)) = targets {
+        payload.inventory_targets = distributed.slot(produced_at);
+    }
+    payload.feasibility_constraints = Slot::produced(
+        qip_contracts::policy::FeasibilityConstraints {
+            minimum_order: BTreeMap::new(),
+            fee_floor: BTreeMap::new(),
+            tick: BTreeMap::new(),
+            withdrawn_venues: std::collections::BTreeSet::new(),
+            dark_regions: dark.iter().map(|region| (*region).to_string()).collect(),
+        },
+        issued_at,
+    );
+    VerifiedPolicy::verify(payload.signed(POLICY_KEY)?, POLICY_KEY, CELL, issued_at)
+}
+
+#[test]
+fn a_mirror_into_a_region_the_centre_derived_dark_is_refused_at_the_extension_under_the_centres_token()
+-> Result<()> {
+    // ADR 0079 decision five. The cell's own region wire says every peer is
+    // lit — asserted, because that is the premise: this refusal comes from
+    // the centre's derivation on slot 11 and from nothing this node read
+    // locally. A region this cell holds no venue in suspends nothing here,
+    // for the reason `dark_foreign_regions` gives: a name that costs this
+    // cell nothing must not read as a suspended mirror.
+    let (mut elsewhere, _) = cell_with(
+        true,
+        Some(arrangement()?),
+        policy_with_dark_regions(
+            t(5),
+            Some((&Distributed::workable(), t(5))),
+            &["ap-south-1"],
+        )?,
+    )?;
+    let mut unused = RecordingGateway::default();
+    let routed = elsewhere.work(t(10), &mut unused)?;
+    assert_eq!(
+        routed.paths.len(),
+        1,
+        "the premise failed: this fixture is assigned no path at all: {:?}",
+        routed.refusals
+    );
+    assert!(
+        !refusals_under(&routed, GATE_PATH_EXTENSION)
+            .iter()
+            .any(|reason| reason.contains(&format!("{GATE_CENTRE_DARK_REGION}:"))),
+        "a dark region this cell holds no venue in suspended its mirror: {:?}",
+        routed.refusals
+    );
+
+    let (mut cell, metrics) = cell_with(
+        true,
+        Some(arrangement()?),
+        policy_with_dark_regions(t(5), Some((&Distributed::workable(), t(5))), &[REGION_TWO])?,
+    )?;
+    assert!(
+        !cell.is_region_dark(REGION_TWO),
+        "the premise failed: the cell's own wire reads the region dark, so this would be \
+         `dark_mirror`'s refusal and not the centre's"
+    );
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_one_opportunity(&cell);
+
+    // Charted under the extension's gate — the constant that seam already
+    // passes, so the series gains no value — and the reason opens with the
+    // centre's token so the journal tells the two dark findings apart. The
+    // token is the property, not the count: this fixture's path-3 band
+    // already refuses at the extension on its own facts, so a refusal under
+    // the gate exists with or without the centre's derivation, and a test
+    // that counted one would pass with the check deleted. A mutation found
+    // exactly that.
+    let refused = refusals_under(&report, GATE_PATH_EXTENSION);
+    assert_eq!(
+        refused.len(),
+        1,
+        "the premise failed: the mirrored leg was not refused at the extension at all: {:?}",
+        report.refusals
+    );
+    assert!(
+        refused[0].contains(&format!("{GATE_CENTRE_DARK_REGION}:")),
+        "a mirror into a region the centre derived dark was not refused under the centre's \
+         token; the extension refused it on its own facts instead: {}",
+        refused[0]
+    );
+    assert!(
+        refused[0].contains(REGION_TWO),
+        "the refusal should name the region the centre derived dark: {}",
+        refused[0]
+    );
+    assert_eq!(refusals_counted(&metrics, GATE_PATH_EXTENSION), 1);
+    assert!(
+        refusals_under(&report, GATE_DARK_REGION).is_empty(),
+        "the centre's derivation was charted as this cell's own wire reading: {:?}",
+        report.refusals
     );
     assert!(gateway.placed.is_empty(), "a suspended mirror still sent");
     Ok(())

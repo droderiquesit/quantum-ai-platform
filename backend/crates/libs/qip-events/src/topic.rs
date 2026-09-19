@@ -160,6 +160,18 @@ pub enum Topic {
     PositionUpdated,
     PnlUpdated,
     ReconciliationCompleted,
+    /// The centre derived a region dark: heard from at least once, and
+    /// from none of its cells within `CentralConfig::region_dark_after`
+    /// (ADR 0079). The record of a derivation rather than a second source
+    /// of truth — replaying the cell reports re-derives it — journaled so
+    /// an operator can read when the centre stopped granting into the
+    /// region and froze its share. Act, because the consequence is on the
+    /// order path: nothing new enters the region while it is dark.
+    RegionDark,
+    /// A dark region's first report reached the centre and the derivation
+    /// cleared. The other half of the pair above, so the two instants
+    /// bracket exactly the window in which grants were refused.
+    RegionLit,
 
     // --- LEARN ---
     OutcomeObserved,
@@ -227,7 +239,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 77] = [
+    pub const ALL: [Self; 79] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -285,6 +297,8 @@ impl Topic {
         Self::PositionUpdated,
         Self::PnlUpdated,
         Self::ReconciliationCompleted,
+        Self::RegionDark,
+        Self::RegionLit,
         Self::OutcomeObserved,
         Self::AttributionCompleted,
         Self::HypothesisScored,
@@ -368,6 +382,8 @@ impl Topic {
             Self::PositionUpdated => "position.updated",
             Self::PnlUpdated => "pnl.updated",
             Self::ReconciliationCompleted => "reconciliation.completed",
+            Self::RegionDark => "region.dark",
+            Self::RegionLit => "region.lit",
             Self::OutcomeObserved => "outcome.observed",
             Self::AttributionCompleted => "attribution.completed",
             Self::HypothesisScored => "hypothesis.scored",
@@ -460,7 +476,9 @@ impl Topic {
             | Self::OrderFilled
             | Self::PositionUpdated
             | Self::PnlUpdated
-            | Self::ReconciliationCompleted => TopicGroup::Act,
+            | Self::ReconciliationCompleted
+            | Self::RegionDark
+            | Self::RegionLit => TopicGroup::Act,
 
             Self::OutcomeObserved
             | Self::AttributionCompleted

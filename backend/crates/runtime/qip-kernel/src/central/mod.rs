@@ -48,6 +48,7 @@
 //! and not in the audit trail.
 
 pub mod belief;
+pub mod darkness;
 pub mod dna;
 pub mod episodic;
 pub mod factory;
@@ -63,6 +64,7 @@ pub mod structure;
 pub mod whitelist;
 
 pub use belief::{BeliefIssue, BeliefOutcome};
+pub use darkness::{LastHeard, RegionDarkness, RegionTransition};
 pub use dna::{DnaPayload, StrategyDna};
 pub use episodic::{EpisodicIssue, EpisodicOutcome};
 pub use factory::{StrategyCandidate, StrategyFactory, StrategyReview};

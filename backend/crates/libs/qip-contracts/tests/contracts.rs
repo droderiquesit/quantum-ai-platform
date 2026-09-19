@@ -2401,6 +2401,7 @@ fn slot_elevens_withdrawn_set_is_additive_on_the_wire_in_both_directions() {
         fee_floor: BTreeMap::new(),
         tick: BTreeMap::new(),
         withdrawn_venues: BTreeSet::new(),
+        dark_regions: BTreeSet::new(),
     };
     let encoded = serde_json::to_string(&empty).expect("serialisable");
     assert!(
@@ -2433,5 +2434,66 @@ fn slot_elevens_withdrawn_set_is_additive_on_the_wire_in_both_directions() {
     assert_eq!(
         round_tripped, withdrawn,
         "the withdrawn set did not survive its own round trip"
+    );
+}
+
+#[test]
+fn a_dark_region_set_is_absent_from_the_wire_when_empty_and_present_once_a_region_is_dark() {
+    // ADR 0079's field, held to the discipline the test above argues for
+    // `withdrawn_venues`, and each assertion fails on a different half of
+    // it. A payload from a centre older than the field decodes with nothing
+    // dark; a new centre with nothing dark writes the bytes an old cell
+    // already accepts, so the slot digest — and the signature over it — is
+    // unchanged for payloads that say nothing new; and once a region *is*
+    // dark the field is present, an old cell refuses the payload whole, and
+    // that is the fail-closed direction: cells upgrade before the centre.
+    let absent = r#"{"minimum_order":{},"fee_floor":{},"tick":{}}"#;
+    let decoded: FeasibilityConstraints =
+        serde_json::from_str(absent).expect("a payload from a centre older than the field");
+    assert!(
+        decoded.dark_regions.is_empty(),
+        "an absent dark set decoded as something other than 'this centre derived nothing dark'"
+    );
+    let empty = FeasibilityConstraints {
+        minimum_order: BTreeMap::new(),
+        fee_floor: BTreeMap::new(),
+        tick: BTreeMap::new(),
+        withdrawn_venues: BTreeSet::new(),
+        dark_regions: BTreeSet::new(),
+    };
+    let encoded = serde_json::to_string(&empty).expect("serialisable");
+    assert!(
+        !encoded.contains("dark_regions"),
+        "an empty dark set is written to the wire, so every payload from a new centre fails \
+         `deny_unknown_fields` at a cell built before the field: {encoded}"
+    );
+    assert_eq!(
+        encoded, absent,
+        "the empty-set encoding is not byte-for-byte the pre-field encoding, so the slot \
+         digest moved for payloads that say nothing new"
+    );
+    let dark = FeasibilityConstraints {
+        dark_regions: ["europe-west2".to_string()].into_iter().collect(),
+        ..empty.clone()
+    };
+    let encoded = serde_json::to_string(&dark).expect("serialisable");
+    assert!(
+        encoded.contains(r#""dark_regions":["europe-west2"]"#),
+        "a region the centre derived dark is not on the wire, so a cell would keep mirroring \
+         into it: {encoded}"
+    );
+    let round_tripped: FeasibilityConstraints =
+        serde_json::from_str(&encoded).expect("deserialisable");
+    assert_eq!(
+        round_tripped, dark,
+        "the dark set did not survive its own round trip"
+    );
+    // And there is no field by which a payload could declare a region lit:
+    // the type's only region-bearing field is the subtractive one.
+    let lit_claim =
+        r#"{"minimum_order":{},"fee_floor":{},"tick":{},"lit_regions":["europe-west2"]}"#;
+    assert!(
+        serde_json::from_str::<FeasibilityConstraints>(lit_claim).is_err(),
+        "a payload naming a region lit was decoded, so the wire can clear a darkness"
     );
 }

@@ -423,6 +423,7 @@ fn policy_with_minimum(
             fee_floor: BTreeMap::new(),
             tick: BTreeMap::new(),
             withdrawn_venues: BTreeSet::new(),
+            dark_regions: BTreeSet::new(),
         },
         issued_at,
     );

@@ -703,6 +703,7 @@ mod tests {
             fee_floor: [(venue.to_string(), parse(fee))].into_iter().collect(),
             tick: [(venue.to_string(), parse(tick))].into_iter().collect(),
             withdrawn_venues: std::collections::BTreeSet::new(),
+            dark_regions: std::collections::BTreeSet::new(),
         }
     }
 

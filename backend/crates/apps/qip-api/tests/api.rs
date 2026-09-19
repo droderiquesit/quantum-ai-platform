@@ -1339,6 +1339,77 @@ fn a_cell_that_reported_is_shown_with_its_age_and_goes_stale_on_the_clock() -> R
 }
 
 #[test]
+fn regions_renders_dark_from_the_planes_derivation_and_says_when_the_derivation_is_off()
+-> Result<()> {
+    // ADR 0079: `stale` is the registry's presentation threshold and `dark`
+    // is the plane's derivation — the reading `issue` refuses on — and the
+    // route must render the second rather than compute one of its own, so
+    // the console and the plane never disagree about which regions are
+    // dark. And "no region is dark" must be distinguishable from "nobody is
+    // looking": the default configuration leaves the derivation off and the
+    // route says so.
+    use qip_kernel::central::CentralConfig;
+    let off = assemble()?;
+    let report = qip_kernel::CellReport::new("eu-west", now()).with_region("europe-west2");
+    off.cells.record(&report);
+    off.platform
+        .lock()
+        .map_err(|_| qip_core::Error::invalid("the platform lock is poisoned"))?
+        .ingest_cell_report(report.clone(), now())?;
+    off.clock.advance(Duration::from_secs(600));
+    let body = body_of(get(&off.api, "/api/v1/regions", Some("viewer-token")));
+    assert_eq!(body["region_dark_after"], serde_json::Value::Null, "{body}");
+    assert_eq!(body["cells"][0]["stale"], serde_json::json!(true), "{body}");
+    assert_eq!(
+        body["cells"][0]["dark"],
+        serde_json::json!(false),
+        "with the derivation off the route derived darkness itself: {body}"
+    );
+
+    let on = assemble_with(
+        qip_kernel::PlatformConfig::default().with_central(CentralConfig {
+            region_dark_after: Some(Duration::from_secs(300)),
+            ..CentralConfig::default()
+        }),
+    )?;
+    on.cells.record(&report);
+    on.platform
+        .lock()
+        .map_err(|_| qip_core::Error::invalid("the platform lock is poisoned"))?
+        .ingest_cell_report(report, now())?;
+    let body = body_of(get(&on.api, "/api/v1/regions", Some("viewer-token")));
+    assert_eq!(
+        body["region_dark_after"],
+        serde_json::json!("5m 0s"),
+        "{body}"
+    );
+    assert_eq!(
+        body["cells"][0]["region"],
+        serde_json::json!("europe-west2"),
+        "{body}"
+    );
+    assert_eq!(body["cells"][0]["dark"], serde_json::json!(false), "{body}");
+    assert_eq!(body["dark_regions"], serde_json::json!([]), "{body}");
+
+    // Past the window the plane derives the region dark, and the route says
+    // so from that derivation — with the reading it was made from.
+    on.clock.advance(Duration::from_secs(301));
+    let body = body_of(get(&on.api, "/api/v1/regions", Some("viewer-token")));
+    assert_eq!(body["cells"][0]["dark"], serde_json::json!(true), "{body}");
+    assert_eq!(
+        body["dark_regions"][0]["region"],
+        serde_json::json!("europe-west2"),
+        "{body}"
+    );
+    assert_eq!(
+        body["dark_regions"][0]["last_heard_from"],
+        serde_json::json!("eu-west"),
+        "{body}"
+    );
+    Ok(())
+}
+
+#[test]
 fn risk_reports_no_exposure_rather_than_zero_exposure_when_no_cell_has_reported() -> Result<()> {
     // Zero gross exposure is what a flat book looks like. It is also what a
     // platform nothing is reporting to looks like, and only one of those is a
