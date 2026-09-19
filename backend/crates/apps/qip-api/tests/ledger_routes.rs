@@ -21,7 +21,9 @@
 
 use qip_api::auth::{Authenticator, Credential, RateLimiter, Role};
 use qip_api::http::{Handler, Method, Request, Response};
-use qip_api::ledger_views::{EVALUATED_AS_ROLE, GATE_NOTE, NO_PRODUCTS, NO_WALLET, POSTURE};
+use qip_api::ledger_views::{
+    EVALUATED_AS_ROLE, GATE_NOTE, INFLOW_POSTING, NO_ARRIVAL_FIELD, NO_PRODUCTS, NO_WALLET, POSTURE,
+};
 use qip_api::routes::{Api, ROUTES};
 use qip_capital::ledger::{
     Eligibility, EligibilityDecision, EligibilityTerms, Jurisdiction, Mandate, MandateId,
@@ -41,7 +43,7 @@ use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
 use qip_kernel::central::{CellReport, StrategyCandidate};
 use qip_kernel::config::{PlatformConfig, UserMandate};
-use qip_kernel::platform::Platform;
+use qip_kernel::platform::{InflowDeclaration, Platform};
 use qip_lifecycle::trials::StrategyFamily;
 use qip_mesh::delta::DeltaOrder;
 use qip_observability::Telemetry;
@@ -381,6 +383,7 @@ fn documented_keys(path: &str) -> &'static [&'static str] {
             "evaluated_as_role",
             "products",
             "fills_journalled",
+            "inflow_posting",
             "users",
         ],
         "/wallet" => &[
@@ -1894,5 +1897,274 @@ fn an_investment_request_amount_sent_as_a_number_or_carrying_a_funding_field_is_
         "the refusal does not name the family the strategy is registered under: {}",
         error.message()
     );
+    Ok(())
+}
+// --- the inflow declaration routes (ADR 0085) ---------------------------------
+
+/// The sentence the presence gate refuses with. A literal, so this suite reads
+/// the refusal the way an operator would and not through the API's constant.
+const NO_PRESENCE: &str = "a standing bearer token cannot carry it";
+
+/// The sentence the role gate refuses with, delimited by the role so that a
+/// refusal for some other reason cannot satisfy it.
+const BELOW_OPERATOR: &str = "requires the operator role";
+
+impl Rig {
+    /// `POST /ledger/users/{user}/expected-inflows` with `body`, as `token`.
+    fn declare(&self, user: &str, token: &str, body: &str) -> Response {
+        let mut headers = BTreeMap::new();
+        headers.insert("authorization".to_string(), format!("Bearer {token}"));
+        self.api.handle(&Request {
+            method: Method::Post,
+            path: format!("/api/v1/ledger/users/{user}/expected-inflows"),
+            query: BTreeMap::new(),
+            headers,
+            body: body.as_bytes().to_vec(),
+            peer: "127.0.0.1:1".to_string(),
+        })
+    }
+
+    /// `DELETE /ledger/users/{user}/expected-inflows/{reference}`, as `token`.
+    fn cancel(&self, user: &str, reference: &str, token: &str) -> Response {
+        self.call(
+            Method::Delete,
+            &format!("/ledger/users/{user}/expected-inflows/{reference}"),
+            token,
+        )
+    }
+
+    /// Every record the event log holds under the ledger producer — a
+    /// declaration or a cancellation would be one. Read from the log rather
+    /// than the ledger, because a route that journalled and then failed to
+    /// apply would leave the ledger clean and the log not.
+    fn ledger_records(&self) -> Result<usize> {
+        self.with_platform(|platform| {
+            platform
+                .event_log()
+                .records()
+                .iter()
+                .filter(|record| record.event.lineage.producer == "kernel/ledger")
+                .count()
+        })
+    }
+}
+
+fn declaration_body() -> String {
+    serde_json::json!({
+        "strategy": "AAA",
+        "reference": "wire-0001",
+        "amount": "500.00",
+    })
+    .to_string()
+}
+
+#[test]
+fn the_inflow_routes_refuse_every_role_below_operator_by_name_and_the_operator_for_want_of_presence()
+-> Result<()> {
+    // The portal grants the viewer role to anyone who completes
+    // self-registration on the public front door. A viewer who could declare
+    // an inflow could put a claim on any enrolled user's book that
+    // `/ledger/users` then renders as a deposit on its way; a viewer who
+    // could cancel one could erase another user's. And the operator is
+    // refused too, for want of an attested person — the route is authorised
+    // in shape and refused in fact (ADR 0075) — which is asserted on the
+    // gate's own sentence so that a route refusing for some other reason
+    // does not pass for one refusing on presence.
+    let rig = rig_with(
+        PlatformConfig::default().with_user_mandates(vec![enrolment("alice", dec!("1000"))?]),
+    )?;
+
+    // Premise, both ways: the viewer's credential is live, and both routes
+    // are in the table at operator.
+    assert_eq!(rig.call(Method::Get, "/wallet", VIEWER_TOKEN).status, 200);
+    for (method, pattern) in [
+        (Method::Post, "/ledger/users/:user/expected-inflows"),
+        (
+            Method::Delete,
+            "/ledger/users/:user/expected-inflows/:reference",
+        ),
+    ] {
+        let route = ROUTES
+            .iter()
+            .find(|route| route.method == method && route.pattern == pattern)
+            .unwrap_or_else(|| panic!("{pattern} is not in the table"));
+        assert_eq!(route.required_role, Role::Operator, "{pattern}");
+    }
+
+    for token in [VIEWER_TOKEN, ANALYST_TOKEN] {
+        let response = rig.declare("alice", token, &declaration_body());
+        let body = String::from_utf8_lossy(&response.body).into_owned();
+        assert_eq!(response.status, 403, "{token}: {body}");
+        assert!(
+            body.contains(BELOW_OPERATOR) && !body.contains(NO_PRESENCE),
+            "{token} must be refused on the role and not further in: {body}"
+        );
+        let response = rig.cancel("alice", "wire-0001", token);
+        let body = String::from_utf8_lossy(&response.body).into_owned();
+        assert_eq!(response.status, 403, "{token}: {body}");
+        assert!(
+            body.contains(BELOW_OPERATOR) && !body.contains(NO_PRESENCE),
+            "{token} must be refused on the role and not further in: {body}"
+        );
+    }
+
+    // The operator gets past the role, past the body and past the user
+    // resolution, and is refused at the presence gate — proving the route
+    // is wired that far and no further.
+    let response = rig.declare("alice", OPERATOR_TOKEN, &declaration_body());
+    let body = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 403, "{body}");
+    assert!(body.contains(NO_PRESENCE), "{body}");
+    let response = rig.cancel("alice", "wire-0001", OPERATOR_TOKEN);
+    let body = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 403, "{body}");
+    assert!(body.contains(NO_PRESENCE), "{body}");
+
+    // Nothing moved and nothing was written: the row holds no book, and
+    // the log holds no ledger record.
+    assert_eq!(rig.row("alice")["balances"], serde_json::json!([]));
+    assert_eq!(
+        rig.ledger_records()?,
+        0,
+        "a refused request reached the event log"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_inflow_declaration_for_nobody_is_not_found_and_a_body_naming_an_arrival_is_refused_by_position()
+-> Result<()> {
+    // Two refusals that must come before the presence gate, because each
+    // is the caller's to fix and a 403 would send them to the wrong
+    // problem. And the second guards the mistake §40.12 invites: the
+    // blueprint's flow runs to `settled → available`, so a caller will send
+    // `settled`; a key silently ignored would let them believe the route
+    // received the money.
+    let rig = rig_with(
+        PlatformConfig::default().with_user_mandates(vec![enrolment("alice", dec!("1000"))?]),
+    )?;
+
+    let response = rig.declare("nobody", OPERATOR_TOKEN, &declaration_body());
+    let body = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 404, "{body}");
+    assert!(body.contains("no mandate is registered"), "{body}");
+    let response = rig.cancel("nobody", "wire-0001", OPERATOR_TOKEN);
+    assert_eq!(
+        response.status,
+        404,
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
+
+    // The position is the parsed object's, which `serde_json` keeps in key
+    // order — `amount`, `reference`, `settled`, `strategy` — so the
+    // offending key is the third, whatever order the caller wrote.
+    let with_settled =
+        r#"{"strategy":"AAA","reference":"wire-0001","amount":"500.00","settled":"500.00"}"#;
+    let response = rig.declare("alice", OPERATOR_TOKEN, with_settled);
+    let body = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 400, "{body}");
+    assert!(
+        body.contains("key at position 3") && body.contains(NO_ARRIVAL_FIELD),
+        "{body}"
+    );
+    assert!(
+        !body.contains("settled"),
+        "the refusal must not echo the caller's key: {body}"
+    );
+
+    let numeric = r#"{"strategy":"AAA","reference":"wire-0001","amount":500}"#;
+    let response = rig.declare("alice", OPERATOR_TOKEN, numeric);
+    let body = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 400, "{body}");
+    assert!(body.contains("never a number"), "{body}");
+
+    assert_eq!(rig.ledger_records()?, 0);
+    Ok(())
+}
+
+#[test]
+fn the_ledger_body_renders_a_declaration_beside_the_bucket_and_says_it_is_never_posted()
+-> Result<()> {
+    // The read side of the writer, honest about what it is: a declared
+    // inflow is listed by reference with `available` unmoved, the
+    // uninvestable bucket is a figure on every balance, and the body says
+    // in as many words that this build never posts a declaration. A page
+    // rendering the list without that sentence would be promising the
+    // `detected → settled → available` the blueprint's flow continues
+    // with. The declaration is made in the kernel, as the eligibility
+    // fixtures are, because the route refuses every standing credential.
+    let rig = rig_with(
+        PlatformConfig::default().with_user_mandates(vec![enrolment("alice", dec!("1000"))?]),
+    )?;
+    rig.decide_in_kernel(
+        "alice",
+        EligibilityDecision::Granted {
+            eligibility: Eligibility::new(EligibilityTerms {
+                verified_at: start(),
+                can_invest: true,
+                jurisdiction: Jurisdiction::new("GB")?,
+                expires_at: start().saturating_add(Duration::from_days(365)),
+            })?,
+        },
+        "identity verified against the passport on file",
+    )?;
+    // Premise: the note is on the body before anything is declared, and
+    // alice has no book.
+    let (text, body) = body_of(rig.get("/ledger/users"));
+    assert_eq!(
+        body["inflow_posting"],
+        serde_json::json!(INFLOW_POSTING),
+        "{text}"
+    );
+    assert_eq!(rig.row("alice")["balances"], serde_json::json!([]));
+
+    rig.with_platform(|platform| -> Result<()> {
+        platform.expect_inflow(
+            &UserId::new("alice")?,
+            InflowDeclaration {
+                strategy: StrategyId::new("AAA"),
+                reference: "wire-0001".to_string(),
+                amount: dec!("500"),
+            },
+            &OperatorIdentity::verified("ops-carol", "oidc", start()),
+            start(),
+        )
+    })??;
+    let row = rig.row("alice");
+    let balances = row["balances"]
+        .as_array()
+        .unwrap_or_else(|| panic!("balances is not a list: {row}"));
+    assert_eq!(balances.len(), 1, "{row}");
+    let balance = &balances[0];
+    assert_eq!(balance["strategy"], serde_json::json!("AAA"));
+    assert_eq!(balance["available"], serde_json::json!("0"));
+    assert_eq!(balance["settled"], serde_json::json!("0"));
+    assert_eq!(balance["uninvestable"], serde_json::json!("0"));
+    assert_eq!(balance["expected_inflows_total"], serde_json::json!("500"));
+    assert_eq!(
+        balance["expected_inflows"],
+        serde_json::json!([{
+            "reference": "wire-0001",
+            "amount": "500",
+            "declared_at": start().to_rfc3339(),
+        }])
+    );
+    assert_eq!(rig.ledger_records()?, 1);
+
+    // And after a cancellation in the kernel, the list is empty again and
+    // the log holds both records.
+    rig.with_platform(|platform| -> Result<()> {
+        platform.cancel_inflow(
+            &UserId::new("alice")?,
+            "wire-0001",
+            &OperatorIdentity::verified("ops-carol", "oidc", start()),
+            start(),
+        )
+    })??;
+    let balance = rig.row("alice")["balances"][0].clone();
+    assert_eq!(balance["expected_inflows"], serde_json::json!([]));
+    assert_eq!(balance["expected_inflows_total"], serde_json::json!("0"));
+    assert_eq!(rig.ledger_records()?, 2);
     Ok(())
 }
