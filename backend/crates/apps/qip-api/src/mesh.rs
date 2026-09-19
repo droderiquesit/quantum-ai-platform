@@ -780,9 +780,12 @@ pub fn pending_policy(
     // drawdown is the platform's.
     let drawdown = platform.drawdown();
     let manifests = regions.map(|membership| {
-        platform
-            .central_mut()
-            .grant_manifests(cells.iter().map(String::as_str), membership, drawdown, now)
+        platform.central_mut().grant_manifests(
+            cells.iter().map(String::as_str),
+            membership,
+            drawdown,
+            now,
+        )
     });
     let mut pending = PendingPolicy::default();
     // Once per cycle, before the loop: the memory is the platform's, so every

@@ -1339,8 +1339,8 @@ fn a_cell_that_reported_is_shown_with_its_age_and_goes_stale_on_the_clock() -> R
 }
 
 #[test]
-fn regions_renders_dark_from_the_planes_derivation_and_says_when_the_derivation_is_off() -> Result<()>
-{
+fn regions_renders_dark_from_the_planes_derivation_and_says_when_the_derivation_is_off()
+-> Result<()> {
     // ADR 0079: `stale` is the registry's presentation threshold and `dark`
     // is the plane's derivation — the reading `issue` refuses on — and the
     // route must render the second rather than compute one of its own, so
@@ -1366,20 +1366,28 @@ fn regions_renders_dark_from_the_planes_derivation_and_says_when_the_derivation_
         "with the derivation off the route derived darkness itself: {body}"
     );
 
-    let on = assemble_with(qip_kernel::PlatformConfig::default().with_central(
-        CentralConfig {
+    let on = assemble_with(
+        qip_kernel::PlatformConfig::default().with_central(CentralConfig {
             region_dark_after: Some(Duration::from_secs(300)),
             ..CentralConfig::default()
-        },
-    ))?;
+        }),
+    )?;
     on.cells.record(&report);
     on.platform
         .lock()
         .map_err(|_| qip_core::Error::invalid("the platform lock is poisoned"))?
         .ingest_cell_report(report, now())?;
     let body = body_of(get(&on.api, "/api/v1/regions", Some("viewer-token")));
-    assert_eq!(body["region_dark_after"], serde_json::json!("5m 0s"), "{body}");
-    assert_eq!(body["cells"][0]["region"], serde_json::json!("europe-west2"), "{body}");
+    assert_eq!(
+        body["region_dark_after"],
+        serde_json::json!("5m 0s"),
+        "{body}"
+    );
+    assert_eq!(
+        body["cells"][0]["region"],
+        serde_json::json!("europe-west2"),
+        "{body}"
+    );
     assert_eq!(body["cells"][0]["dark"], serde_json::json!(false), "{body}");
     assert_eq!(body["dark_regions"], serde_json::json!([]), "{body}");
 

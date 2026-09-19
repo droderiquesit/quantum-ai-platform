@@ -422,7 +422,12 @@ pub fn partition(
     frozen: &BTreeMap<String, Decimal>,
     now: Timestamp,
 ) -> Result<RegionShares> {
-    let bound_for = |cell: &String| frozen.get(cell).copied().unwrap_or_else(|| plan.for_cell(cell));
+    let bound_for = |cell: &String| {
+        frozen
+            .get(cell)
+            .copied()
+            .unwrap_or_else(|| plan.for_cell(cell))
+    };
     // The invariant first, over every region, before any share exists: a
     // plan that over-commits one region is refused whole. Scaling it down
     // instead would ship every cell a number the allocator never produced.

@@ -34,12 +34,12 @@
 //!   [`qip_contracts::edge::DeductionKind::ComputeCost`] has always had a slot
 //!   for and nothing was filling.
 
+use crate::central::darkness::{RegionSpokeAgain, RegionTransition, RegionWentDark};
 use crate::central::{
     AbsorbedFill, BeliefIssue, CellIngestion, CellOutcome, CellReport, CentralPlane,
     DispositionOutcome, EpisodicIssue, FamilyStructureJournal, HorizonArming, LearningReport,
     WhitelistIssue,
 };
-use crate::central::darkness::{RegionSpokeAgain, RegionTransition, RegionWentDark};
 use crate::config::PlatformConfig;
 use crate::counterfactual_trial::{CounterfactualTrial, outcome as trial_outcome};
 use crate::cycle::{CycleReport, Stage, StageOutcome};

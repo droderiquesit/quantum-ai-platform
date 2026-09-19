@@ -2490,7 +2490,8 @@ fn a_dark_region_set_is_absent_from_the_wire_when_empty_and_present_once_a_regio
     );
     // And there is no field by which a payload could declare a region lit:
     // the type's only region-bearing field is the subtractive one.
-    let lit_claim = r#"{"minimum_order":{},"fee_floor":{},"tick":{},"lit_regions":["europe-west2"]}"#;
+    let lit_claim =
+        r#"{"minimum_order":{},"fee_floor":{},"tick":{},"lit_regions":["europe-west2"]}"#;
     assert!(
         serde_json::from_str::<FeasibilityConstraints>(lit_claim).is_err(),
         "a payload naming a region lit was decoded, so the wire can clear a darkness"

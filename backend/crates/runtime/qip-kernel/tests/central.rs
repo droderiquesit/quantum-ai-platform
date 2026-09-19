@@ -50,13 +50,13 @@ use qip_financial::extensions::{Extension, PrivateAssetDetails};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance as DataProvenance};
 use qip_financial::universe::Universe;
+use qip_kernel::central::darkness::{RegionSpokeAgain, RegionWentDark};
 use qip_kernel::central::{
     ArbitragePolicy, BreakOrigin, CellOutcome, CellReport, CentralConfig, CentralPlane,
     DispositionInstruction, DispositionOutcome, DispositionRefused, IssuedCapital, LearningVerdict,
     ReconciliationBreak, RetirementDisposition, StrategyCandidate, StrategyDna, WhitelistIssue,
     WhitelistOutcome, WhitelistedMarket, WhitelistedVenue, capital_subject,
 };
-use qip_kernel::central::darkness::{RegionSpokeAgain, RegionWentDark};
 use qip_kernel::central::{HorizonArming, HorizonClaim, HorizonPolicy};
 use qip_kernel::central::{ManifestDecision, RegionMembership, RegionShare, RegionTransition};
 use qip_kernel::config::PlatformConfig;
@@ -6125,9 +6125,11 @@ fn a_region_dark_window_is_refused_at_zero_and_past_the_envelope_ceiling_and_adm
         "the refusal does not name the field: {}",
         zero.message()
     );
-    let past = with(Duration::from_millis(MAXIMUM_ENVELOPE_VALIDITY.as_millis() + 1))
-        .err()
-        .ok_or_else(|| qip_core::Error::invalid("a window past the ceiling was admitted"))?;
+    let past = with(Duration::from_millis(
+        MAXIMUM_ENVELOPE_VALIDITY.as_millis() + 1,
+    ))
+    .err()
+    .ok_or_else(|| qip_core::Error::invalid("a window past the ceiling was admitted"))?;
     assert!(
         past.message().contains("region_dark_after") && past.message().contains("ceiling"),
         "the refusal does not name the field and the ceiling: {}",
@@ -6154,7 +6156,11 @@ fn a_region_dark_window_is_refused_at_zero_and_past_the_envelope_ceiling_and_adm
 fn a_region_silent_past_the_window_is_dark_on_the_next_read_and_not_before() -> Result<()> {
     let mut plane = plane_with_dark_window()?;
     let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
-    plane.ingest(heard(CELL, LON_REGION, start()), switch.kill_switch_mut(), start())?;
+    plane.ingest(
+        heard(CELL, LON_REGION, start()),
+        switch.kill_switch_mut(),
+        start(),
+    )?;
     // A cell that names no region derives nothing, however long it is silent:
     // it is unknown, not dark, and unknown already receives nothing.
     plane.ingest(
@@ -6200,7 +6206,11 @@ fn a_region_silent_past_the_window_is_dark_on_the_next_read_and_not_before() -> 
     // With no window nothing is ever dark, and the plane says why rather
     // than reporting a healthy fleet.
     let mut off = CentralPlane::new(&[7u8; 32], CentralConfig::default())?;
-    off.ingest(heard(CELL, LON_REGION, start()), switch.kill_switch_mut(), start())?;
+    off.ingest(
+        heard(CELL, LON_REGION, start()),
+        switch.kill_switch_mut(),
+        start(),
+    )?;
     assert!(
         off.dark_regions(start().saturating_add(Duration::from_days(30)))
             .is_empty()
@@ -6219,7 +6229,11 @@ fn a_report_from_a_dark_region_clears_it_and_each_transition_is_offered_until_an
     // was written.
     let mut plane = plane_with_dark_window()?;
     let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
-    plane.ingest(heard(CELL, LON_REGION, start()), switch.kill_switch_mut(), start())?;
+    plane.ingest(
+        heard(CELL, LON_REGION, start()),
+        switch.kill_switch_mut(),
+        start(),
+    )?;
     assert!(plane.region_transitions(start()).is_empty());
 
     let offered = plane.region_transitions(past_window());
@@ -6283,7 +6297,11 @@ fn the_platform_journals_region_dark_from_the_act_stage_and_region_lit_at_the_re
 
     platform.run_cycle(past_window());
     let dark = region_records::<RegionWentDark>(&platform)?;
-    assert_eq!(dark.len(), 1, "the ACT stage did not journal the region going dark: {dark:?}");
+    assert_eq!(
+        dark.len(),
+        1,
+        "the ACT stage did not journal the region going dark: {dark:?}"
+    );
     assert_eq!(dark[0].region, LON_REGION);
     assert_eq!(dark[0].last_heard_from, CELL);
     assert_eq!(dark[0].last_heard_at, start());
@@ -6302,7 +6320,11 @@ fn the_platform_journals_region_dark_from_the_act_stage_and_region_lit_at_the_re
     let heard_at = past_window().saturating_add(Duration::from_secs(2));
     platform.ingest_cell_report(heard(CELL, LON_REGION, start()), heard_at)?;
     let lit = region_records::<RegionSpokeAgain>(&platform)?;
-    assert_eq!(lit.len(), 1, "the clearing report did not journal `region.lit`: {lit:?}");
+    assert_eq!(
+        lit.len(),
+        1,
+        "the clearing report did not journal `region.lit`: {lit:?}"
+    );
     assert_eq!(lit[0].region, LON_REGION);
     assert_eq!(lit[0].cell, CELL);
     assert_eq!(lit[0].heard_at, heard_at);
@@ -6318,7 +6340,11 @@ fn a_grant_into_a_dark_region_is_refused_naming_the_reading_and_admitted_once_th
     register(&mut plane, &id, CELL)?;
     walk_to(&mut plane, &id, GateStage::Pilot)?;
     let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
-    plane.ingest(heard(CELL, LON_REGION, start()), switch.kill_switch_mut(), start())?;
+    plane.ingest(
+        heard(CELL, LON_REGION, start()),
+        switch.kill_switch_mut(),
+        start(),
+    )?;
 
     let error = match issue(&mut plane, &id, CELL, past_window()) {
         Ok(issued) => panic!(
@@ -6361,7 +6387,11 @@ fn a_dark_regions_share_bound_is_frozen_at_its_last_lit_value_while_the_plan_mov
     // region went quiet.
     let mut plane = plane_with_dark_window()?;
     let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
-    plane.ingest(heard(CELL, LON_REGION, start()), switch.kill_switch_mut(), start())?;
+    plane.ingest(
+        heard(CELL, LON_REGION, start()),
+        switch.kill_switch_mut(),
+        start(),
+    )?;
     plane.ingest(
         heard(NYC_CELL, NYC_REGION, start()),
         switch.kill_switch_mut(),
@@ -6440,7 +6470,11 @@ fn a_dark_regions_share_bound_is_frozen_at_its_last_lit_value_while_the_plan_mov
 
     // Once London speaks the plan's current figure applies again.
     let later = past_window().saturating_add(Duration::from_secs(1));
-    plane.ingest(heard(CELL, LON_REGION, start()), switch.kill_switch_mut(), later)?;
+    plane.ingest(
+        heard(CELL, LON_REGION, start()),
+        switch.kill_switch_mut(),
+        later,
+    )?;
     let lit_again = plane.region_shares(&moved, &membership, later)?;
     assert_eq!(share_amount(&lit_again, CELL), Some(dec!("300")));
     assert_eq!(share_amount(&lit_again, "cell-lon-2"), Some(dec!("100")));
@@ -6458,7 +6492,11 @@ fn after_a_region_goes_dark_no_derived_quantity_is_smaller_than_the_last_reports
     // literally asks for — `positions.remove` for a silent cell — which
     // lowers the cell count `crowded` needs and withdraws a recall.
     let mut plane = plane_with_dark_window()?;
-    let cells = [(CELL, LON_REGION), (NYC_CELL, NYC_REGION), (SIN_CELL, SIN_REGION)];
+    let cells = [
+        (CELL, LON_REGION),
+        (NYC_CELL, NYC_REGION),
+        (SIN_CELL, SIN_REGION),
+    ];
     let ids: Vec<StrategyId> = cells
         .iter()
         .map(|(cell, _)| StrategyId::new(format!("momentum-{cell}")))
@@ -6528,7 +6566,11 @@ fn after_a_region_goes_dark_no_derived_quantity_is_smaller_than_the_last_reports
     let gross_lit = plane.gross_notional_by_cell();
     assert_eq!(gross_lit.len(), 3);
     let shares_lit = shares_at(&mut plane, start());
-    assert_eq!(shares_lit.len(), 3, "the premise: every cell was shipped a share");
+    assert_eq!(
+        shares_lit.len(),
+        3,
+        "the premise: every cell was shipped a share"
+    );
 
     // London falls silent past the window; the other two keep reporting.
     let now = past_window();
@@ -6545,11 +6587,19 @@ fn after_a_region_goes_dark_no_derived_quantity_is_smaller_than_the_last_reports
 
     // Held, not dropped: the same instrument, the same cells, the same
     // findings at no smaller a gross, and the silent cell still recalled.
-    assert_eq!(dark.crowded.len(), 1, "the crowding vanished: {:?}", dark.crowded);
+    assert_eq!(
+        dark.crowded.len(),
+        1,
+        "the crowding vanished: {:?}",
+        dark.crowded
+    );
     assert_eq!(dark.crowded[0].instrument, INSTRUMENT);
     assert_eq!(dark.crowded[0].cells, lit.crowded[0].cells);
     assert!(dark.crowded[0].cells.contains(&CELL.to_string()));
-    assert_eq!(findings(&dark.concentrations), findings(&lit.concentrations));
+    assert_eq!(
+        findings(&dark.concentrations),
+        findings(&lit.concentrations)
+    );
     assert!(
         dark.recalls.iter().any(|order| order.cell == CELL),
         "the silent cell was dropped from the recall set: {:?}",
@@ -6590,7 +6640,10 @@ fn after_a_region_goes_dark_no_derived_quantity_is_smaller_than_the_last_reports
     )?;
     assert!(plane.dark_regions(later).is_empty());
     assert_eq!(cleared.crowded[0].cells, lit.crowded[0].cells);
-    assert_eq!(findings(&cleared.concentrations), findings(&lit.concentrations));
+    assert_eq!(
+        findings(&cleared.concentrations),
+        findings(&lit.concentrations)
+    );
     assert_eq!(plane.gross_notional_by_cell(), gross_lit);
     assert_eq!(shares_at(&mut plane, later), shares_lit);
     assert!(plane.feasibility_constraints(later).dark_regions.is_empty());

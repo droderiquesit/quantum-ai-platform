@@ -287,7 +287,7 @@ fn policy_withdrawing(
             fee_floor: BTreeMap::new(),
             tick: BTreeMap::new(),
             withdrawn_venues: withdrawn.iter().map(|v| (*v).to_string()).collect(),
-            dark_regions: BTreeSet::new(),
+            dark_regions: std::collections::BTreeSet::new(),
         },
         issued_at,
     );

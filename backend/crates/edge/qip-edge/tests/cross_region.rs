@@ -1201,11 +1201,7 @@ fn a_mirror_into_a_region_the_centre_derived_dark_is_refused_at_the_extension_un
     let (mut cell, metrics) = cell_with(
         true,
         Some(arrangement()?),
-        policy_with_dark_regions(
-            t(5),
-            Some((&Distributed::workable(), t(5))),
-            &[REGION_TWO],
-        )?,
+        policy_with_dark_regions(t(5), Some((&Distributed::workable(), t(5))), &[REGION_TWO])?,
     )?;
     assert!(
         !cell.is_region_dark(REGION_TWO),

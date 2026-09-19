@@ -2582,9 +2582,10 @@ fn regions(platform: &Platform, cells: &CellRegistry, now: Timestamp) -> String 
             )
         })
         .collect();
-    let window = central
-        .region_dark_after()
-        .map_or_else(|| "null".to_string(), |window| json::string(&describe_age(window)));
+    let window = central.region_dark_after().map_or_else(
+        || "null".to_string(),
+        |window| json::string(&describe_age(window)),
+    );
     format!(
         r#"{{"freshness_bound":{},"region_dark_after":{window},"dark_regions":[{}],"cells":[{}]}}"#,
         json::string(&describe_age(bound)),
