@@ -564,12 +564,27 @@ fn every_cycle_reaches_the_durable_log_and_comes_back_unchanged() -> Result<()> 
         summaries.push(platform.run_cycle(at).summarise());
     }
 
-    // One entry per cycle, after the universe record assembly writes first.
-    assert_eq!(platform.journal().len(), 4, "one entry per cycle");
+    // Counted per topic rather than in total, for the reason the sibling test
+    // above records: a total passes for the wrong composition and has to be
+    // retuned every time a stage starts journalling something.
+    let cycle_records =
+        platform.replay_journal(&EventFilter::new().topic(CycleJournalEntry::TOPIC))?;
+    assert_eq!(cycle_records.len(), 3, "one cycle entry per cycle");
+    let statistics_records =
+        platform.replay_journal(&EventFilter::new().topic(Topic::FeatureComputed))?;
     assert_eq!(
+        statistics_records.len(),
+        3,
+        "and one streaming-statistics record per cycle, findings or none — \
+         a cycle that measured and found nothing must stay distinguishable \
+         from a cycle where the measurement never ran"
+    );
+    // The mirror is what this test is named for, and it is a relation between
+    // the two logs rather than a number in either.
+    assert_eq!(
+        platform.journal().len(),
         platform.event_log().len(),
-        4,
-        "and one in the platform's own log"
+        "the durable transport must mirror the platform's own log"
     );
     assert!(
         platform.journal().verify_chain().is_ok(),
@@ -627,11 +642,27 @@ fn the_journal_is_replayable_as_of_an_instant() -> Result<()> {
     let everything = platform.replay_journal(
         &EventFilter::new().as_of(second.saturating_add(Duration::from_nanos(1))),
     )?;
+    // Asserted by composition, not as a bare total. A total is the weakest
+    // assertion available here: it holds for any mix of topics that sums to the
+    // same number, and it fails whenever any stage gains a record — so the
+    // cheapest response for the next reader is to retune the constant rather
+    // than ask what changed. It read 3 until UNDERSTAND began journalling its
+    // streaming feature statistics every cycle, which is exactly that event.
+    let universe = platform.replay_journal(
+        &EventFilter::new()
+            .topic(Topic::ReferenceDataUpdated)
+            .as_of(second.saturating_add(Duration::from_nanos(1))),
+    )?;
     assert_eq!(
-        everything.len(),
-        3,
+        universe.len(),
+        1,
         "assembly journalled no universe record, so a replay of this run \
          cannot say what instruments it ran over"
+    );
+    assert!(
+        everything.len() > all.len(),
+        "an unfiltered replay must carry more than the cycles alone, or the \
+         universe record never reached the log the replay reads"
     );
 
     // The envelope's payload hash is computed on the way in and recomputed on
