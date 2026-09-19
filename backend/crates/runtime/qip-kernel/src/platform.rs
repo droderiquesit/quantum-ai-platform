@@ -74,6 +74,7 @@ use qip_capital::ledger::{
     PermittedFamilies, ProductCatalogue, ProductEligibility, RefusedLimit, Role, UserId,
     UserLedger, UserShare,
 };
+use qip_capital::margin::MarginModel;
 use qip_capital::reservation::ReservationLedger;
 use qip_capital::{AllocationLimits, CapitalAllocator, DrawdownSchedule};
 use qip_capital_fabric::corridor::{Corridor, CorridorId};
@@ -1322,6 +1323,21 @@ impl WalletJudgement {
 /// decision rather than a reconciliation against yesterday's figure — the
 /// break the wallet would otherwise manufacture itself.
 const STATEMENT_FRESHNESS: Duration = Duration::from_days(1);
+
+/// The currency this platform settles in, for the two reads that have to
+/// agree about which observed asset is cash.
+///
+/// `Platform::reconcile_wallet` books the desk's own balance under an asset
+/// named for this currency, and `crate::cross_margin::review` decides which
+/// observed holding takes [`crate::cross_margin::NON_CASH_HAIRCUT`] by
+/// comparing the asset's name against it. Those are two readings of one
+/// fact, and the failure if they disagree is silent and in the wrong
+/// direction: the desk's settlement cash would be haircut as though it were
+/// a security, and a venue would report a margin call on cover it holds in
+/// full. So it is stated once. It is a constant rather than configuration
+/// because nothing in this deployment has ever settled in anything else and
+/// a second currency is a mandate change, not a field somebody sets.
+const SETTLEMENT_CURRENCY: Currency = Currency::USD;
 
 /// The correlation the fabric journal's own working-copy records carry.
 ///
@@ -6042,7 +6058,7 @@ impl Platform {
         let desk_venue = VenueId::new(self.broker.name());
         let desk_key = VenueAsset {
             venue: desk_venue.clone(),
-            asset: Asset::new(Currency::USD.to_string())?,
+            asset: Asset::new(SETTLEMENT_CURRENCY.to_string())?,
         };
         let ledger_views = if self.holdings_observed.contains_key(&desk_key) {
             vec![LedgerView::new(
@@ -11547,6 +11563,18 @@ impl Platform {
             let detail = format!("{}; {unjudged}", outcome.detail);
             outcome = StageOutcome { detail, ..outcome };
         }
+        // Blueprint §25.6, immediately after the wallet and for its inputs:
+        // what collateralises what, per venue, and which exposure has no
+        // cover anybody has read. Until this call `crate::cross_margin` and
+        // the collateral graph under it were reached by tests alone.
+        let (reviewed, problems) = self.review_cross_margin(now);
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
         // Score whatever resolved, and say how calibrated the platform is on
         // everything that has. This is the seam where the fact becomes known:
         // the platform's own series are the only source it holds for the
@@ -12510,6 +12538,121 @@ impl Platform {
             );
         }
         review
+    }
+
+    /// Blueprint §25.6's cross-margin read, against the book LEARN inherited
+    /// and the statements the desk has handed in, and say what it found.
+    ///
+    /// [`crate::cross_margin::review`] held the arithmetic, `qip-capital`
+    /// held the graph and `qip-acceptance` held a suite proving both against
+    /// a platform that had actually traded — and **nothing outside a test
+    /// ever called any of it**. A collateral model with no production caller
+    /// is the shape this repository already shipped once as
+    /// `MaxExpectedShortfall`: it reads as a control and cannot fire. This
+    /// call is the whole of the difference.
+    ///
+    /// **Here, in LEARN, and after [`Self::reconcile_wallet`].** The read
+    /// joins exactly two facts and both are at their freshest at this point
+    /// in the cycle: the counterparty axis as ACT's fills left it, and the
+    /// holdings the wallet has just been reconciled against. Running it in
+    /// DECIDE would have reported this cycle's cover against last cycle's
+    /// exposure, which is two claims about one cycle's collateral with the
+    /// wrong one on the report.
+    ///
+    /// **It refuses nothing and sizes nothing**, which is the module's own
+    /// decision rather than an omission this call should quietly fix: a
+    /// coverage read is filed under [`qip_events::Topic::RiskEvaluated`]
+    /// because it is an evaluation, and turning "nobody has read a statement
+    /// at this venue" into a veto would stop a paper platform trading on the
+    /// first cycle of every deployment that exists today. What it produces is
+    /// a sentence on the stage, a problem per actionable finding, and a
+    /// journalled [`crate::cross_margin::CrossMarginFinding`].
+    ///
+    /// Three arms rather than two, and the third is the one worth naming. A
+    /// finding is reported. A book that carries maintenance somewhere and has
+    /// a statement covering all of it is reported too, because "every venue
+    /// is covered" is a fact a desk is entitled to see stated. A book that
+    /// requires nothing anywhere says nothing at all — `describe` would
+    /// otherwise announce "0 observed against 0 required" on a platform that
+    /// has never traded, and a reassuring zero about a question nobody asked
+    /// is exactly the reading `is_finding` exists to refuse.
+    fn review_cross_margin(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        // `MarginModel::default` rather than a configured table, and said out
+        // loud rather than defaulted into silently: the rates are a term of a
+        // margin agreement and this repository has never been shown one, so
+        // the honest position is the library's declared Reg-T-like standing
+        // assumption, which a reader can find and argue with. A configuration
+        // field no deployment sets would be the same two numbers wearing the
+        // authority of a decision somebody took.
+        let model = MarginModel::default();
+        let review = match crate::cross_margin::review(
+            &self.holdings_observed,
+            &self.aggregates,
+            &model,
+            SETTLEMENT_CURRENCY,
+        ) {
+            Ok(review) => review,
+            Err(error) => {
+                return (
+                    None,
+                    vec![format!(
+                        "the collateral behind this book could not be read, so no venue's cover                          was checked against its own maintenance this cycle: {}",
+                        error.message()
+                    )],
+                );
+            }
+        };
+
+        let mut problems = Vec::new();
+        // One problem per called venue rather than a count. The venue is the
+        // only part of this an operator can act on: posting collateral is a
+        // per-account instruction, and "2 venues below maintenance" names
+        // neither account.
+        for venue in &review.calls {
+            problems.push(format!(
+                "a venue's observed cover is below the maintenance its own exposure requires, so                  collateral has to be posted there: {venue}"
+            ));
+        }
+        // One problem for the unobserved set, not one per venue. Here the
+        // fact genuinely is collective — this book's collateral is unread —
+        // and the remedy is one instruction, hand the statements in; the
+        // venues are named inside it so nothing is folded away.
+        if !review.unobserved.is_empty() {
+            problems.push(format!(
+                "{} of gross sits at {} venue(s) nobody has handed in a statement for, needing {}                  posted where nobody has looked; this is not a shortfall and must not be read as                  one ({})",
+                review.unobserved_gross(),
+                review.unobserved.len(),
+                review.unobserved_maintenance(),
+                review
+                    .unobserved
+                    .iter()
+                    .map(|gap| gap.venue.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+
+        // Journalled only where there is a finding, which is the record's own
+        // rule — `CrossMarginFinding::of` returns `None` otherwise — so a
+        // covered book writes a sentence to the stage and nothing to the log.
+        // A journal that failed is a problem rather than a swallowed error: a
+        // finding the desk was told about and the log was not is two stories
+        // about one cycle.
+        if let Some(record) = crate::cross_margin::CrossMarginFinding::of(&review, self.cycle, now)
+            && let Err(error) = self.journal_record(record, "kernel/cross-margin", now)
+        {
+            problems.push(format!(
+                "the cross-margin finding was reported to the desk and not journalled: {}",
+                error.message()
+            ));
+        }
+
+        let reported = if review.is_finding() || review.maintenance_required.is_positive() {
+            Some(review.describe())
+        } else {
+            None
+        };
+        (reported, problems)
     }
 
     /// The risk state the checks evaluate, from a set of aggregate figures.
