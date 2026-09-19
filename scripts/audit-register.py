@@ -53,6 +53,43 @@ would produce noise the docstring below already argues is fatal:
     is counted as unpositionable and skipped, never guessed at. Guessing is
     how a checker earns the reputation that makes its real findings invisible.
 
+An emptiness candidate is reported in one of two buckets, and the split was
+added 2026-09-19 after a run produced 25 undifferentiated candidates of which
+eight found nothing but prose:
+
+  CANDIDATE   at least one returned line is code. The lines printed are the
+              code ones, not the head of the output — a grep walks its tree
+              alphabetically, so the old behaviour showed three doc comments
+              for a row whose one real hit sat in a file late in the walk, and
+              that reads as noise.
+
+  PROSE-ONLY  every returned line is a comment. The command does return
+              output, so the row's wording is stale as written, and that is
+              worth printing; but four of the eight were §37.1/§37.2/§37.3 and
+              §38.4 citing `grep -rn capital_fabric_file
+              infrastructure/environments/*/terraform.tfvars`, whose every hit
+              is a commented-out assignment and whose own next clause says so:
+              "and each tfvars says why". Prose-only rows do not set the exit
+              code. A gate that fires on a row explaining its own output is the
+              fastest way to teach a reader that this tool can be ignored.
+
+Two things make that split possible and neither was here before. `#` opens a
+comment in Terraform, YAML, shell and Python and opens an attribute in Rust,
+so the comment rule is chosen by file extension rather than tried both ways —
+`#[cfg(test)]` read as prose would silently disable the positioning rule this
+whole tool rests on. And `grep -n` against a single named file prints
+`line:text` with no path, which the old hit pattern could not read at all.
+
+Supersession is the other correction of the same day. `CORRECTED` looks at the
+text *before* a command, which catches a row that announces its correction and
+then quotes the false claim; the common order is the opposite, with the
+original sentence first and the amendment appended after it. §40.5 opens with
+a `returns nothing` that is no longer true and then says so itself, in the
+same cell, and this tool reported it. A retraction now counts when it follows
+the command *and* re-cites a distinctive token of it — not merely when the
+cell contains an amendment somewhere, because an amendment is exactly when the
+older claims beside it are most likely to have gone stale too.
+
 It cannot check whether a verdict is right, only whether the evidence under it
 still says what the row claims. That is a floor, not a measurement.
 
@@ -103,6 +140,69 @@ CORRECTED = re.compile(
     re.IGNORECASE,
 )
 
+# Words too generic to prove that a later retraction is about *this* command.
+# `terraform` appears in half the register's paths; a retraction mentioning it
+# says nothing about which claim it retracts.
+GENERIC_TOKENS = {
+    "infrastructure",
+    "terraform",
+    "backend",
+    "frontend",
+    "crates",
+    "include",
+    "scripts",
+    "workflows",
+    "environments",
+    # Layer names. These are path segments in half the register's commands and
+    # in half its prose; a retraction that happens to quote a directory is not
+    # a retraction of a claim about what is inside it.
+    "services",
+    "runtime",
+}
+
+# A token specific enough to tie a retraction to a command: an identifier or a
+# path segment, eight characters or more, that is not on the list above.
+COMMAND_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{7,}")
+
+
+def superseded(evidence, command, end):
+    """Whether a later clause in the same cell retracts this command's claim.
+
+    `CORRECTED` looks at the text *before* a command, which catches a row that
+    announces its own correction and then quotes the false claim. It does not
+    catch the other order, and the other order is the common one: the cell
+    carries the original sentence, and the amendment is appended after it.
+
+    §40.5 is the worked example and it cost this tool a false report. The row
+    opens "`grep -rn 'google_compute_security_policy\\|...'` returns nothing,
+    so Cloud Armor, the Global HTTPS LB and Cloud CDN are all absent", and
+    then says, in the same cell, "**Amended 2026-09-14 (ADR 0069).** `grep
+    google_compute_security_policy infrastructure/terraform` no longer returns
+    nothing". The row is correct and self-correcting, and the checker reported
+    it as stale.
+
+    The retraction has to be tied to *this* command rather than to any
+    amendment anywhere in the cell, or an appended note about one claim would
+    excuse every older claim beside it — and an amendment is exactly when the
+    older claims beside it are most likely to have gone stale too. So a
+    retraction counts only when it re-cites a distinctive token of the command
+    it retracts, within a window of it.
+    """
+    later = evidence[end:]
+    tokens = [
+        token
+        for token in dict.fromkeys(COMMAND_TOKEN.findall(command))
+        if token.lower() not in GENERIC_TOKENS
+    ]
+    if not tokens:
+        return False
+    for mark in CORRECTED.finditer(later):
+        window = later[max(0, mark.start() - 200): mark.end() + 200]
+        if any(token in window for token in tokens):
+            return True
+    return False
+
+
 # The second class: the row expects lines and asserts they are all tests.
 #
 # Narrow on purpose. Every alternative below names *tests* or *a production
@@ -128,8 +228,80 @@ ONLY_TESTS = re.compile(
 # the `#[cfg(test)]` rule can be applied to.
 HIT = re.compile(r"^(?P<path>[^:]+):(?P<line>\d+):(?P<text>.*)$")
 
+# `line:text`, which is what `grep -n` prints when it was given exactly one
+# file. The register does this often — §1.3's evidence names one source file —
+# and the path is knowable only from the command, so the `#[cfg(test)]` rule
+# still cannot be applied. What *can* be applied is the comment rule, and
+# that is the only thing the emptiness class asks of a line.
+BARE_HIT = re.compile(r"^(?P<line>\d+):(?P<text>.*)$")
+
+
+def hit_text(hit):
+    """(path, text) for either grep shape, or (None, None) when neither fits.
+
+    `(None, None)` is not "no comment"; it is "cannot tell", and the caller
+    treats it as code. Every place this is used, guessing prose would delete a
+    finding and guessing code merely prints one.
+    """
+    match = HIT.match(hit)
+    if match:
+        return match.group("path"), match.group("text")
+    match = BARE_HIT.match(hit)
+    if match:
+        return None, match.group("text")
+    return None, None
+
 # A line of prose inside the source. The register's rows mean code.
+#
+# Two spellings, chosen by the file's extension rather than tried together,
+# because `#` is a comment in Terraform and an attribute in Rust and guessing
+# between them is the whole problem. `#[cfg(test)]` read as a comment would
+# silently disable the positioning rule this tool is built on.
 COMMENT = re.compile(r"^\s*(//|/\*|\*(?!/))")
+HASH_COMMENT = re.compile(r"^\s*#")
+
+# Where `#` opens a comment. Deliberately a list of suffixes rather than
+# "anything that is not Rust": a file type nobody enumerated falls through to
+# the slash rule and its `#` lines count as code, which over-reports rather
+# than under-reports. Under-reporting is the direction that loses a finding.
+HASH_COMMENT_SUFFIXES = (
+    ".tf",
+    ".tfvars",
+    ".tftpl",
+    ".hcl",
+    ".yaml",
+    ".yml",
+    ".sh",
+    ".bash",
+    ".py",
+    ".toml",
+    ".cfg",
+    ".ini",
+    "Makefile",
+    "Dockerfile",
+)
+
+
+def is_comment_line(path, text):
+    """Whether `text`, read as a line of `path`, is prose rather than code.
+
+    `path` may be None — a `grep -n` against one named file prints `line:text`
+    with no path at all — in which case only the slash spelling is tried. That
+    is the conservative side: a `#` line in an unattributable hit counts as
+    code and gets reported.
+
+    This distinction is worth its own function because it decided four of this
+    tool's twenty-five candidates on the day it was written. §37.1, §37.2,
+    §37.3 and §38.4 all cite `grep -rn capital_fabric_file
+    infrastructure/environments/*/terraform.tfvars` and all say it "returns
+    nothing"; every line it returns is a commented-out assignment, and each row
+    goes on to say so in its own next clause — "and each tfvars says why". A
+    checker that reports a row whose very next words explain its output is the
+    checker that teaches its reader to skip it.
+    """
+    if path is not None and str(path).endswith(HASH_COMMENT_SUFFIXES):
+        return bool(HASH_COMMENT.match(text))
+    return bool(COMMENT.match(text))
 
 # A definition rather than a use. "No production caller" is a claim about
 # callers; the thing's own declaration is never one, and counting it would make
@@ -247,7 +419,7 @@ def classify_hit(root, hit):
     text = match.group("text")
     if TEST_PATH.search(path):
         return "test"
-    if COMMENT.match(text):
+    if is_comment_line(path, text):
         return "comment"
     source = root / path
     if not source.is_file():
@@ -293,6 +465,8 @@ def claims(text):
                 continue
             if CORRECTED.search(evidence[max(0, match.start() - 160):match.start()]):
                 continue
+            if superseded(evidence, command, match.end()):
+                continue
             yield kind, section, verdict, command
 
 
@@ -314,6 +488,12 @@ SELF_TEST_SOURCES = {
         "fn after() { install_mirror(); }\n"    # 5  production, below a nested cut
     ),
     "crates/a/tests/it.rs": "fn t() { install_mirror(); }\n",  # 1  test by path
+    # `#` is a comment here and an attribute in Rust, which is why the two
+    # spellings are chosen by extension rather than tried together.
+    "environments/dev/terraform.tfvars": (
+        "# capital_fabric_file = \"data/fabric/x.json\"\n"     # 1  comment
+        "region = \"europe-west2\"\n"                          # 2  code
+    ),
 }
 
 
@@ -358,6 +538,75 @@ def self_test():
         for name, hit, want in cases:
             check(name, classify_hit(root, hit), want)
 
+        # The comment rule on its own, which the emptiness class uses without
+        # going through `classify_hit` at all. Every case here is one that
+        # decided a real candidate on 2026-09-19.
+        comment_cases = [
+            # A commented-out assignment in a tfvars: four rows turn on this.
+            ("tfvars hash", "environments/dev/terraform.tfvars",
+             "# capital_fabric_file = \"x\"", True),
+            ("tfvars code", "environments/dev/terraform.tfvars", "region = \"x\"", False),
+            # The one that must never flip: a Rust attribute is not prose, and
+            # reading it as prose would disable the positioning rule.
+            ("rust attribute", "crates/a/src/lib.rs", "#[cfg(test)]", False),
+            ("rust doc comment", "crates/a/src/lib.rs", "/// a note", True),
+            ("rust module comment", "crates/a/src/lib.rs", "//! a note", True),
+            ("terraform resource", "infrastructure/terraform/main.tf",
+             "resource \"google_compute_security_policy\" \"edge\" {", False),
+            ("terraform hash", "infrastructure/terraform/main.tf", "  # why it is unset", True),
+            # No path: the slash rule only, and `#` counts as code rather than
+            # being guessed at. Over-reporting is the safe direction.
+            ("pathless comment", None, "    /// a note", True),
+            ("pathless hash", None, "# not attributable", False),
+        ]
+        for name, path, text, want in comment_cases:
+            check(f"comment {name}", is_comment_line(path, text), want)
+
+        # And the two grep shapes, because a `grep -n` against one named file
+        # prints no path and the emptiness class still has to read its text.
+        shape_cases = [
+            ("positioned", "src/a.rs:12:    foo();", ("src/a.rs", "    foo();")),
+            ("bare line", "82:    pub funding_rate_annual_f64: f64,",
+             (None, "    pub funding_rate_annual_f64: f64,")),
+            ("neither", "Binary file target/x matches", (None, None)),
+        ]
+        for name, hit, want in shape_cases:
+            check(f"shape {name}", hit_text(hit), want)
+
+    # A retraction appended after the command it retracts. §40.5's real text,
+    # trimmed: without this the row reads as stale while it is correcting
+    # itself, and with a rule that ignored the token check, the unrelated
+    # claim beside it would be excused too.
+    amended = (
+        "The public edge does not: `grep -rn 'google_compute_security_policy' "
+        "infrastructure/terraform --include=*.tf` returns nothing, so Cloud Armor is absent. "
+        "**Amended 2026-09-14 (ADR 0069).** `grep google_compute_security_policy "
+        "infrastructure/terraform` no longer returns nothing: `modules/public-edge/` declares it."
+    )
+    command = "grep -rn 'google_compute_security_policy' infrastructure/terraform --include=*.tf"
+    end = amended.index("returns nothing")
+    check("retraction after the command", superseded(amended, command, end), True)
+
+    unrelated = (
+        "`grep -rn 'some_other_symbol' backend/crates` returns nothing. "
+        "**Amended 2026-09-14.** `grep google_compute_security_policy infrastructure/terraform` "
+        "no longer returns nothing."
+    )
+    check(
+        "amendment about a different command",
+        superseded(unrelated, "grep -rn 'some_other_symbol' backend/crates", 40),
+        False,
+    )
+    check(
+        "generic tokens alone do not excuse a claim",
+        superseded(
+            "`ls infrastructure/terraform` returns nothing. **Amended.** terraform no longer.",
+            "ls infrastructure/terraform",
+            30,
+        ),
+        False,
+    )
+
     phrases = [
         ("finds only test callers, so path 3", True),
         ("matches only test text, never a retention floor", True),
@@ -376,7 +625,7 @@ def self_test():
 
     for line in failures:
         print(f"SELF-TEST FAIL  {line}")
-    total = len(cases) + len(phrases)
+    total = len(cases) + len(phrases) + len(comment_cases) + len(shape_cases) + 3
     print(f"self-test: {total - len(failures)}/{total} passed")
     return 1 if failures else 0
 
@@ -391,6 +640,7 @@ def main():
     skipped = 0
     unpositionable = 0
     violations = []
+    prose_only = []
 
     for kind, section, verdict, command in claims(text):
         if UNSAFE.search(command) or UNBOUNDED.match(command):
@@ -412,9 +662,33 @@ def main():
         output = done.stdout.strip()
         if kind == "empty":
             checked[kind] += 1
-            if output:
-                head = "\n".join(output.splitlines()[:3])
+            if not output:
+                continue
+            # Every line, not the first three. The old version printed the
+            # head of the output and the head of a grep's output is
+            # alphabetical, so a row whose one real hit sat in a file late in
+            # the walk was shown as three doc comments and read as noise.
+            lines = output.splitlines()
+            code = [
+                line
+                for line in lines
+                if not is_comment_line(*hit_text(line))
+                or hit_text(line) == (None, None)
+            ]
+            head = "\n".join(code[:3] if code else lines[:3])
+            remainder = (len(code) if code else len(lines)) - 3
+            if remainder > 0:
+                head += f"\n... and {remainder} more"
+            if code:
+                if len(code) < len(lines):
+                    head += f"\n({len(lines) - len(code)} further lines are comments)"
                 violations.append((kind, section, verdict, command, head))
+            else:
+                # Every line is prose. The command does return output, so the
+                # row's wording is stale as written, and that is worth saying —
+                # but nothing it found is code, and reporting it beside a real
+                # finding is what makes the real finding invisible.
+                prose_only.append((kind, section, verdict, command, head))
             continue
 
         # only-tests. An empty result says nothing about a claim that every
@@ -447,9 +721,24 @@ def main():
             print(f"       > {line}")
         print()
 
+    for _, section, verdict, command, output in prose_only:
+        print(f"PROSE-ONLY §{section} ({verdict})")
+        print(f"       claimed empty: {command}")
+        for line in output.splitlines():
+            print(f"       > {line}")
+        print()
+
     print(f"checked {checked['empty']} emptiness claims and {checked['only-tests']} "
           f"tests-only claims, skipped {skipped} as unsafe to run and "
-          f"{unpositionable} as unpositionable, {len(violations)} candidates")
+          f"{unpositionable} as unpositionable, {len(violations)} candidates "
+          f"and {len(prose_only)} prose-only")
+    if prose_only and not violations:
+        print()
+        print("A PROSE-ONLY row's command does return lines, so its wording is stale as")
+        print("written, but every line it returns is a comment. Several such rows are correct")
+        print("in substance and say so in their own next clause — §37.1's goes on to write")
+        print("\"and each tfvars says why\" about the very lines printed above it. Read them")
+        print("after the candidates, not instead of them.")
     if violations:
         print()
         print("These are candidates for reading, not verdicts. The checker cannot tell a row")
@@ -467,6 +756,10 @@ def main():
         print("When one is genuinely wrong, correct the row with a command that runs. Never")
         print("add a parenthetical explaining the output away: a command whose output needs")
         print("excusing is not evidence, and that is exactly how §5.7 stayed wrong for weeks.")
+    # Prose-only rows do not set the exit code. They are reported so nothing is
+    # hidden, and they are not a gate, because a gate that fires on a row whose
+    # own next clause explains the output is the fastest way to teach a reader
+    # that this tool can be ignored.
     return 1 if violations else 0
 
 
