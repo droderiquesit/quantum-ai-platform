@@ -369,3 +369,184 @@ record admits nothing to `Cargo.toml`.
   or (b) source those changes arrive by email to an account holder, not by a
   commit, and nothing in this repository watches for them. That is an open
   operational gap this record names and does not close.
+
+---
+
+## Amendment, 2026-09-19 — the evaluation was done, and every readable source refuses
+
+**What changed.** The owner delegated the reading of vendor terms to this
+session, which removes the ground on which alternative (e) above refused to
+name a vendor. So vendors were named, their terms were fetched and read, and
+the question set in part one was put to each. **The record's status is
+unchanged: no vendor is chosen and no vendor's terms are accepted.** What is
+different is that four vendors' terms are now *characterised as evaluated*,
+with the clause quoted, and the result is a refusal on each. The engine
+remains without a caller, and the reason is now a sentence in a vendor's
+terms rather than an unread document.
+
+**Method, so the evidence can be checked rather than trusted.** Each terms
+page was fetched over HTTPS on 2026-09-19 and read in full; the clauses below
+are verbatim from the document as it dates itself. **No market data was
+received from any vendor**, and one probe is recorded rather than omitted:
+Cboe's delayed-quotes JSON was requested twice, before its terms were read,
+and answered `403` both times with nothing served. That order was wrong —
+terms first — and it is written down here because two of the four vendors
+prohibit "systematic or automated data collection" outright, and an
+evaluation that collected a fixture before reading the clause would have
+breached the terms it was reading; no fixture exists. The refusal
+register `qip_data_finder::admission::refusals()` carries the same four
+entries in code, consulted by the gate before the catalogue —
+`grep -n 'fn refusals\|refusal_on_record(refused)' backend/crates/services/qip-data-finder/src/admission.rs`
+— and `no_refused_source_has_a_connector_or_a_catalogue_entry` in the same
+file holds that none of them has a connector or a catalogue entry.
+
+### Class (a), a venue's own feed — two evaluated, two refused
+
+**Deribit** (Deribit FZE, "Deribit by Coinbase"). Documents:
+*Deribit Exchange Membership Terms — Deribit FZE*
+(`https://support.deribit.com/hc/en-us/articles/25944532191645`, article last
+updated 2026-08-12) and *Terms of Service — DRB Panama Inc.*
+(`…/articles/25944471089437`, last updated 2026-03-04); both fetched through
+the support centre's article API because the `deribit.com/legal` page renders
+only in a browser. The refusing clause is the same in both, Membership Terms
+2.10 and Terms of Service 32.3:
+
+> The use of market data and/or derived data is for personal use only. You
+> are not allowed to aggregate, resell, publish, forward or in any other way
+> process market data and/or derived data (except for personal use) without
+> prior written approval from us.
+
+Membership Terms 37.3 adds "You must not modify, copy, display, distribute or
+commercially exploit any of our Intellectual Property Rights or materials",
+and undertaking 27.1(i) has the member promise not to "conduct any systematic
+or automated data collection activities (including without limitation
+scraping, data mining, data extraction and data harvesting) on our systems"
+— which is a polling connector described exactly. `Usage::Derive` is refused by "in any other way
+process"; `Usage::Trade` by "personal use only" applied to a research desk's
+platform; the unauthenticated public endpoints change nothing, because a
+caller who has accepted no terms has been granted nothing. **Refused.** The
+reopening condition is the clause's own: "prior written approval", which is
+the negotiated licence part two already prices for class (a), and which would
+arrive as an ADR 0041-style attributed record and an edit to the register.
+
+**OKX.** *OKX Terms of Service*
+(`https://www.okx.com/help/terms-of-service`, last updated 2026-09-17),
+clauses 8.1 and 9.4:
+
+> You agree that you will not copy, transmit, distribute, sell, license,
+> reverse engineer, modify, publish, or participate in the transfer or sale
+> of, create derivative works from, or in any other way, exploit any of our
+> products and Services.
+
+> You may not use the OKX Platform or the Services for any commercial purpose
+> unless otherwise explicitly authorized by OKX.
+
+`Derive` refused by "create derivative works from"; `Trade` by "any
+commercial purpose". **Refused.**
+
+### Class (d), delayed or end-of-day publication — two evaluated, two refused
+
+Part three said to try this class first, and it was tried first. It does not
+have the licensing shape part three hoped for: the two publishers below put
+their delayed and daily data under the same website terms as their prose.
+
+**Cboe** (Cboe Global Markets, Inc.). *Terms and Conditions for Use of Cboe
+Websites* (`https://www.cboe.com/terms`, "Last Updated: November 16, 2022"),
+which govern the delayed quote tables and the JSON behind them. Clause 2:
+
+> You may view, print and download one copy of the Materials for your
+> personal non-commercial use in connection with products and services
+> offered by Cboe […] You may not otherwise copy, reproduce, alter, store
+> either in hard copy or in an electronic retrieval system, license,
+> transmit, display, broadcast, create a derivative work (for example, a
+> financial product, service or index) from, use to verify or correct other
+> data or information, publish, rent, sublicense, distribute, or otherwise
+> use in whole or in part in any other manner the Materials without Cboe's
+> prior written consent
+
+and clause 4(a): "the Materials are provided for general informational and
+educational purposes only and are not intended for trading purposes". A
+volatility surface is the "derivative work (for example, a financial product,
+service or index)" the clause names. **Refused** on both usages, and note
+that the delayed JSON endpoint also answered the evaluation's plain fetch
+with `403`, so it is gated as well as refused.
+
+**HKEX** (Hong Kong Exchanges and Clearing Limited), whose daily option
+reports are the nearest thing to a public settlement-price publication that
+was found. *HKEX Website Terms of Use*
+(`https://www.hkex.com.hk/Global/Exchange/Terms-of-Use?sc_lang=en`, last
+updated 2025-08-19), clause 5:
+
+> Unless HKEX or relevant third-parties has/have given you express written
+> permission, you are not permitted to, directly or indirectly and whether or
+> not for gain: […] (ii) create or compile derivative works (including,
+> without limitation, through framing or systematic retrieval to create
+> collections, compilations, databases or directories) from the Information
+> or any part of it; (iii) use any programmatic, scripted or other mechanical
+> means to access this Website or any Information
+
+**Refused.** The register's entry for it is
+`hkex-option-daily-reports`.
+
+### Not read, and therefore not refused and not admissible
+
+Bybit's terms page renders only in a browser; Binance answered with an empty
+challenge page; CME Group and the OCC answered `403` to the evaluation's
+fetch; the Eurex and JPX legal pages were not found at any address tried.
+None of these is on the register, because the register holds refusals on a
+clause somebody read, and none of them is admissible, because the gate
+refuses what nobody read. Both facts are stated so that a later reader does
+not mistake absence from the register for a clean bill.
+
+### The public-domain route does not exist for options
+
+The NWS entry in the catalogue was admitted on an absence of copyright; the
+ECB and New York Fed entries on open permissive terms. No public body
+publishes option quotes or settlement prices. The nearest is the **Bank of
+England**, whose statistical database is under the Open Government Licence
+(`https://www.bankofengland.co.uk/legal`: "Reproduction of data in the
+Database is subject to the terms of the UK Open Government Licence"), and
+which publishes option-*implied* volatilities and densities for a few
+underlyings. That is a model output — the Bank's forward, discount and
+smoothing, none of which arrive with the number — and requirement 2 above
+refuses it as this engine's input regardless of its licence. It may be
+admissible for research; it is not an option-quote source.
+
+### Outcome
+
+- **§16.1 and §5.3 remain PARTIAL, and the volatility surface remains
+  without a caller — now blocked on a named clause.** Every readable
+  candidate refuses derivation and commercial use of its market data without
+  written consent. The block is a vendor's sentence, not this platform's
+  omission, and the way through it is the negotiated licence part two already
+  costed for class (a): written approval from a venue, held as an attributed
+  record, and a register edit naming the approval where the refusing clause
+  is today.
+- **What was built is the refusal register**, so the next lane meets "refused
+  on Deribit's clause 2.10, read 2026-09-19" and not "terms have not been
+  read". It is read in production by `admit_from_registered`, which both
+  composition roots reach through `StandingAdmission::over`; nothing is
+  deployed, so no deployed process has asked it anything.
+- **No connector was written.** A connector for a refused source is
+  alternative (f) with the order reversed, and the register's test now
+  refuses one by name.
+- **What the kernel lane must call on the day a source is admitted** — stated
+  here so the shape is not rediscovered: assemble `points` from quotes
+  carrying **one** true instant and derive each point's implied volatility
+  in-tree (requirement 2), then
+  `VolatilitySurface::new(underlying, as_of, forward, points)` with the one
+  `as_of` and the one `forward` those quotes share (requirement 3). The
+  assembler, not the surface, must refuse a set of quotes with more than one
+  true instant; that check does not exist yet and belongs beside the caller.
+- **Alternative (e) is withdrawn**, not reversed: vendors were named because
+  the owner delegated the reading, and the record's refusal to *choose* one
+  stands on the evidence above.
+
+### What would make this amendment wrong
+
+- A vendor's terms changing. The four documents are dated above and the
+  register carries the same dates; nothing here watches them.
+- A written approval from a venue arriving and the register not being edited
+  to say so — the approval would then be a fact the gate cannot see.
+- Any of the four ids appearing on `KNOWN_SOURCES` or in `catalogue()`
+  without the register changing first. The test named above fails on it.
