@@ -3781,12 +3781,6 @@ impl Platform {
                 now,
             )?;
         }
-        // The declared inflows the log holds, replayed into the ledger the
-        // enrolments just built, through the same gates a live declaration
-        // passes. Before this a declaration was erased at the next process
-        // start, and `/ledger/users` showed a deposit as expected until the
-        // first restart and never again (ADR 0085).
-        Self::resume_ledger(&event_log, &mut user_ledger)?;
         let fabric = Self::resume_fabric(&event_log, config.seed)?;
         // Resumed against `limits` — the set this boot actually runs
         // under — while it is still borrowed rather than moved, so a
@@ -3988,6 +3982,16 @@ impl Platform {
                 now,
             )?;
         }
+        // The declared inflows the log holds, replayed into the ledger
+        // through the same gates a live declaration passes — after the
+        // committed eligibilities above, because a declaration asks the
+        // registry and a replay against an empty one would refuse every
+        // record. Before this seam a declaration was erased at the next
+        // process start: `/ledger/users` showed a deposit as expected until
+        // the first restart and never again (ADR 0085). Two fields borrowed
+        // disjointly rather than a method, so the log is read while the
+        // ledger is written.
+        Self::resume_ledger(&platform.event_log, &mut platform.user_ledger)?;
         // The committed venue registrations, through the same journaled path
         // an operator's runtime approval takes. A record the registry refuses
         // — a source with no declared requirement — stops assembly with the
@@ -5442,8 +5446,11 @@ impl Platform {
         Ok(())
     }
 
-    /// Replay the log's declared inflows into a freshly enrolled ledger, in
-    /// log order, through the same gates a live declaration passes.
+    /// Replay the log's declared inflows into the ledger, in log order,
+    /// through the same gates a live declaration passes — called after the
+    /// enrolments and the committed eligibilities are in, because the gates
+    /// ask both and a replay against an empty registry would refuse every
+    /// record it was written to keep.
     ///
     /// The fourth resume seam beside the fabric journal, the withdrawn venue
     /// set and the open recalibration proposals, and the one the per-user

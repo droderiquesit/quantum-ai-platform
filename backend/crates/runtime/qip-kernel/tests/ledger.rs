@@ -58,8 +58,8 @@ use qip_kernel::central::{CellReport, StrategyCandidate};
 use qip_kernel::config::{PlatformConfig, UserEligibility, UserMandate};
 use qip_kernel::cycle::Stage;
 use qip_kernel::platform::{
-    BookingBasis, EligibilityEntry, EligibilitySource, InvestmentEntry, InvestmentJudgement,
-    LedgerEntry, Platform,
+    BookingBasis, EligibilityEntry, EligibilitySource, InflowDeclaration, InvestmentEntry,
+    InvestmentJudgement, LedgerEntry, Platform,
 };
 use qip_lifecycle::corridor::{CorridorRoute, CorridorSubject};
 use qip_lifecycle::trials::StrategyFamily;
@@ -2871,5 +2871,355 @@ fn a_cycle_that_has_observed_no_balance_says_so_rather_than_completing_quietly()
         platform.fabric_state().reconciliations().contains_key(&key),
         "premise: the second cycle actually judged the desk's cash"
     );
+    Ok(())
+}
+// --- declared inflows (ADR 0085) ---------------------------------------------
+
+/// The producer the kernel writes per-user ledger records under. A literal
+/// here for the reason `ELIGIBILITY_PRODUCER` is one: the test reads the log
+/// the way an auditor would, by what the record says about itself.
+const LEDGER_PRODUCER: &str = "kernel/ledger";
+
+/// Every inflow declaration and cancellation the *event log* holds, oldest
+/// first — read from the log rather than the journal, because a restarted
+/// process has a fresh journal and the log is the record.
+fn inflow_records(platform: &Platform) -> Result<Vec<LedgerEntry>> {
+    platform
+        .event_log()
+        .records()
+        .iter()
+        .filter(|record| {
+            record.event.topic == Topic::AttributionCompleted
+                && record.event.lineage.producer == LEDGER_PRODUCER
+        })
+        .map(|record| {
+            Ok(
+                qip_streaming::envelope::StreamEnvelope::from_frame(&record.event)?
+                    .decode::<LedgerEntry>()?
+                    .body,
+            )
+        })
+        .filter(|entry| {
+            !matches!(
+                entry,
+                Ok(LedgerEntry::Funded { .. }
+                    | LedgerEntry::Booked { .. }
+                    | LedgerEntry::FundingRefused { .. })
+            )
+        })
+        .collect()
+}
+
+fn declaration(strategy: &str, reference: &str, amount: Decimal) -> InflowDeclaration {
+    InflowDeclaration {
+        strategy: StrategyId::new(strategy),
+        reference: reference.to_string(),
+        amount,
+    }
+}
+
+fn expected_total(platform: &Platform, user: &str, strategy: &str) -> Result<Decimal> {
+    Ok(platform
+        .user_ledger()
+        .balance(
+            &UserId::new(user)?,
+            &StrategyId::new(strategy),
+            Currency::USD,
+        )
+        .map_or(
+            Decimal::ZERO,
+            qip_capital::ledger::CashBalance::expected_total,
+        ))
+}
+
+#[test]
+fn a_declared_inflow_is_journalled_before_the_ledger_adopts_it_and_a_refused_one_writes_nothing()
+-> Result<()> {
+    // The §40.12 writer's kernel half. What it must be: a record in the
+    // hash-chained log for every declaration and cancellation that stood,
+    // attributed to the operator's subject and never to a body; nothing on
+    // the log for one the ledger refused; and no money moved by either —
+    // `available()` stays at zero however much is declared.
+    let mut platform = platform(
+        PlatformConfig::default()
+            .with_user_mandates(vec![enrolment("alice", dec!("1000"))?])
+            .with_user_eligibilities(vec![cleared_for_a_year("alice")?]),
+    )?;
+    let alice = UserId::new("alice")?;
+    let operator = OperatorIdentity::verified("ops-carol", "oidc", start());
+    // Premise: nothing declared, nothing on the log.
+    assert!(inflow_records(&platform)?.is_empty());
+    assert_eq!(expected_total(&platform, "alice", "AAA")?, Decimal::ZERO);
+
+    // A user with no mandate is refused, and the log does not hear of it.
+    let refused = platform
+        .expect_inflow(
+            &UserId::new("bob")?,
+            declaration("AAA", "wire-0001", dec!("500")),
+            &operator,
+            start(),
+        )
+        .expect_err("bob holds no mandate");
+    assert!(
+        refused.message().contains("holds no mandate"),
+        "{}",
+        refused.message()
+    );
+    // A stale credential is refused before the ledger is asked, as an
+    // eligibility decision's is.
+    let stale = OperatorIdentity::verified(
+        "ops-carol",
+        "oidc",
+        start().saturating_sub(Duration::from_mins(60)),
+    );
+    assert!(
+        platform
+            .expect_inflow(
+                &alice,
+                declaration("AAA", "wire-0001", dec!("500")),
+                &stale,
+                start()
+            )
+            .is_err(),
+        "an hour-old credential cannot declare"
+    );
+    // A declaration the mandate could never take in is the ledger's own
+    // refusal, and it too leaves no record.
+    assert!(
+        platform
+            .expect_inflow(
+                &alice,
+                declaration("AAA", "wire-0001", dec!("5000")),
+                &operator,
+                start()
+            )
+            .is_err(),
+        "5000 against a 1000 mandate"
+    );
+    assert!(
+        inflow_records(&platform)?.is_empty(),
+        "a refused declaration reached the event log"
+    );
+
+    // The admitting half, and the record it leaves.
+    platform.expect_inflow(
+        &alice,
+        declaration("AAA", "wire-0001", dec!("500")),
+        &operator,
+        start(),
+    )?;
+    let records = inflow_records(&platform)?;
+    assert_eq!(records.len(), 1);
+    let LedgerEntry::InflowExpected {
+        user,
+        strategy,
+        currency,
+        reference,
+        amount,
+        declared_at,
+        declared_by,
+    } = &records[0]
+    else {
+        panic!("the one record is not a declaration: {:?}", records[0]);
+    };
+    assert_eq!(user, &alice);
+    assert_eq!(strategy.as_str(), "AAA");
+    assert_eq!(*currency, Currency::USD);
+    assert_eq!(reference, "wire-0001");
+    assert_eq!(*amount, dec!("500"));
+    assert_eq!(*declared_at, start());
+    assert_eq!(
+        declared_by, "ops-carol",
+        "the operator's subject, from the identity and not from anything a body could carry"
+    );
+    let balance = platform
+        .user_ledger()
+        .balance(&alice, &StrategyId::new("AAA"), Currency::USD)
+        .expect("the declaration opened a book")
+        .clone();
+    assert_eq!(balance.expected_total(), dec!("500"));
+    assert_eq!(
+        balance.available(),
+        Decimal::ZERO,
+        "a declaration moves no money"
+    );
+    assert_eq!(balance.settled(), Decimal::ZERO);
+
+    // Cancelling a reference nobody declared is refused and unrecorded.
+    assert!(
+        platform
+            .cancel_inflow(&alice, "wire-9999", &operator, start())
+            .is_err()
+    );
+    assert_eq!(inflow_records(&platform)?.len(), 1);
+    // Cancelling the one that stands is recorded and drops it.
+    platform.cancel_inflow(&alice, "wire-0001", &operator, start())?;
+    let records = inflow_records(&platform)?;
+    assert_eq!(records.len(), 2);
+    assert!(
+        matches!(
+            &records[1],
+            LedgerEntry::InflowCancelled { reference, amount, cancelled_by, .. }
+                if reference == "wire-0001" && *amount == dec!("500") && cancelled_by == "ops-carol"
+        ),
+        "{:?}",
+        records[1]
+    );
+    assert_eq!(expected_total(&platform, "alice", "AAA")?, Decimal::ZERO);
+    Ok(())
+}
+
+/// A file-backed log in a directory of this test's own, so two processes
+/// can be assembled over it in turn.
+fn log_path(tag: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-ledger-{tag}-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    directory.join("events.jsonl")
+}
+
+/// Assemble a platform over `path` at `at`, with alice enrolled and
+/// cleared, as the composition root would after a restart.
+fn platform_over(path: &std::path::Path, at: Timestamp) -> Result<Platform> {
+    let config = PlatformConfig::default()
+        .with_event_log_file(path)
+        .with_user_mandates(vec![enrolment("alice", dec!("1000"))?])
+        .with_user_eligibilities(vec![cleared_for_a_year("alice")?]);
+    let (context, _clock) = Context::deterministic(at, config.seed);
+    Platform::new(config, context, Telemetry::silent(), universe()?, limits())
+}
+
+#[test]
+fn a_declared_inflow_survives_a_restart_and_a_cancelled_one_does_not() -> Result<()> {
+    // The lifetime finding the register made against this row on
+    // 2026-09-19: `UserLedger` was derived state built from the configuration
+    // alone, and `grep 'fn resume_'` named three seams, none of them the
+    // ledger, so a declared inflow was erased at the next process start. A
+    // second process over the first's log must hold what stood — the
+    // declaration that was not cancelled — and not what was.
+    let path = log_path("restart");
+    let alice = UserId::new("alice")?;
+    let operator = OperatorIdentity::verified("ops-carol", "oidc", start());
+    {
+        let mut first = platform_over(&path, start())?;
+        first.expect_inflow(
+            &alice,
+            declaration("AAA", "wire-0001", dec!("500")),
+            &operator,
+            start(),
+        )?;
+        first.expect_inflow(
+            &alice,
+            declaration("AAA", "wire-0002", dec!("300")),
+            &operator,
+            start(),
+        )?;
+        first.cancel_inflow(&alice, "wire-0002", &operator, start())?;
+        assert_eq!(
+            expected_total(&first, "alice", "AAA")?,
+            dec!("500"),
+            "premise: one declaration stands in the first process"
+        );
+        assert_eq!(inflow_records(&first)?.len(), 3);
+    }
+
+    // An hour on, as a restart is in life (and so the id stream does not
+    // mint the first process's ids again).
+    let later = start().saturating_add(Duration::from_hours(1));
+    let mut second = platform_over(&path, later)?;
+    assert_eq!(
+        inflow_records(&second)?.len(),
+        3,
+        "premise: the second process read the first's log back"
+    );
+    let balance = second
+        .user_ledger()
+        .balance(&alice, &StrategyId::new("AAA"), Currency::USD)
+        .expect("the restarted ledger holds alice's book")
+        .clone();
+    assert_eq!(
+        balance.expected_total(),
+        dec!("500"),
+        "the declaration that stood is back"
+    );
+    assert!(
+        balance.expected_inflows().contains_key("wire-0001")
+            && !balance.expected_inflows().contains_key("wire-0002"),
+        "and the cancelled one is not: {:?}",
+        balance.expected_inflows().keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        balance.available(),
+        Decimal::ZERO,
+        "resuming moved no money"
+    );
+    // The resumed state is the live state: the standing reference is still
+    // taken and the cancelled one is free again.
+    assert!(
+        second
+            .expect_inflow(
+                &alice,
+                declaration("AAA", "wire-0001", dec!("1")),
+                &operator,
+                later
+            )
+            .is_err(),
+        "wire-0001 is still declared after the restart"
+    );
+    second.expect_inflow(
+        &alice,
+        declaration("AAA", "wire-0002", dec!("100")),
+        &OperatorIdentity::verified("ops-carol", "oidc", later),
+        later,
+    )?;
+    assert_eq!(expected_total(&second, "alice", "AAA")?, dec!("600"));
+    let _ = std::fs::remove_dir_all(path.parent().expect("the log has a directory"));
+    Ok(())
+}
+
+#[test]
+fn a_log_declaring_an_inflow_for_a_user_this_configuration_no_longer_enrols_stops_assembly()
+-> Result<()> {
+    // Fail closed, the way `resume_fabric` does. A record the ledger this
+    // boot built will not take — here, a user the configuration dropped —
+    // is not skipped: skipping is the erasure the seam exists to end, and
+    // the ledger would then disagree with the log about a claim on a user's
+    // capital. The refusal names the record and what to do.
+    let path = log_path("dropped-user");
+    let alice = UserId::new("alice")?;
+    let operator = OperatorIdentity::verified("ops-carol", "oidc", start());
+    {
+        let mut first = platform_over(&path, start())?;
+        first.expect_inflow(
+            &alice,
+            declaration("AAA", "wire-0001", dec!("500")),
+            &operator,
+            start(),
+        )?;
+        assert_eq!(
+            inflow_records(&first)?.len(),
+            1,
+            "premise: a declaration is on the log"
+        );
+    }
+
+    let later = start().saturating_add(Duration::from_hours(1));
+    let config = PlatformConfig::default().with_event_log_file(&path);
+    let (context, _clock) = Context::deterministic(later, config.seed);
+    let refused = Platform::new(config, context, Telemetry::silent(), universe()?, limits())
+        .err()
+        .expect("assembly over a log that declares an inflow for an unenrolled user is refused");
+    assert!(
+        refused
+            .message()
+            .contains("cannot be resumed from this log")
+            && refused.message().contains("wire-0001"),
+        "the refusal names the record and the remedy: {}",
+        refused.message()
+    );
+    let _ = std::fs::remove_dir_all(path.parent().expect("the log has a directory"));
     Ok(())
 }
