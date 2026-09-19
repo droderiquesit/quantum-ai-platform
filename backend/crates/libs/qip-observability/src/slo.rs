@@ -179,10 +179,14 @@ impl SloStatus {
     /// `MaxExpectedShortfall` sat in every default limit set reading as
     /// protection while the state it consulted was always empty.
     ///
-    /// Three of §49.1's targets are ratios over wall-clock time on a deployed
-    /// node and cannot be measured in this process at all, so they will read
-    /// as unobserved until something runs. Anything summarising objectives
-    /// must say so rather than counting them as met.
+    /// Several of §49.1's targets are ratios over wall-clock time on a
+    /// deployed node and cannot be measured in this process at all, so they
+    /// read as unobserved until something runs. They are named in
+    /// [`BLUEPRINT_SLOS_NEEDING_A_DEPLOYMENT`] rather than counted here,
+    /// because this sentence said "three" while that list held four within an
+    /// hour of both being written, which is how a number in prose goes wrong.
+    /// Anything summarising objectives must report the unobserved ones as
+    /// unobserved rather than counting them as met.
     pub fn is_observed(&self) -> bool {
         self.observations > 0
     }
