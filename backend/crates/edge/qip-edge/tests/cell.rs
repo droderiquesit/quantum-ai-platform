@@ -376,6 +376,8 @@ fn the_journal_chain_catches_an_edited_decision() -> Result<()> {
             venue: "XLON".to_string(),
             quantity: "100".to_string(),
             simulated: true,
+            release_at: Some(t(2)),
+            equalised: true,
         },
         t(2),
     );

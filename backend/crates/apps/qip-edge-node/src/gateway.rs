@@ -57,8 +57,9 @@ use qip_contracts::venue::VenueId;
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, OrderId};
-use qip_core::time::Timestamp;
-use qip_edge::cell::{ExecutionReport, Placer};
+use qip_core::time::{Duration, Timestamp};
+use qip_edge::cell::{ExecutionReport, Placer, UnreleasedOrder};
+use qip_edge::dispersion::DEFAULT_DISPERSION_BOUND;
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::resume::VenueAccount;
 use qip_execution_engine::broker::Broker;
@@ -126,6 +127,40 @@ fn invented_listing_liquidity() -> LiquidityProfile {
 /// report.
 pub const MAX_WORKING_ORDERS: usize = 1_024;
 
+/// The most lag the simulated gateway will release a held order under
+/// (ADR 0084 §3 and §4).
+///
+/// The same number the cell's dispersion gate admits a cycle on, and for the
+/// reason it is that number: a leg released more than the bound after its
+/// instant has arrived outside the window its cycle was admitted on, and
+/// sending it anyway is the exposure the release schedule was computed to
+/// prevent. It is withdrawn instead and reported through
+/// [`Placer::unreleased`]. A deployment that has measured its venues sets a
+/// tighter one with [`SimulatedGateway::with_release_tolerance`].
+///
+/// **What this means on the simulated arm.** The gateway is driven by the
+/// pass instant and can release a held order only on a pass, so a held order
+/// is released late by however long the node waited between passes. With no
+/// latency model every offset is zero, nothing is held and nothing is late;
+/// the day a latency model makes an offset non-zero, a node whose passes are
+/// further apart than this tolerance will withdraw every held leg, and the
+/// cell will halt on the first. That is the honest state — refuse rather
+/// than send late — and it is stated here so nobody reads a withdrawal as a
+/// venue's fault.
+pub const DEFAULT_RELEASE_TOLERANCE: Duration = DEFAULT_DISPERSION_BOUND;
+
+/// An order the cell placed for release at an instant the gateway had not
+/// reached yet, held until a pass reaches it.
+#[derive(Debug)]
+struct HeldOrder {
+    order_id: String,
+    object_id: ObjectId,
+    venue: VenueId,
+    side: BookSide,
+    quantity: Decimal,
+    price: Decimal,
+}
+
 /// An order the venue accepted and has not finished with, as the gateway
 /// follows it.
 #[derive(Debug)]
@@ -149,6 +184,22 @@ pub struct SimulatedGateway {
     /// Orders that rested, followed until the venue closes them. Bounded by
     /// [`MAX_WORKING_ORDERS`].
     working: BTreeMap<String, WorkingOrder>,
+    /// The latest pass instant this gateway has been handed through
+    /// [`Self::advance_to`] — the assembly instant until the first pass.
+    /// Never a clock: the node's loop reads the clock once per turn and
+    /// hands the same `now` here and to the cell, so a replay of the same
+    /// passes releases the same orders in the same order (ADR 0084 §3).
+    now: Timestamp,
+    /// Orders placed for release at an instant past `now`, keyed on that
+    /// instant so a pass releases them in instant order. Counted against
+    /// [`MAX_WORKING_ORDERS`] with the working set, because a held order is
+    /// one this gateway has promised to follow.
+    held: BTreeMap<Timestamp, Vec<HeldOrder>>,
+    /// Orders withdrawn at release because their instant was further past
+    /// than [`Self::release_tolerance`], awaiting collection by the cell.
+    unreleased: Vec<UnreleasedOrder>,
+    /// See [`DEFAULT_RELEASE_TOLERANCE`].
+    release_tolerance: Duration,
 }
 
 impl SimulatedGateway {
@@ -200,7 +251,139 @@ impl SimulatedGateway {
             venue,
             reports: Vec::new(),
             working: BTreeMap::new(),
+            now: at,
+            held: BTreeMap::new(),
+            unreleased: Vec::new(),
+            release_tolerance: DEFAULT_RELEASE_TOLERANCE,
         })
+    }
+
+    /// The same gateway under a release tolerance the deployment chooses.
+    ///
+    /// Refused rather than clamped below zero: a negative tolerance would
+    /// withdraw an order released exactly on time, which is a gate that
+    /// refuses everything and reads as one that is working.
+    pub fn with_release_tolerance(mut self, tolerance: Duration) -> Result<Self> {
+        if tolerance.as_nanos() < 0 {
+            return Err(Error::invalid(format!(
+                "a release tolerance of {} nanoseconds withdraws an order released on its own \
+                 instant; name how far past its release instant an order may still be sent",
+                tolerance.as_nanos()
+            )));
+        }
+        self.release_tolerance = tolerance;
+        Ok(self)
+    }
+
+    /// Move the gateway to the pass instant, releasing what is due (ADR 0084
+    /// §3).
+    ///
+    /// Called by the pass before anything else touches the venue, with the
+    /// same `now` the cell is handed. An order held for an instant at or
+    /// before `now` is submitted on this pass if `now` is within the release
+    /// tolerance of it, and withdrawn — reported through
+    /// [`Placer::unreleased`], never sent late — if not. Held orders are
+    /// released in instant order, and within one instant in the order they
+    /// were placed.
+    ///
+    /// A pass instant earlier than the last is refused: the gateway's held
+    /// orders are keyed on instants the cell computed from an earlier pass,
+    /// and a pass that ran backwards would release them against a `now`
+    /// that predates the decision.
+    pub fn advance_to(&mut self, now: Timestamp) -> Result<()> {
+        if now < self.now {
+            return Err(Error::invalid(format!(
+                "the pass instant {} is earlier than the {} this gateway last ran at; passes \
+                 run forward, and one that does not is a clock nobody should release orders on",
+                now.to_rfc3339(),
+                self.now.to_rfc3339()
+            )));
+        }
+        self.now = now;
+        let due: Vec<Timestamp> = self.held.range(..=now).map(|(at, _)| *at).collect();
+        for scheduled in due {
+            let Some(orders) = self.held.remove(&scheduled) else {
+                continue;
+            };
+            let lag = now.since(scheduled);
+            for order in orders {
+                if lag > self.release_tolerance {
+                    self.unreleased.push(UnreleasedOrder {
+                        order_id: order.order_id,
+                        venue: order.venue,
+                        scheduled,
+                        lag,
+                        tolerance: self.release_tolerance,
+                    });
+                    continue;
+                }
+                // Submitted at the pass instant and not at the scheduled
+                // one: the venue matched it now, and a fill stamped with an
+                // instant nobody matched at would make the fill time read as
+                // zero on a leg the gateway held for a whole pass.
+                self.submit_now(order, now)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Orders held for an instant no pass has reached yet.
+    pub fn held_count(&self) -> usize {
+        self.held.values().map(Vec::len).sum()
+    }
+
+    /// Hand `order` to the matching engine at `at`, and follow what rests.
+    fn submit_now(&mut self, order: HeldOrder, at: Timestamp) -> Result<()> {
+        let HeldOrder {
+            order_id,
+            object_id,
+            venue,
+            side,
+            quantity,
+            price,
+        } = order;
+        // The cell names the side of the book it takes: hitting the ask is a
+        // buy, hitting the bid is a sell.
+        let taking = match side {
+            BookSide::Ask => Side::Buy,
+            BookSide::Bid => Side::Sell,
+        };
+        self.ensure_listed(&object_id, price, at)?;
+        let order = Order::new(
+            OrderId::from_string(&order_id),
+            object_id,
+            taking,
+            quantity,
+            OrderType::Limit { price },
+            price,
+            format!("cell-order-{order_id}"),
+            vec![format!("placed by the edge cell as {order_id}")],
+            venue.as_str(),
+            at,
+        );
+        let fills = self.exchange.submit(&order, at)?;
+        let mut reported = Decimal::ZERO;
+        for fill in fills {
+            debug_assert!(fill.simulated, "a simulated venue produced a live fill");
+            reported += fill.quantity;
+            self.reports.push(ExecutionReport {
+                order_id: fill.order_id.as_str().to_string(),
+                venue: venue.clone(),
+                quantity: fill.quantity,
+                price: fill.price,
+                at: fill.at,
+            });
+        }
+        if reported < quantity {
+            self.working.insert(
+                order_id,
+                WorkingOrder {
+                    reported,
+                    limit: price,
+                },
+            );
+        }
+        Ok(())
     }
 
     /// The venue this gateway reaches.
@@ -422,57 +605,39 @@ impl Placer for SimulatedGateway {
         price: Decimal,
         at: Timestamp,
     ) -> Result<()> {
-        // The cell names the side of the book it takes: hitting the ask is a
-        // buy, hitting the bid is a sell.
-        let taking = match side {
-            BookSide::Ask => Side::Buy,
-            BookSide::Bid => Side::Sell,
-        };
         // Before the venue sees it: a refusal after acceptance would be an
-        // order at the venue that nothing follows.
-        if self.working.len() >= MAX_WORKING_ORDERS {
+        // order at the venue that nothing follows. Held orders count, because
+        // each is one this gateway has promised to follow once released.
+        if self.working.len().saturating_add(self.held_count()) >= MAX_WORKING_ORDERS {
             return Err(Error::denied(format!(
                 "the gateway follows {MAX_WORKING_ORDERS} resting orders at {} and cannot take \
                  another until the venue closes one; order {order_id} was not sent",
                 self.venue.as_str()
             )));
         }
-        self.ensure_listed(object_id, price, at)?;
-        let order = Order::new(
-            OrderId::from_string(order_id),
-            object_id.clone(),
-            taking,
+        let order = HeldOrder {
+            order_id: order_id.to_string(),
+            object_id: object_id.clone(),
+            venue: venue.clone(),
+            side,
             quantity,
-            OrderType::Limit { price },
             price,
-            format!("cell-order-{order_id}"),
-            vec![format!("placed by the edge cell as {order_id}")],
-            venue.as_str(),
-            at,
-        );
-        let fills = self.exchange.submit(&order, at)?;
-        let mut reported = Decimal::ZERO;
-        for fill in fills {
-            debug_assert!(fill.simulated, "a simulated venue produced a live fill");
-            reported += fill.quantity;
-            self.reports.push(ExecutionReport {
-                order_id: fill.order_id.as_str().to_string(),
-                venue: venue.clone(),
-                quantity: fill.quantity,
-                price: fill.price,
-                at: fill.at,
-            });
+        };
+        // "Release no earlier than" (ADR 0084 §2). An instant past the pass
+        // this gateway is on is a hold, released by the first `advance_to`
+        // that reaches it; anything else is released now. The listing is
+        // made at placement either way, so a held order's instrument exists
+        // at the venue before the pass that matches it.
+        if at > self.now {
+            self.ensure_listed(object_id, price, self.now)?;
+            self.held.entry(at).or_default().push(order);
+            return Ok(());
         }
-        if reported < quantity {
-            self.working.insert(
-                order_id.to_string(),
-                WorkingOrder {
-                    reported,
-                    limit: price,
-                },
-            );
-        }
-        Ok(())
+        self.submit_now(order, at)
+    }
+
+    fn unreleased(&mut self) -> Vec<UnreleasedOrder> {
+        std::mem::take(&mut self.unreleased)
     }
 
     fn execution_reports(&mut self) -> Vec<ExecutionReport> {
@@ -755,6 +920,16 @@ impl Placer for RestGateway {
         price: Decimal,
         at: Timestamp,
     ) -> Result<()> {
+        // `at` is "release no earlier than" since ADR 0084, and this gateway
+        // releases immediately whatever it says — which that record calls
+        // correct before it and wrong after it. It is not wrong *here*
+        // because nothing scheduled can reach this gateway: `run_pass` is
+        // typed to the simulated gateway and a live gateway is refused at
+        // start-up. The release thread that would honour the instant for a
+        // real venue is ADR 0084 §4's, in this crate, and is not built;
+        // the day it is, this gateway hands the order to it rather than to
+        // the adapter.
+        //
         // A cell that reached a venue it was not configured for would be
         // sending an order for an account nobody chose. Refused before the
         // session is touched.
@@ -996,6 +1171,15 @@ impl Placer for NodeGateway {
         match self {
             Self::Simulated(gateway) => gateway.execution_reports(),
             Self::Live(gateway) => gateway.execution_reports(),
+        }
+    }
+
+    fn unreleased(&mut self) -> Vec<UnreleasedOrder> {
+        match self {
+            Self::Simulated(gateway) => gateway.unreleased(),
+            // The REST gateway holds nothing (see its `place`), so it has
+            // nothing to have withdrawn.
+            Self::Live(_) => Vec::new(),
         }
     }
 

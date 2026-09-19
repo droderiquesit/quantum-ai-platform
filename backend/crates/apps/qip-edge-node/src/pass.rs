@@ -114,6 +114,11 @@ pub fn run_pass(
     stats: &mut PassStats,
     now: Timestamp,
 ) -> Result<PassOutcome> {
+    // ADR 0084 §3: the gateway is moved to the pass instant before anything
+    // reads the venue, so an order the cell scheduled for release by now is
+    // at the venue — or withdrawn for being late — before the feed publishes
+    // the book it changed and before the cell asks what filled.
+    gateway.advance_to(now)?;
     let tick = feed.publish(gateway, cell, now)?;
     // §36.3's node-crash row. While the cell is reconciling before it
     // resumes, the venue's own account of what it holds open is taken here —

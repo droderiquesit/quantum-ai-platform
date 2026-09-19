@@ -22,7 +22,7 @@ use qip_contracts::venue::VenueId;
 use qip_core::dec;
 use qip_core::error::Result;
 use qip_core::ids::ObjectId;
-use qip_core::time::{Duration, Timestamp};
+use qip_core::time::Timestamp;
 use qip_edge::cell::Placer;
 use qip_edge_node::gateway::{NodeGateway, RestGateway};
 use qip_edge_node::venue::{
@@ -599,6 +599,9 @@ fn the_simulated_gateway_still_places_and_reports_that_nothing_left_the_process(
     assert_eq!(gateway.class(), "simulated");
     assert_eq!(gateway.unknown_orders(), 0);
 
+    // At the instant the gateway was opened at: since ADR 0084 an instant
+    // past the pass the simulated gateway is on is a hold, not a send, and
+    // the subject here is that a send stays in the process.
     gateway.place(
         "cell-3",
         &ObjectId::from_string("obj-ABC"),
@@ -606,7 +609,7 @@ fn the_simulated_gateway_still_places_and_reports_that_nothing_left_the_process(
         BookSide::Ask,
         dec!("5"),
         dec!("100"),
-        at().saturating_add(Duration::from_secs(1)),
+        at(),
     )?;
     assert_eq!(gateway.submitted_count(), 1);
     Ok(())

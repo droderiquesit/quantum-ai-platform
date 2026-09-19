@@ -99,7 +99,8 @@ still answers the JSON health body. The series and what each is keyed on:
   is neither read as instant nor as T+2, its dependent legs go out unjudged,
   and that is a number rather than a silence. Its refusal seam goes through
   `Cell::refuse` under `GATE_SETTLEMENT` (`qip-edge/src/settlement.rs`), so
-  the refusal-site count below did not move; recount rather than trust this.
+  the refusal-site count below did not move on its account; recount rather
+  than trust this.
 - From the node: `qip_edge_mesh_{deltas,grants,policy_frames}_total{outcome}`
   as deltas of the link's cumulative counters, and
   `qip_edge_mesh_circuit{state}`.
@@ -128,7 +129,11 @@ printed two lines on 2026-09-06, **three** on 2026-09-15, and **four** on
 inside `Cell::send`, `GATE_QUOTE_BUDGET` inside the withdrawal seam, and since
 the requote lane a second `GATE_QUOTE_BUDGET` inside `Cell::spend_requote`,
 which charges the budget the two messages a requote sends and refuses when it
-cannot fund both. Two lanes disagreed about three-versus-four on the same day
+cannot fund both — and **five** later the same evening, when ADR 0084's
+release-schedule lane added `GATE_RELEASE_LATE` inside
+`Cell::withdraw_unreleased`, the seam where an order the simulated gateway
+held past its release tolerance is withdrawn rather than sent late, which like
+`Cell::send` has no `WorkReport` to push a refusal onto. Two lanes disagreed about three-versus-four on the same day
 because one was working on a base that predated the requote seam; the
 disagreement is the reason this paragraph carries dates and not a number. The
 fourth site passes the same `pub const` as the third, so the site count moved

@@ -94,6 +94,7 @@ fn resting_buy(order_id: &str, symbol: &str, quantity: &str, price: &str) -> Ope
         filled: Decimal::ZERO,
         simulated: true,
         sent_at: t(5),
+        release_at: t(5),
         expires_at: Some(t(600)),
         closed: None,
     }
