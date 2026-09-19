@@ -649,7 +649,12 @@ impl QuoteBudget {
     /// absence, and the repricer exists to improve the first, not to create
     /// the second.
     pub fn admit_requote(&mut self, venue: &VenueId, now: Timestamp) -> Admission {
-        self.admit_all(&[venue.clone(), venue.clone()], now)
+        // Built from [`REQUOTE_MESSAGES`] rather than written out, so that the
+        // peek above and the spend here cannot come to disagree about what a
+        // requote costs. Two controls reading one fact from two places is how
+        // a budget comes to admit what it has already refused.
+        let messages = vec![venue.clone(); REQUOTE_MESSAGES as usize];
+        self.admit_all(&messages, now)
     }
 
     /// A venue reported a trade. The denominator of the message-to-trade
