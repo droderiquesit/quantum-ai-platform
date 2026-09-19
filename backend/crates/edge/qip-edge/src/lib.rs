@@ -35,6 +35,8 @@
 
 pub mod arbitrage;
 pub mod cell;
+/// §32.1's size decomposition: what a cycle does after a leg fills short.
+pub mod decomposition;
 pub mod dispersion;
 pub mod dropcopy;
 pub mod envelope;
@@ -43,6 +45,8 @@ pub mod journal;
 pub mod mesh;
 pub mod mirror;
 pub mod policy;
+/// §29.2 priority allocation: which quote update gets the message.
+pub mod priority;
 pub mod quoting;
 /// Which other regions have gone dark, and what a cell does about it (§36.3).
 pub mod region;
@@ -59,6 +63,9 @@ pub use cell::{
     GATE_MASS_CANCEL, GATE_PATH_EXTENSION, GATE_PATH_ROUTER, GATE_QUOTE_BUDGET, MAX_OPEN_ORDERS,
     OpenOrder, PlacedOrder, Placer, PolledHalt, PricingPolicy, RoutedCycle, WorkReport,
 };
+pub use decomposition::{
+    Completion, DEFAULT_MINIMUM_VIABLE_FRACTION, Decomposition, DecompositionPolicy, LegSize,
+};
 pub use dispersion::{DispersionPolicy, DispersionVerdict, FillTimes, VenueFillTimeState};
 pub use dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 pub use envelope::{VerifiedEnvelope, sign_payload};
@@ -72,6 +79,7 @@ pub use mesh::{
 };
 pub use mirror::{MirrorArrangement, MirroredInstrument};
 pub use policy::{VerifiedHalt, VerifiedPolicy};
+pub use priority::{Candidate, allocate, worth};
 pub use quoting::{
     Admission, Depletion, MessageKind, QuoteBudget, REQUOTE_MESSAGES, RateLimits, VenueBudgetState,
 };

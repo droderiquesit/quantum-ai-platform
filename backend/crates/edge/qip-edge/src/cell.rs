@@ -11,6 +11,7 @@
 //! somebody already approved, for as long as the envelope has left to run.
 
 use crate::arbitrage::ArbitrageDesk;
+use crate::decomposition::{Decomposition, DecompositionPolicy, LegSize};
 use crate::dispersion::{DispersionPolicy, DispersionVerdict, FillTimes};
 use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 use crate::envelope::VerifiedEnvelope;
@@ -263,6 +264,12 @@ pub struct CellConfig {
     /// The spread in fill time a multi-venue cycle may carry (§32.1).
     /// Always in force, for the reason above.
     pub dispersion: DispersionPolicy,
+    /// The smallest fraction of its planned size a cycle will be completed at
+    /// once a leg has filled short (§32.1). Always in force, for the reason
+    /// above: a decomposition policy that defaulted to absent would send
+    /// every later leg at its planned size, which is the position this
+    /// control exists to stop.
+    pub decomposition: DecompositionPolicy,
 }
 
 /// The rolling window §27.1's crossing cap is evaluated against.
@@ -303,6 +310,7 @@ impl CellConfig {
             crossing_interval: None,
             quote_limits: RateLimits::default(),
             dispersion: DispersionPolicy::default(),
+            decomposition: DecompositionPolicy::default(),
         }
     }
 
@@ -5054,6 +5062,10 @@ impl Cell {
             return Ok(());
         }
         let mut orders: Vec<String> = Vec::with_capacity(cycle.legs.len());
+        // §32.1's size decomposition, carried across the legs of this one
+        // cycle and dropped with it. It starts whole, so a cycle whose venues
+        // fill everything asked of them is sent exactly as it was admitted.
+        let mut decomposition = Decomposition::new(self.config.decomposition);
         for (position, leg) in cycle.legs.iter().enumerate() {
             // A buy takes the ask; the sign was fixed where the leg was made.
             let side = if leg.signed_size.is_positive() {
@@ -5061,7 +5073,59 @@ impl Cell {
             } else {
                 BookSide::Bid
             };
-            let quantity = leg.signed_size.abs();
+            // What the legs already out have completed decides the size of
+            // this one. A leg sent at its planned size behind a leg that
+            // filled six tenths is four tenths of an outright position at a
+            // price chosen for an arbitrage that did not exist at that size.
+            let planned = leg.signed_size.abs();
+            let grid = self
+                .config
+                .feasibility
+                .get(leg.venue.as_str())
+                .map(|model| model.granularity_for(&leg.object_id));
+            let quantity = match decomposition.size_for(planned, grid) {
+                LegSize::Planned(size) => size,
+                LegSize::Decomposed { planned, size } => {
+                    self.journal.record(
+                        Decision::CycleDecomposed {
+                            cycle_id: cycle.cycle_id.clone(),
+                            leg: position,
+                            planned: planned.to_string(),
+                            size: size.to_string(),
+                            fraction: decomposition.fraction().to_string(),
+                        },
+                        now,
+                    );
+                    size
+                }
+                LegSize::Unviable { planned, reason } => {
+                    // The legs already sent are a position nobody chose, and
+                    // there is no size at which finishing the cycle is worth
+                    // it. That is exactly the state `break_cycle` exists for.
+                    let error = Error::denied(format!(
+                        "leg {position} of cycle {} cannot be completed at a viable size against \
+                         its planned {planned}: {reason}",
+                        cycle.cycle_id
+                    ));
+                    // Not counted on `qip_edge_cycle_legs_total`: that series
+                    // counts legs the cell *sent*, by what each completed,
+                    // and this one never went to a venue. The leg in front of
+                    // it is already counted `unviable` there, and the cell's
+                    // declining to send this one is counted where every other
+                    // refusal is, under the `arbitrage_cycle_broken` gate
+                    // `break_cycle` refuses through. Counting it in both
+                    // would make a single stopped cycle read as two.
+                    self.break_cycle(
+                        &cycle.cycle_id,
+                        position,
+                        cycle.legs.len(),
+                        &error,
+                        now,
+                        report,
+                    );
+                    return Err(error);
+                }
+            };
             let price = leg.reference_price;
             let sent = self.send(
                 &leg.object_id,
@@ -5088,8 +5152,22 @@ impl Cell {
             };
             // A leg is attributed like a net of one: `net` over a single
             // no-net intent yields one contributor, which is the leg's
-            // strategy at the leg's full size.
-            let leg_net = net(vec![leg.clone()]).into_iter().next();
+            // strategy at the size that went to the venue. The size, not the
+            // planned one: `NetIntent::split_fill` divides a fill across
+            // contributors, and a contributor claiming a size the venue was
+            // never asked for would attribute a decomposed leg's fills to a
+            // cycle that was never sent.
+            //
+            // Cloned and resized rather than rebuilt: `Intent::netting` is
+            // private precisely so that nothing can mint a leg without the
+            // `NoNet` policy §27.2 requires, and a clone carries it through.
+            let mut sent_leg = leg.clone();
+            sent_leg.signed_size = if leg.signed_size.is_positive() {
+                quantity
+            } else {
+                -quantity
+            };
+            let leg_net = net(vec![sent_leg.clone()]).into_iter().next();
             let Some(leg_net) = leg_net else {
                 let error = Error::invalid(format!(
                     "leg {position} of cycle {} nets to nothing and cannot be attributed",
@@ -5132,6 +5210,49 @@ impl Cell {
             );
             let confirmed = self.confirm_execution_reports(gateway, now);
             report.fills.extend(confirmed);
+            // What this leg completed, from the cell's own record of it
+            // rather than from the reports just drained: a report for an
+            // order sent on an earlier pass is in that list too, and a leg
+            // whose venue answered while an earlier leg was still being sent
+            // is booked on the record and not in this drain.
+            let filled = match self.working.get(&order_id) {
+                Some(working) => working.order.filled,
+                None => {
+                    // `record_sent` put it there on the line above. Its
+                    // absence is the cell disagreeing with itself about an
+                    // order that is already at a venue, which is a break and
+                    // never a fraction to size the next leg from.
+                    let error = Error::invalid(format!(
+                        "leg {position} of cycle {} was sent as order {order_id} and the cell \
+                         holds no open order under that id, so what it completed cannot be read",
+                        cycle.cycle_id
+                    ));
+                    self.break_cycle(
+                        &cycle.cycle_id,
+                        position.saturating_add(1),
+                        cycle.legs.len(),
+                        &error,
+                        now,
+                        report,
+                    );
+                    return Err(error);
+                }
+            };
+            let completion = match decomposition.observe(quantity, filled) {
+                Ok(completion) => completion,
+                Err(error) => {
+                    self.break_cycle(
+                        &cycle.cycle_id,
+                        position.saturating_add(1),
+                        cycle.legs.len(),
+                        &error,
+                        now,
+                        report,
+                    );
+                    return Err(error);
+                }
+            };
+            self.metrics.cycle_leg(completion);
             if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) {
                 let utilisation = desk.utilisation_mut();
                 utilisation.gross_committed += quantity * price;
@@ -5143,7 +5264,7 @@ impl Cell {
                 strategy: leg.strategy.clone(),
                 contributors: vec![Contributor {
                     strategy: leg.strategy.clone(),
-                    signed_size: leg.signed_size,
+                    signed_size: sent_leg.signed_size,
                     inputs: leg.inputs.clone(),
                 }],
                 object_id: leg.object_id.clone(),

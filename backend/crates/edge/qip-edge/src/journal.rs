@@ -211,6 +211,23 @@ pub enum Decision {
         orders: Vec<String>,
         net: String,
     },
+    /// A leg of an arbitrage cycle went out smaller than the scanner priced
+    /// it, because an earlier leg of the same cycle filled short (§32.1).
+    ///
+    /// Recorded at the moment the size is chosen and before the leg is sent,
+    /// with the planned size beside the one that went out, so the chain
+    /// answers "why is this order not the size the cycle was admitted at"
+    /// without anybody having to re-derive it from the fills. `fraction` is
+    /// what the cycle can still complete at — the minimum over every leg the
+    /// venues have answered on, not this leg alone — and is carried as a
+    /// string for the reason every other decimal here is.
+    CycleDecomposed {
+        cycle_id: String,
+        leg: usize,
+        planned: String,
+        size: String,
+        fraction: String,
+    },
     /// A deployed strategy was withdrawn from the cell, its envelope handed
     /// back to the caller.
     ///
@@ -299,6 +316,7 @@ impl Decision {
             Self::CyclePathAssigned { .. } => "cycle_path_assigned",
             Self::PathExtensionChecked { .. } => "path_extension_checked",
             Self::CycleCommitted { .. } => "cycle_committed",
+            Self::CycleDecomposed { .. } => "cycle_decomposed",
             Self::StrategyWithdrawn { .. } => "strategy_withdrawn",
             Self::RegionShareApplied { .. } => "region_share_applied",
             Self::RegionOutlookChanged { .. } => "region_outlook_changed",

@@ -52,6 +52,7 @@
 //! order id is a memory leak wearing a dashboard. Each `with(...)` call below
 //! says what bounds its own label.
 
+use crate::decomposition::Completion;
 use crate::quoting::{MessageKind, VenueBudgetState};
 use crate::region::DarkSource;
 use qip_contracts::degradation::{Capability, DegradationState, Freshness};
@@ -209,6 +210,24 @@ pub const EDGE_VENUES_AWAITING_RECONCILIATION: &str = "qip_edge_venues_awaiting_
 /// history that produced it.
 pub const EDGE_FILL_TIME_MILLIS: &str = "qip_edge_fill_time_millis";
 
+/// Legs of an arbitrage cycle the cell sent, by what the venue reported each
+/// of them completed (§32.1's size decomposition).
+///
+/// One record per leg that reached a venue, and none for a leg the cell
+/// declined to send — that refusal is counted under the
+/// `arbitrage_cycle_broken` gate on [`names::EDGE_REFUSALS`], and counting it
+/// here as well would make one stopped cycle read as two.
+///
+/// `completion` is [`crate::decomposition::Completion::as_str`], four
+/// source-file literals on a `Copy` enum, so the series is bounded by that
+/// enum and never by anything a venue said. Read as a whole rather than one
+/// arm at a time: a cell whose legs are all `unanswered` is a cell whose
+/// gateway has no order-entry channel, and it decomposes nothing for a reason
+/// that has nothing to do with the market; a cell whose legs are all `whole`
+/// is the ordinary healthy reading. Those two are indistinguishable on any
+/// series that counted only the legs that filled short.
+pub const EDGE_CYCLE_LEGS: &str = "qip_edge_cycle_legs_total";
+
 /// Configured venues that have produced too few fills for their fill time to
 /// be judged (§32.1).
 ///
@@ -363,6 +382,11 @@ impl CellMetrics {
         m.describe(
             EDGE_FILL_TIME_MILLIS,
             "milliseconds from the cell's send to the venue's confirmed fill, by venue",
+        );
+        m.describe(
+            EDGE_CYCLE_LEGS,
+            "legs of an arbitrage cycle the cell sent, by what the venue reported each \
+             completed: unanswered, whole, short, unviable",
         );
         m.describe(
             EDGE_FILL_TIME_UNMEASURED,
@@ -769,6 +793,20 @@ impl CellMetrics {
         let venues = venues as f64;
         self.metrics
             .gauge(EDGE_FILL_TIME_UNMEASURED, self.base.clone(), venues);
+    }
+
+    /// One leg of an arbitrage cycle, counted by what the leg before it
+    /// completed (§32.1).
+    ///
+    /// Recorded where the fact becomes known: inside `Cell::place_cycle`, at
+    /// the moment the size of the next leg is decided, which is the only
+    /// place the venue's answer about the previous leg and the decision taken
+    /// on it exist together.
+    pub fn cycle_leg(&self, completion: Completion) {
+        self.metrics.count(
+            EDGE_CYCLE_LEGS,
+            self.with("completion", completion.as_str()),
+        );
     }
 
     pub fn reconciliation_break(&self) {
