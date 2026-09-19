@@ -379,7 +379,12 @@ fn a_payload_the_forms_constructor_refuses_is_refused_at_serve_not_at_score() ->
         ],
     )?;
     let artifact = InTreeProvider::pack_distilled("sound@1", &sound)?;
-    assert_eq!(InTreeProvider.serve(&artifact)?.score(&[0.5])?, 1.0);
+    // The leaf is exactly `1.0`, so the comparison is of bits, not of a
+    // tolerance.
+    assert_eq!(
+        InTreeProvider.serve(&artifact)?.score(&[0.5])?.to_bits(),
+        1.0f64.to_bits()
+    );
     Ok(())
 }
 
