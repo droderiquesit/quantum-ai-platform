@@ -44,6 +44,7 @@ use qip_evolution::generate::Candidate;
 use qip_evolution::grammar::Grammar;
 use qip_evolution::palette::FeaturePalette;
 use qip_financial::universe::Universe;
+use qip_kernel::central::factory::AlphaFamily;
 use qip_kernel::central::foundry::{HoldoutInputs, StrategyFoundry, recorded_manifest};
 use qip_kernel::platform::Platform;
 use qip_lifecycle::evidence::{CrossValidationRun, FeatureTiming, LeakageAudit};
@@ -99,6 +100,15 @@ pub struct EvolutionConfig {
     /// turn it off and a test can reach it. A knob nothing can set is a
     /// constant with a longer name.
     pub learning: LearningConfig,
+    /// The alpha family every sweep this engine runs is declared to harvest
+    /// (§26.1's `family`; §19.2's tier input). `None` — the default, and the
+    /// only value the deployed binary produces today — tiers every candidate
+    /// to batch. The operator-facing read is not wired: a new
+    /// `QIP_DEEPBRAIN_*` variable must first be argued in
+    /// `qip-acceptance/tests/manifest_wiring.rs`'s `READ_BUT_NOT_SET` table,
+    /// which is another lane's territory, and a variable read without that
+    /// row fails the wiring suite.
+    pub alpha_family: Option<AlphaFamily>,
 }
 
 impl Default for EvolutionConfig {
@@ -112,6 +122,7 @@ impl Default for EvolutionConfig {
             history_cap: 2048,
             challengers: 4,
             learning: LearningConfig::default(),
+            alpha_family: None,
         }
     }
 }
@@ -790,14 +801,17 @@ impl EvolutionEngine {
                 // different corners, and the foundry folds it into the
                 // identity prefix so two searches cannot mint colliding ids.
                 let seed = self.seed ^ fold(subject);
-                entry.insert(StrategyFoundry::new(
-                    catalogue,
-                    grammar,
-                    "central-research",
-                    VenueId::new("XSIM"),
-                    format!("evo-{subject}"),
-                    seed,
-                )?)
+                entry.insert(
+                    StrategyFoundry::new(
+                        catalogue,
+                        grammar,
+                        "central-research",
+                        VenueId::new("XSIM"),
+                        format!("evo-{subject}"),
+                        seed,
+                    )?
+                    .with_alpha_family(self.config.alpha_family),
+                )
             }
         };
 

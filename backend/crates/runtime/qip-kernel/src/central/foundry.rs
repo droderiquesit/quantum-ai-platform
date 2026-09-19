@@ -61,7 +61,7 @@
 //! still collide two searches — it makes it impossible for anything registered
 //! through this seam, which is the path that reaches capital.
 
-use crate::central::factory::{StrategyCandidate, StrategyFactory};
+use crate::central::factory::{AlphaFamily, StrategyCandidate, StrategyFactory};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::ObjectId;
@@ -105,6 +105,12 @@ pub struct StrategyFoundry {
     /// lineage, which is the template-and-sweep the blueprint counts trials
     /// against. One per foundry, because one foundry is one sweep.
     family: StrategyFamily,
+    /// The alpha family this sweep's candidates are declared to harvest
+    /// (§26.1's `family` on the record, §19.2's tier input). One per
+    /// foundry, because a sweep is one design and its candidates are
+    /// variants of it; `None` is a sweep nobody classified, whose
+    /// candidates tier to batch.
+    alpha_family: Option<AlphaFamily>,
     /// The cell that would run whatever this foundry produces.
     cell: String,
     venue: VenueId,
@@ -144,6 +150,7 @@ impl StrategyFoundry {
         Ok(Self {
             generator: StrategyGenerator::new(grammar, format!("{lineage}@{seed}"), seed),
             family,
+            alpha_family: None,
             compiler: StrategyCompiler::new(catalogue),
             ledger: TrialLedger::new(),
             cell,
@@ -151,6 +158,22 @@ impl StrategyFoundry {
             pending: Vec::new(),
             rounds: 0,
         })
+    }
+
+    /// Declare the alpha family every candidate of this sweep harvests.
+    ///
+    /// Takes the option rather than the family so a composition root can
+    /// hand through what its operator declared, including nothing. The
+    /// declaration is copied onto every candidate this foundry registers;
+    /// nothing derives it from the lineage's name (ADR 0066).
+    pub const fn with_alpha_family(mut self, family: Option<AlphaFamily>) -> Self {
+        self.alpha_family = family;
+        self
+    }
+
+    /// The alpha family this sweep declared, if any.
+    pub const fn alpha_family(&self) -> Option<AlphaFamily> {
+        self.alpha_family
     }
 
     /// The search's cumulative trial count.
@@ -286,6 +309,10 @@ impl StrategyFoundry {
             now,
         )?
         .with_evidence(evidence);
+        let registered = match self.alpha_family {
+            Some(family) => registered.with_alpha_family(family),
+            None => registered,
+        };
 
         factory.register(registered)
     }

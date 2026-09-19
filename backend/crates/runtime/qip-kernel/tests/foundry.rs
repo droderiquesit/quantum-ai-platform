@@ -20,10 +20,12 @@ use qip_core::{Duration, ObjectId, Timestamp};
 use qip_evolution::generate::Candidate;
 use qip_evolution::grammar::Grammar;
 use qip_evolution::palette::FeaturePalette;
-use qip_kernel::central::factory::StrategyFactory;
+use qip_kernel::adaptive_cadence::population_of;
+use qip_kernel::central::factory::{AlphaFamily, StrategyFactory};
 use qip_kernel::central::foundry::{HoldoutInputs, StrategyFoundry};
 use qip_lifecycle::evidence::{CrossValidationRun, DatasetManifest, LeakageAudit};
 use qip_strategy::catalogue::FeatureCatalogue;
+use qip_optimization_engine::tiers::{EvaluationTier, HOT_TIER_CAP, TierPlan};
 use qip_strategy::ir::Type;
 
 fn subject() -> ObjectId {
@@ -395,5 +397,122 @@ fn every_generated_strategy_carries_an_expiry() -> Result<()> {
             candidate.id()
         );
     }
+    Ok(())
+}
+
+// --- §26.1's `family` on the record, and §19.2's tier reading it -----------
+
+#[test]
+fn a_sweep_declared_under_an_alpha_family_registers_every_candidate_carrying_it() -> Result<()> {
+    // Until 2026-09-19 nothing on a registered candidate said which alpha
+    // source it harvested, and the evaluation-tier census parsed the sweep's
+    // *name* instead — which the deployed deep brain hard-codes as
+    // `evo-{subject}`, so no candidate could ever tier warmer than batch and
+    // the hot-tier cap was a control with no reachable input.
+    let mut declared = foundry(11)?.with_alpha_family(Some(AlphaFamily::MarketMaking));
+    let mut undeclared = foundry(13)?;
+    // The premise: one sweep declares, the other does not.
+    assert_eq!(declared.alpha_family(), Some(AlphaFamily::MarketMaking));
+    assert_eq!(undeclared.alpha_family(), None);
+
+    let mut factory = StrategyFactory::new();
+    declared.search(40)?;
+    undeclared.search(40)?;
+    let from_declared = first_pending(&declared)?;
+    let from_undeclared = first_pending(&undeclared)?;
+    declared.register(&mut factory, &from_declared, holdout(), now())?;
+    undeclared.register(&mut factory, &from_undeclared, holdout(), now())?;
+
+    let carried = factory
+        .candidate(&from_declared)
+        .ok_or_else(|| qip_core::error::Error::not_found("the declared candidate"))?;
+    assert_eq!(
+        carried.alpha_family(),
+        Some(AlphaFamily::MarketMaking),
+        "the sweep's declaration did not reach the record the factory holds"
+    );
+    let bare = factory
+        .candidate(&from_undeclared)
+        .ok_or_else(|| qip_core::error::Error::not_found("the undeclared candidate"))?;
+    assert_eq!(
+        bare.alpha_family(),
+        None,
+        "a sweep that declared nothing registered a candidate claiming a family"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_tier_census_reads_the_declared_family_and_a_disagreeing_sweep_tiers_to_batch() -> Result<()>
+{
+    // The reader. A declaration nothing reads is the `MaxExpectedShortfall`
+    // shape; this proves the census counts a declared sweep against the hot
+    // tier, and that a sweep whose candidates disagree spends none of it.
+    let on = subject();
+    let mut hot = foundry(11)?.with_alpha_family(Some(AlphaFamily::MarketMaking));
+    let mut other = StrategyFoundry::new(
+        catalogue(&on)?,
+        Grammar::over(FeaturePalette::from_catalogue(&catalogue(&on)?, &on)?),
+        "cell-london",
+        venue(),
+        "other-sweep",
+        17,
+    )?;
+    let mut factory = StrategyFactory::new();
+    hot.search(40)?;
+    other.search(40)?;
+    let ids: Vec<StrategyId> = hot
+        .pending()
+        .iter()
+        .take(2)
+        .map(|c| c.id().clone())
+        .collect();
+    assert_eq!(
+        ids.len(),
+        2,
+        "the search produced fewer than two candidates"
+    );
+    for id in &ids {
+        hot.register(&mut factory, id, holdout(), now())?;
+    }
+    let bare = first_pending(&other)?;
+    other.register(&mut factory, &bare, holdout(), now())?;
+
+    let population = population_of(&factory);
+    assert_eq!(
+        population.get("foundry-tests"),
+        Some(&(Some(AlphaFamily::MarketMaking), 2)),
+        "the declared sweep is not counted under its family: {population:?}"
+    );
+    assert_eq!(
+        population.get("other-sweep"),
+        Some(&(None, 1)),
+        "the undeclared sweep is not counted as unclassified: {population:?}"
+    );
+    let census = TierPlan::assign_counted(&population, HOT_TIER_CAP)?;
+    assert_eq!(
+        census.count(EvaluationTier::Hot),
+        2,
+        "a market-making sweep did not reach the hot tier: {}",
+        census.describe(HOT_TIER_CAP)
+    );
+    assert_eq!(census.count(EvaluationTier::Batch), 1);
+
+    // A second foundry under the *same* lineage declaring a different
+    // family. The foundry cannot do this to itself — it declares once and
+    // copies — so this is the factory's own `register` admitting a
+    // disagreeing record, and the census must not guess which half is right.
+    let mut disagreeing = foundry(13)?.with_alpha_family(Some(AlphaFamily::Arbitrage));
+    disagreeing.search(40)?;
+    let odd = first_pending(&disagreeing)?;
+    disagreeing.register(&mut factory, &odd, holdout(), now())?;
+    let population = population_of(&factory);
+    assert_eq!(
+        population.get("foundry-tests"),
+        Some(&(None, 3)),
+        "a sweep whose candidates disagree was tiered on one side's word: {population:?}"
+    );
+    let census = TierPlan::assign_counted(&population, HOT_TIER_CAP)?;
+    assert_eq!(census.count(EvaluationTier::Hot), 0);
     Ok(())
 }
