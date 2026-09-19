@@ -5966,16 +5966,20 @@ fn the_ladder_refuses_holdout_evidence_that_was_never_simulated_and_admits_the_f
         )?;
     }
 
-    // The production path: the foundry attached the manifest of the bars.
+    // The production path is admitted: the foundry attached the manifest of
+    // the bars, and the gate read it. The promotion is asserted before the
+    // manifest is inspected so that a foundry which stopped attaching it
+    // fails this test on the admission — the property — and not on the
+    // inspection.
     let factory = platform.central_mut().factory_mut();
     let simulated = &pending[0];
+    let promotion = factory.promote(simulated, None, "simulated over recorded bars", start())?;
+    assert_eq!(promotion.to, GateStage::Holdout);
     let carried = factory
         .candidate(simulated)
         .and_then(|candidate| candidate.evidence().simulation.clone())
         .ok_or_else(|| qip_core::Error::not_found("the registered candidate's manifest"))?;
     assert_eq!(carried.bars, 1_000);
-    let promotion = factory.promote(simulated, None, "simulated over recorded bars", start())?;
-    assert_eq!(promotion.to, GateStage::Holdout);
 
     // The same evidence with nothing establishing a simulation.
     let unsimulated = &pending[1];
