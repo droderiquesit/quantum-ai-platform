@@ -35,6 +35,8 @@
 
 pub mod arbitrage;
 pub mod cell;
+/// §32.1's size decomposition: what a cycle does after a leg fills short.
+pub mod decomposition;
 pub mod dispersion;
 pub mod dropcopy;
 pub mod envelope;
@@ -58,6 +60,9 @@ pub use cell::{
     GATE_AWAITING_RECONCILIATION, GATE_DARK_REGION, GATE_FILL_DISPERSION, GATE_LIVE_VENUE,
     GATE_MASS_CANCEL, GATE_PATH_EXTENSION, GATE_PATH_ROUTER, GATE_QUOTE_BUDGET, MAX_OPEN_ORDERS,
     OpenOrder, PlacedOrder, Placer, PolledHalt, PricingPolicy, RoutedCycle, WorkReport,
+};
+pub use decomposition::{
+    Completion, DEFAULT_MINIMUM_VIABLE_FRACTION, Decomposition, DecompositionPolicy, LegSize,
 };
 pub use dispersion::{DispersionPolicy, DispersionVerdict, FillTimes, VenueFillTimeState};
 pub use dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
