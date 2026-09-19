@@ -396,11 +396,19 @@ fn run() -> Result<()> {
     // The ceiling is read from the cell's own autonomy controller rather than
     // from configuration, so "this deployment permits live execution" is
     // decided by the thing that would permit it.
-    let gateway_venue = config
-        .venues
-        .first()
-        .expect("from_env refuses an empty venue list")
-        .clone();
+    //
+    // `from_env` already refuses an empty venue list, so this arm is not
+    // expected to run; it is a refusal rather than an `expect` because a
+    // composition root refuses invalid configuration by name and never
+    // panics on it (`.claude/rules/architecture/00-boundaries.md`). A panic
+    // here would be the one exit from this binary that named no variable to
+    // set, and it was the one `expect` outside tests in the workspace.
+    let gateway_venue = config.venues.first().cloned().ok_or_else(|| {
+        Error::invalid(
+            "configuration: QIP_VENUES names no venue, so there is no venue to open a \
+             gateway to; set QIP_VENUES to a comma-separated venue list",
+        )
+    })?;
     let ceiling = cell.autonomy().ceiling();
     let choice = VenueChoice::from_env(&gateway_venue, ceiling.is_live())?;
     for line in choice.banner_lines(ceiling.as_str()) {

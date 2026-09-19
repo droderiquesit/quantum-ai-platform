@@ -332,9 +332,10 @@ impl CompliancePlane {
                     enforced: true,
                     mechanism: "crate::model_risk::AdmittedOutput has no public constructor; \
                                 ModelRiskRegister::admit is the only source and requires the \
-                                qip-ai eligibility check, a current risk file, an in-boundary \
-                                operating point and an Explanation, which cannot exist unless \
-                                its contributions reconcile exactly to the output"
+                                qip-ai eligibility check, a current risk file carrying an \
+                                independent review, an in-boundary operating point and an \
+                                Explanation, which cannot exist unless its contributions \
+                                reconcile exactly to the output"
                         .to_string(),
                     evidence: vec![
                         format!("{} risk files on record", self.model_risk.len()),

@@ -1634,3 +1634,59 @@ fn a_feasibility_veto_is_attributed_to_its_gate_constant() {
         "a malformation that is not a feasibility veto was charged to a rule"
     );
 }
+#[test]
+fn a_fill_on_an_order_that_was_never_sent_is_refused_before_anything_is_booked() -> Result<()> {
+    // Until 2026-09-19 `apply_fill` admitted any *open* order, and both
+    // `created` and `risk_approved` are open: the fill was pushed and only
+    // then was the transition to filled found illegal, so the caller saw an
+    // error and the order carried a fill its state denied. A fill reported
+    // on an order no venue was ever given is a reconciliation break, and a
+    // break that books half of itself is the kind nobody finds.
+    let mut cleared_but_unsent = order("BBB", Side::Buy, "1000");
+    cleared_but_unsent.transition(OrderState::RiskApproved { at: now() }, now())?;
+    for (label, mut order) in [
+        ("created", order("AAA", Side::Buy, "1000")),
+        ("risk_approved", cleared_but_unsent),
+    ] {
+        // Premise: the order is open, which is exactly what let the fill
+        // through, and carries nothing yet.
+        assert!(order.state.is_open(), "premise: a {label} order is open");
+        assert!(
+            !order.state.is_at_venue(),
+            "premise: a {label} order is not at a venue"
+        );
+        assert!(order.fills.is_empty());
+        let fill = Fill {
+            fill_id: qip_core::ids::FillId::from_string(format!("fill-{label}")),
+            order_id: order.order_id.clone(),
+            at: now(),
+            quantity: dec!("400"),
+            price: dec!("100"),
+            costs: Decimal::ZERO,
+            venue: "simulated-venue".to_string(),
+            simulated: true,
+        };
+
+        let error = order
+            .apply_fill(fill)
+            .expect_err("a fill on an order no venue was given must be refused");
+        // The property first, the wording second: the old code also returned
+        // an error here, and what it got wrong was what it had done first.
+        assert!(
+            order.fills.is_empty(),
+            "the refused fill was booked on the {label} order anyway"
+        );
+        assert_eq!(order.filled_quantity(), Decimal::ZERO);
+        assert_eq!(
+            order.state.as_str(),
+            label,
+            "a refused fill must leave the state where it found it"
+        );
+        assert!(
+            error.message().contains("never sent to a venue"),
+            "the refusal must say why a {label} order cannot fill: {}",
+            error.message()
+        );
+    }
+    Ok(())
+}

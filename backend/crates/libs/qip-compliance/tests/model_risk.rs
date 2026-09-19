@@ -427,3 +427,79 @@ fn an_explanation_with_an_upstream_reference_that_does_not_reconcile_is_still_re
 
     assert!(error.message().contains("does not reconcile"));
 }
+#[test]
+fn a_model_nobody_independent_has_reviewed_cannot_drive_a_decision_however_well_it_validated()
+-> Result<()> {
+    // `ValidationKind::IndependentReview` and `has_independent_review`
+    // existed, the fixture above carried one, and until 2026-09-19 `admit`
+    // never asked: a file holding only its builders' own hold-out and
+    // backtest was admitted exactly like one somebody else had challenged.
+    let models = eligible_model()?;
+    let builders_only = vec![
+        ValidationEvidence::new(
+            ValidationKind::HoldOut,
+            "holdout.2024",
+            "j.okafor",
+            now().saturating_sub(Duration::from_days(30)),
+            "root mean squared error within the acceptance band on held-out data",
+        )?,
+        ValidationEvidence::new(
+            ValidationKind::Backtest,
+            "history.2019-2024",
+            "j.okafor",
+            now().saturating_sub(Duration::from_days(28)),
+            "point-in-time replay over five years; no look-ahead found",
+        )?,
+    ];
+    let file = ModelRiskFile::open(
+        REFERENCE,
+        "one-day-ahead realised volatility for liquid single names",
+        "quant-research",
+        now().saturating_sub(Duration::from_days(30)),
+        now().saturating_add(Duration::from_days(30)),
+        vec!["degrades in the first hour after an earnings release".to_string()],
+        builders_only,
+        vec![PerformanceBoundary::new(
+            "adv_participation",
+            Some(Decimal::ZERO),
+            Some(dec!("0.05")),
+        )?],
+    )?;
+    // Premise: the file opens, is current, and its one gap is the review —
+    // so a refusal can only be about that.
+    assert!(!file.has_independent_review());
+    assert!(!file.is_overdue(now()));
+    assert!(models.require_for_decision(REFERENCE, now()).is_ok());
+
+    let mut register = ModelRiskRegister::new();
+    register.file(file);
+    let error = register
+        .admit(&models, honest_explanation()?, now())
+        .expect_err("a model only its builders validated must not drive a decision");
+    assert!(
+        error.message().contains("independent review"),
+        "the refusal must name what is missing: {}",
+        error.message()
+    );
+    assert!(
+        error.message().contains("j.okafor"),
+        "the refusal must say who did validate it: {}",
+        error.message()
+    );
+    let recorded = register
+        .admissions()
+        .last()
+        .ok_or_else(|| qip_core::error::Error::not_found("admission record"))?;
+    assert!(!recorded.admitted);
+    assert!(recorded.refusal.contains("independent review"));
+
+    // With the review on file the same model is admitted, so the refusal was
+    // about the challenge and not the model.
+    register.file(current_risk_file()?);
+    assert!(
+        register
+            .admit(&models, honest_explanation()?, now())
+            .is_ok()
+    );
+    Ok(())
+}
