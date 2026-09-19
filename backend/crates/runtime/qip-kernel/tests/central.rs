@@ -10,10 +10,17 @@
 //!
 //! One test says how nearly additive the module is: the same cycle, stage for
 //! stage, on a platform whose central plane has been used and one whose has
-//! not — with one enumerated exception since ADR 0064, because the LEARN stage
-//! now reviews the families the factory has registered and an empty factory
-//! has none to review. The exception is written out in that test rather than
+//! not — with a small enumerated set of exceptions, each written out in that
+//! test as a substitution so the assertion stays an equality rather than being
 //! excused by comparing less.
+//!
+//! **No count is given here, because this sentence said "one exception" while
+//! the test carried two.** ADR 0064's family review was the first; ADR 0066's
+//! cadence added a second on 2026-09-14 and this line was not amended; §49.1's
+//! objective reader added a third on 2026-09-19. The exceptions are the
+//! substitutions in
+//! `attaching_the_central_plane_changes_no_stage_but_the_family_review_the_learn_stage_now_runs`
+//! and reading them is the only way to know how many there are.
 
 // The workspace denies `panic_in_result_fn` for production code, where an
 // assertion that aborts a `Result`-returning function is a bug. In a test the
@@ -1277,15 +1284,37 @@ fn attaching_the_central_plane_changes_no_stage_but_the_family_review_the_learn_
         "the premise failed: the cadence clause this substitution accounts for is not in the \
          detail, so the equality below would be comparing something else"
     );
-    let permitted = format!(
-        "{expected_with_a_registered_family}; 1 strategy family(ies) reviewed against funding \
-         standing, 1 of them funded [central-tests (1 member(s), 1 funded)]; the review \
-         allocates nothing"
+    // The third permitted difference, added 2026-09-19 with §49.1's reader.
+    // The LEARN stage now closes with a line saying where the blueprint's own
+    // targets stand, and it differs between the two platforms for a reason
+    // that is the reader working rather than the plane leaking: `worked` has
+    // absorbed a cell report, so §49.1's reconciliation objective rests on an
+    // observation, and `untouched` has absorbed nothing, so it rests on none.
+    // One met and fourteen unobserved against nothing met and fifteen
+    // unobserved is exactly the distinction the reader exists to make, and a
+    // reader that printed the same sentence on both would be the one this
+    // repository refuses.
+    //
+    // Substituted rather than appended, because the §49.1 clause is last on
+    // both details and the family review sits in front of it. Writing it as
+    // one replacement keeps the assertion below an equality: a fourth
+    // difference, or any change to either clause, still fails.
+    let permitted = expected_with_a_registered_family.replace(
+        "§49.1: 0 of 15 objective(s) met, 0 missed, 15 unobserved (2 fed by this process)",
+        "1 strategy family(ies) reviewed against funding standing, 1 of them funded \
+         [central-tests (1 member(s), 1 funded)]; the review allocates nothing; §49.1: 1 of 15 \
+         objective(s) met, 0 missed, 14 unobserved (2 fed by this process)",
+    );
+    assert_ne!(
+        permitted, expected_with_a_registered_family,
+        "the premise failed: the §49.1 clause this substitution accounts for is not in the \
+         detail, so the equality below would be comparing something else"
     );
     assert_eq!(
         actual_learn.detail, permitted,
-        "the central plane changed the LEARN stage by more than the family review it now runs \
-         and the cadence's own reason for saving"
+        "the central plane changed the LEARN stage by more than the family review it now runs, \
+         the cadence's own reason for saving, and the §49.1 objective the absorbed cell report \
+         put an observation under"
     );
     // One extra record on the log, and one only: the family review's.
     assert_eq!(
