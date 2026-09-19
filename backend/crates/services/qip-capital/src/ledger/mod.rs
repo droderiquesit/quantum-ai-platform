@@ -103,7 +103,12 @@
 //!   [`UserLedger::journal`], [`UserLedger::journal_to`] and
 //!   [`UserLedger::journal_pro_rata`], which refuse any split that does not
 //!   sum to the attributed fill exactly; and [`UserLedger::post_inflow`],
-//!   which refuses a reference nobody declared.
+//!   which refuses a reference nobody declared and admits an arrival to
+//!   `settled` only as far as the same two ceilings `fund` asks, holding the
+//!   rest in [`CashBalance::uninvestable`], where nothing is sized against it
+//!   (ADR 0085). A declaration itself — [`UserLedger::expect_inflow`] — moves
+//!   no money and is refused for an ineligible user, a reused reference and
+//!   an amount the mandate could never take in.
 //! * **Out:** nothing. A book is reduced only by a negative
 //!   [`AttributedFill`], which is a realised loss and a fact about what
 //!   happened. There is no redemption, no transfer and no withdrawal, and
@@ -175,8 +180,10 @@ mod product;
 mod registry;
 mod request;
 
-pub use book::{AttributedFill, LedgerKey, ProRataSplit, StrategyBook, UserLedger, UserShare};
-pub use cash::{CashBalance, ExpectedInflow};
+pub use book::{
+    AttributedFill, CancelledInflow, LedgerKey, ProRataSplit, StrategyBook, UserLedger, UserShare,
+};
+pub use cash::{CashBalance, ExpectedInflow, PostedInflow};
 pub use eligibility::{
     DecidedBy, DecidedByRecord, Eligibility, EligibilityDecision, EligibilityRecord,
     EligibilityRegistry, EligibilityTerms, Ineligible,

@@ -10,6 +10,22 @@
 //! held beside the balance, visible, and excluded until
 //! [`CashBalance::post_inflow`] is called by whatever reconciled them.
 //!
+//! # An arrival is a fact and investability is a ceiling
+//!
+//! A wire that has landed cannot be refused — the bank holds the money
+//! whatever this ledger says — but the mandate's ceilings are not asked of
+//! the bank, they are asked of the book. So [`CashBalance::post_inflow`] is
+//! handed the *room* the ledger computed under the mandate's investable
+//! capital and its cumulative-contribution ceiling, and splits the arrival:
+//! what fits goes to `settled`, the rest to `uninvestable`, a bucket that is
+//! received, acknowledged, rendered, and never in [`CashBalance::available`]
+//! — so a deposit past the mandate is a number the desk can see and return,
+//! and never a number a position is sized against (ADR 0085). The failure
+//! this closes: until 2026-09-19 `post_inflow` added the whole arrival to
+//! `settled`, which *is* sized against, so a reference and an amount typed at
+//! an operator route would have raised a user's investable cash past their
+//! own mandate through a door weaker than [`super::UserLedger::fund`].
+//!
 //! # Custody of the record: a balance serialises out and does not come back
 //!
 //! This platform holds no capital, so the only custody it can enforce is
@@ -41,7 +57,7 @@
 //! // crate but this one can add it. A balance minted from a document is
 //! // unrepresentable rather than refused.
 //! let minted: CashBalance = serde_json::from_str(
-//!     r#"{"currency":"USD","settled":"999999999","reserved":"0","expected":{}}"#,
+//!     r#"{"currency":"USD","settled":"999999999","reserved":"0","expected":{},"uninvestable":"0"}"#,
 //! )
 //! .expect("a document is not a balance");
 //! ```
@@ -92,6 +108,27 @@ pub struct CashBalance {
     /// Keyed by the reference the user supplied, so the same claim made
     /// twice is refused rather than counted twice.
     expected: BTreeMap<String, ExpectedInflow>,
+    /// Cash that arrived and did not fit under the mandate's ceilings when
+    /// it was posted. Never in [`Self::available`], never reserved against,
+    /// never debited: it is held for return or for a superseding mandate,
+    /// and the ledger reports it rather than sizing against it.
+    uninvestable: Decimal,
+}
+
+/// What one posted arrival became: the part the ceilings admitted to
+/// `settled` and the part they did not.
+///
+/// Serialises and does not deserialise, like every money type here — it is
+/// a report of what the ledger did, not an input that could do it again.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PostedInflow {
+    pub reference: String,
+    /// The whole arrival, as declared.
+    pub amount: Decimal,
+    /// What went to `settled` and is now investable.
+    pub invested: Decimal,
+    /// What went to the uninvestable bucket. `amount - invested`, exactly.
+    pub held: Decimal,
 }
 
 impl CashBalance {
@@ -101,6 +138,7 @@ impl CashBalance {
             settled: Decimal::ZERO,
             reserved: Decimal::ZERO,
             expected: BTreeMap::new(),
+            uninvestable: Decimal::ZERO,
         }
     }
 
@@ -121,6 +159,12 @@ impl CashBalance {
     /// is not in this number, whatever the user has declared.
     pub fn available(&self) -> Decimal {
         self.settled - self.reserved
+    }
+
+    /// Cash that arrived past the mandate's ceilings and is held, not
+    /// invested. Not in [`Self::available`], and nothing here spends it.
+    pub fn uninvestable(&self) -> Decimal {
+        self.uninvestable
     }
 
     /// The sum of every inflow declared and not yet posted — reported so it
@@ -173,20 +217,42 @@ impl CashBalance {
         Ok(())
     }
 
-    /// The ledger says the deposit arrived: move it from expected to settled.
+    /// The ledger says the deposit arrived: move it from expected to settled
+    /// as far as `room` admits, and hold the rest.
     ///
     /// The one path by which an expectation becomes money. Refuses a
     /// reference nobody declared, because posting an inflow with no
     /// expectation behind it is a credit from nowhere.
-    pub fn post_inflow(&mut self, reference: &str) -> Result<Decimal> {
+    ///
+    /// `room` is what the ledger computed the mandate still admits — the
+    /// smaller of the investable ceiling's headroom and the contribution
+    /// ceiling's — and this balance does not second-guess it. A room at or
+    /// below zero admits nothing and the whole arrival is held: that is not
+    /// a clamp of an input, it is the statement that a book already at or
+    /// past its ceiling (realised gains can carry `settled` above the
+    /// investable figure) has no room, and the arrival is still a fact.
+    /// Nothing is refused, because the money has landed either way.
+    pub fn post_inflow(&mut self, reference: &str, room: Decimal) -> Result<PostedInflow> {
         let Some(inflow) = self.expected.remove(reference) else {
             return Err(Error::denied(format!(
                 "no inflow under the reference {reference} was expected; declare it before \
                  posting it, or the credit has no claim behind it"
             )));
         };
-        self.settled += inflow.amount;
-        Ok(inflow.amount)
+        let invested = if room.is_positive() {
+            inflow.amount.min(room)
+        } else {
+            Decimal::ZERO
+        };
+        let held = inflow.amount - invested;
+        self.settled += invested;
+        self.uninvestable += held;
+        Ok(PostedInflow {
+            reference: reference.to_string(),
+            amount: inflow.amount,
+            invested,
+            held,
+        })
     }
 
     /// The deposit is not coming: drop the expectation. Nothing else moves.

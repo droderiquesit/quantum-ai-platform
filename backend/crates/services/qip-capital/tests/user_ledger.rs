@@ -773,6 +773,9 @@ fn an_expected_inflow_cannot_be_spent_until_the_ledger_posts_it() -> Result<()> 
     let alice = user("alice");
     let mut ledger = ledger();
     enrol(&mut ledger, "alice", "1000")?;
+    // Cleared, because since ADR 0085 a declaration asks the eligibility
+    // registry the way `fund` does; this test's subject is spendability.
+    clear(&mut ledger, "alice")?;
     assert!(ledger.balance(&alice, &strategy(), Currency::USD).is_none());
 
     ledger.expect_inflow(&alice, &strategy(), "wire-0001", dec!("500"), now())?;
@@ -803,7 +806,12 @@ fn an_expected_inflow_cannot_be_spent_until_the_ledger_posts_it() -> Result<()> 
     assert_eq!(spend, balance, "a refused debit moves nothing");
 
     let posted = ledger.post_inflow(&alice, &strategy(), "wire-0001", now())?;
-    assert_eq!(posted, dec!("500"));
+    assert_eq!(
+        posted.invested,
+        dec!("500"),
+        "500 sits inside a 1000 mandate"
+    );
+    assert_eq!(posted.held, Decimal::ZERO);
     let mut balance = ledger
         .balance(&alice, &strategy(), Currency::USD)
         .expect("the book persists")

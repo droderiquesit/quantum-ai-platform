@@ -24,7 +24,7 @@
 //! construction and the unit that was moved is on the record rather than
 //! in nobody's book.
 
-use super::cash::CashBalance;
+use super::cash::{CashBalance, PostedInflow};
 use super::eligibility::{Eligibility, EligibilityRecord, EligibilityRegistry, Ineligible};
 use super::identity::{MandateId, UserId};
 use super::lot::{HoldingPeriodDistribution, HoldingPeriodRules, TaxLot};
@@ -700,8 +700,37 @@ impl UserLedger {
         Ok(split)
     }
 
+    /// Everything a user has declared and not yet had posted or cancelled,
+    /// in one currency, across every book — the outstanding claims the
+    /// contribution ceiling is asked against at the next declaration.
+    fn expected_outstanding(&self, user: &UserId, currency: Currency) -> Decimal {
+        self.books
+            .iter()
+            .filter(|((owner, _), _)| owner == user)
+            .filter_map(|(_, book)| book.cash(currency))
+            .map(CashBalance::expected_total)
+            .sum()
+    }
+
     /// Record a deposit the user says they have sent, against one
     /// strategy's book. Not available until [`Self::post_inflow`].
+    ///
+    /// The declaration is the last instant a refusal reaches the person
+    /// before the wire is sent, so it is where the ledger says what it will
+    /// not be able to invest; an arrival is a fact and is never refused
+    /// (ADR 0085). Refused here, mirroring [`Self::fund`] by name: a user
+    /// without a mandate; a user the eligibility registry does not admit at
+    /// `declared_at`, by the [`Ineligible`] reason named; a blank reference
+    /// or a non-positive amount ([`CashBalance::expect_inflow`]); a reference
+    /// outstanding at *any* of the user's books, not only this one, because
+    /// a wire reference names one wire and a second book claiming it is a
+    /// split reconciliation could never resolve; and an amount that, with
+    /// what the user has contributed and every declaration still outstanding,
+    /// would pass the capital the mandate places under management. The
+    /// investable ceiling is deliberately *not* asked here: it moves with
+    /// realised profit and loss between now and the arrival, so it is asked
+    /// where the money lands, in [`Self::post_inflow`], and what it refuses
+    /// there is held rather than refused.
     pub fn expect_inflow(
         &mut self,
         user: &UserId,
@@ -710,12 +739,60 @@ impl UserLedger {
         amount: Decimal,
         declared_at: Timestamp,
     ) -> Result<()> {
+        let reference = reference.into();
         let Some(mandate) = self.registry.mandate(user) else {
             return Err(Error::denied(format!(
                 "{user} holds no mandate; enrol one before declaring an inflow"
             )));
         };
+        if let Err(why) = self
+            .eligibility
+            .admit(user, mandate.jurisdiction(), declared_at)
+        {
+            return Err(Error::denied(why.describe(user)));
+        }
         let currency = mandate.currency();
+        let capital = mandate.capital();
+        if !amount.is_positive() {
+            return Err(Error::invalid(format!(
+                "an expected inflow of {amount} is refused; a deposit is a positive amount"
+            )));
+        }
+        if let Some(((_, elsewhere), _)) = self
+            .books
+            .iter()
+            .filter(|((owner, _), _)| owner == user)
+            .find(|(_, book)| {
+                book.cash(currency)
+                    .is_some_and(|cash| cash.expected_inflows().contains_key(&reference))
+            })
+        {
+            return Err(Error::invalid(format!(
+                "an inflow under the reference {reference} is already expected for {user} at \
+                 {elsewhere}; a wire reference names one wire, so cancel that declaration or \
+                 use the reference of the second wire"
+            )));
+        }
+        let contributed = self.contributed_total(user, currency)?;
+        let outstanding = self.expected_outstanding(user, currency);
+        let Some(would_contribute) = contributed
+            .checked_add(outstanding)
+            .and_then(|claimed| claimed.checked_add(amount))
+        else {
+            return Err(Error::numeric(format!(
+                "declaring an inflow of {amount} {currency} overflows {user}'s contributed and \
+                 declared total; declare a smaller amount"
+            )));
+        };
+        if would_contribute > capital {
+            return Err(Error::denied(format!(
+                "declaring an inflow of {amount} {currency} for {user} at {strategy} would take \
+                 their contributed total of {contributed} plus {outstanding} already declared to \
+                 {would_contribute}, past the {capital} the mandate places under management; \
+                 the desk manages what the mandate says it manages — record a new mandate under \
+                 the change that supersedes this one before the deposit is sent"
+            )));
+        }
         self.books
             .entry((user.clone(), strategy.clone()))
             .or_insert_with(StrategyBook::new)
@@ -723,27 +800,127 @@ impl UserLedger {
             .expect_inflow(reference, amount, declared_at)
     }
 
+    /// The deposit is not coming: drop the declaration, wherever among the
+    /// user's books it stands, and say which book held it and for how much.
+    ///
+    /// Refuses a user without a mandate and a reference no book of theirs
+    /// expects, so a cancellation is always of a declaration that stood and
+    /// never a no-op that reads as one. Nothing else moves: settled,
+    /// reserved and the uninvestable bucket are untouched, and the reference
+    /// is free to be declared again for the wire that does come.
+    pub fn cancel_inflow(
+        &mut self,
+        user: &UserId,
+        reference: &str,
+        at: Timestamp,
+    ) -> Result<CancelledInflow> {
+        let Some(mandate) = self.registry.mandate(user) else {
+            return Err(Error::denied(format!(
+                "{user} holds no mandate, so no inflow can be expected for them, and none \
+                 cancelled"
+            )));
+        };
+        let currency = mandate.currency();
+        let Some(key) = self
+            .books
+            .iter()
+            .filter(|((owner, _), _)| owner == user)
+            .find(|(_, book)| {
+                book.cash(currency)
+                    .is_some_and(|cash| cash.expected_inflows().contains_key(reference))
+            })
+            .map(|(key, _)| key.clone())
+        else {
+            return Err(Error::denied(format!(
+                "no inflow under the reference {reference} is expected for {user} at any \
+                 strategy, so there is nothing to cancel"
+            )));
+        };
+        let Some(book) = self.books.get_mut(&key) else {
+            return Err(Error::denied(format!(
+                "{user}'s book at {} was found and then not; nothing was cancelled",
+                key.1
+            )));
+        };
+        let amount = book.cash_mut(currency).cancel_inflow(reference)?;
+        book.last_entry_at = Some(at);
+        Ok(CancelledInflow {
+            strategy: key.1,
+            amount,
+        })
+    }
+
     /// The ledger says the deposit arrived.
+    ///
+    /// An arrival is never refused for its size — the bank holds the money
+    /// whatever the book says — but it is not admitted past the mandate
+    /// either. The room the mandate still has is computed here, under both
+    /// ceilings [`Self::fund`] asks and by the same names: the investable
+    /// capital less what the user already has settled, and the capital under
+    /// management less what they have contributed. The smaller of the two
+    /// is what [`CashBalance::post_inflow`] may move to settled; the rest
+    /// lands in the uninvestable bucket, held and never sized against. The
+    /// invested part is a contribution and is recorded as a [`TaxLot`], so
+    /// the contribution ceiling counts it against the next funding exactly
+    /// as it counts a `fund`.
+    ///
+    /// Still refused: a user without a mandate, and a reference no book at
+    /// this strategy expected, because posting with no declaration behind
+    /// it is a credit from nowhere. Eligibility is not re-asked; it was asked
+    /// at the declaration, and a lapse since does not un-receive a wire.
+    ///
+    /// **No production caller.** Nothing in this tree can honestly say a
+    /// wire landed: the custodian statement the platform observes is the
+    /// desk's own wallet, not a user's deposit, and no reconciled statement
+    /// line for a user exists. ADR 0085 refuses to invent one; this stays
+    /// reachable from tests until a statement that names the reference does.
     pub fn post_inflow(
         &mut self,
         user: &UserId,
         strategy: &StrategyId,
         reference: &str,
         at: Timestamp,
-    ) -> Result<Decimal> {
+    ) -> Result<PostedInflow> {
         let Some(mandate) = self.registry.mandate(user) else {
             return Err(Error::denied(format!(
                 "{user} holds no mandate, so no inflow can be posted to them"
             )));
         };
         let currency = mandate.currency();
-        let Some(book) = self.books.get_mut(&(user.clone(), strategy.clone())) else {
+        let investable = mandate.investable();
+        let capital = mandate.capital();
+        let jurisdiction = mandate.jurisdiction();
+        let funded = self.funded_total(user, currency);
+        let contributed = self.contributed_total(user, currency)?;
+        // Either difference may be negative — gains carry `funded` past the
+        // investable figure — and a negative room is "none", which
+        // `CashBalance::post_inflow` reads as holding the whole arrival.
+        let room = (investable - funded).min(capital - contributed);
+        let key = (user.clone(), strategy.clone());
+        let Some(book) = self.books.get_mut(&key) else {
             return Err(Error::denied(format!(
                 "{user} has no book at {strategy}, so no inflow under {reference} was expected"
             )));
         };
-        let posted = book.cash_mut(currency).post_inflow(reference)?;
+        let posted = book.cash_mut(currency).post_inflow(reference, room)?;
         book.last_entry_at = Some(at);
+        if posted.invested.is_positive() {
+            self.lots.entry(key).or_default().push(TaxLot {
+                strategy: strategy.clone(),
+                currency,
+                basis: posted.invested,
+                acquired_at: at,
+                jurisdiction,
+            });
+        }
         Ok(posted)
     }
+}
+
+/// What [`UserLedger::cancel_inflow`] dropped: the book that held the
+/// declaration and the amount it claimed, for the record.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CancelledInflow {
+    pub strategy: StrategyId,
+    pub amount: Decimal,
 }
