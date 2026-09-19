@@ -52,6 +52,7 @@ pub mod precedent_declines;
 pub mod quote_loop;
 pub mod references;
 pub mod regime_allocation;
+pub mod regime_transition;
 pub mod rule_review;
 pub mod shared_cause;
 pub mod sizing_review;
