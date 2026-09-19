@@ -27,7 +27,7 @@ use qip_edge::cell::{
     WorkReport,
 };
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
-use qip_edge::quoting::{MessageKind, RateLimits};
+use qip_edge::quoting::{Admission, Depletion, MessageKind, RateLimits};
 use qip_edge::telemetry::{
     EDGE_MESSAGES_SENT, EDGE_ORDERS_EXPIRED, EDGE_ORDERS_MASS_CANCELLED, EDGE_QUOTE_BUDGET_TOKENS,
     EDGE_QUOTE_NARROWED,
@@ -662,6 +662,153 @@ fn only_a_fill_the_venue_reported_counts_as_a_trade_against_the_message_to_trade
         1,
         "the venue's own fill did not reach the message-to-trade monitor, so the ratio is \
          measured against a denominator that never moves"
+    );
+    Ok(())
+}
+
+// --- §29.2's threshold adaptation, and the reserve it may not touch --------
+
+#[test]
+fn a_draining_budget_only_ever_widens_the_requote_threshold_and_stops_widening_at_the_reserve()
+-> Result<()> {
+    // The failure this prevents is the inversion: a band computed on the raw
+    // token count rather than on the spendable region above the reserve would
+    // call a bucket resting exactly on its reserve comfortable, and the cell
+    // would go on repricing at the declared threshold with nothing left to
+    // send. The reserve is not the requoter's to spend, so it is not the
+    // requoter's to count either.
+    let limits = limits(8, 4)?;
+    assert_eq!(
+        limits.capacity(),
+        12,
+        "the premise failed: the fixture is eight spendable messages above a reserve of four"
+    );
+
+    // Full, and therefore unwidened: this is what makes the control an
+    // adaptation rather than a new limit a full budget also faces.
+    assert_eq!(limits.depletion(12, false), Depletion::Ample);
+    assert_eq!(
+        limits.depletion(12, false).widen_ticks(5),
+        Some(5),
+        "a full budget widened the declared threshold, so every cell reprices differently now"
+    );
+
+    // Walked down one message at a time. Each reading is the band for that
+    // exact token count, so a boundary that moved would fail here rather than
+    // in whichever test happened to straddle it.
+    let walk: Vec<Depletion> = (0..=12).rev().map(|t| limits.depletion(t, false)).collect();
+    assert_eq!(
+        walk,
+        vec![
+            Depletion::Ample, // 12 tokens: 8 of 8 spendable, 100%
+            Depletion::Ample, // 11: 7 of 8, 87%
+            Depletion::Ample, // 10: 6 of 8, exactly 75% — the band is
+            //                       inclusive at its floor, so the boundary
+            //                       is a stated fact rather than a rounding
+            Depletion::Drawn,     //  9: 5 of 8, 62%
+            Depletion::Drawn,     //  8: 4 of 8, exactly 50%
+            Depletion::Depleted,  //  7: 3 of 8, 37%
+            Depletion::Depleted,  //  6: 2 of 8, exactly 25%
+            Depletion::Critical,  //  5: 1 of 8, 12%
+            Depletion::Exhausted, //  4: on the reserve, nothing spendable
+            Depletion::Exhausted, //  3: below it
+            Depletion::Exhausted, //  2
+            Depletion::Exhausted, //  1
+            Depletion::Exhausted, //  0
+        ],
+        "the bands are not the spendable region's"
+    );
+
+    // Monotone, which is the property rather than any one band: the threshold
+    // a requote must clear never falls as the budget drains. A multiple that
+    // dipped anywhere would make the cell reprice *more* eagerly the emptier
+    // it got, which is the precise inversion of the control.
+    let widened: Vec<u32> = walk
+        .iter()
+        .map(|band| band.widen_ticks(5).unwrap_or(u32::MAX))
+        .collect();
+    assert!(
+        widened.windows(2).all(|pair| pair[0] <= pair[1]),
+        "the widened threshold fell as the budget drained: {widened:?}"
+    );
+    assert_eq!(
+        widened[0], 5,
+        "the premise failed: the walk does not start at the declared threshold"
+    );
+    assert_eq!(
+        *widened
+            .last()
+            .expect("the walk covers every token count in the fixture"),
+        u32::MAX,
+        "an exhausted budget funded a requote at some finite threshold"
+    );
+
+    // Exhausted is "do not requote", not "widen a lot" — the distinction the
+    // node reports as two different sentences about one order.
+    assert_eq!(limits.depletion(4, false).multiple(), None);
+    assert_eq!(limits.depletion(4, false).widen_ticks(5), None);
+    assert_eq!(limits.depletion(4, false).widen_bps(50.0), None);
+    Ok(())
+}
+
+#[test]
+fn a_requote_is_refused_rather_than_funded_from_the_reserve_a_mass_cancel_needs() -> Result<()> {
+    // Three spendable messages above a reserve of four. One requote costs two,
+    // so the second requote is the control firing: it is refused with four
+    // messages still in the bucket, because those four are the ones a mass
+    // cancel on a halt is funded from. A requote that could reach them would
+    // make the withdrawal it is reserved for unfundable — the control making
+    // worse the thing it exists to prevent.
+    let (mut cell, metrics) = cell_under(limits(3, 4)?, PricingPolicy::Marketable)?;
+    let before = cell.quote_budget();
+    assert_eq!(
+        before[0].tokens, 7,
+        "the premise failed: the fixture did not start full"
+    );
+    assert!(
+        cell.requote_fundable(&venue(), t(10)),
+        "the premise failed: a full budget could not fund the first requote"
+    );
+
+    let first = cell.spend_requote(&venue(), t(10));
+    assert!(
+        first.is_admitted(),
+        "a budget with three spendable messages refused the first two-message requote: {first:?}"
+    );
+    assert_eq!(
+        cell.quote_budget()[0].tokens,
+        5,
+        "a requote was not charged exactly the two messages it sends"
+    );
+
+    // The same instant, so nothing refills and the bucket is the only thing
+    // that has changed.
+    assert!(
+        !cell.requote_fundable(&venue(), t(10)),
+        "one spendable message above the reserve read as enough for a two-message requote"
+    );
+    let second = cell.spend_requote(&venue(), t(10));
+    let Admission::Refused { reason } = second else {
+        panic!("the second requote was funded out of the reserve: {second:?}");
+    };
+    assert!(
+        reason.contains("keeps 4 of them for withdrawals"),
+        "the refusal does not name the reserve that stopped it: {reason}"
+    );
+    assert_eq!(
+        cell.quote_budget()[0].tokens,
+        5,
+        "the refused requote spent something anyway"
+    );
+
+    // The point of the reserve, asserted rather than argued: the withdrawal
+    // the requote could not reach is still fundable.
+    assert_eq!(
+        metrics
+            .snapshot()
+            .counter(names::EDGE_REFUSALS, &by("gate", GATE_QUOTE_BUDGET)),
+        1,
+        "the refused requote was not charted under the gate that refused it"
     );
     Ok(())
 }

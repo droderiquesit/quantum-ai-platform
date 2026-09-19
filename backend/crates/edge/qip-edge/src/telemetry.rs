@@ -26,12 +26,26 @@
 //! **Cardinality is bounded by construction.** `cell` and `region` are fixed
 //! for the life of the process. `venue` is bounded by the cell's configured
 //! venue set. `gate` is bounded by the string literals `Cell::refuse` is
-//! called with, plus `qip_edge::cell::GATE_LIVE_VENUE` — the one gate the cell
-//! also records outside `Cell::refuse`, from `Cell::send`, which refuses a
-//! live-class venue at the seam where an order would leave and has no
-//! `WorkReport` to push a refusal onto. A constant, so the bound holds; said
-//! here because "the literals `Cell::refuse` is called with" was the whole
-//! list until that seam gained a refusal. `source`, `kind` and `outcome` are
+//! called with, **plus the `pub const`s passed at the seams that record
+//! directly** — `qip_edge::cell::GATE_LIVE_VENUE` from `Cell::send`, and
+//! `qip_edge::cell::GATE_QUOTE_BUDGET` from both the withdrawal seam and
+//! `Cell::spend_requote`. Each of those happens where an order or a message
+//! would leave and has no `WorkReport` to push a refusal onto.
+//!
+//! **The invariant is not the number of sites, and this paragraph twice said
+//! it was.** It read "the literals `Cell::refuse` is called with" until a
+//! second seam appeared, then named `GATE_LIVE_VENUE` as "the one gate" the
+//! cell records outside `Cell::refuse` — which was already false when it was
+//! written, because §29.2's withdrawal seam records `GATE_QUOTE_BUDGET` the
+//! same way. An enumeration goes stale silently every time a seam is added,
+//! and a reader who trusts it concludes a legitimate site is a violation. So
+//! the bound is stated as a property instead: **every site passes a `pub
+//! const` or a source-file literal, never a runtime string.** A constant is
+//! as fixed as a literal however many seams use one, and a single site
+//! passing a `format!` would break the bound at any count. Count the sites
+//! with `grep -n 'metrics\.refusal(' backend/crates/edge/qip-edge/src/cell.rs`
+//! to know where to look, then read each one — the count tells you nothing on
+//! its own. `source`, `kind` and `outcome` are
 //! enums, and `capability` is
 //! the three policy-fed variants of one. Nothing here is labelled by
 //! instrument, strategy or order id, and that is deliberate: a series per

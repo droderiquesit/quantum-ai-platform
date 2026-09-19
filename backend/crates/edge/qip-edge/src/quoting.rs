@@ -242,6 +242,131 @@ impl RateLimits {
             self.withdrawal_reserve
         }
     }
+
+    /// How depleted a bucket holding `tokens` is, in the bands the requote
+    /// threshold widens across.
+    ///
+    /// Measured on the **spendable** region — what sits above the floor a
+    /// placement faces — and not on the whole bucket, because the reserve is
+    /// not a requote's to spend. A bucket resting exactly on its reserve has
+    /// nothing for a requote however much capacity stands above it, and a
+    /// band computed on the raw token count would call that bucket
+    /// comfortable.
+    ///
+    /// Integer arithmetic on both sides, so a band boundary is exact: a
+    /// boundary decided by a rounding mode is a boundary a replay can cross.
+    pub const fn depletion(self, tokens: u32, narrowed: bool) -> Depletion {
+        let floor = self.placement_floor(narrowed);
+        let spendable_capacity = self.capacity.saturating_sub(floor);
+        if spendable_capacity == 0 {
+            return Depletion::Exhausted;
+        }
+        let spendable = tokens.saturating_sub(floor);
+        // Widened to `u64` before the multiply so the percentage is exact for
+        // every `u32` capacity rather than saturating into the wrong band.
+        match (spendable as u64) * 100 / (spendable_capacity as u64) {
+            0 => Depletion::Exhausted,
+            1..=24 => Depletion::Critical,
+            25..=49 => Depletion::Depleted,
+            50..=74 => Depletion::Drawn,
+            _ => Depletion::Ample,
+        }
+    }
+}
+
+/// Messages one requote costs a venue session: the cancel and the
+/// replacement that follows it.
+///
+/// Both are charged against the *placement* floor rather than one of each,
+/// and that is the conservative reading on purpose. A requote is the cell
+/// choosing to speak; the reserve exists so that a mass cancel is still
+/// fundable after the cell has spent a session choosing to speak. A requote
+/// allowed to dip into the reserve would make the withdrawal it is reserved
+/// for unfundable — the control making worse the thing it exists to prevent,
+/// which is the shape this module already refuses for placements.
+pub const REQUOTE_MESSAGES: u32 = 2;
+
+/// How much of a venue's message budget is left, in the bands §29.2's
+/// threshold-adaptation row widens the requote threshold across.
+///
+/// Bands rather than a continuous factor because the threshold they widen is
+/// declared in whole ticks, and because a band is a thing an operator can
+/// read off a journal entry and reproduce. The multiples double: a cell with
+/// half its spendable budget left requotes only on twice the drift, and one
+/// down to its last quarter-band only on eight times it, so the messages
+/// that remain are spent on the orders that have moved furthest rather than
+/// on whichever instrument happened to tick first.
+///
+/// [`Depletion::Exhausted`] is not "widen a lot" but "do not requote at
+/// all", and it is a distinct arm rather than a large multiple because the
+/// two are different facts: an order left resting because its drift did not
+/// clear a widened threshold is a decision about that order, and one left
+/// resting because the session has no messages is a decision about the
+/// venue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Depletion {
+    /// Three quarters or more of the spendable budget remains. The declared
+    /// threshold stands unwidened, so a full budget reprices exactly as it
+    /// did before this band existed.
+    Ample,
+    /// Half or more remains.
+    Drawn,
+    /// A quarter or more remains.
+    Depleted,
+    /// Something remains, but less than a quarter.
+    Critical,
+    /// Nothing above the floor a placement faces. No requote is funded.
+    Exhausted,
+}
+
+impl Depletion {
+    /// The band's name, for a journal entry and for nothing else. A
+    /// source-file literal per arm, so anything labelled by it is bounded by
+    /// this enum.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ample => "ample",
+            Self::Drawn => "drawn",
+            Self::Depleted => "depleted",
+            Self::Critical => "critical",
+            Self::Exhausted => "exhausted",
+        }
+    }
+
+    /// What the declared requote threshold is multiplied by in this band, or
+    /// `None` when no requote is funded at all.
+    pub const fn multiple(self) -> Option<u32> {
+        match self {
+            Self::Ample => Some(1),
+            Self::Drawn => Some(2),
+            Self::Depleted => Some(4),
+            Self::Critical => Some(8),
+            Self::Exhausted => None,
+        }
+    }
+
+    /// The declared tick threshold as this band widens it.
+    ///
+    /// Saturating rather than wrapping: a threshold that wrapped to a small
+    /// number would requote *more* eagerly the emptier the budget got, which
+    /// is the precise inversion of the control.
+    pub const fn widen_ticks(self, ticks: u32) -> Option<u32> {
+        match self.multiple() {
+            Some(multiple) => Some(ticks.saturating_mul(multiple)),
+            None => None,
+        }
+    }
+
+    /// The declared basis-point threshold as this band widens it.
+    ///
+    /// Basis points are a statistic and stay `f64` — that crossing point is
+    /// stated in [`qip_routing::reprice::RepricePolicy`], which declares the
+    /// threshold — while the multiple is the integer above, so the widening
+    /// itself introduces no rounding of its own.
+    pub fn widen_bps(self, bps_f64: f64) -> Option<f64> {
+        self.multiple()
+            .map(|multiple| bps_f64 * f64::from(multiple))
+    }
 }
 
 /// What the budget said about one message, or one cycle's worth of them.
@@ -473,6 +598,63 @@ impl QuoteBudget {
         Admission::Admitted {
             remaining: bucket.tokens,
         }
+    }
+
+    /// How depleted `venue`'s bucket is, as the pass last left it.
+    ///
+    /// Reads rather than refills, because the pass refills every bucket once
+    /// through [`QuoteBudget::refill_all`] before anything consults them; a
+    /// second refill here would accrue the same elapsed nanoseconds twice.
+    ///
+    /// A venue this cell holds no bucket for is [`Depletion::Exhausted`]
+    /// rather than `Ample`. It is the fail-closed reading and it agrees with
+    /// what would happen next: an admission at an unconfigured venue is
+    /// refused, so reporting it as comfortable would only widen a threshold
+    /// on the way to a refusal.
+    pub fn depletion(&self, venue: &str) -> Depletion {
+        self.venues
+            .get(venue)
+            .map_or(Depletion::Exhausted, |bucket| {
+                self.limits.depletion(bucket.tokens, bucket.narrowed)
+            })
+    }
+
+    /// Whether `venue` could fund a whole requote at `now`, spending nothing.
+    ///
+    /// Asked before the repricer is consulted, and that order is the point.
+    /// The repricer spends its own per-order and per-instrument throttle
+    /// budgets the moment it decides to reprice, and those budgets count
+    /// instructions *sent*; consulting it first and then discovering the
+    /// venue session could not carry the instruction would spend a throttle
+    /// unit on a message no venue ever saw, leaving two controls disagreeing
+    /// about how much chasing the cell had done.
+    pub fn requote_fundable(&mut self, venue: &VenueId, now: Timestamp) -> bool {
+        let limits = self.limits;
+        let Some(bucket) = self.venues.get_mut(venue.as_str()) else {
+            return false;
+        };
+        bucket.refill(limits, now);
+        bucket
+            .tokens
+            .saturating_sub(limits.placement_floor(bucket.narrowed))
+            >= REQUOTE_MESSAGES
+    }
+
+    /// Spend a whole requote's messages at `venue` — both of them or neither.
+    ///
+    /// All-or-nothing for the same reason the cycle's admission is: a requote
+    /// that funded its cancel and not its replacement would withdraw a
+    /// resting order and put nothing back, leaving the cell unquoted where it
+    /// had merely been stale. A stale quote is a price; no quote is an
+    /// absence, and the repricer exists to improve the first, not to create
+    /// the second.
+    pub fn admit_requote(&mut self, venue: &VenueId, now: Timestamp) -> Admission {
+        // Built from [`REQUOTE_MESSAGES`] rather than written out, so that the
+        // peek above and the spend here cannot come to disagree about what a
+        // requote costs. Two controls reading one fact from two places is how
+        // a budget comes to admit what it has already refused.
+        let messages = vec![venue.clone(); REQUOTE_MESSAGES as usize];
+        self.admit_all(&messages, now)
     }
 
     /// A venue reported a trade. The denominator of the message-to-trade

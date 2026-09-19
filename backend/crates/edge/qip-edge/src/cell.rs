@@ -19,7 +19,7 @@ use crate::journal::{Decision, Journal, Mirror};
 use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
 use crate::mirror::MirrorArrangement;
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
-use crate::quoting::{Admission, MessageKind, QuoteBudget, RateLimits};
+use crate::quoting::{Admission, Depletion, MessageKind, QuoteBudget, RateLimits};
 use crate::region::RegionOutlook;
 use crate::reservation::RegionTable;
 use crate::resume::{ResumeDiscipline, VenueAccount};
@@ -6105,6 +6105,58 @@ impl Cell {
     /// different state again from one with no venue at all.
     pub fn quote_budget(&self) -> Vec<crate::quoting::VenueBudgetState> {
         self.budget.summary()
+    }
+
+    /// How depleted `venue`'s message budget is (§29.2's threshold
+    /// adaptation).
+    ///
+    /// The requoter asks this before it asks whether an order is stale, and
+    /// widens the threshold it judges staleness on by
+    /// [`Depletion::widen_ticks`] and [`Depletion::widen_bps`]. The failure
+    /// that motivates it is the one the whole budget exists for, arriving by
+    /// a different door: quote traffic dominates order traffic, so a session
+    /// is far likelier to be cut off by its repricing than by its sending,
+    /// and a cell that repriced at the same threshold all the way down to an
+    /// empty bucket would spend its last messages on whichever instrument
+    /// ticked first and have none left for the orders that had moved
+    /// furthest — nor for the mass cancel.
+    ///
+    /// Unwidened while the budget is [`Depletion::Ample`], which is what
+    /// makes this an adaptation rather than a new limit: a cell with a full
+    /// bucket reprices exactly as it did before this existed.
+    pub fn quote_depletion(&self, venue: &str) -> Depletion {
+        self.budget.depletion(venue)
+    }
+
+    /// Whether `venue`'s budget could fund a whole requote at `now`.
+    ///
+    /// Spends nothing. Asked before the repricer is consulted so that the
+    /// repricer's own throttle budgets — which count instructions sent —
+    /// are never spent on an instruction the venue session could not carry.
+    pub fn requote_fundable(&mut self, venue: &VenueId, now: Timestamp) -> bool {
+        self.budget.requote_fundable(venue, now)
+    }
+
+    /// Spend a requote's two messages at `venue`, both or neither.
+    ///
+    /// This is the seam that makes the §29.2 budget able to fire at all for
+    /// the traffic it was written about. Until it existed the node's
+    /// requoter sent its cancel and its replacement straight at the venue
+    /// gateway, so every requote was two messages the budget never saw: the
+    /// cell believed in headroom it had already spent, and the disconnect
+    /// the budget exists to pre-empt would have arrived with the bucket
+    /// reading full.
+    ///
+    /// A refusal is recorded on [`GATE_QUOTE_BUDGET`] here rather than
+    /// pushed onto a [`WorkReport`], because a requote happens outside
+    /// [`Cell::work`] and there is no report to push onto — the same reason
+    /// [`Cell::send`] records directly.
+    pub fn spend_requote(&mut self, venue: &VenueId, now: Timestamp) -> Admission {
+        let admission = self.budget.admit_requote(venue, now);
+        if !admission.is_admitted() {
+            self.metrics.refusal(GATE_QUOTE_BUDGET);
+        }
+        admission
     }
 
     /// What each venue's fill-time history holds, in venue order (§32.1).
