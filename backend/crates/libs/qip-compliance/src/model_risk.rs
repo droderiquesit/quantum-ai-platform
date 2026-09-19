@@ -292,6 +292,12 @@ impl ModelRiskFile {
 
     /// Whether the file has independent validation — somebody who did not
     /// build the model having looked at it.
+    ///
+    /// Read by [`ModelRiskRegister::admit`], which refuses a model without
+    /// one. It was declared and consulted by nothing until 2026-09-19: the
+    /// evidence kind existed, the test fixture carried one, and a file with
+    /// only its builders' own validation was admitted exactly like one that
+    /// had been challenged.
     pub fn has_independent_review(&self) -> bool {
         self.validation_evidence
             .iter()
@@ -580,11 +586,12 @@ impl ModelRiskRegister {
 
     /// The single gate a model output passes to reach a decision.
     ///
-    /// Four things must hold, and each maps to a way models have caused losses
+    /// Five things must hold, and each maps to a way models have caused losses
     /// elsewhere: the model is registered and eligible (`qip_ai`'s check —
     /// staged, evaluated, undrifted), a risk file exists, its review is not
-    /// overdue, and the conditions the output was produced under are inside
-    /// the range the model was validated over.
+    /// overdue, somebody who did not build the model has reviewed it, and the
+    /// conditions the output was produced under are inside the range the
+    /// model was validated over.
     ///
     /// The explanation is required rather than optional. Its existence already
     /// proves it reconciles, so requiring it here means no output reaches a
@@ -637,6 +644,21 @@ impl ModelRiskRegister {
                 "the risk file for {reference} was due for review at {} and it is now {now}; \
                  review it before the model is used again",
                 file.review_due()
+            )));
+        }
+        if !file.has_independent_review() {
+            let validators: Vec<&str> = file
+                .validation_evidence()
+                .iter()
+                .map(|evidence| evidence.performed_by.as_str())
+                .collect();
+            return Err(Error::denied(format!(
+                "the risk file for {reference} carries no independent review; every validation \
+                 on it was performed by {}, and a model validated only by the people who built \
+                 it has not been challenged — record a {} naming the reviewer before the model \
+                 drives a decision",
+                validators.join(", "),
+                ValidationKind::IndependentReview.as_str()
             )));
         }
         let conditions = explanation.conditions();
