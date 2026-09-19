@@ -2401,6 +2401,7 @@ fn slot_elevens_withdrawn_set_is_additive_on_the_wire_in_both_directions() {
         fee_floor: BTreeMap::new(),
         tick: BTreeMap::new(),
         withdrawn_venues: BTreeSet::new(),
+        dark_regions: BTreeSet::new(),
     };
     let encoded = serde_json::to_string(&empty).expect("serialisable");
     assert!(

@@ -368,9 +368,9 @@ pub struct InventoryTargets {
     pub reference_prices: BTreeMap<String, Decimal>,
 }
 
-/// Feasibility constraints per venue: minimum order, fee floor, tick, and the
-/// venues the centre has withdrawn. The three grids are exact, because every
-/// one of them bounds money.
+/// Feasibility constraints per venue: minimum order, fee floor, tick, the
+/// venues the centre has withdrawn, and the regions it has derived as dark.
+/// The three grids are exact, because every one of them bounds money.
 ///
 /// # `withdrawn_venues` only ever subtracts
 ///
@@ -430,6 +430,33 @@ pub struct FeasibilityConstraints {
     /// this struct by which a payload could.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub withdrawn_venues: BTreeSet<String>,
+    /// Regions the centre has derived as dark — heard from once, and from
+    /// none of their cells within `CentralConfig::region_dark_after` (ADR
+    /// 0079). A cell refuses at `check_extension_for` any mirrored leg whose
+    /// counterpart venue sits in one, read against its own
+    /// `CellConfig::venue_regions`.
+    ///
+    /// **Subtract-only, for the same reason `withdrawn_venues` is.** A name
+    /// here suspends a mirror; there is no field by which a payload could
+    /// declare a region *lit*, because the cell's own reading of its peers
+    /// (`RegionOutlook`, off a wire the node polls) is not the centre's to
+    /// clear, and a region that has come back is one the centre simply stops
+    /// naming. The worst a forged or replayed payload can do with this set
+    /// is stop a cell mirroring into a region it was configured to reach.
+    ///
+    /// Not `withdrawn_venues`: a venue is not a region. A global venue
+    /// traded from two regions would be withdrawn at the healthy one, and
+    /// `withdrawn_venues` is ADR 0062's evidence window whose reinstatement
+    /// takes two signatures — a region that comes back must not need two
+    /// humans to say so.
+    ///
+    /// Same serde discipline as the field above, and the same deploy order
+    /// follows: skipped when empty so every payload signed before the field
+    /// existed keeps its digest, present once a region is dark so an old
+    /// cell refuses the payload whole rather than mirroring into a region
+    /// the centre has stopped hearing from. Cells upgrade before the centre.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub dark_regions: BTreeSet<String>,
 }
 
 /// Per-venue adversary posture, as the adversary monitor's opaque summary.

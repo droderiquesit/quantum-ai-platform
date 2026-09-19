@@ -1003,6 +1003,7 @@ impl CentralPlane {
             fee_floor: BTreeMap::new(),
             tick: BTreeMap::new(),
             withdrawn_venues: self.withdrawn_venues.clone(),
+            dark_regions: BTreeSet::new(),
         }
     }
 
