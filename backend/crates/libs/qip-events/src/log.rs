@@ -71,12 +71,27 @@
 //! ceiling — held every book snapshot it had ever recorded, so what the
 //! platform kept depended on how busy it had been rather than on any stated
 //! retention, and the blueprint's stated retention for event-anchored book
-//! state is ninety days rolling (§54.2, §22.1). So a second bound now runs
+//! state is ninety days rolling (§54.2, §22.1). So a second bound can now run
 //! beside the first: a replaceable record ([`Topic::is_lossy_tolerable`])
 //! older than [`EventLog::snapshot_window`] behind the newest instant the log
 //! has recorded is rolled off the index and counted in
-//! [`EventLog::rolled_by_age`]. Three things about its shape are deliberate.
+//! [`EventLog::rolled_by_age`]. Four things about its shape are deliberate.
 //!
+//! * **It is off unless a caller sets it, and that is a constraint rather
+//!   than a preference.** `Platform::resume_fabric` in `qip-kernel` and
+//!   `FabricJournal::resume` in `qip-capital-fabric` rebuild the fabric's
+//!   state by replaying the *retained* records from genesis, and each
+//!   refuses a log whose retained sequences have a gap — by design, because
+//!   a slice from the middle of a log cannot prove what came before it. A
+//!   roll leaves exactly such a gap. With the window on by default, a
+//!   platform holding fabric records could not restart once any snapshot in
+//!   its log was ninety days old, and `qip-cli replay` refused a one-cycle
+//!   journal the moment a platform assembled on it with the real clock
+//!   appended one record (three tests, 2026-09-19). Until those consumers
+//!   re-anchor across evictions the way [`EventLog::verify_retained_chain`]
+//!   does, only a caller that knows its log holds no fabric records may set
+//!   the window, and no composition root does today. Stated here so nobody
+//!   flips the default to make the bound "reached".
 //! * **Only the replaceable class rolls.** A trade, a bar or a filing is an
 //!   observation the fallback series keeps for three years, and the audit
 //!   trail is never touched by any retention path in this module — the roll
@@ -157,8 +172,9 @@ pub struct EventLog {
     evicted_observations: u64,
     appends_refused: u64,
     /// How long a replaceable record is kept behind the newest recorded
-    /// instant. Always set, for the same reason `capacity` is.
-    snapshot_window: Duration,
+    /// instant, or `None` for a log that never rolls — the default, for the
+    /// reason the module doc gives.
+    snapshot_window: Option<Duration>,
     /// The recorded instant at or after which the next roll runs. `None`
     /// until the first record arrives.
     next_roll_due: Option<Timestamp>,
@@ -190,13 +206,14 @@ pub struct EventLog {
 /// working set.
 pub const DEFAULT_CAPACITY: usize = 1_000_000;
 
-/// How long a replaceable record is retained behind the log's newest recorded
-/// instant, by default: the blueprint's ninety-day rolling snapshot window
-/// (§54.2), which its own arithmetic sizes at 4.5 million events for a busy
-/// day's order flow. Widen it with [`EventLog::with_snapshot_window`] where a
-/// model class demonstrably needs longer — the blueprint's stated revisit
-/// condition — and say why at the call site.
-pub const DEFAULT_SNAPSHOT_WINDOW: Duration = Duration::from_days(90);
+/// The blueprint's ninety-day rolling snapshot window (§54.2), which its own
+/// arithmetic sizes at 4.5 million events for a busy day's order flow. Not a
+/// default: no log rolls until [`EventLog::with_snapshot_window`] is called,
+/// for the reason the module doc gives. Pass this where a log is known to
+/// hold no fabric records; widen it where a model class demonstrably needs
+/// longer — the blueprint's stated revisit condition — and say why at the
+/// call site.
+pub const SNAPSHOT_WINDOW: Duration = Duration::from_days(90);
 
 /// How much recorded time passes between two scans for records past the
 /// window. One day against a ninety-day window means a record lives at most
@@ -270,7 +287,7 @@ impl EventLog {
             evicted_replaceable: 0,
             evicted_observations: 0,
             appends_refused: 0,
-            snapshot_window: DEFAULT_SNAPSHOT_WINDOW,
+            snapshot_window: None,
             next_roll_due: None,
             rolled_by_age: 0,
             last_sequence: 0,
@@ -457,10 +474,13 @@ impl EventLog {
             // load with `by_event_id` silently pointing at only the
             // later of the two records.
             self.reject_duplicate_event_id(record.event.event_id.as_str())?;
-            // The window is applied as the file loads, before the count
-            // ceiling is consulted, so a reopened log holds what the log
-            // that wrote it held and a stale snapshot is counted as rolled
-            // rather than as evicted under a pressure that never existed.
+            // The same seam the append path uses, before the count ceiling
+            // is consulted, so a stale snapshot is counted as rolled rather
+            // than as evicted under a pressure that never existed. No
+            // constructor sets a window before loading, so today this rolls
+            // nothing here and `with_snapshot_window` does the work after
+            // the load; it stays so that the two paths cannot diverge if
+            // one day one does.
             self.roll_if_due(record.event.recorded_at);
             // Make room before indexing, so loading a file larger than the
             // ceiling never puts the whole file in memory first — which is
@@ -508,7 +528,14 @@ impl EventLog {
     }
 
     /// Bound how long a replaceable record is retained behind the newest
-    /// recorded instant. See the module doc's snapshot-window section.
+    /// recorded instant. See the module doc's snapshot-window section for
+    /// what this must not be set on.
+    ///
+    /// Applied at once to whatever the log already holds, measured from the
+    /// newest instant among those records, so `EventLog::open(p)?
+    /// .with_snapshot_window(w)?` arrives at the working set the writer held
+    /// rather than at the whole file; after that the roll runs on the
+    /// append path as records arrive.
     ///
     /// A zero or negative window is refused rather than read as "roll
     /// everything" or "roll nothing": either reading is a retention policy
@@ -519,17 +546,21 @@ impl EventLog {
             return Err(Error::invalid(format!(
                 "an event log snapshot window of {} nanoseconds retains no replaceable record \
                  at all; give with_snapshot_window a positive duration — the blueprint's \
-                 default is ninety days",
+                 figure is ninety days",
                 window.as_nanos()
             )));
         }
-        self.snapshot_window = window;
+        self.snapshot_window = Some(window);
+        self.next_roll_due = None;
+        if let Some(newest) = self.records.iter().map(|r| r.event.recorded_at).max() {
+            self.roll_if_due(newest);
+        }
         Ok(self)
     }
 
     /// How long a replaceable record is retained behind the newest recorded
-    /// instant.
-    pub const fn snapshot_window(&self) -> Duration {
+    /// instant, or `None` for a log that never rolls.
+    pub const fn snapshot_window(&self) -> Option<Duration> {
         self.snapshot_window
     }
 
@@ -751,12 +782,15 @@ impl EventLog {
     /// over an empty index is free and over a loading file is the pass that
     /// applies the window to what the previous process left.
     fn roll_if_due(&mut self, recorded_at: Timestamp) {
-        if !self.next_roll_due.is_none_or(|due| recorded_at >= due) {
+        let Some(window) = self.snapshot_window else {
+            return;
+        };
+        if self.next_roll_due.is_some_and(|due| recorded_at < due) {
             return;
         }
-        self.roll(recorded_at);
-        let cadence = if self.snapshot_window < ROLL_CADENCE {
-            self.snapshot_window
+        self.roll(window, recorded_at);
+        let cadence = if window < ROLL_CADENCE {
+            window
         } else {
             ROLL_CADENCE
         };
@@ -768,11 +802,11 @@ impl EventLog {
     /// series' business and a permanent record is the audit trail's, and
     /// this filters on the same predicate the pressure eviction spends
     /// first so the two bounds agree about what is cheap to lose.
-    fn roll(&mut self, newest: Timestamp) {
-        let cutoff = newest.saturating_sub(self.snapshot_window);
+    fn roll(&mut self, window: Duration, newest: Timestamp) {
+        let cutoff = newest.saturating_sub(window);
         let before = self.records.len();
         self.records.retain(|record| {
-            !(record.event.topic.is_lossy_tolerable() && record.event.recorded_at < cutoff)
+            !record.event.topic.is_lossy_tolerable() || record.event.recorded_at >= cutoff
         });
         let rolled = before.saturating_sub(self.records.len());
         if rolled == 0 {

@@ -2053,10 +2053,12 @@ fn the_retained_chain_verifies_across_an_interior_eviction_and_still_names_an_ed
 // bounded it by age, so a quiet deployment that never reached the ceiling
 // held every book snapshot it had ever recorded. The blueprint's retention
 // for event-anchored book state is ninety days rolling (§54.2, §22.1). These
-// tests hold the roll to three properties: it takes only the replaceable
-// class, it can never take a permanent record, and a replay across the roll
+// tests hold the roll to four properties: it takes only the replaceable
+// class, it can never take a permanent record, a replay across the roll
 // still verifies — including after a restart, where the roll is re-derived
-// from the file rather than remembered.
+// from the file rather than remembered — and it does not run unless a caller
+// asked for it, because two consumers of the retained span replay from
+// genesis and refuse a gap (the module doc names them).
 
 /// A day's worth of records: one replaceable snapshot, one permanent audit
 /// record, one observation. Three classes, so a roll that took the wrong
@@ -2086,11 +2088,13 @@ fn a_day_of_records(ctx: &Context, at: Timestamp, day: i64, log: &mut EventLog) 
 #[test]
 fn the_snapshot_window_rolls_replaceable_records_by_age_and_never_a_permanent_one() {
     let (ctx, start) = context();
-    let mut log = EventLog::in_memory();
+    let mut log = EventLog::in_memory()
+        .with_snapshot_window(qip_events::log::SNAPSHOT_WINDOW)
+        .unwrap();
     assert_eq!(
         log.snapshot_window(),
-        Duration::from_days(90),
-        "premise: the default window is the blueprint's ninety days"
+        Some(Duration::from_days(90)),
+        "premise: the window set is the blueprint's ninety days"
     );
 
     // Nine days of records spread over eighty days, all inside one window
@@ -2164,18 +2168,22 @@ fn the_snapshot_window_rolls_replaceable_records_by_age_and_never_a_permanent_on
 
 #[test]
 fn a_reopened_log_re_derives_the_roll_from_its_file_and_still_verifies() {
-    // The roll is of the index, not the file. A restart reads the file back
-    // and must arrive at the same working set the writer held — the stale
-    // snapshots rolled, every permanent record present — rather than at the
-    // whole file, and the retained span must verify across the gaps the roll
-    // left.
+    // The roll is of the index, not the file. A restart that asks for the
+    // same window reads the file back and must arrive at the same working
+    // set the writer held — the stale snapshots rolled, every permanent
+    // record present — rather than at the whole file, and the retained span
+    // must verify across the gaps the roll left. A restart that does not ask
+    // holds the whole file: the bound is the writer's choice, not the file's.
     let dir = std::env::temp_dir().join(format!("qip-log-snapshot-window-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("events.jsonl");
     let (ctx, start) = context();
 
     let written = {
-        let mut log = EventLog::open(&path).unwrap();
+        let mut log = EventLog::open(&path)
+            .unwrap()
+            .with_snapshot_window(Duration::from_days(90))
+            .unwrap();
         for day in (0..=80).step_by(10) {
             a_day_of_records(
                 &ctx,
@@ -2198,7 +2206,10 @@ fn a_reopened_log_re_derives_the_roll_from_its_file_and_still_verifies() {
         log.len()
     };
 
-    let reopened = EventLog::open(&path).unwrap();
+    let reopened = EventLog::open(&path)
+        .unwrap()
+        .with_snapshot_window(Duration::from_days(90))
+        .unwrap();
     assert_eq!(
         reopened.len(),
         written,
@@ -2223,10 +2234,18 @@ fn a_reopened_log_re_derives_the_roll_from_its_file_and_still_verifies() {
     );
 
     // The honest limit, pinned so it is not mistaken for a gap that closed:
-    // the file is still append-only and every line ever written is on it.
-    // Bounding disk is the segmenting change the module doc says needs an
-    // ADR.
+    // the file is still append-only and every line ever written is on it,
+    // and a reader that did not ask for the window gets all of it. Bounding
+    // disk is the segmenting change the module doc says needs an ADR.
     drop(reopened);
+    let unrolled = EventLog::open(&path).unwrap();
+    assert_eq!(
+        unrolled.len(),
+        28,
+        "a reopen without the window must hold the whole file"
+    );
+    assert_eq!(unrolled.rolled_by_age(), 0);
+    drop(unrolled);
     let lines = std::fs::read_to_string(&path)
         .unwrap()
         .lines()
@@ -2234,6 +2253,34 @@ fn a_reopened_log_re_derives_the_roll_from_its_file_and_still_verifies() {
         .count();
     assert_eq!(lines, 28, "the roll bounds the index, not the file");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_log_nobody_gave_a_window_rolls_nothing_however_old_the_snapshot() {
+    // Off by default is a constraint, not a preference: `Platform::
+    // resume_fabric` and `FabricJournal::resume` replay the retained span
+    // from genesis and refuse a gap, so a log that rolled on its own could
+    // not be resumed once it held a fabric record and a ninety-day-old
+    // snapshot. On 2026-09-19 a default of ninety days made `qip-cli replay`
+    // refuse a one-cycle journal for exactly that reason. This test is what
+    // stops the default drifting back on to make the bound look reached.
+    let (ctx, start) = context();
+    let mut log = EventLog::in_memory();
+    // Premise: the older snapshot is well past the blueprint's window
+    // behind the newer one, so a log that rolled on its own would have
+    // taken it.
+    let gap = Duration::from_days(400);
+    assert!(gap > qip_events::log::SNAPSHOT_WINDOW);
+    log.append(&erased(&ctx, start, tick("OLD"))).unwrap();
+    log.append(&erased(&ctx, start.saturating_add(gap), tick("NEW")))
+        .unwrap();
+    assert_eq!(
+        log.by_topic(Topic::MarketTick).len(),
+        2,
+        "a log with no window rolled a snapshot on its own"
+    );
+    assert_eq!(log.rolled_by_age(), 0);
+    assert_eq!(log.snapshot_window(), None, "and it reports no window");
 }
 
 #[test]
@@ -2254,5 +2301,5 @@ fn a_snapshot_window_that_retains_nothing_is_refused_rather_than_read_as_a_polic
     let widened = EventLog::in_memory()
         .with_snapshot_window(Duration::from_days(365))
         .unwrap();
-    assert_eq!(widened.snapshot_window(), Duration::from_days(365));
+    assert_eq!(widened.snapshot_window(), Some(Duration::from_days(365)));
 }
