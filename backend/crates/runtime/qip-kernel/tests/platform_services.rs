@@ -18,6 +18,7 @@ use qip_core::Context;
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Currency, Decimal, ObjectId, dec};
+use qip_data_finder::category::{CategoryApproval, SourceCategory};
 use qip_data_finder::coverage::{SourceCoverage, SourceRegion, UpdateFrequency};
 use qip_data_finder::endpoint::{AccessMechanism, AuthRequirement, SourceEndpoint};
 use qip_data_finder::legal::{LicensingPosture, SourceLicense};
@@ -27,6 +28,7 @@ use qip_data_finder::source::{SourceCandidate, SourceIdentity};
 use qip_events::EventBody;
 use qip_events::{EventFilter, Topic};
 use qip_financial::asset_class::{AssetClass, InstrumentType, Sector};
+use qip_financial::intelligence::MacroObservation;
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
@@ -320,6 +322,104 @@ fn the_sense_stage_reports_the_registry_only_once_there_is_one() -> Result<()> {
             .contains("1 registered source(s)"),
         "{}",
         after.stage(Stage::Sense).expect("sense ran").detail
+    );
+    Ok(())
+}
+
+#[test]
+fn the_sense_stage_ranks_sources_on_the_lead_they_measured_over_each_other() -> Result<()> {
+    // The failure: §7.6.4's "freshness is measured, not assumed" with
+    // nothing measuring it. The finder scored a source's lateness against
+    // its own promised cadence, so a wire that copied a release an hour
+    // after another had it scored exactly as fresh as the wire that had it
+    // first, and no ranking anywhere could tell the two apart.
+    let mut platform = platform(PlatformConfig::default())?;
+    let before = platform.run_cycle(start());
+    let sense = before.stage(Stage::Sense).expect("sense ran");
+    // Premise: with no fact seen twice there is no ranking and no clause —
+    // the assertion below is then about a measurement, not a template.
+    assert!(
+        !sense.detail.contains("ranked on measured lead"),
+        "nothing measured is not worth a clause: {}",
+        sense.detail
+    );
+    assert!(platform.source_lead_ranking().is_empty());
+
+    let reference = start().saturating_sub(Duration::from_days(1));
+    let release = |source: &str, learned_at: Timestamp| {
+        SensedRecord::Macro(Box::new(MacroObservation {
+            series_id: "US.CPI.YOY".to_string(),
+            region: "US".to_string(),
+            value: 3.4,
+            unit: "percent".to_string(),
+            reference_date: reference,
+            consensus: None,
+            previous: None,
+            is_revision: false,
+            provenance: Provenance::new(source, reference, learned_at),
+            quality: DataQuality::clean(),
+        }))
+    };
+    // The follower's record is fed first on purpose: the lead is the gap in
+    // knowable instants, and a batch's order must not decide it.
+    let absorbed = platform.observe(vec![
+        release("late-wire", start().saturating_sub(Duration::from_hours(1))),
+        release(
+            "early-wire",
+            start().saturating_sub(Duration::from_hours(2)),
+        ),
+    ]);
+    assert_eq!(absorbed, 2, "both releases should have been absorbed");
+
+    let ranking = platform.source_lead_ranking();
+    assert_eq!(ranking.len(), 2, "{ranking:?}");
+    assert_eq!(ranking[0].source, "early-wire");
+    assert_eq!(ranking[0].mean_lead, Duration::from_hours(1));
+    assert_eq!(ranking[0].led, 1);
+    assert_eq!(ranking[1].source, "late-wire");
+    assert_eq!(ranking[1].trailed, 1);
+
+    let after = platform.run_cycle(start());
+    let detail = &after.stage(Stage::Sense).expect("sense ran").detail;
+    assert!(
+        detail.contains(
+            "1 fact(s) seen from two sources, ranked on measured lead: early-wire led on 1 \
+             fact(s) by 3600s on average (longest 3600s), trailed on 0, late-wire never first, \
+             trailed on 1 fact(s)"
+        ),
+        "{detail}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_category_approval_filed_on_the_platform_reaches_the_finder_and_is_given_once() -> Result<()> {
+    // The failure: §7.6.3's approval seam declared on the kernel and wired to
+    // nothing, so an operator's approval changed no finder's answer. The
+    // second refusal proves the first approval landed where the finder reads
+    // it rather than in a field nothing consults.
+    let mut platform = platform(PlatformConfig::default())?;
+    assert!(platform.data_finder().approved_categories().is_empty());
+    platform.approve_source_category(CategoryApproval::new(
+        SourceCategory::GovernmentAndTrade,
+        "desk-owner",
+        start(),
+        "https://desk.example/reviews/trade-data-2026-09",
+    )?)?;
+    assert_eq!(platform.data_finder().approved_categories().len(), 1);
+    let refused = platform
+        .approve_source_category(CategoryApproval::new(
+            SourceCategory::GovernmentAndTrade,
+            "someone-else",
+            start(),
+            "a second review",
+        )?)
+        .expect_err("a second approval of the same category was accepted by the platform");
+    assert!(
+        refused.message().contains("already approved")
+            && refused.message().contains("approved by desk-owner"),
+        "{}",
+        refused.message()
     );
     Ok(())
 }

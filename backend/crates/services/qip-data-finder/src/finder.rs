@@ -10,6 +10,7 @@
 //! identifier — never from iteration order, which would make the answer depend
 //! on how the caller happened to build the list.
 
+use crate::category::{ApprovedCategories, CategoryApproval, SourceCategory};
 use crate::coverage::UpdateFrequency;
 use crate::decision::{
     DecisionOutcome, LifecycleStage, Reasoning, RegisteredSource, RegistrationDecision,
@@ -26,7 +27,7 @@ use crate::scoring::{Routing, SourceScores};
 use crate::source::{Source, SourceCandidate, SourceLineage};
 use crate::tier::{
     AccessMode, BulkCadence, CredentialReference, DeepWebAdapter, DiscoveryEnclave, Interface,
-    RenderingBudget, SourceTier, TierEvidence,
+    Promotion, RenderingBudget, SourceTier, TierEvidence,
 };
 use qip_contracts::governance::Usage;
 use qip_core::error::{Error, Result};
@@ -58,6 +59,11 @@ pub struct FinderConfig {
     /// says *whose* it is.
     #[serde(default)]
     registrations: RegistrationRegistry,
+    /// §7.6.3's one-time human approvals, by category. Empty by default:
+    /// a deep-web adapter is promoted automatically only within a category
+    /// on this list, and a deployment that has approved none promotes none.
+    #[serde(default)]
+    approved_categories: ApprovedCategories,
 }
 
 impl FinderConfig {
@@ -95,7 +101,19 @@ impl FinderConfig {
             credential_references: BTreeMap::new(),
             enclave: None,
             registrations: RegistrationRegistry::empty(),
+            approved_categories: ApprovedCategories::none(),
         })
+    }
+
+    /// File a person's one-time approval of a source category (§7.6.3).
+    /// Refused for a category already approved.
+    pub fn with_category_approval(mut self, approval: CategoryApproval) -> Result<Self> {
+        self.approved_categories.approve(approval)?;
+        Ok(self)
+    }
+
+    pub fn approved_categories(&self) -> &ApprovedCategories {
+        &self.approved_categories
     }
 
     /// Declare what a source demands before it may be read.
@@ -280,6 +298,18 @@ impl DataFinder {
     /// Sources currently registered, by identifier.
     pub fn registry(&self) -> &BTreeMap<String, RegisteredSource> {
         &self.registry
+    }
+
+    /// File a person's one-time approval of a source category (§7.6.3) on a
+    /// running finder, so a deep-web candidate deferred for want of it is
+    /// promoted on its next assessment without a restart. Refused for a
+    /// category already approved; the approval on file is named.
+    pub fn approve_category(&mut self, approval: CategoryApproval) -> Result<()> {
+        self.config.approved_categories.approve(approval)
+    }
+
+    pub fn approved_categories(&self) -> &ApprovedCategories {
+        &self.config.approved_categories
     }
 
     pub fn registered(&self, id: &str) -> Option<&RegisteredSource> {
@@ -585,8 +615,11 @@ impl DataFinder {
         // reached is not one this deployment can reach it by. The refusal
         // carries the tier and the mode so a reviewer can see which rule
         // fired without re-deriving it.
-        match self.route_by_tier(&source, tier) {
-            Ok(finding) => reasoning.record(LifecycleStage::Route, finding),
+        let adapter = match self.route_by_tier(&source, tier, category) {
+            Ok((finding, adapter)) => {
+                reasoning.record(LifecycleStage::Route, finding);
+                adapter
+            }
             Err(error) => {
                 let reason = error.message().to_string();
                 reasoning.record(
@@ -601,7 +634,7 @@ impl DataFinder {
                 )
                 .map(|decision| decision.with_legality(legality).with_scores(scores));
             }
-        }
+        };
 
         // Who registered, after where the credential is. The tier routing
         // above has already refused a credentialed source with no named
@@ -634,6 +667,39 @@ impl DataFinder {
                     now,
                 )
                 .map(|decision| decision.with_legality(legality).with_scores(scores));
+            }
+        }
+
+        // §7.6.3's governance clause, after the tier has admitted the route
+        // and the registration standing has been settled, and before the
+        // registration is written: a deep-web adapter is promoted
+        // automatically within a category a human approved once, and
+        // otherwise *deferred* — not rejected. Nothing about the source
+        // has been found wanting; a person has not yet said its category may
+        // be collected from, and the next assessment after they do promotes
+        // it with no further review. The refusal names which of the two
+        // things is missing.
+        if let Some(adapter) = &adapter {
+            match adapter.promotion(self.config.approved_categories()) {
+                Ok(Promotion::NotGoverned) => {}
+                Ok(Promotion::Promoted(approval)) => reasoning.record(
+                    LifecycleStage::Route,
+                    format!("promoted automatically: {}", approval.describe()),
+                ),
+                Err(error) => {
+                    let reason = error.message().to_string();
+                    reasoning.record(
+                        LifecycleStage::Route,
+                        format!("held pending a category approval: {reason}"),
+                    );
+                    return RegistrationDecision::new(
+                        id,
+                        DecisionOutcome::Deferred { reason },
+                        reasoning,
+                        now,
+                    )
+                    .map(|decision| decision.with_legality(legality).with_scores(scores));
+                }
             }
         }
 
@@ -754,25 +820,38 @@ impl DataFinder {
     }
 
     /// Decide whether the source can be reached the way its tier requires,
-    /// returning the finding for the record or the refusal.
+    /// returning the finding for the record and the adapter built for it,
+    /// or the refusal.
     ///
     /// A surface-web API is the case every source before this tier existed
     /// fell into, and it is left exactly as it was: no adapter, no enclave,
     /// the finding recorded and nothing else changed. Every other combination
-    /// builds a [`DeepWebAdapter`] and asks it whether the deployment can run
-    /// it.
-    fn route_by_tier(&self, source: &Source, tier: SourceTier) -> Result<String> {
+    /// builds a [`DeepWebAdapter`] — carrying the §7.6.1 category the
+    /// classify stage settled on — and asks it whether the deployment can run
+    /// it. The adapter is handed back so the caller can ask it §7.6.3's
+    /// promotion question, which is answered with a deferral rather than the
+    /// rejection every refusal here becomes.
+    fn route_by_tier(
+        &self,
+        source: &Source,
+        tier: SourceTier,
+        category: Option<SourceCategory>,
+    ) -> Result<(String, Option<DeepWebAdapter>)> {
         let mode = self.access_mode_for(source, tier)?;
         if tier == SourceTier::SurfaceWeb && mode == AccessMode::Api {
-            return Ok(format!(
-                "tier {} via access mode {}: reached directly, no deep-web adapter needed",
-                tier.as_str(),
-                mode.as_str()
+            return Ok((
+                format!(
+                    "tier {} via access mode {}: reached directly, no deep-web adapter needed",
+                    tier.as_str(),
+                    mode.as_str()
+                ),
+                None,
             ));
         }
-        let adapter = DeepWebAdapter::new(source.id(), source.endpoint().host(), tier, mode)?;
+        let adapter = DeepWebAdapter::new(source.id(), source.endpoint().host(), tier, mode)?
+            .with_category(category);
         adapter.admissible(source.licensing(), self.config.enclave.as_ref())?;
-        Ok(format!(
+        let finding = format!(
             "tier {} via access mode {}{}{}",
             tier.as_str(),
             adapter.mode().as_str(),
@@ -787,7 +866,8 @@ impl DataFinder {
                 (true, Some(enclave)) => format!(", inside {}", enclave.describe()),
                 _ => String::new(),
             }
-        ))
+        );
+        Ok((finding, Some(adapter)))
     }
 
     /// The access mode a source has to be reached by, from its mechanism,
