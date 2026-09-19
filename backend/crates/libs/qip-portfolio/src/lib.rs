@@ -24,6 +24,6 @@ pub mod position;
 
 pub use exposure::{Exposure, ExposureBreakdown};
 pub use lifecycle::PositionLifecycle;
-pub use lot::{Lot, LotMethod, RealisedTrade};
+pub use lot::{HoldingPeriodTest, HoldingTerm, Lot, LotMethod, LotSelection, RealisedTrade};
 pub use portfolio::{Portfolio, PortfolioSnapshot, Valuation};
 pub use position::{Position, PositionSide};

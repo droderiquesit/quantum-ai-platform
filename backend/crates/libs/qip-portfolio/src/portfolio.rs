@@ -113,8 +113,23 @@ impl Portfolio {
             .positions
             .entry(object.object_id.as_str().to_string())
             .or_insert_with(|| {
+                // The instrument's own regulatory record supplies the tax
+                // jurisdiction, and only when it names exactly one. Several
+                // is left unknown rather than narrowed to the first: which of
+                // them governs a holding period is a question this record
+                // does not answer, and answering it here would be the
+                // platform inventing a tax position on an operator's behalf.
+                // Taken once, when the position is opened, because it is the
+                // jurisdiction the lots were acquired in — a later edit to
+                // the instrument record must not retroactively reclassify
+                // gains already realised under the old one.
+                let jurisdiction = match object.regulatory.jurisdictions.len() {
+                    1 => object.regulatory.jurisdictions.iter().next().copied(),
+                    _ => None,
+                };
                 Position::new(object.object_id.clone(), &object.symbol, at)
                     .with_multiplier(object.contract_multiplier)
+                    .with_jurisdiction(jurisdiction)
             });
 
         let cash_flow = position.apply_fill(quantity, price, costs, at, order_id);
@@ -177,6 +192,28 @@ impl Portfolio {
         }
         position.move_lifecycle(PositionLifecycle::Unwinding)?;
         Ok(true)
+    }
+
+    /// Choose how closing fills in one instrument pick the lots they consume.
+    ///
+    /// The narrow seam onto [`Position::declare_selection`], written the way
+    /// [`Self::flag_position`] is and for the same reason: a caller gets to
+    /// change this one decision without being handed the lot ledger and the
+    /// realised P&L along with it.
+    ///
+    /// Both refusals below are carried through unchanged, because both are
+    /// the point rather than an inconvenience. A holding-period rule declared
+    /// for a jurisdiction other than the position's would order the lots
+    /// exactly as first-in-first-out while reading as a tax policy in force;
+    /// and a position the book does not hold is refused rather than created,
+    /// because a lot policy set against a holding nobody has is a statement
+    /// about the caller's own bookkeeping.
+    pub fn declare_selection(
+        &mut self,
+        object_id: &ObjectId,
+        selection: crate::lot::LotSelection,
+    ) -> Result<()> {
+        self.position_mut(object_id)?.declare_selection(selection)
     }
 
     /// The position under `object_id`, for the two lifecycle seams above.
