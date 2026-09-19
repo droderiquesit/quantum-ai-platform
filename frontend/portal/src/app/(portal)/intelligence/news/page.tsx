@@ -1,24 +1,27 @@
 "use client";
 
 import { useMemo } from "react";
-import { Chip, Metric, MetricRow, StreamControls } from "@/components/data/Bits";
+import { Chip, Freshness, Metric, MetricRow, StreamControls } from "@/components/data/Bits";
 import { EventFeed } from "@/components/data/EventFeed";
 import { Panel, PanelBody, PanelHead } from "@/components/data/Panel";
-import { StateBlock } from "@/components/data/States";
+import { ResourceView, StateBlock } from "@/components/data/States";
+import { platform } from "@/lib/api/client";
 import { formatCount, formatTimestamp } from "@/lib/format";
 import { useEventStream } from "@/lib/hooks/useEventStream";
+import { useResource } from "@/lib/hooks/useResource";
 import type { StreamEnvelope } from "@/lib/sse/envelope";
 
 /**
- * News and sentiment, read from the platform's own market stream.
+ * News and sentiment, read from the platform's own market stream and from
+ * `GET /news`.
  *
  * `GET /api/v1/stream/market` carries every narrative topic the ingestion
  * service records — `news.received`, `fundamental.updated`, `macro.updated` —
- * and this page is a client of that stream and nothing else. It used to render
- * six invented headlines under a SIMULATED DATA banner; that illustration is
- * gone, because a real route existed for the thing it illustrated, and a
- * placeholder beside a real feed is exactly the mixed panel the console's
- * rules forbid.
+ * and the feed on this page is a client of that stream and nothing else. It
+ * used to render six invented headlines under a SIMULATED DATA banner; that
+ * illustration is gone, because a real route existed for the thing it
+ * illustrated, and a placeholder beside a real feed is exactly the mixed
+ * panel the console's rules forbid.
  *
  * What is honest about an empty feed: this deployment configures no vendor
  * narrative adapter, so the stream is open and carries nothing on these
@@ -26,6 +29,14 @@ import type { StreamEnvelope } from "@/lib/sse/envelope";
  * rather than dressing it up — "no news has been ingested" is a fact, and a
  * quiet feed and a dead socket are kept distinguishable by the stream
  * controls beside it.
+ *
+ * The second panel reads `GET /news`, which `routes.rs` serves and answers
+ * with an absence and its reason. This page used to tell its reader that
+ * route did not exist — a false statement on the screen, made in the
+ * platform's disfavour — and paraphrased the reason from memory. Now the
+ * platform's own sentence is rendered, and if the route ever answers a body
+ * instead, that body is shown verbatim and labelled unread rather than
+ * through a shape this console guessed.
  */
 
 /** The wire names of the topics the narrative adapter publishes. */
@@ -86,6 +97,11 @@ export default function NewsPage() {
     channel: "market",
     label: "SSE /stream/market (narrative)",
     maxEvents: 300,
+  });
+  const news = useResource<unknown>(platform.news, {
+    key: "news",
+    label: "GET /news",
+    intervalMs: 60_000,
   });
 
   const narrative = useMemo(() => market.events.filter(isNarrative), [market.events]);
@@ -151,29 +167,60 @@ export default function NewsPage() {
       </Panel>
 
       <Panel>
-        <PanelHead title="What is behind this feed" actions={<Chip tone="warn">no vendor source</Chip>} />
+        <PanelHead
+          title="What is behind this feed"
+          meta={<Freshness resource={news} name="news" />}
+          actions={<Chip>GET /api/v1/news</Chip>}
+        />
         <PanelBody>
-          <StateBlock
-            tone="warn"
-            label="not ingested"
-            headline="This deployment configures no live news source, so the feed above carries what the platform recorded on these topics — which, today, is nothing."
-            compact
-          >
-            <p>
-              The absorption machinery is real: the narrative adapter in{" "}
-              <code className="num">backend/crates/services/qip-market-ingestion/src/narrative.rs</code>{" "}
-              decodes news items, corporate filings and macroeconomic releases into sensed records,
-              anchored on the instant each document became knowable, and publishes them on the
-              topics this page subscribes to. No vendor feed is configured in this process, so
-              nothing reaches the stream. When one is, the rows render here with the item&rsquo;s own
-              headline, source and scored sentiment — no adapter change on this side.
-            </p>
-            <p className="mt-1.5 text-[color:var(--color-ink-faint)]">
-              What is still missing on the platform side is a history: the stream opens at the live
-              edge with a bounded backlog, and there is no <code className="num">GET /api/v1/news</code>{" "}
-              to page through what was ingested before this tab opened.
-            </p>
-          </StateBlock>
+          {news.outcome !== null && news.outcome.kind === "unavailable" ? (
+            <StateBlock
+              tone="warn"
+              label="not ingested"
+              headline="The platform serves no news in this deployment, and says why."
+              compact
+            >
+              <p className="num" data-testid="news-route-reason">
+                {news.outcome.reason}
+              </p>
+              <p className="mt-1.5">
+                The platform&rsquo;s own answer, under the subject{" "}
+                <span className="num">{news.outcome.subject}</span>, and not this console&rsquo;s
+                paraphrase of it. The absorption machinery is real: the narrative adapter in{" "}
+                <code className="num">backend/crates/services/qip-market-ingestion/src/narrative.rs</code>{" "}
+                decodes news items, corporate filings and macroeconomic releases into sensed
+                records, anchored on the instant each document became knowable, and publishes them
+                on the topics the feed above subscribes to. When an adapter is configured, the rows
+                render there with the item&rsquo;s own headline, source and scored sentiment.
+              </p>
+              <p className="mt-1.5 text-[color:var(--color-ink-faint)]" data-testid="news-route-history">
+                What is still missing on the platform side is a history: the stream opens at the
+                live edge with a bounded backlog, and{" "}
+                <code className="num">GET /api/v1/news</code> is served but matched to one expression
+                that answers this absence, with no arm that pages through what was ingested before
+                this tab opened.
+              </p>
+            </StateBlock>
+          ) : (
+            <ResourceView resource={news} loadingRows={2}>
+              {(body) => (
+                <StateBlock
+                  tone="info"
+                  label="served, not yet read"
+                  headline="The platform answered GET /news with a body, and this console has not been taught its shape."
+                  compact
+                >
+                  <p>
+                    Shown as it arrived, so what the platform served is on the screen rather than
+                    hidden behind a shape this page would otherwise have guessed.
+                  </p>
+                  <pre className="num mt-1.5 max-h-[40vh] overflow-auto whitespace-pre-wrap text-[10.5px]" data-testid="news-route-body">
+                    {JSON.stringify(body, null, 2)}
+                  </pre>
+                </StateBlock>
+              )}
+            </ResourceView>
+          )}
         </PanelBody>
       </Panel>
     </div>

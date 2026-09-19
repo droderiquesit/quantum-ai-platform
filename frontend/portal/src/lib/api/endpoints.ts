@@ -39,6 +39,30 @@ export const REST: Record<string, EndpointSpec> = {
   models: { method: "GET", path: "/models", role: "viewer", summary: "observed model spend" },
   capital: { method: "GET", path: "/capital", role: "viewer", summary: "bounds, envelopes, outstanding recalls" },
   risk: { method: "GET", path: "/risk", role: "viewer", summary: "exposure, concentration, kill switch" },
+  /**
+   * §40.1's exploration surface. Read-only by the platform's own design: the
+   * "adjust the exploration share" half of the row is a mandate term changed
+   * through the capital path, and no write for it exists on either side.
+   */
+  exploration: {
+    method: "GET",
+    path: "/exploration",
+    role: "viewer",
+    summary: "what the platform is spending to learn, and what it has learned per kind",
+  },
+  /**
+   * Served, and answered as an absence: `routes.rs` matches `GET /news` to
+   * one expression returning `unavailable("news", NO_NARRATIVE_ADAPTER)`. It
+   * is listed so the news page can render the platform's own reason instead
+   * of this console's paraphrase of it — the page said the route did not
+   * exist for as long as this row was missing.
+   */
+  news: {
+    method: "GET",
+    path: "/news",
+    role: "viewer",
+    summary: "news, filings and macro releases — or why this process has none",
+  },
   pnl: { method: "GET", path: "/pnl", role: "viewer", summary: "profit, loss, realised against expected alpha" },
   dataSources: { method: "GET", path: "/data-sources", role: "viewer", summary: "data sources with health and licensing" },
   training: { method: "GET", path: "/training", role: "viewer", summary: "training runs and status" },

@@ -129,7 +129,7 @@ export const NAV: readonly NavGroup[] = [
         label: "News & sentiment",
         mark: "NW",
         description: "News, filings and macro releases as the market stream records them",
-        reads: ["/stream/market"],
+        reads: ["/stream/market", "/news"],
       },
       {
         href: "/intelligence/regimes",
@@ -228,6 +228,18 @@ export const NAV: readonly NavGroup[] = [
         mark: "PL",
         description: "Profit, loss, and who or what earned it",
         reads: ["/pnl", "/portfolio"],
+      },
+      {
+        // §40.1's eighth surface, read-only. The share is a term of the desk
+        // mandate and changes through the capital path under an authenticated
+        // operator; the page renders the declared share or the platform's own
+        // statement that none is declared, and offers no control to move it.
+        href: "/capital/exploration",
+        label: "Exploration budget",
+        mark: "XB",
+        description:
+          "What the platform is spending to learn — the declared share or its absence, held, committed and spent kept apart, and every open probe as the question it bought",
+        reads: ["/exploration"],
       },
     ],
   },

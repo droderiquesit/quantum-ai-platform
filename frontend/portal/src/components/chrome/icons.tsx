@@ -67,6 +67,13 @@ const P: Record<string, string[]> = {
     "M19 17V5a2 2 0 0 0-2-2H4",
     "M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3",
   ],
+  // Lucide's `flask-conical`, for the exploration budget: capital set aside
+  // to learn rather than to earn.
+  "flask-conical": [
+    "M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2",
+    "M6.453 15h11.094",
+    "M8.5 2h7",
+  ],
 };
 
 export type IconName = keyof typeof P & string;
@@ -130,6 +137,7 @@ export const ITEM_ICON: Record<string, IconName> = {
   "/capital": "pie-chart",
   "/portfolio/positions": "table-2",
   "/portfolio/pnl": "line-chart",
+  "/capital/exploration": "flask-conical",
   // The treasury section shipped without entries here and every item fell
   // back to the dashboard glyph, so four different pages wore the same icon.
   "/treasury/ledger": "table-2",
