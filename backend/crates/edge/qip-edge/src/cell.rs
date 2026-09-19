@@ -1150,6 +1150,34 @@ impl Cell {
         self.region_allocation.as_ref().map(RegionTable::free)
     }
 
+    /// Install a venue's settlement terms into a cell that is already
+    /// running (§56.2 rule 21).
+    ///
+    /// What a composition root needs where the fact arrives with the seam
+    /// that knows it rather than with the configuration: `qip-edge-node`
+    /// binds the simulator's feed to the cell after assembly, and it is the
+    /// simulator — not the operator — that knows its proceeds are credited
+    /// on the fill. Refused for a venue this cell was not configured for:
+    /// terms for a venue the cell cannot reach are a wiring error at a
+    /// runtime seam, where the same entry in [`CellConfig::with_settlement`]
+    /// is merely inert. Terms already held for the venue are replaced, and
+    /// the replacement is journaled so a reader can see when the calendar
+    /// a cycle was judged against changed.
+    pub fn install_settlement(&mut self, venue: &VenueId, terms: SettlementTerms) -> Result<()> {
+        if !self.config.venues.iter().any(|known| known == venue) {
+            return Err(Error::invalid(format!(
+                "cell {} is not configured for venue {}, so it has no leg there to project \
+                 settlement for; name the venue in the cell's venue list before giving it terms",
+                self.config.cell_id,
+                venue.as_str()
+            )));
+        }
+        self.config
+            .settlement
+            .insert(venue.as_str().to_string(), terms);
+        Ok(())
+    }
+
     /// Install the arbitrage desk this cell scans with.
     ///
     /// A builder rather than a constructor argument, like [`Self::with_metrics`],
