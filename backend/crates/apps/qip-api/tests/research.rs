@@ -32,7 +32,8 @@ use qip_kernel::central::StrategyCandidate;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::platform::Platform;
 use qip_lifecycle::evidence::{
-    CrossValidationRun, FeatureTiming, HoldoutEvidence, LeakageAudit, StrategyEvidence,
+    CrossValidationRun, DatasetManifest, FeatureTiming, HoldoutEvidence, LeakageAudit,
+    StrategyEvidence,
 };
 use qip_lifecycle::trials::StrategyFamily;
 use qip_market::bar::{Bar, Interval};
@@ -581,7 +582,16 @@ fn holdout_evidence(observations: usize, trials: usize) -> Result<StrategyEviden
             restated_without_snapshots: Vec::new(),
         },
     };
-    Ok(StrategyEvidence::new().with_holdout(holdout))
+    Ok(StrategyEvidence::new()
+        .with_holdout(holdout)
+        .with_simulation(DatasetManifest::new(
+            "obj-AAA",
+            "XNYS",
+            2_000,
+            start().saturating_sub(Duration::from_days(2_000)),
+            start(),
+            qip_core::sha256_hex(b"recorded bars"),
+        )?))
 }
 
 #[test]

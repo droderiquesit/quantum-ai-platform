@@ -93,8 +93,8 @@ use qip_capital_fabric::wallet::{
 use qip_capital_fabric::{
     CapitalLocation, DemandForecast, DemandForecaster, DemandKind, DemandObservation, FundingCurve,
     FxRates, LocationBalance, PlanScore, PrePositioningPlan, PrePositioningPlanner,
-    PrePositioningRequest, RealisedDemand, Region as CapitalRegion, SettlementCalendar,
-    SettlementConvention, TransferCostModel,
+    PrePositioningRequest, RealisedDemand, Region as CapitalRegion, SettlementBook,
+    SettlementCalendar, SettlementConvention, TransferCostModel,
 };
 use qip_chain::{
     BridgeFailure, BridgeLedger, BridgeTransfer, ChainState, ChainUpdate, Confirmations,
@@ -3676,6 +3676,29 @@ impl Platform {
         let half_book = initial_equity
             .checked_div(Decimal::from_int(2))
             .unwrap_or(initial_equity);
+        // The desk's broker is built here rather than in the struct literal
+        // below because the settlement book has to name its venue, and the
+        // name is the broker's to give (`Broker::name`), not a literal this
+        // file could drift from.
+        let broker: Box<dyn Broker> = Box::new(SimulatedBroker::new(
+            SimulationSettings::default(),
+            config.seed,
+        ));
+        // §34.1: settlement rules are joined to the venue's jurisdiction.
+        // This was one T+1 weekday calendar for every lane until 2026-09-19,
+        // which quoted a lane at any venue on the home jurisdiction's
+        // cut-off and weekends. The book declares the home jurisdiction and
+        // assigns the desk's own venue to it — the one venue this process
+        // sends to (ADR 0003). A lane at any other venue is refused in the
+        // plan by name rather than quoted on this calendar; the adapter that
+        // admits a venue is what must supply its convention and
+        // jurisdiction, and until it does the venue has no calendar here.
+        let mut settlement = SettlementBook::new();
+        settlement.declare_jurisdiction(
+            CapitalRegion::new(HOME_REGION),
+            SettlementCalendar::weekday(SettlementConvention::T1)?,
+        )?;
+        settlement.assign_venue(VenueId::new(broker.name()), CapitalRegion::new(HOME_REGION))?;
         let pre_positioner = PrePositioningPlanner::new(
             CapitalAllocator::new(
                 AllocationLimits::new(initial_equity, quarter_book, half_book, half_book)?,
@@ -3688,7 +3711,7 @@ impl Platform {
                 Decimal::from_int(25),
                 300.0,
             )?,
-            SettlementCalendar::weekday(SettlementConvention::T1)?,
+            settlement,
         );
 
         // The desk first, under a mandate sized to the book's opening equity
@@ -3810,10 +3833,7 @@ impl Platform {
                 OrderManager::new(PreTradeChecker::new(limits.clone())),
                 |orders, (object_id, grid)| orders.with_instrument_feasibility(object_id, grid),
             ),
-            broker: Box::new(SimulatedBroker::new(
-                SimulationSettings::default(),
-                config.seed,
-            )),
+            broker,
             autonomy: AutonomyController::with_live_ceiling(config.autonomy_ceiling),
             monitor: RiskMonitor::new(limits, config.monitor),
             // Opened empty and re-anchored to tracked equity at every sizing
@@ -15751,6 +15771,16 @@ impl Platform {
             .entry((location, kind))
             .or_default()
             .push(DemandObservation::new(at, amount));
+    }
+
+    /// The settlement calendars the pre-positioning planner quotes on, per
+    /// jurisdiction, and which venue settles in which.
+    ///
+    /// Read-only: the book is assembled once, from what this process can
+    /// attest, and a venue enters it through the adapter that admits the
+    /// venue rather than through a setter a stage could reach.
+    pub fn settlement_book(&self) -> &SettlementBook {
+        self.pre_positioner.settlement()
     }
 
     /// Every lane the platform has observed demand at.

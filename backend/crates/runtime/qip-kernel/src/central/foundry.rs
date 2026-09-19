@@ -64,6 +64,7 @@
 use crate::central::factory::{StrategyCandidate, StrategyFactory};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
+use qip_core::ObjectId;
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_evolution::challenger::TrialLedger;
@@ -71,9 +72,10 @@ use qip_evolution::generate::{Candidate, GenerationRun, StrategyGenerator};
 use qip_evolution::grammar::Grammar;
 use qip_evolution::mutate::MutationRun;
 use qip_lifecycle::evidence::{
-    CrossValidationRun, HoldoutEvidence, LeakageAudit, StrategyEvidence,
+    CrossValidationRun, DatasetManifest, HoldoutEvidence, LeakageAudit, StrategyEvidence,
 };
 use qip_lifecycle::trials::StrategyFamily;
+use qip_market::bar::Bar;
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::StrategyCompiler;
 
@@ -255,16 +257,25 @@ impl StrategyFoundry {
             })?;
         let candidate = self.pending.remove(position);
 
-        let evidence = StrategyEvidence::new().with_holdout(HoldoutEvidence {
-            holdout_returns: holdout.returns,
-            in_sample_folds: holdout.in_sample_folds,
-            out_of_sample_folds: holdout.out_of_sample_folds,
-            // The invariant this whole module exists for.
-            trials: self.ledger.trials(),
-            periods_per_year: holdout.periods_per_year,
-            cross_validation: holdout.cross_validation,
-            leakage: holdout.leakage,
-        });
+        let evidence = StrategyEvidence::new()
+            .with_holdout(HoldoutEvidence {
+                holdout_returns: holdout.returns,
+                in_sample_folds: holdout.in_sample_folds,
+                out_of_sample_folds: holdout.out_of_sample_folds,
+                // The invariant this whole module exists for.
+                trials: self.ledger.trials(),
+                periods_per_year: holdout.periods_per_year,
+                cross_validation: holdout.cross_validation,
+                leakage: holdout.leakage,
+            })
+            // Blueprint rule 29. The gate refuses holdout evidence without a
+            // manifest of the recorded data it was simulated over, and this
+            // is the one production path that produces holdout evidence, so
+            // it is the one place the manifest is attached. `HoldoutInputs`
+            // requires it rather than defaulting it: a candidate scored
+            // without bars has no manifest to give, and should not reach
+            // here at all.
+            .with_simulation(holdout.manifest);
 
         let registered = StrategyCandidate::new(
             candidate.compiled().clone(),
@@ -304,4 +315,68 @@ pub struct HoldoutInputs {
     pub periods_per_year: f64,
     pub cross_validation: CrossValidationRun,
     pub leakage: LeakageAudit,
+    /// The recorded bars the returns were simulated over, by content —
+    /// see [`recorded_manifest`]. Required, not optional: the holdout gate
+    /// refuses evidence without one, and a caller that could omit it would
+    /// register candidates the gate structurally cannot admit.
+    pub manifest: DatasetManifest,
+}
+
+/// Manifest the recorded bars a candidate was simulated over.
+///
+/// The hash is over a canonical line per bar — open time, open, high, low,
+/// close, volume — rather than over a serialised struct, so a field added to
+/// [`Bar`] later does not silently change the hash of history that did not
+/// change. Two runs over the same bars carry the same manifest; a run over
+/// different bars, or over the same bars with one price edited, does not.
+///
+/// Refuses an empty history, bars that name more than one venue — a dataset
+/// recorded at two venues is two datasets — and bars out of time order,
+/// which is a history nothing should have simulated over.
+pub fn recorded_manifest(subject: &ObjectId, bars: &[Bar]) -> Result<DatasetManifest> {
+    let (first, last) = match (bars.first(), bars.last()) {
+        (Some(first), Some(last)) => (first, last),
+        _ => {
+            return Err(Error::invalid(format!(
+                "{subject} has no recorded bars to manifest; a candidate is simulated over \
+                 history before it is registered, and there is none"
+            )));
+        }
+    };
+    let mut canonical = String::with_capacity(bars.len() * 64);
+    let mut previous_open = first.open_time;
+    for bar in bars {
+        if bar.venue != first.venue {
+            return Err(Error::invalid(format!(
+                "{subject}'s bars name both {} and {}; a dataset recorded at two venues is two \
+                 datasets and cannot be manifested as one",
+                first.venue, bar.venue
+            )));
+        }
+        if bar.open_time < previous_open {
+            return Err(Error::invalid(format!(
+                "{subject}'s bars are out of time order at {}; a history that runs backwards \
+                 was not the history the simulation clock walked",
+                bar.open_time.to_rfc3339()
+            )));
+        }
+        previous_open = bar.open_time;
+        canonical.push_str(&format!(
+            "{}|{}|{}|{}|{}|{}\n",
+            bar.open_time.as_secs(),
+            bar.open,
+            bar.high,
+            bar.low,
+            bar.close,
+            bar.volume
+        ));
+    }
+    DatasetManifest::new(
+        subject.as_str(),
+        first.venue.as_str(),
+        bars.len(),
+        first.open_time,
+        last.open_time,
+        qip_core::sha256_hex(canonical.as_bytes()),
+    )
 }

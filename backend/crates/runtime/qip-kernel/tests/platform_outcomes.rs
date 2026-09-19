@@ -11,11 +11,15 @@
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_capital_fabric::{DemandKind, RealisedDemand};
+use qip_capital_fabric::plan::RefusalReason;
+use qip_capital_fabric::{
+    CapitalLocation, DemandKind, RealisedDemand, Region, SettlementConvention,
+};
 use qip_contracts::edge::DeductionKind;
+use qip_contracts::venue::VenueId;
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
-use qip_core::{Context, Decimal, ObjectId, dec};
+use qip_core::{Context, Currency, Decimal, ObjectId, dec};
 use qip_cost_router::IntelligenceTier;
 use qip_execution_engine::order::Side;
 use qip_financial::asset_class::{InstrumentType, Sector};
@@ -411,6 +415,110 @@ fn the_decide_stage_reports_where_capital_will_be_needed() -> Result<()> {
     let report = platform.run_cycle(after_the_fill);
     let detail = &report.stage(Stage::Decide).expect("decide ran").detail;
     assert!(detail.contains("funding lane(s) forecast"), "{detail}");
+    Ok(())
+}
+
+#[test]
+fn the_desk_venue_settles_on_its_jurisdictions_calendar_and_an_undeclared_venue_is_refused_by_name()
+-> Result<()> {
+    // §34.1's settlement provision: rules joined to the venue's jurisdiction.
+    // The failure this guards: the kernel built one T+1 weekday calendar and
+    // the planner quoted every lane on it, so a venue nobody had declared a
+    // convention for was funded on the home jurisdiction's cut-off and
+    // weekends. Now the book names the desk's venue under the home
+    // jurisdiction and nothing else, and a lane at any other venue is
+    // refused in the plan with the venue named — while the desk's lane
+    // beside it is still quoted.
+    let mut platform = platform(PlatformConfig::default())?;
+    let home = Region::new("home");
+    let declared: Vec<(String, String)> = platform
+        .settlement_book()
+        .venues()
+        .map(|(venue, region)| (venue.as_str().to_string(), region.as_str().to_string()))
+        .collect();
+    assert_eq!(
+        declared.len(),
+        1,
+        "one venue this process sends to: {declared:?}"
+    );
+    let (desk_venue, jurisdiction) = declared[0].clone();
+    assert_eq!(jurisdiction, "home", "{declared:?}");
+    assert_eq!(
+        platform
+            .settlement_book()
+            .calendar_for(&VenueId::new(&desk_venue), &home)?
+            .convention(),
+        SettlementConvention::T1
+    );
+    let error = platform
+        .settlement_book()
+        .calendar_for(&VenueId::new("XTKS"), &home)
+        .expect_err("an undeclared venue has no calendar to quote on");
+    assert!(
+        error.message().contains("XTKS") && error.message().contains("assign_venue"),
+        "{}",
+        error.message()
+    );
+
+    // Two fills give the forecaster a lane at the desk venue; demand recorded
+    // by hand gives it one at a venue nobody declared.
+    fill_one(&mut platform, start())?;
+    fill_one(
+        &mut platform,
+        start().saturating_add(Duration::from_days(1)),
+    )?;
+    assert!(
+        platform
+            .demand_lanes()
+            .iter()
+            .any(|(location, _, _)| location.venue.as_str() == desk_venue),
+        "premise: the venue the book declares is the venue the desk's fills land at"
+    );
+    let stranger = CapitalLocation::new(home.clone(), Currency::USD, VenueId::new("XTKS"));
+    for day in 0..2 {
+        platform.record_capital_demand(
+            stranger.clone(),
+            DemandKind::Cash,
+            start().saturating_add(Duration::from_days(day)),
+            dec!("100000"),
+        );
+    }
+    let horizon = Duration::from_days(1);
+    let at = start().saturating_add(Duration::from_days(2));
+    let forecast_venues: Vec<String> = platform
+        .forecast_capital_demand(at, horizon)
+        .iter()
+        .map(|forecast| forecast.location.venue.as_str().to_string())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert_eq!(
+        forecast_venues,
+        vec!["XTKS".to_string(), desk_venue.clone()],
+        "premise: both lanes are forecast"
+    );
+
+    let plan = platform.pre_position(at, horizon)?;
+    let refused = plan
+        .refusals
+        .iter()
+        .find(|refusal| refusal.location.venue.as_str() == "XTKS")
+        .unwrap_or_else(|| panic!("the undeclared venue was not refused: {}", plan.describe()));
+    assert_eq!(
+        refused.reason,
+        RefusalReason::Unpriceable,
+        "{}",
+        refused.describe()
+    );
+    assert!(refused.detail.contains("XTKS"), "{}", refused.describe());
+    assert!(
+        !plan.refusals.iter().any(|refusal| {
+            refusal.location.venue.as_str() == desk_venue
+                && refusal.reason == RefusalReason::Unpriceable
+        }),
+        "the desk venue's lane is quoted on its own calendar: {}",
+        plan.describe()
+    );
     Ok(())
 }
 

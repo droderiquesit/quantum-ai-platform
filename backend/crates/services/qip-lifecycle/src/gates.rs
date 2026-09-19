@@ -287,6 +287,42 @@ impl Gate for HoldoutGate {
             ),
         );
 
+        // Blueprint rule 29: the series must have come out of a simulation
+        // over recorded data. Until this check existed the gate deflated
+        // whatever series it was handed, so a return series typed into a
+        // fixture and one a `SimulationClock` produced over a year of bars
+        // were the same evidence. The manifest is produced at the seam where
+        // the bars are — `StrategyFoundry::register` in the kernel — and a
+        // series longer than the dataset that supposedly produced it did not
+        // come from that dataset, which is the one arithmetic check a
+        // manifest admits without re-running the simulation.
+        let simulated_observations = observations + holdout.cross_validation.observations;
+        outcome = match evidence.simulation.as_ref() {
+            None => outcome.record(
+                "holdout_simulated_against_recorded_data",
+                false,
+                "no dataset manifest: nothing establishes that the holdout series came out of \
+                 a simulation over recorded data. Produce the holdout through the foundry, \
+                 which manifests the bars the candidate was simulated over",
+            ),
+            Some(manifest) if simulated_observations > manifest.bars => outcome.record(
+                "holdout_simulated_against_recorded_data",
+                false,
+                format!(
+                    "the holdout and its folds span {simulated_observations} observation(s) \
+                     but the manifest covers {} bar(s); a series longer than the data that \
+                     produced it did not come from that data ({})",
+                    manifest.bars,
+                    manifest.describe()
+                ),
+            ),
+            Some(manifest) => outcome.record(
+                "holdout_simulated_against_recorded_data",
+                true,
+                manifest.describe(),
+            ),
+        };
+
         // The count comes from the trial book's charge, never from the run.
         // Recorded as its own check so a refusal for an unknown count reads
         // as what it is rather than as a Sharpe that could not be computed.

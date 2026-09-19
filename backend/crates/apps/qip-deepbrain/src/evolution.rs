@@ -44,7 +44,7 @@ use qip_evolution::generate::Candidate;
 use qip_evolution::grammar::Grammar;
 use qip_evolution::palette::FeaturePalette;
 use qip_financial::universe::Universe;
-use qip_kernel::central::foundry::{HoldoutInputs, StrategyFoundry};
+use qip_kernel::central::foundry::{HoldoutInputs, StrategyFoundry, recorded_manifest};
 use qip_kernel::platform::Platform;
 use qip_lifecycle::evidence::{CrossValidationRun, FeatureTiming, LeakageAudit};
 use qip_market::bar::Bar;
@@ -1321,6 +1321,9 @@ impl EvolutionEngine {
                 timings,
                 restated_without_snapshots: Vec::new(),
             },
+            // The bars the clock above actually walked, by content, so the
+            // gate can tell this series came out of a simulation.
+            manifest: recorded_manifest(subject, bars)?,
         };
         Ok(Scored { holdout, net })
     }

@@ -15,6 +15,7 @@ use qip_contracts::gate::GateStage;
 use qip_contracts::governance::Approval;
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::{CapitalEnvelope, Utilisation};
+use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use serde::{Deserialize, Serialize};
 
@@ -325,6 +326,110 @@ pub struct ScaledEvidence {
     pub scaling_approval: Option<Approval>,
 }
 
+/// The recorded data a holdout series was simulated over, named by content.
+///
+/// Blueprint rule 29 says every strategy is exercised in simulation against
+/// recorded data before enablement, and rule 34 says external history is
+/// referenced by a manifest with a content hash. Until this type existed the
+/// holdout gate recomputed a deflated Sharpe from whatever return series was
+/// submitted and nothing established that the series came out of a
+/// simulation at all — a researcher's spreadsheet and a `SimulationClock`
+/// run over a year of bars were indistinguishable at the gate. The manifest
+/// is what makes them distinguishable: it is produced at the seam where the
+/// bars are, and the gate refuses evidence that does not carry one.
+///
+/// It records what was simulated over, not a verdict about it. The hash is
+/// over the bars' own content, so two runs on the same history carry the
+/// same manifest and a run on different history cannot borrow one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatasetManifest {
+    /// The instrument the bars describe.
+    pub subject: String,
+    /// The venue the bars were recorded at.
+    pub venue: String,
+    /// How many bars the simulation ran over.
+    pub bars: usize,
+    /// Open of the first bar.
+    pub first_open: Timestamp,
+    /// Open of the last bar.
+    pub last_open: Timestamp,
+    /// SHA-256 over the bars' canonical encoding, as lowercase hex.
+    pub content_hash: String,
+}
+
+impl DatasetManifest {
+    /// Describe a recorded dataset.
+    ///
+    /// Refuses a manifest that could not describe a simulation: no bars, a
+    /// last bar before the first, or a hash that is not a SHA-256 digest.
+    /// Each of those is a manifest written by hand rather than computed from
+    /// data, and a hand-written manifest is the thing the gate reads this
+    /// type to rule out.
+    pub fn new(
+        subject: impl Into<String>,
+        venue: impl Into<String>,
+        bars: usize,
+        first_open: Timestamp,
+        last_open: Timestamp,
+        content_hash: impl Into<String>,
+    ) -> Result<Self> {
+        let subject = subject.into();
+        let venue = venue.into();
+        let content_hash = content_hash.into();
+        if subject.trim().is_empty() || venue.trim().is_empty() {
+            return Err(Error::invalid(
+                "a dataset manifest names the subject and the venue its bars were recorded at; \
+                 an unnamed dataset cannot be re-fetched to reproduce the simulation",
+            ));
+        }
+        if bars == 0 {
+            return Err(Error::invalid(
+                "a dataset manifest over zero bars describes no simulation; run the candidate \
+                 over recorded history and manifest that",
+            ));
+        }
+        if last_open < first_open {
+            return Err(Error::invalid(format!(
+                "a dataset manifest's last bar ({}) opens before its first ({}); the bars were \
+                 not in time order when they were manifested",
+                last_open.to_rfc3339(),
+                first_open.to_rfc3339()
+            )));
+        }
+        if content_hash.len() != 64
+            || !content_hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(Error::invalid(
+                "a dataset manifest's content hash is a SHA-256 digest as 64 lowercase hex \
+                 characters; anything else was not computed over the bars",
+            ));
+        }
+        Ok(Self {
+            subject,
+            venue,
+            bars,
+            first_open,
+            last_open,
+            content_hash,
+        })
+    }
+
+    /// A line naming what was simulated over.
+    pub fn describe(&self) -> String {
+        format!(
+            "{} bar(s) of {} at {} from {} to {}, content {}",
+            self.bars,
+            self.subject,
+            self.venue,
+            self.first_open.to_rfc3339(),
+            self.last_open.to_rfc3339(),
+            self.content_hash
+        )
+    }
+}
+
 /// Everything known about one strategy, at whatever rung it has reached.
 ///
 /// Assembled by the research and operations paths and read by the gates. The
@@ -334,6 +439,16 @@ pub struct ScaledEvidence {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StrategyEvidence {
     pub holdout: Option<HoldoutEvidence>,
+    /// The recorded data the holdout series was simulated over.
+    ///
+    /// `None` means nothing established that the series came out of a
+    /// simulation, and the holdout gate reads that as a failed check rather
+    /// than as an unknown to be forgiven. Optional at the type level because
+    /// a candidate has no evidence at all; the gate is where it is required,
+    /// and `StrategyFoundry::register` in `qip-kernel` — the one production
+    /// producer of holdout evidence — always fills it.
+    #[serde(default)]
+    pub simulation: Option<DatasetManifest>,
     /// The lifetime trial count this evaluation was charged under, issued by
     /// [`crate::trials::TrialBook::charge`].
     ///
@@ -357,6 +472,12 @@ impl StrategyEvidence {
 
     pub fn with_holdout(mut self, evidence: HoldoutEvidence) -> Self {
         self.holdout = Some(evidence);
+        self
+    }
+
+    /// Attach the manifest of the recorded data the holdout was simulated over.
+    pub fn with_simulation(mut self, manifest: DatasetManifest) -> Self {
+        self.simulation = Some(manifest);
         self
     }
 

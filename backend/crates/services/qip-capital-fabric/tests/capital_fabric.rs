@@ -26,7 +26,7 @@ use qip_capital_fabric::plan::{
     LocationBalance, PrePositioningPlan, PrePositioningPlanner, PrePositioningRequest,
     RefusalReason,
 };
-use qip_capital_fabric::settlement::{SettlementCalendar, SettlementConvention};
+use qip_capital_fabric::settlement::{SettlementBook, SettlementCalendar, SettlementConvention};
 use qip_capital_fabric::transfer::{FundingCurve, FxRates, ShortfallAsymmetry, TransferCostModel};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
@@ -80,6 +80,30 @@ fn cost_model(wire_fee: Decimal) -> Result<TransferCostModel> {
     )
 }
 
+/// The jurisdiction every `at_venue` location is keyed on.
+fn emea() -> Region {
+    Region::new("emea")
+}
+
+/// A book with one jurisdiction, `emea`, on `convention`, and every venue
+/// this suite forecasts at assigned to it.
+fn settlement_book(convention: SettlementConvention) -> Result<SettlementBook> {
+    let mut book = SettlementBook::new();
+    book.declare_jurisdiction(emea(), SettlementCalendar::weekday(convention)?)?;
+    for venue in [
+        "XLON",
+        "XTKS",
+        "XETR",
+        "EURO-DESK",
+        "VENUE-0",
+        "VENUE-1",
+        "VENUE-2",
+    ] {
+        book.assign_venue(VenueId::new(venue), emea())?;
+    }
+    Ok(book)
+}
+
 fn planner_with(
     total: Decimal,
     per_venue: Decimal,
@@ -92,7 +116,7 @@ fn planner_with(
             DrawdownSchedule::default(),
         ),
         cost_model(wire_fee)?,
-        SettlementCalendar::weekday(convention)?,
+        settlement_book(convention)?,
     ))
 }
 
@@ -357,7 +381,7 @@ fn the_benefit_is_taken_at_the_lower_bound_and_the_cost_at_the_upper() -> Result
                 DrawdownSchedule::default(),
             ),
             cost_model(dec!("25"))?.with_cost_uncertainty(uncertainty)?,
-            SettlementCalendar::weekday(SettlementConvention::T1)?,
+            settlement_book(SettlementConvention::T1)?,
         );
         let live = idle_allocation(&planner, now)?;
         let plan = planner.plan(&request, &live, now)?;
@@ -509,6 +533,217 @@ fn an_interval_refuses_to_be_built_out_of_order_or_without_coverage() -> Result<
 // --- settlement -------------------------------------------------------------
 
 #[test]
+fn each_lane_is_quoted_on_its_own_venues_jurisdiction_calendar_not_one_shared_calendar()
+-> Result<()> {
+    // The failure this guards: the planner held one calendar for every lane,
+    // so a venue settling T+0 and a venue settling T+2 were quoted on the
+    // same convention, and whichever one the calendar was not built for was
+    // wrong on every Friday. Two lanes, two jurisdictions, one deadline the
+    // T+0 venue makes and the T+2 venue misses: the plan has to move capital
+    // to one and refuse the other as settling too late, in the same call.
+    let mut book = SettlementBook::new();
+    book.declare_jurisdiction(
+        Region::new("same-day"),
+        SettlementCalendar::weekday(SettlementConvention::T0)?,
+    )?;
+    book.declare_jurisdiction(
+        Region::new("two-day"),
+        SettlementCalendar::weekday(SettlementConvention::T2)?,
+    )?;
+    book.assign_venue(VenueId::new("XFAST"), Region::new("same-day"))?;
+    book.assign_venue(VenueId::new("XSLOW"), Region::new("two-day"))?;
+    let planner = PrePositioningPlanner::new(
+        CapitalAllocator::new(
+            AllocationLimits::new(
+                dec!("100000000"),
+                dec!("100000000"),
+                dec!("100000000"),
+                dec!("100000000"),
+            )?,
+            DrawdownSchedule::default(),
+        ),
+        cost_model(dec!("25"))?,
+        book,
+    );
+    let fast = CapitalLocation::new(
+        Region::new("same-day"),
+        Currency::USD,
+        VenueId::new("XFAST"),
+    );
+    let slow = CapitalLocation::new(Region::new("two-day"), Currency::USD, VenueId::new("XSLOW"));
+
+    // Thursday morning, needed Friday morning: T+0 lands Thursday evening,
+    // T+2 lands Monday.
+    let now = thursday();
+    let needed_by = now.saturating_add(Duration::from_days(1));
+    let mut request =
+        PrePositioningRequest::new(treasury(), dec!("50000000"), FxRates::new(Currency::USD))?;
+    for location in [&fast, &slow] {
+        request = request.with_forecast(margin_forecast(
+            location,
+            dec!("9000000"),
+            dec!("10000000"),
+            dec!("11000000"),
+            now,
+            needed_by.since(now),
+        )?);
+    }
+    let plan = planner.plan(&request, &idle_allocation(&planner, now)?, now)?;
+
+    let moved: Vec<&str> = plan.moves.iter().map(|m| m.to.venue.as_str()).collect();
+    assert_eq!(moved, vec!["XFAST"], "{}", plan.describe());
+    let refused = plan
+        .refusals
+        .iter()
+        .find(|r| r.location.venue.as_str() == "XSLOW")
+        .unwrap_or_else(|| {
+            panic!(
+                "the T+2 lane was neither moved nor refused: {}",
+                plan.describe()
+            )
+        });
+    assert_eq!(
+        refused.reason,
+        RefusalReason::SettlesTooLate,
+        "{}",
+        refused.describe()
+    );
+    assert!(refused.detail.contains("T+2"), "{}", refused.describe());
+    Ok(())
+}
+
+#[test]
+fn a_lane_at_a_venue_with_no_declared_jurisdiction_is_refused_by_name_and_the_declared_lane_still_planned()
+-> Result<()> {
+    // Refuse, never default. Before the book existed an undeclared venue
+    // was simply quoted on the one calendar; now the lane is refused with
+    // the venue named and the act that clears it, and the refusal is per
+    // lane so the declared venue beside it is still funded.
+    let planner = planner()?;
+    let now = thursday();
+    let declared = at_venue("XLON");
+    let undeclared = at_venue("XNAS");
+    let mut request =
+        PrePositioningRequest::new(treasury(), dec!("50000000"), FxRates::new(Currency::USD))?;
+    for location in [&declared, &undeclared] {
+        request = request.with_forecast(margin_forecast(
+            location,
+            dec!("9000000"),
+            dec!("10000000"),
+            dec!("11000000"),
+            now,
+            Duration::from_days(4),
+        )?);
+    }
+    let plan = planner.plan(&request, &idle_allocation(&planner, now)?, now)?;
+
+    let moved: Vec<&str> = plan.moves.iter().map(|m| m.to.venue.as_str()).collect();
+    assert_eq!(moved, vec!["XLON"], "{}", plan.describe());
+    let refused = plan
+        .refusals
+        .iter()
+        .find(|r| r.location.venue.as_str() == "XNAS")
+        .unwrap_or_else(|| panic!("the undeclared lane was not refused: {}", plan.describe()));
+    assert_eq!(
+        refused.reason,
+        RefusalReason::Unpriceable,
+        "{}",
+        refused.describe()
+    );
+    assert!(
+        refused.detail.contains("XNAS") && refused.detail.contains("assign_venue"),
+        "{}",
+        refused.describe()
+    );
+    // And the lane is still on the record, so scoring after the fact sees
+    // that the forecaster looked and the planner declined.
+    assert_eq!(plan.lanes.len(), 2, "{}", plan.describe());
+    Ok(())
+}
+
+#[test]
+fn a_lane_keyed_on_a_jurisdiction_its_venue_does_not_settle_in_is_refused() -> Result<()> {
+    // A location carries its own region, and the book carries the venue's.
+    // When they disagree one of them is wrong, and quoting the lane on the
+    // venue's real calendar would make the plan right for the wrong reason.
+    let planner = planner()?;
+    let now = thursday();
+    let mislabelled =
+        CapitalLocation::new(Region::new("apac"), Currency::USD, VenueId::new("XLON"));
+    let request =
+        PrePositioningRequest::new(treasury(), dec!("50000000"), FxRates::new(Currency::USD))?
+            .with_forecast(margin_forecast(
+                &mislabelled,
+                dec!("9000000"),
+                dec!("10000000"),
+                dec!("11000000"),
+                now,
+                Duration::from_days(4),
+            )?);
+    let plan = planner.plan(&request, &idle_allocation(&planner, now)?, now)?;
+    assert!(plan.moves.is_empty(), "{}", plan.describe());
+    let refused = plan
+        .refusals
+        .first()
+        .unwrap_or_else(|| panic!("nothing was refused: {}", plan.describe()));
+    assert_eq!(
+        refused.reason,
+        RefusalReason::Unpriceable,
+        "{}",
+        refused.describe()
+    );
+    assert!(
+        refused.detail.contains("emea") && refused.detail.contains("apac"),
+        "{}",
+        refused.describe()
+    );
+    Ok(())
+}
+
+#[test]
+fn the_book_refuses_a_venue_in_an_undeclared_jurisdiction_and_a_second_calendar_for_one()
+-> Result<()> {
+    let mut book = SettlementBook::new();
+    let error = book
+        .assign_venue(VenueId::new("XLON"), emea())
+        .expect_err("a venue cannot settle in a jurisdiction with no calendar");
+    assert!(
+        error.message().contains("declare_jurisdiction"),
+        "{}",
+        error.message()
+    );
+
+    book.declare_jurisdiction(
+        emea(),
+        SettlementCalendar::weekday(SettlementConvention::T1)?,
+    )?;
+    let error = book
+        .declare_jurisdiction(
+            emea(),
+            SettlementCalendar::weekday(SettlementConvention::T2)?,
+        )
+        .expect_err("two calendars for one jurisdiction is two settlement days");
+    assert!(error.message().contains("already"), "{}", error.message());
+
+    book.assign_venue(VenueId::new("XLON"), emea())?;
+    let error = book
+        .assign_venue(VenueId::new("XLON"), emea())
+        .expect_err("a venue settles in one jurisdiction");
+    assert!(
+        error.message().contains("already settles"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(book.jurisdiction_of(&VenueId::new("XLON")), Some(&emea()));
+    assert_eq!(
+        book.calendar_for(&VenueId::new("XLON"), &emea())?
+            .convention(),
+        SettlementConvention::T1
+    );
+    Ok(())
+}
+
+#[test]
 fn a_weekend_plan_that_assumes_same_day_availability_is_refused() -> Result<()> {
     // A collateral requirement with Saturday value, at a venue that margins
     // through the weekend against settlement rails that do not. The two
@@ -539,7 +774,10 @@ fn a_weekend_plan_that_assumes_same_day_availability_is_refused() -> Result<()> 
 
     // Even a same-day calendar does not deliver same day across a weekend.
     let late = friday_evening();
-    let quote = planner.calendar().quote(late)?;
+    let quote = planner
+        .settlement()
+        .calendar_for(&venue.venue, &venue.region)?
+        .quote(late)?;
     assert!(!quote.made_cutoff, "{}", quote.describe());
     assert_eq!(quote.available_at.weekday(), 0, "{}", quote.describe());
     assert!(quote.days_in_flight_stat > 2.0, "{}", quote.describe());
