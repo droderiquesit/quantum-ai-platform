@@ -516,10 +516,14 @@ fn two_cells_driven_through_identical_passes_journal_identical_release_instants(
         6,
         "the premise failed: three cycles of two legs did not journal six sends"
     );
+    // A range rather than the exact instant, on purpose: the exact instant
+    // is the other test's property, and a premise that pinned it here would
+    // fire before the identity assertion under a mutation that perturbs the
+    // instant — proving the premise, not the property.
     assert!(
-        first
-            .iter()
-            .any(|(venue, release_at, _)| venue == NEAR && *release_at == Some(ms(t(20), 29))),
+        first.iter().any(|(venue, release_at, _)| {
+            venue == NEAR && release_at.is_some_and(|at| at > t(20) && at < t(30))
+        }),
         "the premise failed: no leg was held on a non-zero offset, so identity here proves \
          nothing about the schedule: {first:?}"
     );
