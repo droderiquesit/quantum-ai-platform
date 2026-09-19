@@ -13,7 +13,11 @@
 //! two worth anything:
 //!
 //! 1. A book that traded and holds no statement has the venue named on the
-//!    LEARN stage, as a stage problem, and in the hash-chained log.
+//!    LEARN stage and in the hash-chained log — and **not** raised as a stage
+//!    problem, because handing in nothing is what every deployment that exists
+//!    today has done, and a fault raised every cycle on the ordinary state is
+//!    an alarm an operator learns to page past. A margin call on cover
+//!    somebody actually read is the fault, and the third test holds that.
 //! 2. A statement that covers the book turns that line into a covered reading
 //!    and journals nothing, so the finding is one an operator can close.
 //! 3. A book that has traded nowhere says **nothing at all** about collateral.
@@ -199,9 +203,16 @@ fn a_book_that_traded_with_no_statement_has_the_unread_venue_named_by_learn_and_
         learn.detail
     );
 
-    // A sentence on a stage is a sentence. The problem is what reaches
-    // `CycleJournalEntry::problems` and both brains' `problems()`, which is
-    // the surface an operator is actually watching.
+    // And it is a sentence and **not** a stage problem, which is the half of
+    // this property that had to be learned the hard way. Handing in nothing is
+    // what every deployment that exists today has done; a fault raised every
+    // cycle on the ordinary state is an alarm an operator learns to page past,
+    // and `reconcile_wallet`'s caller already argues exactly this about the
+    // wallet's own silence. The first draft of this seam raised a problem here
+    // and broke `the_learn_stage_retires_a_strategy_whose_cells_realised_
+    // sustained_decay_and_journals_its_disposition`, whose book trades and
+    // hands in nothing and whose LEARN problem list had been empty since the
+    // stage existed. That test was right and this seam was wrong.
     let problems: Vec<String> = report
         .problems()
         .into_iter()
@@ -209,11 +220,12 @@ fn a_book_that_traded_with_no_statement_has_the_unread_venue_named_by_learn_and_
         .map(|(_, problem)| problem.to_string())
         .collect();
     assert!(
-        problems.iter().any(
+        !problems.iter().any(
             |problem| problem.contains("nobody has handed in a statement for")
-                && problem.contains(counterparty.as_str())
+                || problem.contains("collateral has to be posted there")
         ),
-        "no stage problem named the venue with unread collateral: {problems:?}"
+        "an unread account was raised as a fault on a book that is entitled to \
+         have handed in nothing: {problems:?}"
     );
 
     // And the record a replay would read. The total tells an operator to go

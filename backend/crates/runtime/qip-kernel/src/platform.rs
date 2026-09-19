@@ -12565,8 +12565,10 @@ impl Platform {
     /// because it is an evaluation, and turning "nobody has read a statement
     /// at this venue" into a veto would stop a paper platform trading on the
     /// first cycle of every deployment that exists today. What it produces is
-    /// a sentence on the stage, a problem per actionable finding, and a
-    /// journalled [`crate::cross_margin::CrossMarginFinding`].
+    /// a sentence on the stage, a journalled
+    /// [`crate::cross_margin::CrossMarginFinding`], and a stage problem for a
+    /// margin call and for nothing else — the comment on the problem list says
+    /// why an unread account is deliberately not one.
     ///
     /// Three arms rather than two, and the third is the one worth naming. A
     /// finding is reported. A book that carries maintenance somewhere and has
@@ -12604,6 +12606,24 @@ impl Platform {
         };
 
         let mut problems = Vec::new();
+        // **Only a margin call is a problem. An unread account is a
+        // sentence.** The distinction is the one the `reconcile_wallet` call
+        // above already argues for at length, and it is load-bearing here for
+        // exactly its reason: a desk is entitled to have handed in nothing, an
+        // unobserved venue is the ordinary state of every deployment that
+        // exists today, and a fault raised every cycle on a normal state is an
+        // alarm an operator learns to page past. A venue whose statement was
+        // read and does not cover its own maintenance is the opposite —
+        // somebody looked, and the numbers do not work.
+        //
+        // This was written the other way first, and a kernel test caught it:
+        // `the_learn_stage_retires_a_strategy_whose_cells_realised_sustained_decay_and_journals_its_disposition`
+        // drives a book that trades and hands in nothing, and it failed on a
+        // LEARN problem list that had been empty since the stage existed.
+        // Nothing is lost by declining to call a cold start a fault: the stage
+        // sentence still names every unread venue and the journalled finding
+        // still carries the whole of it.
+        //
         // One problem per called venue rather than a count. The venue is the
         // only part of this an operator can act on: posting collateral is a
         // per-account instruction, and "2 venues below maintenance" names
@@ -12611,24 +12631,6 @@ impl Platform {
         for venue in &review.calls {
             problems.push(format!(
                 "a venue's observed cover is below the maintenance its own exposure requires, so                  collateral has to be posted there: {venue}"
-            ));
-        }
-        // One problem for the unobserved set, not one per venue. Here the
-        // fact genuinely is collective — this book's collateral is unread —
-        // and the remedy is one instruction, hand the statements in; the
-        // venues are named inside it so nothing is folded away.
-        if !review.unobserved.is_empty() {
-            problems.push(format!(
-                "{} of gross sits at {} venue(s) nobody has handed in a statement for, needing {}                  posted where nobody has looked; this is not a shortfall and must not be read as                  one ({})",
-                review.unobserved_gross(),
-                review.unobserved.len(),
-                review.unobserved_maintenance(),
-                review
-                    .unobserved
-                    .iter()
-                    .map(|gap| gap.venue.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
             ));
         }
 
