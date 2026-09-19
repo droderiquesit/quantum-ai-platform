@@ -662,7 +662,7 @@ impl ExplorationBook {
             return Err(Error::denied(format!(
                 "a probe may not stay open for longer than {:.1} hour(s), and this plan asked \
                  for {:.1}; expiry is the only thing that closes a probe nobody settles or \
-                 abandons, so a longer one is refused rather than truncated - plan for less, \
+                 abandons, so a longer one is refused rather than truncated — plan for less, \
                  or re-plan once these probes lapse",
                 MAXIMUM_PROBE_VALIDITY.as_secs_f64() / 3600.0,
                 validity.as_secs_f64() / 3600.0
