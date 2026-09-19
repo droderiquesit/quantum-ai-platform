@@ -26,7 +26,7 @@ use qip_core::error::{Error, Result};
 use qip_core::time::Duration;
 use qip_core::{Clock, SystemClock};
 use qip_data_finder::registration::RegistrationRecord;
-use qip_kernel::central::ArbitragePolicy;
+use qip_kernel::central::{ArbitragePolicy, CentralConfig, CentralPlane};
 use qip_kernel::{Platform, PlatformConfig};
 use qip_market_ingestion::connector::journal::StreamJournal;
 use qip_observability::Telemetry;
@@ -119,6 +119,14 @@ fn run() -> Result<()> {
     // it too; a policy attached after the rebuild would be lost in the swap.
     let (arbitrage, arbitrage_banner) = load_arbitrage_policy()?;
 
+    // ADR 0079's dark-region window, read here and in no other root — see
+    // `load_region_dark_after` for why this is the root that owns it and why
+    // unset is the derivation off rather than a default window. Set on the
+    // configuration beside the arbitrage policy, before the platform exists,
+    // for the same reason: the plane `harden_central` rebuilds from carries
+    // it too.
+    let (region_dark_after, region_dark_banner) = load_region_dark_after()?;
+
     // Who has registered with a venue, from the committed file the deployment
     // names — see `load_venue_registrations` for why an unset path is a
     // registry that records nobody and a named file that does not parse is a
@@ -132,6 +140,7 @@ fn run() -> Result<()> {
         .with_live_ceiling(ceiling)
         .with_venue_registrations(venue_registrations);
     config.central.arbitrage = arbitrage;
+    config.central.region_dark_after = region_dark_after;
 
     // The source `POST /cycle` senses, chosen before the platform exists
     // because a tape owns the clock the platform must be assembled on. A
@@ -528,6 +537,7 @@ fn run() -> Result<()> {
         }
     }
     println!("  arbitrage desk:   {arbitrage_banner}");
+    println!("  region darkness:  {region_dark_banner}");
     println!("  wallet statement: {statement_banner}");
     println!("  capital fabric:   {fabric_banner}");
     match &mesh {
@@ -888,6 +898,104 @@ fn load_arbitrage_policy() -> Result<(Option<ArbitragePolicy>, String)> {
     Ok((Some(policy), banner))
 }
 
+/// Where the centre's dark-region window is read from (ADR 0079): a whole
+/// number of seconds every cell of a region may be silent before the centre
+/// derives the region dark. Unset means the derivation is off.
+const REGION_DARK_AFTER_VARIABLE: &str = "QIP_REGION_DARK_AFTER";
+
+/// ADR 0079's window, from the environment, and the banner line that says
+/// what the process will and will not derive.
+///
+/// This is the root that owns the window, and the claim is checked rather
+/// than assumed: `mesh.rs::pending_policy` is the one producer of the policy
+/// payload — it runs `Platform::issue_region_shares`, which is where a dark
+/// region's share bound is frozen — and `IngestSink::absorb` in the same
+/// module is the one caller of `Platform::ingest_cell_report`, which is
+/// where `last_heard` is written. Both are reached from `POST /cycle` in
+/// `routes.rs` under the mesh lock. `qip-deepbrain` and `qip-fastbrain`
+/// build no mesh and ingest no cell report, so a window stated there would
+/// be a number over an empty `last_heard`: it could derive nothing, and a
+/// banner saying "a region is dark after N seconds" on a process no cell
+/// can reach would be a claim about a control that cannot fire. Neither
+/// reads this variable, and `manifest_wiring.rs` refuses them a value.
+///
+/// Unset is not a refusal: it is the operator saying the derivation is off,
+/// which `CentralConfig::region_dark_after` deliberately gives no default
+/// for — there is no measurement in this tree to pick a window from, and a
+/// default here would be a number nobody chose sitting where a region's
+/// capital is decided. `/api/v1/regions` then answers
+/// `"region_dark_after": null`, so a reader can tell "nobody is looking" from
+/// "no region is dark". Set and not a whole number of seconds, zero, or
+/// above the envelope ceiling is a refusal to start naming the variable: a
+/// process that fell back to "off" because the operator mistyped the window
+/// would run healthy with the control silently disarmed, which is the shape
+/// the empty universe once had.
+fn load_region_dark_after() -> Result<(Option<Duration>, String)> {
+    let value = std::env::var(REGION_DARK_AFTER_VARIABLE).ok();
+    let window = parse_region_dark_after(value.as_deref())?;
+    let banner = match window {
+        None => format!(
+            "off ({REGION_DARK_AFTER_VARIABLE} is not set); no region is ever derived dark and \
+             /api/v1/regions answers region_dark_after: null"
+        ),
+        Some(window) => format!(
+            "a region is dark after {} second(s) of silence from every cell in it (ADR 0079); \
+             nothing new enters a dark region and its last book is held",
+            window.as_millis() / 1_000
+        ),
+    };
+    Ok((window, banner))
+}
+
+/// The value of [`REGION_DARK_AFTER_VARIABLE`] as the duration the plane
+/// reads, or `None` for unset or blank.
+///
+/// The parser refuses what only it can see — text that is not a whole
+/// number of seconds. The two bounds, zero and the envelope ceiling, are the
+/// plane's own and are refused once, in `CentralPlane::new`; they are
+/// checked here by assembling a plane on the candidate configuration rather
+/// than by restating the comparison, because a second copy of the bound at
+/// this root would be a second claim about one fact, and the two would
+/// drift. What this root adds is the variable's name in front of the
+/// plane's message, so an operator reading the refusal is told which line
+/// of the deployment to change rather than which field of a struct they
+/// never see. The class of the refusal is the plane's (`relabelled` keeps
+/// it), so an over-ceiling window is still `denied` and a zero one `invalid`.
+fn parse_region_dark_after(value: Option<&str>) -> Result<Option<Duration>> {
+    let Some(text) = value.map(str::trim).filter(|text| !text.is_empty()) else {
+        return Ok(None);
+    };
+    let seconds: i64 = text.parse().map_err(|error| {
+        Error::invalid(format!(
+            "configuration: {REGION_DARK_AFTER_VARIABLE} is {text:?}, which is not a whole \
+             number of seconds: {error}. State the window as an integer such as 300, or unset \
+             it to leave the derivation off"
+        ))
+    })?;
+    let window = Duration::from_secs(seconds);
+    // A validation-only assembly: the plane it builds is dropped on the next
+    // line, and a reproducible key is used because no signature is ever made
+    // with it. The literal is a sentence rather than key material — the
+    // plane insists on thirty-two bytes, and the first version of this seam
+    // handed it twenty-eight, so the admitting test below refused every
+    // window and proved why an admitting half is not optional.
+    CentralPlane::with_reproducible_key(
+        b"validation only: this plane is dropped before it signs anything",
+        CentralConfig {
+            region_dark_after: Some(window),
+            ..CentralConfig::default()
+        },
+    )
+    .map_err(|error| {
+        let message = format!(
+            "configuration: {REGION_DARK_AFTER_VARIABLE} is {seconds}: {}",
+            error.message()
+        );
+        error.relabelled(message)
+    })?;
+    Ok(Some(window))
+}
+
 /// The wallet statement the deployment names, observed into `platform`, and
 /// the banner line that says what was read.
 ///
@@ -970,7 +1078,8 @@ mod tests {
     // test the assertion is the deliverable and `?` keeps the setup readable.
     #![allow(clippy::panic_in_result_fn)]
 
-    use super::{limits_banner, parse_risk_limits};
+    use super::{limits_banner, parse_region_dark_after, parse_risk_limits};
+    use qip_capital::MAXIMUM_ENVELOPE_VALIDITY;
     use qip_core::error::{Error, Result};
     use qip_core::{Context, Timestamp, dec};
     use qip_kernel::central::ArbitragePolicy;
@@ -978,6 +1087,110 @@ mod tests {
     use qip_observability::Telemetry;
     use qip_risk::AggregateFigures;
     use qip_risk::limits::LimitSet;
+
+    // ADR 0079's window at this root. Each refusal is asserted to name the
+    // variable as a delimited token, because the message an operator reads
+    // at start-up has to point at the line of the deployment to change; the
+    // plane's own message names a struct field they never see.
+    fn names_the_variable(message: &str) -> bool {
+        message
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|token| token == "QIP_REGION_DARK_AFTER")
+    }
+
+    #[test]
+    fn an_unset_or_blank_dark_window_leaves_the_derivation_off() -> Result<()> {
+        // Unset is the operator's "off", not a mistake: the field has no
+        // default on purpose, and a root that invented one would arm the
+        // derivation on a number nobody chose.
+        assert_eq!(parse_region_dark_after(None)?, None);
+        assert_eq!(parse_region_dark_after(Some(""))?, None);
+        assert_eq!(parse_region_dark_after(Some("   "))?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_dark_window_that_is_not_a_whole_number_of_seconds_stops_the_process_naming_the_variable() {
+        // A mistyped window must not read as "off": the process would run
+        // healthy with the control disarmed and nothing would say so.
+        for text in ["five minutes", "1.5", "300s", "0x12c", "-"] {
+            let error = parse_region_dark_after(Some(text))
+                .err()
+                .unwrap_or_else(|| panic!("{text:?} was admitted as a window"));
+            assert!(
+                names_the_variable(error.message()),
+                "{text:?}: the refusal does not name the variable: {}",
+                error.message()
+            );
+            assert!(
+                error.message().contains("whole number of seconds"),
+                "{text:?}: the refusal does not say what shape is wanted: {}",
+                error.message()
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_or_over_ceiling_dark_window_stops_the_process_naming_the_variable_and_the_ceiling() {
+        // Both bounds are the plane's (`CentralPlane::new`); what this root
+        // owes the operator is the variable's name in front of them.
+        let zero = parse_region_dark_after(Some("0")).expect_err(
+            "a zero window was admitted; every region would be dark between two reports",
+        );
+        assert!(names_the_variable(zero.message()), "{}", zero.message());
+        assert!(
+            zero.message().contains("no silence at all"),
+            "the zero refusal is not the plane's own: {}",
+            zero.message()
+        );
+
+        let negative =
+            parse_region_dark_after(Some("-30")).expect_err("a negative window was admitted");
+        assert!(
+            names_the_variable(negative.message()),
+            "{}",
+            negative.message()
+        );
+
+        let past = MAXIMUM_ENVELOPE_VALIDITY.as_millis() / 1_000 + 1;
+        let over = parse_region_dark_after(Some(&past.to_string()))
+            .expect_err("a window past the envelope ceiling was admitted; it would notice a region only after every grant in it had expired");
+        assert!(names_the_variable(over.message()), "{}", over.message());
+        assert!(
+            over.message().contains("ceiling"),
+            "the over-ceiling refusal does not name the ceiling: {}",
+            over.message()
+        );
+        assert_eq!(
+            over.code(),
+            "denied",
+            "the plane refuses an over-ceiling window as denied and the root changed its class"
+        );
+    }
+
+    #[test]
+    fn a_dark_window_at_or_under_the_ceiling_is_the_duration_the_plane_reads() -> Result<()> {
+        // The admitting half, without which the three refusals above could
+        // be satisfied by a parser that refuses everything.
+        assert_eq!(
+            parse_region_dark_after(Some("300"))?,
+            Some(qip_core::Duration::from_secs(300))
+        );
+        assert_eq!(
+            parse_region_dark_after(Some(" 300 "))?,
+            Some(qip_core::Duration::from_secs(300)),
+            "surrounding whitespace is not part of a number"
+        );
+        // Exactly the ceiling is admitted: the plane refuses `>` and not `>=`,
+        // and a root that refused the ceiling itself would disagree with it.
+        assert_eq!(
+            parse_region_dark_after(Some(
+                &(MAXIMUM_ENVELOPE_VALIDITY.as_millis() / 1_000).to_string()
+            ))?,
+            Some(MAXIMUM_ENVELOPE_VALIDITY)
+        );
+        Ok(())
+    }
 
     #[test]
     fn a_malformed_limits_file_stops_the_process() {

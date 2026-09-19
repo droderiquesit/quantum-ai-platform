@@ -267,15 +267,28 @@ locals {
       invokers = compact([
         module.secrets.console_service_account_email == null ? "" : "serviceAccount:${module.secrets.console_service_account_email}",
       ])
-      env = {
-        QIP_API_ADDRESS    = "0.0.0.0:8080"
-        QIP_STORAGE_TARGET = var.storage_target
-        # The autonomy ceiling, from the one root variable whose validation
-        # refuses the three live rungs at plan time. Every workload takes it
-        # from here and never from a literal, so lowering or raising it is a
-        # change to one reviewed value that appears in a diff.
-        QIP_AUTONOMY_CEILING = var.autonomy_ceiling
-      }
+      env = merge(
+        {
+          QIP_API_ADDRESS    = "0.0.0.0:8080"
+          QIP_STORAGE_TARGET = var.storage_target
+          # The autonomy ceiling, from the one root variable whose validation
+          # refuses the three live rungs at plan time. Every workload takes it
+          # from here and never from a literal, so lowering or raising it is a
+          # change to one reviewed value that appears in a diff.
+          QIP_AUTONOMY_CEILING = var.autonomy_ceiling
+        },
+        # ADR 0079's dark-region window, on the one workload that owns it:
+        # the API runs `pending_policy` and ingests every cell report, so it
+        # is the process that can hear a region fall silent. Unset, the
+        # derivation is off and `/api/v1/regions` says so with a null window
+        # — the state every environment is in, because none serves a mesh.
+        # A reviewed non-null value is an operator's window, never a default
+        # this catalogue chooses for them; the API refuses zero, a fraction
+        # and anything above the envelope ceiling at start-up, by name.
+        var.region_dark_after == null ? {} : {
+          QIP_REGION_DARK_AFTER = var.region_dark_after
+        },
+      )
       # The universe every root reads, and whatever optional files the tfvars
       # named for this workload. A comprehension rather than a bare `merge`
       # so the block still opens with `config_files = {`: three acceptance

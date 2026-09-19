@@ -1,8 +1,41 @@
 # 0079 — A dark region is the centre's word for silence, and nothing read from it may loosen a bound
 
-**Status:** *proposed*, 2026-09-19. Decided by the architecture lane; awaiting
-implementation across the four crates named under "The change, crate by
-crate".
+**Status:** *accepted*, 2026-09-19. Implemented the same day across the four
+crates named under "The change, crate by crate" — `42c68d5` (the
+subtract-only slot), `c0f957f` (the derivation, `issue`'s refusal, the share
+freeze and both journal events), `4b209fa` (the invariant test, the
+`/regions` rendering and the ACT-exit journaling), `b7558d6` and `bcb5619`
+(the edge half, at the extension) — and given the composition root this
+record required by lane C1: `43aa251` (`qip-api` reads `QIP_REGION_DARK_AFTER`
+as whole seconds and refuses a malformed value, zero, a negative and a window
+past the envelope ceiling at start-up, naming the variable and surfacing the
+plane's own refusal rather than restating its bounds; the deep brain
+deliberately does not read it, because it ingests no cell report and a
+window there would be a number over an empty `last_heard`), `c7784ac`
+(`region_dark_after` as a root variable with no default, rendered on the
+API's catalogue entry alone through a conditional arm and planned both ways
+in `infrastructure/terraform/tests/region-dark-window.tftest.hcl`), and the
+manifest-wiring and record commits that follow under
+`git log --oneline --grep='QIP_REGION_DARK_AFTER' claude/compassionate-cray-jvx8jt`.
+
+Two limits stand, stated rather than rounded up. Every environment leaves the
+window null and says why in its own tfvars: no Cloud Run API serves a mesh
+(`THE_MESH_HAS_NO_PORT_ON_CLOUD_RUN` in
+`backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs`), so a window
+today would arm a derivation over a centre that can hear no cell, and no
+deployed process derives anything yet. And `CentralPlane::issue` has no
+production caller, so Decision four's refusal is built, proven and unreached
+until the operator route its own doc names exists.
+
+One claim in the Context below has become false since it was written and is
+left as written because the decision does not turn on it:
+`grep -rn 'region_outlook\|is_region_dark' --include=*.rs backend/crates/`
+now prints the cell's `apply_region_outlook`, `region_outlook` and their
+callers, which the region-wire lane landed. That reading is the cell's own,
+of its peers, off a local mount — which a crashed node still cannot send —
+so the centre's derivation from silence remains a second, independent source,
+and the two are kept distinct on purpose
+(`grep -n 'pub const GATE_CENTRE_DARK_REGION\|pub const GATE_DARK_REGION' backend/crates/edge/qip-edge/src/cell.rs`).
 
 **Relates to:** blueprint §36.3 (rows two and three, "a region's node
 crashes" and "whole cloud region fails"), §36.2 (the twelve-slot payload),

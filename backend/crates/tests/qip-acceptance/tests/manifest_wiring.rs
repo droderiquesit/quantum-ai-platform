@@ -2103,6 +2103,111 @@ fn the_risk_limits_file_is_mountable_from_a_root_variable_on_all_three_central_r
 }
 
 #[test]
+fn the_dark_region_window_is_settable_from_a_root_variable_on_the_api_alone_and_no_environment_states_one()
+ {
+    // ADR 0079's deployment half. `CentralConfig::region_dark_after` has no
+    // default on purpose, so the derivation is off in every process until a
+    // root states a window — and until this, no root did, so a control
+    // built, proven and rendered on `/api/v1/regions` was armed nowhere.
+    // `qip-api` is the root, because it is the one binary that ingests a
+    // cell report (`IngestSink::absorb`) and produces the policy payload
+    // (`pending_policy`): where `last_heard` is written and where a dark
+    // region's share is frozen. Three facts a deployment has to get right,
+    // each asserted rather than argued: the API reads the variable and the
+    // brains do not; the catalogue offers it from a root variable through
+    // the conditional arm, to the API alone; and every environment declines
+    // it in writing, because this API serves no mesh and a window here would
+    // arm a derivation over a centre that can hear no cell.
+    let constants = variables_by_constant();
+    let read_by_api = variables_read_by("qip-api", &constants);
+    assert!(
+        read_by_api.literal.contains("QIP_REGION_DARK_AFTER"),
+        "qip-api no longer reads QIP_REGION_DARK_AFTER; the arm below would then render a \
+         variable nothing reads, and the derivation would be off with a window stated"
+    );
+    for binary in ["qip-fastbrain", "qip-deepbrain"] {
+        assert!(
+            !variables_read_by(binary, &constants)
+                .all()
+                .contains("QIP_REGION_DARK_AFTER"),
+            "{binary} reads QIP_REGION_DARK_AFTER. It builds no mesh and ingests no cell \
+             report, so a window there is a number over an empty map and a banner claiming \
+             a control that cannot fire; the API is the one root that owns the window"
+        );
+    }
+
+    let conditional = catalogue_conditional_variables();
+    let on_the_api = conditional
+        .get("api")
+        .expect("the catalogue declares the api workload");
+    assert!(
+        on_the_api.contains("QIP_REGION_DARK_AFTER"),
+        "the API's catalogue entry does not render QIP_REGION_DARK_AFTER inside a \
+         `var.x == null ? {{}} : {{` arm; it renders {on_the_api:?} conditionally. An \
+         unconditional arm would hand a null environment an empty string the binary reads \
+         as unset only by the grace of its trim"
+    );
+    for workload in ["fastbrain", "deepbrain"] {
+        assert!(
+            !conditional
+                .get(workload)
+                .is_some_and(|names| names.contains("QIP_REGION_DARK_AFTER")),
+            "the {workload} entry renders QIP_REGION_DARK_AFTER; only the API ingests cell \
+             reports"
+        );
+    }
+    let catalogue = without_comments(&read(CATALOGUE));
+    assert!(
+        catalogue.contains("QIP_REGION_DARK_AFTER = var.region_dark_after"),
+        "the catalogue sets QIP_REGION_DARK_AFTER from something other than the root \
+         variable; a literal here would be a window this catalogue chose for the operator"
+    );
+
+    let block = root_variable_block("region_dark_after");
+    assert!(
+        block.contains("default = null"),
+        "region_dark_after has a non-null default; the ADR gives the window no default \
+         because there is no measurement in this tree to pick one from"
+    );
+    assert!(
+        block.contains("^[1-9][0-9]*$"),
+        "region_dark_after no longer refuses zero, a negative or a fraction at plan time; the \
+         binary would refuse them at start-up instead, one restart later"
+    );
+
+    for environment in ENVIRONMENTS {
+        assert_eq!(
+            tfvars_assignment(environment, "region_dark_after"),
+            None,
+            "{environment} states a dark-region window. This API serves no mesh, so the \
+             derivation can hear no cell there; if the fabric now exists and QIP_MESH_CELLS \
+             is set, this premise is the line to revisit"
+        );
+        let tfvars = read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        ));
+        assert!(
+            tfvars.contains("region_dark_after"),
+            "{environment} does not mention region_dark_after at all. Unset is a decision \
+             here — the derivation is off and /api/v1/regions says so — and a decision nobody \
+             wrote down is one the next reader will make again from scratch"
+        );
+    }
+
+    // The allowlist does not excuse it: the catalogue offers the value, so an
+    // entry saying the variable cannot be set would be false, and an obsolete
+    // exception excuses the next mistake with the same name.
+    assert!(
+        !READ_BUT_NOT_SET
+            .iter()
+            .any(|(crate_name, variable, _)| *crate_name == "qip-api"
+                && *variable == "QIP_REGION_DARK_AFTER"),
+        "QIP_REGION_DARK_AFTER is argued unset for qip-api in READ_BUT_NOT_SET and the \
+         catalogue sets it from var.region_dark_after; one of the two is wrong"
+    );
+}
+
+#[test]
 fn a_workloads_rendered_manifest_mounts_exactly_the_secrets_its_catalogue_entry_declares() {
     // `infrastructure/CLAUDE.md` calls the catalogue "the source of truth for
     // both the identity Terraform creates and the manifest Argo CD applies".
