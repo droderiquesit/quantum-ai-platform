@@ -1248,6 +1248,135 @@ fn the_demo_seed_reads_stale_until_fresh_support_is_absorbed_and_then_reads_fres
 }
 
 #[test]
+fn an_absorbed_news_item_becomes_an_occurrence_carrying_its_source_and_both_instants() {
+    // Blueprint §43.1's `WorldEvent`: "an observed occurrence linked to
+    // entities, with source, event time, receipt time and confidence". No
+    // struct of that name exists and none should — the graph already holds
+    // every part of it, and a second representation of a fact the graph holds
+    // is the second-source-of-truth failure. What did not exist until this
+    // test is any assertion that it is *written*: `absorb_news` is the only
+    // writer of a `NodeKind::Event` node and of a `ConcernsEntity` fact in
+    // the whole tree, and nothing anywhere asserted either. A canonical
+    // object nothing checks is one a refactor removes in silence.
+    //
+    // The two instants are deliberately days apart in the fixture. With the
+    // publication time equal to the absorption time the assertion would pass
+    // on an implementation that stamped `now` into both, which is exactly the
+    // point-in-time leak the bitemporal record exists to make impossible.
+    let published = days_ago(3);
+    let (mut model, context) = seeded_model();
+    let item = NewsItem {
+        item_id: "news-occurrence".into(),
+        headline: "Northwind Semiconductor Corporation recalled a component line".into(),
+        manifest: SourceManifest::generated(
+            "test",
+            "news-occurrence",
+            published,
+            "The company withdrew a component line after a supplier defect.",
+        ),
+        source: NewsSource::CompanyAnnouncement,
+        published_at: published,
+        entities: vec![EntityMention {
+            text: "Northwind Semiconductor Corporation".into(),
+            entity_id: None,
+            confidence: 0.81,
+            is_primary: true,
+            sentiment: None,
+        }],
+        sentiment: Sentiment {
+            polarity: -0.4,
+            confidence: 0.8,
+            novelty: 0.6,
+        },
+        topics: vec!["recall".into()],
+        provenance: Provenance::synthetic("synthetic-news", published),
+        quality: DataQuality::clean(),
+    };
+
+    let resolved = model.absorb_news(&item, &context);
+    assert_eq!(
+        resolved,
+        vec!["ent-northwind".to_string()],
+        "premise: the mention resolved to an entity; with none, no occurrence is linked at all"
+    );
+
+    // The occurrence itself, with its source and the instant the platform
+    // received it.
+    let event = model
+        .graph()
+        .node("news:news-occurrence")
+        .expect("the absorbed item is an occurrence in the graph");
+    assert_eq!(
+        event.kind,
+        NodeKind::Event,
+        "the occurrence was recorded as something other than an event"
+    );
+    assert_eq!(
+        event.attributes.get("source").map(String::as_str),
+        Some(NewsSource::CompanyAnnouncement.as_str()),
+        "the occurrence does not carry the authority it came from"
+    );
+    assert_eq!(
+        event.recorded_at,
+        now(),
+        "the occurrence's receipt instant is not when the platform received it"
+    );
+
+    // And the link to the entity, carrying the event time, the receipt time
+    // and the confidence separately.
+    let links: Vec<_> = model
+        .graph()
+        .neighbours(
+            "news:news-occurrence",
+            Some(RelationshipKind::ConcernsEntity),
+            now(),
+            now(),
+        )
+        .into_iter()
+        .filter(|fact| fact.relationship.to == "ent-northwind")
+        .collect();
+    assert_eq!(
+        links.len(),
+        1,
+        "the occurrence is linked to the entity exactly once"
+    );
+    let link = links[0];
+    assert_eq!(
+        link.valid_from, published,
+        "the event time is not the instant the occurrence happened; a link stamped at absorption          would let a backtest read the news before it was published"
+    );
+    assert_eq!(
+        link.recorded_at,
+        now(),
+        "the receipt time is not the instant the platform learned of it"
+    );
+    assert_ne!(
+        link.valid_from, link.recorded_at,
+        "the two instants collapsed onto one, which is the whole of what bitemporality buys"
+    );
+    assert!(
+        approx_eq(link.relationship.weight, 0.81, 1e-9),
+        "the mention's confidence did not reach the link: {}",
+        link.relationship.weight
+    );
+
+    // The occurrence is invisible to a reader standing before the platform
+    // received it, however true it already was.
+    assert!(
+        model
+            .graph()
+            .neighbours(
+                "news:news-occurrence",
+                Some(RelationshipKind::ConcernsEntity),
+                now(),
+                days_ago(1),
+            )
+            .is_empty(),
+        "an occurrence the platform had not yet received was readable"
+    );
+}
+
+#[test]
 fn absorbing_news_resolves_entities_and_indexes_the_document() {
     let (mut model, context) = seeded_model();
     let item = NewsItem {
