@@ -217,7 +217,39 @@ impl Timestamp {
         format!("{y:04}-{m:02}-{d:02}")
     }
 
-    /// Parse `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS[.fff][Z]`.
+    /// Parse an RFC 3339 instant, or the bare date `YYYY-MM-DD`.
+    ///
+    /// Accepts `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS[.fff]`, and either of those
+    /// carrying `Z`, an RFC 3339 §5.6 numeric offset `+HH:MM` / `-HH:MM`, or
+    /// the ISO 8601 basic spelling `+HHMM` / `-HHMM`. **A numeric offset is
+    /// applied.** What comes back is the instant the text names, not the
+    /// wall-clock reading printed on it.
+    ///
+    /// Until 2026-09-19 this split the time at the first `+` or `-` and read
+    /// what preceded it as UTC, so `2026-09-19T05:21:00-05:00` parsed as
+    /// 05:21 UTC — five hours early. That is the worst shape a defect can
+    /// take here. The offset was gone before the value had a type, so every
+    /// later check saw a well-formed instant and no comparison, hash or
+    /// replay downstream could recover the error; and a record stamped
+    /// earlier than the instant it became knowable is point-in-time leakage,
+    /// which makes a backtest read the future and look good doing it. One
+    /// connector guarded against it by refusing a non-zero offset before
+    /// calling; no other did, and every connector written afterwards would
+    /// have inherited the trap.
+    ///
+    /// An offset that is present but not one this can read — `+5:00`,
+    /// `+25:00`, `-00:99`, `+1` — is refused rather than treated as zero.
+    /// Treating an unreadable offset as zero is precisely how the original
+    /// defect operated, and a `None` the caller must handle is the only
+    /// outcome that cannot be mistaken for a correct instant.
+    ///
+    /// One guess remains, deliberately: a time bearing no designator at all,
+    /// such as `2026-08-22T10:00:00`, is read as UTC, and a bare date as
+    /// midnight UTC. RFC 3339 requires a designator, so this is an extension,
+    /// kept because the platform's own literals and several vendors'
+    /// date-only fields rely on it. A caller admitting third-party text whose
+    /// zone it does not control should require `Z` or an explicit offset
+    /// itself before calling: this function cannot tell the two sources apart.
     pub fn parse_rfc3339(s: &str) -> Option<Self> {
         let s = s.trim().trim_end_matches('Z');
         let (date, time) = match s.split_once(['T', ' ']) {
@@ -235,8 +267,14 @@ impl Timestamp {
         let mut nanos = days.checked_mul(NANOS_PER_DAY)?;
 
         if let Some(t) = time {
-            let t = t.split(['+', '-']).next()?; // ignore offsets; inputs are UTC
-            let mut tp = t.split(':');
+            // Where an offset is present it begins at the first sign in the
+            // time field: no hour, minute, second or fractional part may
+            // contain one, so the first `+` or `-` can be nothing else.
+            let (clock, offset_nanos) = match t.find(['+', '-']) {
+                Some(i) => (&t[..i], parse_utc_offset(&t[i..])?),
+                None => (t, 0),
+            };
+            let mut tp = clock.split(':');
             let hh: i64 = tp.next()?.parse().ok()?;
             let mm: i64 = tp.next().unwrap_or("0").parse().ok()?;
             let sec_part = tp.next().unwrap_or("0");
@@ -252,7 +290,16 @@ impl Timestamp {
                 let digit = frac.as_bytes().get(i).map_or(0, |c| i64::from(c - b'0'));
                 frac_ns = frac_ns * 10 + digit;
             }
-            nanos += hh * NANOS_PER_HOUR + mm * NANOS_PER_MIN + ss * NANOS_PER_SEC + frac_ns;
+            nanos = nanos
+                .checked_add(hh * NANOS_PER_HOUR + mm * NANOS_PER_MIN + ss * NANOS_PER_SEC)?
+                .checked_add(frac_ns)?;
+            // The reading above is the clock local to that offset. UTC is
+            // that reading less however far east of UTC the offset stands, so
+            // a `-05:00` stamp moves *forward* five hours and a `+05:30` one
+            // moves back five and a half. Subtracting rather than adding is
+            // the whole correction; the wrong sign here would swap a
+            // five-hour error for a ten-hour one and still look plausible.
+            nanos = nanos.checked_sub(offset_nanos)?;
         }
         Some(Self(nanos))
     }
@@ -317,6 +364,39 @@ impl<'de> Deserialize<'de> for Timestamp {
             Repr::Nanos(n) => Ok(Timestamp::from_nanos(n)),
         }
     }
+}
+
+/// Signed nanoseconds that a numeric RFC 3339 UTC offset stands east of UTC,
+/// or `None` where `s` is not an offset this platform will read.
+///
+/// `+HH:MM` and `-HH:MM` are RFC 3339 §5.6; `+HHMM` and `-HHMM` are the ISO
+/// 8601 basic spelling, admitted because a publisher already in the tree
+/// sends `+0000` and a zero offset refused at the parser reads to an operator
+/// as a broken feed rather than as a policy. Every other shape is refused,
+/// and the refusal is the point: an offset silently read as zero is how
+/// [`Timestamp::parse_rfc3339`] filed readings five hours early, and reading
+/// a malformed offset leniently would reintroduce that defect one spelling at
+/// a time.
+fn parse_utc_offset(s: &str) -> Option<i64> {
+    let (sign, digits) = match s.as_bytes().first()? {
+        b'+' => (1i64, s.get(1..)?),
+        b'-' => (-1i64, s.get(1..)?),
+        _ => return None,
+    };
+    let (h, m) = match digits.split_once(':') {
+        Some(parts) => parts,
+        None if digits.len() == 4 => digits.split_at(2),
+        None => return None,
+    };
+    if h.len() != 2 || m.len() != 2 || !h.bytes().chain(m.bytes()).all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let hh: i64 = h.parse().ok()?;
+    let mm: i64 = m.parse().ok()?;
+    if hh > 23 || mm > 59 {
+        return None;
+    }
+    Some(sign * (hh * NANOS_PER_HOUR + mm * NANOS_PER_MIN))
 }
 
 /// Days since the Unix epoch for a civil UTC date (Howard Hinnant's algorithm).

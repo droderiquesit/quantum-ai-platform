@@ -175,3 +175,134 @@ fn duration_annualisation_uses_a_365_day_year() {
     assert!((Duration::from_days(365).as_years_f64() - 1.0).abs() < 1e-12);
     assert!((Duration::from_days(730).as_years_f64() - 2.0).abs() < 1e-12);
 }
+
+// ---------------------------------------------------------------------------
+// UTC offsets. Until 2026-09-19 `parse_rfc3339` split the time at the first
+// `+` or `-` and read what preceded it as UTC, so every instant below parsed
+// to its own wall-clock reading and the zone was lost before the value had a
+// type. Nothing downstream could detect it — the result was a well-formed
+// instant, simply the wrong one — and a reading stamped earlier than the
+// instant it became knowable is the point-in-time leakage the domain rules
+// put first. This is not hypothetical: one connector in the tree carries a
+// guard written specifically against it, and no other caller had one.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_western_offset_names_an_instant_later_than_its_own_wall_clock() {
+    let parsed = Timestamp::parse_rfc3339("2026-09-19T05:21:00-05:00").expect("a valid instant");
+    // Premise: the naive reading this used to return is a *different* instant.
+    // Without asserting that first, the equality below could pass on a parser
+    // that ignored the offset and a renderer that reprinted what it was given.
+    let naive = Timestamp::parse_rfc3339("2026-09-19T05:21:00Z").expect("a valid instant");
+    assert_ne!(
+        parsed, naive,
+        "a -05:00 stamp must not parse to the same instant as the same digits in UTC"
+    );
+    assert_eq!(parsed.to_rfc3339(), "2026-09-19T10:21:00.000Z");
+    // The direction as arithmetic rather than as a string: a zone five hours
+    // behind UTC means the UTC instant is five hours later.
+    assert_eq!(parsed.since(naive), Duration::from_hours(5));
+}
+
+#[test]
+fn an_eastern_offset_names_an_instant_earlier_than_its_own_wall_clock() {
+    let parsed = Timestamp::parse_rfc3339("2026-09-19T05:21:00+05:00").expect("a valid instant");
+    let naive = Timestamp::parse_rfc3339("2026-09-19T05:21:00Z").expect("a valid instant");
+    assert_ne!(parsed, naive, "a +05:00 stamp is not the same instant as Z");
+    assert_eq!(parsed.to_rfc3339(), "2026-09-19T00:21:00.000Z");
+    assert_eq!(parsed.since(naive), Duration::from_hours(-5));
+}
+
+#[test]
+fn a_half_hour_offset_is_applied_to_the_minute_and_may_cross_the_day() {
+    // +05:30 exists and is common. It is the case a parser handling only
+    // whole hours gets wrong by thirty minutes rather than not at all, and it
+    // moves this instant into the previous civil day, which an implementation
+    // correcting within the day would fumble.
+    let parsed = Timestamp::parse_rfc3339("2026-09-19T05:21:00+05:30").expect("a valid instant");
+    let naive = Timestamp::parse_rfc3339("2026-09-19T05:21:00Z").expect("a valid instant");
+    assert_ne!(parsed, naive, "a +05:30 stamp is not the same instant as Z");
+    assert_eq!(parsed.to_rfc3339(), "2026-09-18T23:51:00.000Z");
+    assert_eq!(parsed.civil_date(), (2026, 9, 18), "it crossed the day");
+    assert_eq!(
+        parsed.since(naive),
+        Duration::from_hours(-5) - Duration::from_mins(30)
+    );
+}
+
+#[test]
+fn a_western_offset_may_carry_an_instant_into_the_following_day() {
+    let parsed = Timestamp::parse_rfc3339("2026-09-19T21:00:00-05:00").expect("a valid instant");
+    assert_eq!(parsed.to_rfc3339(), "2026-09-20T02:00:00.000Z");
+    assert_eq!(parsed.civil_date(), (2026, 9, 20));
+}
+
+#[test]
+fn every_spelling_of_a_zero_offset_is_the_same_instant_as_z() {
+    let zulu = Timestamp::parse_rfc3339("2026-09-19T05:00:00Z").expect("a valid instant");
+    for text in [
+        "2026-09-19T05:00:00+00:00",
+        "2026-09-19T05:00:00-00:00",
+        "2026-09-19T05:00:00+0000",
+        "2026-09-19T05:00:00-0000",
+    ] {
+        assert_eq!(
+            Timestamp::parse_rfc3339(text).expect("a valid instant"),
+            zulu,
+            "{text} names the same instant as Z"
+        );
+    }
+}
+
+#[test]
+fn an_offset_is_applied_without_losing_the_fractional_second() {
+    // The fraction is parsed from the same slice the offset was cut out of,
+    // so an implementation slicing at the wrong index drops it in silence.
+    let parsed = Timestamp::parse_rfc3339("2026-09-19T05:21:00.250-05:00").expect("an instant");
+    assert_eq!(parsed.to_rfc3339(), "2026-09-19T10:21:00.250Z");
+}
+
+#[test]
+fn an_offset_the_parser_cannot_read_is_refused_rather_than_taken_as_zero() {
+    // Premise: the same instant with a well-formed offset is admitted, so
+    // these are refusals of the offset and not a blanket refusal of the shape.
+    assert!(
+        Timestamp::parse_rfc3339("2026-09-19T05:21:00+05:00").is_some(),
+        "the premise: a well-formed offset is admitted"
+    );
+    for text in [
+        "2026-09-19T05:21:00+5:00",  // a one-digit hour
+        "2026-09-19T05:21:00+25:00", // no zone stands 25 hours from UTC
+        "2026-09-19T05:21:00+00:60", // sixty minutes is the next hour
+        "2026-09-19T05:21:00-00:99",
+        "2026-09-19T05:21:00+1",
+        "2026-09-19T05:21:00+",
+        "2026-09-19T05:21:00-",
+        "2026-09-19T05:21:00+0:500",
+        "2026-09-19T05:21:00+ab:cd",
+        "2026-09-19T05:21:00+05:0",
+        "2026-09-19T05:21:00+050",
+        "2026-09-19T05:21:00+050000",
+    ] {
+        assert!(
+            Timestamp::parse_rfc3339(text).is_none(),
+            "{text} carries an offset nothing can read, and reading it as zero \
+             is the defect this whole block exists to prevent"
+        );
+    }
+}
+
+#[test]
+fn two_stamps_naming_one_instant_in_different_zones_are_equal() {
+    // The property a bitemporal store actually rests on: identity of the
+    // instant, independent of the zone a publisher happened to print it in.
+    // A backtest keyed on one of these and a live reading keyed on another
+    // must agree about ordering, and a parser dropping the offset made them
+    // disagree by five hours while every one of them looked well formed.
+    let new_york = Timestamp::parse_rfc3339("2026-09-19T05:21:00-05:00").expect("an instant");
+    let kolkata = Timestamp::parse_rfc3339("2026-09-19T15:51:00+05:30").expect("an instant");
+    let utc = Timestamp::parse_rfc3339("2026-09-19T10:21:00Z").expect("an instant");
+    assert_eq!(new_york, utc);
+    assert_eq!(kolkata, utc);
+    assert_eq!(new_york, kolkata);
+}
