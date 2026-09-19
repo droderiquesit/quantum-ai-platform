@@ -11349,6 +11349,38 @@ impl Platform {
     }
 
     fn stage_act(&mut self, now: Timestamp, correlation: &CorrelationId) -> StageOutcome {
+        let outcome = self.stage_act_orders(now, correlation);
+        // ADR 0079: a region whose every cell has been silent past the
+        // operator's window is derived dark, and the transition — in either
+        // direction — is put on the record here, in the stage whose
+        // consequence it carries: from this instant `issue` refuses into the
+        // region, its share is frozen and the next feasibility slot names
+        // it. Journaled on the cycle rather than only at a report because a
+        // region that has gone dark sends no report to journal it on.
+        //
+        // A wrapper around the whole stage rather than a call at its end,
+        // because the stage has two exits — the quiet cycle leaves at the
+        // quote loop's early return — and a call placed at the far exit was
+        // reached by neither the acceptance suite nor a fresh deployment.
+        // That is the lesson the quote loop's own comment records, and it
+        // was relearned here: the first placement left the journaling test
+        // red on exactly the cycle a dark region produces, a quiet one.
+        let (reviewed, problems) = self.review_region_darkness(now);
+        let mut outcome = outcome;
+        if let Some(reviewed) = reviewed {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        outcome
+    }
+
+    /// The ACT stage proper: the risk monitor, sizing, sign-off, release and
+    /// the quote loop. Wrapped by [`Self::stage_act`], which is the only
+    /// caller.
+    fn stage_act_orders(&mut self, now: Timestamp, correlation: &CorrelationId) -> StageOutcome {
         // The risk monitor runs whether or not there is anything to trade: a
         // book that became unacceptable while it sat is exactly what this
         // stage exists to catch.
@@ -11813,25 +11845,7 @@ impl Platform {
         // three the paper boundary already rests on, and `quote_loop.rs`'s
         // acceptance suite asserts it over production source *and*
         // behaviourally, by ending a real pass with no order and no fill.
-        let outcome = crate::quote_loop::review(self, now, outcome);
-
-        // ADR 0079: a region whose every cell has been silent past the
-        // operator's window is derived dark, and the transition — in either
-        // direction — is put on the record here, in the stage whose
-        // consequence it carries: from this instant `issue` refuses into the
-        // region, its share is frozen and the next feasibility slot names
-        // it. Journaled on the cycle rather than only at a report because a
-        // region that has gone dark sends no report to journal it on.
-        let (reviewed, problems) = self.review_region_darkness(now);
-        let mut outcome = outcome;
-        if let Some(reviewed) = reviewed {
-            let detail = format!("{}; {reviewed}", outcome.detail);
-            outcome = StageOutcome { detail, ..outcome };
-        }
-        for problem in problems {
-            outcome = outcome.with_problem(problem);
-        }
-        outcome
+        crate::quote_loop::review(self, now, outcome)
     }
 
     /// The largest whole number of the instrument's lots that does not exceed

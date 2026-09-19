@@ -27,7 +27,7 @@
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_capital::allocation::StrategyProposal;
+use qip_capital::allocation::{Allocation, AllocationPlan, StrategyProposal};
 use qip_capital::capacity::CapacityModel;
 use qip_capital::envelope::{EnvelopeIssuer, EnvelopeTerms, MAXIMUM_ENVELOPE_VALIDITY};
 use qip_capital::exposure::CellPosition;
@@ -56,7 +56,9 @@ use qip_kernel::central::{
     ReconciliationBreak, RetirementDisposition, StrategyCandidate, StrategyDna, WhitelistIssue,
     WhitelistOutcome, WhitelistedMarket, WhitelistedVenue, capital_subject,
 };
+use qip_kernel::central::darkness::{RegionSpokeAgain, RegionWentDark};
 use qip_kernel::central::{HorizonArming, HorizonClaim, HorizonPolicy};
+use qip_kernel::central::{ManifestDecision, RegionMembership, RegionShare, RegionTransition};
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
 use qip_kernel::platform::Platform;
@@ -6009,5 +6011,588 @@ fn the_ladder_refuses_holdout_evidence_that_was_never_simulated_and_admits_the_f
         GateStage::Candidate,
         "a refused promotion moves nothing"
     );
+    Ok(())
+}
+
+// --- ADR 0079: a dark region is the centre's word for silence -----------------
+//
+// Every test in this section pins one half of the ADR's invariant: *no
+// quantity the centre derives from a dark reading may be smaller than the
+// same quantity derived from the region's last report, and nothing may be
+// created by a region going dark.* The failure they prevent is the
+// `MaxExpectedShortfall` shape with the sign reversed — a region going
+// silent reading at the centre as the platform having become safer.
+
+const DARK_WINDOW: Duration = Duration::from_mins(5);
+const LON_REGION: &str = "europe-west2";
+const NYC_REGION: &str = "us-east1";
+const SIN_REGION: &str = "asia-southeast1";
+const NYC_CELL: &str = "cell-nyc-1";
+const SIN_CELL: &str = "cell-sin-1";
+
+fn plane_with_dark_window() -> Result<CentralPlane> {
+    CentralPlane::new(
+        &[7u8; 32],
+        CentralConfig {
+            region_dark_after: Some(DARK_WINDOW),
+            ..CentralConfig::default()
+        },
+    )
+}
+
+/// A report that says only "this cell, in this region, spoke".
+fn heard(cell: &str, region: &str, at: Timestamp) -> CellReport {
+    CellReport::new(cell, at).with_region(region)
+}
+
+/// One second past the window: the first instant a region silent since
+/// `start()` reads dark.
+fn past_window() -> Timestamp {
+    start()
+        .saturating_add(DARK_WINDOW)
+        .saturating_add(Duration::from_secs(1))
+}
+
+fn dark_set(regions: &[&str]) -> std::collections::BTreeSet<String> {
+    regions.iter().map(|region| (*region).to_string()).collect()
+}
+
+fn share_plan(allocations: &[(&str, &str)]) -> AllocationPlan {
+    let allocations: Vec<Allocation> = allocations
+        .iter()
+        .map(|(cell, notional)| Allocation {
+            strategy: StrategyId::new(format!("momentum-{cell}")),
+            cell: (*cell).to_string(),
+            venue: venue(),
+            notional: Decimal::parse(notional).expect("a decimal literal"),
+            indicated: Decimal::parse(notional).expect("a decimal literal"),
+            risk_adjusted_edge: 0.01,
+            binding_constraints: Vec::new(),
+        })
+        .collect();
+    let budget = allocations
+        .iter()
+        .fold(Decimal::ZERO, |sum, allocation| sum + allocation.notional);
+    AllocationPlan {
+        at: start(),
+        total_budget: budget,
+        drawdown: 0.0,
+        drawdown_multiplier: Decimal::ONE,
+        budget,
+        allocations,
+        refusals: Vec::new(),
+    }
+}
+
+fn share_amount(shares: &qip_kernel::central::RegionShares, cell: &str) -> Option<Decimal> {
+    shares.for_cell(cell).map(RegionShare::amount)
+}
+
+fn region_records<B: qip_events::EventBody>(platform: &Platform) -> Result<Vec<B>> {
+    use qip_events::EventFilter;
+    platform
+        .replay_journal(&EventFilter::new().topic(B::TOPIC))?
+        .iter()
+        .map(|envelope| Ok(envelope.decode::<B>()?.body))
+        .collect()
+}
+
+#[test]
+fn a_region_dark_window_is_refused_at_zero_and_past_the_envelope_ceiling_and_admitted_between()
+-> Result<()> {
+    // Zero would derive every region dark between any two reports; a window
+    // past the envelope ceiling would notice a region's silence only after
+    // every grant in it had expired on its own — a control that fires after
+    // the fact it exists to catch. Both are refused at construction rather
+    // than clamped, and the refusal names the field so an operator knows
+    // which number to change. Between the two the window is admitted, and
+    // the default is *off* and says so: the ADR refuses a default on
+    // purpose, because there is no measurement to pick one from.
+    let with = |window| {
+        CentralPlane::new(
+            &[7u8; 32],
+            CentralConfig {
+                region_dark_after: Some(window),
+                ..CentralConfig::default()
+            },
+        )
+    };
+    let zero = with(Duration::ZERO)
+        .err()
+        .ok_or_else(|| qip_core::Error::invalid("a zero window was admitted"))?;
+    assert!(
+        zero.message().contains("region_dark_after"),
+        "the refusal does not name the field: {}",
+        zero.message()
+    );
+    let past = with(Duration::from_millis(MAXIMUM_ENVELOPE_VALIDITY.as_millis() + 1))
+        .err()
+        .ok_or_else(|| qip_core::Error::invalid("a window past the ceiling was admitted"))?;
+    assert!(
+        past.message().contains("region_dark_after") && past.message().contains("ceiling"),
+        "the refusal does not name the field and the ceiling: {}",
+        past.message()
+    );
+    assert_eq!(
+        with(MAXIMUM_ENVELOPE_VALIDITY)?.region_dark_after(),
+        Some(MAXIMUM_ENVELOPE_VALIDITY),
+        "a window exactly at the ceiling is the longest permitted, and was refused"
+    );
+    assert_eq!(
+        plane_with_dark_window()?.region_dark_after(),
+        Some(DARK_WINDOW)
+    );
+    assert_eq!(
+        plane()?.region_dark_after(),
+        None,
+        "the default configuration must leave the derivation off, not pick a window"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_region_silent_past_the_window_is_dark_on_the_next_read_and_not_before() -> Result<()> {
+    let mut plane = plane_with_dark_window()?;
+    let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
+    plane.ingest(heard(CELL, LON_REGION, start()), switch.kill_switch_mut(), start())?;
+    // A cell that names no region derives nothing, however long it is silent:
+    // it is unknown, not dark, and unknown already receives nothing.
+    plane.ingest(
+        heard("cell-nowhere", "", start()),
+        switch.kill_switch_mut(),
+        start(),
+    )?;
+
+    assert!(plane.dark_regions(start()).is_empty());
+    let at_window = start().saturating_add(DARK_WINDOW);
+    assert!(
+        plane.dark_regions(at_window).is_empty(),
+        "silent *for* the window read as silent *past* it"
+    );
+    assert_eq!(
+        plane.dark_regions(past_window()),
+        dark_set(&[LON_REGION]),
+        "a region silent past the window did not read dark on the next read"
+    );
+    let reading = plane
+        .darkness_of(CELL, past_window())
+        .ok_or_else(|| qip_core::Error::not_found("the cell's region is dark"))?;
+    assert_eq!(reading.region, LON_REGION);
+    assert_eq!(reading.last_heard_from, CELL);
+    assert_eq!(reading.last_heard_at, start());
+    assert_eq!(reading.window, DARK_WINDOW);
+    assert_eq!(reading.dark_since(), at_window);
+    assert!(
+        plane.darkness_of("cell-nowhere", past_window()).is_none(),
+        "a cell in no region was read as being in a dark one"
+    );
+
+    // Silence is measured on the centre's clock: a report whose own `at` is
+    // old but arrives now is heard now, because a silent cell's clock is
+    // exactly what the centre cannot read.
+    plane.ingest(
+        heard(CELL, LON_REGION, start()),
+        switch.kill_switch_mut(),
+        past_window(),
+    )?;
+    assert!(plane.dark_regions(past_window()).is_empty());
+
+    // With no window nothing is ever dark, and the plane says why rather
+    // than reporting a healthy fleet.
+    let mut off = CentralPlane::new(&[7u8; 32], CentralConfig::default())?;
+    off.ingest(heard(CELL, LON_REGION, start()), switch.kill_switch_mut(), start())?;
+    assert!(
+        off.dark_regions(start().saturating_add(Duration::from_days(30)))
+            .is_empty()
+    );
+    assert_eq!(off.region_dark_after(), None);
+    Ok(())
+}
+
+#[test]
+fn a_report_from_a_dark_region_clears_it_and_each_transition_is_offered_until_announced()
+-> Result<()> {
+    // The transition is what is journaled, and it is offered by the plane
+    // until the platform says the record is in the log — so a journal that
+    // fails leaves the change pending rather than lost. The announced set
+    // decides nothing: the derivation stays dark whether or not the record
+    // was written.
+    let mut plane = plane_with_dark_window()?;
+    let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
+    plane.ingest(heard(CELL, LON_REGION, start()), switch.kill_switch_mut(), start())?;
+    assert!(plane.region_transitions(start()).is_empty());
+
+    let offered = plane.region_transitions(past_window());
+    let [RegionTransition::WentDark(reading)] = offered.as_slice() else {
+        panic!("one region went dark and the plane offered {offered:?}");
+    };
+    assert_eq!(reading.region, LON_REGION);
+    assert_eq!(
+        plane.region_transitions(past_window()),
+        offered,
+        "a transition nobody announced was not offered again"
+    );
+    plane.announce(&offered[0]);
+    assert!(plane.region_transitions(past_window()).is_empty());
+    assert!(plane.announced_dark().contains(LON_REGION));
+    assert!(
+        plane.dark_regions(past_window()).contains(LON_REGION),
+        "announcing a transition changed the derivation, which must read only `last_heard`"
+    );
+
+    // Resumption is the first report from any cell of the region, through
+    // the same door.
+    let later = past_window().saturating_add(Duration::from_secs(1));
+    plane.ingest(
+        heard("cell-lon-2", LON_REGION, start()),
+        switch.kill_switch_mut(),
+        later,
+    )?;
+    assert!(plane.dark_regions(later).is_empty());
+    let cleared = plane.region_transitions(later);
+    assert_eq!(
+        cleared,
+        vec![RegionTransition::SpokeAgain {
+            region: LON_REGION.to_string(),
+            cell: "cell-lon-2".to_string(),
+            heard_at: later,
+        }]
+    );
+    plane.announce(&cleared[0]);
+    assert!(plane.region_transitions(later).is_empty());
+    assert!(!plane.announced_dark().contains(LON_REGION));
+    Ok(())
+}
+
+#[test]
+fn the_platform_journals_region_dark_from_the_act_stage_and_region_lit_at_the_report_that_cleared_it()
+-> Result<()> {
+    // The non-test call path: a region that went dark by the passage of
+    // time is put on the record by the cycle's ACT stage, and the report
+    // that clears it writes `region.lit` at the report rather than a cycle
+    // later, so the two records bracket exactly the window in which grants
+    // were refused. A second cycle does not write the same darkness twice.
+    let config = PlatformConfig::default().with_central(CentralConfig {
+        region_dark_after: Some(DARK_WINDOW),
+        ..CentralConfig::default()
+    });
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    platform.ingest_cell_report(heard(CELL, LON_REGION, start()), start())?;
+    assert!(region_records::<RegionWentDark>(&platform)?.is_empty());
+
+    platform.run_cycle(past_window());
+    let dark = region_records::<RegionWentDark>(&platform)?;
+    assert_eq!(dark.len(), 1, "the ACT stage did not journal the region going dark: {dark:?}");
+    assert_eq!(dark[0].region, LON_REGION);
+    assert_eq!(dark[0].last_heard_from, CELL);
+    assert_eq!(dark[0].last_heard_at, start());
+    assert_eq!(dark[0].window, DARK_WINDOW);
+    assert_eq!(dark[0].dark_since, start().saturating_add(DARK_WINDOW));
+    assert!(platform.central().announced_dark().contains(LON_REGION));
+
+    platform.run_cycle(past_window().saturating_add(Duration::from_secs(1)));
+    assert_eq!(
+        region_records::<RegionWentDark>(&platform)?.len(),
+        1,
+        "a second cycle journaled the same darkness twice"
+    );
+    assert!(region_records::<RegionSpokeAgain>(&platform)?.is_empty());
+
+    let heard_at = past_window().saturating_add(Duration::from_secs(2));
+    platform.ingest_cell_report(heard(CELL, LON_REGION, start()), heard_at)?;
+    let lit = region_records::<RegionSpokeAgain>(&platform)?;
+    assert_eq!(lit.len(), 1, "the clearing report did not journal `region.lit`: {lit:?}");
+    assert_eq!(lit[0].region, LON_REGION);
+    assert_eq!(lit[0].cell, CELL);
+    assert_eq!(lit[0].heard_at, heard_at);
+    assert!(!platform.central().announced_dark().contains(LON_REGION));
+    Ok(())
+}
+
+#[test]
+fn a_grant_into_a_dark_region_is_refused_naming_the_reading_and_admitted_once_the_region_speaks()
+-> Result<()> {
+    let mut plane = plane_with_dark_window()?;
+    let id = strategy();
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
+    plane.ingest(heard(CELL, LON_REGION, start()), switch.kill_switch_mut(), start())?;
+
+    let error = match issue(&mut plane, &id, CELL, past_window()) {
+        Ok(issued) => panic!(
+            "a grant was issued into a dark region: {}",
+            issued.envelope().signing_payload()
+        ),
+        Err(error) => error,
+    };
+    for expected in [LON_REGION, CELL, "is dark", "window"] {
+        assert!(
+            error.message().contains(expected),
+            "the refusal does not carry `{expected}`: {}",
+            error.message()
+        );
+    }
+    assert!(
+        plane.envelope(CELL, &id).is_none(),
+        "a refused grant left an envelope behind"
+    );
+
+    plane.ingest(
+        heard(CELL, LON_REGION, start()),
+        switch.kill_switch_mut(),
+        past_window(),
+    )?;
+    let issued = issue(&mut plane, &id, CELL, past_window())?;
+    assert_eq!(issued.envelope().strategy(), &id);
+    assert!(plane.envelope(CELL, &id).is_some());
+    Ok(())
+}
+
+#[test]
+fn a_dark_regions_share_bound_is_frozen_at_its_last_lit_value_while_the_plan_moves_and_no_other_bound_moves()
+-> Result<()> {
+    // ADR 0079 decision four. The allocator keeps sizing while a region is
+    // silent, and the plan it produces will move; a dark region's cells are
+    // partitioned at the bound they last had while lit, a lit region's at
+    // the plan's current figure, and a dark cell that was never partitioned
+    // while lit is withheld with the reason — nothing new exists because a
+    // region went quiet.
+    let mut plane = plane_with_dark_window()?;
+    let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
+    plane.ingest(heard(CELL, LON_REGION, start()), switch.kill_switch_mut(), start())?;
+    plane.ingest(
+        heard(NYC_CELL, NYC_REGION, start()),
+        switch.kill_switch_mut(),
+        start(),
+    )?;
+    let membership = RegionMembership::new(
+        BTreeMap::from([
+            (LON_REGION.to_string(), dec!("1000")),
+            (NYC_REGION.to_string(), dec!("1000")),
+        ]),
+        BTreeMap::from([
+            (CELL.to_string(), LON_REGION.to_string()),
+            ("cell-lon-2".to_string(), LON_REGION.to_string()),
+            (NYC_CELL.to_string(), NYC_REGION.to_string()),
+        ]),
+    )?;
+
+    let lit = plane.region_shares(
+        &share_plan(&[(CELL, "600"), (NYC_CELL, "500")]),
+        &membership,
+        start(),
+    )?;
+    assert_eq!(share_amount(&lit, CELL), Some(dec!("600")));
+    assert_eq!(share_amount(&lit, NYC_CELL), Some(dec!("500")));
+    assert_eq!(share_amount(&lit, "cell-lon-2"), Some(Decimal::ZERO));
+
+    // New York speaks again; London does not.
+    plane.ingest(
+        heard(NYC_CELL, NYC_REGION, start()),
+        switch.kill_switch_mut(),
+        past_window(),
+    )?;
+    assert_eq!(plane.dark_regions(past_window()), dark_set(&[LON_REGION]));
+    let moved = share_plan(&[(CELL, "300"), (NYC_CELL, "700"), ("cell-lon-2", "100")]);
+    let dark = plane.region_shares(&moved, &membership, past_window())?;
+    assert_eq!(
+        share_amount(&dark, CELL),
+        Some(dec!("600")),
+        "the dark region's bound moved with the plan"
+    );
+    assert_eq!(
+        share_amount(&dark, "cell-lon-2"),
+        Some(Decimal::ZERO),
+        "a dark cell was given a share the plan produced after the region went quiet"
+    );
+    assert_eq!(
+        share_amount(&dark, NYC_CELL),
+        Some(dec!("700")),
+        "a lit region's bound was frozen too"
+    );
+
+    // A dark cell never partitioned while lit gets nothing, and the reason
+    // travels with the withheld slot.
+    let with_newcomer = RegionMembership::new(
+        membership.grants().clone(),
+        membership
+            .cells()
+            .iter()
+            .map(|(cell, region)| (cell.clone(), region.clone()))
+            .chain(std::iter::once((
+                "cell-lon-3".to_string(),
+                LON_REGION.to_string(),
+            )))
+            .collect(),
+    )?;
+    let withheld = plane.region_shares(&moved, &with_newcomer, past_window())?;
+    assert!(withheld.for_cell("cell-lon-3").is_none());
+    assert!(
+        withheld
+            .withheld()
+            .get("cell-lon-3")
+            .is_some_and(|reason| reason.contains("dark")),
+        "the newcomer was not withheld with the reason: {:?}",
+        withheld.withheld()
+    );
+
+    // Once London speaks the plan's current figure applies again.
+    let later = past_window().saturating_add(Duration::from_secs(1));
+    plane.ingest(heard(CELL, LON_REGION, start()), switch.kill_switch_mut(), later)?;
+    let lit_again = plane.region_shares(&moved, &membership, later)?;
+    assert_eq!(share_amount(&lit_again, CELL), Some(dec!("300")));
+    assert_eq!(share_amount(&lit_again, "cell-lon-2"), Some(dec!("100")));
+    Ok(())
+}
+
+#[test]
+fn after_a_region_goes_dark_no_derived_quantity_is_smaller_than_the_last_reports_and_nothing_new_exists()
+-> Result<()> {
+    // The invariant ADR 0079 decision seven writes out, in its own shape: a
+    // book crowded across `minimum_cells_for_crowding` cells; silence one
+    // past the window; every derived quantity is held and nothing new
+    // exists; then the region speaks and it clears with none of the above
+    // having moved. The mutation this catches is the one §36.3 row three
+    // literally asks for — `positions.remove` for a silent cell — which
+    // lowers the cell count `crowded` needs and withdraws a recall.
+    let mut plane = plane_with_dark_window()?;
+    let cells = [(CELL, LON_REGION), (NYC_CELL, NYC_REGION), (SIN_CELL, SIN_REGION)];
+    let ids: Vec<StrategyId> = cells
+        .iter()
+        .map(|(cell, _)| StrategyId::new(format!("momentum-{cell}")))
+        .collect();
+    for ((cell, _), id) in cells.iter().zip(&ids) {
+        register(&mut plane, id, cell)?;
+        walk_to(&mut plane, id, GateStage::Pilot)?;
+        issue(&mut plane, id, cell, start())?;
+    }
+    let signatures_before: Vec<Option<String>> = cells
+        .iter()
+        .zip(&ids)
+        .map(|((cell, _), id)| {
+            plane
+                .envelope(cell, id)
+                .map(|envelope| envelope.signature().to_string())
+        })
+        .collect();
+    assert!(signatures_before.iter().all(Option::is_some));
+    let membership = RegionMembership::new(
+        cells
+            .iter()
+            .map(|(_, region)| ((*region).to_string(), plane.config().per_cell))
+            .collect(),
+        cells
+            .iter()
+            .map(|(cell, region)| ((*cell).to_string(), (*region).to_string()))
+            .collect(),
+    )?;
+    let report_of = |cell: &str, region: &str, id: &StrategyId, at: Timestamp| {
+        heard(cell, region, at).with_positions(vec![position(cell, id, INSTRUMENT, dec!("1000"))])
+    };
+    let shares_at = |plane: &mut CentralPlane, at: Timestamp| -> BTreeMap<String, Decimal> {
+        plane
+            .grant_manifests(cells.iter().map(|(cell, _)| *cell), &membership, 0.0, at)
+            .decisions()
+            .iter()
+            .filter_map(|(cell, decision)| match decision {
+                ManifestDecision::Ship(share) => Some((cell.clone(), share.amount())),
+                ManifestDecision::Withhold(_) => None,
+            })
+            .collect()
+    };
+    let findings = |findings: &[qip_capital::exposure::ConcentrationFinding]| {
+        findings
+            .iter()
+            .map(|finding| (finding.axis, finding.bucket.clone(), finding.gross))
+            .collect::<Vec<_>>()
+    };
+
+    let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
+    let mut last = None;
+    for ((cell, region), id) in cells.iter().zip(&ids) {
+        last = Some(plane.ingest(
+            report_of(cell, region, id, start()),
+            switch.kill_switch_mut(),
+            start(),
+        )?);
+    }
+    let lit = last.ok_or_else(|| qip_core::Error::not_found("three reports were ingested"))?;
+    // The premise: the book is crowded across all three cells, breaches a
+    // concentration, and recalls every one of them.
+    assert_eq!(lit.crowded.len(), 1, "{:?}", lit.crowded);
+    assert_eq!(lit.crowded[0].cells.len(), 3);
+    assert!(!lit.concentrations.is_empty());
+    assert_eq!(lit.recalls.len(), 3);
+    let gross_lit = plane.gross_notional_by_cell();
+    assert_eq!(gross_lit.len(), 3);
+    let shares_lit = shares_at(&mut plane, start());
+    assert_eq!(shares_lit.len(), 3, "the premise: every cell was shipped a share");
+
+    // London falls silent past the window; the other two keep reporting.
+    let now = past_window();
+    let mut last = None;
+    for ((cell, region), id) in cells.iter().zip(&ids).skip(1) {
+        last = Some(plane.ingest(
+            report_of(cell, region, id, now),
+            switch.kill_switch_mut(),
+            now,
+        )?);
+    }
+    let dark = last.ok_or_else(|| qip_core::Error::not_found("two reports were ingested"))?;
+    assert_eq!(plane.dark_regions(now), dark_set(&[LON_REGION]));
+
+    // Held, not dropped: the same instrument, the same cells, the same
+    // findings at no smaller a gross, and the silent cell still recalled.
+    assert_eq!(dark.crowded.len(), 1, "the crowding vanished: {:?}", dark.crowded);
+    assert_eq!(dark.crowded[0].instrument, INSTRUMENT);
+    assert_eq!(dark.crowded[0].cells, lit.crowded[0].cells);
+    assert!(dark.crowded[0].cells.contains(&CELL.to_string()));
+    assert_eq!(findings(&dark.concentrations), findings(&lit.concentrations));
+    assert!(
+        dark.recalls.iter().any(|order| order.cell == CELL),
+        "the silent cell was dropped from the recall set: {:?}",
+        dark.recalls
+    );
+    assert_eq!(dark.recalls.len(), lit.recalls.len());
+    assert_eq!(plane.gross_notional_by_cell(), gross_lit);
+    assert!(
+        plane.darkness_of(CELL, now).is_some(),
+        "the held book is not marked as a dark region's"
+    );
+
+    // Nothing new: no grant, the slot names the region, the withdrawn set
+    // and every region's share bound are where they were.
+    assert!(issue(&mut plane, &ids[0], CELL, now).is_err());
+    let constraints = plane.feasibility_constraints(now);
+    assert_eq!(constraints.dark_regions, dark_set(&[LON_REGION]));
+    assert!(constraints.withdrawn_venues.is_empty());
+    assert_eq!(shares_at(&mut plane, now), shares_lit);
+    let signatures_dark: Vec<Option<String>> = cells
+        .iter()
+        .zip(&ids)
+        .map(|((cell, _), id)| {
+            plane
+                .envelope(cell, id)
+                .map(|envelope| envelope.signature().to_string())
+        })
+        .collect();
+    assert_eq!(signatures_dark, signatures_before);
+
+    // The region speaks, through the same door, and clears — with none of
+    // the above having moved in the meantime.
+    let later = now.saturating_add(Duration::from_secs(1));
+    let cleared = plane.ingest(
+        report_of(CELL, LON_REGION, &ids[0], later),
+        switch.kill_switch_mut(),
+        later,
+    )?;
+    assert!(plane.dark_regions(later).is_empty());
+    assert_eq!(cleared.crowded[0].cells, lit.crowded[0].cells);
+    assert_eq!(findings(&cleared.concentrations), findings(&lit.concentrations));
+    assert_eq!(plane.gross_notional_by_cell(), gross_lit);
+    assert_eq!(shares_at(&mut plane, later), shares_lit);
+    assert!(plane.feasibility_constraints(later).dark_regions.is_empty());
     Ok(())
 }

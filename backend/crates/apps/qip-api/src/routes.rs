@@ -2539,17 +2539,28 @@ fn regions(platform: &Platform, cells: &CellRegistry, now: Timestamp) -> String 
         return unavailable("cells", crate::missing::NO_CELL_REPORTS);
     }
     let bound = cells.freshness_bound();
-    let exposure = platform.central().exposure();
+    let central = platform.central();
+    let exposure = central.exposure();
     let switch = platform.autonomy().kill_switch();
+    // "Dark" is the plane's derivation and never this route's own clock
+    // arithmetic (ADR 0079): `stale` below is the registry's freshness
+    // bound, a presentation threshold, and `dark` is the reading `issue`
+    // refuses on, the share freeze reads and slot 11 ships. Rendering a
+    // second derivation here would give the console and the plane two
+    // answers to one question. `region_dark_after` is rendered so a reader
+    // can tell "no region is dark" from "the derivation is off".
+    let darkness = central.region_darkness(now);
     let rendered: Vec<String> = observations
         .iter()
         .map(|observation| {
             format!(
-                r#"{{"cell":{},"reported_at":{},"age":{},"stale":{},"halted":{},"positions":{},"strategies":{},"reconciliation_breaks":{},"gross":{},"net":{}}}"#,
+                r#"{{"cell":{},"region":{},"reported_at":{},"age":{},"stale":{},"dark":{},"halted":{},"positions":{},"strategies":{},"reconciliation_breaks":{},"gross":{},"net":{}}}"#,
                 json::string(&observation.cell),
+                json::string(&observation.region),
                 json::string(&observation.at.to_rfc3339()),
                 json::string(&describe_age(observation.age(now))),
                 observation.is_stale(now, bound),
+                !observation.region.is_empty() && darkness.contains_key(&observation.region),
                 switch.is_halted(&observation.cell),
                 observation.positions,
                 observation.strategies,
@@ -2559,9 +2570,25 @@ fn regions(platform: &Platform, cells: &CellRegistry, now: Timestamp) -> String 
             )
         })
         .collect();
+    let dark_regions: Vec<String> = darkness
+        .values()
+        .map(|reading| {
+            format!(
+                r#"{{"region":{},"last_heard_from":{},"last_heard_at":{},"dark_since":{}}}"#,
+                json::string(&reading.region),
+                json::string(&reading.last_heard_from),
+                json::string(&reading.last_heard_at.to_rfc3339()),
+                json::string(&reading.dark_since().to_rfc3339())
+            )
+        })
+        .collect();
+    let window = central
+        .region_dark_after()
+        .map_or_else(|| "null".to_string(), |window| json::string(&describe_age(window)));
     format!(
-        r#"{{"freshness_bound":{},"cells":[{}]}}"#,
+        r#"{{"freshness_bound":{},"region_dark_after":{window},"dark_regions":[{}],"cells":[{}]}}"#,
         json::string(&describe_age(bound)),
+        dark_regions.join(","),
         rendered.join(",")
     )
 }

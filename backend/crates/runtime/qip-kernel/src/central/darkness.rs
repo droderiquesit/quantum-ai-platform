@@ -21,8 +21,8 @@
 //! in `crowded`'s cell count and in `cells_behind`; and the feasibility slot
 //! names the region so a cell suspends every mirror into it. Every effect is
 //! a refusal, a retention or a journal entry. Nothing here can loosen a
-//! bound, which is the invariant the ADR states and `tests/dark_regions.rs`
-//! pins.
+//! bound, which is the invariant the ADR states and the ADR 0079 section of
+//! `tests/central.rs` pins.
 
 use qip_core::{Duration, Timestamp};
 use qip_events::{EventBody, Topic};

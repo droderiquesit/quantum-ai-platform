@@ -37,6 +37,10 @@ pub const CELL_REPORT_FRESHNESS: Duration = Duration::from_secs(60);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellObservation {
     pub cell: String,
+    /// The region the cell reported itself in, as the report carried it —
+    /// the key `/regions` looks the plane's dark-region derivation up by
+    /// (ADR 0079). Empty for a report that named none.
+    pub region: String,
     /// When the report was made, taken from the report rather than from a
     /// clock read on arrival: the cell's own as-of time is the one that says
     /// how old the book is.
@@ -95,6 +99,7 @@ impl CellRegistry {
                 report.cell.clone(),
                 CellObservation {
                     cell: report.cell.clone(),
+                    region: report.region.clone(),
                     at: report.at,
                     positions: report.positions.len(),
                     strategies: report.utilisation.len(),
