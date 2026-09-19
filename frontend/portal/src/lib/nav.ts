@@ -129,7 +129,7 @@ export const NAV: readonly NavGroup[] = [
         label: "News & sentiment",
         mark: "NW",
         description: "News, filings and macro releases as the market stream records them",
-        reads: ["/stream/market"],
+        reads: ["/stream/market", "/news"],
       },
       {
         href: "/intelligence/regimes",

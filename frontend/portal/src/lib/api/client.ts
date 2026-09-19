@@ -243,6 +243,15 @@ export const platform = {
   backtests: (signal?: AbortSignal) => request<T.Backtests>("/backtests", withSignal(signal)),
   /** Answers `unavailable` today; typed as `unknown` because no available shape exists yet. */
   regimes: (signal?: AbortSignal) => request<unknown>("/regimes", withSignal(signal)),
+  /**
+   * Answers `unavailable` unconditionally: `routes.rs` matches `GET /news`
+   * to one expression returning `unavailable("news", NO_NARRATIVE_ADAPTER)`,
+   * with no second arm. Typed as `unknown` for the same reason as `regimes`.
+   * Read so the news page renders the platform's own reason rather than a
+   * paraphrase — the page told its reader the route did not exist for as
+   * long as nothing here called it.
+   */
+  news: (signal?: AbortSignal) => request<unknown>("/news", withSignal(signal)),
 
   /**
    * The route table the process is serving right now.
