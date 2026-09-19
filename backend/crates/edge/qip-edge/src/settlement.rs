@@ -401,7 +401,10 @@ pub fn project(
     Ok(Projection { fires_at, legs })
 }
 
+// In a test the assertion is the deliverable; the workspace denies
+// `panic_in_result_fn` for production code, where it would be a bug.
 #[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
 mod tests {
     use super::*;
 
