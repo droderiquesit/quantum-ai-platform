@@ -2342,18 +2342,66 @@ fn the_exploration_surface_keeps_what_is_held_committed_and_spent_as_three_numbe
             "the exploration surface has no `{field}`: {body}"
         );
     }
-    // The half this process cannot serve says so, with a reason, rather than
-    // being absent or reported as a measured zero.
+    // The "what it learned" half: one row per `ProbeKind`, including the
+    // kinds the book holds no record for. The book creates a record only
+    // when a probe of that kind opens, so a fresh platform holds none — and a
+    // table walked over the records rather than the enum would be empty
+    // here, which is the exact failure this asserts against: a missing row
+    // reads as a kind with nothing to report, not as a kind never asked.
+    // Premise first — the enum has more than one variant, so "every kind
+    // appears" is a claim about a set and not about a single token.
+    let kinds = qip_kernel::exploration::ProbeKind::ALL;
+    assert!(
+        kinds.len() > 1,
+        "ProbeKind has one variant; the table test is vacuous"
+    );
     assert_eq!(
         body["learned"]["available"],
-        serde_json::json!(false),
+        serde_json::json!(true),
         "{body}"
     );
-    assert!(
-        body["learned"]["reason"]
-            .as_str()
-            .is_some_and(|reason| !reason.is_empty()),
-        "{body}"
+    let rows = body["learned"]["kinds"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`learned.kinds` is not an array: {body}"));
+    assert_eq!(
+        rows.len(),
+        kinds.len(),
+        "the table has a row count other than the enum's: {body}"
     );
+    for (kind, row) in kinds.iter().zip(rows) {
+        // Compared as a whole token, in the enum's declaration order, not by
+        // substring: `capacity_at_size` and `stale_estimate` share no
+        // substring worth worrying about today, but a kind added tomorrow
+        // whose name contains another's would pass a `contains`.
+        assert_eq!(
+            row["kind"],
+            serde_json::Value::String(kind.as_str().to_string()),
+            "row {row} is not the kind the enum lists in this position; the table is partial \
+             or out of order: {body}"
+        );
+        assert_eq!(
+            row["learns"],
+            serde_json::Value::String(kind.learns().to_string()),
+            "{body}"
+        );
+        for counter in ["opened", "probed", "observed", "bound_breaches"] {
+            assert!(
+                row[counter].is_u64(),
+                "row {row} has no counter `{counter}`: {body}"
+            );
+        }
+        // Money is a decimal string; a sum of gains is a statistic and a
+        // number.
+        assert!(row["realised_cost"].is_string(), "{body}");
+        assert!(row["probed_gain"].is_number(), "{body}");
+        // A kind nothing has probed has a gain nobody has measured, and the
+        // route says `null`, never `0` — a zero here would report a question
+        // answered with nothing learned in place of a question never asked.
+        assert_eq!(row["probed"], serde_json::json!(0), "{body}");
+        assert!(
+            row["measured_gain"].is_null(),
+            "an unprobed kind reports a measured gain: {body}"
+        );
+    }
     Ok(())
 }

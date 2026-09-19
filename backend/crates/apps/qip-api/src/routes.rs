@@ -2711,22 +2711,26 @@ fn capital(platform: &Platform, now: Timestamp) -> String {
 ///   `ProbeKind::learns`, so a reader sees the question rather than an
 ///   enum token they would have to look up.
 ///
-/// # What this cannot yet show, and why
+/// # The "what it learned" half, and why every kind is a row
 ///
-/// §40.1's surface says "and what it learned". That is the per-kind mean
-/// information gain the book keeps in `KindRecord`, and reaching it needs
-/// `ProbeKind`, because `ExplorationBook::record` is keyed by it and there is
-/// no iterator over the kinds. `ProbeKind` is `qip_capital`'s, `qip-capital`
-/// is a **dev**-dependency of this crate, and `api_boundary.rs` refuses a
-/// shipped edge from the application layer to any capital crate. That refusal
-/// is not worked around here. Closing the half needs one line —
-/// `pub use` on the `qip_capital::exploration` import in
-/// `qip-kernel/src/exploration.rs`, so the kernel's own surface names the
-/// enum the way it already names `ExplorationDesk`. A partial table built
-/// from the kinds that happen to have an open probe was the alternative and
-/// is worse than the absence: a kind that has settled everything would
-/// silently not appear, and a row missing from a table reads as a kind with
-/// nothing to report.
+/// §40.1's surface says "and what it learned". That is the per-kind record
+/// the book keeps in `KindRecord`, reached here through
+/// `qip_kernel::exploration`'s re-export of `ProbeKind` and `KindRecord` —
+/// the kernel's own surface, not a shipped edge to the capital crate, which
+/// `api_boundary.rs` refuses and which this handler does not take. The table
+/// is walked over `ProbeKind::ALL`, **not** over the kinds the book happens
+/// to hold a record for. The book only creates a record when a probe of that
+/// kind opens, so a table built from its records alone would omit every kind
+/// never bought, and a row missing from a table reads as a kind with nothing
+/// to report rather than as a kind the platform has never asked about. A
+/// kind with no record is rendered as the record the book would have
+/// created for it — every counter zero — because that is what "nothing yet"
+/// is in the book's own terms.
+///
+/// `measured_gain` is the one field that may be `null`, and `null` is not
+/// `0`: `KindRecord::measured_gain` answers `None` where a kind has no probed
+/// settlement to average, and a reader shown `0` there would take a question
+/// nobody has asked for a question answered with nothing learned.
 fn exploration(platform: &Platform) -> String {
     let desk = platform.exploration();
     let book = desk.book();
@@ -2760,8 +2764,37 @@ fn exploration(platform: &Platform) -> String {
             )
         })
         .collect();
+    // Every kind, in the enum's declaration order, whether or not the book
+    // holds a record for it. See the doc comment: a partial table is worse
+    // than an absence.
+    let empty = qip_kernel::exploration::KindRecord::default();
+    let learned: Vec<String> = qip_kernel::exploration::ProbeKind::ALL
+        .iter()
+        .map(|kind| {
+            let record = book.record(*kind).unwrap_or(&empty);
+            format!(
+                r#"{{"kind":{},"learns":{},"opened":{},"probed":{},"observed":{},"probed_gain":{},"realised_cost":{},"bound_breaches":{},"measured_gain":{}}}"#,
+                json::string(kind.as_str()),
+                json::string(kind.learns()),
+                record.opened,
+                record.probed,
+                record.observed,
+                // f64 → JSON number: a sum of information gains is a
+                // statistic, not money. `realised_cost` beside it is a
+                // `Decimal` and stays a string.
+                json::number(record.probed_gain),
+                json::string(&record.realised_cost.to_string()),
+                record.bound_breaches,
+                // `None` → `null`, never `0`: not measured is a different
+                // statement from measured as nothing.
+                record
+                    .measured_gain()
+                    .map_or_else(|| "null".to_string(), json::number)
+            )
+        })
+        .collect();
     format!(
-        r#"{{"share":{},"held":{},"committed":{},"spend":{},"open_count":{},"opened_total":{},"settled_total":{},"abandoned_total":{},"subjects_forgotten":{},"open":[{}],"learned":{}}}"#,
+        r#"{{"share":{},"held":{},"committed":{},"spend":{},"open_count":{},"opened_total":{},"settled_total":{},"abandoned_total":{},"subjects_forgotten":{},"open":[{}],"learned":{{"available":true,"kinds":[{}]}}}}"#,
         share,
         json::string(&desk.held().to_string()),
         json::string(&book.committed().to_string()),
@@ -2772,11 +2805,7 @@ fn exploration(platform: &Platform) -> String {
         book.abandoned_total(),
         book.subjects_forgotten(),
         open.join(","),
-        unavailable(
-            "learned",
-            "the per-kind information gain is keyed by a capital-crate enum this process may \
-             not name; see the handler's documentation",
-        )
+        learned.join(",")
     )
 }
 
