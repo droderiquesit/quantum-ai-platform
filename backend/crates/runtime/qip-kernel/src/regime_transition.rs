@@ -42,6 +42,7 @@
 //! was established rather than by how little is known about it here.
 
 use qip_core::{Duration, Timestamp};
+use qip_world_model::causal::ConditionStanding;
 use std::collections::BTreeMap;
 
 /// How long a crossing stays readable after it happened.
@@ -72,6 +73,35 @@ pub const SUBJECT_PREFIX: &str = "regime-boundary:";
 /// least recently changed mark, and losing a mark costs at most one missed
 /// crossing, because the subject re-enters as a first sighting.
 pub const MAX_SUBJECTS: usize = 1024;
+
+/// The share of a subject's edges whose conditions are untested in the regime
+/// it has just entered — the uncertainty a regime-boundary probe is ranked on.
+///
+/// `None` for a subject with no edges at all: a subject the graph makes no
+/// claim about has nothing to learn *about its edges*, and scoring it zero
+/// would put a row in the plan that reads as a choice nobody could take.
+///
+/// [`ConditionStanding::KnownToFail`] counts as tested, not as untested, and
+/// that is the load-bearing arm. A refuted edge is the one case where the
+/// platform knows exactly how the edge behaves here — it does not — so a
+/// probe buys nothing. Counting a refutation as ignorance would aim the
+/// budget at the edges the platform has already finished learning about,
+/// which is the opposite of what §9.4 asks the budget to do.
+///
+/// usize → f64 at the quotient: a share of edges is a statistic, and this is
+/// where the counts stop being counts.
+pub fn untested_share<I>(standings: I) -> Option<f64>
+where
+    I: IntoIterator<Item = ConditionStanding>,
+{
+    let (untested, total) = standings.into_iter().fold((0usize, 0usize), |(u, t), s| {
+        (u + usize::from(s == ConditionStanding::Untested), t + 1)
+    });
+    if total == 0 {
+        return None;
+    }
+    Some(untested as f64 / total as f64)
+}
 
 /// One subject's regime as this module last saw it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -207,6 +237,55 @@ mod tests {
 
     fn at(hours: i64) -> Timestamp {
         Timestamp::from_secs(hours * 3_600)
+    }
+
+    #[test]
+    fn a_subject_with_no_edges_has_no_boundary_uncertainty_rather_than_a_zero() {
+        // Zero would be a row in the plan reading as a choice nobody could
+        // take; `None` is the graph saying it makes no claim about the
+        // subject at all.
+        assert_eq!(untested_share(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn the_boundary_uncertainty_is_the_share_of_edges_untested_in_the_regime_entered() {
+        assert_eq!(
+            untested_share([
+                ConditionStanding::Untested,
+                ConditionStanding::Holds,
+                ConditionStanding::Holds,
+                ConditionStanding::Holds,
+            ]),
+            Some(0.25),
+            "the share counted something other than the untested edges"
+        );
+        assert_eq!(
+            untested_share([ConditionStanding::Untested, ConditionStanding::Untested]),
+            Some(1.0)
+        );
+        assert_eq!(
+            untested_share([ConditionStanding::Holds, ConditionStanding::Holds]),
+            Some(0.0),
+            "a subject whose every edge was tested here has nothing left to probe"
+        );
+    }
+
+    #[test]
+    fn an_edge_known_to_fail_in_the_regime_entered_counts_as_tested_and_not_as_ignorance() {
+        // The arm most easily got backwards. A refuted edge is the one case
+        // where the platform knows exactly how it behaves here - it does not
+        // - so probing buys nothing. Counting it as ignorance would aim the
+        // budget at the edges the platform has already finished learning
+        // about.
+        assert_eq!(
+            untested_share([ConditionStanding::KnownToFail, ConditionStanding::Holds]),
+            Some(0.0),
+            "a refutation was charged to the budget as something still unknown"
+        );
+        assert_eq!(
+            untested_share([ConditionStanding::KnownToFail, ConditionStanding::Untested]),
+            Some(0.5)
+        );
     }
 
     #[test]

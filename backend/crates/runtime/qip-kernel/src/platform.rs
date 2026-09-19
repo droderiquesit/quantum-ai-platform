@@ -8329,7 +8329,7 @@ impl Platform {
     /// is where the counts stop being counts.
     fn regime_boundary_uncertainties(&self, now: Timestamp) -> BTreeMap<String, f64> {
         let world = self.world.read();
-        let mut tally: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        let mut standings: BTreeMap<String, Vec<ConditionStanding>> = BTreeMap::new();
         for edge in world.causal().edges() {
             if edge.recorded_at > now {
                 continue;
@@ -8338,20 +8338,20 @@ impl Platform {
                 continue;
             }
             let regime = self.regime_context(&edge.effect);
-            let entry = tally.entry(edge.effect.clone()).or_insert((0, 0));
-            entry.1 += 1;
-            if edge.in_regime(&regime) == ConditionStanding::Untested {
-                entry.0 += 1;
-            }
+            standings
+                .entry(edge.effect.clone())
+                .or_default()
+                .push(edge.in_regime(&regime));
         }
-        tally
+        standings
             .into_iter()
-            .filter(|(_, (_, total))| *total > 0)
-            .map(|(subject, (untested, total))| {
-                (
-                    format!("{}{subject}", crate::regime_transition::SUBJECT_PREFIX),
-                    untested as f64 / total as f64,
-                )
+            .filter_map(|(subject, standings)| {
+                crate::regime_transition::untested_share(standings).map(|share| {
+                    (
+                        format!("{}{subject}", crate::regime_transition::SUBJECT_PREFIX),
+                        share,
+                    )
+                })
             })
             .collect()
     }
