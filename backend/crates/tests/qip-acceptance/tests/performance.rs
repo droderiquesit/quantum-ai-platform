@@ -644,14 +644,27 @@ fn feature_evaluation_costs_the_same_per_message_however_many_the_engine_has_alr
     // walks its whole topological order every call and recomputes the nodes a
     // message dirtied, so per-message cost is linear in the number of
     // registered features by construction, and a scaling assertion over symbol
-    // count would fail on a design decision rather than on a regression. What
-    // must not grow is the history behind each feature: the realised-volatility
-    // and moving-average windows, and the book `MarketState` keeps. That is a
-    // regression this platform has already shipped once on another path — the
-    // kernel's history series held every observation since assembly and the
-    // deployed cycle went from 2.4ms at cycle 255 to 310ms at cycle 16,728 —
-    // and here it would read as per-message cost rising with the number of
-    // messages already ingested.
+    // count would fail on a design decision rather than on a regression. The
+    // axis is how much the engine has already seen: a per-message cost that
+    // rises with the length of the tape is the regression this platform has
+    // already shipped once on another path, where the kernel's history series
+    // held every observation since assembly and the deployed cycle went from
+    // 2.4ms at cycle 255 to 310ms at cycle 16,728.
+    //
+    // **What this does not cover, measured rather than assumed.** A ratio
+    // catches an unbounded working set only when something *walks* it. The
+    // mutation that made `InstrumentState`'s spread history unbounded and
+    // inserted at its front — a real bug shape, and exactly the retention
+    // bound the data domain's rule demands — passed this test at 1.04x,
+    // because nothing reads more of that series than a fixed window. The
+    // mutation that made `FeatureEngine::evaluate` walk every instant it had
+    // ever evaluated failed it at 2.59x while the ceiling above passed at
+    // 64.426 us/op against its 500 us ceiling. So: this guards super-linear
+    // time, not bounded retention. The bound itself would have to be asserted
+    // on the retained series directly, the way the line arbiter's is on
+    // `LineArbiter::tracked`, and `FeatureEngine` exposes no view of its
+    // `MarketState` for that. Saying so is better than a comment that claims
+    // the cover it does not have.
     //
     // Load-invariant, unlike the ceiling above: both halves are measured on
     // this machine moments apart, so contention divides out of the ratio
@@ -683,6 +696,16 @@ fn feature_evaluation_costs_the_same_per_message_however_many_the_engine_has_alr
         }
         Ok((started.elapsed(), computed))
     };
+
+    // Warmed before either half is timed, and this is not a formality: run
+    // first in a fresh process the smaller half measured 38.380 us/op against
+    // the larger half's 15.159, a 2.5x head start for the *small* run that
+    // came from the allocator and the page cache rather than from anything
+    // under test. A ratio whose smaller half is inflated is a ratio that
+    // cannot fire, which is the failure mode this file exists to avoid — so
+    // the warm-up is discarded work whose only job is to make the two halves
+    // comparable.
+    let _ = feed(SMALL)?;
 
     let (small_elapsed, small_computed) = feed(SMALL)?;
     let (large_elapsed, large_computed) = feed(LARGE)?;
@@ -2178,24 +2201,36 @@ fn arbitrating_two_redundant_lines_costs_what_the_execution_measurements_say() -
 #[test]
 fn line_arbitration_costs_the_same_per_unit_however_long_the_lines_have_been_running() -> Result<()>
 {
-    // The arbiter's window is the bounded-retention claim in the one place a
-    // duplicate suppressor is most tempted to break it: to recognise line B's
-    // copy of a unit it must remember line A's, and the cheap way to be always
-    // right is to remember every unit forever. That is an unbounded working set
-    // on the feed path — prohibited outright by the data domain's rule — and it
-    // does not fail, it degrades, which is why a ceiling on a fixed message
-    // count cannot see it. Feeding five times the stream and asserting the
-    // per-unit cost did not rise is the assertion that can.
+    // Two assertions, because a timing ratio alone was measured here and found
+    // to be blind to the thing this seam is most likely to get wrong.
+    //
+    // To recognise line B's copy of a unit the arbiter must remember line A's,
+    // and the cheap way to be always right is to remember every unit forever —
+    // an unbounded working set on the feed path, prohibited outright by the
+    // data domain's rule. So this test was first written as a ratio alone, and
+    // the mutation that deletes the eviction entirely (`while self.recent.len()
+    // > self.window` made unreachable) **passed it at 0.82x**, because
+    // `recent` is a `BTreeMap`: unbounded retention costs a logarithm in time
+    // and everything in memory, and a 2.0x tolerance cannot see a logarithm.
+    // A ratio is the wrong instrument for a bound, and a test that claimed
+    // otherwise would have been a control that reads as protection and is not.
+    //
+    // So the bound is asserted directly, on `LineArbiter::tracked`, which
+    // exists for this. The ratio stays beside it and guards the other failure:
+    // a per-unit *scan* of the window or of a seen-set, which is super-linear
+    // in time and which the size assertion cannot see. Both mutations are in
+    // the lane report; each fires on exactly one of the two.
     const SMALL: usize = 25_000;
     const LARGE: usize = 125_000;
     const BATCH: usize = 100;
+    const WINDOW: usize = 4 * BATCH;
 
-    let run = |messages: usize| -> (WallDuration, usize, usize, usize) {
+    let run = |messages: usize| -> (WallDuration, usize, usize, usize, usize) {
         let stream = level_stream("ACME", messages, 0xA5B);
         // Wider than a batch, for the reason the ceiling test above gives: B's
         // copy arrives a whole batch after A's, and a unit that has left the
         // window is a `Missed` rather than a duplicate.
-        let mut arbiter = LineArbiter::new("feed-a", &["line-a", "line-b"], 4 * BATCH);
+        let mut arbiter = LineArbiter::new("feed-a", &["line-a", "line-b"], WINDOW);
         let mut released = 0usize;
         let mut published = 0usize;
         let mut duplicates = 0usize;
@@ -2213,11 +2248,19 @@ fn line_arbitration_costs_the_same_per_unit_however_long_the_lines_have_been_run
                 }
             }
         }
-        (started.elapsed(), released, published, duplicates)
+        (
+            started.elapsed(),
+            released,
+            published,
+            duplicates,
+            arbiter.tracked(),
+        )
     };
 
-    let (small_elapsed, small_released, small_published, small_duplicates) = run(SMALL);
-    let (large_elapsed, large_released, large_published, large_duplicates) = run(LARGE);
+    let (small_elapsed, small_released, small_published, small_duplicates, small_tracked) =
+        run(SMALL);
+    let (large_elapsed, large_released, large_published, large_duplicates, large_tracked) =
+        run(LARGE);
 
     // Premise: both runs published every unit once and recognised the second
     // line's copy of every one. An arbiter that dropped a line does half the
@@ -2233,6 +2276,24 @@ fn line_arbitration_costs_the_same_per_unit_however_long_the_lines_have_been_run
     assert_eq!(
         large_duplicates, LARGE,
         "the long run missed line B's copies"
+    );
+
+    // The bound itself, which no timing ratio can see. The window is allowed
+    // to hold one more than its width — `evict` drains down to `window`, so
+    // the unit just admitted may still be standing above it — and nothing
+    // more, whatever the length of the session behind it. Both runs are
+    // asserted, and the larger is five times the smaller, so a set that grew
+    // with the stream would have to grow by nothing at all to survive this.
+    assert!(
+        small_tracked <= WINDOW + 1,
+        "after {SMALL} units the arbiter is holding {small_tracked} sequences against a window \
+         of {WINDOW}"
+    );
+    assert!(
+        large_tracked <= WINDOW + 1,
+        "after {LARGE} units the arbiter is holding {large_tracked} sequences against a window \
+         of {WINDOW}; the seen-set is growing with the stream, which is the unbounded working \
+         set the module comment says the window exists to prevent"
     );
 
     report_scaling(
