@@ -71,17 +71,93 @@ fn rfc3339_round_trips() {
 }
 
 #[test]
-fn rfc3339_accepts_shorter_forms() {
+fn a_bare_date_is_the_start_of_that_day_in_utc() {
+    // The one short form that survives, and it survives because it is not a
+    // guess. A date names a day and no clock reading, so there is no zone to
+    // invent; the type has to give the day an instant and midnight UTC is the
+    // convention `to_date_string`, `civil_date` and `from_civil` already keep.
+    // Several vendors publish date-only fields with nothing more precise
+    // behind them — the ECB, Frankfurter and the New York Fed connectors all
+    // pass one straight through.
     assert_eq!(
         Timestamp::parse_rfc3339("2026-08-22").unwrap(),
         Timestamp::from_civil(2026, 8, 22)
     );
     assert_eq!(
-        Timestamp::parse_rfc3339("2026-08-22T10:00:00")
-            .unwrap()
-            .to_rfc3339(),
-        "2026-08-22T10:00:00.000Z"
+        Timestamp::parse_rfc3339("2026-08-22").unwrap().to_rfc3339(),
+        "2026-08-22T00:00:00.000Z"
     );
+}
+
+#[test]
+fn a_time_with_no_zone_designator_is_refused_rather_than_read_as_utc() {
+    // Until 2026-09-19 `2026-08-22T10:00:00` parsed as 10:00 UTC, and this
+    // test asserted that it did. It was the last guess left in this function
+    // after the offset-dropping defect was fixed — the one that read
+    // `2026-09-19T05:21:00-05:00` five hours early — and it is the same defect
+    // from the other side: that one discarded an offset the text carried, this
+    // one invented an offset the text withheld. Both produce a well-formed
+    // instant that nothing downstream can tell from a correct one, and a
+    // record stamped before it was knowable is point-in-time leakage.
+    //
+    // It was kept on the belief that the platform's own literals depended on
+    // it. The line above was the only naked local time in the workspace.
+    //
+    // `qip-api`'s statement and ledger views parse an `as_of` out of an HTTP
+    // query, so this is the difference between a browser in New York being
+    // told what the book held at 05:21 local and being told what it held five
+    // hours earlier.
+    for text in [
+        "2026-08-22T10:00:00",
+        "2026-08-22T10:00:00.250",
+        "2026-08-22 10:00:00",
+        "2026-08-22T10:00",
+    ] {
+        assert!(
+            Timestamp::parse_rfc3339(text).is_none(),
+            "{text:?} names a clock reading without saying whose clock, and was accepted"
+        );
+    }
+
+    // The designator in every spelling the platform meets, so the refusal
+    // above cannot be satisfied by refusing everything. This half is the one
+    // that distinguishes a working gate from one that says no to all input.
+    for (text, expected) in [
+        ("2026-08-22T10:00:00Z", "2026-08-22T10:00:00.000Z"),
+        ("2026-08-22T10:00:00z", "2026-08-22T10:00:00.000Z"),
+        ("2026-08-22T10:00:00+00:00", "2026-08-22T10:00:00.000Z"),
+        ("2026-08-22T05:00:00-05:00", "2026-08-22T10:00:00.000Z"),
+        ("2026-08-22T15:30:00+05:30", "2026-08-22T10:00:00.000Z"),
+        ("2026-08-22T05:00:00-0500", "2026-08-22T10:00:00.000Z"),
+    ] {
+        assert_eq!(
+            Timestamp::parse_rfc3339(text)
+                .unwrap_or_else(|| panic!("{text:?} carries a designator and was refused"))
+                .to_rfc3339(),
+            expected,
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn two_contradictory_zone_claims_on_one_instant_are_refused() {
+    // `Z` and a numeric offset say different things about the same reading and
+    // neither is the more likely right. A parser that honoured one of them
+    // would be choosing, which is the behaviour this function has just stopped
+    // doing. `...00ZZ` is here for the same reason: the earlier code trimmed
+    // every trailing `Z`, so a string nobody could have meant parsed happily.
+    for text in [
+        "2026-08-22T10:00:00+05:00Z",
+        "2026-08-22T10:00:00-05:00Z",
+        "2026-08-22T10:00:00ZZ",
+        "2026-08-22Z",
+    ] {
+        assert!(
+            Timestamp::parse_rfc3339(text).is_none(),
+            "should reject {text:?}"
+        );
+    }
 }
 
 #[test]

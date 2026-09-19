@@ -219,11 +219,12 @@ impl Timestamp {
 
     /// Parse an RFC 3339 instant, or the bare date `YYYY-MM-DD`.
     ///
-    /// Accepts `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS[.fff]`, and either of those
-    /// carrying `Z`, an RFC 3339 §5.6 numeric offset `+HH:MM` / `-HH:MM`, or
-    /// the ISO 8601 basic spelling `+HHMM` / `-HHMM`. **A numeric offset is
-    /// applied.** What comes back is the instant the text names, not the
-    /// wall-clock reading printed on it.
+    /// Accepts the bare date `YYYY-MM-DD`, and a time
+    /// `YYYY-MM-DDTHH:MM:SS[.fff]` **that carries a zone designator**: `Z` or
+    /// `z`, an RFC 3339 §5.6 numeric offset `+HH:MM` / `-HH:MM`, or the ISO
+    /// 8601 basic spelling `+HHMM` / `-HHMM`. **A numeric offset is applied.**
+    /// What comes back is the instant the text names, not the wall-clock
+    /// reading printed on it.
     ///
     /// Until 2026-09-19 this split the time at the first `+` or `-` and read
     /// what preceded it as UTC, so `2026-09-19T05:21:00-05:00` parsed as
@@ -243,19 +244,58 @@ impl Timestamp {
     /// defect operated, and a `None` the caller must handle is the only
     /// outcome that cannot be mistaken for a correct instant.
     ///
-    /// One guess remains, deliberately: a time bearing no designator at all,
-    /// such as `2026-08-22T10:00:00`, is read as UTC, and a bare date as
-    /// midnight UTC. RFC 3339 requires a designator, so this is an extension,
-    /// kept because the platform's own literals and several vendors'
-    /// date-only fields rely on it. A caller admitting third-party text whose
-    /// zone it does not control should require `Z` or an explicit offset
-    /// itself before calling: this function cannot tell the two sources apart.
+    /// **A time bearing no designator at all is refused**, and until
+    /// 2026-09-19 it was read as UTC. `2026-08-22T10:00:00` names a clock
+    /// reading and does not say whose clock; there are thirty-eight standard
+    /// offsets it could be, and choosing one is the same defect as the
+    /// five-hour error above wearing different clothes. That one dropped an
+    /// offset the text carried, this one invented an offset the text withheld,
+    /// and both hand back a well-formed instant that no comparison, hash or
+    /// replay downstream can tell from a correct one. It was kept as a guess
+    /// on the belief that the platform's own literals depended on it. They do
+    /// not: on the day this changed, the only naked local time anywhere in the
+    /// workspace was the single test line asserting the guess. The cost of
+    /// refusing was one line, and it had never been measured.
+    ///
+    /// Two callers make the point. `qip-api`'s statement and ledger views
+    /// parse an `as_of` straight out of an HTTP query, where a browser in New
+    /// York sending its own wall clock would have been booked five hours
+    /// early, against a ledger whose whole value is that it can be replayed.
+    /// And a feature stamped earlier than the instant it became knowable is
+    /// point-in-time leakage, which makes a backtest read the future and look
+    /// good doing it.
+    ///
+    /// **A bare date is not the same case and is still accepted**, as midnight
+    /// UTC. `2026-08-22` names no clock reading, so there is no zone to guess
+    /// at; it names a day, and the platform stores instants, so a day must be
+    /// given one. Midnight UTC is the convention this whole type already
+    /// keeps — [`Self::to_date_string`], [`Self::civil_date`] and
+    /// [`Self::from_civil`] are all UTC — and several vendors publish
+    /// date-only fields with nothing more precise behind them. A caller that
+    /// needs the close in Frankfurt rather than the start of the UTC day
+    /// states that itself, on top of a value that is not secretly wrong.
     pub fn parse_rfc3339(s: &str) -> Option<Self> {
-        let s = s.trim().trim_end_matches('Z');
-        let (date, time) = match s.split_once(['T', ' ']) {
-            Some((d, t)) => (d, Some(t)),
-            None => (s, None),
+        // Whether a `Z` was there has to be read before it is removed. The
+        // version that stripped it up front could not afterwards tell `...00Z`
+        // from `...00`, which is how the two came to mean the same thing.
+        // `strip_suffix` rather than `trim_end_matches`, so `...00ZZ` is
+        // refused instead of being quietly accepted as one `Z`.
+        let s = s.trim();
+        let (body, zulu) = match s.strip_suffix(['Z', 'z']) {
+            Some(rest) => (rest, true),
+            None => (s, false),
         };
+        let (date, time) = match body.split_once(['T', ' ']) {
+            Some((d, t)) => (d, Some(t)),
+            None => (body, None),
+        };
+        // A bare date carrying a designator — `2026-08-22Z` — is not RFC 3339
+        // and is not a form any caller here produces. Refused rather than
+        // read as the date, because the only way to reach it is a caller that
+        // built the string wrong.
+        if time.is_none() && zulu {
+            return None;
+        }
         let mut dp = date.split('-');
         let y: i32 = dp.next()?.parse().ok()?;
         let m: u32 = dp.next()?.parse().ok()?;
@@ -271,7 +311,14 @@ impl Timestamp {
             // time field: no hour, minute, second or fractional part may
             // contain one, so the first `+` or `-` can be nothing else.
             let (clock, offset_nanos) = match t.find(['+', '-']) {
+                // Both a numeric offset and a `Z` is two contradictory claims
+                // about the same instant. Neither is more likely right.
+                Some(_) if zulu => return None,
                 Some(i) => (&t[..i], parse_utc_offset(&t[i..])?),
+                // No designator, no instant. See the note above: this is the
+                // refusal, and returning `None` is the only outcome a caller
+                // cannot mistake for a correct reading.
+                None if !zulu => return None,
                 None => (t, 0),
             };
             let mut tp = clock.split(':');
