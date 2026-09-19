@@ -254,6 +254,18 @@ pub const EDGE_PASSIVE_CYCLES: &str = "qip_edge_passive_cycles_total";
 /// with.
 pub const EDGE_FILL_TIME_UNMEASURED: &str = "qip_edge_fill_time_unmeasured_venues";
 
+/// Trade edges of the arbitrage desk's graph by what §30.1's edge update did
+/// with each on a pass: `repriced`, its book had moved and it was re-quoted;
+/// `unchanged`, its book had not and it kept its rate.
+///
+/// `outcome` is two source-file literals, written in
+/// [`CellMetrics::edge_refresh`] and nowhere else, so the series is bounded
+/// by them and never by a market or a venue. Both arms are written on every
+/// pass that refreshes, including one that re-priced nothing: a desk whose
+/// books never move and a desk with no trade edge are the same empty series
+/// on `repriced` alone, and `unchanged` is what tells them apart.
+pub const EDGE_ARBITRAGE_EDGE_REFRESHES: &str = "qip_edge_arbitrage_edge_refreshes_total";
+
 /// Configured venues the cell holds no settlement terms for (§56.2 rule 21).
 ///
 /// The idle reading of the settlement gate, for the reason
@@ -417,6 +429,11 @@ impl CellMetrics {
         m.describe(
             EDGE_FILL_TIME_UNMEASURED,
             "configured venues with too few fills for their fill time to be judged",
+        );
+        m.describe(
+            EDGE_ARBITRAGE_EDGE_REFRESHES,
+            "trade edges of the arbitrage graph by what the pass's edge update did with each: \
+             repriced because its book moved, or unchanged",
         );
         m.describe(
             EDGE_SETTLEMENT_UNPROJECTED,
@@ -829,6 +846,27 @@ impl CellMetrics {
         let venues = venues as f64;
         self.metrics
             .gauge(EDGE_FILL_TIME_UNMEASURED, self.base.clone(), venues);
+    }
+
+    /// What §30.1's edge update did on one pass: how many trade edges were
+    /// re-quoted because their book had moved, and how many kept their rate.
+    ///
+    /// Both arms are incremented every time, by zero when that is the count,
+    /// so a pass that re-priced nothing still writes the series and the
+    /// `unchanged` arm carries the denominator.
+    pub fn edge_refresh(&self, refresh: crate::arbitrage::EdgeRefresh) {
+        // Edge counts are bounded by the whitelist the graph was built from,
+        // which is small; the casts cannot lose an edge anybody priced.
+        self.metrics.increment(
+            EDGE_ARBITRAGE_EDGE_REFRESHES,
+            self.with("outcome", "repriced"),
+            refresh.repriced as u64,
+        );
+        self.metrics.increment(
+            EDGE_ARBITRAGE_EDGE_REFRESHES,
+            self.with("outcome", "unchanged"),
+            refresh.unchanged as u64,
+        );
     }
 
     /// How many configured venues the settlement gate cannot project

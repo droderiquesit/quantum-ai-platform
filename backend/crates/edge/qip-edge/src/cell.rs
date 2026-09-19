@@ -10,7 +10,7 @@
 //! expiring — and the worst it can do while cut off is spend an amount
 //! somebody already approved, for as long as the envelope has left to run.
 
-use crate::arbitrage::ArbitrageDesk;
+use crate::arbitrage::{ArbitrageDesk, EdgeRefresh};
 use crate::decomposition::{Decomposition, DecompositionPolicy, LegSize};
 use crate::dispersion::{DispersionPolicy, DispersionVerdict, FillTimes, ReleaseSchedule};
 use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
@@ -674,6 +674,13 @@ pub struct WorkReport {
     /// what the cell held and what it built, which the refusal pair cannot
     /// carry. Empty on a pass whose applied policy names nothing.
     pub dispositions: Vec<DispositionLine>,
+    /// §30.1's edge update as this pass ran it: how many of the desk's trade
+    /// edges were re-quoted because their book had moved, and how many were
+    /// left holding their rate. `None` on a pass that ran no refresh — no
+    /// desk, a halt, or a degradation that paused the scan — which is a
+    /// different fact from a refresh that found nothing moved, and the two
+    /// must not read alike.
+    pub edge_refresh: Option<EdgeRefresh>,
     pub halted: bool,
 }
 
@@ -2420,8 +2427,17 @@ impl Cell {
     }
 
     /// Track an instrument at a venue.
+    ///
+    /// A state inserted here replaces whatever the cell held for the pair
+    /// wholesale, so the desk is told to forget which books it has read: a
+    /// replacement can carry the same `(observed_at, observations)` pair as
+    /// the state it displaced while showing a different touch, and §30.1's
+    /// affected-edge filter would otherwise keep a rate no book holds.
     pub fn track(&mut self, state: VenueState) {
         self.liquidity.insert(state);
+        if let Some(installed) = self.desk.as_mut() {
+            installed.desk.forget_books();
+        }
     }
 
     /// Deploy a strategy, the program its plan indexes into, and the verified
@@ -5282,7 +5298,12 @@ impl Cell {
             let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) else {
                 return Ok(Vec::new());
             };
-            desk.refresh(&self.liquidity)?;
+            let refresh = desk.refresh(&self.liquidity)?;
+            // Charted and reported the moment it is known. A count of
+            // affected edges computed and dropped would be the §30.1 row
+            // claiming an incremental update it does not make.
+            self.metrics.edge_refresh(refresh);
+            report.edge_refresh = Some(refresh);
             desk.scan(&self.liquidity, now)
         };
 

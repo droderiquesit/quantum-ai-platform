@@ -1010,7 +1010,7 @@ fn answer(
     // read identically from the order count alone.
     let pass = match feed {
         Some(feed) => format!(
-            r#"{{"feed":"{}","instruments":{},"instruments_omitted":{},"passes":{},"halted_turns":{},"refusals":{},"signals":{},"orders":{},"fills":{},"expired":{},"repriced":{},"breaks":{}}}"#,
+            r#"{{"feed":"{}","instruments":{},"instruments_omitted":{},"passes":{},"halted_turns":{},"refusals":{},"signals":{},"orders":{},"fills":{},"expired":{},"repriced":{},"breaks":{},"edges_repriced":{},"edges_unchanged":{}}}"#,
             SIMULATED_FEED,
             feed.tracked(),
             feed.omitted_total(),
@@ -1023,6 +1023,8 @@ fn answer(
             stats.expired,
             stats.repriced,
             stats.breaks,
+            stats.edges_repriced,
+            stats.edges_unchanged,
         ),
         None => "null".to_string(),
     };
