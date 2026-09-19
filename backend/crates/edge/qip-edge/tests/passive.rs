@@ -30,6 +30,7 @@ use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::arbitrage::ArbitrageDesk;
 use qip_edge::cell::{Cell, CellConfig, ExecutionReport, Placer};
 use qip_edge::dispersion::DispersionPolicy;
+use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::policy::VerifiedPolicy;
 use qip_edge::telemetry::EDGE_PASSIVE_CYCLES;
@@ -251,6 +252,10 @@ struct SettlingGateway {
     pending: Vec<ExecutionReport>,
     latency_millis: BTreeMap<String, i64>,
     stops_after: usize,
+    /// Placements from this index on are answered for half what was asked and
+    /// leave the other half working — a venue that filled what was at the
+    /// touch and rested the rest.
+    halves_from: usize,
     answered: usize,
     cancelled: Vec<String>,
     /// Quantity still open at the venue for each order it has not answered.
@@ -267,6 +272,7 @@ impl SettlingGateway {
                 .map(|(venue, millis)| ((*venue).to_string(), *millis))
                 .collect(),
             stops_after: usize::MAX,
+            halves_from: usize::MAX,
             answered: 0,
             cancelled: Vec::new(),
             open: BTreeMap::new(),
@@ -275,6 +281,11 @@ impl SettlingGateway {
 
     fn answering_only(mut self, orders: usize) -> Self {
         self.stops_after = orders;
+        self
+    }
+
+    fn halving_from(mut self, order: usize) -> Self {
+        self.halves_from = order;
         self
     }
 
@@ -301,16 +312,26 @@ impl Placer for SettlingGateway {
         price: Decimal,
         at: Timestamp,
     ) -> Result<()> {
-        if self.answered < self.stops_after {
+        let half = self.placed.len() >= self.halves_from;
+        if half || self.answered < self.stops_after {
             let millis = self
                 .latency_millis
                 .get(venue.as_str())
                 .copied()
                 .unwrap_or_default();
+            let filled = if half {
+                let taken = quantity
+                    .checked_div(d("2"))
+                    .expect("half of a placed quantity");
+                self.open.insert(order_id.to_string(), quantity - taken);
+                taken
+            } else {
+                quantity
+            };
             self.pending.push(ExecutionReport {
                 order_id: order_id.to_string(),
                 venue: venue.clone(),
-                quantity,
+                quantity: filled,
                 price,
                 at: at.saturating_add(Duration::from_millis(millis)),
             });
@@ -587,6 +608,70 @@ fn a_resting_leg_that_fills_nothing_is_withdrawn_and_the_near_leg_is_never_cross
 }
 
 #[test]
+fn a_resting_leg_that_half_filled_and_then_expired_stops_the_cell_rather_than_crossing_a_stale_price()
+-> Result<()> {
+    // The arm with no good answer, and the one where saying so is the answer.
+    // The far venue takes half the resting leg and rests the other half; the
+    // cell waits, because a fraction that can still grow is not a fraction to
+    // size the near leg to. Then the cycle's own validity elapses and the
+    // remainder is withdrawn. The cell now holds half a far leg outright and
+    // the near leg is priced where the scanner quoted it a minute ago.
+    //
+    // Crossing it there would be the cell completing an arbitrage against
+    // numbers that no longer exist — tidying up one unchosen position by
+    // taking a second. It stops and halts instead, which is what
+    // `break_cycle` is for and what the arbitrage crate means by "the
+    // deadline after which an unfilled leg is a stranded position rather than
+    // a pending one".
+    let (mut cell, _metrics) = cell_with(5)?;
+    // Orders 0 and 1 are the measuring cycle and fill whole; order 2 is the
+    // resting leg and half fills.
+    let mut gateway = slow_far_venue().halving_from(2);
+
+    cell.work(t(10), &mut gateway)?;
+    let rested = cell.work(t(20), &mut gateway)?;
+    assert_eq!(
+        rested.orders.len(),
+        1,
+        "the premise failed: no leg rested: {:?}",
+        rested.refusals
+    );
+    let near_before = gateway.placed_on(NEAR);
+
+    // Still inside the validity: the resting half is working, so the cell has
+    // no settled fraction and crosses nothing.
+    let waiting = cell.work(t(25), &mut gateway)?;
+    assert_eq!(
+        gateway.placed_on(NEAR),
+        near_before,
+        "the near leg was crossed against a fraction that could still grow: {:?}",
+        waiting.refusals
+    );
+
+    // Past it: the remainder is withdrawn and the cycle can no longer be
+    // completed at a price anybody would quote.
+    let outcome = cell.work(t(20 + LEG_VALIDITY_SECS + 1), &mut gateway);
+    let Err(error) = outcome else {
+        panic!("the cell completed a cycle at a price the market had left: {outcome:?}");
+    };
+    assert!(
+        error.message().contains("price the market has left"),
+        "the refusal did not say the price was stale: {}",
+        error.message()
+    );
+    assert_eq!(
+        gateway.placed_on(NEAR),
+        near_before,
+        "the near leg was crossed at the price the scanner quoted a minute earlier"
+    );
+    assert!(
+        cell.is_halted(),
+        "a cycle stranded half-filled left the cell trading on"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_gateway_that_cannot_withdraw_an_order_is_never_given_a_resting_leg() -> Result<()> {
     // A leg may only rest where the cell could take it back. The same guard
     // `resolve_pricing` puts on a resting net: an order nothing can withdraw
@@ -652,6 +737,71 @@ fn two_venues_inside_the_bound_keep_sending_their_cycle_in_one_pass() -> Result<
         outcome(&metrics, "rested"),
         0,
         "a leg rested on a venue answering inside the bound"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_reconciliation_between_passes_never_retires_the_order_a_rested_cycle_is_waiting_on()
+-> Result<()> {
+    // The node reconciles between passes, and `Cell::reconcile` retires every
+    // closed order it finds. The order a rested cycle is waiting on is closed
+    // the moment its time to live elapses — and it is also the only record of
+    // what that venue completed, which is the fraction the rest of the cycle
+    // must be sized to. Retiring it leaves the cell unable to say what
+    // happened to a cycle it still owes legs against, which it reports as a
+    // reconciliation break and halts on: a cell stopped by its own
+    // housekeeping rather than by any disagreement with a venue.
+    let (mut cell, metrics) = cell_with(5)?;
+    let mut gateway = slow_far_venue().answering_only(2);
+
+    let first = cell.work(t(10), &mut gateway)?;
+    // The drop copy has to agree with the cell about the first cycle's two
+    // fills, or reconciliation breaks on those and never reaches settlement —
+    // and the property here is about settlement.
+    for order in &first.orders {
+        cell.observe_drop_copy(DropCopyFill {
+            order_id: order.order_id.clone(),
+            venue: order.venue.clone(),
+            quantity: order.quantity,
+            price: order.price,
+            at: t(11),
+        });
+    }
+    let rested = cell.work(t(20), &mut gateway)?;
+    assert_eq!(
+        rested.orders.len(),
+        1,
+        "the premise failed: no leg rested: {:?}",
+        rested.refusals
+    );
+
+    // Past the leg validity, so the resting order is withdrawn and closed —
+    // and then reconciled, in that order, exactly as a node does between one
+    // pass and the next.
+    let expired = t(20 + LEG_VALIDITY_SECS + 1);
+    let withdrawn = cell.withdraw_expired(&mut gateway, expired);
+    assert_eq!(
+        withdrawn.len(),
+        1,
+        "the premise failed: the resting order was not withdrawn at its time to live"
+    );
+    assert!(
+        cell.reconcile(expired).is_empty(),
+        "the premise failed: reconciliation found a break of its own, so settlement never ran"
+    );
+
+    let after = cell.work(t(20 + LEG_VALIDITY_SECS + 2), &mut gateway)?;
+    assert!(
+        !cell.is_halted(),
+        "a reconciliation between passes retired the order the rested cycle was waiting on, and \
+         the cell halted on a disagreement with itself: {:?}",
+        after.refusals
+    );
+    assert_eq!(
+        outcome(&metrics, "abandoned"),
+        1,
+        "the cycle was not abandoned cleanly after the reconciliation"
     );
     Ok(())
 }
