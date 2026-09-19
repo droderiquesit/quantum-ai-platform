@@ -79,6 +79,55 @@ SEARCHER = re.compile(r"^(grep|ls|sed|awk|find|rg)\b")
 UNSAFE = re.compile(r"\$\(|`|>|\brm\b|\bmv\b|\bdd\b")
 
 
+def unescape_table_pipes(command):
+    """Undo the register's markdown-table pipe escaping WITHOUT breaking grep patterns.
+
+    A markdown table cell must escape a literal `|`, so a shell pipe is written
+    `\\|` in the register. But `\\|` is ALSO how BRE spells alternation, and
+    `grep -in 'bigtable\\|alloydb'` means one thing to grep and another to a
+    naive unescaper. Replacing every `\\|` with `|` turns that pattern into a
+    search for the literal text `bigtable|alloydb`, which occurs in no tree.
+
+    That is not a cosmetic bug. The command then returns nothing, the checker
+    reads nothing as "the claim holds", and the row is confirmed whatever the
+    repository contains. 62 of the register's 115 emptiness claims carry a
+    pattern-internal pipe, so the first version of this script could not fire
+    over a majority of its own denominator while reporting them all as checked
+    — the `MaxExpectedShortfall` shape, in the tool written to catch it. It is
+    why §17.2 sat false and unflagged: read as grep reads it, its
+    proof-of-absence command returns 37 lines.
+
+    The discriminator is quoting, not spacing. Inside a quoted string the pipe
+    belongs to the pattern and the backslash is grep's; outside quotes it is
+    the shell's pipe, escaped only so the table parses. Spacing looks tempting
+    and is wrong: `'a\\|b'` and `x \\| y` differ by quoting reliably and by
+    whitespace only by convention.
+    """
+    out = []
+    quote = None
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if quote:
+            if char == quote:
+                quote = None
+            if char == "\\" and command[index + 1: index + 2] == "|":
+                # Inside quotes: grep's alternation. Keep the backslash.
+                out.append("\\|")
+                index += 2
+                continue
+        elif char in ("'", '"'):
+            quote = char
+        elif char == "\\" and command[index + 1: index + 2] == "|":
+            # Outside quotes: a shell pipe the table forced us to escape.
+            out.append("|")
+            index += 2
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def claims(text):
     """Yield (section, verdict, command) for every emptiness claim in the register."""
     for line in text.splitlines():
@@ -91,8 +140,7 @@ def claims(text):
         verdict = parts[3].strip().strip("`")
         evidence = "|".join(parts[4:])
         for match in re.finditer(r"`([^`]+)`", evidence):
-            # The register escapes pipes inside commands so the table still parses.
-            command = match.group(1).replace("\\|", "|").strip()
+            command = unescape_table_pipes(match.group(1)).strip()
             if not SEARCHER.match(command):
                 continue
             if not EMPTINESS.match(evidence[match.end():]):
