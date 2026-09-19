@@ -646,7 +646,9 @@ impl SimulatedExchange {
     ) -> Result<BookableFill> {
         let notional = quantity.checked_mul(price).ok_or_else(|| {
             Error::numeric(format!(
-                "a fill of {quantity} at {price} on {} has no representable notional, so it can                  be neither charged nor added to the fee ladder; send a size whose consideration                  is representable",
+                "a fill of {quantity} at {price} on {} has no representable notional, so it can \
+                 be neither charged nor added to the fee ladder; send a size whose consideration \
+                 is representable",
                 self.venue.as_str()
             ))
         })?;
@@ -654,15 +656,15 @@ impl SimulatedExchange {
             .settings
             .fees
             .fee(notional, liquidity, self.traded_notional)?;
-        self.traded_notional = self.traded_notional.checked_add(notional.abs()).ok_or_else(
-            || {
-                Error::numeric(format!(
-                    "{} has traded {} here and a further {notional} overflows the volume its fee                      ladder is read against; restart the venue session rather than charging the                      next fill at a rung nobody computed",
-                    self.venue.as_str(),
-                    self.traded_notional
-                ))
-            },
-        )?;
+        let traded = self.traded_notional;
+        self.traded_notional = traded.checked_add(notional.abs()).ok_or_else(|| {
+            Error::numeric(format!(
+                "{} has traded {traded} here and a further {notional} overflows the volume its \
+                 fee ladder is read against; restart the venue session rather than charging the \
+                 next fill at a rung nobody computed",
+                self.venue.as_str()
+            ))
+        })?;
         self.fill_sequence = self.fill_sequence.saturating_add(1);
         self.last_trade
             .insert(object_id.as_str().to_string(), price);
