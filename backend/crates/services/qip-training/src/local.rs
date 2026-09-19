@@ -202,6 +202,42 @@ impl TeacherForm {
         }
     }
 
+    /// Predict at a declared arity, refusing the wrong input count and any
+    /// non-finite input, and apply the calibration.
+    ///
+    /// This is the one place a teacher's score is computed with its refusals
+    /// attached. [`TrainedTeacher::predict`] calls it, and so does the
+    /// served form in [`crate::serve`] — two callers of one function rather
+    /// than two functions that must be kept equal, because the failure a
+    /// second copy invites is a served score that drifts from the fitted
+    /// one without any test that compares them noticing which is right.
+    ///
+    /// `arity` is declared rather than derived from the form because a stump
+    /// ensemble's own [`Self::arity`] is the highest feature any stump
+    /// consults plus one, which can be fewer than the features the teacher
+    /// was fitted on; a caller supplying the full row must not be refused
+    /// for supplying it.
+    pub fn predict_calibrated(
+        &self,
+        arity: usize,
+        calibration: Calibration,
+        reference: &str,
+        inputs: &[f64],
+    ) -> Result<f64> {
+        if inputs.len() != arity {
+            return Err(Error::invalid(format!(
+                "{reference} takes {arity} input(s), given {}",
+                inputs.len()
+            )));
+        }
+        if inputs.iter().any(|value| !value.is_finite()) {
+            return Err(Error::numeric(format!(
+                "{reference} was given a non-finite input"
+            )));
+        }
+        Ok(calibration.apply(self.predict(inputs)))
+    }
+
     /// Worst-case evaluation steps, in the same unit
     /// [`qip_strategy::model::DistilledModel::cost`] uses.
     pub fn cost(&self) -> usize {
@@ -443,23 +479,12 @@ impl TrainedTeacher {
         }
     }
 
-    /// Predict, applying the calibration.
+    /// Predict, applying the calibration. Delegates to
+    /// [`TeacherForm::predict_calibrated`], which the served form in
+    /// [`crate::serve`] also calls, so the two cannot disagree.
     pub fn predict(&self, inputs: &[f64]) -> Result<f64> {
-        if inputs.len() != self.arity() {
-            return Err(Error::invalid(format!(
-                "{} takes {} input(s), given {}",
-                self.reference(),
-                self.arity(),
-                inputs.len()
-            )));
-        }
-        if inputs.iter().any(|value| !value.is_finite()) {
-            return Err(Error::numeric(format!(
-                "{} was given a non-finite input",
-                self.reference()
-            )));
-        }
-        Ok(self.calibration.apply(self.form.predict(inputs)))
+        self.form
+            .predict_calibrated(self.arity(), self.calibration, &self.reference(), inputs)
     }
 
     /// Predict for every row of a dataset.

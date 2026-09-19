@@ -12,6 +12,9 @@ serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
 qip-numerics.workspace = true
+# The serving port (ADR 0083): `serve` puts `InTreeProvider` behind
+# `qip_ai::serving::ModelProvider`, a service depending on a lib.
+qip-ai.workspace = true
 # `DistilledModel` is the distillation target: the only learned function the
 # hot path will evaluate, and the reason this crate exists in the shape it does.
 qip-strategy.workspace = true

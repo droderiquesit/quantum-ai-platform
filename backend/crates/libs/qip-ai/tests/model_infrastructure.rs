@@ -789,3 +789,138 @@ fn drift_on_a_degenerate_sample_is_neutral() {
 fn _completion_is_inspectable(c: &Completion) -> bool {
     c.is_complete() && c.total_tokens() > 0
 }
+
+// --- promote with an artifact (ADR 0083) --------------------------------------
+
+use qip_ai::serving::{ModelArtifact, ModelFormat, digest_of};
+
+fn artifact_for(card: &ModelCard, intercept: f64) -> ModelArtifact {
+    ModelArtifact::new(
+        card.reference(),
+        ModelFormat::DistilledLinear,
+        json!({"name": card.name, "form": {"linear": {"intercept": intercept, "coefficients": [0.5, -0.25]}}}),
+    )
+}
+
+#[test]
+fn promoting_with_an_artifact_names_it_on_the_card_and_publishes_it_under_its_digest() {
+    // The deploy stage checks a plan's inline model against a manifest of
+    // digests; the promote stage is where a digest first becomes a fact the
+    // registry holds. A card promoted without one has nothing for the
+    // manifest to name, which is the state every card was in before.
+    let mut registry = ModelRegistry::new();
+    let card = evaluated_card(now(), true);
+    let artifact = artifact_for(&card, 0.1);
+    registry.register(card);
+    assert!(
+        registry
+            .get("regime-classifier@2.1.0")
+            .unwrap()
+            .artifact_digest
+            .is_none(),
+        "the premise failed: a card named an artifact before promotion"
+    );
+
+    let published = registry.promote_artifact(&artifact, now()).unwrap();
+
+    let card = registry.get("regime-classifier@2.1.0").unwrap();
+    assert_eq!(card.stage, ModelStage::Production);
+    assert_eq!(
+        card.artifact_digest.as_deref(),
+        Some(artifact.digest.as_str())
+    );
+    // Named by content, so a file can be checked against its own name.
+    assert_eq!(published.file_name, format!("{}.json", artifact.digest));
+    // The published bytes read back as the same artifact, and their digest
+    // is a recomputation over the payload they carry — not a copy of a
+    // field somebody could have edited.
+    let reread = ModelArtifact::from_json(&published.contents).unwrap();
+    assert_eq!(reread, artifact);
+    assert_eq!(reread.digest, digest_of(&reread.payload));
+    // Promotion with an artifact is still promotion: the card can drive a
+    // decision afterwards.
+    assert!(
+        registry
+            .require_for_decision("regime-classifier@2.1.0", now())
+            .is_ok()
+    );
+}
+
+#[test]
+fn an_artifact_that_does_not_digest_to_its_payload_promotes_nothing() {
+    let mut registry = ModelRegistry::new();
+    let card = evaluated_card(now(), true);
+    let mut artifact = artifact_for(&card, 0.1);
+    registry.register(card);
+    // Swap the payload after the digest was taken.
+    artifact.payload["form"]["linear"]["intercept"] = json!(0.2);
+    assert_ne!(
+        artifact.digest,
+        digest_of(&artifact.payload),
+        "the premise failed"
+    );
+
+    let error = registry.promote_artifact(&artifact, now()).unwrap_err();
+    assert_eq!(error.code(), "denied");
+    assert!(error.message().contains(&artifact.digest), "{error}");
+    // Nothing moved: the card is still in development with no digest.
+    let card = registry.get("regime-classifier@2.1.0").unwrap();
+    assert_eq!(card.stage, ModelStage::Development);
+    assert!(card.artifact_digest.is_none());
+}
+
+#[test]
+fn an_artifact_for_an_unevaluated_card_is_refused_and_no_digest_is_recorded() {
+    let mut registry = ModelRegistry::new();
+    let card = evaluated_card(now(), false);
+    let artifact = artifact_for(&card, 0.1);
+    registry.register(card);
+    let error = registry.promote_artifact(&artifact, now()).unwrap_err();
+    assert!(error.message().contains("passing evaluation"), "{error}");
+    let card = registry.get("regime-classifier@2.1.0").unwrap();
+    assert_eq!(card.stage, ModelStage::Development);
+    assert!(
+        card.artifact_digest.is_none(),
+        "a digest was recorded on a card that did not promote"
+    );
+    // And a card nobody registered is not found rather than silently created.
+    let mut empty = ModelRegistry::new();
+    assert_eq!(
+        empty.promote_artifact(&artifact, now()).unwrap_err().code(),
+        "not_found"
+    );
+}
+
+#[test]
+fn a_version_cannot_be_re_promoted_with_different_bytes_under_the_same_reference() {
+    // The refusal a reader might expect to be allowed. Every decision that
+    // cited `regime-classifier@2.1.0` cited a digest; re-promoting the same
+    // reference with other bytes would make those citations name a model
+    // that no longer exists under that name.
+    let mut registry = ModelRegistry::new();
+    let card = evaluated_card(now(), true);
+    let first = artifact_for(&card, 0.1);
+    let second = artifact_for(&card, 0.3);
+    assert_ne!(first.digest, second.digest, "the premise failed");
+    registry.register(card);
+    registry.promote_artifact(&first, now()).unwrap();
+
+    let error = registry.promote_artifact(&second, now()).unwrap_err();
+    assert_eq!(error.code(), "denied");
+    assert!(
+        error.message().contains(&first.digest) && error.message().contains(&second.digest),
+        "the refusal did not name both digests: {error}"
+    );
+    assert_eq!(
+        registry
+            .get("regime-classifier@2.1.0")
+            .unwrap()
+            .artifact_digest
+            .as_deref(),
+        Some(first.digest.as_str()),
+        "the card's digest moved on a refused promotion"
+    );
+    // The same bytes again are idempotent: a re-run of a promotion is not
+    // a change of model.
+    assert!(registry.promote_artifact(&first, now()).is_ok());
+}

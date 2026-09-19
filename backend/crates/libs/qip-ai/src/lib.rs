@@ -25,6 +25,7 @@ pub mod language;
 pub mod memory;
 pub mod registry;
 pub mod retrieval;
+pub mod serving;
 
 pub use embedding::{Embedder, Embedding, HashingEmbedder};
 pub use evaluation::{Calibration, DriftReport, PredictionOutcome};
@@ -33,3 +34,4 @@ pub use language::{
 };
 pub use registry::{ModelCard, ModelRegistry, ModelStage};
 pub use retrieval::{Document, RetrievalResult, SearchIndex};
+pub use serving::{ModelArtifact, ModelFormat, ModelProvider, ServedModel};

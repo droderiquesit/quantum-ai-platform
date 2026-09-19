@@ -805,6 +805,7 @@ dependencies = [
 name = "qip-training"
 version = "0.1.0"
 dependencies = [
+ "qip-ai",
  "qip-core",
  "qip-numerics",
  "qip-quant",

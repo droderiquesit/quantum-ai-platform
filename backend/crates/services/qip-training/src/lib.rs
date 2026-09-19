@@ -87,6 +87,18 @@
 //! so an unmeasured student is not a state anything downstream has to check
 //! for.
 //!
+//! ## A trained model is served by the code that trained it
+//!
+//! Off the hot path, a caller that wants a score from any of the four forms
+//! above goes through [`qip_ai::serving::ModelProvider`], and [`serve::InTreeProvider`]
+//! is the one implementation (ADR 0083). It packs a teacher or a distillate
+//! into a digest-named [`qip_ai::serving::ModelArtifact`] and serves it back,
+//! and the score it returns is computed by the form's own `predict` or
+//! `evaluate` — there is no second arithmetic. No inference crate is taken:
+//! the population of forms is four small structs this crate already owns,
+//! and the format list is a closed enum, so a fifth form is an ADR before it
+//! is a payload.
+//!
 //! # What this crate deliberately does not do
 //!
 //! **It does not read a clock or draw from ambient randomness.** Every entry
@@ -127,6 +139,7 @@ pub mod distill;
 pub mod estimators;
 pub mod job;
 pub mod local;
+pub mod serve;
 pub mod vertex;
 
 pub use cadence::{AuthorisedUpdate, TrainingCadence, UpdatePayload, UpdateScope};
