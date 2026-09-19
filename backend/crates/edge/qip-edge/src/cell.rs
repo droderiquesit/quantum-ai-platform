@@ -196,6 +196,30 @@ pub const GATE_MASS_CANCEL: &str = "mass_cancel";
 /// operator to read a routing table about an outage in another region.
 pub const GATE_DARK_REGION: &str = "dark_region";
 
+/// The token a refusal carries when the **centre** has derived the region
+/// on the far end of a mirror dark (ADR 0079) — read off policy slot 11's
+/// `dark_regions` against this cell's own `venue_regions` in
+/// [`Cell::check_extension_for`].
+///
+/// Distinct from [`GATE_DARK_REGION`], which is this cell's *own* reading of
+/// its peers off the region wire the node polls: the two are different
+/// sources with different remedies — a mount on this node against a
+/// derivation at the centre — and a refusal from the second filed under the
+/// first would send an operator to read a local wire about a silence the
+/// centre measured. A constant so the token cannot be reworded by an edit a
+/// test would still pass.
+///
+/// **Where it is charted, stated so it is not mistaken for a gate label.**
+/// The refusal is raised inside the extension check and so reaches the
+/// pass under `GATE_PATH_EXTENSION`, the constant that seam already passes
+/// to `Cell::refuse` — `qip_edge_refusals_total{gate}` gains no value and
+/// stays bounded. This token opens the refusal's reason, so the journal
+/// and the report tell the two dark findings apart even though the series
+/// does not. Promoting it to its own `RoutedOutcome` arm and its own label
+/// is a change to the routing dispatch and belongs to the lane that owns
+/// it.
+pub const GATE_CENTRE_DARK_REGION: &str = "centre_dark_region";
+
 /// The gate a second admission of a cycle already resting a leg is refused
 /// under (§32.1's passive-first mechanism).
 ///
@@ -4443,6 +4467,12 @@ impl Cell {
     ) -> Result<ExtensionVerdict> {
         let mut verdict = None;
         for index in composition.mirror_edges() {
+            // ADR 0079 decision five, before any band or hedge is read: a
+            // mirror whose far venue sits in a region the centre has derived
+            // dark is suspended whatever the path says about it, because
+            // the cell on the other end may be nobody and the band gates
+            // assume somebody is there to take the other side.
+            self.refuse_mirror_into_centre_dark_region(composition, index)?;
             // The assigned path decides which facts are assembled, and the
             // match names all eight so a ninth cannot be added without a
             // decision here. Assembling the mirror facts whatever the path
@@ -4520,6 +4550,67 @@ impl Cell {
             // refuse for facts nobody supplied.
             None => check_extension(path, &PathExtensions::new(), now),
         }
+    }
+
+    /// Refuse a mirror edge whose far venue's region the centre has derived
+    /// dark, or whose far venue this cell holds no region annotation for.
+    ///
+    /// Read off policy slot 11's `dark_regions` — the centre's derivation
+    /// from silence, subtract-only on the wire — against
+    /// `CellConfig::venue_regions`, ADR 0073's operator-stated map, and not
+    /// against the composition edge's own `region`: the edge's region was
+    /// derived from that map at installation, so reading the map is
+    /// reading the fact at its source, and a venue with no annotation is a
+    /// missing fact, which ADR 0073 decision five says is a refusal rather
+    /// than a home-region default. With no slot 11 applied there is nothing
+    /// to read and nothing is refused here; the cell's own region wire
+    /// (`dark_mirror`) still gates the same edge from its own reading.
+    ///
+    /// The refusal opens with [`GATE_CENTRE_DARK_REGION`]; see that
+    /// constant for where it is charted.
+    fn refuse_mirror_into_centre_dark_region(
+        &self,
+        composition: &Composition,
+        index: usize,
+    ) -> Result<()> {
+        let Some(constraints) = self.feasibility_constraints() else {
+            return Ok(());
+        };
+        let Some(edge) = composition.edges().get(index) else {
+            // The extension assembly refuses a missing edge itself, with the
+            // composition's edge count; a second refusal here would name the
+            // wrong finding.
+            return Ok(());
+        };
+        let (local, _) = self.mirror_ends(edge)?;
+        let remote = if local == edge.from() {
+            edge.to()
+        } else {
+            edge.from()
+        };
+        let Some(region) = self.config.venue_regions.get(remote.venue.as_str()) else {
+            return Err(Error::denied(format!(
+                "{GATE_CENTRE_DARK_REGION}: the mirrored leg {} -> {} reaches venue {} and this \
+                 cell holds no region annotation for it, so whether the centre has derived \
+                 that region dark cannot be read; annotate the venue's region in \
+                 QIP_VENUE_REGIONS rather than mirroring into a region nobody named",
+                edge.from().label(),
+                edge.to().label(),
+                remote.venue.as_str()
+            )));
+        };
+        if constraints.dark_regions.contains(region) {
+            return Err(Error::denied(format!(
+                "{GATE_CENTRE_DARK_REGION}: the mirrored leg {} -> {} reaches region {region}, \
+                 which the centre has derived dark — heard from once and from none of its \
+                 cells within the operator's window (ADR 0079); every mirror into it is \
+                 suspended until a cell there reports to the centre again, and this cell's \
+                 local strategies and intra-venue cycles are unaffected",
+                edge.from().label(),
+                edge.to().label()
+            )));
+        }
+        Ok(())
     }
 
     /// Everything §33.1's path-3 row needs for one mirror edge, assembled
