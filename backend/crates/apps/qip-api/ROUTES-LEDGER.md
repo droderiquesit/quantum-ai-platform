@@ -29,6 +29,15 @@ listed no `POST` at all while the eligibility route had been live for some
 time; that is corrected here rather than left, because a page built from this
 file would not know the surface it is describing.
 
+Since ADR 0085 §5 there is a fifth read and a third pair of operator writes,
+and they are the desk's rather than a user's: `GET /ledger/commitments` lists
+every unfunded private commitment the desk is on the hook for with the
+capital-call notices standing against each, at `viewer` because it carries
+no per-user datum, and `POST /ledger/commitments/{commitment}/capital-calls`
+with its `DELETE` by reference file and withdraw a fund's drawdown notice at
+`operator`. A notice can only ever *raise* what the reserve holds back; no
+route settles one, and each section below says why.
+
 Every body is read off the kernel at request time. The wallet, the corridors,
 the destinations and the gate assessment come from the kernel's fabric
 journal, whose every decision is also a record in the platform's event log;
@@ -279,6 +288,151 @@ declaration is. Nothing else on the book moves, and the reference is free to
 be declared again for the wire that does come. Answer, `200`: the same row
 the declaration answers with. Journalled under `kernel/ledger` before the
 ledger drops it, and replayed in log order after the declaration it cancels.
+
+## `GET /api/v1/ledger/commitments`
+
+**Role: `viewer`.** Every unfunded private commitment the desk is on the hook
+for — derived at assembly from each private-asset record in the universe —
+with the capital-call notices standing against it, as the reserve reads them.
+Carries no per-user datum: a commitment is the desk's obligation to a fund,
+and a notice is what the fund demanded of the desk. `obligation_total` is the
+figure the kernel's `deployable_capital` subtracts from free capital before
+anything is sized, and it is the book's own sum (`CommitmentBook::
+unfunded_total`), not one this layer adds up: each commitment's `obligation`
+is its `unfunded` balance plus the `accrued_default_penalty` its overdue
+notices have cost. A notice ahead of its due instant therefore changes no
+figure here; one past it adds exactly its `penalty`.
+
+```json
+{
+  "posture": "PAPER TRADING",
+  "served_at": "2025-10-09T08:53:20.000Z",
+  "call_settlement": "no filed capital call is ever settled by this build: …",
+  "obligation_total": "251000",
+  "accrued_default_penalty": "1000",
+  "commitments": [
+    {
+      "subject": "obj-FUND",
+      "committed": "400000",
+      "called": "150000",
+      "unfunded": "250000",
+      "accrued_default_penalty": "1000",
+      "obligation": "251000",
+      "known_at": "2025-10-09T08:53:20.000Z",
+      "capital_calls": [
+        {
+          "reference": "call-1",
+          "amount": "100000",
+          "issued_at": "2025-10-09T08:53:20.000Z",
+          "due_at": "2025-10-19T08:53:20.000Z",
+          "consequence": { "kind": "interest", "annual_rate_bps": 3650 },
+          "overdue": true,
+          "days_late": 10,
+          "penalty": "1000"
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Key | Type | Meaning |
+|---|---|---|
+| `call_settlement` | string | A constant sentence: no filed capital call is ever settled by this build. Meeting a call is capital leaving the desk, which only the custodian it was paid from can attest, and no statement the platform observes names a fund administrator (ADR 0085 §5). Render it beside any capital call shown. |
+| `obligation_total` | money string | What the reserve holds back across the book: every commitment's `obligation`, summed by the book. |
+| `accrued_default_penalty` | money string | The penalty part of that total, on its own, so a reserve that grew and a payment the desk missed do not read alike. |
+| `commitments[].subject` | string | The private asset's object id, which is the commitment's key. |
+| `commitments[].committed`, `called`, `unfunded` | money string | The record's promised and drawn capital, and their difference. A notice never moves any of the three. |
+| `commitments[].obligation` | money string | `unfunded` plus this commitment's `accrued_default_penalty`. |
+| `commitments[].known_at` | RFC 3339 | When the platform last updated the record the commitment derives from. |
+| `capital_calls[].consequence` | object | `{"kind": "interest", "annual_rate_bps": N}`, `{"kind": "forfeiture", "fraction_bps": N}` or `{"kind": "acceleration"}` — what failing the call costs, as the notice stated it. |
+| `capital_calls[].overdue`, `days_late`, `penalty` | bool, integer, money string | Whether the money was due and the notice knowable by `served_at`; whole days past due, floored; and what missing it has cost so far. Zero and `false` ahead of the due instant. |
+
+## `POST /api/v1/ledger/commitments/{commitment}/capital-calls`
+
+**Role: `operator`.** File a fund's drawdown notice against `{commitment}`:
+the fund's own notice reference, the amount demanded, the instant it falls
+due, and the consequence of failing it. This is blueprint §43.2's
+`CapitalCall` reaching the commitment book from outside a test, as ADR 0085
+§5 designed it — its own record family, a demand *on* the desk and not a
+user's deposit — and no further.
+
+**It pays, settles and transfers nothing, and can only ever raise what the
+platform holds back.** A notice moves neither the called nor the unfunded
+balance; it changes nothing until it is overdue, and then adds its penalty
+to the obligation the reserve subtracts. **No filed call is ever settled by
+this build**: `Commitment::settle_call`, the one method that would move the
+called balance, is reached by no route, because meeting a call is capital
+leaving the desk and an operator asserting that it left would be a person's
+claim about the custodian's fact — the shape ADR 0085 §2 refuses for an
+arrival, in the direction that would loosen sizing. The body's
+`call_settlement` says so in as many words.
+
+Request body — exactly these four keys. Any other key is `400`, named by
+position and never quoted back; a caller who reads a notice as something to
+pay will send `paid`, `settled` or `source`, and none of them is read:
+
+```json
+{
+  "reference": "FUND-CALL-2026-Q4-01",
+  "amount": "100000.00",
+  "due": "2026-10-19T00:00:00Z",
+  "consequence": { "kind": "interest", "annual_rate_bps": 800 }
+}
+```
+
+- `amount` is a **string**, for the reason every money figure here is.
+- `due` is an RFC 3339 instant with its zone; an epoch number is refused,
+  because it is a unit nobody stated. The *issued* instant is the server's
+  clock, not the caller's.
+- `consequence` is **required and never defaulted**: `kind` is `interest`
+  (with `annual_rate_bps`), `forfeiture` (with `fraction_bps`) or
+  `acceleration` (with nothing else). The basis points are a rate, not money,
+  and are the one figure this route reads as a JSON number. The three arms
+  behave differently in time — interest grows with lateness, forfeiture is
+  taken once, acceleration moves every remaining call to today — and a
+  notice filed without one would reserve against a penalty nobody stated.
+- Refused with the book's own sentence for a commitment the universe does
+  not hold (`404`), and (`400`) for an amount that with the notices already
+  standing would pass the unfunded balance, a due instant before the
+  notice's own, or a reference already standing — a second notice under one
+  reference is either a restatement or a second draw, and guessing which
+  would move the reserve with no record of which claim won. To amend a
+  notice, withdraw it and file again.
+- **Refused in fact today**, `403`, for want of an attested person: every
+  credential this API accepts is a standing bearer token, and the route
+  dates the operator by `Principal::authentication_instant`, which refuses
+  one (ADR 0065, ADR 0075). The gate stands *before* the commitment is
+  looked up, so the refusal is the same on a book that holds no commitment
+  at all. The route is authorised in shape; it acts once a per-person
+  credential exists (ADR 0076).
+
+Answer, `200`: the commitment's `/ledger/commitments` row read back from the
+book after it adopted the notice, with `posture`, `served_at` and
+`call_settlement` beside it. The notice and the operator's subject are
+journalled to the event log under the producer `kernel/capital-call`
+**before** the book adopts it, and rebuilt from the log at the next boot
+through the same gates, so a notice lives in the log and nowhere else. A log
+holding a notice this boot's universe will not take — a commitment dropped
+from the catalogue, an unfunded balance the administrator's record has since
+reduced below the notices standing — **stops assembly**, naming the record
+and the remedy (withdraw the notice on the running process before deploying
+the universe that invalidates it, or archive the log); skipping it would be
+the erasure the record exists to end.
+
+## `DELETE /api/v1/ledger/commitments/{commitment}/capital-calls/{reference}`
+
+**Role: `operator`.** Withdraw the notice under `{reference}` — the fund
+rescinded it, or it was filed in error. No body. Refused for a commitment
+the book does not hold (`404`) and for a reference no notice stands under
+(`400`), so a withdrawal is always of a notice that stood; `403` for want of
+an attested person, exactly as the filing is. The called and unfunded
+balances do not move — a withdrawal meets nothing — and the most it can do
+to the reserve is stop charging the penalty the notice, had it stood, would
+have accrued. Answer, `200`: the same row the filing answers with.
+Journalled under `kernel/capital-call` before the book drops it, and
+replayed in log order after the notice it retracts, so a reference filed,
+withdrawn and filed again resumes filed once.
 
 ## `GET /api/v1/wallet`
 
