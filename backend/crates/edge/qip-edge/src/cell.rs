@@ -5922,12 +5922,20 @@ impl Cell {
     /// # What this cannot promise, and what it does instead
     ///
     /// The blueprint's cycle is atomic-or-cancelled. This cell's
-    /// [`Placer`] can place and cannot cancel, and no fill reaches the cell
-    /// until the drop-copy is reconciled, so there is nothing here a
-    /// `LegGroup` could act on: the coordinator in
-    /// `qip-execution-engine::multileg` decides what to unwind from fills it
-    /// is told about, and this seam is told nothing. Building one here would
-    /// be a control with no input.
+    /// [`Placer`] can place, can withdraw a *resting* order where the
+    /// gateway has a cancel path ([`Placer::can_cancel`]), and cannot send
+    /// a compensating order; a leg that has already filled is a position
+    /// this seam has no way to reverse. The fills it does learn of arrive
+    /// through [`Placer::execution_reports`] and are read by §32.1's size
+    /// decomposition below, which sizes the legs *behind* a short one and
+    /// can do nothing about the legs already away. So there is still
+    /// nothing here a `LegGroup` could act on: the coordinator in
+    /// `qip-execution-engine::multileg` decides what to unwind from fills
+    /// and can place the compensating orders, and this seam cannot.
+    /// Building one here would be a control with no output. (This
+    /// paragraph said "cannot cancel" and "no fill reaches the cell until
+    /// the drop-copy is reconciled" until 2026-09-19; both had been false
+    /// since the withdrawal path and the execution-report channel landed.)
     ///
     /// What the cell can do is refuse to carry on. A leg the venue refuses
     /// after an earlier leg went out leaves the cell holding a position it

@@ -44,9 +44,14 @@
 //! feasibility gate, the desk's capital envelope, and the cell's one order
 //! path, in that order — the chain §33 names, with netting skipped because
 //! §27.2 forbids it for a leg. And it does not coordinate: the cell's
-//! [`crate::cell::Placer`] can place and cannot cancel, so a cycle whose
-//! later leg the venue refuses cannot be unwound from here. What the cell
-//! does instead is stated at `Cell::place_cycle`.
+//! [`crate::cell::Placer`] can place, and can withdraw a resting order only
+//! where the gateway says it has a cancel path (`Placer::can_cancel`), but
+//! it cannot send a compensating order — so a cycle whose later leg the
+//! venue refuses after an earlier one filled cannot be unwound from here.
+//! This sentence said "can place and cannot cancel" until 2026-09-19, which
+//! stopped being true when `Cell::withdraw_expired` and the resting leg of
+//! §32.1's passive-first arrived. What the cell does instead is stated at
+//! `Cell::place_cycle`.
 
 use crate::envelope::VerifiedEnvelope;
 use qip_arbitrage::graph::EdgeKind;

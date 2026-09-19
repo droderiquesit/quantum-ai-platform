@@ -17,9 +17,11 @@
 //! was an outright position, taken at a price chosen for an arbitrage that
 //! did not exist at that size. Nothing noticed until the drop copy was
 //! reconciled, by which time the position had been carried for however long
-//! that took. The cell cannot unwind — its [`crate::cell::Placer`] can place
-//! and cannot cancel — so unwinding was never the alternative here. Sizing
-//! the rest of the cycle to what the cycle has actually completed is.
+//! that took. The cell cannot unwind — its [`crate::cell::Placer`] can
+//! withdraw a resting order where the gateway has a cancel path, and cannot
+//! send the compensating order that would reverse a leg already filled — so
+//! unwinding was never the alternative here. Sizing the rest of the cycle
+//! to what the cycle has actually completed is.
 //!
 //! # Three outcomes, and the third is the one that is not a gate
 //!
