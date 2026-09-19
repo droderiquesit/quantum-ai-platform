@@ -258,16 +258,6 @@ impl ObjectiveLedger {
         }
     }
 
-    /// Whether this ledger holds a series for `name` at all.
-    ///
-    /// Distinct from holding observations *in a window*: a series that exists
-    /// and has aged out is a fed objective with a quiet window, and a series
-    /// that does not exist is an objective nothing feeds. Reporting both as
-    /// "no data" is how the two become indistinguishable.
-    pub fn feeds(&self, name: &str) -> bool {
-        self.observations.contains_key(name)
-    }
-
     /// Good and total observations of `name` inside `window` as at `now`.
     pub fn counts(&self, name: &str, window: SloWindow, now: Timestamp) -> (u64, u64) {
         let span = window_span(window);
@@ -316,7 +306,14 @@ pub fn assess(ledger: &ObjectiveLedger, now: Timestamp) -> ObjectiveReview {
 }
 
 fn stand(ledger: &ObjectiveLedger, slo: &Slo, now: Timestamp) -> ObjectiveStanding {
-    if ledger.feeds(&slo.name) {
+    // Whether an objective is *fed by this process* is a property of the
+    // code, not of whether anything has happened yet. Deciding it from the
+    // ledger's contents instead — "does a series exist" — read a fed
+    // objective on a platform that had ingested nothing as unclassified, and
+    // so as a defect in this module, on every cold start. That is the same
+    // confusion in miniature as the one this module exists to stop: an
+    // absence of observations is not an absence of a measurement path.
+    if FED_OBJECTIVES.contains(&slo.name.as_str()) {
         let (good, total) = ledger.counts(&slo.name, slo.window, now);
         let status = slo.evaluate(good, total);
         // `SloStatus::is_observed` and not `is_met`. `evaluate(0, 0)` reports

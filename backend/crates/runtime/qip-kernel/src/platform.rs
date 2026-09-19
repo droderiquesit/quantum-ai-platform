@@ -4595,15 +4595,24 @@ impl Platform {
         let ingestion = match ingested {
             Ok(ingestion) => ingestion,
             Err(error) => {
-                // A report the centre could not finish absorbing is recorded
-                // against §49.1's reconciliation objective as **not** clean,
-                // and the direction of that choice is the whole point. The
-                // plane halts the cell before it can return an error from the
-                // recall step, so the alternative — count only what returned
-                // `Ok` — would drop exactly the reports that halted a cell
-                // and make the objective read better the worse things went.
-                // That is the `MaxExpectedShortfall` shape: a control whose
-                // evidence disappears in the case it exists for.
+                // A report the centre could not absorb is recorded against
+                // §49.1's reconciliation objective as **not** clean, and the
+                // direction of that choice is the whole point: a report the
+                // centre refused is a cell whose book the centre has not
+                // reconciled, whether it was malformed on arrival or halted
+                // and then refused by the recall step further down. Counting
+                // only what returned `Ok` would drop exactly the reports that
+                // went worst and make the objective read better the worse
+                // things got — the `MaxExpectedShortfall` shape, where the
+                // evidence disappears in the case the control exists for.
+                //
+                // What this costs: a sender emitting malformed reports drags
+                // the ratio down. That is acceptable here and would not be
+                // everywhere, because this objective is *read by nothing that
+                // decides* — it withdraws no venue, sizes nothing and halts
+                // nothing. It is a line on the LEARN stage's record. A
+                // control keyed on it would need the two cases separated
+                // first.
                 self.objectives.observe(
                     crate::blueprint_objectives::RECONCILIATION_BREAKS_ZERO,
                     false,
@@ -6404,6 +6413,22 @@ impl Platform {
 
     pub fn autonomy(&self) -> &AutonomyController {
         &self.autonomy
+    }
+
+    /// Where blueprint §49.1's objectives stand on this process's own
+    /// observations, as at `now`.
+    ///
+    /// The same review [`Self::stage_learn`] folds onto the LEARN outcome,
+    /// exposed so a caller can read the standings per objective rather than
+    /// parse the stage's sentence. It returns a standing for **every**
+    /// objective, including the thirteen nothing here feeds — an objective
+    /// missing from the answer would be one a reader could not tell from an
+    /// objective that was met.
+    pub fn blueprint_objectives(
+        &self,
+        now: Timestamp,
+    ) -> crate::blueprint_objectives::ObjectiveReview {
+        crate::blueprint_objectives::assess(&self.objectives, now)
     }
 
     pub fn autonomy_mut(&mut self) -> &mut AutonomyController {
