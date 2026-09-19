@@ -408,7 +408,7 @@ impl Requoter {
     /// behind when the bid rises above it. `Touch::resting` is the repricer's
     /// own, called here rather than re-derived, and only the subtraction's
     /// direction is written twice.
-    fn allocate(cell: &Cell, open: &[OpenOrder]) -> Vec<OpenOrder> {
+    pub fn allocate(cell: &Cell, open: &[OpenOrder]) -> Vec<OpenOrder> {
         let mut by_id: BTreeMap<String, OpenOrder> = BTreeMap::new();
         let mut candidates = Vec::new();
         for order in open

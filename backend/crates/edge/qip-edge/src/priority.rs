@@ -131,8 +131,14 @@ mod tests {
         // the repricer already computes. In ticks the second order wins by
         // ten to one, and repricing it recovers a hundredth of what
         // repricing the first does.
-        let large = Candidate::new("a-large-order", worth(d("1000"), d("0.01")));
-        let small = Candidate::new("b-small-order", worth(d("1"), d("0.10")));
+        //
+        // The ids are chosen so the tie-break contradicts the answer. They
+        // did not start that way, and a mutation that deleted the comparison
+        // on worth entirely — leaving only the tie-break — passed this test,
+        // because `a-large-order` sorts before `b-small-order` and the
+        // fixture agreed with the wrong ranking by accident.
+        let large = Candidate::new("zulu-large-order", worth(d("1000"), d("0.01")));
+        let small = Candidate::new("alpha-small-order", worth(d("1"), d("0.10")));
         assert_eq!(
             large.worth(),
             Some(d("10")),
@@ -145,7 +151,7 @@ mod tests {
         );
         assert_eq!(
             ids(&allocate(vec![small, large])),
-            vec!["a-large-order", "b-small-order"],
+            vec!["zulu-large-order", "alpha-small-order"],
             "the cheaper update was allocated the message first"
         );
     }
