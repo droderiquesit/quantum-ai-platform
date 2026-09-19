@@ -839,6 +839,285 @@ fn an_expected_inflow_cannot_be_spent_until_the_ledger_posts_it() -> Result<()> 
     Ok(())
 }
 
+#[test]
+fn a_declaration_from_a_user_the_registry_does_not_admit_is_refused_by_the_reason_named()
+-> Result<()> {
+    // ADR 0085's first refusal, mirrored from `fund` by name. Before it, a
+    // declaration asked the mandate registry for a currency and nothing
+    // else, so a user no operator had verified could put a claim on the
+    // desk's books that `/ledger/users` then rendered as an expected
+    // deposit. The declaration is the last instant a refusal reaches the
+    // person before the wire is sent; that is why it is asked here and not
+    // at the arrival.
+    let alice = user("alice");
+    let mut ledger = ledger();
+    enrol(&mut ledger, "alice", "1000")?;
+    // Premise: the mandate is held and nothing else stands in the way, so
+    // the refusal below is the eligibility's and not the registry's.
+    assert!(ledger.mandate(&alice).is_some());
+
+    let refused = ledger
+        .expect_inflow(&alice, &strategy(), "wire-0001", dec!("500"), now())
+        .expect_err("an unverified user cannot declare an inflow");
+    assert!(
+        refused.message().contains("(unknown_user)"),
+        "the refusal names the eligibility reason: {}",
+        refused.message()
+    );
+    assert!(
+        ledger.balance(&alice, &strategy(), Currency::USD).is_none(),
+        "a refused declaration opens no book"
+    );
+
+    // The admitting half: the same declaration stands once an operator has
+    // cleared the user, so the gate is a gate and not a wall.
+    clear(&mut ledger, "alice")?;
+    ledger.expect_inflow(&alice, &strategy(), "wire-0001", dec!("500"), now())?;
+    assert_eq!(
+        ledger
+            .balance(&alice, &strategy(), Currency::USD)
+            .expect("the declaration opened a book")
+            .expected_total(),
+        dec!("500")
+    );
+    Ok(())
+}
+
+#[test]
+fn a_wire_reference_declared_at_one_strategy_is_refused_at_another_until_it_is_cancelled()
+-> Result<()> {
+    // A wire reference names one wire. Until ADR 0085 the duplicate rule was
+    // per book, so the same reference could be declared at two strategies
+    // and reconciliation would have had two claims to match one arrival to;
+    // and `UserLedger` had no `cancel_inflow` at all, so a declaration that
+    // never arrived could never be cleared and its reference never re-used.
+    let alice = user("alice");
+    let other = StrategyId::new("carry-v1");
+    let mut ledger = ledger();
+    enrol(&mut ledger, "alice", "1000")?;
+    clear(&mut ledger, "alice")?;
+    ledger.expect_inflow(&alice, &strategy(), "wire-0001", dec!("300"), now())?;
+    // Premise: the first declaration stands at the first strategy.
+    assert_eq!(
+        ledger
+            .balance(&alice, &strategy(), Currency::USD)
+            .expect("declared")
+            .expected_total(),
+        dec!("300")
+    );
+
+    let refused = ledger
+        .expect_inflow(&alice, &other, "wire-0001", dec!("300"), now())
+        .expect_err("the same reference at a second strategy is refused");
+    assert!(
+        refused.message().contains("already expected") && refused.message().contains("momentum-v3"),
+        "the refusal names the book that holds it: {}",
+        refused.message()
+    );
+    assert!(
+        ledger.balance(&alice, &other, Currency::USD).is_none(),
+        "a refused declaration opens no book at the second strategy"
+    );
+
+    // Cancelling a reference nobody declared is refused, not a no-op.
+    let refused = ledger
+        .cancel_inflow(&alice, "wire-9999", now())
+        .expect_err("an unknown reference has nothing to cancel");
+    assert!(
+        refused.message().contains("nothing to cancel"),
+        "{}",
+        refused.message()
+    );
+
+    // Cancelling the one that stands names the book and the amount, moves
+    // nothing else, and frees the reference for the wire that does come.
+    let cancelled = ledger.cancel_inflow(&alice, "wire-0001", now())?;
+    assert_eq!(cancelled.strategy, strategy());
+    assert_eq!(cancelled.amount, dec!("300"));
+    let balance = ledger
+        .balance(&alice, &strategy(), Currency::USD)
+        .expect("the book persists");
+    assert_eq!(balance.expected_total(), Decimal::ZERO);
+    assert_eq!(balance.settled(), Decimal::ZERO);
+    assert_eq!(balance.uninvestable(), Decimal::ZERO);
+    ledger.expect_inflow(&alice, &other, "wire-0001", dec!("300"), now())?;
+    assert_eq!(
+        ledger
+            .balance(&alice, &other, Currency::USD)
+            .expect("re-declared at the second strategy")
+            .expected_total(),
+        dec!("300")
+    );
+    Ok(())
+}
+
+#[test]
+fn a_declaration_the_mandate_could_never_take_in_is_refused_before_the_wire_is_sent() -> Result<()>
+{
+    // The contribution ceiling `fund` asks, asked at the declaration —
+    // counting what is contributed *and* what is already declared, because
+    // five declarations that each fit alone are one deposit the mandate
+    // cannot take. The prior in the lane brief was to refuse only an
+    // ineligible user's declaration and let the bucket absorb the rest;
+    // ADR 0085 decides otherwise, because a desk that accepts a declaration
+    // it already knows it cannot invest tells the user to send money it
+    // will only hold.
+    let alice = user("alice");
+    let mut ledger = ledger();
+    enrol(&mut ledger, "alice", "1000")?;
+    clear(&mut ledger, "alice")?;
+    ledger.fund(&alice, &strategy(), dec!("600"), now())?;
+    ledger.expect_inflow(&alice, &strategy(), "wire-0001", dec!("300"), now())?;
+    // Premise: 600 contributed and 300 declared, under a 1000 mandate.
+    assert_eq!(
+        ledger.contributed_total(&alice, Currency::USD)?,
+        dec!("600")
+    );
+
+    let refused = ledger
+        .expect_inflow(&alice, &strategy(), "wire-0002", dec!("200"), now())
+        .expect_err("600 + 300 + 200 passes the 1000 the mandate manages");
+    assert!(
+        refused
+            .message()
+            .contains("past the 1000 the mandate places under management")
+            && refused.message().contains("plus 300 already declared"),
+        "the refusal names the ceiling and the outstanding claims: {}",
+        refused.message()
+    );
+    assert_eq!(
+        ledger
+            .balance(&alice, &strategy(), Currency::USD)
+            .expect("the book stands")
+            .expected_total(),
+        dec!("300"),
+        "a refused declaration is not recorded"
+    );
+
+    // The admitting half: what still fits is taken.
+    ledger.expect_inflow(&alice, &strategy(), "wire-0002", dec!("100"), now())?;
+    assert_eq!(
+        ledger
+            .balance(&alice, &strategy(), Currency::USD)
+            .expect("the book stands")
+            .expected_total(),
+        dec!("400")
+    );
+    Ok(())
+}
+
+#[test]
+fn an_arrival_past_the_contribution_ceiling_is_held_uninvestable_and_available_does_not_move()
+-> Result<()> {
+    // The failure the register found on 2026-09-19: `post_inflow` added the
+    // whole arrival to `settled`, the figure positions are sized against,
+    // asking no ceiling — a second, weaker door beside `fund`. An arrival
+    // cannot be refused (you cannot un-receive a wire), so the excess is
+    // held in a bucket that `available()` never sees.
+    let alice = user("alice");
+    let mut ledger = ledger();
+    enrol(&mut ledger, "alice", "1000")?;
+    clear(&mut ledger, "alice")?;
+    ledger.expect_inflow(&alice, &strategy(), "wire-0001", dec!("500"), now())?;
+    // A funding after the declaration eats the room the declaration was
+    // made against: 700 contributed, 300 left under the 1000 mandate.
+    ledger.fund(&alice, &strategy(), dec!("700"), now())?;
+    let before = ledger
+        .balance(&alice, &strategy(), Currency::USD)
+        .expect("funded")
+        .clone();
+    // Premise: the arrival will not fit, and nothing is held yet.
+    assert_eq!(before.available(), dec!("700"));
+    assert_eq!(before.uninvestable(), Decimal::ZERO);
+    assert_eq!(
+        ledger.contributed_total(&alice, Currency::USD)?,
+        dec!("700")
+    );
+
+    let posted = ledger.post_inflow(&alice, &strategy(), "wire-0001", now())?;
+    assert_eq!(posted.amount, dec!("500"));
+    assert_eq!(posted.invested, dec!("300"), "what the ceiling admits");
+    assert_eq!(posted.held, dec!("200"), "what it does not");
+
+    let after = ledger
+        .balance(&alice, &strategy(), Currency::USD)
+        .expect("the book persists")
+        .clone();
+    assert_eq!(after.settled(), dec!("1000"));
+    assert_eq!(
+        after.available(),
+        dec!("1000"),
+        "available moved by the admitted part and by nothing else"
+    );
+    assert_eq!(after.uninvestable(), dec!("200"));
+    assert_eq!(after.expected_total(), Decimal::ZERO);
+    // The invested part is a contribution the next funding is counted
+    // against, exactly as a `fund` would be.
+    assert_eq!(
+        ledger.contributed_total(&alice, Currency::USD)?,
+        dec!("1000")
+    );
+    assert!(
+        ledger.fund(&alice, &strategy(), dec!("1"), now()).is_err(),
+        "the mandate is full"
+    );
+    // And the held part is spendable by nothing.
+    let mut spend = after.clone();
+    spend.debit(dec!("1000"))?;
+    assert!(
+        spend.debit(dec!("1")).is_err(),
+        "the 200 held is not there to debit"
+    );
+    let mut hold = after.clone();
+    assert!(
+        hold.reserve(dec!("1001")).is_err(),
+        "nor to reserve against"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_arrival_past_the_investable_ceiling_is_held_even_when_the_contribution_ceiling_has_room()
+-> Result<()> {
+    // The second of `fund`'s two ceilings, by name. A mandate with a
+    // liquidity floor invests less than it manages; an arrival that fits
+    // under the capital and not under the investable figure is held for
+    // the difference, because the floor is the user's own term and a wire
+    // does not renegotiate it.
+    let alice = user("alice");
+    let mut ledger = ledger();
+    ledger.enrol(
+        alice.clone(),
+        mandate_id("alice"),
+        Mandate::new(MandateTerms {
+            liquidity_floor: dec!("400"),
+            ..terms("1000")
+        })?,
+        now(),
+    )?;
+    clear(&mut ledger, "alice")?;
+    ledger.expect_inflow(&alice, &strategy(), "wire-0001", dec!("500"), now())?;
+    ledger.fund(&alice, &strategy(), dec!("300"), now())?;
+    // Premise: 600 investable, 300 at work; 1000 managed, 300 contributed.
+    // The investable ceiling is the binding one.
+    let mandate = ledger.mandate(&alice).expect("enrolled");
+    assert_eq!(mandate.investable(), dec!("600"));
+    assert_eq!(mandate.capital(), dec!("1000"));
+
+    let posted = ledger.post_inflow(&alice, &strategy(), "wire-0001", now())?;
+    assert_eq!(
+        posted.invested,
+        dec!("300"),
+        "600 investable less 300 at work"
+    );
+    assert_eq!(posted.held, dec!("200"));
+    let after = ledger
+        .balance(&alice, &strategy(), Currency::USD)
+        .expect("the book persists");
+    assert_eq!(after.available(), dec!("600"));
+    assert_eq!(after.uninvestable(), dec!("200"));
+    Ok(())
+}
 // --- the books --------------------------------------------------------------
 
 #[test]
@@ -1882,8 +2161,15 @@ fn a_settled_balance_is_reported_out_and_the_report_is_not_a_way_back_in() -> Re
         .collect();
     assert_eq!(
         keys,
-        ["currency", "expected", "reserved", "settled"],
-        "a reported balance is the four figures the ledger holds, and nothing else"
+        [
+            "currency",
+            "expected",
+            "reserved",
+            "settled",
+            "uninvestable"
+        ],
+        "a reported balance is the five figures the ledger holds — the fifth, since ADR \
+         0085, being cash that arrived past the mandate and is held — and nothing else"
     );
     // ADR 0021, held here too: there is nothing on a balance through which a
     // withdrawal could be described, requested or recorded.
