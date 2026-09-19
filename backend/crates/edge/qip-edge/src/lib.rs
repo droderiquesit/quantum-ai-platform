@@ -72,7 +72,9 @@ pub use mesh::{
 };
 pub use mirror::{MirrorArrangement, MirroredInstrument};
 pub use policy::{VerifiedHalt, VerifiedPolicy};
-pub use quoting::{Admission, MessageKind, QuoteBudget, RateLimits, VenueBudgetState};
+pub use quoting::{
+    Admission, Depletion, MessageKind, QuoteBudget, REQUOTE_MESSAGES, RateLimits, VenueBudgetState,
+};
 pub use region::{DarkSource, RegionOutlook};
 pub use reservation::{Rebase, RegionAllocation, RegionTable};
 pub use resume::{ResumeDiscipline, VenueAccount};
