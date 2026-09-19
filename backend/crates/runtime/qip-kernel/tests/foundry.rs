@@ -24,8 +24,8 @@ use qip_kernel::adaptive_cadence::population_of;
 use qip_kernel::central::factory::{AlphaFamily, StrategyFactory};
 use qip_kernel::central::foundry::{HoldoutInputs, StrategyFoundry};
 use qip_lifecycle::evidence::{CrossValidationRun, DatasetManifest, LeakageAudit};
-use qip_strategy::catalogue::FeatureCatalogue;
 use qip_optimization_engine::tiers::{EvaluationTier, HOT_TIER_CAP, TierPlan};
+use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::ir::Type;
 
 fn subject() -> ObjectId {
