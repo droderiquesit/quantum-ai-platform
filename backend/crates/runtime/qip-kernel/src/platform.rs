@@ -185,7 +185,9 @@ use qip_simulation_engine::market::{
     InstrumentSpec, MarketSimulator, MarketView as SimMarketView, SimStrategy, SyntheticMarket,
 };
 use qip_simulation_engine::scenario::{
-    FactorExposure, ScenarioResult, StressTester, standard_library,
+    ADVERSARIAL_SCENARIO_NAME, AdversarialSequence, DriverShockSizing, FactorExposure,
+    PropagatedShock, STANDARD_DRIVER_SHOCK, ScenarioResult, StressTester, causal_exposures,
+    causal_scenario, standard_library,
 };
 use qip_streaming::durable::DurableLogTransport;
 use qip_streaming::envelope::{EventFacts, StreamEnvelope};
@@ -1237,6 +1239,27 @@ const PRODUCT_ORIGIN: &str = "kernel/product";
 /// the platform on somebody's choice of magnitude.
 const STRESS_LOSS_TOLERANCE: f64 = 0.20;
 
+/// How many mechanisms a causal stress walks from its driver.
+///
+/// Four hops, because the propagation floor already cuts a chain the moment
+/// its magnitude falls below a tenth of a percent of the origin's move, and
+/// past four mechanisms at any realistic transmission a chain is under that
+/// floor anyway; the bound is a guard on the walk's cost, not a claim about
+/// how far a shock reaches. The reasoning panel's `CausalAnalyst` walks the
+/// same graph to a different depth for a different question.
+const CAUSAL_STRESS_MAX_ORDER: usize = 4;
+
+/// The `scenario` label under which the worst causal stress reaches the loss
+/// gauge.
+///
+/// A source literal, and not the scenario's own name: a causal scenario is
+/// named for its driver (`causal:<origin>`), and a driver is a node the world
+/// model absorbed — an instrument id, or a term a document claimed — so the
+/// name is unbounded and would carry that cardinality onto a chart. One
+/// fixed label for the worst driver keeps the series bounded; the per-driver
+/// figures are on [`StressReport::causal`] and in the stage detail.
+const CAUSAL_WORST_DRIVER_LABEL: &str = "causal-worst-driver";
+
 /// What the SIMULATE stage found when it stressed the open book.
 ///
 /// Carries the position counts beside the losses on purpose. A scenario result
@@ -1244,6 +1267,15 @@ const STRESS_LOSS_TOLERANCE: f64 = 0.20;
 /// where nine of ten positions are unmodelled produces a small, calm number
 /// that describes almost nothing. The two counts are what let a reader tell
 /// a book that survives a crisis from a book the model cannot see.
+///
+/// Four methods, kept in three fields because they answer three different
+/// questions. `scenarios` is the library — blueprint §23.7's historical
+/// replay and correlation stress — reached through a beta. `adversarial` is
+/// the sequence the simulator built against these positions, bounded by the
+/// same library. `causal` is a shock at each driver the world model's graph
+/// holds, walked through mechanisms to whichever held positions a path
+/// reaches, with no beta involved at all: the row that finds the exposure no
+/// correlation would connect.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StressReport {
     /// When the book was stressed.
@@ -1257,12 +1289,31 @@ pub struct StressReport {
     /// The single-factor decomposition of the modelled book, where the model
     /// could be built. `None` is a refusal, never a zero decomposition.
     pub decomposition: Option<qip_risk::factor::RiskDecomposition>,
+    /// The worst plausible sequence of factor moves given these positions,
+    /// or `None` when no held position carries a beta to any library factor
+    /// — there is then nothing to sign a move against.
+    pub adversarial: Option<AdversarialSequence>,
+    /// One result per driver whose propagation reached a held position, worst
+    /// loss first. A position on a result's `unmodelled` list is one no path
+    /// from that driver reached, not one the model could not measure.
+    pub causal: Vec<ScenarioResult>,
+    /// Drivers the graph holds and the stress walked from. Carried so that an
+    /// empty `causal` reads as "no driver reaches the book" when this is
+    /// positive and as "the graph holds no claim" when it is zero.
+    pub causal_drivers: usize,
+    /// Drivers whose propagation reached no held position at either sign.
+    pub causal_drivers_unconnected: usize,
 }
 
 impl StressReport {
     /// The scenario that cost the most.
     pub fn worst(&self) -> Option<&ScenarioResult> {
         self.scenarios.first()
+    }
+
+    /// The causal stress that cost the most.
+    pub fn worst_causal(&self) -> Option<&ScenarioResult> {
+        self.causal.first()
     }
 
     /// The stage's one-line detail.
@@ -1279,8 +1330,29 @@ impl StressReport {
             ),
             None => String::new(),
         };
+        let adversarial = match &self.adversarial {
+            Some(sequence) => format!("; {}", sequence.summarise()),
+            None => "; no adversarial sequence: no held position carries a beta to a library \
+                     factor"
+                .to_string(),
+        };
+        let causal = match self.worst_causal() {
+            Some(worst) => format!(
+                "; causal: {} of {} driver(s) reach the book, worst {}",
+                self.causal.len(),
+                self.causal_drivers,
+                worst.summarise()
+            ),
+            None if self.causal_drivers == 0 => {
+                "; causal: the graph holds no claim to walk from".to_string()
+            }
+            None => format!(
+                "; causal: none of {} driver(s) reaches a held position",
+                self.causal_drivers
+            ),
+        };
         format!(
-            "{} scenario(s) applied, {} position(s) modelled and {} unmodelled; worst {worst}{breadth}",
+            "{} scenario(s) applied, {} position(s) modelled and {} unmodelled; worst {worst}{breadth}{adversarial}{causal}",
             self.scenarios.len(),
             self.modelled_positions,
             self.unmodelled_positions
@@ -11536,6 +11608,25 @@ impl Platform {
                         result.loss_fraction,
                     );
                 }
+                // The two constructed methods reach the same series under
+                // two fixed labels. The adversarial scenario's name is a
+                // constant; the causal results are named per driver and only
+                // the worst is charted, under a literal, for the reason
+                // `CAUSAL_WORST_DRIVER_LABEL` gives.
+                if let Some(sequence) = &report.adversarial {
+                    self.telemetry.metrics.gauge(
+                        names::SIMULATION_STRESS_LOSS_FRACTION,
+                        labels([("scenario", ADVERSARIAL_SCENARIO_NAME)]),
+                        sequence.result.loss_fraction,
+                    );
+                }
+                if let Some(worst) = report.worst_causal() {
+                    self.telemetry.metrics.gauge(
+                        names::SIMULATION_STRESS_LOSS_FRACTION,
+                        labels([("scenario", CAUSAL_WORST_DRIVER_LABEL)]),
+                        worst.loss_fraction,
+                    );
+                }
             }
             // Not "nothing to stress": the word is what a reader greps for,
             // and a book with no open position has no scenario to apply, which
@@ -11553,7 +11644,14 @@ impl Platform {
         // `resilience.rs`'s legibility check: a platform with a long tape and
         // no open position reported producing nothing, so a blind cycle and a
         // fully sighted one were billed the same.
-        let produced = longest + report.as_ref().map(|r| r.scenarios.len()).unwrap_or(0);
+        // Every scenario applied is counted — the library, the adversarial
+        // sequence when one could be built, and one per driver that reached
+        // the book — because each is a scenario the tester ran.
+        let produced = longest
+            + report
+                .as_ref()
+                .map(|r| r.scenarios.len() + usize::from(r.adversarial.is_some()) + r.causal.len())
+                .unwrap_or(0);
         self.stress = report;
         problems.into_iter().fold(
             StageOutcome::ran(Stage::Simulate, produced, detail),
@@ -11715,6 +11813,54 @@ impl Platform {
             }
         }
 
+        // §23.7's fourth method, bounded by the library the third loop above
+        // applied, so "plausible" here means "no further than a scenario the
+        // desk already accepted". A refusal is a problem on the stage rather
+        // than a silent `None`, because `None` has a meaning of its own — a
+        // book with no beta to sign against — and the two must not read alike.
+        let adversarial = match tester.adversarial_sequence(
+            &scenarios,
+            &exposures,
+            equity.to_f64(),
+            STRESS_LOSS_TOLERANCE,
+            now,
+        ) {
+            Ok(sequence) => sequence,
+            Err(error) => {
+                problems.push(format!("adversarial sequence refused: {}", error.message()));
+                None
+            }
+        };
+        if let Some(sequence) = &adversarial
+            && let Some(index) = sequence.first_breach
+            && let Some(step) = sequence.steps.get(index)
+        {
+            problems.push(format!(
+                "adversarial sequence breaches the {:.0}% tolerance at step {} of {}, on {} \
+                 {:+.2}%: {:.1}% of equity gone by then",
+                STRESS_LOSS_TOLERANCE * 100.0,
+                index + 1,
+                sequence.steps.len(),
+                step.factor,
+                step.magnitude * 100.0,
+                step.cumulative_loss_fraction * 100.0
+            ));
+        }
+
+        let (causal, causal_drivers, causal_drivers_unconnected) =
+            self.stress_through_the_graph(&tester, &exposures, equity.to_f64(), now, &mut problems);
+        for result in &causal {
+            if result.breaches(STRESS_LOSS_TOLERANCE) {
+                problems.push(format!(
+                    "{} loses {:.1}% of equity through the causal graph, above the {:.0}% \
+                     tolerance",
+                    result.scenario,
+                    result.loss_fraction * 100.0,
+                    STRESS_LOSS_TOLERANCE * 100.0
+                ));
+            }
+        }
+
         let decomposition = self.decompose_risk(&market, &assets, &betas, &specific, &mut problems);
         (
             Some(StressReport {
@@ -11723,9 +11869,145 @@ impl Platform {
                 modelled_positions: assets.len(),
                 unmodelled_positions: unmodelled,
                 decomposition,
+                adversarial,
+                causal,
+                causal_drivers,
+                causal_drivers_unconnected,
             }),
             problems,
         )
+    }
+
+    /// §23.7's third method: a shock at every driver the causal graph holds,
+    /// propagated through mechanisms to whichever held positions a path
+    /// reaches. Returns the results worst first, the number of drivers
+    /// walked, and the number whose walk reached no held position.
+    ///
+    /// **No beta is involved.** The library reaches a position through the
+    /// factor model, and a position the model cannot measure — a new listing,
+    /// a private mark, a name with a short tape — is stressed by nothing
+    /// there. Here the book is loaded on its own nodes at exactly one and the
+    /// transmission is the graph's, so a position is reached because a claim
+    /// connects it to the driver, which is the exposure the section says no
+    /// correlation would connect.
+    ///
+    /// Each driver is shocked at both signs and the worse result kept: a
+    /// mechanism can invert, and which direction hurts is a fact of the path,
+    /// not of the driver. The magnitude is the driver's own worst observed
+    /// period where the tape holds one, and [`STANDARD_DRIVER_SHOCK`]
+    /// otherwise, with the choice recorded on the scenario.
+    fn stress_through_the_graph(
+        &self,
+        tester: &StressTester,
+        exposures: &[FactorExposure],
+        equity: f64,
+        now: Timestamp,
+        problems: &mut Vec<String>,
+    ) -> (Vec<ScenarioResult>, usize, usize) {
+        let self_loaded = causal_exposures(exposures);
+        let reading = self.world.read();
+        let graph = reading.causal();
+        // The graph as it stands, for the reason `shared_cause` gives: an
+        // edge recorded after the graph last absorbed anything cannot exist,
+        // and the result is then reproducible from the log.
+        let Some(known_at) = graph.last_updated() else {
+            return (Vec::new(), 0, 0);
+        };
+        let origins: BTreeSet<&str> = graph
+            .edges()
+            .iter()
+            .filter(|edge| edge.recorded_at <= known_at)
+            .map(|edge| edge.cause.as_str())
+            .collect();
+
+        let mut results: Vec<ScenarioResult> = Vec::new();
+        let mut unconnected = 0usize;
+        for origin in &origins {
+            let (magnitude, sizing) = match self.worst_observed_move(origin) {
+                Some(observed) => (observed, DriverShockSizing::ObservedWorstPeriod),
+                None => (
+                    STANDARD_DRIVER_SHOCK,
+                    DriverShockSizing::StandardDriverShock,
+                ),
+            };
+            let mut worst: Option<ScenarioResult> = None;
+            for shock in [-magnitude, magnitude] {
+                let propagation =
+                    reading.propagate(origin, shock, CAUSAL_STRESS_MAX_ORDER, now, known_at);
+                let propagated: Vec<PropagatedShock> = propagation
+                    .effects
+                    .iter()
+                    .map(|effect| PropagatedShock {
+                        target: effect.target.clone(),
+                        magnitude: effect.magnitude,
+                        order: effect.order,
+                        // The lag along the path, in days; the propagation
+                        // dates every effect from `now`.
+                        over_days: effect.expected_at.since(now).as_secs_f64() / 86_400.0,
+                    })
+                    .collect();
+                let scenario =
+                    match causal_scenario(origin, shock, sizing, &propagated, &self_loaded) {
+                        Ok(Some(scenario)) => scenario,
+                        Ok(None) => continue,
+                        Err(error) => {
+                            problems.push(format!(
+                                "causal stress at {origin} refused: {}",
+                                error.message()
+                            ));
+                            continue;
+                        }
+                    };
+                match tester.apply(&scenario, &self_loaded, equity, now) {
+                    Ok(result) => {
+                        if worst
+                            .as_ref()
+                            .is_none_or(|kept| result.loss_fraction > kept.loss_fraction)
+                        {
+                            worst = Some(result);
+                        }
+                    }
+                    Err(error) => problems.push(format!(
+                        "causal stress at {origin} refused: {}",
+                        error.message()
+                    )),
+                }
+            }
+            match worst {
+                Some(result) => results.push(result),
+                None => unconnected += 1,
+            }
+        }
+        results.sort_by(|a, b| {
+            b.loss_fraction
+                .partial_cmp(&a.loss_fraction)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.scenario.cmp(&b.scenario))
+        });
+        (results, origins.len(), unconnected)
+    }
+
+    /// The largest single-period move the tape holds for `instrument`, as a
+    /// positive fraction, or `None` when the tape cannot say: fewer than two
+    /// closes, a close at or below zero, or a move that is not a number.
+    ///
+    /// A move that happened is the one plausibility bound nobody has to
+    /// defend. Log returns, so a halving and a doubling are the same size.
+    fn worst_observed_move(&self, instrument: &str) -> Option<f64> {
+        let closes = self.price_history.get(instrument)?;
+        let mut worst = 0.0_f64;
+        for pair in closes.windows(2) {
+            let (previous, next) = (pair[0], pair[1]);
+            if previous <= 0.0 || next <= 0.0 {
+                return None;
+            }
+            let moved = (next / previous).ln().abs();
+            if !moved.is_finite() {
+                return None;
+            }
+            worst = worst.max(moved);
+        }
+        (closes.len() >= 2 && worst > 0.0).then_some(worst)
     }
 
     /// Decompose the modelled book's risk over the single market factor.

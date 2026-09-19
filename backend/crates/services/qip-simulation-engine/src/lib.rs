@@ -91,7 +91,9 @@ pub use market::{
 };
 pub use montecarlo::{Distribution, Generator, MonteCarlo};
 pub use scenario::{
-    FactorExposure, FactorShock, Scenario, ScenarioResult, StressTester, standard_library,
+    ADVERSARIAL_SCENARIO_NAME, AdversarialSequence, AdversarialStep, CAUSAL_SCENARIO_PREFIX,
+    DriverShockSizing, FactorExposure, FactorShock, PropagatedShock, STANDARD_DRIVER_SHOCK,
+    Scenario, ScenarioResult, StressTester, causal_exposures, causal_scenario, standard_library,
 };
 pub use validation::{
     DeflatedSharpe, OverfittingReport, PurgedSplit, Split, WalkForward, assess_overfitting,
