@@ -7,7 +7,13 @@ import { EmptyBlock, ResourceView, StateBlock } from "@/components/data/States";
 import { platform } from "@/lib/api/client";
 import { isUnavailable, type SystemStatus } from "@/lib/api/types";
 import { formatCount, formatDecimal, formatTimestamp } from "@/lib/format";
-import { formatStatistic, useExploration, type Exploration, type OpenProbe } from "@/lib/hooks/useExploration";
+import {
+  formatStatistic,
+  useExploration,
+  type Exploration,
+  type LearnedKind,
+  type OpenProbe,
+} from "@/lib/hooks/useExploration";
 import { useResource } from "@/lib/hooks/useResource";
 
 /**
@@ -32,9 +38,20 @@ import { useResource } from "@/lib/hooks/useResource";
  * * **Every open probe as the question it bought**, with the bound it may
  *   cost, the uncertainty it was opened against and when it expires.
  *
- * And one thing it does not: the per-kind "what it learned" table, which the
- * route reports unavailable with its reason at the tip this page was written
- * against. The reason is rendered; nothing is shown in its place.
+ * * **What it learned, per kind, as the route's own table.** One row per
+ *   `ProbeKind`, in the order the route sends them, including kinds the
+ *   book has never bought — the route walks the enum rather than its
+ *   records so that a kind never asked about is a row of zeroes and not a
+ *   missing row that reads as nothing to report. A `measured_gain` of
+ *   `null` is rendered as the words "not measured", never as `0`: the mean
+ *   gain over zero probed settlements is not a number, and a figure there
+ *   would tell a reader a question was answered with nothing learned.
+ *
+ * Should the route answer the table as an absence — the `Section`
+ * convention every surface uses — its reason is rendered and nothing in its
+ * place; and a body that is neither an absence nor the table this page knows
+ * is shown verbatim under an "unread" label rather than through columns the
+ * page would have to guess.
  *
  * Nothing on this page acts. "Adjust the exploration share" is the row's
  * "Acts on" cell in the blueprint and it is deliberately absent: the share is
@@ -260,15 +277,16 @@ function ShareSection({ data }: { data: Exploration }) {
 }
 
 /**
- * The per-kind table, in the two states the wire can be in.
+ * The per-kind table, in the three states the wire can be in.
  *
- * The first is the one this page was written against and the route's own
- * test pins: `available: false` with a reason, rendered as that reason. The
- * second is a body that is not an absence — the route having closed the
- * half — and it is rendered verbatim under an "unread" label rather than
- * through a shape this console guessed from a kernel struct. A table drawn
- * from guessed columns would be this page inventing what the platform
- * learned, which is the exact failure the surface exists to prevent.
+ * The first is the route's table: one row per kind, transcribed column for
+ * column from the handler's `learned.kinds`, totalled nowhere. The second is
+ * the `Section` absence every surface may answer under — `available: false`
+ * with a reason — rendered as that reason and nothing in its place. The
+ * third is a body that is neither, which this page cannot have been written
+ * against; it is rendered verbatim under an "unread" label rather than
+ * through a shape guessed from a kernel struct, because a table drawn from
+ * guessed columns would be this page inventing what the platform learned.
  */
 function LearnedSection({ data }: { data: Exploration }) {
   if (isUnavailable(data.learned)) {
@@ -290,22 +308,107 @@ function LearnedSection({ data }: { data: Exploration }) {
       </div>
     );
   }
+  if (!Array.isArray(data.learned.kinds)) {
+    return (
+      <div data-testid="exploration-learned-unread">
+        <StateBlock
+          tone="info"
+          label="served, not yet read"
+          headline="The platform served a body this console has not been taught the shape of."
+        >
+          <p>
+            The body is shown as it arrived, so what the platform learned is on the screen rather
+            than hidden behind a shape this page would otherwise have guessed.
+          </p>
+          <pre className="num mt-1.5 max-h-[40vh] overflow-auto text-[11px]" data-testid="exploration-learned-raw">
+            {JSON.stringify(data.learned, null, 2)}
+          </pre>
+        </StateBlock>
+      </div>
+    );
+  }
   return (
-    <div data-testid="exploration-learned-unread">
-      <StateBlock
-        tone="info"
-        label="served, not yet read"
-        headline="The platform now serves this table, and this console has not been taught its shape."
-      >
-        <p>
-          The body is shown as it arrived, so what the platform learned is on the screen rather than
-          hidden behind a shape this page would otherwise have guessed.
-        </p>
-        <pre className="num mt-1.5 max-h-[40vh] overflow-auto text-[11px]" data-testid="exploration-learned-raw">
-          {JSON.stringify(data.learned, null, 2)}
-        </pre>
-      </StateBlock>
+    <div className="flex flex-col gap-2" data-testid="exploration-learned-table">
+      <div className="overflow-x-auto">
+        <table className="w-full text-[11.5px]">
+          <thead>
+            <tr className="eyebrow text-left">
+              <th className="pr-3 pb-1">Kind</th>
+              <th className="pr-3 pb-1 text-right">Opened</th>
+              <th className="pr-3 pb-1 text-right">Probed</th>
+              <th className="pr-3 pb-1 text-right">Observed</th>
+              <th className="pr-3 pb-1 text-right">Gain, summed</th>
+              <th className="pr-3 pb-1 text-right">Cost</th>
+              <th className="pr-3 pb-1 text-right">Bound breaches</th>
+              <th className="pb-1 text-right">Gain, per probe</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.learned.kinds.map((row) => (
+              <LearnedRow key={row.kind} row={row} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="max-w-[90ch] text-[11px] leading-relaxed text-[color:var(--color-ink-faint)]">
+        Every kind the platform can probe is a row, including the ones it has never bought: the
+        route lists the enum, not the book&rsquo;s records, so a kind never asked about reads as
+        zeroes rather than as a missing row. &ldquo;Gain, per probe&rdquo; is the platform&rsquo;s
+        own mean over probed settlements and arrives as sent; where nothing has been probed it is
+        not measured, and no figure is shown in its place. Nothing on this page sums a column.
+      </p>
     </div>
+  );
+}
+
+/**
+ * One kind, column for column. `measured_gain` is the one cell that may be
+ * `null`, and `null` is rendered as words rather than through
+ * `formatStatistic`'s dash — a dash beside numeric neighbours reads as a
+ * value the page failed to fetch, and this is a value the platform declined
+ * to compute.
+ */
+function LearnedRow({ row }: { row: LearnedKind }) {
+  return (
+    <tr
+      className="border-t border-[color:var(--color-line)] align-top"
+      data-testid="exploration-learned-row"
+      data-kind={row.kind}
+    >
+      <td className="py-1.5 pr-3">
+        <div className="text-[12px] text-[color:var(--color-ink)]" data-testid="exploration-learned-learns">
+          {row.learns}
+        </div>
+        <div className="num text-[10.5px] text-[color:var(--color-ink-faint)]" data-testid="exploration-learned-kind">
+          {row.kind}
+        </div>
+      </td>
+      <td className="num py-1.5 pr-3 text-right" data-testid="exploration-learned-opened">
+        {formatCount(row.opened)}
+      </td>
+      <td className="num py-1.5 pr-3 text-right" data-testid="exploration-learned-probed">
+        {formatCount(row.probed)}
+      </td>
+      <td className="num py-1.5 pr-3 text-right" data-testid="exploration-learned-observed">
+        {formatCount(row.observed)}
+      </td>
+      <td className="num py-1.5 pr-3 text-right" data-testid="exploration-learned-probed-gain">
+        {formatStatistic(row.probed_gain)}
+      </td>
+      <td className="num py-1.5 pr-3 text-right" data-testid="exploration-learned-realised-cost">
+        {formatDecimal(row.realised_cost)}
+      </td>
+      <td className="num py-1.5 pr-3 text-right" data-testid="exploration-learned-bound-breaches">
+        {formatCount(row.bound_breaches)}
+      </td>
+      <td className="py-1.5 text-right" data-testid="exploration-learned-measured-gain">
+        {row.measured_gain === null ? (
+          <span className="text-[color:var(--color-ink-faint)]">not measured</span>
+        ) : (
+          <span className="num">{formatStatistic(row.measured_gain)}</span>
+        )}
+      </td>
+    </tr>
   );
 }
 

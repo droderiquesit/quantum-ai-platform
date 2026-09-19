@@ -1,7 +1,7 @@
 "use client";
 
 import { request } from "@/lib/api/client";
-import type { Section, Unavailable } from "@/lib/api/types";
+import type { Section } from "@/lib/api/types";
 import { useResource, type Resource } from "./useResource";
 
 /**
@@ -91,20 +91,61 @@ export interface Exploration {
   readonly subjects_forgotten: number;
   readonly open: readonly OpenProbe[];
   /**
-   * The per-kind "what it learned" table.
+   * The per-kind "what it learned" table, or the route's stated absence.
    *
-   * At the tip this console was written against, the handler answers this
-   * field {@link Unavailable} unconditionally and `qip-api`'s own test pins
-   * it so (`the_exploration_surface_keeps_what_is_held_committed_and_spent_as_three_numbers`
-   * asserts `learned.available == false`). The kernel now re-exports the
-   * enum the table is keyed by, so the route can close the half; when it
-   * does, its shape is whatever `routes.rs` emits and not something this
-   * file guesses at. The other arm is therefore typed as an opaque record
-   * and rendered verbatim, labelled as unread — a shape transcribed from a
-   * kernel struct rather than from the wire would be this console inventing
-   * the platform's answer.
+   * The served arm is transcribed from the `exploration` handler's
+   * `learned` object, which walks `ProbeKind::ALL` and emits one row per
+   * kind whether or not the book holds a record for it. The route's own test
+   * (`the_exploration_surface_keeps_what_is_held_committed_and_spent_as_three_numbers`)
+   * pins the row count to the enum's, so a kind missing from this table is a
+   * wire the route did not send, not a kind with nothing to report. The
+   * absence arm is kept because `Section` is the convention every surface
+   * answers under, and a body this console does not recognise is still
+   * rendered verbatim rather than through guessed columns.
    */
-  readonly learned: Unavailable | Readonly<Record<string, unknown>>;
+  readonly learned: Section<LearnedTable>;
+}
+
+/**
+ * The served table: every `ProbeKind`, in the enum's declaration order.
+ *
+ * `available` is stated as `true` rather than implied by the presence of
+ * `kinds`, mirroring how the route states `false` on an absence: a client
+ * that forgot to check would otherwise read a missing key as an empty table.
+ */
+export interface LearnedTable {
+  readonly available: true;
+  readonly kinds: readonly LearnedKind[];
+}
+
+/**
+ * One row of the table: `KindRecord`'s fields, with the kind's token and the
+ * question it buys beside them. Field names are the handler's, transcribed.
+ *
+ * Two fields are statistics and arrive as JSON numbers; one is money and
+ * arrives as a decimal string; and one may be `null`. That `null` is the
+ * point of the row: `measured_gain` is the mean information gain per probed
+ * settlement, and where nothing has been probed there is nothing to average.
+ * The route sends `null` there, never `0`, because "not measured" and
+ * "measured as nothing" are different statements — and this console renders
+ * the `null` as the words, never as a figure.
+ */
+export interface LearnedKind {
+  readonly kind: string;
+  readonly learns: string;
+  readonly opened: number;
+  /** Settlements on probed evidence — the only ones that feed the reward. */
+  readonly probed: number;
+  /** Settlements on observed evidence, counted and reported, never scored. */
+  readonly observed: number;
+  /** The sum of information gains on probed evidence. A statistic. */
+  readonly probed_gain: number;
+  /** Everything this kind has actually spent. Money, so a decimal string. */
+  readonly realised_cost: DecimalString;
+  /** Settlements whose cost exceeded the probe's own bound. */
+  readonly bound_breaches: number;
+  /** The mean gain per probed settlement, or `null` where nothing has been probed. */
+  readonly measured_gain: number | null;
 }
 
 /** The one read, and the only one. See the module note. */
