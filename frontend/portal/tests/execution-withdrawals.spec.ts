@@ -164,3 +164,69 @@ test("an empty withdrawn set still distinguishes never-withdrawn from withdrawn-
     "still needs a second person",
   );
 });
+
+test("the share the platform sent is the share on the screen, even when it disagrees with the count over the sample", async ({
+  page,
+}) => {
+  // This test exists because the suite did not have it and the page's central
+  // claim was therefore unguarded. Every other fixture here carries
+  // `share === count / sample`, which is what `qip-kernel`'s `venue_review`
+  // computes today. That agreement makes "this page renders the review's
+  // figure" and "this page divides two numbers it was given" produce identical
+  // pixels, so a mutation replacing `row.withdrawal.share` with
+  // `row.withdrawal.count / row.withdrawal.sample` was run against the suite
+  // and all three tests still passed. A property no fixture can distinguish is
+  // not covered by the tests that appear to cover it.
+  //
+  // So this body is deliberately inconsistent: 41 of 64 is 64.06 per cent, and
+  // the share says 87 per cent. That is not a shape the current kernel emits,
+  // and the point is that the console must not be the thing that decides so.
+  // The denominator is already not a constant of the platform — `VenueCluster`
+  // documents the sample as "not a single figure every venue shares", and
+  // ADR 0062's echo handling weighs a venue as `refusals + echoes.min(refusals)`
+  // rather than as a bare count — so the arithmetic behind `share` can move
+  // without the wire shape changing at all. If it does, a console that divides
+  // would quietly disagree with the platform that acted, and disagree in the
+  // direction of a smaller number, which reads as a venue withdrawn on weaker
+  // evidence than it actually was.
+  await servePlatform(page, {
+    ...healthy(),
+    "/venues/withdrawals": {
+      withdrawn: [
+        {
+          venue: "simulated-venue",
+          withdrawal: {
+            venue: "simulated-venue",
+            constraint: "feasibility_lot_size",
+            sample: 64,
+            count: 41,
+            share: 0.87,
+            seams: ["desk"],
+            cycle: 907,
+            at: "2026-04-11T06:30:00Z",
+          },
+          awaiting_countersignature: false,
+        },
+      ],
+      withdrawals_recorded: 1,
+      reinstatement_path: "/api/v1/venues/:venue/reinstatements",
+      reinstatement_refusal: REFUSAL,
+    },
+  });
+  await page.goto("/execution/withdrawals");
+
+  const row = page.locator('[data-testid="venue-withdrawals-row"][data-venue="simulated-venue"]');
+  // The premise, asserted first: the row rendered and carries both operands.
+  // Without this the share assertion below would hold on a page that rendered
+  // no row at all.
+  await expect(row).toBeVisible();
+  await expect(row.getByTestId("venue-withdrawals-refusal-count")).toHaveText("41");
+  await expect(row.getByTestId("venue-withdrawals-sample")).toHaveText("64");
+
+  // The property. `87.00%` is the field; `64.06%` is what dividing would give.
+  // Both are asserted, because asserting only the first would pass on a page
+  // that rendered both figures somewhere.
+  await expect(row.getByTestId("venue-withdrawals-share")).toHaveText("87.00%");
+  await expect(row.getByTestId("venue-withdrawals-share")).not.toHaveText("64.06%");
+  await expect(row).not.toContainText("64.06%");
+});
