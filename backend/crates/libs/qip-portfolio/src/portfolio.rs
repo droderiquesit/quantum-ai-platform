@@ -194,6 +194,28 @@ impl Portfolio {
         Ok(true)
     }
 
+    /// Choose how closing fills in one instrument pick the lots they consume.
+    ///
+    /// The narrow seam onto [`Position::declare_selection`], written the way
+    /// [`Self::flag_position`] is and for the same reason: a caller gets to
+    /// change this one decision without being handed the lot ledger and the
+    /// realised P&L along with it.
+    ///
+    /// Both refusals below are carried through unchanged, because both are
+    /// the point rather than an inconvenience. A holding-period rule declared
+    /// for a jurisdiction other than the position's would order the lots
+    /// exactly as first-in-first-out while reading as a tax policy in force;
+    /// and a position the book does not hold is refused rather than created,
+    /// because a lot policy set against a holding nobody has is a statement
+    /// about the caller's own bookkeeping.
+    pub fn declare_selection(
+        &mut self,
+        object_id: &ObjectId,
+        selection: crate::lot::LotSelection,
+    ) -> Result<()> {
+        self.position_mut(object_id)?.declare_selection(selection)
+    }
+
     /// The position under `object_id`, for the two lifecycle seams above.
     ///
     /// Deliberately private and deliberately not returning `&mut Position` to
