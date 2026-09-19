@@ -16,12 +16,28 @@
  *   page that added them back would size the reader's expectations against
  *   money that may never arrive;
  * * a control that could move capital — asserted by no form and no submit
- *   control inside the page, and no non-GET request leaving it.
+ *   control inside the page, and no non-GET request leaving it;
+ * * the held bucket folded into available, or into the expected total — the
+ *   three figures ADR 0085 keeps apart are asserted apart: the platform's
+ *   `uninvestable` in its own cell, and none of the sums a page that added
+ *   any two of them would show anywhere on the page;
+ * * a declared inflow shown without the platform's `inflow_posting` sentence
+ *   beside it, or with a paraphrase — asserted verbatim, because the sentence
+ *   is the platform's constant and a paraphrase would go on saying "never
+ *   posted" the day the platform deleted the constant and started posting;
+ * * a form that could declare or cancel an inflow — the two operator routes
+ *   are named and the refusal every credential meets is rendered, labelled as
+ *   the route contract's statement and not as an answer the platform gave
+ *   this page, which it did not: `/ledger/users` carries no such field.
  *
  * The body is the example in `backend/crates/apps/qip-api/ROUTES-LEDGER.md`,
- * the contract the route is built to, with one expected inflow added so the
- * separation has something to separate. It is not captured from a running
- * process: no deployment has yet enrolled a user with a declared inflow.
+ * the contract the route is built to, with one expected inflow and a non-zero
+ * `uninvestable` added so the separation has something to separate. The
+ * non-zero bucket is a shape this build never serves — nothing posts an
+ * arrival, so the figure is `"0"` on every balance — and that is the point:
+ * a page proven only against zero is a page whose sum with zero is invisible.
+ * It is not captured from a running process: no deployment has yet enrolled
+ * a user with a declared inflow.
  */
 import { expect, test } from "@playwright/test";
 import { healthy, servePlatform } from "./support/platform";
@@ -29,12 +45,17 @@ import { healthy, servePlatform } from "./support/platform";
 const WITHDRAWAL_REFUSED =
   "capital does not leave the platform: ADR 0021 refuses the signing and withdrawal half of the treasury and ADR 0023 keeps that in force; a withdrawal is a separate, later, separately approved decision";
 
+/** `INFLOW_POSTING` in `backend/crates/apps/qip-api/src/ledger_views.rs`, character for character. */
+const INFLOW_POSTING =
+  "no declared inflow is ever posted by this build: nothing here can say a user's wire landed, so an expected inflow stays expected until an operator cancels it, and `uninvestable` is zero on every balance until a reconciled statement exists (ADR 0085)";
+
 const LEDGER_USERS = {
   posture: "PAPER TRADING",
   served_at: "2025-10-09T08:53:20Z",
   evaluated_as_role: "viewer",
   products: ["research-tests"],
   fills_journalled: 2,
+  inflow_posting: INFLOW_POSTING,
   users: [
     {
       user_id: "desk",
@@ -55,6 +76,7 @@ const LEDGER_USERS = {
           settled: "250.75",
           reserved: "0",
           available: "250.75",
+          uninvestable: "125",
           expected_inflows_total: "500",
           expected_inflows: [{ reference: "wire-0001", amount: "500", declared_at: "2025-10-09T08:00:00Z" }],
           entries: 2,
@@ -111,9 +133,49 @@ test("the ledger page carries the paper label, refuses withdrawal in the platfor
   // Available is the platform's figure; the declared inflow is shown beside
   // it and is not in it. 750.75 is what a page that summed them would show.
   await expect(page.getByTestId("ledger-available")).toHaveText("250.75");
-  await expect(page.getByTestId("ledger-expected")).toContainText("500");
+  await expect(page.getByTestId("ledger-expected-total")).toHaveText("500");
   await expect(page.getByTestId("ledger-expected")).toContainText("wire-0001");
   await expect(content).not.toContainText("750.75");
+
+  // The held bucket is its own figure, in its own cell, labelled as held and
+  // not sized against — and it is summed with nothing. 375.75 is available
+  // plus held; 625 is held plus the expected total; 875.75 is all three.
+  await expect(page.getByTestId("ledger-uninvestable")).toHaveText("125");
+  await expect(page.locator("#content th", { hasText: "Held, not sized against" })).toHaveCount(1);
+  await expect(content).not.toContainText("375.75");
+  await expect(content).not.toContainText("625");
+  await expect(content).not.toContainText("875.75");
+
+  // The declaration itself: one row, by the reference the user supplied, with
+  // its amount and the instant it was declared.
+  const inflow = page.getByTestId("ledger-inflow");
+  await expect(inflow).toHaveCount(1);
+  await expect(inflow).toHaveAttribute("data-reference", "wire-0001");
+  await expect(inflow).toContainText("wire-0001");
+  await expect(inflow).toContainText("500");
+  await expect(inflow).toContainText("declared");
+
+  // And beside it the platform's own sentence, verbatim. `toHaveText` is a
+  // whole-text match, so a paraphrase, a truncation or an addition fails it.
+  await expect(page.getByTestId("ledger-inflow-posting")).toHaveText(INFLOW_POSTING);
+
+  // The two routes a declaration is made and cancelled at are named, with the
+  // refusal every credential meets — labelled as the contract's statement,
+  // because the platform returned no such sentence to this page.
+  const declaration = page.getByTestId("inflow-declaration");
+  await expect(declaration).toBeVisible();
+  await expect(page.getByTestId("inflow-route-declare")).toHaveText(
+    "POST /api/v1/ledger/users/{user}/expected-inflows",
+  );
+  await expect(page.getByTestId("inflow-route-cancel")).toHaveText(
+    "DELETE /api/v1/ledger/users/{user}/expected-inflows/{reference}",
+  );
+  await expect(page.getByTestId("inflow-declaration-refusal")).toContainText("standing bearer token");
+  await expect(page.getByTestId("inflow-declaration-refusal")).toContainText("ADR 0076");
+  await expect(page.getByTestId("inflow-declaration-refusal-source")).toContainText(
+    "not an answer the platform returned to this page",
+  );
+  await expect(declaration.locator("form, input, textarea, select, button")).toHaveCount(0);
 
   // No control on the page can move capital. The page holds no form and no
   // submit control; the chrome's one form is the kill-switch halt dialog,
@@ -128,6 +190,46 @@ test("the ledger page carries the paper label, refuses withdrawal in the platfor
     content.getByRole("button", { name: /^(propose|approve|sign|transfer|withdraw|submit)/i }),
   ).toHaveCount(0);
   expect(writes).toEqual([]);
+});
+
+test("a book with nothing declared shows held as its own zero, no inflow row, and still the posting sentence", async ({
+  page,
+}) => {
+  // The shape this build actually serves: `uninvestable` is "0" on every
+  // balance and nothing is declared. The sentence is still rendered, because
+  // it is also what says the zero means "nothing posts an arrival" rather
+  // than "nothing arrived past the ceiling" — two different facts a bare
+  // zero cannot tell apart.
+  await servePlatform(page, {
+    ...healthy(),
+    "/ledger/users": {
+      ...LEDGER_USERS,
+      users: [
+        {
+          ...LEDGER_USERS.users[0],
+          balances: [
+            {
+              ...LEDGER_USERS.users[0].balances[0],
+              uninvestable: "0",
+              expected_inflows_total: "0",
+              expected_inflows: [],
+            },
+          ],
+        },
+      ],
+    },
+  });
+  await page.goto("/treasury/ledger");
+
+  // The premise: the row rendered with the platform's available figure.
+  await expect(page.getByTestId("ledger-balance-row")).toHaveCount(1);
+  await expect(page.getByTestId("ledger-available")).toHaveText("250.75");
+
+  await expect(page.getByTestId("ledger-uninvestable")).toHaveText("0");
+  await expect(page.getByTestId("ledger-expected-total")).toHaveText("0");
+  await expect(page.getByTestId("ledger-inflow")).toHaveCount(0);
+  await expect(page.getByTestId("ledger-inflow-posting")).toHaveText(INFLOW_POSTING);
+  await expect(page.getByTestId("treasury-paper-label")).toHaveText("PAPER TRADING");
 });
 
 test("a ledger with no product says why entitlements are absent rather than showing none", async ({ page }) => {

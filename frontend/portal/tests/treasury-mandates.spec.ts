@@ -81,6 +81,8 @@ const LEDGER_USERS = {
   evaluated_as_role: "viewer",
   products: ["research-tests"],
   fills_journalled: 2,
+  inflow_posting:
+    "no declared inflow is ever posted by this build: nothing here can say a user's wire landed, so an expected inflow stays expected until an operator cancels it, and `uninvestable` is zero on every balance until a reconciled statement exists (ADR 0085)",
   users: [ALICE, DESK],
 } as const;
 

@@ -223,9 +223,11 @@ export function ExpectedInflowList({
  */
 export function InflowPostingNote({ sentence, testId }: { sentence: string; testId: string }) {
   return (
-    <p className="mt-1 text-[11.5px] leading-relaxed" data-testid={testId}>
+    <p className="mt-1 text-[11.5px] leading-relaxed">
       <span className="eyebrow mr-1.5">posting</span>
-      <span className="text-[color:var(--color-warn)]">{sentence}</span>
+      <span className="text-[color:var(--color-warn)]" data-testid={testId}>
+        {sentence}
+      </span>
     </p>
   );
 }

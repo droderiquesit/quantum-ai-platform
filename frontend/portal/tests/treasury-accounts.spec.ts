@@ -17,17 +17,28 @@
  *   platform-recorded fact is naming an identity nothing downstream records;
  * * an expected inflow folded into an available balance — asserted by the
  *   available cell carrying the platform's figure and not the sum;
+ * * the held bucket (`uninvestable`, ADR 0085 §3) folded into available or
+ *   into the expected total — asserted by its own cell, and by none of the
+ *   sums appearing anywhere on the page;
+ * * a declared inflow shown without the platform's `inflow_posting` sentence
+ *   verbatim beside it, or a form that could declare or cancel one;
  * * a withdrawal shown as anything but refused, or any control at all on a page
  *   that has none.
  *
  * Bodies are the contract in `backend/crates/apps/qip-api/ROUTES-LEDGER.md`,
- * not a capture: no deployment has enrolled a user with a declared inflow.
+ * not a capture: no deployment has enrolled a user with a declared inflow, and
+ * the non-zero `uninvestable` is a shape this build never serves — it is here
+ * so that a page summing it with zero cannot pass unnoticed.
  */
 import { expect, test, type Page } from "@playwright/test";
 import { GATEWAY, healthy, servePlatform, servePlatformUnreachable } from "./support/platform";
 
 const WITHDRAWAL_REFUSED =
   "capital does not leave the platform: ADR 0021 refuses the signing and withdrawal half of the treasury and ADR 0023 keeps that in force; a withdrawal is a separate, later, separately approved decision";
+
+/** `INFLOW_POSTING` in `backend/crates/apps/qip-api/src/ledger_views.rs`, character for character. */
+const INFLOW_POSTING =
+  "no declared inflow is ever posted by this build: nothing here can say a user's wire landed, so an expected inflow stays expected until an operator cancels it, and `uninvestable` is zero on every balance until a reconciled statement exists (ADR 0085)";
 
 const ALICE = {
   user_id: "alice",
@@ -57,6 +68,7 @@ const ALICE = {
       settled: "250.75",
       reserved: "0",
       available: "250.75",
+      uninvestable: "125",
       expected_inflows_total: "500",
       expected_inflows: [{ reference: "wire-0001", amount: "500", declared_at: "2025-10-09T08:00:00Z" }],
       entries: 2,
@@ -91,6 +103,7 @@ const LEDGER_USERS = {
   evaluated_as_role: "viewer",
   products: ["research-tests"],
   fills_journalled: 2,
+  inflow_posting: INFLOW_POSTING,
   users: [ALICE, DESK],
 } as const;
 
@@ -159,8 +172,42 @@ test("the account page renders the asked-for account's mandate, the ledger's ref
   // Available is the platform's figure; the declared inflow sits beside it and
   // is not in it. 750.75 is what a page that summed them would show.
   await expect(page.getByTestId("account-available")).toHaveText("250.75");
+  await expect(page.getByTestId("account-expected-total")).toHaveText("500");
   await expect(page.getByTestId("account-expected")).toContainText("wire-0001");
   await expect(page.locator("#content")).not.toContainText("750.75");
+
+  // The held bucket: its own cell, labelled as held and not sized against,
+  // and summed with nothing. 375.75 is available plus held; 625 is held plus
+  // the expected total; 875.75 is all three.
+  await expect(page.getByTestId("account-uninvestable")).toHaveText("125");
+  await expect(page.locator("#content th", { hasText: "Held, not sized against" })).toHaveCount(1);
+  await expect(page.locator("#content")).not.toContainText("375.75");
+  await expect(page.locator("#content")).not.toContainText("625");
+  await expect(page.locator("#content")).not.toContainText("875.75");
+
+  // The declaration as a row by reference, and the platform's sentence beside
+  // it, verbatim — `toHaveText` is a whole-text match.
+  const inflow = page.getByTestId("account-inflow");
+  await expect(inflow).toHaveCount(1);
+  await expect(inflow).toHaveAttribute("data-reference", "wire-0001");
+  await expect(inflow).toContainText("500");
+  await expect(page.getByTestId("account-inflow-posting")).toHaveText(INFLOW_POSTING);
+
+  // The routes named, the refusal rendered as the contract's statement, and
+  // no control inside the block.
+  const declaration = page.getByTestId("inflow-declaration");
+  await expect(declaration).toBeVisible();
+  await expect(page.getByTestId("inflow-route-declare")).toHaveText(
+    "POST /api/v1/ledger/users/{user}/expected-inflows",
+  );
+  await expect(page.getByTestId("inflow-route-cancel")).toHaveText(
+    "DELETE /api/v1/ledger/users/{user}/expected-inflows/{reference}",
+  );
+  await expect(page.getByTestId("inflow-declaration-refusal")).toContainText("standing bearer token");
+  await expect(page.getByTestId("inflow-declaration-refusal-source")).toContainText(
+    "not an answer the platform returned to this page",
+  );
+  await expect(declaration.locator("form, input, textarea, select, button")).toHaveCount(0);
 
   // Withdrawal refused in the platform's words, and no control anywhere.
   const withdrawal = page.getByTestId("withdrawal-entitlement");
@@ -252,6 +299,12 @@ test("an account with no book says no book has been opened rather than showing a
   await expect(noBooks).toBeVisible();
   await expect(noBooks).toContainText("No book has been opened for this account.");
   await expect(noBooks).toContainText("an account with no book, not a book at zero");
+  // No book means no held figure and no posting note to show beside one; the
+  // routes and their refusal are still stated, because they are about the
+  // platform and not about this account's books.
+  await expect(page.getByTestId("account-uninvestable")).toHaveCount(0);
+  await expect(page.getByTestId("account-inflow-posting")).toHaveCount(0);
+  await expect(page.getByTestId("inflow-declaration")).toBeVisible();
   // The platform's own note for an account with no entitlement, rendered as it came.
   await expect(page.getByTestId("account-entitlements-note")).toContainText(
     "no product to evaluate against",
