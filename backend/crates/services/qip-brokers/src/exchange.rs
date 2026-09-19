@@ -51,6 +51,7 @@ pub use qip_market::book::BookLevel;
 use qip_market::book::OrderBook;
 use qip_market::quote::Quote;
 use qip_routing::ratelimit::{RateLedger, RateLimits};
+use qip_routing::venue::{FeeSchedule, Liquidity};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -81,10 +82,22 @@ pub struct BookableFill {
 }
 
 /// How the simulated venue behaves.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExchangeSettings {
-    /// Commission as a fraction of notional. Exact, because it moves cash.
-    pub commission_rate: Decimal,
+    /// What the venue charges — blueprint §18.4's fee tier accumulation, and
+    /// §34.1's fee-schedule provision, as this venue applies them.
+    ///
+    /// A schedule and not a rate, because the single rate this field used to
+    /// be was wrong in two directions at once. It charged a resting order the
+    /// same as one that crossed, so a paper desk could never see that
+    /// providing liquidity is cheaper and sometimes paid; and it was fixed,
+    /// so no amount of trading here ever reached a cheaper rung and §18.4's
+    /// "reaching one can be worth more than the trades that reach it" was a
+    /// sentence about a thing the platform could not do. Money is still
+    /// exact: the rungs are quoted in basis points as `f64` because that is
+    /// how a venue publishes them, and every charge against cash goes through
+    /// [`FeeSchedule::fee`], which is `Decimal` arithmetic.
+    pub fees: FeeSchedule,
     /// Base round trip to an acknowledgement.
     pub latency: Duration,
     /// Additional uniform jitter on the round trip, drawn from the seed.
@@ -112,8 +125,14 @@ pub struct ExchangeSettings {
 impl Default for ExchangeSettings {
     fn default() -> Self {
         Self {
-            // 0.0002 = two basis points, at the nine-digit decimal scale.
-            commission_rate: Decimal::from_raw(200_000),
+            // Two basis points on both sides, which is exactly what the flat
+            // `commission_rate` this replaced charged: it was
+            // `Decimal::from_raw(200_000)` at the nine-digit scale, and
+            // `FeeSchedule::fee` reaches the same `Decimal` for the same
+            // notional. A default that changed the number would have made
+            // every existing fill assertion a question about arithmetic
+            // rather than about the ladder.
+            fees: FeeSchedule::flat(2.0, 2.0),
             latency: Duration::from_millis(4),
             latency_jitter: Duration::from_millis(3),
             rejection_probability: 0.005,
@@ -204,6 +223,23 @@ pub struct SimulatedExchange {
     /// not the sender's: a message the sender believes it sent and this ledger
     /// never saw is exactly the gap worth being able to see.
     rates: RateLedger,
+    /// Notional this account has traded here, which is what picks the rung of
+    /// [`ExchangeSettings::fees`] every subsequent fill is charged at.
+    ///
+    /// **The venue's own tally, and deliberately not the desk's.**
+    /// `qip_capital::compounding::FeeVolumeLedger` holds the desk's trailing
+    /// volume across every venue over a bounded window, and a venue that read
+    /// the desk's figure would agree with it by construction and prove
+    /// nothing — the same argument [`SimulatedExchange::rates`] is kept
+    /// separate from the router's message count for. A venue only ever sees
+    /// its own flow, so these are two claims about different facts that a
+    /// reconciliation can compare; the moment they are made one, a desk that
+    /// has mis-booked its own volume is billed at the rung it believes it
+    /// deserves rather than the one it earned.
+    ///
+    /// Cumulative for the life of this venue object, which is the honest
+    /// window for a venue that reads no clock but the caller's.
+    traded_notional: Decimal,
 }
 
 impl SimulatedExchange {
@@ -237,11 +273,33 @@ impl SimulatedExchange {
             submitted: 0,
             rejected: 0,
             rates: RateLedger::new(),
+            traded_notional: Decimal::ZERO,
         }
     }
 
     pub fn settings(&self) -> ExchangeSettings {
+        self.settings.clone()
+    }
+
+    /// Notional traded here so far, and so the rung the next fill is charged
+    /// at. Readable because a rung nobody can see is a discount nobody can
+    /// check, and §18.4's whole point is that approaching one is worth
+    /// planning for.
+    pub fn traded_notional(&self) -> Decimal {
+        self.traded_notional
+    }
+
+    /// The rate in basis points this venue would charge the account's next
+    /// fill on the given side of the liquidity.
+    ///
+    /// The forward-looking half of §18.4: a desk can ask what it pays now
+    /// without having to trade to find out, which is what makes "reaching a
+    /// threshold can be worth more than the trades that reach it" a thing
+    /// something can compute rather than a remark.
+    pub fn rate_bps_f64(&self, liquidity: Liquidity) -> f64 {
         self.settings
+            .fees
+            .rate_bps_f64(liquidity, self.traded_notional)
     }
 
     /// What is left of this venue's allowance at `at` — orders, then messages.
@@ -396,14 +454,17 @@ impl SimulatedExchange {
         let trades = outcome.trades.clone();
         for trade in &trades {
             if trade.maker_owner.is_client() {
+                // Seeded flow is what takes here, so the client order this
+                // hits was the resting one and is charged as the maker.
                 let maker_fill = self.make_fill(
                     &trade.maker,
                     object_id,
                     side.opposite(),
                     trade.price,
                     trade.quantity,
+                    Liquidity::Maker,
                     at,
-                );
+                )?;
                 self.record(maker_fill)?;
                 self.credit_maker(&trade.maker, trade.quantity, at);
             }
@@ -556,7 +617,23 @@ impl SimulatedExchange {
         Ok(())
     }
 
-    /// Build a fill, charge the commission, and note the trade price.
+    /// Build a fill, charge it at the rung this account has reached, and note
+    /// the trade price.
+    ///
+    /// Two things here are refusals where they used to be silence, and both
+    /// were the same bug wearing different clothes. The commission was
+    /// `unwrap_or(Decimal::ZERO)` on an arithmetic fault, and a fee of exactly
+    /// zero is the one wrong answer that makes a venue look free — it does not
+    /// merely mis-book a fill, it makes this venue the cheapest one for
+    /// everything routed afterwards. [`FeeSchedule::fee`] refuses instead, and
+    /// so does the volume this fill adds to the ladder. A fill nobody could
+    /// price is not booked at no cost; it is not booked.
+    ///
+    /// The rung is read from the volume traded **before** this fill, not
+    /// including it. Charging against the volume this fill creates would let a
+    /// single large order discount itself into a rung it had not reached when
+    /// it was sent, which is a rebate the venue never offered and a cost
+    /// estimate the router could not have reproduced.
     fn make_fill(
         &mut self,
         order_id: &OrderId,
@@ -564,16 +641,32 @@ impl SimulatedExchange {
         side: Side,
         price: Decimal,
         quantity: Decimal,
+        liquidity: Liquidity,
         at: Timestamp,
-    ) -> BookableFill {
+    ) -> Result<BookableFill> {
+        let notional = quantity.checked_mul(price).ok_or_else(|| {
+            Error::numeric(format!(
+                "a fill of {quantity} at {price} on {} has no representable notional, so it can                  be neither charged nor added to the fee ladder; send a size whose consideration                  is representable",
+                self.venue.as_str()
+            ))
+        })?;
+        let costs = self
+            .settings
+            .fees
+            .fee(notional, liquidity, self.traded_notional)?;
+        self.traded_notional = self.traded_notional.checked_add(notional.abs()).ok_or_else(
+            || {
+                Error::numeric(format!(
+                    "{} has traded {} here and a further {notional} overflows the volume its fee                      ladder is read against; restart the venue session rather than charging the                      next fill at a rung nobody computed",
+                    self.venue.as_str(),
+                    self.traded_notional
+                ))
+            },
+        )?;
         self.fill_sequence = self.fill_sequence.saturating_add(1);
-        let costs = quantity
-            .checked_mul(price)
-            .and_then(|notional| notional.checked_mul(self.settings.commission_rate))
-            .unwrap_or(Decimal::ZERO);
         self.last_trade
             .insert(object_id.as_str().to_string(), price);
-        BookableFill {
+        Ok(BookableFill {
             object_id: object_id.clone(),
             side,
             fill: Fill {
@@ -592,7 +685,7 @@ impl SimulatedExchange {
                 // flag is the adapter's to set, never the message's.
                 simulated: true,
             },
-        }
+        })
     }
 
     /// Book a client fill to the clearing account and queue it for the client.
@@ -794,14 +887,20 @@ impl VenueAdapter for SimulatedExchange {
         // a trade can touch two client orders at once.
         let trades = outcome.trades.clone();
         for trade in &trades {
+            // The order being submitted is the one that crossed — a trade
+            // exists only because it took what was resting — so it pays the
+            // taker rate. The counterparty below provided the liquidity and
+            // pays the maker rate, which on a real schedule is frequently a
+            // rebate and is the whole reason the two are told apart.
             let bookable = self.make_fill(
                 &order.order_id,
                 &order.object_id,
                 order.side,
                 trade.price,
                 trade.quantity,
+                Liquidity::Taker,
                 landed,
-            );
+            )?;
             fills.push(bookable.fill.clone());
             self.record(bookable)?;
             if trade.maker_owner.is_client() {
@@ -812,8 +911,9 @@ impl VenueAdapter for SimulatedExchange {
                     maker_side,
                     trade.price,
                     trade.quantity,
+                    Liquidity::Maker,
                     landed,
-                );
+                )?;
                 self.record(maker_fill)?;
                 self.credit_maker(&trade.maker, trade.quantity, landed);
             }
@@ -1079,8 +1179,22 @@ impl Broker for SimulatedExchange {
                 .min()
                 .unwrap_or(Decimal::ONE),
             // A rate for reporting, so `f64` is the right type here. Every
-            // charge against cash uses the exact `Decimal` rate.
-            commission_rate: self.settings.commission_rate.to_f64(),
+            // charge against cash goes through `FeeSchedule::fee`, which is
+            // exact `Decimal` arithmetic.
+            //
+            // `VenueCapabilities` has one field where this venue now has two
+            // prices and a ladder, so the single number has to be chosen
+            // rather than averaged. It is the **taker** rate at the volume
+            // already traded here: the rate an order that crosses pays, the
+            // only one of the two that is never a rebate, and therefore the
+            // one a reader who treats this figure as the cost will not be
+            // flattered by. A maker rate reported here would tell an OMS that
+            // trading costs less than any order it can actually send.
+            commission_rate: self
+                .settings
+                .fees
+                .rate_bps_f64(Liquidity::Taker, self.traded_notional)
+                / 10_000.0,
         }
     }
 
