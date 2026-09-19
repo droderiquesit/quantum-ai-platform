@@ -266,35 +266,66 @@ impl ObservationGrade {
 
     /// This reading's quality, as the publisher graded it.
     ///
-    /// `Validated` is the only grade that produces a clean record. Every other
-    /// admitted grade carries the publisher's own words as an issue, and
-    /// `DataQuality::with_issue` halves the remaining confidence for each —
-    /// which is why `Preliminary` lands below
-    /// [`qip_financial::quality::DECISION_QUALITY_FLOOR`] and a preliminary
-    /// reading therefore cannot drive a decision. That is the intended
-    /// consequence and not a side effect: the NWS is saying it has not checked
-    /// the number.
+    /// Each confidence is written out rather than derived by chaining
+    /// `DataQuality::with_issue`, and the difference is not cosmetic.
+    /// `with_issue` halves the remaining confidence per call, so one issue
+    /// lands on 0.5 — just under
+    /// [`qip_financial::quality::DECISION_QUALITY_FLOOR`] — and *which* grades
+    /// may drive a decision would then be settled by how many times a
+    /// constructor happened to be called rather than by a judgement about the
+    /// grade. This was written that way first, and it put a coarse-pass
+    /// reading below the floor by arithmetic coincidence.
+    ///
+    /// The boundary the numbers are chosen around is the one that means
+    /// something: **screened against something, versus not screened at all.**
+    /// `V`, `S`, `C` and `T` are readings the publisher looked at and they
+    /// clear the floor; `Z` is the publisher saying it applied no quality
+    /// control, and it does not. That is the whole reason the grade is carried
+    /// rather than dropped — `DataQuality::default` would assert the opposite.
+    ///
+    /// `completeness` is 1.0 throughout: the field was present and carried a
+    /// value, or this grade would never have been asked for. Confidence is
+    /// what the grade speaks to.
     pub fn quality(&self) -> DataQuality {
+        let graded = |confidence: f64| DataQuality {
+            completeness: 1.0,
+            confidence,
+            validation_failures: 1,
+            issues: vec![format!(
+                "the publisher reports the reading is {}",
+                self.describe()
+            )],
+            is_imputed: false,
+        };
         match self {
             Self::Validated => DataQuality::clean(),
-            Self::SubjectiveGood | Self::CoarsePass | Self::Trace => {
-                DataQuality::clean().with_issue(format!("the reading is {}", self.describe()))
-            }
-            // Two issues, not one: a value nobody checked is further from a
-            // measurement than one checked against a wide band, and a single
-            // `with_issue` would put `Z` and `C` at the same confidence.
-            Self::Preliminary => DataQuality::clean()
-                .with_issue(format!("the reading is {}", self.describe()))
-                .with_issue(
-                    "no quality control means the value is unverified rather than merely coarse",
-                ),
+            // A human judged it sound: short of the instrument's own
+            // validation, comfortably above the floor.
+            Self::SubjectiveGood => graded(0.9),
+            // A trace is a real statement about the world — there was
+            // precipitation, below what the instrument resolves — so it is
+            // published, and it is less precise than a measured value.
+            Self::Trace => graded(0.8),
+            // Screened only against a wide band, but screened. Clears the
+            // floor.
+            Self::CoarsePass => graded(0.75),
+            // Below the floor on purpose. The publisher is saying it has not
+            // checked this number.
+            Self::Preliminary => graded(0.5),
             // Reachable only through a caller that ignored `is_repudiated`.
-            // Graded rather than unwrapped so that a future caller which does
-            // publish one cannot publish it as clean.
-            Self::Failed | Self::Questionable | Self::SubjectiveBad => DataQuality::clean()
-                .with_issue(format!("the reading is {}", self.describe()))
-                .with_issue("the publisher repudiates this value")
-                .with_issue("this grade should not have reached a published record"),
+            // Graded rather than made unreachable so that a future caller
+            // which does publish one cannot publish it as clean.
+            Self::Failed | Self::Questionable | Self::SubjectiveBad => DataQuality {
+                completeness: 1.0,
+                confidence: 0.0,
+                validation_failures: 2,
+                issues: vec![
+                    format!("the publisher reports the reading is {}", self.describe()),
+                    "the publisher repudiates this value and it should not have been published"
+                        .to_string(),
+                ],
+                is_imputed: false,
+            },
         }
     }
 }

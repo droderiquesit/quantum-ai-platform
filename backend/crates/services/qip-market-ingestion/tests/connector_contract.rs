@@ -25,8 +25,8 @@ use qip_market_ingestion::connector::{
 };
 use qip_market_ingestion::connectors::{
     AlpacaBarsConnector, CoinbaseTickerConnector, EcbKeyRatesConnector, FrankfurterRatesConnector,
-    KalshiMarketsConnector, NyFedEffrConnector, alpaca_bars, coinbase_ticker, ecb_key_rates,
-    frankfurter_rates, kalshi_markets,
+    KalshiMarketsConnector, NwsStationObservationsConnector, NyFedEffrConnector, alpaca_bars,
+    coinbase_ticker, ecb_key_rates, frankfurter_rates, kalshi_markets, nws_station_observations,
 };
 use qip_transport::RecordingSleeper;
 use std::collections::BTreeMap;
@@ -97,6 +97,26 @@ fn nyfed_effr() -> Result<(NyFedEffrConnector, SourceEmulator)> {
     Ok((
         connector,
         SourceEmulator::from_json(qip_market_ingestion::connectors::nyfed_effr::FIXTURE)?,
+    ))
+}
+
+/// After eleven of the recording's twelve observations have cleared the
+/// manifest's one-hour dissemination delay, and before the twelfth has.
+///
+/// The recording runs from 04:05Z to 05:00Z on 2026-09-19. At this horizon
+/// the 05:00 observation is still correctly withheld, which is why the
+/// expected count below is seventy-eight readings and not eighty-five — a
+/// horizon an hour later would pass while proving nothing about the gate.
+fn nws_horizon() -> Timestamp {
+    at("2026-09-19T05:55:00Z")
+}
+
+fn nws() -> Result<(NwsStationObservationsConnector, SourceEmulator)> {
+    let connector =
+        NwsStationObservationsConnector::new(NwsStationObservationsConnector::shipped_manifest()?)?;
+    Ok((
+        connector,
+        SourceEmulator::from_json(nws_station_observations::FIXTURE)?,
     ))
 }
 
@@ -180,6 +200,109 @@ fn the_kalshi_markets_connector_passes_the_connector_contract() -> Result<()> {
             .any(|target| target.contains("/trade-api/v2/exchange/status")),
         "the health check never asked the status endpoint: {:?}",
         emulator.calls()
+    );
+    Ok(())
+}
+
+#[test]
+fn the_nws_station_observations_connector_passes_the_connector_contract() -> Result<()> {
+    let (mut connector, mut emulator) = nws()?;
+    let report = ContractHarness::new(nws_horizon()).run(&mut connector, &mut emulator)?;
+
+    assert_report(&report);
+    Ok(())
+}
+
+#[test]
+fn the_nws_connector_skips_a_reading_the_station_did_not_report_and_keeps_the_rest() -> Result<()> {
+    // The recording's twelve observations carry `seaLevelPressure` with a
+    // null value on all but one, and `windGust` and `precipitationLast3Hours`
+    // with a null on every one. A connector that refused a page for a null
+    // would publish nothing at all from this station, and one that imputed a
+    // value would invent a measurement.
+    let (mut connector, mut emulator) = nws()?;
+    let mut runtime = runtime_for(&connector)?;
+    let envelopes = runtime
+        .poll(&mut connector, &mut emulator, nws_horizon())?
+        .admitted;
+
+    // The premise, asserted before the property: the recording really does
+    // name the field and really does carry a null for it. Without this the
+    // assertions below would pass just as well against a recording that never
+    // mentioned a wind gust at all, which would prove nothing about skipping.
+    let recorded: serde_json::Value = serde_json::from_str(nws_station_observations::FIXTURE)
+        .expect("the shipped fixture is a recorded source script");
+    let body = recorded["exchanges"][0]["answers"][0]["body"]
+        .as_str()
+        .expect("the recorded answer carries a body");
+    let served: serde_json::Value =
+        serde_json::from_str(body).expect("the recorded body is the JSON the source served");
+    let gust = &served["features"][0]["properties"]["windGust"];
+    assert!(
+        !gust.is_null(),
+        "the recording no longer names a wind gust at all, so this test proves nothing"
+    );
+    assert!(
+        gust["value"].is_null(),
+        "the recording's wind gust now carries a value, so a skipped reading is no longer what \
+         this test is about: {gust}"
+    );
+
+    let metrics: std::collections::BTreeSet<String> = envelopes
+        .iter()
+        .filter_map(|envelope| match envelope.record() {
+            SensedRecord::AlternativeData(point) => Some(point.metric.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        metrics.contains("air_temperature"),
+        "the reported readings were dropped along with the unreported ones: {metrics:?}"
+    );
+    assert!(
+        !metrics.contains("wind_gust"),
+        "a reading the station never reported was published anyway: {metrics:?}"
+    );
+    assert!(
+        !metrics.contains("precipitation_3h"),
+        "a reading the station never reported was published anyway: {metrics:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_reading_the_publisher_never_quality_controlled_cannot_drive_a_decision() -> Result<()> {
+    // The reason the grade is carried at all. `DataQuality::default` asserts
+    // a perfect measurement and clears the decision floor, so a connector
+    // that dropped the publisher's letter would hand a value the NWS says it
+    // never checked to the loop as decision grade.
+    let (mut connector, mut emulator) = nws()?;
+    let mut runtime = runtime_for(&connector)?;
+    let envelopes = runtime
+        .poll(&mut connector, &mut emulator, nws_horizon())?
+        .admitted;
+    assert!(
+        !envelopes.is_empty(),
+        "premise: the poll must produce records for the grades below to mean anything"
+    );
+
+    // Every record this recording produces is graded `V` or `C`, and both are
+    // decision grade. Asserted so the negative case below is a statement
+    // about the grade rather than about this connector refusing everything.
+    assert!(
+        envelopes
+            .iter()
+            .all(|envelope| envelope.is_decision_grade()),
+        "a validated or coarse-pass reading was withheld from decisions"
+    );
+
+    // The grade the recording carries no value for, driven directly: `Z`
+    // means the publisher applied no quality control at all.
+    let preliminary = nws_station_observations::ObservationGrade::Preliminary.quality();
+    assert!(
+        !preliminary.meets(qip_financial::quality::DECISION_QUALITY_FLOOR),
+        "an unchecked reading cleared the decision floor at {}",
+        preliminary.score()
     );
     Ok(())
 }
@@ -631,11 +754,12 @@ fn every_known_source_opens_by_name_through_the_bridge_over_its_own_fixture() ->
     // fails at start-up with a message about a missing arm. Each is opened
     // over its recorded (or placeholder) fixture through the same
     // `over_transport` path `open` takes after it builds the transport.
-    assert_eq!(KNOWN_SOURCES.len(), 6, "{KNOWN_SOURCES:?}");
+    assert_eq!(KNOWN_SOURCES.len(), 7, "{KNOWN_SOURCES:?}");
     let (kalshi, kalshi_emulator) = kalshi()?;
     let (alpaca, alpaca_emulator) = alpaca()?;
     let (ecb, ecb_emulator) = ecb_key_rates()?;
     let (effr, effr_emulator) = nyfed_effr()?;
+    let (nws_connector, nws_emulator) = nws()?;
     let cases: Vec<(
         Box<dyn SourceConnector + Send>,
         SourceEmulator,
@@ -651,6 +775,12 @@ fn every_known_source_opens_by_name_through_the_bridge_over_its_own_fixture() ->
         // cleared its dissemination delay at this horizon, and a case
         // expecting ten would be a case that had turned the gate off.
         (Box::new(effr), effr_emulator, nyfed_effr_horizon(), 9),
+        // Seventy-eight readings from eleven of the recording's twelve
+        // observations: the 05:00 one has not cleared its one-hour
+        // dissemination delay at this horizon. Seven short of the
+        // eighty-five the page decodes, and a case expecting eighty-five
+        // would be a case that had turned the knowability gate off.
+        (Box::new(nws_connector), nws_emulator, nws_horizon(), 78),
     ];
     for (connector, emulator, horizon, expected) in cases {
         let manifest = connector.manifest().clone();
