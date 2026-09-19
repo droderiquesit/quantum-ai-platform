@@ -45,6 +45,8 @@ pub mod journal;
 pub mod mesh;
 pub mod mirror;
 pub mod policy;
+/// §29.2 priority allocation: which quote update gets the message.
+pub mod priority;
 pub mod quoting;
 /// Which other regions have gone dark, and what a cell does about it (§36.3).
 pub mod region;
@@ -77,6 +79,7 @@ pub use mesh::{
 };
 pub use mirror::{MirrorArrangement, MirroredInstrument};
 pub use policy::{VerifiedHalt, VerifiedPolicy};
+pub use priority::{Candidate, allocate, worth};
 pub use quoting::{
     Admission, Depletion, MessageKind, QuoteBudget, REQUOTE_MESSAGES, RateLimits, VenueBudgetState,
 };

@@ -69,6 +69,7 @@ use qip_core::ids::{ObjectId, OrderId};
 use qip_core::time::Timestamp;
 use qip_edge::cell::{Cell, ExecutionReport, OpenOrder, Placer};
 use qip_edge::dropcopy::DropCopyFill;
+use qip_edge::priority::{Candidate, allocate, worth};
 use qip_edge::telemetry::CellMetrics;
 use qip_edge::{Admission, Depletion};
 use qip_routing::children::{ChildOrder, ParentOrder};
@@ -389,6 +390,60 @@ impl Requoter {
         })
     }
 
+    /// §29.2's priority allocation: the cell's resting orders in the order
+    /// the messages that are left should be offered to them.
+    ///
+    /// Richest update first, where worth is `qip_edge::priority::worth` — the
+    /// quantity still working times how far behind the touch the order rests.
+    /// A book that prices nothing gives the order no worth rather than
+    /// removing it: the ranking never refuses, it only decides who is asked
+    /// first, and the loop below still takes every order through every gate.
+    /// That is what makes it safe to rank on this cheaper arithmetic than
+    /// `Repricer::drift_of`, which needs a modelled child — an order that
+    /// cannot be modelled must still get a place in the queue, and it is the
+    /// loop that reports it as `Unmodelled`.
+    ///
+    /// The one thing duplicated from the repricer is the sign convention: a
+    /// buy consumes the ask and therefore *rests* on the bid, so it falls
+    /// behind when the bid rises above it. `Touch::resting` is the repricer's
+    /// own, called here rather than re-derived, and only the subtraction's
+    /// direction is written twice.
+    fn allocate(cell: &Cell, open: &[OpenOrder]) -> Vec<OpenOrder> {
+        let mut by_id: BTreeMap<String, OpenOrder> = BTreeMap::new();
+        let mut candidates = Vec::new();
+        for order in open
+            .iter()
+            .filter(|order| order.closed.is_none() && order.expires_at.is_some())
+        {
+            let behind_by = cell
+                .liquidity()
+                .get(&order.venue, &order.object_id)
+                .and_then(|state| {
+                    Some(Touch {
+                        bid: state.best_bid()?.price,
+                        ask: state.best_ask()?.price,
+                    })
+                })
+                .map(|touch| {
+                    let reference = touch.resting(order.side);
+                    match order.side {
+                        BookSide::Ask => reference - order.price,
+                        BookSide::Bid => order.price - reference,
+                    }
+                })
+                .unwrap_or(Decimal::ZERO);
+            candidates.push(Candidate::new(
+                order.order_id.clone(),
+                worth(order.remaining(), behind_by),
+            ));
+            by_id.insert(order.order_id.clone(), order.clone());
+        }
+        allocate(candidates)
+            .into_iter()
+            .filter_map(|candidate| by_id.remove(candidate.order_id()))
+            .collect()
+    }
+
     /// Consider every resting order the cell holds against the book it
     /// holds, once. Call after the gateway's events have been drained into
     /// the cell and never on a halted cell — see the module documentation.
@@ -407,10 +462,14 @@ impl Requoter {
             .retain(|_, order_id| self.tracked.contains_key(order_id));
 
         let mut requotes = Vec::new();
-        for order in open
-            .iter()
-            .filter(|order| order.closed.is_none() && order.expires_at.is_some())
-        {
+        // §29.2's priority allocation, before the first order is considered.
+        // The budget decides how many messages there are; this decides which
+        // orders get asked for them. Without it the answer was the order the
+        // cell holds its open orders in, which is the order their ids sort
+        // in, so a session with budget for one requote spent it on whichever
+        // instrument was alphabetically first.
+        for order in Self::allocate(cell, &open) {
+            let order = &order;
             if !self.tracked.contains_key(&order.order_id) {
                 match Self::model(order) {
                     Ok(tracked) => {
