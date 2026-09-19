@@ -1599,4 +1599,126 @@ mod tests {
         );
         Ok(())
     }
+
+    /// ADR 0050's evaluation, done: the option-quote sources whose terms
+    /// were read are refused **by the clause**, not as unevaluated.
+    ///
+    /// Before the refusal register a refused source had no entry, and
+    /// `admit` said its terms had not been read — a false statement about
+    /// work that was done, and the exact sentence that would send the next
+    /// lane off to read them again. This asserts the refusal names the
+    /// vendor, the document and the clause, and does *not* claim the terms
+    /// are unread.
+    #[test]
+    fn an_option_quote_source_refused_on_its_read_terms_is_refused_by_the_clause_and_not_as_unread()
+    {
+        // Premise: the source is on the register and nowhere else, so the
+        // refusal below can only come from the register.
+        let refused = refusals()
+            .into_iter()
+            .find(|refused| refused.source_id == "deribit-options")
+            .expect("the Deribit evaluation is on the refusal register");
+        assert!(
+            !qip_market_ingestion::connector_feed::KNOWN_SOURCES.contains(&"deribit-options")
+        );
+        let message = admit("deribit-options", LicensingClass::Restricted, now())
+            .expect_err("a source whose terms refuse it was admitted")
+            .message()
+            .to_string();
+        // The delimited clause, the vendor and the document — each one
+        // something a reader can check against the publisher rather than
+        // against this file.
+        assert!(
+            message.contains("for personal use only"),
+            "the refusal does not quote the clause: {message}"
+        );
+        assert!(
+            message.contains(refused.vendor) && message.contains(refused.terms_url),
+            "the refusal does not name the vendor and the document: {message}"
+        );
+        assert!(
+            message.contains("refuses derive and trade"),
+            "the refusal does not say which of the gate's questions the clause answers: {message}"
+        );
+        assert!(
+            !message.contains("have not been read"),
+            "the refusal claims terms that were read are unread: {message}"
+        );
+    }
+
+    /// The register is consulted before the catalogue, so a refused source
+    /// cannot be admitted by writing an entry for it.
+    ///
+    /// The failure this prevents is the quiet one: a lane that finds no
+    /// catalogue entry for Deribit, writes one under a licence identifier of
+    /// its own choosing, and is admitted by a gate that only ever looked at
+    /// the catalogue. Here the entry grants everything and the gate still
+    /// refuses on the clause.
+    #[test]
+    fn a_refused_source_cannot_be_admitted_by_writing_a_catalogue_entry_for_it() -> Result<()> {
+        let entries = vec![CatalogueEntry {
+            source_id: "deribit-options",
+            expected_class: LicensingClass::Restricted,
+            posture: LicensingPosture::declared(SourceLicense::new(
+                "an-identifier-nobody-reviewed",
+                [Usage::Research, Usage::Derive, Usage::Trade, Usage::Redistribute],
+            )?),
+        }];
+        // Premise: the entry on its own would pass every usage question.
+        for usage in REQUIRED_USAGES {
+            assert!(entries[0].posture.legality_for(usage, now()).is_permitted());
+        }
+        let message = admit_from(&entries, "deribit-options", LicensingClass::Restricted, now())
+            .expect_err("a catalogue entry admitted a source the register refuses")
+            .message()
+            .to_string();
+        assert!(
+            message.contains("for personal use only"),
+            "the refusal is not the register's clause: {message}"
+        );
+        Ok(())
+    }
+
+    /// A refused source has neither a connector nor a catalogue entry, and
+    /// every refusal carries evidence a reader can check.
+    ///
+    /// A connector for a refused source is ADR 0050's alternative (f) — code
+    /// the gate can never open — and a catalogue entry for one is a second
+    /// claim about a licence the register already answered. Both are held
+    /// here so that adding either fails a test naming the register.
+    #[test]
+    fn no_refused_source_has_a_connector_or_a_catalogue_entry() -> Result<()> {
+        let refused = refusals();
+        assert!(!refused.is_empty(), "the register is empty, so this guards nothing");
+        let catalogued = catalogue()?;
+        for entry in &refused {
+            assert!(
+                !qip_market_ingestion::connector_feed::KNOWN_SOURCES.contains(&entry.source_id),
+                "{} has a connector in this build; its terms refuse it, so the connector is \
+                 code the gate can never open",
+                entry.source_id
+            );
+            assert!(
+                catalogued
+                    .iter()
+                    .all(|catalogued| catalogued.source_id != entry.source_id),
+                "{} is both refused and catalogued, which is two claims about one licence",
+                entry.source_id
+            );
+            assert!(
+                entry.terms_url.starts_with("https://") && !entry.clause.trim().is_empty(),
+                "{} carries no checkable evidence",
+                entry.source_id
+            );
+            for usage in REQUIRED_USAGES {
+                assert!(
+                    entry.refuses.contains(&usage),
+                    "{} is on the register without refusing {}, so it is not a refusal",
+                    entry.source_id,
+                    usage.as_str()
+                );
+            }
+        }
+        Ok(())
+    }
 }
