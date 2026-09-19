@@ -76,6 +76,7 @@ pub mod coverage;
 pub mod decision;
 pub mod endpoint;
 pub mod finder;
+pub mod freshness;
 pub mod health;
 pub mod ingestion;
 pub mod ledger;
