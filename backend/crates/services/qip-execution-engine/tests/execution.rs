@@ -1670,11 +1670,8 @@ fn a_fill_on_an_order_that_was_never_sent_is_refused_before_anything_is_booked()
         let error = order
             .apply_fill(fill)
             .expect_err("a fill on an order no venue was given must be refused");
-        assert!(
-            error.message().contains("never sent to a venue"),
-            "the refusal must say why a {label} order cannot fill: {}",
-            error.message()
-        );
+        // The property first, the wording second: the old code also returned
+        // an error here, and what it got wrong was what it had done first.
         assert!(
             order.fills.is_empty(),
             "the refused fill was booked on the {label} order anyway"
@@ -1684,6 +1681,11 @@ fn a_fill_on_an_order_that_was_never_sent_is_refused_before_anything_is_booked()
             order.state.as_str(),
             label,
             "a refused fill must leave the state where it found it"
+        );
+        assert!(
+            error.message().contains("never sent to a venue"),
+            "the refusal must say why a {label} order cannot fill: {}",
+            error.message()
         );
     }
     Ok(())
