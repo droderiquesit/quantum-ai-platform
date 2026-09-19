@@ -78,6 +78,12 @@ const VENUE: &str = "CX";
 /// **another region**, which is the whole subject of this file.
 const VENUE_TWO: &str = "DX";
 const REGION_TWO: &str = "us-east1";
+/// A third venue, in the cell's **own** region, that no edge of the cycle
+/// touches. §30.2's row 4 is "one side lacks inventory, hedge available
+/// locally", and a hedge in the book the cycle is already trading is the
+/// local leg not being done rather than cover for it — so the row needs a
+/// venue at home that the cycle does not use, and this is it.
+const VENUE_HEDGE: &str = "EX";
 const DESK: &str = "arb-desk";
 const ENVELOPE_KEY: &[u8] = b"a-cell-envelope-key-for-tests";
 const POLICY_KEY: &[u8] = b"a-cell-policy-key-for-tests";
@@ -101,6 +107,10 @@ fn venue() -> VenueId {
 
 fn venue_two() -> VenueId {
     VenueId::new(VENUE_TWO)
+}
+
+fn venue_hedge() -> VenueId {
+    VenueId::new(VENUE_HEDGE)
 }
 
 fn d(literal: &str) -> Decimal {
