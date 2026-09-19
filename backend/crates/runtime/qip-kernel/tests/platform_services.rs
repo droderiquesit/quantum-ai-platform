@@ -32,6 +32,7 @@ use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
+use qip_kernel::feature_statistics::{FEATURE_STATISTICS_MIN_RETURNS, FeatureStatisticsReview};
 use qip_kernel::platform::{CycleJournalEntry, Platform, RecordedPrediction};
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
@@ -713,5 +714,120 @@ fn the_same_seed_and_the_same_inputs_produce_the_same_journal() -> Result<()> {
             .collect())
     };
     assert_eq!(run()?, run()?);
+    Ok(())
+}
+
+// --- the streaming estimators ----------------------------------------------
+
+/// The four streaming estimators §21.1 and §22.2 name actually summarise a
+/// production series, rather than only being reached with nothing to measure.
+///
+/// This is the seam test the wiring was missing, and the gap it closes is
+/// specific. `every_cycle_reaches_the_durable_log_and_comes_back_unchanged`
+/// already asserts one `FeatureComputed` record per cycle — but it feeds
+/// ninety bars, which is below `FEATURE_STATISTICS_MIN_RETURNS`, so every
+/// record it counts is an *empty* review. A record written every cycle and
+/// never once carrying a measurement is the `MaxExpectedShortfall` shape in a
+/// new place: a summary that reads as surveillance and has never summarised
+/// anything. So the premise here is asserted before the property — the series
+/// really is above the bar and nothing was skipped — and then each of the four
+/// estimators is required to have contributed a figure that could only come
+/// from having observed the series:
+///
+/// * the t-digest, because the 5th, 50th and 95th percentiles are strictly
+///   ordered — a digest that observed nothing returns them equal;
+/// * the HyperLogLog, because more than one distinct return was counted;
+/// * Welford's accumulator, because the standard deviation is positive;
+/// * the weighted reservoir, because it holds rows.
+///
+/// Mutated by passing `&BTreeMap::new()` in place of `&self.price_history` at
+/// the `feature_statistics::measure` call in `Platform::stage_understand` —
+/// the precise severing of the production wiring this test exists to hold.
+#[test]
+fn a_cycle_over_a_long_enough_series_summarises_it_with_all_four_streaming_estimators() -> Result<()>
+{
+    let mut platform = platform(PlatformConfig::default())?;
+    // Comfortably above the two-hundred-return bar and inside the platform's
+    // own five-hundred-and-twelve-price window, so this is a series the
+    // deployed bound would actually retain.
+    platform.observe(bars("AAA", 260));
+    platform.run_cycle(start());
+
+    let records = platform.replay_journal(&EventFilter::new().topic(Topic::FeatureComputed))?;
+    // Premise: the measurement reached the log at all. Without this the
+    // assertions below would be vacuous over an empty vector.
+    assert_eq!(
+        records.len(),
+        1,
+        "one streaming-statistics record per cycle"
+    );
+    let review: FeatureStatisticsReview = serde_json::from_value(records[0].payload().clone())
+        .map_err(|error| {
+            qip_core::error::Error::invalid(format!("the journalled review did not parse: {error}"))
+        })?;
+
+    // Premise: nothing was skipped, so what follows is a statement about the
+    // estimators and not about which instruments got as far as them.
+    assert!(
+        review.unmeasured.is_empty(),
+        "an instrument was skipped rather than summarised: {:?}",
+        review.unmeasured
+    );
+    assert_eq!(
+        review.instruments.len(),
+        1,
+        "the one instrument the cycle was fed should have been summarised: {}",
+        review.describe()
+    );
+    let summary = &review.instruments[0];
+    assert_eq!(summary.object_id, object("AAA").as_str());
+    // Premise: the series really is above the bar. A summary of a shorter
+    // series would be the thing this test was written to prove cannot happen.
+    assert!(
+        summary.returns >= FEATURE_STATISTICS_MIN_RETURNS as u64,
+        "the series carried {} returns, below the {} the estimators need — this test would \
+         then be asserting nothing about a measurement",
+        summary.returns,
+        FEATURE_STATISTICS_MIN_RETURNS
+    );
+
+    // The t-digest: three quantiles read off one distribution, strictly
+    // ordered. Equality would mean a digest that was constructed and never
+    // fed, which is the failure this whole test is about.
+    assert!(
+        summary.lower_tail < summary.median && summary.median < summary.upper_tail,
+        "the digest's percentiles are not strictly ordered — 5th {}, median {}, 95th {}",
+        summary.lower_tail,
+        summary.median,
+        summary.upper_tail
+    );
+    // The HyperLogLog: a real return series has many distinct values, and
+    // `has_moved` is the platform's own reading of that estimate.
+    assert!(
+        summary.distinct_values > 1.0,
+        "the cardinality estimator counted {} distinct returns",
+        summary.distinct_values
+    );
+    assert!(
+        summary.has_moved,
+        "a noisy series with a jump in it was reported as not varying at all"
+    );
+    // Welford's accumulator.
+    assert!(
+        summary.standard_deviation > 0.0,
+        "the moments accumulator reported a standard deviation of {}",
+        summary.standard_deviation
+    );
+    // The weighted reservoir.
+    assert!(
+        summary.sample_rows > 0,
+        "the reservoir retained no representative rows"
+    );
+    // And the whole summary stays inside §22.2's per-distribution budget.
+    assert!(
+        review.bytes > 0 && review.bytes <= 8_192,
+        "the summary cost {} bytes",
+        review.bytes
+    );
     Ok(())
 }
