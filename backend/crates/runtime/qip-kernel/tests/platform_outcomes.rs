@@ -467,6 +467,13 @@ fn the_desk_venue_settles_on_its_jurisdictions_calendar_and_an_undeclared_venue_
         &mut platform,
         start().saturating_add(Duration::from_days(1)),
     )?;
+    assert!(
+        platform
+            .demand_lanes()
+            .iter()
+            .any(|(location, _, _)| location.venue.as_str() == desk_venue),
+        "premise: the venue the book declares is the venue the desk's fills land at"
+    );
     let stranger = CapitalLocation::new(home.clone(), Currency::USD, VenueId::new("XTKS"));
     for day in 0..2 {
         platform.record_capital_demand(
