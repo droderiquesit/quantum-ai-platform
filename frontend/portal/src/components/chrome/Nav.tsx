@@ -4,8 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { AlgorikMark } from "@algorik/brand";
-import { NAV } from "@/lib/nav";
-import { Icon, ITEM_ICON } from "./icons";
+import { MOBILE_PRIMARY, NAV } from "@/lib/nav";
+import { Icon, ITEM_ICON, type IconName } from "./icons";
 
 /**
  * The sidebar, in the licensed template's structure (ADR 0015).
@@ -167,16 +167,26 @@ export function Sidebar({
  * portal's own design language — same tokens, same icons, same emerald
  * active state — so the "mobile app" is visibly the same product.
  *
- * Four primary surfaces plus Menu, which opens the full off-canvas sidebar:
- * a strip that tried to carry all forty-one destinations would carry none
- * of them reachably. Phones only; tablets and desktops keep the sidebar.
+ * The five primary areas are the blueprint's (§40.8: Home, Invest,
+ * Portfolio, Wallet, Activity), each resolved to the page this console
+ * already serves for it rather than to a page written to fill the slot:
+ * Invest is the strategy library, because the investable primitive is the
+ * family that cleared the gate (§40.11); Wallet is the reconciled holdings
+ * `GET /wallet` answers; Activity is the order blotter, which reads the
+ * execution record and its refusals. Until 2026-09-19 the strip carried
+ * Dashboard, Opportunities, Portfolio and Risk — four chosen by nobody in
+ * particular — and the register scored the mobile row short of the
+ * blueprint's five for exactly that reason. Risk is one tap further, under
+ * Menu; the halt control is in the header of every screen and is not a
+ * tab. Plus Menu, which opens the full off-canvas sidebar: a strip that
+ * tried to carry every destination would carry none of them reachably.
+ * Phones only; tablets and desktops keep the sidebar.
+ *
+ * The table is `MOBILE_PRIMARY` in `@/lib/nav`, beside the sidebar's map,
+ * so the behavioural suite asserts the five from the same data the bar
+ * renders rather than from a list a person must remember to keep in step.
  */
-const TABS = [
-  { href: "/", label: "Dashboard", icon: "layout-dashboard" },
-  { href: "/signals", label: "Opportunities", icon: "radio" },
-  { href: "/portfolio", label: "Portfolio", icon: "wallet" },
-  { href: "/risk", label: "Risk", icon: "shield-check" },
-] as const;
+const TABS = MOBILE_PRIMARY;
 
 export function MobileTabBar({ onMenu }: { onMenu: () => void }) {
   const pathname = usePathname();
@@ -201,7 +211,7 @@ export function MobileTabBar({ onMenu }: { onMenu: () => void }) {
                 active ? "text-accent" : "text-muted hover:text-text"
               }`}
             >
-              <Icon name={tab.icon} className="w-5 h-5 shrink-0" />
+              <Icon name={tab.icon as IconName} className="w-5 h-5 shrink-0" />
               {tab.label}
             </Link>
           );

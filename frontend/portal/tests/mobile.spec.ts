@@ -7,6 +7,7 @@
  * written against these stubs would pass whatever the worker did.
  */
 import { devices, expect, test } from "@playwright/test";
+import { MOBILE_PRIMARY, NAV_ITEMS } from "../src/lib/nav";
 import { GATEWAY, healthy, servePlatform } from "./support/platform";
 
 const PHONE = devices["Pixel 7"].viewport;
@@ -48,6 +49,24 @@ test.describe("the phone layout", () => {
       (box?.x ?? 0) + (box?.width ?? 0),
       "the kill switch runs past the right edge of a phone screen",
     ).toBeLessThanOrEqual(PHONE?.width ?? 0);
+  });
+
+  test("the halt control is on every primary screen the tab bar reaches", async ({ page }) => {
+    // §40.8: "with the halt control on every screen". The test above proves
+    // it on the dashboard; this one walks the five primary areas, because a
+    // control that is on the home screen and off the wallet is on some
+    // screens, and the sentence says every.
+    await servePlatform(page, healthy());
+    for (const tab of MOBILE_PRIMARY) {
+      await page.goto(tab.href);
+      const control = page.getByTestId("kill-switch-open");
+      await expect(control, `no halt control on ${tab.area} (${tab.href})`).toBeVisible();
+      const box = await control.boundingBox();
+      expect(
+        (box?.x ?? 0) + (box?.width ?? 0),
+        `the halt control runs past the right edge on ${tab.area}`,
+      ).toBeLessThanOrEqual(PHONE?.width ?? 0);
+    }
   });
 
   test("every section is reachable from the off-canvas sidebar", async ({ page }) => {
@@ -97,18 +116,41 @@ test.describe("the phone layout", () => {
     }
   });
 
-  test("the tab bar reaches the primary surfaces and its Menu opens the full navigation", async ({
+  test("the tab bar carries the blueprint's five primary areas and its Menu opens the full navigation", async ({
     page,
   }) => {
-    // The installed app's thumb navigation. Four primary destinations plus
-    // Menu — a strip carrying all forty-one would carry none reachably.
+    // The installed app's thumb navigation. §40.8 names five primary areas —
+    // Home, Invest, Portfolio, Wallet, Activity — plus Menu; a strip carrying
+    // every destination would carry none reachably. The five are asserted
+    // from the table the bar renders, and the table is asserted against the
+    // blueprint by name, so a tab renamed or dropped fails here in words.
+    expect(MOBILE_PRIMARY.map((tab) => tab.area)).toEqual([
+      "Home",
+      "Invest",
+      "Portfolio",
+      "Wallet",
+      "Activity",
+    ]);
+    // Each resolves to a page the console's own map declares — a tab to a
+    // page written only to fill a slot would be the manufactured surface
+    // this console refuses.
+    for (const tab of MOBILE_PRIMARY) {
+      expect(NAV_ITEMS.map((item) => item.href), `${tab.area} points outside the map`).toContain(
+        tab.href,
+      );
+    }
     await servePlatform(page, healthy());
     await page.goto("/");
     const bar = page.getByTestId("mobile-tab-bar");
     await expect(bar).toBeVisible();
-    for (const href of ["/", "/signals", "/portfolio", "/risk"]) {
-      await expect(bar.locator(`a[href="${href}"]`), `${href} missing from the tab bar`).toHaveCount(1);
+    for (const tab of MOBILE_PRIMARY) {
+      const link = bar.locator(`a[href="${tab.href}"]`);
+      await expect(link, `${tab.area} (${tab.href}) missing from the tab bar`).toHaveCount(1);
+      await expect(link, `${tab.href} is not labelled ${tab.label}`).toHaveText(tab.label);
     }
+    // Five tabs and one Menu, and nothing else: a sixth tab is the first step
+    // back to a strip that carries everything.
+    await expect(bar.locator("a")).toHaveCount(MOBILE_PRIMARY.length);
     await page.getByTestId("tab-bar-menu").click();
     // The overlay is rendered only while the panel is open, so its presence
     // is the fact of openness. A link inside the off-canvas panel still

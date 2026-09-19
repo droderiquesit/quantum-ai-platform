@@ -512,6 +512,29 @@ export const NAV: readonly NavGroup[] = [
 
 export const NAV_ITEMS: readonly NavItem[] = NAV.flatMap((group) => group.items);
 
+/**
+ * The phone tab bar's five primary areas — blueprint §40.8's Home, Invest,
+ * Portfolio, Wallet, Activity — each resolved to a page this console already
+ * serves for it rather than to a page written to fill the slot. Invest is
+ * the strategy library, because the investable primitive is the family that
+ * cleared the gate (§40.11); Wallet is the reconciled holdings `GET /wallet`
+ * answers; Activity is the order blotter, which reads the execution record
+ * and its refusals. Risk is one tap further, under Menu; the halt control is
+ * in the header of every screen and is not a tab.
+ *
+ * `area` is the blueprint's word and `label` is what the tab says; they
+ * coincide today and are two fields so that a renamed tab still answers to
+ * the area the suite asserts. `icon` is a name in `ITEM_ICON`'s vocabulary.
+ * Every `href` must also be in `NAV`, and `tests/mobile.spec.ts` says so.
+ */
+export const MOBILE_PRIMARY = [
+  { href: "/", label: "Home", area: "Home", icon: "layout-dashboard" },
+  { href: "/strategies", label: "Invest", area: "Invest", icon: "line-chart" },
+  { href: "/portfolio", label: "Portfolio", area: "Portfolio", icon: "pie-chart" },
+  { href: "/treasury/wallet", label: "Wallet", area: "Wallet", icon: "wallet" },
+  { href: "/orders", label: "Activity", area: "Activity", icon: "activity" },
+] as const;
+
 export function navItemFor(pathname: string): NavItem | undefined {
   return NAV_ITEMS.find((item) => item.href === pathname);
 }
