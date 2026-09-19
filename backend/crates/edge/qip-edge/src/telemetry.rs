@@ -254,6 +254,16 @@ pub const EDGE_PASSIVE_CYCLES: &str = "qip_edge_passive_cycles_total";
 /// with.
 pub const EDGE_FILL_TIME_UNMEASURED: &str = "qip_edge_fill_time_unmeasured_venues";
 
+/// Configured venues the cell holds no settlement terms for (§56.2 rule 21).
+///
+/// The idle reading of the settlement gate, for the reason
+/// [`EDGE_FILL_TIME_UNMEASURED`] exists: a leg that spends proceeds at a
+/// venue with no terms is admitted unjudged, and every venue unstated is a
+/// gate that reads as passing on a chart of refusals. One number rather
+/// than per venue, because the question is whether the control has anything
+/// to project against. Written every pass, including a halted one.
+pub const EDGE_SETTLEMENT_UNPROJECTED: &str = "qip_edge_settlement_unprojected_venues";
+
 /// Buckets for the netting ratio.
 ///
 /// It is a ratio of gross intent to net order volume, so it starts at exactly
@@ -407,6 +417,11 @@ impl CellMetrics {
         m.describe(
             EDGE_FILL_TIME_UNMEASURED,
             "configured venues with too few fills for their fill time to be judged",
+        );
+        m.describe(
+            EDGE_SETTLEMENT_UNPROJECTED,
+            "configured venues with no settlement terms, whose dependent cycle legs are \
+             admitted without a settlement projection",
         );
         m.describe(
             EDGE_PASSIVE_CYCLES,
@@ -814,6 +829,21 @@ impl CellMetrics {
         let venues = venues as f64;
         self.metrics
             .gauge(EDGE_FILL_TIME_UNMEASURED, self.base.clone(), venues);
+    }
+
+    /// How many configured venues the settlement gate cannot project
+    /// against (§56.2 rule 21).
+    ///
+    /// Written every pass, including the idle ones, for the reason
+    /// [`Self::fill_time_unmeasured`] is: the number matters most in the
+    /// state where the gate admits everything.
+    pub fn settlement_unprojected(&self, venues: usize) {
+        // A count of the configured venue list, fixed at deployment and
+        // small; the cast cannot lose a venue anybody has.
+        #[allow(clippy::cast_precision_loss)]
+        let venues = venues as f64;
+        self.metrics
+            .gauge(EDGE_SETTLEMENT_UNPROJECTED, self.base.clone(), venues);
     }
 
     /// One leg of an arbitrage cycle, counted by what the leg before it

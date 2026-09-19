@@ -41,10 +41,11 @@
 //! gauge every pass so that the silence is a number on a chart rather than a
 //! gate that appears to be passing.
 
+use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The gate literal a cycle is refused under when a leg would be funded by
 /// proceeds that are still in settlement when it fires. A `pub const` so the
@@ -294,4 +295,299 @@ impl SettlementCycle {
 
 fn day_number(at: Timestamp) -> i64 {
     at.as_nanos().div_euclid(qip_core::time::NANOS_PER_DAY)
+}
+
+/// How one leg of a cycle is funded, projected before the cycle is held.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LegFunding {
+    /// Settled capital or prefunded inventory: the first leg, or a leg at a
+    /// different venue from the one before it. `qip-arbitrage`'s planner
+    /// never emits a transfer as a leg — it realises one as inventory at the
+    /// far venue — so a venue change between two legs is exactly the case
+    /// where the second spends something the cell already holds there.
+    Held,
+    /// What the previous leg delivers at this same venue, usable from
+    /// `usable_at` under the venue's terms.
+    Proceeds { of_leg: usize, usable_at: Timestamp },
+    /// What the previous leg delivers at a venue the cell holds no terms
+    /// for. Not judged, and counted rather than guessed at; see the module
+    /// doc.
+    Unprojected { of_leg: usize },
+}
+
+/// A cycle's legs against the settlement timeline, in firing order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Projection {
+    /// The instant every leg is taken to fire and every fill to be dated.
+    pub fires_at: Timestamp,
+    pub legs: Vec<LegFunding>,
+}
+
+/// One leg whose funding is not there when it fires.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unfunded {
+    /// Zero-based position of the leg that cannot be funded.
+    pub leg: usize,
+    /// The leg whose proceeds it would spend.
+    pub of_leg: usize,
+    /// When those proceeds become usable.
+    pub usable_at: Timestamp,
+}
+
+impl Projection {
+    /// The first leg, in firing order, that would spend proceeds still in
+    /// settlement at the instant it fires.
+    pub fn first_unfunded(&self) -> Option<Unfunded> {
+        self.legs
+            .iter()
+            .enumerate()
+            .find_map(|(leg, funding)| match funding {
+                LegFunding::Proceeds { of_leg, usable_at } if *usable_at > self.fires_at => {
+                    Some(Unfunded {
+                        leg,
+                        of_leg: *of_leg,
+                        usable_at: *usable_at,
+                    })
+                }
+                _ => None,
+            })
+    }
+
+    /// How many legs were funded by proceeds at a venue with no terms.
+    pub fn unprojected(&self) -> usize {
+        self.legs
+            .iter()
+            .filter(|funding| matches!(funding, LegFunding::Unprojected { .. }))
+            .count()
+    }
+}
+
+/// Project every leg of a cycle against its venues' terms.
+///
+/// `venues` is the legs' venues in firing order and `fires_at` the earliest
+/// instant any of them fires. One instant for every leg, deliberately: the
+/// cell has no execution shape in which a leg fires *later* than the leg it
+/// depends on by a settlement day — all-at-once sends every leg now, and
+/// §32.1's passive-first rests one and crosses the others at its fill, so
+/// the dependent legs and the fill they depend on move together. Since
+/// [`SettlementTerms::available_at`] is monotone, projecting from the
+/// earliest instant is the conservative reading and never admits a cycle a
+/// later fire would refuse.
+///
+/// `Err` is a calendar that could not be walked, which the caller refuses
+/// under the same gate: a projection the cell could not make is a figure it
+/// could not evaluate, and the edge's rule for those is to refuse rather
+/// than abstain.
+pub fn project(
+    venues: &[VenueId],
+    terms: &BTreeMap<String, SettlementTerms>,
+    fires_at: Timestamp,
+) -> Result<Projection> {
+    let mut legs = Vec::with_capacity(venues.len());
+    for (position, venue) in venues.iter().enumerate() {
+        let funding = match position.checked_sub(1) {
+            None => LegFunding::Held,
+            Some(previous) if venues[previous] != *venue => LegFunding::Held,
+            Some(previous) => match terms.get(venue.as_str()) {
+                None => LegFunding::Unprojected { of_leg: previous },
+                Some(terms) => LegFunding::Proceeds {
+                    of_leg: previous,
+                    usable_at: terms.available_at(fires_at)?,
+                },
+            },
+        };
+        legs.push(funding);
+    }
+    Ok(Projection { fires_at, legs })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 2025-10-09T08:53:20Z, a Thursday — the instant every edge fixture
+    /// counts from, so a date asserted here is a date the crate tests share.
+    fn thursday(secs: i64) -> Timestamp {
+        Timestamp::from_secs(1_760_000_000 + secs)
+    }
+
+    fn friday_1500() -> Timestamp {
+        Timestamp::from_secs(1_760_108_400)
+    }
+
+    fn friday_1630() -> Timestamp {
+        Timestamp::from_secs(1_760_113_800)
+    }
+
+    fn v(name: &str) -> VenueId {
+        VenueId::new(name)
+    }
+
+    #[test]
+    fn instant_terms_make_proceeds_usable_at_the_fill_itself() -> Result<()> {
+        let at = thursday(0);
+        assert_eq!(SettlementTerms::instant().available_at(at)?, at);
+        Ok(())
+    }
+
+    #[test]
+    fn a_friday_t_plus_one_lands_on_monday_not_saturday() -> Result<()> {
+        // The one fact this module exists for. A calendar-day count would
+        // say Saturday 09:00; settlement days say Monday.
+        let terms = SettlementTerms::weekday(SettlementConvention::T1)?;
+        let usable = terms.available_at(friday_1500())?;
+        assert_eq!(usable.to_rfc3339(), "2025-10-13T09:00:00.000Z");
+        assert_eq!(usable.weekday(), 0, "Monday is 0");
+        Ok(())
+    }
+
+    #[test]
+    fn a_fill_after_the_cutoff_is_dated_to_the_next_settlement_day() -> Result<()> {
+        // Friday 16:30 T+1: dated Monday, usable Tuesday. Friday 15:00 T+1
+        // was Monday, so the cut-off alone moves the answer by a day.
+        let terms = SettlementTerms::weekday(SettlementConvention::T1)?;
+        let usable = terms.available_at(friday_1630())?;
+        assert_eq!(usable.to_rfc3339(), "2025-10-14T09:00:00.000Z");
+        Ok(())
+    }
+
+    #[test]
+    fn a_holiday_is_skipped_not_counted() -> Result<()> {
+        // Thursday T+2 is Monday; with Monday a holiday it is Tuesday.
+        let monday = Timestamp::from_secs(1_760_313_600);
+        assert_eq!(monday.weekday(), 0, "the premise: this is a Monday");
+        let plain = SettlementTerms::weekday(SettlementConvention::T2)?;
+        assert_eq!(
+            plain.available_at(thursday(0))?.to_rfc3339(),
+            "2025-10-13T09:00:00.000Z"
+        );
+        let holiday = plain.with_holiday(monday);
+        assert_eq!(
+            holiday.available_at(thursday(0))?.to_rfc3339(),
+            "2025-10-14T09:00:00.000Z"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn t_plus_zero_proceeds_are_never_usable_at_the_fill() -> Result<()> {
+        // Same-day settlement is still not instant: the availability minute
+        // is after the cut-off by construction, so a fill inside the cut-off
+        // waits for it and a fill after the cut-off waits a day.
+        let terms = SettlementTerms::weekday(SettlementConvention::T0)?;
+        let inside = thursday(0);
+        assert!(terms.available_at(inside)? > inside);
+        assert_eq!(
+            terms.available_at(inside)?.to_rfc3339(),
+            "2025-10-09T17:00:00.000Z"
+        );
+        let after = friday_1630();
+        assert_eq!(
+            terms.available_at(after)?.to_rfc3339(),
+            "2025-10-13T17:00:00.000Z"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn availability_is_monotone_in_the_fill_instant() -> Result<()> {
+        // The property `project` leans on: a later fill never lands
+        // earlier, so projecting from the earliest instant a leg can fire
+        // is the conservative reading.
+        let terms = SettlementTerms::weekday(SettlementConvention::T2)?;
+        let mut last = terms.available_at(thursday(0))?;
+        for hour in 1..(24 * 14) {
+            let next = terms.available_at(thursday(i64::from(hour) * 3_600))?;
+            assert!(
+                next >= last,
+                "hour {hour} landed earlier than the hour before"
+            );
+            last = next;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn terms_that_could_never_settle_are_refused_at_construction() {
+        assert!(SettlementTerms::on_cycle(SettlementConvention::T1, 16 * 60, 9 * 60, []).is_err());
+        assert!(
+            SettlementTerms::on_cycle(SettlementConvention::T1, 1440, 9 * 60, [0]).is_err(),
+            "a cut-off past the end of the day names no instant"
+        );
+        assert!(
+            SettlementTerms::on_cycle(SettlementConvention::T0, 16 * 60, 9 * 60, [0]).is_err(),
+            "T+0 handing over before its own cut-off is settlement before the fill"
+        );
+        assert!(SettlementTerms::on_cycle(SettlementConvention::T1, 16 * 60, 9 * 60, [7]).is_err());
+        assert!(SettlementTerms::parse("T+3").is_err());
+        assert!(SettlementTerms::parse("").is_err());
+    }
+
+    #[test]
+    fn parse_reads_the_spellings_the_composition_root_writes() -> Result<()> {
+        assert!(SettlementTerms::parse("instant")?.is_instant());
+        assert_eq!(
+            SettlementTerms::parse("T+2")?.convention(),
+            Some(SettlementConvention::T2)
+        );
+        assert_eq!(
+            SettlementTerms::parse(" t1 ")?.convention(),
+            Some(SettlementConvention::T1)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_first_leg_and_a_leg_after_a_venue_change_are_funded_from_what_is_held() -> Result<()> {
+        let mut terms = BTreeMap::new();
+        terms.insert(
+            "A".to_string(),
+            SettlementTerms::weekday(SettlementConvention::T2)?,
+        );
+        terms.insert(
+            "B".to_string(),
+            SettlementTerms::weekday(SettlementConvention::T2)?,
+        );
+        // A → B → B: the second leg follows a transfer the planner realised
+        // as inventory at B, so only the third spends proceeds.
+        let projection = project(&[v("A"), v("B"), v("B")], &terms, thursday(0))?;
+        assert_eq!(projection.legs[0], LegFunding::Held);
+        assert_eq!(projection.legs[1], LegFunding::Held);
+        assert!(matches!(
+            projection.legs[2],
+            LegFunding::Proceeds { of_leg: 1, .. }
+        ));
+        let unfunded = projection
+            .first_unfunded()
+            .expect("the third leg spends T+2 proceeds the instant they are traded");
+        assert_eq!((unfunded.leg, unfunded.of_leg), (2, 1));
+        assert_eq!(unfunded.usable_at.to_rfc3339(), "2025-10-13T09:00:00.000Z");
+        Ok(())
+    }
+
+    #[test]
+    fn a_chain_at_an_instant_venue_is_funded_and_at_an_unknown_venue_is_counted() -> Result<()> {
+        let mut terms = BTreeMap::new();
+        terms.insert("A".to_string(), SettlementTerms::instant());
+        let funded = project(&[v("A"), v("A"), v("A")], &terms, thursday(0))?;
+        assert_eq!(funded.first_unfunded(), None);
+        assert_eq!(funded.unprojected(), 0);
+        assert!(matches!(
+            funded.legs[1],
+            LegFunding::Proceeds { of_leg: 0, usable_at } if usable_at == thursday(0)
+        ));
+
+        let unknown = project(&[v("Z"), v("Z"), v("Z")], &terms, thursday(0))?;
+        assert_eq!(
+            unknown.first_unfunded(),
+            None,
+            "an unknown venue is not judged"
+        );
+        assert_eq!(
+            unknown.unprojected(),
+            2,
+            "and both dependent legs are counted"
+        );
+        Ok(())
+    }
 }
