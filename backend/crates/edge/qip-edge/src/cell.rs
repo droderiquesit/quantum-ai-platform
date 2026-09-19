@@ -52,7 +52,7 @@ use qip_routing::path::{
 use qip_routing::pathcycle::{CycleRouter, RepresentationClasses, VenueRegions};
 use qip_sequencing::tracker::{ReorderPolicy, Sequencer};
 use qip_strategy::compile::CompiledStrategy;
-use qip_strategy::program::Program;
+use qip_strategy::program::{Node, Op, Program};
 use qip_strategy::runtime::StrategyRuntime;
 use std::collections::{BTreeMap, VecDeque};
 
@@ -2287,6 +2287,13 @@ impl Cell {
             }
         }
 
+        // ADR 0083's deploy stage. A learned function reaches this cell only
+        // inline, as `Op::Model`, and every one the plan carries must be a
+        // model the centre promoted — named, at its digest, in the manifest
+        // this cell holds. Checked after the membership loop above, so every
+        // node the walk visits is known to exist.
+        self.check_models_promoted(&strategy, &program)?;
+
         // `with_budget` refuses a program it could not evaluate in bounded
         // time. Doing it here means an over-budget strategy is refused by the
         // deployment that shipped it rather than silently, later, by a market
@@ -2324,6 +2331,68 @@ impl Cell {
         // manifest carries can be summed against it — see
         // `rederive_region_share`.
         self.rederive_region_share(verified_at);
+        Ok(())
+    }
+
+    /// Refuse a plan whose inline model the cell's manifest does not name.
+    ///
+    /// The manifest is the policy's `trained_models` slot, a map from model
+    /// name to [`DistilledModel::digest`] — the model's own content identity,
+    /// which the cell can compute from the inline value without reaching for
+    /// any library above it. A plan's model is admitted only when the
+    /// manifest names it under its own name at its own digest: a match on
+    /// the digest alone would let promoted weights ship under an unpromoted
+    /// name, and a match on the name alone is the whole failure this guards
+    /// against — a plan carrying a model nobody promoted, and the deploy
+    /// stage then a formality that reads as a control.
+    ///
+    /// **An absent manifest admits a plan with no inline model and refuses
+    /// one with any.** The slot is produced nowhere yet
+    /// (`grep -rn 'ModelManifest' backend/crates --include=*.rs | grep -v '/tests/' | grep -v qip-contracts`
+    /// returned nothing on 2026-09-19), so today every plan carrying a model
+    /// is refused and every plan without one is unaffected. That is the
+    /// fail-closed reading: a cell that holds no list of promoted models
+    /// has no grounds to say a model was promoted. Freshness is deliberately
+    /// not consulted — the slot's staleness narrows the cell's capability
+    /// table elsewhere, and a stale manifest is still the last set the
+    /// centre signed, so refusing anything outside it is the safe direction.
+    ///
+    /// [`DistilledModel::digest`]: qip_strategy::model::DistilledModel::digest
+    fn check_models_promoted(&self, strategy: &CompiledStrategy, program: &Program) -> Result<()> {
+        let manifest = self
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.payload().trained_models.value());
+        for node in program.reachable_from(strategy.plan()) {
+            let Some(Node {
+                op: Op::Model { model, .. },
+                ..
+            }) = program.node(node)
+            else {
+                continue;
+            };
+            let digest = model.digest();
+            let Some(manifest) = manifest else {
+                return Err(Error::denied(format!(
+                    "strategy {} carries model `{}` inline and this cell holds no model \
+                     manifest; ship the manifest in the policy's `trained_models` slot before \
+                     deploying a plan that carries a model — a model nobody promoted is not one \
+                     this cell may evaluate",
+                    strategy.id().as_str(),
+                    model.name()
+                )));
+            };
+            if manifest.models.get(model.name()) != Some(&digest) {
+                return Err(Error::denied(format!(
+                    "strategy {} carries model `{}` at digest {digest} inline and the manifest \
+                     this cell holds does not name it; promote the model and ship the manifest \
+                     naming it before deploying the plan — a model nobody promoted is not one \
+                     this cell may evaluate",
+                    strategy.id().as_str(),
+                    model.name()
+                )));
+            }
+        }
         Ok(())
     }
 
