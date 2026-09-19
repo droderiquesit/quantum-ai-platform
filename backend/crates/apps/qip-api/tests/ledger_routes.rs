@@ -22,7 +22,8 @@
 use qip_api::auth::{Authenticator, Credential, RateLimiter, Role};
 use qip_api::http::{Handler, Method, Request, Response};
 use qip_api::ledger_views::{
-    EVALUATED_AS_ROLE, GATE_NOTE, INFLOW_POSTING, NO_ARRIVAL_FIELD, NO_PRODUCTS, NO_WALLET, POSTURE,
+    CALL_SETTLEMENT, EVALUATED_AS_ROLE, GATE_NOTE, INFLOW_POSTING, NO_ARRIVAL_FIELD,
+    NO_PAYMENT_FIELD, NO_PRODUCTS, NO_WALLET, POSTURE,
 };
 use qip_api::routes::{Api, ROUTES};
 use qip_capital::ledger::{
@@ -38,12 +39,14 @@ use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ManualClock, ObjectId, dec};
 use qip_financial::asset_class::{InstrumentType, Sector};
+use qip_financial::cashflow::CallConsequence;
+use qip_financial::extensions::{Extension, PrivateAssetDetails};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
 use qip_kernel::central::{CellReport, StrategyCandidate};
 use qip_kernel::config::{PlatformConfig, UserMandate};
-use qip_kernel::platform::{InflowDeclaration, Platform};
+use qip_kernel::platform::{CapitalCallNotice, InflowDeclaration, Platform};
 use qip_lifecycle::trials::StrategyFamily;
 use qip_mesh::delta::DeltaOrder;
 use qip_observability::Telemetry;
@@ -86,19 +89,26 @@ const STALE_OPERATOR_TOKEN: &str = "stale-operator-token";
 const CELL: &str = "cell-lon-1";
 const INSTRUMENT: &str = "obj-AAA";
 
-/// The four paths under test, as the route table spells them.
-const TREASURY_PATHS: [&str; 4] = ["/ledger/users", "/wallet", "/corridors", "/transfer-gate"];
+/// The five paths under test, as the route table spells them.
+const TREASURY_PATHS: [&str; 5] = [
+    "/ledger/users",
+    "/ledger/commitments",
+    "/wallet",
+    "/corridors",
+    "/transfer-gate",
+];
 
 /// The role each path requires, as `ROUTES-LEDGER.md` states it.
 ///
 /// `/ledger/users` is the one that carries a per-user datum — every user's
 /// mandate, balances and inflow references — and the portal hands the
 /// viewer role to anyone who completes self-registration, so it is the one
-/// held above viewer. The other three describe the process, not a user.
+/// held above viewer. The other four describe the process, not a user: the
+/// commitments are the desk's obligations to funds, not any user's.
 fn required_role_of(path: &str) -> Role {
     match path {
         "/ledger/users" => Role::Analyst,
-        "/wallet" | "/corridors" | "/transfer-gate" => Role::Viewer,
+        "/ledger/commitments" | "/wallet" | "/corridors" | "/transfer-gate" => Role::Viewer,
         other => panic!("{other} is not a treasury path"),
     }
 }
@@ -135,6 +145,10 @@ fn limits() -> LimitSet {
 struct Rig {
     api: Api,
     platform: Arc<Mutex<Platform>>,
+    /// The clock the API serves at, so a test can move the instant a body
+    /// is reasoned about — a notice that is overdue on one day and not the
+    /// day before.
+    clock: Arc<ManualClock>,
 }
 
 fn rig() -> Result<Rig> {
@@ -160,9 +174,16 @@ fn enrolment(user: &str, capital: Decimal) -> Result<UserMandate> {
 }
 
 fn rig_with(config: PlatformConfig) -> Result<Rig> {
+    rig_over(config, universe()?)
+}
+
+/// The rig over a stated universe — the one the capital-call routes need,
+/// because a notice can only be filed against a commitment the universe's
+/// private-asset records derive.
+fn rig_over(config: PlatformConfig, universe: Universe) -> Result<Rig> {
     let clock = Arc::new(ManualClock::new(start()));
     let context = Context::new(clock.clone(), config.seed);
-    let platform = Platform::new(config, context, Telemetry::silent(), universe()?, limits())?;
+    let platform = Platform::new(config, context, Telemetry::silent(), universe, limits())?;
     let platform = Arc::new(Mutex::new(platform));
     let authenticator = Arc::new(Authenticator::new(vec![
         Credential::from_token(
@@ -203,8 +224,9 @@ fn rig_with(config: PlatformConfig) -> Result<Rig> {
     ]));
     let rate_limiter = Arc::new(RateLimiter::new(Duration::from_secs(60), 1000));
     Ok(Rig {
-        api: Api::new(platform.clone(), authenticator, rate_limiter, clock),
+        api: Api::new(platform.clone(), authenticator, rate_limiter, clock.clone()),
         platform,
+        clock,
     })
 }
 
@@ -385,6 +407,14 @@ fn documented_keys(path: &str) -> &'static [&'static str] {
             "fills_journalled",
             "inflow_posting",
             "users",
+        ],
+        "/ledger/commitments" => &[
+            "posture",
+            "served_at",
+            "call_settlement",
+            "obligation_total",
+            "accrued_default_penalty",
+            "commitments",
         ],
         "/wallet" => &[
             "posture",
@@ -2166,5 +2196,392 @@ fn the_ledger_body_renders_a_declaration_beside_the_bucket_and_says_it_is_never_
     assert_eq!(balance["expected_inflows"], serde_json::json!([]));
     assert_eq!(balance["expected_inflows_total"], serde_json::json!("0"));
     assert_eq!(rig.ledger_records()?, 2);
+    Ok(())
+}
+// --- the capital-call routes (ADR 0085 §5) ------------------------------------
+
+/// The private fund every capital-call test files against, as the universe
+/// names it: 400,000 promised against 150,000 drawn, so 250,000 the fund may
+/// call.
+const FUND: &str = "obj-FUND";
+
+fn private_fund() -> Result<FinancialObject> {
+    FinancialObject::builder(
+        ObjectId::from_string(FUND),
+        "FUND",
+        InstrumentType::PrivateEquityFund,
+        qip_financial::costs::LiquidityProfile::illiquid(90.0, 250.0),
+    )
+    .venue("OTC")
+    .geography("US")
+    .price(dec!("100"))
+    .extension(Extension::PrivateAsset(PrivateAssetDetails {
+        vintage_year: 2024,
+        committed_capital: dec!("400000"),
+        called_capital: dec!("150000"),
+        distributed_capital: Decimal::ZERO,
+        residual_value: dec!("160000"),
+        stage: "buyout".to_string(),
+        lockup_years: 7.0,
+        capital_call_notice_days: 10,
+    }))
+    .provenance(Provenance::synthetic("administrator", start()))
+    .build(start())
+}
+
+/// The listed fixture and the private fund.
+fn encumbered_universe() -> Result<Universe> {
+    let mut universe = universe()?;
+    universe.insert(private_fund()?)?;
+    Ok(universe)
+}
+
+fn ten_days_on() -> Timestamp {
+    start().saturating_add(Duration::from_days(10))
+}
+
+impl Rig {
+    /// `POST /ledger/commitments/{commitment}/capital-calls` with `body`, as
+    /// `token`.
+    fn file_call(&self, commitment: &str, token: &str, body: &str) -> Response {
+        let mut headers = BTreeMap::new();
+        headers.insert("authorization".to_string(), format!("Bearer {token}"));
+        self.api.handle(&Request {
+            method: Method::Post,
+            path: format!("/api/v1/ledger/commitments/{commitment}/capital-calls"),
+            query: BTreeMap::new(),
+            headers,
+            body: body.as_bytes().to_vec(),
+            peer: "127.0.0.1:1".to_string(),
+        })
+    }
+
+    /// `DELETE /ledger/commitments/{commitment}/capital-calls/{reference}`,
+    /// as `token`.
+    fn withdraw_call(&self, commitment: &str, reference: &str, token: &str) -> Response {
+        self.call(
+            Method::Delete,
+            &format!("/ledger/commitments/{commitment}/capital-calls/{reference}"),
+            token,
+        )
+    }
+
+    /// Every record the event log holds under the capital-call producer.
+    /// Read from the log rather than the book, because a route that
+    /// journalled and then failed to apply would leave the book clean and
+    /// the log not.
+    fn call_records(&self) -> Result<usize> {
+        self.with_platform(|platform| {
+            platform
+                .event_log()
+                .records()
+                .iter()
+                .filter(|record| record.event.lineage.producer == "kernel/capital-call")
+                .count()
+        })
+    }
+
+    /// File a notice against the fund by calling the kernel directly, for
+    /// the reason `decide_in_kernel` gives: the route refuses every standing
+    /// credential, and the assertions whose subject is the *book's* rendering
+    /// once a notice stands still need one to stand.
+    fn file_in_kernel(&self, reference: &str, amount: Decimal) -> Result<()> {
+        self.with_platform(|platform| -> Result<()> {
+            platform.record_capital_call(
+                FUND,
+                CapitalCallNotice {
+                    reference: reference.to_string(),
+                    amount,
+                    due: ten_days_on(),
+                    consequence: CallConsequence::Interest {
+                        annual_rate_bps: 3_650,
+                    },
+                },
+                &OperatorIdentity::verified("ops-carol", "oidc", start()),
+                start(),
+            )
+        })?
+    }
+
+    /// The fund's row out of `GET /ledger/commitments`, read as a viewer.
+    fn fund_row(&self) -> serde_json::Value {
+        let (text, body) = body_of(self.call(Method::Get, "/ledger/commitments", VIEWER_TOKEN));
+        body["commitments"]
+            .as_array()
+            .unwrap_or_else(|| panic!("commitments is not a list: {text}"))
+            .iter()
+            .find(|row| row["subject"] == serde_json::json!(FUND))
+            .unwrap_or_else(|| panic!("no row for {FUND}: {text}"))
+            .clone()
+    }
+}
+
+fn call_body() -> String {
+    serde_json::json!({
+        "reference": "call-1",
+        "amount": "100000.00",
+        "due": ten_days_on().to_rfc3339(),
+        "consequence": { "kind": "interest", "annual_rate_bps": 3650 },
+    })
+    .to_string()
+}
+
+#[test]
+fn the_capital_call_routes_refuse_every_role_below_operator_by_name_and_the_operator_for_want_of_presence()
+-> Result<()> {
+    // A viewer who could file a notice could raise the reserve the desk
+    // sizes against — shrink what the platform deploys — from the public
+    // front door; a viewer who could withdraw one could stop a penalty the
+    // desk owes from being charged. And the operator is refused too, for
+    // want of an attested person — authorised in shape and refused in fact
+    // (ADR 0075) — asserted on the gate's own sentence so that a route
+    // refusing for some other reason does not pass for one refusing on
+    // presence.
+    let rig = rig_over(PlatformConfig::default(), encumbered_universe()?)?;
+
+    // Premise, three ways: the viewer's credential is live, both routes are
+    // in the table at operator, and the fund is in the book so a refusal
+    // below is not a 404 dressed as a gate.
+    assert_eq!(rig.call(Method::Get, "/wallet", VIEWER_TOKEN).status, 200);
+    for (method, pattern) in [
+        (
+            Method::Post,
+            "/ledger/commitments/:commitment/capital-calls",
+        ),
+        (
+            Method::Delete,
+            "/ledger/commitments/:commitment/capital-calls/:reference",
+        ),
+    ] {
+        let route = ROUTES
+            .iter()
+            .find(|route| route.method == method && route.pattern == pattern)
+            .unwrap_or_else(|| panic!("{pattern} is not in the table"));
+        assert_eq!(route.required_role, Role::Operator, "{pattern}");
+    }
+    assert_eq!(rig.fund_row()["unfunded"], serde_json::json!("250000"));
+
+    for token in [VIEWER_TOKEN, ANALYST_TOKEN] {
+        let response = rig.file_call(FUND, token, &call_body());
+        let body = String::from_utf8_lossy(&response.body).into_owned();
+        assert_eq!(response.status, 403, "{token}: {body}");
+        assert!(
+            body.contains(BELOW_OPERATOR) && !body.contains(NO_PRESENCE),
+            "{token} must be refused on the role and not further in: {body}"
+        );
+        let response = rig.withdraw_call(FUND, "call-1", token);
+        let body = String::from_utf8_lossy(&response.body).into_owned();
+        assert_eq!(response.status, 403, "{token}: {body}");
+        assert!(
+            body.contains(BELOW_OPERATOR) && !body.contains(NO_PRESENCE),
+            "{token} must be refused on the role and not further in: {body}"
+        );
+    }
+
+    // The operator gets past the role and past the body, and is refused at
+    // the presence gate — proving the route is wired that far and no
+    // further.
+    let response = rig.file_call(FUND, OPERATOR_TOKEN, &call_body());
+    let body = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 403, "{body}");
+    assert!(body.contains(NO_PRESENCE), "{body}");
+    let response = rig.withdraw_call(FUND, "call-1", OPERATOR_TOKEN);
+    let body = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 403, "{body}");
+    assert!(body.contains(NO_PRESENCE), "{body}");
+
+    // Nothing moved and nothing was written: no notice stands, and the log
+    // holds no capital-call record.
+    assert_eq!(rig.fund_row()["capital_calls"], serde_json::json!([]));
+    assert_eq!(
+        rig.call_records()?,
+        0,
+        "a refused request reached the event log"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_capital_call_body_naming_a_payment_is_refused_by_position_and_a_consequence_is_never_defaulted()
+-> Result<()> {
+    // Refusals that come before the presence gate, because each is the
+    // caller's to fix and a 403 would send them to the wrong problem. The
+    // first guards the mistake the object invites: a notice is something
+    // the desk pays, so a caller sends `paid`; a key silently ignored would
+    // let them believe the route settled it. The rest are the shape of the
+    // notice itself — an amount as a number, a due instant as an epoch
+    // figure, and above all a missing consequence, which the kernel type
+    // requires and this route must not fill in.
+    let rig = rig_over(PlatformConfig::default(), encumbered_universe()?)?;
+
+    // The position is the parsed object's, which `serde_json` keeps in key
+    // order — `amount`, `consequence`, `due`, `paid`, `reference` — so the
+    // offending key is the fourth, whatever order the caller wrote.
+    let with_paid = format!(
+        r#"{{"reference":"call-1","amount":"100000.00","due":"{}","consequence":{{"kind":"acceleration"}},"paid":"100000.00"}}"#,
+        ten_days_on().to_rfc3339()
+    );
+    let response = rig.file_call(FUND, OPERATOR_TOKEN, &with_paid);
+    let body = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 400, "{body}");
+    assert!(
+        body.contains("key at position 4") && body.contains(NO_PAYMENT_FIELD),
+        "{body}"
+    );
+    assert!(
+        !body.contains("paid"),
+        "the refusal must not echo the caller's key: {body}"
+    );
+
+    let numeric = format!(
+        r#"{{"reference":"call-1","amount":100000,"due":"{}","consequence":{{"kind":"acceleration"}}}}"#,
+        ten_days_on().to_rfc3339()
+    );
+    let response = rig.file_call(FUND, OPERATOR_TOKEN, &numeric);
+    let body = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 400, "{body}");
+    assert!(body.contains("never a number"), "{body}");
+
+    let epoch = r#"{"reference":"call-1","amount":"100000.00","due":1760864000,"consequence":{"kind":"acceleration"}}"#;
+    let response = rig.file_call(FUND, OPERATOR_TOKEN, epoch);
+    let body = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 400, "{body}");
+    assert!(body.contains("`due` must be a JSON string"), "{body}");
+
+    let no_consequence = format!(
+        r#"{{"reference":"call-1","amount":"100000.00","due":"{}"}}"#,
+        ten_days_on().to_rfc3339()
+    );
+    let response = rig.file_call(FUND, OPERATOR_TOKEN, &no_consequence);
+    let body = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 400, "{body}");
+    assert!(
+        body.contains("the body has no `consequence`") && body.contains("not defaulted"),
+        "{body}"
+    );
+
+    let rate_on_acceleration = format!(
+        r#"{{"reference":"call-1","amount":"100000.00","due":"{}","consequence":{{"kind":"acceleration","annual_rate_bps":800}}}}"#,
+        ten_days_on().to_rfc3339()
+    );
+    let response = rig.file_call(FUND, OPERATOR_TOKEN, &rate_on_acceleration);
+    let body = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 400, "{body}");
+    assert!(body.contains("carries no rate"), "{body}");
+
+    assert_eq!(rig.call_records()?, 0);
+    assert_eq!(rig.fund_row()["capital_calls"], serde_json::json!([]));
+    Ok(())
+}
+
+#[test]
+fn the_commitments_body_renders_a_standing_call_with_its_penalty_and_says_it_is_never_settled()
+-> Result<()> {
+    // The read side of the writer, honest about what it is: a filed notice
+    // is listed by reference with its consequence, whether it is overdue
+    // and what missing it has cost, the commitment's `obligation` moves by
+    // exactly that cost, and the body says in as many words that this build
+    // never settles a call. A page rendering the list without that sentence
+    // would be promising a payment. The notice is filed in the kernel, as
+    // the eligibility fixtures are, because the route refuses every
+    // standing credential.
+    let rig = rig_over(PlatformConfig::default(), encumbered_universe()?)?;
+    // Premise: the sentence is on the body before anything is filed, the
+    // fund is there with nothing standing, and the book's total is the
+    // undrawn balance alone.
+    let (text, body) = body_of(rig.call(Method::Get, "/ledger/commitments", VIEWER_TOKEN));
+    assert_eq!(
+        body["call_settlement"],
+        serde_json::json!(CALL_SETTLEMENT),
+        "{text}"
+    );
+    assert_eq!(
+        body["obligation_total"],
+        serde_json::json!("250000"),
+        "{text}"
+    );
+    assert_eq!(
+        body["accrued_default_penalty"],
+        serde_json::json!("0"),
+        "{text}"
+    );
+    let row = rig.fund_row();
+    assert_eq!(row["committed"], serde_json::json!("400000"));
+    assert_eq!(row["called"], serde_json::json!("150000"));
+    assert_eq!(row["unfunded"], serde_json::json!("250000"));
+    assert_eq!(row["obligation"], serde_json::json!("250000"));
+    assert_eq!(row["capital_calls"], serde_json::json!([]));
+
+    rig.file_in_kernel("call-1", dec!("100000"))?;
+    let row = rig.fund_row();
+    assert_eq!(
+        row["capital_calls"],
+        serde_json::json!([{
+            "reference": "call-1",
+            "amount": "100000",
+            "issued_at": start().to_rfc3339(),
+            "due_at": ten_days_on().to_rfc3339(),
+            "consequence": { "kind": "interest", "annual_rate_bps": 3650 },
+            "overdue": false,
+            "days_late": 0,
+            "penalty": "0",
+        }])
+    );
+    assert_eq!(
+        row["obligation"],
+        serde_json::json!("250000"),
+        "a notice ahead of its date changes nothing the reserve holds back"
+    );
+    assert_eq!(rig.call_records()?, 1);
+
+    // Twenty days on — ten past due — the same notice is overdue, has cost
+    // 1,000 at 3,650bp, and the obligation carries it. The clock is the
+    // rig's, so the body is served at the instant it reasons about.
+    let late = ten_days_on().saturating_add(Duration::from_days(10));
+    rig.clock.set(late);
+    let (text, body) = body_of(rig.call(Method::Get, "/ledger/commitments", VIEWER_TOKEN));
+    assert_eq!(
+        body["served_at"],
+        serde_json::json!(late.to_rfc3339()),
+        "{text}"
+    );
+    assert_eq!(
+        body["obligation_total"],
+        serde_json::json!("251000"),
+        "{text}"
+    );
+    assert_eq!(
+        body["accrued_default_penalty"],
+        serde_json::json!("1000"),
+        "{text}"
+    );
+    let row = rig.fund_row();
+    assert_eq!(row["capital_calls"][0]["overdue"], serde_json::json!(true));
+    assert_eq!(row["capital_calls"][0]["days_late"], serde_json::json!(10));
+    assert_eq!(
+        row["capital_calls"][0]["penalty"],
+        serde_json::json!("1000")
+    );
+    assert_eq!(row["obligation"], serde_json::json!("251000"));
+    assert_eq!(
+        row["unfunded"],
+        serde_json::json!("250000"),
+        "the unfunded balance is untouched by a notice"
+    );
+
+    // Withdrawn in the kernel, the list is empty again, the charge stops,
+    // and the log holds both records.
+    rig.with_platform(|platform| -> Result<()> {
+        platform.withdraw_capital_call(
+            FUND,
+            "call-1",
+            &OperatorIdentity::verified("ops-carol", "oidc", late),
+            late,
+        )
+    })??;
+    let row = rig.fund_row();
+    assert_eq!(row["capital_calls"], serde_json::json!([]));
+    assert_eq!(row["obligation"], serde_json::json!("250000"));
+    assert_eq!(rig.call_records()?, 2);
     Ok(())
 }
