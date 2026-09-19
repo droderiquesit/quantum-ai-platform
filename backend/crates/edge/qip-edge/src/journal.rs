@@ -45,11 +45,25 @@ pub enum Decision {
         positive: bool,
     },
     /// An order was sent to a venue.
+    ///
+    /// `release_at` and `equalised` are ADR 0084's: the instant the gateway
+    /// was told not to release the order before, and whether the schedule
+    /// that produced it had a median for every venue in the set. Both are
+    /// absent on entries sealed before the fields existed, and the chain is
+    /// hash-linked over the serialised entry, so an absent field is *not*
+    /// written back on re-serialisation — `skip_serializing_if` — or every
+    /// old journal would fail to verify. A reader treats an absent
+    /// `release_at` as "released at the entry's own instant, unequalised",
+    /// which is what such an order was, and never as zero.
     OrderSent {
         order_id: String,
         venue: String,
         quantity: String,
         simulated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        release_at: Option<Timestamp>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        equalised: bool,
     },
     /// The venue reported part or all of an order traded, and the cell
     /// booked it.

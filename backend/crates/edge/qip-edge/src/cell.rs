@@ -12,7 +12,7 @@
 
 use crate::arbitrage::ArbitrageDesk;
 use crate::decomposition::{Decomposition, DecompositionPolicy, LegSize};
-use crate::dispersion::{DispersionPolicy, DispersionVerdict, FillTimes};
+use crate::dispersion::{DispersionPolicy, DispersionVerdict, FillTimes, ReleaseSchedule};
 use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 use crate::envelope::VerifiedEnvelope;
 use crate::feasibility::{self, VenueModel};
@@ -166,6 +166,18 @@ pub const GATE_QUOTE_BUDGET: &str = "quote_budget";
 /// apart in time (§32.1). Refused through [`Cell::refuse`] like every other
 /// pass gate, so the label needs no second enumeration.
 pub const GATE_FILL_DISPERSION: &str = "fill_dispersion";
+/// The gate literal an order is refused under when the gateway holding it
+/// for its release instant (ADR 0084) found that instant already further in
+/// the past than it will send late, and withdrew the order rather than
+/// releasing it. A `pub const` for the reason [`GATE_QUOTE_BUDGET`] is one:
+/// this refusal is recorded from `Cell::confirm_execution_reports`, which has
+/// no `WorkReport` and so records directly, and a formatted string there
+/// would unbound the `gate` label.
+///
+/// Sent late is the guess the schedule exists to prevent: a leg that arrives
+/// outside the window its cycle was admitted on is exactly the exposure the
+/// offsets were computed against. Withdrawn is the refusal.
+pub const GATE_RELEASE_LATE: &str = "release_late";
 
 /// The gate a halted cell journals under when it holds resting orders and
 /// the gateway it was handed cannot withdraw them (§29.2).
@@ -673,6 +685,29 @@ pub struct ExecutionReport {
     pub at: Timestamp,
 }
 
+/// An order the gateway withdrew without sending, because the instant it was
+/// told to release it at was already further in the past than it will send
+/// late (ADR 0084 §4).
+///
+/// Not an [`ExecutionReport`]: nothing traded. Not a cancel either — the
+/// venue never saw the order, so there is no remaining quantity for it to
+/// answer with. It is the gateway telling the cell that a record the cell
+/// wrote as sent describes an order that never arrived, which is why the
+/// cell treats it as a break and not as housekeeping.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnreleasedOrder {
+    pub order_id: String,
+    pub venue: VenueId,
+    /// The instant the cell asked for the order to be released no earlier
+    /// than.
+    pub scheduled: Timestamp,
+    /// How far past `scheduled` the gateway found itself on the first pass
+    /// that could have released the order.
+    pub lag: Duration,
+    /// The most lag the gateway will release under; what `lag` exceeded.
+    pub tolerance: Duration,
+}
+
 /// A fill the venue reported, attributed to the strategies whose intent the
 /// order carried (§43.4: the chain starts at the fill).
 ///
@@ -710,7 +745,16 @@ pub struct OpenOrder {
     /// What the venue has reported traded, summed over every report.
     pub filled: Decimal,
     pub simulated: bool,
+    /// The pass instant the cell decided the order on.
     pub sent_at: Timestamp,
+    /// The instant the gateway was told not to release it before (ADR 0084):
+    /// `sent_at` plus the leg's offset on its cycle's release schedule, and
+    /// equal to `sent_at` for a net or an unequalised cycle. **The fill time
+    /// is measured from here, not from `sent_at`.** Measured from the decision
+    /// instant, a held leg's fill time would include its own hold, the median
+    /// would grow by the offset, the next schedule would shrink it, and the
+    /// equaliser would chase its own tail.
+    pub release_at: Timestamp,
     /// When the cell withdraws what has not filled, for an order sent under
     /// [`PricingPolicy::RestAtMid`]. `None` for a marketable order, which
     /// either filled on acceptance or was cancelled by the venue.
@@ -3182,6 +3226,14 @@ impl Cell {
         }
         self.metrics.message_sent(&venue, MessageKind::Placement);
 
+        // ADR 0084: a net is one order at one venue, so its schedule is the
+        // trivially equalised one — offset zero — and it is computed rather
+        // than assumed so the journal entry carries the same two fields a
+        // cycle leg's does and a reader need not know which path sent it.
+        let schedule = self
+            .fill_times
+            .release_schedule(std::slice::from_ref(&venue));
+        let release_at = now.saturating_add(schedule.offset(&venue));
         let (order_id, simulated) = self.send(
             &net_intent.object_id,
             &venue,
@@ -3189,6 +3241,7 @@ impl Cell {
             quantity,
             price,
             now,
+            release_at,
             gateway,
         )?;
 
@@ -3226,12 +3279,14 @@ impl Cell {
                     filled: Decimal::ZERO,
                     simulated,
                     sent_at: now,
+                    release_at,
                     expires_at,
                     closed: None,
                 },
                 net: net_intent.clone(),
                 region_committed,
             },
+            schedule.equalised(),
             now,
         );
         // The venue may have filled some of it on acceptance. Those reports
@@ -3291,6 +3346,11 @@ impl Cell {
     /// operator reading the chain needs to know what posture was in force when
     /// the order was stopped — and not to decide, because a ceiling in the
     /// condition would be a live path waiting for a future constructor.
+    ///
+    /// `release_at` is the instant the gateway is told not to release the
+    /// order before (ADR 0084); `now` is the pass instant the refusal, if
+    /// any, is journaled at. The two differ by the leg's offset on its
+    /// cycle's release schedule and by nothing else.
     #[allow(clippy::too_many_arguments)]
     fn send(
         &mut self,
@@ -3300,6 +3360,7 @@ impl Cell {
         quantity: Decimal,
         price: Decimal,
         now: Timestamp,
+        release_at: Timestamp,
         gateway: &mut dyn Placer,
     ) -> Result<(String, bool)> {
         let simulated = gateway.is_simulated();
@@ -3325,7 +3386,9 @@ impl Cell {
         }
         self.order_sequence += 1;
         let order_id = format!("{}-{}", self.config.cell_id, self.order_sequence);
-        gateway.place(&order_id, object_id, venue, side, quantity, price, now)?;
+        gateway.place(
+            &order_id, object_id, venue, side, quantity, price, release_at,
+        )?;
         Ok((order_id, simulated))
     }
 
@@ -3337,7 +3400,12 @@ impl Cell {
     /// sent quantity straight into the list the reconciler compares with the
     /// venue — which is how the platform came to record trades that had not
     /// happened.
-    fn record_sent(&mut self, working: Working, now: Timestamp) {
+    ///
+    /// `equalised` is the release schedule's own verdict on the cycle the
+    /// order belongs to, journaled beside `release_at` so an operator reading
+    /// the chain sees that a leg was held for four milliseconds on purpose
+    /// and not that the node was slow.
+    fn record_sent(&mut self, working: Working, equalised: bool, now: Timestamp) {
         let order = &working.order;
         self.journal.record(
             Decision::OrderSent {
@@ -3345,6 +3413,8 @@ impl Cell {
                 venue: order.venue.as_str().to_string(),
                 quantity: order.quantity.to_string(),
                 simulated: order.simulated,
+                release_at: Some(order.release_at),
+                equalised,
             },
             now,
         );
@@ -3824,6 +3894,12 @@ impl Cell {
         gateway: &mut dyn Placer,
         now: Timestamp,
     ) -> Vec<ConfirmedFill> {
+        // What the gateway withdrew unreleased, before what it reports
+        // filled: an order on this list never reached the venue, so a report
+        // naming it afterwards is a second disagreement rather than a fill.
+        for unreleased in gateway.unreleased() {
+            self.withdraw_unreleased(unreleased, now);
+        }
         let mut confirmed = Vec::new();
         for execution in gateway.execution_reports() {
             if let Some(fill) = self.confirm(execution, now) {
@@ -3831,6 +3907,69 @@ impl Cell {
             }
         }
         confirmed
+    }
+
+    /// Book a gateway's withdrawal of an order it never released (ADR 0084
+    /// §4), and stop the cell.
+    ///
+    /// Stopped rather than tidied, because the cell's chain says the order
+    /// was sent and the venue never saw it — the same disagreement between
+    /// the cell's record and a venue channel that every other break is. For
+    /// a cycle leg it is also a position: the legs released on time are out
+    /// against one that is not, which is the exposure the schedule was
+    /// computed to prevent. The order is closed on the record so the
+    /// reconciler does not hold it against the venue, and what the region
+    /// committed for it is returned, because nothing was spent.
+    fn withdraw_unreleased(&mut self, unreleased: UnreleasedOrder, now: Timestamp) {
+        let reason = format!(
+            "order {} for {} was to be released no earlier than {} and the gateway found that \
+             instant {} ms past on the first pass that could have released it, past the {} ms \
+             it will send late; withdrawn rather than sent late, because a leg arriving outside \
+             the window its cycle was admitted on is the exposure the release schedule exists to \
+             prevent",
+            unreleased.order_id,
+            unreleased.venue.as_str(),
+            unreleased.scheduled.to_rfc3339(),
+            unreleased.lag.as_millis(),
+            unreleased.tolerance.as_millis()
+        );
+        // Recorded directly rather than through `Cell::refuse`: there is no
+        // `WorkReport` on this path. See [`GATE_RELEASE_LATE`] for the
+        // enumeration this makes a constant necessary for.
+        self.metrics.refusal(GATE_RELEASE_LATE);
+        self.journal.record(
+            Decision::Refused {
+                gate: GATE_RELEASE_LATE.to_string(),
+                reason,
+            },
+            now,
+        );
+        let detail = match self.working.get_mut(&unreleased.order_id) {
+            Some(working) if working.order.closed.is_none() => {
+                working.order.closed = Some("unreleased".to_string());
+                let quantity = working.order.quantity;
+                self.return_region_capital_for_unfilled(&unreleased.order_id, quantity, now);
+                format!(
+                    "the cell's record says order {} was sent to {} and the gateway withdrew it \
+                     unreleased, so it never reached the venue",
+                    unreleased.order_id,
+                    unreleased.venue.as_str()
+                )
+            }
+            Some(_) => format!(
+                "the gateway reports withdrawing order {} unreleased and the cell's record \
+                 already has it closed, so the two disagree about whether it ever reached {}",
+                unreleased.order_id,
+                unreleased.venue.as_str()
+            ),
+            None => format!(
+                "the gateway reports withdrawing order {} unreleased at {} and the cell has no \
+                 open order under that id",
+                unreleased.order_id,
+                unreleased.venue.as_str()
+            ),
+        };
+        self.break_on(detail, now);
     }
 
     fn confirm(&mut self, execution: ExecutionReport, now: Timestamp) -> Option<ConfirmedFill> {
@@ -3872,7 +4011,11 @@ impl Cell {
         // The fill is booked whatever the size check below says: the venue
         // reports it traded, and a position the cell refuses to believe in
         // is the position nobody is watching.
-        let sent_at = working.order.sent_at;
+        //
+        // The release instant and not the decision instant, for the fill
+        // time below: see `OpenOrder::release_at` for the tail the equaliser
+        // would otherwise chase.
+        let release_at = working.order.release_at;
         let was_complete = working.order.filled >= working.order.quantity;
         working.order.filled += execution.quantity;
         // §32.1's measurement is of a *completed* order: the leg stops
@@ -3935,11 +4078,11 @@ impl Cell {
         // as healthy by construction.
         self.budget.observe_trade(&fill.venue);
         if completed {
-            // The venue's own instant for the fill against the cell's own
-            // instant for the send. A report claiming to predate its order
-            // is counted as an anomaly by `FillTimes` rather than recorded
-            // as a fast venue.
-            let taken = fill.at.since(sent_at);
+            // The venue's own instant for the fill against the instant the
+            // cell released the order at. A report claiming to predate its
+            // release is counted as an anomaly by `FillTimes` rather than
+            // recorded as a fast venue.
+            let taken = fill.at.since(release_at);
             self.fill_times.observe(&fill.venue, taken);
             self.metrics.fill_time(&fill.venue, taken);
         }
@@ -5336,12 +5479,19 @@ impl Cell {
             PassiveChoice::Whole(reason) => reason,
         };
         self.metrics.passive_cycle(PassiveOutcome::Whole(declined));
+        // ADR 0084: one schedule for the whole cycle, computed once before
+        // the first leg goes out, so every leg's release instant is a
+        // function of the same window and the legs are expected to arrive
+        // together. Computed after the passive choice above, because a
+        // cycle that rests a leg sends that leg alone and the rest later.
+        let schedule = self.fill_times.release_schedule(&venues);
         let mut orders: Vec<String> = Vec::with_capacity(cycle.legs.len());
         for position in 0..cycle.legs.len() {
             let (order_id, quantity) = self.send_cycle_leg(
                 cycle,
                 position,
                 None,
+                &schedule,
                 &mut decomposition,
                 now,
                 gateway,
@@ -5426,10 +5576,17 @@ impl Cell {
         // when this cycle stops being one, and the two would disagree.
         let expires_at = leg.valid_until;
         let mut carried = decomposition;
+        // A resting leg goes out alone, so its schedule is a single venue's:
+        // offset zero, trivially equalised. The legs crossed against it later
+        // get their own schedule on the pass that crosses them.
+        let schedule = self
+            .fill_times
+            .release_schedule(std::slice::from_ref(&VenueId::new(venue)));
         let (order_id, quantity) = self.send_cycle_leg(
             cycle,
             position,
             Some(expires_at),
+            &schedule,
             &mut carried,
             now,
             gateway,
@@ -5582,6 +5739,17 @@ impl Cell {
             return Err(error);
         }
         let mut orders = vec![order_id];
+        // ADR 0084: the legs crossed against the rested one go out together
+        // on this pass, so they are scheduled as a set of their own — the
+        // rested leg is already at its venue and is not in it.
+        let remaining: Vec<VenueId> = cycle
+            .legs
+            .iter()
+            .enumerate()
+            .filter(|(other, _)| *other != position)
+            .map(|(_, leg)| leg.venue.clone())
+            .collect();
+        let schedule = self.fill_times.release_schedule(&remaining);
         for other in 0..total {
             if other == position {
                 continue;
@@ -5607,6 +5775,7 @@ impl Cell {
                 &cycle,
                 other,
                 None,
+                &schedule,
                 &mut decomposition,
                 now,
                 gateway,
@@ -5679,12 +5848,17 @@ impl Cell {
     /// decomposition. That is [`Self::observe_cycle_leg`], because a resting
     /// leg is observed on a later pass and observing it here as well would
     /// count one leg's fill twice against the fraction.
+    ///
+    /// `schedule` is the release schedule of the set of legs this one goes
+    /// out with; the leg is released no earlier than `now` plus its venue's
+    /// offset on it (ADR 0084).
     #[allow(clippy::too_many_arguments)]
     fn send_cycle_leg(
         &mut self,
         cycle: &AdmittedCycle,
         position: usize,
         expires_at: Option<Timestamp>,
+        schedule: &ReleaseSchedule,
         decomposition: &mut Decomposition,
         now: Timestamp,
         gateway: &mut dyn Placer,
@@ -5766,6 +5940,7 @@ impl Cell {
             }
         };
         let price = leg.reference_price;
+        let release_at = now.saturating_add(schedule.offset(&leg.venue));
         let sent = self.send(
             &leg.object_id,
             &leg.venue,
@@ -5773,6 +5948,7 @@ impl Cell {
             quantity,
             price,
             now,
+            release_at,
             gateway,
         );
         let (order_id, simulated) = match sent {
@@ -5834,6 +6010,7 @@ impl Cell {
                     filled: Decimal::ZERO,
                     simulated,
                     sent_at: now,
+                    release_at,
                     // A leg of a cycle going out whole is priced at the touch
                     // the scanner quoted it from and takes it on acceptance;
                     // nothing rests. §32.1's passive leg is the exception and
@@ -5853,6 +6030,7 @@ impl Cell {
                 // a cycle leg over.
                 region_committed: Decimal::ZERO,
             },
+            schedule.equalised(),
             now,
         );
         if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) {
@@ -7222,6 +7400,17 @@ pub trait Placer: std::fmt::Debug {
     /// `simulated` flag from this rather than from anything the caller says.
     fn is_simulated(&self) -> bool;
 
+    /// Accept an order for the venue.
+    ///
+    /// `at` is the instant before which the gateway must not release the
+    /// order — "release no earlier than", not "when it was sent" (ADR 0084).
+    /// The cell stamps it from the cycle's release schedule so that the legs
+    /// of a multi-venue cycle arrive together; a gateway that releases
+    /// immediately whatever `at` says was correct before that record and is
+    /// wrong after it. A gateway that finds `at` further in the past than it
+    /// will send late withdraws the order and reports it through
+    /// [`Self::unreleased`] rather than sending it late.
+    #[allow(clippy::too_many_arguments)]
     fn place(
         &mut self,
         order_id: &str,
@@ -7232,6 +7421,16 @@ pub trait Placer: std::fmt::Debug {
         price: Decimal,
         at: Timestamp,
     ) -> Result<()>;
+
+    /// Orders the gateway withdrew without sending since the last call,
+    /// because their release instant had passed by more than it will send
+    /// late (ADR 0084 §4).
+    ///
+    /// Defaults to nothing, which is right for a gateway that releases every
+    /// order on the pass it is placed and so never holds one to be late with.
+    fn unreleased(&mut self) -> Vec<UnreleasedOrder> {
+        Vec::new()
+    }
 
     /// What a production deployment must supply, empty when usable as is.
     fn required_configuration(&self) -> Vec<String> {
