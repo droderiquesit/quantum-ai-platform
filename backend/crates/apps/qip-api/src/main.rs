@@ -1134,9 +1134,9 @@ mod tests {
     fn a_zero_or_over_ceiling_dark_window_stops_the_process_naming_the_variable_and_the_ceiling() {
         // Both bounds are the plane's (`CentralPlane::new`); what this root
         // owes the operator is the variable's name in front of them.
-        let zero = parse_region_dark_after(Some("0"))
-            .err()
-            .expect("a zero window was admitted; every region would be dark between two reports");
+        let zero = parse_region_dark_after(Some("0")).expect_err(
+            "a zero window was admitted; every region would be dark between two reports",
+        );
         assert!(names_the_variable(zero.message()), "{}", zero.message());
         assert!(
             zero.message().contains("no silence at all"),
@@ -1144,9 +1144,8 @@ mod tests {
             zero.message()
         );
 
-        let negative = parse_region_dark_after(Some("-30"))
-            .err()
-            .expect("a negative window was admitted");
+        let negative =
+            parse_region_dark_after(Some("-30")).expect_err("a negative window was admitted");
         assert!(
             names_the_variable(negative.message()),
             "{}",
@@ -1155,8 +1154,7 @@ mod tests {
 
         let past = MAXIMUM_ENVELOPE_VALIDITY.as_millis() / 1_000 + 1;
         let over = parse_region_dark_after(Some(&past.to_string()))
-            .err()
-            .expect("a window past the envelope ceiling was admitted; it would notice a region only after every grant in it had expired");
+            .expect_err("a window past the envelope ceiling was admitted; it would notice a region only after every grant in it had expired");
         assert!(names_the_variable(over.message()), "{}", over.message());
         assert!(
             over.message().contains("ceiling"),
