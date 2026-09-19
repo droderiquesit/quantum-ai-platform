@@ -107,9 +107,24 @@ variable "zone_identities" {
     puts there. The ledger and control-fabric grants below are made to these
     accounts and to nothing else.
 
-    Empty by default, which grants nothing. A zone named here that is not in
-    `zones` is refused, because an identity in a zone that has no subnet and
-    no rules is an identity outside every boundary.
+    Empty by default, which grants nothing. An identity placed in a zone that
+    is not in `zones` is refused, because an identity in a zone that has no
+    subnet and no rules is an identity outside every boundary. A zone named
+    here with an *empty* list is admitted: the root builds this map from the
+    catalogue before it knows whether an environment declared every zone,
+    and `management` arrives as `[]` wherever OpenObserve is off — an empty
+    list places nobody, so there is nothing outside a boundary to refuse.
+
+    This sentence promised the refusal for as long as the variable existed,
+    and until 2026-09-19 the only validation below checked the thirteen
+    names. A zone that was in the blueprint and absent from `zones` — an
+    identity under `execution` in an environment that declared no execution
+    subnet — was admitted, and the grant lists below simply skipped it,
+    because they iterate `permitted_paths` filtered to declared zones. The
+    identity would have been in no zone's grant and in no zone's rule, and
+    the root's output would have listed it under a zone as if it were
+    governed. The second validation is the promise, made real, and
+    `tests/zone-model.tftest.hcl` plans it from both sides.
 
     Whether one account appears under two zones cannot be checked at plan
     time — the emails are not known until the accounts exist — so the
@@ -139,6 +154,17 @@ variable "zone_identities" {
       ], zone)
     ])
     error_message = "zone_identities names a zone outside the thirteen of blueprint §46.1. An identity in an undeclared zone is an identity outside every boundary."
+  }
+
+  # Reads `var.zones`, which a validation may do from Terraform 1.9 and
+  # `versions.tf` pins. `length(emails) == 0` rather than `emails == []`
+  # because the root's lists are `sort()`ed, and a typed empty list compares
+  # equal to a tuple only by length.
+  validation {
+    condition = alltrue([
+      for zone, emails in var.zone_identities : contains(keys(var.zones), zone) || length(emails) == 0
+    ])
+    error_message = "zone_identities places an identity in a zone this deployment did not declare in `zones`: ${join(", ", [for zone, emails in var.zone_identities : zone if length(emails) > 0 && !contains(keys(var.zones), zone)])}. That zone has no subnet, no tag and no rule here, so the identity would hold every grant a path to the zone earns and sit inside no boundary. Declare the zone's range in the tfvars, or place the workload in a zone the environment has."
   }
 }
 

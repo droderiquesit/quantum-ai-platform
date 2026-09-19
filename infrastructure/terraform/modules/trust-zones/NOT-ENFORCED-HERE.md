@@ -61,13 +61,36 @@ created in any project; the dev environment was torn down on 2026-09-13 and
 the configuration is coherent and the refusals fire. It does not say Google
 accepted a single one of these resources.
 
-## Three zones hold workloads; ten hold nothing
+## Four zones hold workloads; nine hold nothing
 
 The catalogue places `qip-api` in `application-identity`, `qip-deepbrain` in
-`cognition` and `qip-fastbrain` in `intelligence`. The other ten zones,
-`optimisation` among them, have no workload, no identity and — unless an
-environment declares a subnet for them — no subnet. A zone with nothing in it
-constrains nothing.
+`cognition` and `qip-fastbrain` in `intelligence`, and — where an
+environment turns them on — OpenObserve and the control plane's three
+controllers in `management`. Count the placements rather than trusting this
+sentence: `grep -c 'trust_zone *= *"' infrastructure/terraform/catalogue.tf`
+is the catalogue's and OpenObserve's, and
+`grep -c 'gitops_control_plane\[0\]\.[a-z]*_service_account_email,$' infrastructure/terraform/catalogue.tf`
+is the control plane's — the trailing comma matters, because without it the
+same pattern also finds the two places the deployer's email is handed to
+`modules/cloudrun` and prints five. This heading said three until 2026-09-19, and
+`docs/DELIVERY-STATUS.md` repeated it; the fourth zone had held OpenObserve
+since ADR 0028 and the control plane's identities since ADR 0036, and only
+OpenObserve was listed in `zone_identities` — so a `permitted_paths` entry
+from `management` would have granted the dashboard's account and not the
+deployer's. The control plane's cluster takes its subnet and its tag from
+this module's outputs, so its identities are in the zone in every sense a
+firewall can see; they are now placed in it in the one sense a grant can.
+The root's `tests/zone-identities.tftest.hcl` plans the count.
+
+The other nine zones, `optimisation` among them, have no workload, no
+identity and — unless an environment declares a subnet for them — no subnet.
+A zone with nothing in it constrains nothing. Note that `execution` is among
+the nine on purpose rather than by oversight: `modules/execution-node` cuts
+its own subnet and writes its own tag and rules, so a node is not on any
+subnet this module creates, and its identity is deliberately not placed here
+until the two modules share one boundary — an identity in a zone whose rules
+do not reach its instance would be the paper boundary this file exists to
+refuse.
 
 The sharpest case is still Optimisation. The IBM Quantum listeners are in the
 one egress bootstrap every proxy rendering mounts, so the deep brain's sidecar
@@ -80,16 +103,31 @@ nothing in it to do so. `qip-deepbrain` links `qip-optimization-engine` and
 would need to be split for the constraint to be both enforced and useful.
 Until then the IBM-only rule binds, and it binds nothing that wants to pass.
 
-## Identities are the catalogue's, and one-zone-per-identity is not checked here
+## Identities are the root's, and one-zone-per-identity is not checked here
 
-There is no zone service account. A zone's identities are the Cloud Run
-accounts of the workloads placed in it, passed in through `zone_identities`,
+There is no zone service account. A zone's identities are the accounts of
+the workloads the root places in it, passed in through `zone_identities`,
 and the ledger and fabric grants are made to those. Whether one account
 appears under two zones cannot be validated at plan time — the emails are not
-known until the accounts exist — so the property rests on the catalogue:
-every workload names exactly one zone and `modules/cloudrun` creates exactly
-one account per workload. The acceptance suite asserts the first half by
-reading `catalogue.tf`.
+known until the accounts exist — so the property rests on the root:
+every catalogue workload names exactly one zone and `modules/cloudrun`
+creates exactly one account per workload, and the management zone's four are
+merged in by name. The acceptance suite asserts the first half by reading
+`catalogue.tf`.
+
+What *is* checked here, since 2026-09-19: an identity placed in a zone this
+deployment did not declare is refused. The variable's description had
+promised that refusal for as long as the variable existed, and the only
+validation checked the thirteen names — so an identity under `execution` in
+an environment with no execution subnet was admitted, earned no grant, sat
+under no rule, and was listed in the root's output as if governed. A promise
+in a description is a control that cannot fire. The second validation on
+`zone_identities` is the promise made real; the harness plans it from both
+sides and proves the admitted identity becomes a grant. The root refuses the
+same mistake first, in `terraform_data.identities_are_placed`, and narrows
+the map it hands over to declared zones — because a `terraform test` run
+can expect a failure only from a root object, and a refusal no harness can
+name is a refusal nobody has watched fire.
 
 ## Firewall rules are about addresses, not intent
 
