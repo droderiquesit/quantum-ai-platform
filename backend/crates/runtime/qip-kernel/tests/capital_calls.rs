@@ -570,7 +570,7 @@ fn a_log_filing_a_call_against_a_commitment_this_universe_no_longer_holds_stops_
     let later = start().saturating_add(Duration::from_hours(1));
     let mut listed_only = Universe::new();
     listed_only.insert(listed("AAA")?)?;
-    let refused = platform_over(&path, later, listed_only).err().expect(
+    let refused = platform_over(&path, later, listed_only).expect_err(
         "assembly over a log that files a call against a fund the universe dropped is refused",
     );
     assert!(
