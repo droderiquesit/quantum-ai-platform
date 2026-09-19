@@ -369,3 +369,10 @@ record admits nothing to `Cargo.toml`.
   or (b) source those changes arrive by email to an account holder, not by a
   commit, and nothing in this repository watches for them. That is an open
   operational gap this record names and does not close.
+
+---
+
+## Amendment, 2026-09-19 — the licensing evaluation, delegated and in progress
+
+*(Lane S2. This section is being written; until it names a vendor, a
+clause and an outcome, nothing above is changed.)*
