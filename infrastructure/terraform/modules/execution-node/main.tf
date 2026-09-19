@@ -86,6 +86,19 @@ locals {
   # the thread assignment in §41.3 does not fit — see the README.
   isolated_cpus = "2-${local.vcpus - 1}"
 
+  # ADR 0082 decision 4. `isolcpus` alone keeps the scheduler *off* the
+  # isolated cores; it does not put anything on them. A process nobody pins
+  # is scheduled onto the cores that remain — 0 and 1, the ones §41.3 gives
+  # the OS — so a node provisioned with the range above and no affinity call
+  # would run its one thread beside the OS while every isolated core idled,
+  # and the startup script's `isolcpus` refusal would be guarding a machine
+  # the binary cannot reach. The binary pins nothing (`unsafe_code = "forbid"`
+  # and no crate for it, kept); the unit pins the process from outside, onto
+  # the first isolated core. For a one-thread process the process-level pin
+  # is the per-thread pin. Derived from the same range so the two cannot
+  # disagree.
+  first_isolated_cpu = 2
+
   # The venue list the binary is configured with. Present in shadow mode too:
   # `qip-edge-node` refuses an empty `QIP_VENUES`, and what the node may
   # actually reach is the firewall's business rather than this string's.
@@ -405,6 +418,7 @@ resource "google_compute_instance_template" "node" {
       cross_region_mirror_path   = var.cross_region_mirror_path
       region_allocation          = var.region_allocation
       isolated_cpus              = local.isolated_cpus
+      first_isolated_cpu         = local.first_isolated_cpu
       required_hugepages_gb      = var.required_hugepages_gb
       watchdog_seconds           = var.watchdog_seconds
       capital_envelope_secret_id = var.capital_envelope_secret_id

@@ -75,6 +75,7 @@ did not isolate anything decline to trade.
 | §41.4 setting | Who enforces it | What happens if it is absent |
 |---|---|---|
 | `isolcpus` for cores 2 upwards | The image's kernel command line | Startup script refuses; no unit starts |
+| The process actually running on an isolated core | The unit, `CPUAffinity=` naming the first isolated core (ADR 0082 decision 4) | Without it the one thread is scheduled onto cores 0–1 beside the OS and the isolated range idles; `isolcpus` alone puts nothing on the cores it clears |
 | Huge pages preallocated | The image's kernel command line | Startup script refuses below `required_hugepages_gb` |
 | No swap | The image | Startup script refuses |
 | No container runtime | The image | Startup script refuses if `docker`/`containerd`/`podman`/`crio`/`runc` is present |

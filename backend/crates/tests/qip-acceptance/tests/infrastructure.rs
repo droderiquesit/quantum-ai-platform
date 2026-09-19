@@ -1758,6 +1758,52 @@ fn the_boot_image_is_pinned_by_name_and_carries_what_the_nodes_template_requires
 }
 
 #[test]
+fn the_unit_pins_the_node_onto_the_first_isolated_core_so_the_isolcpus_refusal_guards_something() {
+    // ADR 0082 decision 4. `isolcpus` keeps the scheduler *off* the isolated
+    // cores; it puts nothing on them. Until 2026-09-19 the startup script
+    // refused to boot without the range and then started a unit that pinned
+    // nothing, so the one thread ran on cores 0–1 beside the OS and the range
+    // the boot check insisted on sat idle — a refusal guarding cores the
+    // binary could not reach. The unit now pins the process from outside,
+    // onto the first isolated core, and the module derives that core beside
+    // the range so the two cannot disagree. The plan-time proof is
+    // `modules/execution-node/tests/affinity.tftest.hcl`; this is the text
+    // half, so a deleted line is caught by a suite that runs without
+    // Terraform.
+    let node_module = read(NODE_MODULE);
+    assert!(
+        node_module.contains("isolated_cpus = \"2-${local.vcpus - 1}\""),
+        "{NODE_MODULE} no longer derives the isolated range from core 2, so \
+         the pinned core below is asserted against the wrong range"
+    );
+    assert!(
+        node_module.contains("first_isolated_cpu = 2"),
+        "{NODE_MODULE} does not derive the first isolated core beside the \
+         range; a pin written as a literal in the template drifts from the \
+         range the boot check refuses without"
+    );
+    assert!(
+        node_module.contains("first_isolated_cpu         = local.first_isolated_cpu"),
+        "{NODE_MODULE} derives the first isolated core and never hands it to \
+         the startup template, so the unit cannot name it"
+    );
+    let startup = shell_without_comment_lines(&read(NODE_STARTUP));
+    let unit = startup
+        .split("[Service]")
+        .find(|block| block.contains("ExecStart=/usr/local/bin/qip-edge-node"))
+        .unwrap_or_else(|| {
+            panic!("{NODE_STARTUP} writes no [Service] block that starts qip-edge-node")
+        });
+    assert!(
+        unit.contains("\nCPUAffinity=${first_isolated_cpu}\n"),
+        "{NODE_STARTUP}'s qip-execution-node.service carries no CPUAffinity= \
+         naming the first isolated core, so the one thread is scheduled onto \
+         cores 0-1 beside the OS while the isolated range idles (ADR 0082 \
+         decision 4)"
+    );
+}
+
+#[test]
 fn an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else() {
     // The most security-relevant rules in the configuration. A node holds the
     // whole hot path and decides without asking anyone; these rules are the

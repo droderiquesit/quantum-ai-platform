@@ -334,6 +334,13 @@ Group=qip-node
 EnvironmentFile=$CONF_DIR/node.env
 ExecStart=/usr/local/bin/qip-edge-node
 
+# ADR 0082 decision 4: isolcpus keeps the scheduler off the isolated cores and
+# puts nothing on them, so without this line the one thread runs on cores 0-1
+# beside the OS and the isolated range above idles. The supervisor pins the
+# process; the binary pins nothing. First isolated core, derived from the
+# same range the boot check refuses without.
+CPUAffinity=${first_isolated_cpu}
+
 # §41.4: Restart=always, one unit. RestartSec is one second rather than zero so
 # that a node failing its own start-up checks restarts visibly instead of
 # spinning fast enough to look like a running process.
