@@ -11,6 +11,7 @@
 //! warning, because the alternative is a stale model quietly continuing to
 //! trade.
 
+use crate::serving::ModelArtifact;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, ModelId, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -84,6 +85,31 @@ pub struct ModelCard {
     /// Known limitations, recorded so they are visible at the point of use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub limitations: Vec<String>,
+    /// The digest of the artifact this card was promoted with, once it has
+    /// been — [`crate::serving::ModelArtifact::digest`], in-tree SHA-256 over
+    /// the canonical payload. A digest and not a signature: it names the
+    /// bytes a deployment must carry and says nothing about who produced
+    /// them (ADR 0043). `None` for a card promoted without an artifact, which
+    /// is the state every card was in before ADR 0083.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_digest: Option<String>,
+}
+
+/// A digest-named artifact, ready for a composition root to write.
+///
+/// The registry is a library and performs no I/O, so "promote writes the
+/// artifact" is split at this type: the registry produces the name and the
+/// bytes, and whoever composes it — a binary, today writing a file — puts
+/// them somewhere. The name is the content's digest so that two promotions
+/// of the same bytes land on one file and a file can be checked against its
+/// own name by anyone holding it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedArtifact {
+    /// `<digest>.json`.
+    pub file_name: String,
+    /// The artifact serialised, in the form
+    /// [`crate::serving::ModelArtifact::from_json`] reads back.
+    pub contents: String,
 }
 
 impl ModelCard {
@@ -112,6 +138,7 @@ impl ModelCard {
             drift_threshold: 0.2,
             evaluation_validity: Duration::from_days(90),
             limitations: Vec::new(),
+            artifact_digest: None,
         }
     }
 
@@ -253,6 +280,58 @@ impl ModelRegistry {
         card.stage = ModelStage::Production;
         card.deployed_at = Some(at);
         Ok(())
+    }
+
+    /// Promote a model together with the artifact a deployment will carry
+    /// (ADR 0083's promote stage), and return the artifact named by its
+    /// digest for the composition root to write.
+    ///
+    /// Three refusals, each before the card changes: an artifact whose digest
+    /// is not the digest of its payload (the bytes are not the bytes), a
+    /// card that would not promote on its own terms — no passing evaluation
+    /// — and a card already promoted with a *different* artifact. The last
+    /// is the one a reader might expect to be allowed: re-promoting a
+    /// version with new bytes is a different model wearing the same name,
+    /// and every decision that referenced the old digest would then cite a
+    /// model that no longer exists under that reference. Bump the version.
+    pub fn promote_artifact(
+        &mut self,
+        artifact: &ModelArtifact,
+        at: Timestamp,
+    ) -> Result<PublishedArtifact> {
+        artifact.verify_digest()?;
+        let existing = self
+            .get(&artifact.reference)
+            .ok_or_else(|| {
+                Error::not_found(format!("no model registered as {}", artifact.reference))
+            })?
+            .artifact_digest
+            .clone();
+        if let Some(existing) = existing
+            && existing != artifact.digest
+        {
+            return Err(Error::denied(format!(
+                "{} was promoted with artifact {existing} and this artifact digests to {}; a \
+                 version whose bytes changed is a different model — register it under a new \
+                 version rather than replacing what decisions already cite",
+                artifact.reference, artifact.digest
+            )));
+        }
+        self.promote(&artifact.reference, at)?;
+        let card = self.get_mut(&artifact.reference).ok_or_else(|| {
+            Error::not_found(format!("no model registered as {}", artifact.reference))
+        })?;
+        card.artifact_digest = Some(artifact.digest.clone());
+        let contents = serde_json::to_string_pretty(artifact).map_err(|error| {
+            Error::invalid(format!(
+                "artifact {} could not be serialised: {error}",
+                artifact.reference
+            ))
+        })?;
+        Ok(PublishedArtifact {
+            file_name: format!("{}.json", artifact.digest),
+            contents,
+        })
     }
 
     /// Retire a model. Anything referencing it afterwards is rejected.
