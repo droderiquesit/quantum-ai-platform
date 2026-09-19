@@ -3209,9 +3209,12 @@ fn a_log_declaring_an_inflow_for_a_user_this_configuration_no_longer_enrols_stop
     let later = start().saturating_add(Duration::from_hours(1));
     let config = PlatformConfig::default().with_event_log_file(&path);
     let (context, _clock) = Context::deterministic(later, config.seed);
-    let refused = Platform::new(config, context, Telemetry::silent(), universe()?, limits())
-        .err()
-        .expect("assembly over a log that declares an inflow for an unenrolled user is refused");
+    let refused = match Platform::new(config, context, Telemetry::silent(), universe()?, limits()) {
+        Ok(_) => {
+            panic!("assembly over a log that declares an inflow for an unenrolled user is refused")
+        }
+        Err(refused) => refused,
+    };
     assert!(
         refused
             .message()
