@@ -58,7 +58,11 @@
 //!   on every probe, and an account in which the cost of learning is visible
 //!   apart from the cost of trading. Until it existed
 //!   [`ledger::Mandate::exploration_share`] was validated, stored, rendered
-//!   in the console and drawn on by nothing.
+//!   in the console and drawn on by nothing. A probe holds capital until it
+//!   lapses, so [`exploration::MAXIMUM_PROBE_VALIDITY`] bounds that the way
+//!   the two constants above bound a hold and a grant — and it is the third
+//!   of three because the probe and the hold that funds it are two claims
+//!   about one fact, and only the hold was bounded.
 //! * [`recall`] withdraws capital mid-flight, and is explicit that a recall is
 //!   a request. The reliable bound on a cell nobody can reach is the envelope
 //!   expiry, which the cell enforces locally against its own clock.
@@ -151,8 +155,8 @@ pub use compounding::{
 };
 pub use envelope::{EnvelopeIssuer, EnvelopeTerms, MAXIMUM_ENVELOPE_VALIDITY};
 pub use exploration::{
-    DeclinedProbe, ExplorationBook, ExplorationPlan, KindRecord, Probe, ProbeCandidate,
-    ProbeEvidence, ProbeKind, ProbeOutcome, ProbeSettlement, budget_for,
+    DeclinedProbe, ExplorationBook, ExplorationPlan, KindRecord, MAXIMUM_PROBE_VALIDITY, Probe,
+    ProbeCandidate, ProbeEvidence, ProbeKind, ProbeOutcome, ProbeSettlement, budget_for,
 };
 pub use exposure::{
     AggregateExposure, CellPosition, ConcentrationFinding, ConcentrationLimits, CrowdedPosition,

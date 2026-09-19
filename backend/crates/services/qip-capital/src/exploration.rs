@@ -76,6 +76,43 @@ pub const MAXIMUM_PROBE_SHARE: Decimal = Decimal::from_raw(250_000_000);
 /// candidate it has budget for.
 pub const MAXIMUM_OPEN_PROBES: usize = 8;
 
+/// The longest a probe may stay open before it lapses.
+///
+/// A day, and the day is not chosen to fit the caller — it is the day the
+/// capital behind the probe already lapses on.
+/// [`crate::reservation::MAXIMUM_RESERVATION_VALIDITY`] bounds the hold that
+/// funds a probe, and `qip_kernel::exploration` takes that hold and plans the
+/// probe against the same `PROBE_VALIDITY`. Those were two independent claims
+/// about one fact — how long this capital is spoken for — and only one of
+/// them was bounded.
+///
+/// # What an unbounded probe validity did, and it is the budget's own
+///
+/// [`ExplorationBook::due`] is the only thing that ends a probe nobody
+/// settles or abandons, and it ends one by asking [`Probe::is_expired`]. A
+/// validity past the remaining range of the clock landed `expires_at` on
+/// [`Timestamp::MAX`] — the value [`qip_core::Timestamp`] documents as the
+/// sentinel meaning "no upper bound" — so `due` never returned that probe,
+/// [`ExplorationBook::committed`] counted its maximum loss for the life of
+/// the process, and [`MAXIMUM_OPEN_PROBES`] filled with probes that could not
+/// be emptied. The budget then declined every later candidate for want of
+/// capital nothing would ever give back, and it declined them *with a
+/// reason*, which is the dangerous part: the book reads as a working bound
+/// doing its job while exploration has silently stopped.
+///
+/// Worse than pinning it, the probe outlived its own funding. The hold
+/// lapsed at a day and returned the capital to the free balance; the probe
+/// stayed open and went on counting against the budget. One is a claim that
+/// the capital is available and the other that it is at risk, and the louder
+/// one would have been wrong.
+///
+/// A validity past the ceiling is **refused rather than shortened**, for the
+/// reason [`crate::reservation`] and [`crate::envelope`] both give: a caller
+/// told a probe was opened and silently given a shorter one is a caller
+/// holding the wrong expiry, and a probe's stated bound has to be the bound
+/// it ran under.
+pub const MAXIMUM_PROBE_VALIDITY: Duration = Duration::from_hours(24);
+
 /// Subjects whose probe history the book remembers.
 ///
 /// Bounded because the subject is a caller's string: a kernel that renamed a
@@ -621,6 +658,34 @@ impl ExplorationBook {
                  holds capital and asks nothing",
             ));
         }
+        if validity > MAXIMUM_PROBE_VALIDITY {
+            return Err(Error::denied(format!(
+                "a probe may not stay open for longer than {:.1} hour(s), and this plan asked \
+                 for {:.1}; expiry is the only thing that closes a probe nobody settles or \
+                 abandons, so a longer one is refused rather than truncated — plan for less, \
+                 or re-plan once these probes lapse",
+                MAXIMUM_PROBE_VALIDITY.as_secs_f64() / 3600.0,
+                validity.as_secs_f64() / 3600.0
+            )));
+        }
+        // Checked rather than saturating, and computed once for the whole
+        // plan so every probe it selects carries the same expiry. A
+        // saturating expiry lands on `Timestamp::MAX`, the sentinel for "no
+        // upper bound", and `due` would never return the probe to be settled
+        // or abandoned. `now` is a caller's instant and `Timestamp::MAX` is a
+        // value point-in-time views really do pass around, so this refuses
+        // rather than being unreachable.
+        let Some(expires_at) = now
+            .as_nanos()
+            .checked_add(validity.as_nanos())
+            .map(Timestamp::from_nanos)
+        else {
+            return Err(Error::numeric(format!(
+                "a probe planned at {now} and valid for {:.1} hour(s) expires past the end of \
+                 the clock; plan at an instant the expiry can be represented from",
+                validity.as_secs_f64() / 3600.0
+            )));
+        };
         let committed_before = self.committed();
         let mut plan = ExplorationPlan {
             budget,
@@ -709,7 +774,7 @@ impl ExplorationBook {
                         maximum_loss: candidate.maximum_loss,
                         uncertainty_at_open: candidate.uncertainty,
                         opened_at: now,
-                        expires_at: now.saturating_add(validity),
+                        expires_at,
                         score,
                     });
                 }

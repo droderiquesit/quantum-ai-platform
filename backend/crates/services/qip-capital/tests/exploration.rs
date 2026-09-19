@@ -14,7 +14,7 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_capital::exploration::{
-    ExplorationBook, ProbeCandidate, ProbeEvidence, ProbeKind, ProbeOutcome,
+    ExplorationBook, MAXIMUM_PROBE_VALIDITY, ProbeCandidate, ProbeEvidence, ProbeKind, ProbeOutcome,
 };
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, Timestamp, dec};
@@ -191,5 +191,95 @@ fn two_runs_over_the_same_evidence_select_the_same_probes_in_the_same_order() ->
     let third = book.plan(dec!("1000"), &candidates, validity(), now())?;
     let fourth = book.plan(dec!("1000"), &candidates, validity(), now())?;
     assert_eq!(third, fourth);
+    Ok(())
+}
+
+#[test]
+fn a_probe_asking_to_outlive_the_ceiling_is_refused_rather_than_shortened() -> Result<()> {
+    // The failure this prevents is the budget's own version of a control that
+    // reads as protection and is not. `due` is the only thing that closes a
+    // probe nobody settles or abandons and it decides on `expires_at`, so a
+    // probe granted an unbounded validity never comes due, `committed()`
+    // counts its maximum loss for the life of the process, and every later
+    // candidate is declined *with a reason* while exploration has stopped.
+    // Truncating to the ceiling instead would be worse than refusing: the
+    // caller would hold an expiry the probe is not running under.
+    let book = ExplorationBook::new();
+    let candidates = vec![candidate(ProbeKind::UncertainModel, "a", 0.5, dec!("250"))?];
+
+    // Premise, stated before anything is asserted about the refusal: the
+    // ceiling is well inside the clock's range, so the over-ceiling value
+    // below is representable and this test is about the ceiling rather than
+    // about arithmetic. The sibling test owns the arithmetic.
+    assert!(MAXIMUM_PROBE_VALIDITY < Duration::from_nanos(i64::MAX));
+    let over = MAXIMUM_PROBE_VALIDITY + Duration::from_secs(1);
+
+    let refused = book
+        .plan(dec!("1000"), &candidates, over, now())
+        .expect_err("a validity past the ceiling was accepted");
+    assert_eq!(refused.code(), "denied");
+    assert!(
+        refused.message().contains("refused rather than truncated"),
+        "the refusal did not say it refuses rather than shortens: {}",
+        refused.message()
+    );
+
+    // And it admits a good one. A gate that refused everything would pass the
+    // half of this test above and protect nothing, so the ceiling itself is
+    // planned against and the probe it yields is checked for the expiry it
+    // was actually given.
+    let plan = book.plan(dec!("1000"), &candidates, MAXIMUM_PROBE_VALIDITY, now())?;
+    assert_eq!(
+        plan.selected.len(),
+        1,
+        "planning at exactly the ceiling funded nothing: {plan:?}"
+    );
+    let probe = &plan.selected[0];
+    assert_eq!(
+        probe.expires_at,
+        now().saturating_add(MAXIMUM_PROBE_VALIDITY)
+    );
+    // The property the whole ceiling exists for: the probe really does lapse,
+    // rather than carrying the `Timestamp::MAX` sentinel that means "no upper
+    // bound" and can never be reached.
+    assert_ne!(probe.expires_at, Timestamp::MAX);
+    assert!(!probe.is_expired(now()));
+    assert!(probe.is_expired(probe.expires_at));
+    Ok(())
+}
+
+#[test]
+fn a_probe_whose_expiry_runs_past_the_end_of_the_clock_is_refused_rather_than_saturated()
+-> Result<()> {
+    // `Timestamp::saturating_add` lands on `Timestamp::MAX`, which
+    // `qip_core::Timestamp` documents as the sentinel meaning "no upper
+    // bound" — so saturating here produced exactly the never-lapsing probe
+    // the ceiling above exists to prevent, by a path the ceiling cannot see.
+    // `Timestamp::MAX` is a real constructible value that point-in-time views
+    // pass around, so this arm is reachable rather than decorative.
+    let book = ExplorationBook::new();
+    let candidates = vec![candidate(ProbeKind::UncertainModel, "a", 0.5, dec!("250"))?];
+
+    // Premise: this validity is inside the ceiling, so the refusal below is
+    // the arithmetic guard and not the ceiling guard firing again. Without
+    // this the test would pass while proving the wrong control.
+    assert!(validity() <= MAXIMUM_PROBE_VALIDITY);
+    // Premise: the instant really is the end of the clock, which is what
+    // makes the addition overflow.
+    assert_eq!(Timestamp::MAX.as_nanos(), i64::MAX);
+
+    let refused = book
+        .plan(dec!("1000"), &candidates, validity(), Timestamp::MAX)
+        .expect_err("an expiry past the end of the clock was accepted");
+    assert_eq!(refused.code(), "numeric");
+    assert!(
+        refused.message().contains("past the end of"),
+        "the refusal did not name the overflow: {}",
+        refused.message()
+    );
+    // What the old arithmetic would have produced, asserted so the reader can
+    // see the defect this guards and not merely the guard.
+    assert_eq!(Timestamp::MAX.saturating_add(validity()), Timestamp::MAX);
+    assert_eq!(book.open_count(), 0);
     Ok(())
 }
