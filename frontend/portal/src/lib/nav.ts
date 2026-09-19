@@ -138,6 +138,18 @@ export const NAV: readonly NavGroup[] = [
         description: "The newest regime change the signal stream carried, and the platform's own account of the gap",
         reads: ["/regimes", "/stream/signals"],
       },
+      {
+        // §40.2's seven questions, each answered by the route that answers
+        // it or shown as the absence it is. The "Explanations" screen of
+        // §40.7's Intelligence area; read-only, because explanation is
+        // understanding and its "Acts on" cell is "Nothing".
+        href: "/intelligence/explanations",
+        label: "Explanations",
+        mark: "XP",
+        description:
+          "The seven questions a person asks of a decision, which route answers each today, and which the platform does not yet answer",
+        reads: ["/cognition/self-model", "/cognition/precedents", "/risk/recalibrations", "/orders", "/models", "/pnl"],
+      },
     ],
   },
   {
