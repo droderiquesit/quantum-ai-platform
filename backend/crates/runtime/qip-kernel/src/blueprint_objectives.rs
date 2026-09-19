@@ -343,11 +343,30 @@ fn stand(ledger: &ObjectiveLedger, slo: &Slo, now: Timestamp) -> ObjectiveStandi
 /// pushes a problem on every cycle of a deployment that is working as
 /// configured teaches an operator that problems are noise. So:
 ///
-/// * A **missed** objective is a problem. Something was measured and the
-///   platform did not reach the target it wrote down.
-/// * An **unobserved** objective is not. Nothing is deployed and six of the
-///   figures do not exist; that is today's honest state and it belongs in the
-///   summary, where it is visible without being an alarm.
+/// * A **missed** objective is a problem **only once the miss is
+///   page-worthy** — [`SloStatus::is_page_worthy`], the SLO module's own bar:
+///   most of the window's error budget gone, over at least twenty
+///   observations. The bar is read from that type rather than chosen here, so
+///   there is one place a paging threshold lives.
+///
+///   This was "every miss is a problem" when the module first landed, and the
+///   workspace run found what that costs inside an hour. A cell that sends one
+///   intent per order nets nothing, so its netting ratio is 1.0, so §49.1's
+///   1.5 floor is missed — on the very first report, from a cell doing exactly
+///   what it was configured to do. `the_learn_stage_retires_a_strategy_...` in
+///   `tests/central.rs` failed on that, and it was right to: a problem raised
+///   on one observation of a platform working as configured is the
+///   [`crate::venue_admission`] lesson again, where an alarm on every cycle
+///   teaches an operator that alarms are noise.
+///
+///   **The count of misses is still in the summary on every pass**, whether or
+///   not one is page-worthy, so nothing is hidden by the bar — what changes is
+///   whether it wakes somebody. And the control can still fire:
+///   `a_miss_sustained_across_a_full_window_is_a_problem_and_a_single_one_is_not`
+///   drives it over the bar and asserts the problem appears.
+/// * An **unobserved** objective is not a problem. Nothing is deployed and six
+///   of the figures do not exist; that is today's honest state and it belongs
+///   in the summary, where it is visible without being an alarm.
 /// * An **unclassified** objective is a problem, and a problem about this
 ///   module rather than about the platform.
 pub fn review(ledger: &ObjectiveLedger, now: Timestamp) -> (Option<String>, Vec<String>) {
@@ -355,12 +374,14 @@ pub fn review(ledger: &ObjectiveLedger, now: Timestamp) -> (Option<String>, Vec<
     let mut problems = Vec::new();
     for (name, standing) in &reviewed.standings {
         match standing {
-            ObjectiveStanding::Missed(status) => problems.push(format!(
-                "blueprint §49.1 objective `{name}` was missed: {:.4} achieved against a target \
-                 of {:.4} over {} observation(s); the objective is the platform's own and is \
-                 not to be relaxed to clear this",
-                status.achieved, status.slo.target, status.observations
-            )),
+            ObjectiveStanding::Missed(status) if status.is_page_worthy() => {
+                problems.push(format!(
+                    "blueprint §49.1 objective `{name}` was missed: {:.4} achieved against a \
+                     target of {:.4} over {} observation(s); the objective is the platform's own \
+                     and is not to be relaxed to clear this",
+                    status.achieved, status.slo.target, status.observations
+                ));
+            }
             ObjectiveStanding::Unclassified => problems.push(format!(
                 "blueprint §49.1 objective `{name}` is neither fed by this process nor listed \
                  in `blueprint_objectives::unmeasured`, so it would be reported as unobserved \

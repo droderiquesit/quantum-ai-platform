@@ -437,3 +437,64 @@ fn an_objective_whose_window_has_aged_out_is_quiet_rather_than_met() {
     );
     assert_eq!(stale.met(), 0, "nothing in the window, so nothing met");
 }
+
+/// A miss has to be sustained before it wakes anybody, and once sustained it
+/// must actually wake somebody.
+///
+/// Both halves matter and the second is the one at risk. Gating the problem on
+/// `SloStatus::is_page_worthy` keeps a single observation quiet — a cell that
+/// nets nothing has a ratio of 1.0 and misses §49.1's 1.5 floor on its very
+/// first report, while doing exactly what it was configured to do, and
+/// `the_learn_stage_retires_a_strategy_...` in `tests/central.rs` failed on
+/// precisely that noise. But a gate that only ever suppresses is a control
+/// that cannot fire, which is the failure this whole module was written to
+/// clean up after. So this drives the same objective past the bar and asserts
+/// the problem appears.
+#[test]
+fn a_miss_sustained_across_a_full_window_is_a_problem_and_a_single_one_is_not() {
+    let mut ledger = ObjectiveLedger::new();
+    ledger.observe(NETTING_RATIO, false, start());
+    // Premise: one failed observation really is a miss, so what follows is
+    // about whether it is *reported* rather than about whether it happened.
+    let single = assess(&ledger, start());
+    assert!(
+        matches!(
+            single.standing(NETTING_RATIO),
+            Some(ObjectiveStanding::Missed(_))
+        ),
+        "premise: one failed observation misses the objective"
+    );
+    let (summary, problems) = review(&ledger, start());
+    let summary = summary.expect("the review always says something");
+    assert!(
+        summary.contains("1 missed"),
+        "the miss is counted in the summary whether or not it pages: {summary}"
+    );
+    assert!(
+        problems.is_empty(),
+        "one observation is not a sustained miss and must not raise an alarm: {problems:?}"
+    );
+
+    // Twenty is `SloStatus::is_page_worthy`'s own floor, read from that type
+    // rather than restated here: nineteen more takes this to twenty.
+    for _ in 0..19 {
+        ledger.observe(NETTING_RATIO, false, start());
+    }
+    let (summary, problems) = review(&ledger, start());
+    let summary = summary.expect("the review always says something");
+    assert!(
+        summary.contains("1 missed"),
+        "still one objective missed, now on twenty observations: {summary}"
+    );
+    assert_eq!(
+        problems.len(),
+        1,
+        "a miss that has burned the window's budget over twenty observations is a problem: \
+         {problems:?}"
+    );
+    assert!(
+        problems[0].contains("`netting-ratio` was missed"),
+        "and the problem names the objective, so an operator knows which target moved: {}",
+        problems[0]
+    );
+}
