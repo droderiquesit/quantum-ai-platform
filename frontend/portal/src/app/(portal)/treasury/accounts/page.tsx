@@ -21,7 +21,15 @@ import {
   type LedgerUser,
   type LedgerUsers,
 } from "@/lib/hooks/useTreasury";
-import { CapabilityChip, Muted, TreasuryHeader, WithdrawalChip } from "../_shared";
+import {
+  CapabilityChip,
+  ExpectedInflowList,
+  InflowDeclarationBlock,
+  InflowPostingNote,
+  Muted,
+  TreasuryHeader,
+  WithdrawalChip,
+} from "../_shared";
 
 /**
  * One account, whole (blueprint §43.3): the mandate it holds, the ledger's own
@@ -92,6 +100,13 @@ function Account() {
           <ResourceView resource={ledger} loadingRows={4}>
             {(data) => <Selected data={data} asked={asked} />}
           </ResourceView>
+        </PanelBody>
+      </Panel>
+
+      <Panel>
+        <PanelHead title="Declaring an expected inflow" />
+        <PanelBody>
+          <InflowDeclarationBlock />
         </PanelBody>
       </Panel>
 
@@ -355,6 +370,9 @@ function AccountDetail({ user, data }: { user: LedgerUser; data: LedgerUsers }) 
                     Available
                   </th>
                   <th scope="col" className="n">
+                    Held, not sized against (uninvestable)
+                  </th>
+                  <th scope="col" className="n">
                     Expected inflows (not available)
                   </th>
                   <th scope="col" className="n">
@@ -373,20 +391,14 @@ function AccountDetail({ user, data }: { user: LedgerUser; data: LedgerUsers }) 
                     <td className="n" data-testid="account-available">
                       {formatDecimal(balance.available)}
                     </td>
+                    <td className="n" data-testid="account-uninvestable">
+                      {formatDecimal(balance.uninvestable)}
+                    </td>
                     <td className="n" data-testid="account-expected">
-                      {formatDecimal(balance.expected_inflows_total)}
-                      {balance.expected_inflows.length > 0 ? (
-                        <span className="block">
-                          <Muted>
-                            {balance.expected_inflows
-                              .map(
-                                (inflow) =>
-                                  `${inflow.reference}: ${formatDecimal(inflow.amount)} declared ${formatTimestamp(inflow.declared_at)}`,
-                              )
-                              .join(" · ")}
-                          </Muted>
-                        </span>
-                      ) : null}
+                      <span data-testid="account-expected-total">
+                        {formatDecimal(balance.expected_inflows_total)}
+                      </span>
+                      <ExpectedInflowList inflows={balance.expected_inflows} testId="account-inflow" />
                     </td>
                     <td className="n">{formatCount(balance.entries)}</td>
                     <td className="num">{formatTimestamp(balance.last_entry_at)}</td>
@@ -398,11 +410,16 @@ function AccountDetail({ user, data }: { user: LedgerUser; data: LedgerUsers }) 
         )}
         <p className="mt-1">
           <Muted>
-            Available is the platform&rsquo;s settled less reserved. Expected inflows are declared
-            and not posted: the ledger keeps them out of available until it has seen the money, and
-            so does this page.
+            Available is the platform&rsquo;s settled less reserved. Held is cash that arrived past
+            the mandate&rsquo;s ceiling: reported, never sized against, and not in available or in
+            any other figure here. Expected inflows are declared and not posted: the ledger keeps
+            them out of available until it has seen the money, and so does this page. None of the
+            three is added to another.
           </Muted>
         </p>
+        {user.balances.length > 0 ? (
+          <InflowPostingNote sentence={data.inflow_posting} testId="account-inflow-posting" />
+        ) : null}
       </div>
 
       <div>

@@ -17,7 +17,14 @@ import {
   type LedgerUser,
   type SessionIdentity,
 } from "@/lib/hooks/useTreasury";
-import { CapabilityChip, Muted, WithdrawalChip } from "../_shared";
+import {
+  CapabilityChip,
+  ExpectedInflowList,
+  InflowDeclarationBlock,
+  InflowPostingNote,
+  Muted,
+  WithdrawalChip,
+} from "../_shared";
 import { EligibilityPanel } from "./EligibilityPanel";
 
 /**
@@ -37,7 +44,12 @@ import { EligibilityPanel } from "./EligibilityPanel";
  * the user says is on its way is a claim the ledger has not yet seen,
  * `CashBalance::available` excludes it by construction, and a page that folded
  * it into a headline number would be sizing the reader's expectations against
- * money that may never arrive.
+ * money that may never arrive. `uninvestable` is a third figure kept apart
+ * from both (ADR 0085 §3): cash that arrived past the mandate's ceiling and
+ * is held, never sized against, and never in `available` — so it has its own
+ * column, labelled as held, and is summed with nothing. Beside every book the
+ * platform's own `inflow_posting` sentence is rendered verbatim, because a
+ * declared inflow reads as "arriving" and this build never posts one.
  *
  * The withdrawal entitlement is rendered as refused with the platform's reason
  * on every row, because that is the only value the platform's type can hold
@@ -142,6 +154,7 @@ export default function LedgerPage() {
                       <UserCard
                         key={listed.user_id}
                         user={decided.get(listed.user_id) ?? listed}
+                        inflowPosting={data.inflow_posting}
                         operatorName={operatorName}
                         permission={permission}
                         onDecided={onDecided}
@@ -155,6 +168,13 @@ export default function LedgerPage() {
               </>
             )}
           </ResourceView>
+        </PanelBody>
+      </Panel>
+
+      <Panel>
+        <PanelHead title="Declaring an expected inflow" />
+        <PanelBody>
+          <InflowDeclarationBlock />
         </PanelBody>
       </Panel>
     </div>
@@ -223,9 +243,10 @@ function LedgerHeader({
           one control records an operator&rsquo;s eligibility decision about a user — who was
           verified, when, where, until when, and against which document — and that record moves no
           money: it names no instrument, side, quantity or price, and it carries no field about
-          capital leaving the platform. There is nothing here that proposes, signs or transfers.
-          ADR 0021 refuses the half of the treasury by which capital leaves and ADR 0023 keeps that
-          in force.
+          capital leaving the platform. There is nothing here that proposes, signs or transfers,
+          and no control that declares or cancels an expected inflow — the panel at the foot of
+          the page says why. ADR 0021 refuses the half of the treasury by which capital leaves and
+          ADR 0023 keeps that in force.
         </p>
         <p className="mt-2 text-[11px] leading-snug text-[color:var(--color-ink-faint)]" data-testid="ledger-session">
           {identity.status === "loading"
@@ -241,11 +262,14 @@ function LedgerHeader({
 
 function UserCard({
   user,
+  inflowPosting,
   operatorName,
   permission,
   onDecided,
 }: {
   user: LedgerUser;
+  /** The body's `inflow_posting` sentence, rendered beside every book. */
+  inflowPosting: string;
   operatorName: string | null;
   permission: EligibilityPermission;
   onDecided: (row: LedgerUser) => void;
@@ -315,6 +339,9 @@ function UserCard({
                       Available
                     </th>
                     <th scope="col" className="n">
+                      Held, not sized against (uninvestable)
+                    </th>
+                    <th scope="col" className="n">
                       Expected inflows (not available)
                     </th>
                     <th scope="col" className="n">
@@ -333,20 +360,14 @@ function UserCard({
                       <td className="n" data-testid="ledger-available">
                         {formatDecimal(balance.available)}
                       </td>
+                      <td className="n" data-testid="ledger-uninvestable">
+                        {formatDecimal(balance.uninvestable)}
+                      </td>
                       <td className="n" data-testid="ledger-expected">
-                        {formatDecimal(balance.expected_inflows_total)}
-                        {balance.expected_inflows.length > 0 ? (
-                          <span className="block">
-                            <Muted>
-                              {balance.expected_inflows
-                                .map(
-                                  (inflow) =>
-                                    `${inflow.reference}: ${formatDecimal(inflow.amount)} declared ${formatTimestamp(inflow.declared_at)}`,
-                                )
-                                .join(" · ")}
-                            </Muted>
-                          </span>
-                        ) : null}
+                        <span data-testid="ledger-expected-total">
+                          {formatDecimal(balance.expected_inflows_total)}
+                        </span>
+                        <ExpectedInflowList inflows={balance.expected_inflows} testId="ledger-inflow" />
                       </td>
                       <td className="n">{formatCount(balance.entries)}</td>
                       <td className="num">{formatTimestamp(balance.last_entry_at)}</td>
@@ -358,11 +379,16 @@ function UserCard({
           )}
           <p className="mt-1">
             <Muted>
-              Available is the platform&rsquo;s settled less reserved. Expected inflows are declared,
-              not posted, and are shown beside the balance rather than in it: the ledger excludes
-              them from available until it has seen the money, and so does this page.
+              Available is the platform&rsquo;s settled less reserved. Held is cash that arrived past
+              the mandate&rsquo;s ceiling: it is reported, never sized against, and not in available
+              or in any other figure here. Expected inflows are declared, not posted, and are shown
+              beside the balance rather than in it: the ledger excludes them from available until
+              it has seen the money, and so does this page. None of the three is added to another.
             </Muted>
           </p>
+          {user.balances.length > 0 ? (
+            <InflowPostingNote sentence={inflowPosting} testId="ledger-inflow-posting" />
+          ) : null}
         </div>
       </div>
 

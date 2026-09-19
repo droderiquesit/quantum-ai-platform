@@ -6,8 +6,9 @@ import { Panel, PanelBody, PanelHead } from "@/components/data/Panel";
 import { StateBlock } from "@/components/data/States";
 import { platform } from "@/lib/api/client";
 import type { SystemStatus } from "@/lib/api/types";
+import { formatDecimal, formatTimestamp } from "@/lib/format";
 import { useResource } from "@/lib/hooks/useResource";
-import type { Capability } from "@/lib/hooks/useTreasury";
+import { INFLOW_ROUTES, type Capability, type ExpectedInflow } from "@/lib/hooks/useTreasury";
 
 /**
  * What every treasury page carries, and why it is one component.
@@ -169,5 +170,122 @@ export function Quote({ children, tone }: { children: ReactNode; tone?: "warn" |
     <p className="text-[11.5px] leading-relaxed" style={{ color: colour }}>
       {children}
     </p>
+  );
+}
+
+// --- expected inflows and the held bucket (ADR 0085) --------------------------------
+
+/**
+ * The declared inflows of one book, each by its reference, amount and the
+ * instant it was declared — a list and not a sentence, so a reference can be
+ * read against the wire that carries it.
+ *
+ * Every figure is the platform's text through `formatDecimal`, which groups
+ * digits and never rounds or sums. There is deliberately no total here: the
+ * platform's own `expected_inflows_total` is rendered by the caller beside
+ * this list, and a list that summed its own rows would be a second figure for
+ * the same fact, free to disagree with the first the day the ledger's rule
+ * changed.
+ */
+export function ExpectedInflowList({
+  inflows,
+  testId,
+}: {
+  inflows: readonly ExpectedInflow[];
+  /** The per-row test id, so the ledger and account pages stay distinguishable. */
+  testId: string;
+}) {
+  if (inflows.length === 0) return null;
+  return (
+    <ul className="mt-0.5 flex flex-col gap-0.5">
+      {inflows.map((inflow) => (
+        <li key={inflow.reference} data-testid={testId} data-reference={inflow.reference}>
+          <Muted>
+            <span className="num">{inflow.reference}</span>: {formatDecimal(inflow.amount)} declared{" "}
+            {formatTimestamp(inflow.declared_at)}
+          </Muted>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * The platform's `inflow_posting` sentence, rendered as it came.
+ *
+ * The contract says render it beside any expected inflow shown, and ADR 0085
+ * §2 says why: a declared inflow reads as "arriving" to anyone who sees it,
+ * and the blueprint's flow continues `detected → settled → available`, which
+ * this build does not. The sentence is the platform's constant and not this
+ * console's paraphrase, so that the day the platform starts posting inflows
+ * and deletes the constant, the page stops saying it does not — a paraphrase
+ * here would go on saying it forever.
+ */
+export function InflowPostingNote({ sentence, testId }: { sentence: string; testId: string }) {
+  return (
+    <p className="mt-1 text-[11.5px] leading-relaxed" data-testid={testId}>
+      <span className="eyebrow mr-1.5">posting</span>
+      <span className="text-[color:var(--color-warn)]">{sentence}</span>
+    </p>
+  );
+}
+
+/**
+ * The two routes by which an expected inflow is declared and cancelled, and
+ * why this console offers no control for either.
+ *
+ * The person reading a declared inflow is the person who might want to
+ * cancel it, or declare the next one, so the routes are named rather than
+ * hidden. But the platform refuses both in fact for every credential it
+ * accepts — the routes date the operator by an authentication instant, which
+ * a standing bearer token cannot carry (ADR 0065, ADR 0075) — so a form here
+ * would be a control whose every submission is refused, and a page that
+ * offered one would be pretending to a capability it does not have.
+ *
+ * What is rendered as the refusal is the route contract's statement and it
+ * is labelled as such. `venue_views.rs` serves `reinstatement_refusal` — the
+ * platform's own answer for the caller — and the withdrawals page renders
+ * that; `ledger_views.rs` serves no such field for these routes, and the one
+ * way to obtain the platform's own sentence would be to attempt the write.
+ * This console does not. Saying "the platform refused" about a sentence the
+ * platform never returned would be the console's prediction wearing the
+ * platform's voice; the block says whose sentence it is instead.
+ */
+export function InflowDeclarationBlock() {
+  return (
+    <div className="flex flex-col gap-2" data-testid="inflow-declaration">
+      <p className="max-w-[90ch] text-[12px] leading-relaxed text-[color:var(--color-ink-dim)]">
+        An expected inflow is declared and cancelled at two operator routes the platform serves
+        (ADR 0085):{" "}
+        <span className="num" data-testid="inflow-route-declare">
+          {INFLOW_ROUTES.declare.method} {INFLOW_ROUTES.declare.path}
+        </span>{" "}
+        and{" "}
+        <span className="num" data-testid="inflow-route-cancel">
+          {INFLOW_ROUTES.cancel.method} {INFLOW_ROUTES.cancel.path}
+        </span>
+        , both at the {INFLOW_ROUTES.role} role. A declaration is a claim that a wire is on its
+        way; it receives, posts and invests nothing, and the only thing this build can do with one
+        is cancel it. This console offers no form to declare or cancel one and the gateway
+        declares no write against either path; the routes are named here because the platform
+        serves them, not because this page can call them.
+      </p>
+      <StateBlock
+        tone="warn"
+        label="declaration refused"
+        headline="A declaration or cancellation at either route is refused for every credential this console could present."
+      >
+        <p data-testid="inflow-declaration-refusal">{INFLOW_ROUTES.refused_in_fact}</p>
+        <p
+          className="mt-1.5 text-[color:var(--color-ink-faint)]"
+          data-testid="inflow-declaration-refusal-source"
+        >
+          That is the route contract&rsquo;s statement ({INFLOW_ROUTES.refusal_stated_by}), not an
+          answer the platform returned to this page: <span className="num">GET /ledger/users</span>{" "}
+          carries no refusal for these routes, and this console does not attempt the write to
+          obtain one.
+        </p>
+      </StateBlock>
+    </div>
   );
 }
