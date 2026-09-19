@@ -37,8 +37,8 @@
 use crate::central::darkness::{RegionSpokeAgain, RegionTransition, RegionWentDark};
 use crate::central::{
     AbsorbedFill, BeliefIssue, CellIngestion, CellOutcome, CellReport, CentralPlane,
-    DispositionOutcome, EpisodicIssue, FamilyStructureJournal, HorizonArming, LearningReport,
-    WhitelistIssue,
+    DispositionOutcome, EpisodicIssue, FamilyStructureJournal, GrantManifests, HorizonArming,
+    LearningReport, RegionMembership, WhitelistIssue,
 };
 use crate::config::PlatformConfig;
 use crate::counterfactual_trial::{CounterfactualTrial, outcome as trial_outcome};
@@ -4425,6 +4425,33 @@ impl Platform {
     /// is exactly the fact an operator asking why the desk never installs
     /// needs to find. A refusal is not journaled here, because nothing was
     /// shipped; it is returned, naming the entry, for the shipper to log.
+    /// Partition every configured cell's share of its region's grant for the
+    /// `capital_grants` slot (ADR 0039), under this platform's own drawdown.
+    ///
+    /// The kernel intent the API's policy producer raises, in the class of
+    /// [`Self::issue_cycle_whitelist`]: `pending_policy` asks once per cycle
+    /// as it builds the payloads and supplies nothing a caller sent — the
+    /// cell list is the deployment's configured cells and the membership is
+    /// the declaration the composition root parsed at start. The drawdown
+    /// is read here and not taken as an argument, so the shares this ships
+    /// and the envelopes the centre issues come from one number rather than
+    /// two readings a caller could separate. `&mut` because the plane
+    /// records the bound each lit cell was partitioned at, which is what a
+    /// dark reading later freezes (ADR 0079); the API used to reach the
+    /// plane through `central_mut` for this and the boundary suite refused
+    /// it, rightly — a route mutating the plane directly is the shape that
+    /// suite exists to stop.
+    pub fn issue_region_shares<'a>(
+        &mut self,
+        cells: impl IntoIterator<Item = &'a str>,
+        membership: &RegionMembership,
+        now: Timestamp,
+    ) -> GrantManifests {
+        let drawdown = self.drawdown();
+        self.central
+            .grant_manifests(cells, membership, drawdown, now)
+    }
+
     pub fn issue_cycle_whitelist(&mut self, cell: &str, now: Timestamp) -> Result<WhitelistIssue> {
         let issue = self.central.cycle_whitelist_for(cell, now)?;
         let correlation_id = self

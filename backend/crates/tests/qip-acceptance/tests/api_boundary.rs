@@ -1154,6 +1154,21 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         // the slot's freshness and not its values, so nothing a caller of the
         // API sends can widen what a cell may do with it.
         "issue_belief_priors",
+        // `issue_region_shares` — the same class as `issue_cycle_whitelist`
+        // and admitted on the same terms. `pending_policy` asks the platform
+        // for slot 7's manifests once per cycle as it builds the payloads,
+        // and the API supplies nothing a caller sent: the cell list is the
+        // deployment's configured cells, the membership is the declaration
+        // the composition root parsed at start, and the instant is the
+        // cycle's. The drawdown the shares are sized under is read inside
+        // the kernel and cannot be passed, so the shares and the envelopes
+        // come from one number. `&mut` because the plane records the bound
+        // each lit cell was partitioned at — the value a dark reading later
+        // freezes (ADR 0079) — and for nothing else; a manifest names only
+        // grants the centre already issued, so nothing here can widen what a
+        // cell may commit. The API reached the plane through `central_mut`
+        // for this until this test refused it, which is the test working.
+        "issue_region_shares",
         "observe",
         "observe_statement",
         "approve_promotion",

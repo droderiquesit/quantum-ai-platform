@@ -774,18 +774,13 @@ pub fn pending_policy(
     // Without one, every live grant ships to every cell — the shape the ADR
     // grows out of, said out loud rather than defaulted silently, because
     // two nodes under one grant could each spend it.
-    // Read before the plane is borrowed mutably: `grant_manifests` records
-    // the share bound each lit cell is partitioned at, which is what a dark
-    // reading later freezes (ADR 0079), so the call needs the plane and the
-    // drawdown is the platform's.
-    let drawdown = platform.drawdown();
+    // Raised as the kernel's own intent rather than reached through the
+    // plane: the platform reads its drawdown and records the bound each lit
+    // cell is partitioned at, which is what a dark reading later freezes
+    // (ADR 0079). The API supplies the configured cells, the declared
+    // membership and the instant, and nothing a caller sent.
     let manifests = regions.map(|membership| {
-        platform.central_mut().grant_manifests(
-            cells.iter().map(String::as_str),
-            membership,
-            drawdown,
-            now,
-        )
+        platform.issue_region_shares(cells.iter().map(String::as_str), membership, now)
     });
     let mut pending = PendingPolicy::default();
     // Once per cycle, before the loop: the memory is the platform's, so every
