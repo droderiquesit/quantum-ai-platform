@@ -1618,9 +1618,7 @@ mod tests {
             .into_iter()
             .find(|refused| refused.source_id == "deribit-options")
             .expect("the Deribit evaluation is on the refusal register");
-        assert!(
-            !qip_market_ingestion::connector_feed::KNOWN_SOURCES.contains(&"deribit-options")
-        );
+        assert!(!qip_market_ingestion::connector_feed::KNOWN_SOURCES.contains(&"deribit-options"));
         let message = admit("deribit-options", LicensingClass::Restricted, now())
             .expect_err("a source whose terms refuse it was admitted")
             .message()
@@ -1646,14 +1644,18 @@ mod tests {
         );
     }
 
-    /// The register is consulted before the catalogue, so a refused source
-    /// cannot be admitted by writing an entry for it.
+    /// The register overrides the catalogue, so a refused source cannot be
+    /// admitted by writing an entry for it.
     ///
     /// The failure this prevents is the quiet one: a lane that finds no
     /// catalogue entry for Deribit, writes one under a licence identifier of
     /// its own choosing, and is admitted by a gate that only ever looked at
     /// the catalogue. Here the entry grants everything and the gate still
-    /// refuses on the clause.
+    /// refuses on the clause. What this proves is the override, not the
+    /// order of the two lookups: a mutation moving the register check after
+    /// the catalogue lookup left this test passing, because an entry still
+    /// could not admit — and failed the test above, whose no-entry path is
+    /// where the order shows.
     #[test]
     fn a_refused_source_cannot_be_admitted_by_writing_a_catalogue_entry_for_it() -> Result<()> {
         let entries = vec![CatalogueEntry {
@@ -1661,17 +1663,27 @@ mod tests {
             expected_class: LicensingClass::Restricted,
             posture: LicensingPosture::declared(SourceLicense::new(
                 "an-identifier-nobody-reviewed",
-                [Usage::Research, Usage::Derive, Usage::Trade, Usage::Redistribute],
+                [
+                    Usage::Research,
+                    Usage::Derive,
+                    Usage::Trade,
+                    Usage::Redistribute,
+                ],
             )?),
         }];
         // Premise: the entry on its own would pass every usage question.
         for usage in REQUIRED_USAGES {
             assert!(entries[0].posture.legality_for(usage, now()).is_permitted());
         }
-        let message = admit_from(&entries, "deribit-options", LicensingClass::Restricted, now())
-            .expect_err("a catalogue entry admitted a source the register refuses")
-            .message()
-            .to_string();
+        let message = admit_from(
+            &entries,
+            "deribit-options",
+            LicensingClass::Restricted,
+            now(),
+        )
+        .expect_err("a catalogue entry admitted a source the register refuses")
+        .message()
+        .to_string();
         assert!(
             message.contains("for personal use only"),
             "the refusal is not the register's clause: {message}"
@@ -1689,7 +1701,10 @@ mod tests {
     #[test]
     fn no_refused_source_has_a_connector_or_a_catalogue_entry() -> Result<()> {
         let refused = refusals();
-        assert!(!refused.is_empty(), "the register is empty, so this guards nothing");
+        assert!(
+            !refused.is_empty(),
+            "the register is empty, so this guards nothing"
+        );
         let catalogued = catalogue()?;
         for entry in &refused {
             assert!(
