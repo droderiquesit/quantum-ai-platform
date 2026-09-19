@@ -194,6 +194,20 @@ fn armed_cell() -> Result<Cell> {
     Ok(cell)
 }
 
+/// One pass, the way `run_pass` drives one: the gateway is moved to the pass
+/// instant before the cell works it. Since ADR 0084 an order placed for an
+/// instant past the pass the simulated gateway is on is held, not sent, so a
+/// test that worked the cell without moving the gateway would be asserting
+/// on orders the venue had not yet been given.
+fn pass(
+    cell: &mut Cell,
+    gateway: &mut SimulatedGateway,
+    at: Timestamp,
+) -> Result<qip_edge::cell::WorkReport> {
+    gateway.advance_to(at)?;
+    cell.work(at, gateway)
+}
+
 // --- the seam, end to end ----------------------------------------------------
 
 #[test]
@@ -205,7 +219,7 @@ fn a_cell_order_reaches_the_matching_engine_and_reconciles_through_drop_copy() -
     // the buy the strategy raises has something real to cross.
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
 
-    let report = cell.work(t(20), &mut gateway)?;
+    let report = pass(&mut cell, &mut gateway, t(20))?;
     assert!(
         report.refusals.is_empty(),
         "a fully-equipped cell refused: {:?}",
@@ -281,7 +295,7 @@ fn a_partial_fill_at_the_venue_is_booked_for_what_traded_and_the_rest_rests_with
     // number when the floor landed.
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("20"), t(15))?;
 
-    let report = cell.work(t(20), &mut gateway)?;
+    let report = pass(&mut cell, &mut gateway, t(20))?;
     let order = report.orders.first().expect("an order was sent");
     assert_eq!(
         report.fills.len(),
@@ -352,7 +366,10 @@ fn an_unlisted_instrument_is_listed_synthetically_and_stamped_as_such() -> Resul
     gateway.seed_touch(&subject, Side::Sell, dec!("42"), dec!("10"), start())?;
 
     let mut probe = gateway;
-    // Place against it to prove the listing admits real orders...
+    // Place against it to prove the listing admits real orders. The gateway
+    // is moved to the placement instant first: since ADR 0084 an instant
+    // past the pass the gateway is on is a hold, not a send.
+    probe.advance_to(t(1))?;
     probe.place(
         "order-1",
         &subject,
@@ -382,7 +399,9 @@ fn the_same_seed_replays_the_same_session_exactly() -> Result<()> {
         let mut fills = Vec::new();
         for index in 0..40 {
             // Some of these the venue refuses from its own draw; determinism
-            // means the same ones, in the same order, every run.
+            // means the same ones, in the same order, every run. Each
+            // placement is on the pass it is placed at, so none is held.
+            gateway.advance_to(t(index))?;
             let _ = gateway.place(
                 &format!("order-{index}"),
                 &subject,
@@ -615,7 +634,7 @@ fn a_cell_with_no_policy_sizes_at_the_conservative_floor_and_a_fresh_payload_res
     let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
 
-    let report = cell.work(t(20), &mut gateway)?;
+    let report = pass(&mut cell, &mut gateway, t(20))?;
     let order = report.orders.first().expect("an order was sent");
     // The strategy asks for 100 (the harness's compiled strategy); the floor
     // multiplier is 0.375.
@@ -630,7 +649,7 @@ fn a_cell_with_no_policy_sizes_at_the_conservative_floor_and_a_fresh_payload_res
     fresh_cell.apply_policy(verified_policy(1, false, true, t(18)), t(18))?;
     let mut fresh_gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
     fresh_gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
-    let fresh_report = fresh_cell.work(t(20), &mut fresh_gateway)?;
+    let fresh_report = pass(&mut fresh_cell, &mut fresh_gateway, t(20))?;
     let fresh_order = fresh_report.orders.first().expect("an order was sent");
     assert_eq!(
         fresh_order.quantity,
@@ -651,7 +670,7 @@ fn a_central_policy_halt_stops_the_cell_and_only_a_newer_payload_releases_it() -
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
 
     // Premise: the cell trades before the halt.
-    let before = cell.work(t(16), &mut gateway)?;
+    let before = pass(&mut cell, &mut gateway, t(16))?;
     assert!(
         !before.orders.is_empty(),
         "the cell did not trade before the halt, so the halt below stops nothing"
@@ -659,7 +678,7 @@ fn a_central_policy_halt_stops_the_cell_and_only_a_newer_payload_releases_it() -
 
     cell.apply_policy(verified_policy(2, true, true, t(17)), t(17))?;
     assert!(cell.is_halted(), "a policy halt did not halt the cell");
-    let halted = cell.work(t(18), &mut gateway)?;
+    let halted = pass(&mut cell, &mut gateway, t(18))?;
     assert!(halted.orders.is_empty(), "a halted cell placed an order");
     assert!(
         halted
@@ -686,7 +705,7 @@ fn a_central_policy_halt_stops_the_cell_and_only_a_newer_payload_releases_it() -
         !cell.is_halted(),
         "a newer releasing payload did not release"
     );
-    let after = cell.work(t(21), &mut gateway)?;
+    let after = pass(&mut cell, &mut gateway, t(21))?;
     assert!(
         !after.orders.is_empty(),
         "the released cell did not resume trading"
@@ -705,14 +724,14 @@ fn a_strategy_that_recognises_situations_pauses_when_episodic_memory_goes_stale(
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
     // No policy has ever arrived, so episodic memory reads unavailable — and a
     // price-only strategy must trade through that regardless.
-    let priced = cell.work(t(16), &mut gateway)?;
+    let priced = pass(&mut cell, &mut gateway, t(16))?;
     assert!(
         !priced.orders.is_empty(),
         "a price-only strategy paused on an episodic loss it does not depend on"
     );
 
     cell.classify(STRATEGY, StrategyClass::SituationalRecognition)?;
-    let paused = cell.work(t(17), &mut gateway)?;
+    let paused = pass(&mut cell, &mut gateway, t(17))?;
     assert!(
         paused.orders.is_empty(),
         "a situational-recognition strategy traded without episodic memory"
@@ -749,7 +768,7 @@ fn a_halt_command_stops_the_cell_and_a_payload_racing_it_cannot_release_it() -> 
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("100"), t(15))?;
 
     // Premise: trading before the halt.
-    assert!(!cell.work(t(16), &mut gateway)?.orders.is_empty());
+    assert!(!pass(&mut cell, &mut gateway, t(16))?.orders.is_empty());
 
     cell.apply_halt(
         verified_halt(t(17), "drop-copy disagreement at the centre"),
@@ -941,7 +960,7 @@ fn two_strategies_agreeing_send_one_order_carrying_both_contributors() -> Result
     let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
 
-    let report = cell.work(t(20), &mut gateway)?;
+    let report = pass(&mut cell, &mut gateway, t(20))?;
     // The premise: both strategies really did fire. A netting assertion over
     // one signal would pass while proving that the second never ran.
     assert_eq!(
@@ -990,7 +1009,7 @@ fn two_strategies_disagreeing_cross_internally_and_the_venue_sees_nothing() -> R
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
     gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
 
-    let report = cell.work(t(20), &mut gateway)?;
+    let report = pass(&mut cell, &mut gateway, t(20))?;
     // Premise first, and it is the whole test: both strategies fired, in
     // opposite directions. Without this the assertions below would pass on a
     // cell that simply did nothing.
@@ -1042,7 +1061,7 @@ fn the_netting_ratio_reports_what_the_strategy_set_actually_cost() -> Result<()>
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
     gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
 
-    let report = cell.work(t(20), &mut gateway)?;
+    let report = pass(&mut cell, &mut gateway, t(20))?;
     // Premise: both fired, in opposite directions, and something survived the
     // offset. Without all three the ratio below would describe a different
     // situation than the one the test claims to cover.
@@ -1102,7 +1121,7 @@ fn a_strategy_its_own_envelope_refuses_never_reaches_the_netting_set() -> Result
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
     gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
 
-    let report = cell.work(t(20), &mut gateway)?;
+    let report = pass(&mut cell, &mut gateway, t(20))?;
     // Premise, in three parts: both strategies fired, they disagreed, and the
     // second was genuinely refused by its own envelope. Drop any one and the
     // assertion below describes a different situation.
@@ -1153,7 +1172,7 @@ fn the_delta_the_centre_receives_names_every_strategy_behind_a_netted_order() ->
     let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
 
-    let report = cell.work(t(20), &mut gateway)?;
+    let report = pass(&mut cell, &mut gateway, t(20))?;
     assert_eq!(
         report.signals.len(),
         2,
@@ -1204,7 +1223,7 @@ fn a_partial_offset_is_crossed_internally_at_the_mid_and_booked_to_both_sides() 
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
     gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
 
-    let report = cell.work(t(20), &mut gateway)?;
+    let report = pass(&mut cell, &mut gateway, t(20))?;
     // Premise: they fired, they disagreed, and a remainder survived — so the
     // cross below is a genuine partial offset rather than a total one.
     assert_eq!(
@@ -1304,7 +1323,7 @@ fn a_cross_above_the_forty_percent_cap_is_refused_whole_rather_than_trimmed() ->
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
     gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
 
-    let report = cell.work(t(20), &mut gateway)?;
+    let report = pass(&mut cell, &mut gateway, t(20))?;
     assert_eq!(
         report.signals.len(),
         2,
@@ -1346,7 +1365,7 @@ fn two_strategies_that_agree_are_not_crossed_against_each_other() -> Result<()> 
     let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
 
-    let report = cell.work(t(20), &mut gateway)?;
+    let report = pass(&mut cell, &mut gateway, t(20))?;
     assert_eq!(
         report.signals.len(),
         2,
@@ -1385,7 +1404,7 @@ fn a_netted_order_spends_every_contributing_strategy_s_own_envelope() -> Result<
     gateway.seed_touch(&object("ACME"), Side::Sell, dec!("100"), dec!("500"), t(15))?;
     gateway.seed_touch(&object("ACME"), Side::Buy, dec!("100"), dec!("500"), t(15))?;
 
-    let report = cell.work(t(20), &mut gateway)?;
+    let report = pass(&mut cell, &mut gateway, t(20))?;
     assert_eq!(report.orders.len(), 1, "the premise needs one netted order");
     let order = &report.orders[0];
     assert_eq!(
@@ -1468,7 +1487,7 @@ fn pass_against(kind: SignalKind, resting: Side) -> Result<(Decimal, usize, Book
         "the premise failed: the seeded touch did not rest"
     );
 
-    let report = cell.work(t(20), &mut gateway)?;
+    let report = pass(&mut cell, &mut gateway, t(20))?;
     // Premise: the signal was the kind asked for and the venue accepted the
     // one order, so whatever happened next happened to that order.
     assert_eq!(report.signals.len(), 1, "the strategy did not fire once");

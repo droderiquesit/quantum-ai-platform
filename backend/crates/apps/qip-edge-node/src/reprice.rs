@@ -67,7 +67,7 @@ use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, OrderId};
 use qip_core::time::Timestamp;
-use qip_edge::cell::{Cell, ExecutionReport, OpenOrder, Placer};
+use qip_edge::cell::{Cell, ExecutionReport, OpenOrder, Placer, UnreleasedOrder};
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::priority::{Candidate, allocate, worth};
 use qip_edge::telemetry::CellMetrics;
@@ -816,6 +816,13 @@ impl Placer for RequotingPlacer<'_> {
             }
         }
         reports
+    }
+
+    fn unreleased(&mut self) -> Vec<UnreleasedOrder> {
+        // Passed through unmapped: a replacement child is placed at the pass
+        // instant and so is never held, and an unreleased order therefore
+        // always carries the cell's own id.
+        self.venue.unreleased()
     }
 
     fn can_cancel(&self) -> bool {
