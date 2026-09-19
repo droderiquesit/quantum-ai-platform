@@ -315,10 +315,7 @@ impl RegistrationRegistry {
             // The National Weather Service serves its observations with no
             // account and no key, and its own guidance asks for politeness
             // rather than for registration.
-            .with_requirement(
-                "nws-station-observations",
-                RegistrationRequirement::Keyless,
-            )
+            .with_requirement("nws-station-observations", RegistrationRequirement::Keyless)
             .with_requirement("alpaca-daily-bars", RegistrationRequirement::Account)
             .with_requirement("kalshi-markets", RegistrationRequirement::Account)
     }

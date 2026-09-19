@@ -873,7 +873,11 @@ impl SourceConnector for NwsStationObservationsConnector {
     }
 }
 
+// The workspace denies `panic_in_result_fn` for production code; a test that
+// returns `Result` so it can use `?` on the manifest loader still has to
+// assert, and the abort is the reporting mechanism rather than a defect.
 #[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
 mod tests {
     use super::*;
 

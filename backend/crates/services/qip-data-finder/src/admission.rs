@@ -1097,7 +1097,8 @@ mod tests {
         // Premise: the class the gate is handed is the shipped manifest's, so
         // this is the call a composition root makes and not a class chosen to
         // make the entry agree.
-        let class = qip_market_ingestion::connector_feed::shipped_class("nws-station-observations")?;
+        let class =
+            qip_market_ingestion::connector_feed::shipped_class("nws-station-observations")?;
         assert_eq!(class, LicensingClass::Public);
         let decision = admit("nws-station-observations", class, now())?;
         assert_eq!(
