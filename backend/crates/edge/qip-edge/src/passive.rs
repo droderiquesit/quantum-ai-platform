@@ -36,11 +36,34 @@
 //! unchanged and the cycle has been delayed a pass for nothing. So a tie at the
 //! top declines the mechanism and the cycle goes out whole, which is what the
 //! cell did before this existed.
+//!
+//! # Resting is not free, and the threshold is the operator's own number
+//!
+//! Waiting costs a pass. A cycle that would have gone out in one now goes out
+//! in two, and an arbitrage is an opportunity with a shelf life — the price
+//! that made it worth taking may not survive the wait. So the mechanism must
+//! be worth its cost, and on two venues a millisecond apart it is not: it
+//! would trade a whole pass to remove a millisecond from the exposure window.
+//! That is not a hypothetical. This module engaged unconditionally on any
+//! measured difference for exactly one commit, and
+//! `two_venues_that_answer_together_keep_trading_and_their_fill_times_are_published`
+//! — a test written for the dispersion gate, not for this — caught it, because
+//! its two venues are one and two milliseconds apart under a five-millisecond
+//! bound and it stopped sending the cycle in one pass.
+//!
+//! The threshold is [`crate::dispersion::DispersionPolicy::bound`] and
+//! deliberately not a number of this module's own. The bound is already the
+//! operator's statement of how far apart a cycle's legs may arrive and still
+//! be one position; a venue whose *own* median answer takes longer than that
+//! is, in the operator's own units, a venue that cannot be part of a
+//! simultaneous set. That is what "thin" means here, and it is measured rather
+//! than declared. A second threshold would be a second opinion about the same
+//! question, and the two would disagree.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
 
 use qip_contracts::VenueId;
+use qip_core::Duration;
 
 /// Which leg of a cycle rests first, or why none does.
 ///
@@ -81,6 +104,10 @@ pub enum WholeReason {
     /// Two or more venues share the longest median. See the module
     /// documentation for why a tie declines.
     NoSlowest,
+    /// The slowest venue answers inside the dispersion bound, so there is
+    /// nothing worth removing from the exposure window and a pass spent
+    /// waiting would cost more than it saved.
+    WithinBound,
 }
 
 impl WholeReason {
@@ -91,17 +118,27 @@ impl WholeReason {
             Self::SingleVenue => "single_venue",
             Self::Unmeasured => "unmeasured",
             Self::NoSlowest => "no_slowest",
+            Self::WithinBound => "within_bound",
         }
     }
 }
 
 /// What became of a cycle the mechanism took an interest in.
 ///
-/// Counted rather than inferred from the journal, and `Whole` is in the
-/// enumeration on purpose: without it a cell that never rested a leg and a
-/// cell that never ran a cycle read identically on the series, which is the
-/// same failure `qip_edge_fill_time_unmeasured_venues` exists to close beside
-/// the dispersion gate.
+/// The declining arm carries its [`WholeReason`] rather than flattening to
+/// one `whole` label, and that is the difference between a series that can be
+/// acted on and one that only proves the code ran. A cell that never rests a
+/// cycle because it is a single-venue cell needs nothing done about it; a cell
+/// that never rests one because two of its venues have been equally slow for a
+/// week is a cell whose fill-time measurement has stopped discriminating. Both
+/// read as `whole` on a flattened series, and an operator would have to go to
+/// the journal to tell them apart — which is the thing a series exists to
+/// save.
+///
+/// The declining arms are also the denominator. Without them a cell that has
+/// never rested a leg and a cell that has never run a cycle are the same empty
+/// series, which is the failure `qip_edge_fill_time_unmeasured_venues` exists
+/// to close beside the dispersion gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PassiveOutcome {
     /// A leg was sent alone and is resting. The rest of the cycle has not
@@ -115,26 +152,28 @@ pub enum PassiveOutcome {
     /// exists to produce: under the all-at-once discipline the fast legs
     /// would already have been crossed.
     Abandoned,
-    /// The cycle went out whole, the mechanism declining for one of
-    /// [`WholeReason`]'s three causes.
-    Whole,
+    /// The cycle went out whole, the mechanism having declined for this
+    /// reason.
+    Whole(WholeReason),
 }
 
 impl PassiveOutcome {
     /// The label this outcome is counted under: one source-file literal per
-    /// arm, so the series is bounded by this enum.
+    /// arm here and per arm of [`WholeReason`], six in all, so the series is
+    /// bounded by the two enums and never by a venue name or a cycle id.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Rested => "rested",
             Self::Completed => "completed",
             Self::Abandoned => "abandoned",
-            Self::Whole => "whole",
+            Self::Whole(reason) => reason.as_str(),
         }
     }
 }
 
 /// Which leg of `legs` — venues in plan order — should rest first, given what
-/// each venue's fill time has been measured at.
+/// each venue's fill time has been measured at and how far apart `bound` says
+/// a cycle's legs may arrive.
 ///
 /// `medians` holds an entry only for a venue the cell has measured; a venue
 /// absent from it is unmeasured, which is not the same as fast. That
@@ -146,7 +185,11 @@ impl PassiveOutcome {
 /// cycle with two legs at one slow venue rests the earlier of them. Plan
 /// order is least reversible first, and resting the later leg would leave the
 /// more reversible one outstanding while the cell waited.
-pub fn choose(legs: &[VenueId], medians: &BTreeMap<String, Duration>) -> PassiveChoice {
+pub fn choose(
+    legs: &[VenueId],
+    medians: &BTreeMap<String, Duration>,
+    bound: Duration,
+) -> PassiveChoice {
     let distinct: BTreeSet<&str> = legs.iter().map(VenueId::as_str).collect();
     if distinct.len() < 2 {
         return PassiveChoice::Whole(WholeReason::SingleVenue);
@@ -172,6 +215,14 @@ pub fn choose(legs: &[VenueId], medians: &BTreeMap<String, Duration>) -> Passive
         // order path and the crate forbids the panic either way.
         return PassiveChoice::Whole(WholeReason::Unmeasured);
     };
+    // Strictly slower than the bound, never merely at it. A venue that
+    // answers in exactly the time the operator says legs may be apart is
+    // inside what they permitted, and refusing to trade in one pass at the
+    // boundary would make the bound mean one thing here and another in
+    // `FillTimes::assess`, which also compares strictly.
+    if median <= bound {
+        return PassiveChoice::Whole(WholeReason::WithinBound);
+    }
     let tied = measured
         .iter()
         .filter(|(_, other)| *other == median)
@@ -198,18 +249,24 @@ mod tests {
         VenueId::new(name)
     }
 
-    fn medians(pairs: &[(&str, u64)]) -> BTreeMap<String, Duration> {
+    fn medians(pairs: &[(&str, i64)]) -> BTreeMap<String, Duration> {
         pairs
             .iter()
             .map(|(name, millis)| ((*name).to_string(), Duration::from_millis(*millis)))
             .collect()
     }
 
+    /// Small enough that every venue in these fixtures is over it, except
+    /// where a test is about the bound itself.
+    fn bound() -> Duration {
+        Duration::from_millis(5)
+    }
+
     #[test]
     fn a_cycle_whose_legs_are_all_at_one_venue_rests_nothing() {
         let legs = vec![venue("alpha"), venue("alpha")];
         assert_eq!(
-            choose(&legs, &medians(&[("alpha", 40)])),
+            choose(&legs, &medians(&[("alpha", 40)]), bound()),
             PassiveChoice::Whole(WholeReason::SingleVenue)
         );
     }
@@ -221,7 +278,7 @@ mod tests {
         // about measurement and not about the cycle's shape.
         assert_ne!(legs[0].as_str(), legs[1].as_str());
         assert_eq!(
-            choose(&legs, &medians(&[("alpha", 40)])),
+            choose(&legs, &medians(&[("alpha", 40)]), bound()),
             PassiveChoice::Whole(WholeReason::Unmeasured)
         );
     }
@@ -232,7 +289,8 @@ mod tests {
         assert_eq!(
             choose(
                 &legs,
-                &medians(&[("alpha", 40), ("beta", 90), ("gamma", 12)])
+                &medians(&[("alpha", 40), ("beta", 90), ("gamma", 12)]),
+                bound()
             ),
             PassiveChoice::Rest {
                 position: 1,
@@ -250,7 +308,7 @@ mod tests {
         let table = medians(&[("alpha", 90), ("beta", 90), ("gamma", 12)]);
         assert_eq!(table.len(), 3);
         assert_eq!(
-            choose(&legs, &table),
+            choose(&legs, &table, bound()),
             PassiveChoice::Whole(WholeReason::NoSlowest)
         );
     }
@@ -259,12 +317,66 @@ mod tests {
     fn the_earlier_of_two_legs_at_the_slow_venue_is_the_one_that_rests() {
         let legs = vec![venue("beta"), venue("alpha"), venue("beta")];
         assert_eq!(
-            choose(&legs, &medians(&[("alpha", 40), ("beta", 90)])),
+            choose(&legs, &medians(&[("alpha", 40), ("beta", 90)]), bound()),
             PassiveChoice::Rest {
                 position: 0,
                 venue: "beta".to_string(),
                 median: Duration::from_millis(90),
             }
+        );
+    }
+
+    #[test]
+    fn two_venues_a_millisecond_apart_are_not_worth_a_pass_of_waiting() {
+        // The regression this threshold exists for. Both venues are measured
+        // and one is strictly slower, so every other condition says rest —
+        // and resting here would spend a whole pass to remove one millisecond
+        // from the exposure window. `dispersion.rs`'s
+        // `two_venues_that_answer_together_keep_trading_...` failed on
+        // exactly this shape before the bound was consulted.
+        let legs = vec![venue("alpha"), venue("beta")];
+        let table = medians(&[("alpha", 1), ("beta", 2)]);
+        assert_eq!(table.len(), 2, "the premise failed: both venues measured");
+        assert!(
+            table["beta"] > table["alpha"],
+            "the premise failed: beta is not the slower venue"
+        );
+        assert_eq!(
+            choose(&legs, &table, Duration::from_millis(5)),
+            PassiveChoice::Whole(WholeReason::WithinBound)
+        );
+    }
+
+    #[test]
+    fn a_venue_slower_on_its_own_than_the_bound_allows_between_legs_is_rested_on() {
+        // The other half: same shape, same bound, and the slow venue's own
+        // median is past it. Without this the test above would be satisfied
+        // by a mechanism that never engages at all.
+        let legs = vec![venue("alpha"), venue("beta")];
+        assert_eq!(
+            choose(
+                &legs,
+                &medians(&[("alpha", 1), ("beta", 9)]),
+                Duration::from_millis(5)
+            ),
+            PassiveChoice::Rest {
+                position: 1,
+                venue: "beta".to_string(),
+                median: Duration::from_millis(9),
+            }
+        );
+    }
+
+    #[test]
+    fn a_venue_exactly_at_the_bound_is_inside_what_the_operator_permitted() {
+        let legs = vec![venue("alpha"), venue("beta")];
+        assert_eq!(
+            choose(
+                &legs,
+                &medians(&[("alpha", 1), ("beta", 5)]),
+                Duration::from_millis(5)
+            ),
+            PassiveChoice::Whole(WholeReason::WithinBound)
         );
     }
 
@@ -276,7 +388,7 @@ mod tests {
         // not a measurement of the third.
         let legs = vec![venue("alpha"), venue("gamma")];
         assert_eq!(
-            choose(&legs, &medians(&[("alpha", 40), ("beta", 90)])),
+            choose(&legs, &medians(&[("alpha", 40), ("beta", 90)]), bound()),
             PassiveChoice::Whole(WholeReason::Unmeasured)
         );
     }

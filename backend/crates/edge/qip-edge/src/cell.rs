@@ -19,6 +19,7 @@ use crate::feasibility::{self, VenueModel};
 use crate::journal::{Decision, Journal, Mirror};
 use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation};
 use crate::mirror::MirrorArrangement;
+use crate::passive::{self, PassiveChoice, PassiveOutcome};
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
 use crate::quoting::{Admission, Depletion, MessageKind, QuoteBudget, RateLimits};
 use crate::region::RegionOutlook;
@@ -193,6 +194,18 @@ pub const GATE_MASS_CANCEL: &str = "mass_cancel";
 /// cycle refused for the second reason under the first gate would send an
 /// operator to read a routing table about an outage in another region.
 pub const GATE_DARK_REGION: &str = "dark_region";
+
+/// The gate a second admission of a cycle already resting a leg is refused
+/// under (§32.1's passive-first mechanism).
+///
+/// A constant for the same reason as [`GATE_DARK_REGION`], and distinct from
+/// `open_orders` and `arbitrage_cycle_broken` because it is neither: nothing
+/// is wrong, the cell is waiting, and a refusal filed under a capacity gate
+/// or a break would have an operator looking for a fault during the one
+/// window in which the mechanism is doing exactly what it was built to do.
+/// Refused through [`Cell::refuse`] like every other pass gate, so the label
+/// needs no second enumeration.
+pub const GATE_CYCLE_RESTING: &str = "cycle_resting";
 
 /// The gate a restarted cell refuses every pass under until each of its
 /// venues has been reconciled against (§36.3, §48's degradation matrix).
@@ -945,6 +958,18 @@ pub struct Cell {
     /// running with no region wire at all says so on a chart rather than
     /// looking like one whose peers are all answering.
     outlook: RegionOutlook,
+    /// Cycles whose slow leg is resting at a venue while the rest of the
+    /// cycle waits for it (§32.1's passive-first mechanism), by cycle id.
+    ///
+    /// The one piece of cell state that deliberately survives a pass. Every
+    /// other thing `work` decides is committed or released before the pass
+    /// ends — that is what the region-hold sweep at the top of `work`
+    /// enforces — and this is the exception because the mechanism *is* the
+    /// waiting. It is bounded by [`MAX_OPEN_ORDERS`] rather than by anything
+    /// new: every entry holds exactly one open order, an entry whose order
+    /// the cell no longer holds is removed the next time it is looked at, and
+    /// a cycle already in here is refused a second admission.
+    suspended: BTreeMap<String, SuspendedCycle>,
     /// The venues this cell must be shown an account of before it forms
     /// another order (§36.3), if a composition root armed the discipline.
     ///
@@ -1009,6 +1034,7 @@ impl Cell {
             region_allocation: None,
             budget,
             fill_times,
+            suspended: BTreeMap::new(),
             outlook: RegionOutlook::AllLit,
             resume: None,
             config,
@@ -2715,6 +2741,13 @@ impl Cell {
             }
         }
 
+        // §32.1: a cycle whose slow leg was left resting on an earlier pass
+        // is finished — or given up on — before a new one is opened. The
+        // order is the point. A cell that opened fresh cycles while an older
+        // one sat half-formed would be spending its open-order capacity on
+        // opportunities it has not committed to ahead of the one it has.
+        self.resume_rested_cycles(now, gateway, &mut report)?;
+
         // Cycles go out after the nets. Never through `net`: each leg is
         // sent by the same order path a net intent uses, one leg after
         // another in the plan's order, least reversible first.
@@ -3899,6 +3932,11 @@ impl Cell {
             .working
             .iter()
             .filter(|(_, working)| working.order.closed.is_some())
+            // §32.1: never the order a rested cycle is waiting on. Retiring
+            // it would delete the only record of what its venue completed,
+            // and the fraction the rest of that cycle must be sized to would
+            // have to be guessed from the journal or not at all.
+            .filter(|(order_id, _)| !self.awaits_rested_leg(order_id))
             .map(|(order_id, _)| order_id.clone())
             .collect();
         for order_id in closed {
@@ -5044,6 +5082,13 @@ impl Cell {
     /// and legs have already gone out, so the capital is genuinely spent. The
     /// sweep at the top of the next pass returns it; the halt means there is
     /// no next pass until an operator has looked.
+    /// Send an admitted cycle — all at once, or its slow leg first (§32.1).
+    ///
+    /// The passive-first mechanism decides between those two, and it decides
+    /// on measurement or it declines: see [`crate::passive`]. A cycle it
+    /// declines goes out exactly as this function sent every cycle before the
+    /// mechanism existed, which is what makes the decline safe rather than a
+    /// silent change of behaviour.
     fn place_cycle(
         &mut self,
         cycle: &AdmittedCycle,
@@ -5051,9 +5096,28 @@ impl Cell {
         gateway: &mut dyn Placer,
         report: &mut WorkReport,
     ) -> Result<()> {
+        // A cycle the cell already has resting is never opened a second time.
+        // The scanner re-quotes the graph on every pass, and a cycle id names
+        // the path and the instant it opened; a second admission under one id
+        // would double the position the first is waiting to complete, at a
+        // venue that has not answered the first yet.
+        if self.suspended.contains_key(&cycle.cycle_id) {
+            let reason = format!(
+                "cycle {} already has a leg resting at a venue and the rest of it is waiting on \
+                 that fill; nothing more of it is sent until the leg is answered or withdrawn",
+                cycle.cycle_id
+            );
+            self.refuse(report, GATE_CYCLE_RESTING, &reason, now);
+            // Nothing of this admission reaches a venue, so the hold it took
+            // goes back rather than waiting for the sweep.
+            self.release_cycle_hold(&cycle.cycle_id);
+            return Ok(());
+        }
         // Room for every leg before the first is sent: a cycle refused for
         // capacity between legs would be a broken cycle, and a broken cycle
-        // is a position nobody chose.
+        // is a position nobody chose. Checked against the whole cycle even
+        // when only one leg is about to go out, because the cell has to be
+        // able to finish what it starts.
         if !self.has_open_capacity(cycle.legs.len()) {
             self.refuse_for_capacity(report, now);
             // Nothing of this cycle reaches a venue, so the hold it took at
@@ -5061,116 +5125,608 @@ impl Cell {
             self.release_cycle_hold(&cycle.cycle_id);
             return Ok(());
         }
-        let mut orders: Vec<String> = Vec::with_capacity(cycle.legs.len());
         // §32.1's size decomposition, carried across the legs of this one
         // cycle and dropped with it. It starts whole, so a cycle whose venues
         // fill everything asked of them is sent exactly as it was admitted.
+        // A cycle that rests a leg carries this in `suspended` instead, for
+        // the same reason: the fraction belongs to the cycle, not the pass.
         let mut decomposition = Decomposition::new(self.config.decomposition);
-        for (position, leg) in cycle.legs.iter().enumerate() {
-            // A buy takes the ask; the sign was fixed where the leg was made.
-            let side = if leg.signed_size.is_positive() {
-                BookSide::Ask
-            } else {
-                BookSide::Bid
-            };
-            // What the legs already out have completed decides the size of
-            // this one. A leg sent at its planned size behind a leg that
-            // filled six tenths is four tenths of an outright position at a
-            // price chosen for an arbitrage that did not exist at that size.
-            let planned = leg.signed_size.abs();
-            let grid = self
-                .config
-                .feasibility
-                .get(leg.venue.as_str())
-                .map(|model| model.granularity_for(&leg.object_id));
-            let quantity = match decomposition.size_for(planned, grid) {
-                LegSize::Planned(size) => size,
-                LegSize::Decomposed { planned, size } => {
-                    self.journal.record(
-                        Decision::CycleDecomposed {
-                            cycle_id: cycle.cycle_id.clone(),
-                            leg: position,
-                            planned: planned.to_string(),
-                            size: size.to_string(),
-                            fraction: decomposition.fraction().to_string(),
-                        },
-                        now,
-                    );
-                    size
-                }
-                LegSize::Unviable { planned, reason } => {
-                    // The legs already sent are a position nobody chose, and
-                    // there is no size at which finishing the cycle is worth
-                    // it. That is exactly the state `break_cycle` exists for.
-                    let error = Error::denied(format!(
-                        "leg {position} of cycle {} cannot be completed at a viable size against \
-                         its planned {planned}: {reason}",
-                        cycle.cycle_id
-                    ));
-                    // Not counted on `qip_edge_cycle_legs_total`: that series
-                    // counts legs the cell *sent*, by what each completed,
-                    // and this one never went to a venue. The leg in front of
-                    // it is already counted `unviable` there, and the cell's
-                    // declining to send this one is counted where every other
-                    // refusal is, under the `arbitrage_cycle_broken` gate
-                    // `break_cycle` refuses through. Counting it in both
-                    // would make a single stopped cycle read as two.
-                    self.break_cycle(
-                        &cycle.cycle_id,
-                        position,
-                        cycle.legs.len(),
-                        &error,
-                        now,
-                        report,
-                    );
-                    return Err(error);
-                }
-            };
-            let price = leg.reference_price;
-            let sent = self.send(
-                &leg.object_id,
-                &leg.venue,
-                side,
-                quantity,
-                price,
+        let venues: Vec<VenueId> = cycle.legs.iter().map(|leg| leg.venue.clone()).collect();
+        match passive::choose(
+            &venues,
+            &self.venue_medians(),
+            self.fill_times.policy().bound(),
+        ) {
+            PassiveChoice::Rest {
+                position,
+                venue,
+                median,
+            } => self.rest_cycle_leg(
+                cycle,
+                position,
+                &venue,
+                median,
+                decomposition,
                 now,
                 gateway,
-            );
-            let (order_id, simulated) = match sent {
-                Ok(sent) => sent,
-                Err(error) => {
-                    self.break_cycle(
-                        &cycle.cycle_id,
+                report,
+            ),
+            PassiveChoice::Whole(reason) => {
+                self.metrics.passive_cycle(PassiveOutcome::Whole(reason));
+                let mut orders: Vec<String> = Vec::with_capacity(cycle.legs.len());
+                for position in 0..cycle.legs.len() {
+                    let (order_id, quantity) = self.send_cycle_leg(
+                        cycle,
                         position,
-                        cycle.legs.len(),
-                        &error,
+                        None,
+                        &mut decomposition,
                         now,
+                        gateway,
                         report,
-                    );
-                    return Err(error);
+                    )?;
+                    orders.push(order_id.clone());
+                    self.observe_cycle_leg(
+                        cycle,
+                        position,
+                        &order_id,
+                        quantity,
+                        &mut decomposition,
+                        now,
+                        gateway,
+                        report,
+                    )?;
                 }
-            };
-            // A leg is attributed like a net of one: `net` over a single
-            // no-net intent yields one contributor, which is the leg's
-            // strategy at the size that went to the venue. The size, not the
-            // planned one: `NetIntent::split_fill` divides a fill across
-            // contributors, and a contributor claiming a size the venue was
-            // never asked for would attribute a decomposed leg's fills to a
-            // cycle that was never sent.
-            //
-            // Cloned and resized rather than rebuilt: `Intent::netting` is
-            // private precisely so that nothing can mint a leg without the
-            // `NoNet` policy §27.2 requires, and a clone carries it through.
-            let mut sent_leg = leg.clone();
-            sent_leg.signed_size = if leg.signed_size.is_positive() {
-                quantity
-            } else {
-                -quantity
-            };
-            let leg_net = net(vec![sent_leg.clone()]).into_iter().next();
-            let Some(leg_net) = leg_net else {
+                // Every leg is out, so the cycle's hold on the region is spend.
+                self.commit_cycle_hold(&cycle.cycle_id);
+                self.journal.record(
+                    Decision::CycleCommitted {
+                        cycle_id: cycle.cycle_id.clone(),
+                        orders,
+                        net: cycle.net.to_string(),
+                    },
+                    now,
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// What each venue's fill time has been measured at, for the venues with
+    /// enough fills to have a median at all.
+    ///
+    /// A venue missing from the map is unmeasured, which [`crate::passive`]
+    /// treats as "no opinion" and never as fast. Built per cycle rather than
+    /// kept, because it is derived from `fill_times` and a second copy of a
+    /// fact is a second thing that can be stale.
+    fn venue_medians(&self) -> BTreeMap<String, Duration> {
+        self.fill_times
+            .summary()
+            .into_iter()
+            .filter_map(|state| state.median.map(|median| (state.venue, median)))
+            .collect()
+    }
+
+    /// Send one leg of a cycle alone and leave it resting (§32.1).
+    ///
+    /// Nothing else of the cycle goes out. That is the whole mechanism: the
+    /// fast legs are crossed on the next pass, against what this venue
+    /// actually did, so the slow venue is out of the exposure window instead
+    /// of setting its length.
+    #[allow(clippy::too_many_arguments)]
+    fn rest_cycle_leg(
+        &mut self,
+        cycle: &AdmittedCycle,
+        position: usize,
+        venue: &str,
+        median: Duration,
+        decomposition: Decomposition,
+        now: Timestamp,
+        gateway: &mut dyn Placer,
+        report: &mut WorkReport,
+    ) -> Result<()> {
+        let Some(leg) = cycle.legs.get(position) else {
+            // `passive::choose` returns a position into the same slice, so
+            // this cannot happen; stated as a refusal rather than an index,
+            // because an out-of-range index on the order path is a panic and
+            // this crate does not take that trade.
+            let error = Error::invalid(format!(
+                "cycle {} has no leg {position} to rest",
+                cycle.cycle_id
+            ));
+            self.break_cycle(&cycle.cycle_id, 0, cycle.legs.len(), &error, now, report);
+            return Err(error);
+        };
+        // The leg rests until the cycle's own legs expire, and not one instant
+        // longer. `valid_until` is the desk's `leg_validity` measured from
+        // where the cycle was priced, and the arbitrage crate calls it "the
+        // deadline after which an unfilled leg is a stranded position rather
+        // than a pending one". No second duration is introduced here on
+        // purpose: a rest window of its own would be a second opinion about
+        // when this cycle stops being one, and the two would disagree.
+        let expires_at = leg.valid_until;
+        let mut carried = decomposition;
+        let (order_id, quantity) = self.send_cycle_leg(
+            cycle,
+            position,
+            Some(expires_at),
+            &mut carried,
+            now,
+            gateway,
+            report,
+        )?;
+        // The cycle's region hold becomes spend here rather than when the last
+        // leg goes out. A hold is pass-scoped — `work` sweeps any that outlive
+        // their pass and journals it as a defect — and this cycle now spans
+        // passes, so a hold left standing would be returned underneath an
+        // order that is resting against it. Committed in full and returned in
+        // full if the leg is withdrawn having filled nothing.
+        let committed = self.commit_cycle_hold(&cycle.cycle_id);
+        self.journal.record(
+            Decision::CycleRested {
+                cycle_id: cycle.cycle_id.clone(),
+                leg: position,
+                venue: venue.to_string(),
+                order_id: order_id.clone(),
+                // Statistics, not money: a measured duration crosses to an
+                // integer of milliseconds here, where the journal needs a
+                // number a reader can compare. Nothing prices off it.
+                median_millis: median.as_millis(),
+            },
+            now,
+        );
+        self.metrics.passive_cycle(PassiveOutcome::Rested);
+        self.suspended.insert(
+            cycle.cycle_id.clone(),
+            SuspendedCycle {
+                cycle: cycle.clone(),
+                position,
+                order_id,
+                sent: quantity,
+                decomposition: carried,
+                committed,
+            },
+        );
+        Ok(())
+    }
+
+    /// Whether a rested cycle is still waiting on this order to decide what
+    /// to do with its remaining legs.
+    fn awaits_rested_leg(&self, order_id: &str) -> bool {
+        self.suspended
+            .values()
+            .any(|rested| rested.order_id == order_id)
+    }
+
+    /// Finish, or give up on, every cycle whose slow leg was left resting
+    /// (§32.1).
+    fn resume_rested_cycles(
+        &mut self,
+        now: Timestamp,
+        gateway: &mut dyn Placer,
+        report: &mut WorkReport,
+    ) -> Result<()> {
+        // Keys first: resuming one takes `&mut self`, and the order is the
+        // map's, so a replay resumes them in the same order every time.
+        let waiting: Vec<String> = self.suspended.keys().cloned().collect();
+        for cycle_id in waiting {
+            self.resume_rested_cycle(&cycle_id, now, gateway, report)?;
+        }
+        Ok(())
+    }
+
+    /// One rested cycle: cross the rest of it, abandon it, or keep waiting.
+    fn resume_rested_cycle(
+        &mut self,
+        cycle_id: &str,
+        now: Timestamp,
+        gateway: &mut dyn Placer,
+        report: &mut WorkReport,
+    ) -> Result<()> {
+        let Some(rested) = self.suspended.get(cycle_id) else {
+            return Ok(());
+        };
+        let order_id = rested.order_id.clone();
+        let position = rested.position;
+        let sent = rested.sent;
+        let committed = rested.committed;
+        let cycle = rested.cycle.clone();
+        let mut decomposition = rested.decomposition;
+        let total = cycle.legs.len();
+
+        let Some(working) = self.working.get(&order_id) else {
+            // `settle` passes over exactly this order while a cycle owes legs
+            // against it, so its absence is the cell disagreeing with itself
+            // about an order at a venue. There is no fraction to size the
+            // rest of the cycle from, and inventing one would size the fast
+            // legs against a number nobody measured.
+            self.suspended.remove(cycle_id);
+            let error = Error::invalid(format!(
+                "cycle {cycle_id} left leg {position} resting as order {order_id} and the cell \
+                 holds no open order under that id, so what that venue completed cannot be read"
+            ));
+            self.break_cycle(cycle_id, 1, total, &error, now, report);
+            return Err(error);
+        };
+        let filled = working.order.filled;
+        let closed = working.order.closed.clone();
+
+        if closed.is_none() && filled < sent {
+            // Still working, and not yet whole. The fraction the rest of the
+            // cycle would be sized to can still move, and a leg sized against
+            // a fraction that then grows leaves the cycle short on the other
+            // side — which is the outright position the whole mechanism is
+            // about. The wait is bounded by the leg's own time to live, and
+            // `withdraw_expired` enforces it at the top of every pass.
+            return Ok(());
+        }
+        self.suspended.remove(cycle_id);
+
+        if filled.is_zero() {
+            // Withdrawn having filled nothing. No leg of this cycle ever
+            // became a position, which is the outcome the mechanism exists to
+            // produce: under the all-at-once discipline the fast legs would
+            // already be crossed against a slow leg that never arrived.
+            self.return_cycle_capital(cycle_id, committed, now);
+            self.journal.record(
+                Decision::CycleAbandoned {
+                    cycle_id: cycle_id.to_string(),
+                    leg: position,
+                    venue: cycle.legs[position].venue.as_str().to_string(),
+                    reason: closed.unwrap_or_else(|| "unfilled".to_string()),
+                },
+                now,
+            );
+            self.metrics.passive_cycle(PassiveOutcome::Abandoned);
+            return Ok(());
+        }
+
+        // From here the cell holds a position: the slow leg filled something.
+        // Every path below either completes the cycle against it or halts.
+        let completion = match decomposition.observe(sent, filled) {
+            Ok(completion) => completion,
+            Err(error) => {
+                self.break_cycle(cycle_id, 1, total, &error, now, report);
+                return Err(error);
+            }
+        };
+        self.metrics.cycle_leg(completion);
+        let remaining = total.saturating_sub(1);
+        if !self.has_open_capacity(remaining) {
+            let error = Error::denied(format!(
+                "cycle {cycle_id} has {remaining} leg(s) left to send and the cell holds {} open \
+                 order(s), the most it will track",
+                self.working.len()
+            ));
+            self.break_cycle(cycle_id, 1, total, &error, now, report);
+            return Err(error);
+        }
+        let mut orders = vec![order_id];
+        for other in 0..total {
+            if other == position {
+                continue;
+            }
+            // The remaining legs are priced where the scanner quoted them,
+            // and past `valid_until` that price is one the market has left.
+            // Crossing there would be the cell completing an arbitrage
+            // against numbers that no longer exist, so it stops and says so
+            // instead — a stranded position an operator is told about beats a
+            // second position the cell took to tidy up the first.
+            if cycle.legs[other].valid_until <= now {
+                let error = Error::denied(format!(
+                    "leg {other} of cycle {cycle_id} was priced to stand until {} and it is now \
+                     {}; the leg that rested filled {filled} and the rest of the cycle is not \
+                     sent at a price the market has left",
+                    cycle.legs[other].valid_until.as_nanos(),
+                    now.as_nanos()
+                ));
+                self.break_cycle(cycle_id, orders.len(), total, &error, now, report);
+                return Err(error);
+            }
+            let (id, quantity) = self.send_cycle_leg(
+                &cycle,
+                other,
+                None,
+                &mut decomposition,
+                now,
+                gateway,
+                report,
+            )?;
+            orders.push(id.clone());
+            self.observe_cycle_leg(
+                &cycle,
+                other,
+                &id,
+                quantity,
+                &mut decomposition,
+                now,
+                gateway,
+                report,
+            )?;
+        }
+        self.journal.record(
+            Decision::CycleCommitted {
+                cycle_id: cycle_id.to_string(),
+                orders,
+                net: cycle.net.to_string(),
+            },
+            now,
+        );
+        self.metrics.passive_cycle(PassiveOutcome::Completed);
+        Ok(())
+    }
+
+    /// Give back the region capital a rested cycle committed, because its one
+    /// leg was withdrawn having filled nothing.
+    ///
+    /// The amount is the one `commit_cycle_hold` returned and nothing
+    /// recomputed, for the reason `return_region_capital_for_unfilled` keeps
+    /// a net's commit on the order: two independent claims about the same
+    /// spend will disagree, and the louder one will be wrong.
+    fn return_cycle_capital(&mut self, cycle_id: &str, committed: Decimal, now: Timestamp) {
+        if !committed.is_positive() {
+            return;
+        }
+        let outcome = match self.region_allocation.as_ref() {
+            None => return,
+            Some(allocation) => allocation.return_committed(committed),
+        };
+        if let Err(error) = outcome {
+            self.journal.record(
+                Decision::Refused {
+                    gate: "region_reservation_return".to_string(),
+                    reason: format!(
+                        "cycle {cycle_id} was abandoned with nothing filled and its {committed} \
+                         could not be returned to the region allocation: {}",
+                        error.message()
+                    ),
+                },
+                now,
+            );
+        }
+    }
+
+    /// Size one leg of a cycle, send it, and record it as working.
+    ///
+    /// `expires_at` is `None` for a leg that takes the touch on acceptance —
+    /// every leg of a cycle going out whole — and `Some` only for §32.1's
+    /// resting leg. Returns the order id and the quantity that went to the
+    /// venue, which is what the caller must observe the fill against: the
+    /// planned size would attribute a decomposed leg's fills to a cycle that
+    /// was never sent.
+    ///
+    /// Deliberately does **not** fold the venue's answer into the
+    /// decomposition. That is [`Self::observe_cycle_leg`], because a resting
+    /// leg is observed on a later pass and observing it here as well would
+    /// count one leg's fill twice against the fraction.
+    #[allow(clippy::too_many_arguments)]
+    fn send_cycle_leg(
+        &mut self,
+        cycle: &AdmittedCycle,
+        position: usize,
+        expires_at: Option<Timestamp>,
+        decomposition: &mut Decomposition,
+        now: Timestamp,
+        gateway: &mut dyn Placer,
+        report: &mut WorkReport,
+    ) -> Result<(String, Decimal)> {
+        let Some(leg) = cycle.legs.get(position) else {
+            let error = Error::invalid(format!(
+                "cycle {} has no leg {position} to send",
+                cycle.cycle_id
+            ));
+            self.break_cycle(
+                &cycle.cycle_id,
+                position,
+                cycle.legs.len(),
+                &error,
+                now,
+                report,
+            );
+            return Err(error);
+        };
+        let leg = leg.clone();
+        // A buy takes the ask; the sign was fixed where the leg was made.
+        let side = if leg.signed_size.is_positive() {
+            BookSide::Ask
+        } else {
+            BookSide::Bid
+        };
+        // What the legs already out have completed decides the size of
+        // this one. A leg sent at its planned size behind a leg that
+        // filled six tenths is four tenths of an outright position at a
+        // price chosen for an arbitrage that did not exist at that size.
+        let planned = leg.signed_size.abs();
+        let grid = self
+            .config
+            .feasibility
+            .get(leg.venue.as_str())
+            .map(|model| model.granularity_for(&leg.object_id));
+        let quantity = match decomposition.size_for(planned, grid) {
+            LegSize::Planned(size) => size,
+            LegSize::Decomposed { planned, size } => {
+                self.journal.record(
+                    Decision::CycleDecomposed {
+                        cycle_id: cycle.cycle_id.clone(),
+                        leg: position,
+                        planned: planned.to_string(),
+                        size: size.to_string(),
+                        fraction: decomposition.fraction().to_string(),
+                    },
+                    now,
+                );
+                size
+            }
+            LegSize::Unviable { planned, reason } => {
+                // The legs already sent are a position nobody chose, and
+                // there is no size at which finishing the cycle is worth
+                // it. That is exactly the state `break_cycle` exists for.
+                let error = Error::denied(format!(
+                    "leg {position} of cycle {} cannot be completed at a viable size against \
+                     its planned {planned}: {reason}",
+                    cycle.cycle_id
+                ));
+                // Not counted on `qip_edge_cycle_legs_total`: that series
+                // counts legs the cell *sent*, by what each completed,
+                // and this one never went to a venue. The leg in front of
+                // it is already counted `unviable` there, and the cell's
+                // declining to send this one is counted where every other
+                // refusal is, under the `arbitrage_cycle_broken` gate
+                // `break_cycle` refuses through. Counting it in both
+                // would make a single stopped cycle read as two.
+                self.break_cycle(
+                    &cycle.cycle_id,
+                    position,
+                    cycle.legs.len(),
+                    &error,
+                    now,
+                    report,
+                );
+                return Err(error);
+            }
+        };
+        let price = leg.reference_price;
+        let sent = self.send(
+            &leg.object_id,
+            &leg.venue,
+            side,
+            quantity,
+            price,
+            now,
+            gateway,
+        );
+        let (order_id, simulated) = match sent {
+            Ok(sent) => sent,
+            Err(error) => {
+                self.break_cycle(
+                    &cycle.cycle_id,
+                    position,
+                    cycle.legs.len(),
+                    &error,
+                    now,
+                    report,
+                );
+                return Err(error);
+            }
+        };
+        // A leg is attributed like a net of one: `net` over a single
+        // no-net intent yields one contributor, which is the leg's
+        // strategy at the size that went to the venue. The size, not the
+        // planned one: `NetIntent::split_fill` divides a fill across
+        // contributors, and a contributor claiming a size the venue was
+        // never asked for would attribute a decomposed leg's fills to a
+        // cycle that was never sent.
+        //
+        // Cloned and resized rather than rebuilt: `Intent::netting` is
+        // private precisely so that nothing can mint a leg without the
+        // `NoNet` policy §27.2 requires, and a clone carries it through.
+        let mut sent_leg = leg.clone();
+        sent_leg.signed_size = if leg.signed_size.is_positive() {
+            quantity
+        } else {
+            -quantity
+        };
+        let leg_net = net(vec![sent_leg.clone()]).into_iter().next();
+        let Some(leg_net) = leg_net else {
+            let error = Error::invalid(format!(
+                "leg {position} of cycle {} nets to nothing and cannot be attributed",
+                cycle.cycle_id
+            ));
+            self.break_cycle(
+                &cycle.cycle_id,
+                position.saturating_add(1),
+                cycle.legs.len(),
+                &error,
+                now,
+                report,
+            );
+            return Err(error);
+        };
+        self.record_sent(
+            Working {
+                order: OpenOrder {
+                    order_id: order_id.clone(),
+                    venue: leg.venue.clone(),
+                    object_id: leg.object_id.clone(),
+                    side,
+                    quantity,
+                    price,
+                    filled: Decimal::ZERO,
+                    simulated,
+                    sent_at: now,
+                    // A leg of a cycle going out whole is priced at the touch
+                    // the scanner quoted it from and takes it on acceptance;
+                    // nothing rests. §32.1's passive leg is the exception and
+                    // carries the cycle's own expiry, so the one thing that
+                    // can end its wait is the deadline the cycle was priced
+                    // against.
+                    expires_at,
+                    closed: None,
+                },
+                net: leg_net,
+                // A cycle holds once for all its legs. The commit is the
+                // caller's: a cycle going out whole commits when the last leg
+                // is away, and one resting a leg commits when that leg is,
+                // because a pass-scoped hold cannot outlive its pass. Either
+                // way nothing here can expire and return capital, so this
+                // stays zero and `return_region_capital_for_unfilled` passes
+                // a cycle leg over.
+                region_committed: Decimal::ZERO,
+            },
+            now,
+        );
+        if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) {
+            let utilisation = desk.utilisation_mut();
+            utilisation.gross_committed += quantity * price;
+            utilisation.orders_sent += 1;
+        }
+        report.orders.push(PlacedOrder {
+            order_id: order_id.clone(),
+            strategy: leg.strategy.clone(),
+            contributors: vec![Contributor {
+                strategy: leg.strategy.clone(),
+                signed_size: sent_leg.signed_size,
+                inputs: leg.inputs.clone(),
+            }],
+            object_id: leg.object_id.clone(),
+            venue: leg.venue.clone(),
+            side,
+            quantity,
+            price,
+            simulated,
+        });
+        Ok((order_id, quantity))
+    }
+
+    /// Fold what one leg completed into the cycle's decomposition.
+    #[allow(clippy::too_many_arguments)]
+    fn observe_cycle_leg(
+        &mut self,
+        cycle: &AdmittedCycle,
+        position: usize,
+        order_id: &str,
+        quantity: Decimal,
+        decomposition: &mut Decomposition,
+        now: Timestamp,
+        gateway: &mut dyn Placer,
+        report: &mut WorkReport,
+    ) -> Result<()> {
+        let confirmed = self.confirm_execution_reports(gateway, now);
+        report.fills.extend(confirmed);
+        // What this leg completed, from the cell's own record of it
+        // rather than from the reports just drained: a report for an
+        // order sent on an earlier pass is in that list too, and a leg
+        // whose venue answered while an earlier leg was still being sent
+        // is booked on the record and not in this drain.
+        let filled = match self.working.get(order_id) {
+            Some(working) => working.order.filled,
+            None => {
+                // `record_sent` put it there when the leg was sent. Its
+                // absence is the cell disagreeing with itself about an
+                // order that is already at a venue, which is a break and
+                // never a fraction to size the next leg from.
                 let error = Error::invalid(format!(
-                    "leg {position} of cycle {} nets to nothing and cannot be attributed",
+                    "leg {position} of cycle {} was sent as order {order_id} and the cell \
+                     holds no open order under that id, so what it completed cannot be read",
                     cycle.cycle_id
                 ));
                 self.break_cycle(
@@ -5182,109 +5738,23 @@ impl Cell {
                     report,
                 );
                 return Err(error);
-            };
-            self.record_sent(
-                Working {
-                    order: OpenOrder {
-                        order_id: order_id.clone(),
-                        venue: leg.venue.clone(),
-                        object_id: leg.object_id.clone(),
-                        side,
-                        quantity,
-                        price,
-                        filled: Decimal::ZERO,
-                        simulated,
-                        sent_at: now,
-                        // A leg is priced at the touch the scanner quoted it
-                        // from and takes it on acceptance; nothing rests.
-                        expires_at: None,
-                        closed: None,
-                    },
-                    net: leg_net,
-                    // The cycle holds once for all its legs and commits below
-                    // once every leg is out; a leg never rests, so nothing
-                    // here can expire and return capital.
-                    region_committed: Decimal::ZERO,
-                },
-                now,
-            );
-            let confirmed = self.confirm_execution_reports(gateway, now);
-            report.fills.extend(confirmed);
-            // What this leg completed, from the cell's own record of it
-            // rather than from the reports just drained: a report for an
-            // order sent on an earlier pass is in that list too, and a leg
-            // whose venue answered while an earlier leg was still being sent
-            // is booked on the record and not in this drain.
-            let filled = match self.working.get(&order_id) {
-                Some(working) => working.order.filled,
-                None => {
-                    // `record_sent` put it there on the line above. Its
-                    // absence is the cell disagreeing with itself about an
-                    // order that is already at a venue, which is a break and
-                    // never a fraction to size the next leg from.
-                    let error = Error::invalid(format!(
-                        "leg {position} of cycle {} was sent as order {order_id} and the cell \
-                         holds no open order under that id, so what it completed cannot be read",
-                        cycle.cycle_id
-                    ));
-                    self.break_cycle(
-                        &cycle.cycle_id,
-                        position.saturating_add(1),
-                        cycle.legs.len(),
-                        &error,
-                        now,
-                        report,
-                    );
-                    return Err(error);
-                }
-            };
-            let completion = match decomposition.observe(quantity, filled) {
-                Ok(completion) => completion,
-                Err(error) => {
-                    self.break_cycle(
-                        &cycle.cycle_id,
-                        position.saturating_add(1),
-                        cycle.legs.len(),
-                        &error,
-                        now,
-                        report,
-                    );
-                    return Err(error);
-                }
-            };
-            self.metrics.cycle_leg(completion);
-            if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) {
-                let utilisation = desk.utilisation_mut();
-                utilisation.gross_committed += quantity * price;
-                utilisation.orders_sent += 1;
             }
-            orders.push(order_id.clone());
-            report.orders.push(PlacedOrder {
-                order_id,
-                strategy: leg.strategy.clone(),
-                contributors: vec![Contributor {
-                    strategy: leg.strategy.clone(),
-                    signed_size: sent_leg.signed_size,
-                    inputs: leg.inputs.clone(),
-                }],
-                object_id: leg.object_id.clone(),
-                venue: leg.venue.clone(),
-                side,
-                quantity,
-                price,
-                simulated,
-            });
-        }
-        // Every leg is out, so the cycle's hold on the region is spend.
-        self.commit_cycle_hold(&cycle.cycle_id);
-        self.journal.record(
-            Decision::CycleCommitted {
-                cycle_id: cycle.cycle_id.clone(),
-                orders,
-                net: cycle.net.to_string(),
-            },
-            now,
-        );
+        };
+        let completion = match decomposition.observe(quantity, filled) {
+            Ok(completion) => completion,
+            Err(error) => {
+                self.break_cycle(
+                    &cycle.cycle_id,
+                    position.saturating_add(1),
+                    cycle.legs.len(),
+                    &error,
+                    now,
+                    report,
+                );
+                return Err(error);
+            }
+        };
+        self.metrics.cycle_leg(completion);
         Ok(())
     }
 
@@ -5980,15 +6450,25 @@ impl Cell {
         }
     }
 
-    /// Turn a cycle's region hold into spend, once every leg is out.
-    fn commit_cycle_hold(&mut self, cycle_id: &str) {
+    /// Turn a cycle's region hold into spend, and say how much that was.
+    ///
+    /// The amount is returned rather than discarded because a cycle that
+    /// rests a leg commits here and may still be abandoned without ever
+    /// becoming a position — and the capital it gets back then must be
+    /// exactly what it spent, not a figure recomputed from the legs. The same
+    /// reason `Working::region_committed` keeps a net's commit on the order.
+    fn commit_cycle_hold(&mut self, cycle_id: &str) -> Decimal {
         let pass = self.pass;
-        if let Some(allocation) = self.region_allocation.as_ref() {
-            let _ = allocation.commit(
+        let mut committed = Decimal::ZERO;
+        if let Some(allocation) = self.region_allocation.as_ref()
+            && let Some(amount) = allocation.commit(
                 &self.config.cell_id,
                 &region_hold_id_for_cycle(pass, cycle_id),
-            );
+            )
+        {
+            committed = amount;
         }
+        committed
     }
 
     fn refuse(&mut self, report: &mut WorkReport, gate: &str, reason: &str, now: Timestamp) {
@@ -6491,6 +6971,32 @@ struct AdmittedCycle {
     legs: Vec<Intent>,
     /// The sum of the legs' notionals, admitted against the desk's envelope.
     notional: Decimal,
+}
+
+/// A cycle whose slow leg is resting while the rest of it waits (§32.1).
+///
+/// Everything needed to finish the cycle on a later pass, and nothing that
+/// could be re-derived from somewhere else: the admitted cycle as it was
+/// gated, which leg rested and as which order, what that leg was actually
+/// asked for, the decomposition it carries, and what the cycle committed of
+/// the region's capital. The last two are held rather than recomputed for the
+/// same reason — a fraction re-derived on the completing pass and a commit
+/// recomputed from the legs are both second claims about a fact the cell
+/// already has, and the two would disagree.
+#[derive(Clone, Debug)]
+struct SuspendedCycle {
+    cycle: AdmittedCycle,
+    /// Index into `cycle.legs` of the leg that is resting.
+    position: usize,
+    order_id: String,
+    /// What the venue was asked for on that leg, which is what its fill is a
+    /// fraction of — never the planned size, which a decomposition may
+    /// already have reduced.
+    sent: Decimal,
+    decomposition: Decomposition,
+    /// The region capital the cycle spent when the leg went out, returned in
+    /// full if the leg is withdrawn having filled nothing.
+    committed: Decimal,
 }
 
 /// The gate literal a scan rejection is counted under.

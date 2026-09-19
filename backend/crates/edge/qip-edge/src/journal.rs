@@ -228,6 +228,40 @@ pub enum Decision {
         size: String,
         fraction: String,
     },
+    /// One leg of an arbitrage cycle was sent alone and left to rest, the
+    /// rest of the cycle held back until the venue answers it (§32.1's
+    /// passive-first mechanism).
+    ///
+    /// Recorded at the instant the choice is taken and before the leg is
+    /// sent, because "why did only one leg of this cycle reach a venue" is a
+    /// question a chain reader will ask of the very next entry. `median` is
+    /// the measured fill time in milliseconds that made this venue the
+    /// slowest of the cycle's — the evidence, not the conclusion, so a
+    /// replay can tell a cell that rested on measurement from one that
+    /// rested on a tie nobody broke. A statistic rather than money, so it is
+    /// a number here and not a decimal string.
+    CycleRested {
+        cycle_id: String,
+        leg: usize,
+        venue: String,
+        order_id: String,
+        median_millis: i64,
+    },
+    /// A cycle whose resting leg was withdrawn without filling anything, so
+    /// no leg of it ever became a position (§32.1).
+    ///
+    /// This is the entry that distinguishes passive-first from a delay. Under
+    /// the all-at-once discipline the fast legs would already be crossed
+    /// against a slow leg that never filled, and the cell would be holding
+    /// the difference. `reason` names what closed the resting order — its own
+    /// time to live elapsing, or a mass cancel on a halt — because the two
+    /// send an operator to different places.
+    CycleAbandoned {
+        cycle_id: String,
+        leg: usize,
+        venue: String,
+        reason: String,
+    },
     /// A deployed strategy was withdrawn from the cell, its envelope handed
     /// back to the caller.
     ///
@@ -317,6 +351,8 @@ impl Decision {
             Self::PathExtensionChecked { .. } => "path_extension_checked",
             Self::CycleCommitted { .. } => "cycle_committed",
             Self::CycleDecomposed { .. } => "cycle_decomposed",
+            Self::CycleRested { .. } => "cycle_rested",
+            Self::CycleAbandoned { .. } => "cycle_abandoned",
             Self::StrategyWithdrawn { .. } => "strategy_withdrawn",
             Self::RegionShareApplied { .. } => "region_share_applied",
             Self::RegionOutlookChanged { .. } => "region_outlook_changed",
