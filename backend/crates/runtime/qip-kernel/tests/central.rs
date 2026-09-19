@@ -6011,3 +6011,87 @@ fn the_ladder_refuses_holdout_evidence_that_was_never_simulated_and_admits_the_f
     );
     Ok(())
 }
+
+/// ADR 0080: the view the producer ships a cell is the schedule filtered to
+/// that cell and keyed by instrument alone — so one cell never receives
+/// another cell's lot, and the instrument key is the one the cell's own book
+/// is keyed by rather than a `cell/instrument` string it would have to split.
+#[test]
+fn the_per_cell_view_of_scheduled_unwinds_names_only_that_cells_lots_keyed_by_instrument()
+-> Result<()> {
+    use qip_contracts::message::BookSide;
+
+    let mut platform = platform()?;
+    let id = strategy();
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+    let (order, fill) = strategy_order_and_fill(
+        &id,
+        "ord-view-1",
+        BookSide::Ask,
+        dec!("100"),
+        dec!("50"),
+        start(),
+    );
+    platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    let LearningReportAt { retired_at, .. } = retire_by_decay(&mut platform, &id)?;
+    // Premise: the whole schedule lists the lot, so an empty per-cell view
+    // below would be the filter's doing and not an empty schedule's.
+    assert_eq!(
+        platform
+            .central()
+            .scheduled_unwinds()
+            .get(&id)
+            .and_then(|lots| lots.get(&format!("{CELL}/{INSTRUMENT}"))),
+        Some(&dec!("-100")),
+        "premise: the retirement did not schedule the lot"
+    );
+
+    let mine = platform.central().scheduled_unwinds_for(CELL);
+    assert_eq!(
+        mine.get(&id).and_then(|lots| lots.get(INSTRUMENT)),
+        Some(&dec!("-100")),
+        "the cell's own view does not name its lot by instrument: {mine:?}"
+    );
+    assert_eq!(
+        mine.get(&id).map(BTreeMap::len),
+        Some(1),
+        "the view carries a key other than the instrument: {mine:?}"
+    );
+    assert!(
+        platform
+            .central()
+            .scheduled_unwinds_for("a-cell-holding-nothing")
+            .is_empty(),
+        "a cell holding none of the strategy's lots was handed one"
+    );
+
+    // The view empties by the same arithmetic the schedule does once the
+    // cell reports the flatten — no completion record, the books alone.
+    let later = retired_at.saturating_add(Duration::from_hours(1));
+    let (order, fill) = strategy_order_and_fill(
+        &id,
+        "ord-view-2",
+        BookSide::Bid,
+        dec!("100"),
+        dec!("52"),
+        later,
+    );
+    platform.ingest_cell_report(
+        CellReport::new(CELL, later)
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        later,
+    )?;
+    assert!(
+        platform.central().scheduled_unwinds_for(CELL).is_empty(),
+        "the lot was flattened and the cell's view still lists it: {:?}",
+        platform.central().scheduled_unwinds_for(CELL)
+    );
+    Ok(())
+}

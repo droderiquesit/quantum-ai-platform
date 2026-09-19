@@ -2155,3 +2155,273 @@ fn a_shipped_payload_produces_exactly_the_six_slots_the_register_names() -> Resu
     assert!(!platform.is_live_capable());
     Ok(())
 }
+
+// --- ADR 0080: slot thirteen, produced for the cell holding the lot ----------
+
+/// The strategy the centre retires below, and the cell that holds none of
+/// its lots.
+const RETIRING: &str = "retiring-1";
+const OTHER_CELL: &str = "tokyo-1";
+
+/// Register a strategy at `CELL` with evidence that passes every gate and
+/// walk it to pilot — the rung a decaying strategy is demoted from and then
+/// retired at, exactly as `qip-kernel`'s own retirement fixture does it.
+fn register_at_pilot(plane: &mut CentralPlane, id: &StrategyId) -> Result<()> {
+    let (compiled, program) = compile(id.as_str())?;
+    let candidate = StrategyCandidate::new(
+        compiled,
+        program,
+        StrategyFamily::new("mesh-tests")?,
+        CELL,
+        desk_venue(),
+        start(),
+    )?
+    .with_evidence(full_evidence(id, CELL)?)
+    .with_model("microprice-distilled@3")
+    .with_evidence_artifacts(vec![
+        format!("sha256:holdout-{id}"),
+        format!("sha256:shadow-{id}"),
+    ]);
+    plane.factory_mut().register(candidate)?;
+    plane.set_proposal(proposal(id, CELL)?);
+    for rung in [
+        GateStage::Holdout,
+        GateStage::Paper,
+        GateStage::Shadow,
+        GateStage::Pilot,
+    ] {
+        let approval = if rung.requires_human_approval() {
+            Some(dual_approval(
+                id.as_str(),
+                start(),
+                "every gate check passed with the evidence attached",
+            )?)
+        } else {
+            None
+        };
+        plane
+            .factory_mut()
+            .promote(id, approval, "the gate passed", start())?;
+    }
+    Ok(())
+}
+
+/// One order a cell reported sent and the fill the venue confirmed on it,
+/// both attributed wholly to `id`.
+fn retiring_order_and_fill(
+    id: &StrategyId,
+    order_id: &str,
+    side: BookSide,
+    quantity: Decimal,
+    price: Decimal,
+    at: Timestamp,
+) -> (qip_mesh::delta::DeltaOrder, FillRecord) {
+    let signed_size = if side == BookSide::Ask {
+        quantity
+    } else {
+        -quantity
+    };
+    let order = qip_mesh::delta::DeltaOrder {
+        order_id: order_id.to_string(),
+        strategy: id.clone(),
+        object_id: memory_object(),
+        venue: desk_venue(),
+        side,
+        quantity,
+        price,
+        simulated: true,
+        contributors: vec![Contributor {
+            strategy: id.clone(),
+            signed_size,
+            inputs: vec![("book_pressure".to_string(), 1)],
+        }],
+    };
+    let fill = FillRecord {
+        order_id: order_id.to_string(),
+        object_id: memory_object(),
+        venue: desk_venue(),
+        side,
+        quantity,
+        price,
+        simulated: true,
+        at,
+        shares: vec![FillShare {
+            strategy: id.clone(),
+            quantity,
+        }],
+    };
+    (order, fill)
+}
+
+/// A platform whose centre holds one lot — a hundred bought at fifty, at
+/// `CELL` — for a strategy it has since retired by decay. Returns the
+/// strategy and the instant of its retirement.
+fn platform_with_a_retired_lot() -> Result<(Platform, StrategyId, Timestamp)> {
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        qip_observability::Telemetry::silent(),
+        memory_universe()?,
+        qip_risk::limits::LimitSet::conservative_default(),
+    )?;
+    let id = StrategyId::new(RETIRING);
+    register_at_pilot(platform.central_mut(), &id)?;
+    let (order, fill) = retiring_order_and_fill(
+        &id,
+        "ord-retiring-1",
+        BookSide::Ask,
+        dec!("100"),
+        dec!("50"),
+        start(),
+    );
+    let ingestion = platform.ingest_cell_report(
+        qip_kernel::central::CellReport::new(CELL, start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    assert!(
+        ingestion.settlement.refused.is_empty(),
+        "premise: the fill did not settle: {:?}",
+        ingestion.settlement.refused
+    );
+    // Decay demotes it off capital; ninety days of the same retires it.
+    let decayed = || good_returns(11, 60, -0.0002);
+    let demoted_at = start().saturating_add(Duration::from_days(60));
+    platform.learn_from_cells(
+        &[qip_kernel::central::CellOutcome::new(
+            id.clone(),
+            CELL,
+            demoted_at,
+            decayed(),
+        )],
+        demoted_at,
+    )?;
+    let retired_at = demoted_at.saturating_add(Duration::from_days(90));
+    platform.learn_from_cells(
+        &[qip_kernel::central::CellOutcome::new(
+            id.clone(),
+            CELL,
+            retired_at,
+            decayed(),
+        )],
+        retired_at,
+    )?;
+    assert_eq!(
+        platform.central().factory().stage_of(&id),
+        GateStage::Retired,
+        "premise: sustained decay did not retire the strategy"
+    );
+    Ok((platform, id, retired_at))
+}
+
+#[test]
+fn a_cycle_ships_the_cell_holding_a_retired_lot_its_disposition_and_no_other_cell_one() -> Result<()>
+{
+    // Before this, `scheduled_unwinds` listed the orphan and no payload
+    // carried it: §35.2's "never orphaned silently" was met at the record
+    // and unmet at the book. This is the production seam — a payload
+    // `pending_policy` really built from a platform that really retired a
+    // strategy holding a lot — and it asserts the three things a producer of
+    // this slot has to get right: it reaches the cell holding the lot, it
+    // reaches no other cell, and it is under the signature the cell verifies.
+    use qip_contracts::policy::Dispositions;
+    use qip_edge::VerifiedPolicy;
+
+    let (mut platform, id, retired_at) = platform_with_a_retired_lot()?;
+    let asked_at = retired_at.saturating_add(Duration::from_mins(1));
+    let instrument = memory_object().as_str().to_string();
+    // Premise: the centre lists the orphan, at `CELL` and nowhere else.
+    let listed = platform.central().scheduled_unwinds();
+    assert_eq!(
+        listed
+            .get(&id)
+            .and_then(|lots| lots.get(&format!("{CELL}/{instrument}"))),
+        Some(&dec!("-100")),
+        "premise: the retirement did not schedule the lot: {listed:?}"
+    );
+
+    let pending = qip_api::mesh::pending_policy(
+        &mut platform,
+        [CELL.to_string(), OTHER_CELL.to_string()].into_iter(),
+        None,
+        asked_at,
+    );
+    assert_eq!(pending.payloads.len(), 2, "two cells, two payloads");
+    let payload_for = |cell: &str| -> Result<&PolicyPayload> {
+        pending
+            .payloads
+            .iter()
+            .find(|(named, _)| named == cell)
+            .map(|(_, payload)| payload)
+            .ok_or_else(|| Error::not_found(format!("the payload for {cell}")))
+    };
+
+    let here = payload_for(CELL)?;
+    let dispositions = here.dispositions.value().ok_or_else(|| {
+        Error::invalid("slot thirteen shipped unproduced to the cell holding the retired lot")
+    })?;
+    assert_eq!(dispositions.len(), 1, "{dispositions:?}");
+    assert_eq!(
+        dispositions
+            .unwinds
+            .get(&id)
+            .and_then(|lots| lots.get(&instrument)),
+        Some(&dec!("-100")),
+        "the slot does not name the lot by strategy and instrument: {dispositions:?}"
+    );
+    assert_eq!(
+        here.freshness(PolicyItem::Dispositions, asked_at),
+        Freshness::Fresh,
+        "the slot is not stamped with the instant the books were read"
+    );
+
+    let there = payload_for(OTHER_CELL)?;
+    assert!(
+        there.dispositions.is_unproduced(),
+        "a cell holding none of the strategy's lots was shipped a disposition: {:?}",
+        there.dispositions
+    );
+    assert_eq!(
+        there.freshness(PolicyItem::Dispositions, asked_at),
+        Freshness::Unavailable
+    );
+
+    // One line, for the one cell that received the slot.
+    assert_eq!(pending.dispositions.len(), 1, "{:?}", pending.dispositions);
+    assert!(
+        pending.dispositions[0].starts_with(&format!("dispositions for {CELL}: 1 lot(s)")),
+        "the line does not say which cell and how many: {}",
+        pending.dispositions[0]
+    );
+
+    // Signed, sent as bytes, verified at a cell: the slot survives the wire
+    // and the signature covers it, so a disposition altered in flight fails
+    // verification rather than being applied.
+    let key = ENVELOPE_KEY.as_bytes();
+    let signed = here.clone().signed(key)?;
+    let wire = serde_json::to_string(&signed)
+        .map_err(|error| Error::invalid(format!("serialising the payload: {error}")))?;
+    assert!(
+        wire.contains("\"dispositions\":"),
+        "the produced slot is not on the wire: {wire}"
+    );
+    let decoded: PolicyPayload = serde_json::from_str(&wire)
+        .map_err(|error| Error::invalid(format!("decoding the payload: {error}")))?;
+    let verified = VerifiedPolicy::verify(decoded, key, CELL, asked_at)?;
+    assert_eq!(verified.payload().dispositions.value(), Some(dispositions));
+
+    let mut tampered = signed.clone();
+    let mut lots = BTreeMap::new();
+    lots.insert(instrument.clone(), dec!("-1000"));
+    let mut unwinds = BTreeMap::new();
+    unwinds.insert(id.clone(), lots);
+    tampered.dispositions = Slot::produced(Dispositions { unwinds }, asked_at);
+    assert!(
+        VerifiedPolicy::verify(tampered, key, CELL, asked_at).is_err(),
+        "a disposition altered after signing still verifies at the cell"
+    );
+    Ok(())
+}
