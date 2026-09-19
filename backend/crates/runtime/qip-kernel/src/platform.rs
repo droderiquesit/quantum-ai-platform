@@ -499,6 +499,14 @@ pub struct Platform {
     /// What the LEARN stage's rule review found this cycle, for the journal
     /// entry; cleared at the top of LEARN like its siblings.
     cycle_rule_review: Option<RuleReviewJournal>,
+    /// Observations taken against blueprint §49.1's objectives, read by the
+    /// LEARN stage through [`crate::blueprint_objectives::fold`].
+    ///
+    /// Not cleared per cycle, unlike the journals above: an objective's
+    /// window is a day, a week or a month, and a series reset every cycle
+    /// would be evaluated over one cycle whatever window the objective
+    /// declares. The ledger bounds itself instead.
+    objectives: crate::blueprint_objectives::ObjectiveLedger,
     /// Each limit's firing history, keyed by the limit's configured name and
     /// seeded with every name in the boot set at assembly — a rule that never
     /// fires must still have a row for its silence to be measured against.
@@ -3742,6 +3750,7 @@ impl Platform {
             family_findings_open: BTreeSet::new(),
             cycle_counterfactuals: None,
             cycle_rule_review: None,
+            objectives: crate::blueprint_objectives::ObjectiveLedger::new(),
             rule_activity,
             orders_submitted: 0,
             open_proposals,
@@ -4567,13 +4576,69 @@ impl Platform {
         report: CellReport,
         now: Timestamp,
     ) -> Result<CellIngestion> {
+        // Blueprint §49.1's netting ratio, taken *before* the report moves
+        // into the plane, because the plane keeps no copy of the contributor
+        // vectors and this is the last line at which the ratio exists. `None`
+        // means the report evidences nothing about netting — see
+        // `blueprint_objectives::netting_ratio_of` for the three ways that
+        // happens — and an absence is recorded as no observation rather than
+        // as a passing one.
+        let netting = crate::blueprint_objectives::netting_ratio_of(&report.orders);
+        let reported_at = report.at;
         // Two disjoint fields, borrowed as fields rather than through
         // accessors, which is what lets the central plane trip the platform's
         // own switch instead of keeping one of its own.
         let Self {
             central, autonomy, ..
         } = self;
-        let ingestion = central.ingest(report, autonomy.kill_switch_mut(), now)?;
+        let ingested = central.ingest(report, autonomy.kill_switch_mut(), now);
+        let ingestion = match ingested {
+            Ok(ingestion) => ingestion,
+            Err(error) => {
+                // A report the centre could not finish absorbing is recorded
+                // against §49.1's reconciliation objective as **not** clean,
+                // and the direction of that choice is the whole point. The
+                // plane halts the cell before it can return an error from the
+                // recall step, so the alternative — count only what returned
+                // `Ok` — would drop exactly the reports that halted a cell
+                // and make the objective read better the worse things went.
+                // That is the `MaxExpectedShortfall` shape: a control whose
+                // evidence disappears in the case it exists for.
+                self.objectives.observe(
+                    crate::blueprint_objectives::RECONCILIATION_BREAKS_ZERO,
+                    false,
+                    reported_at,
+                );
+                return Err(error);
+            }
+        };
+        // One observation per report absorbed. `halted` is `None` exactly
+        // where the report reconciled — the plane sets it from the union of
+        // the cell's own breaks and the settlement's `UnsentFill` findings —
+        // so this reads the outcome rather than re-deriving it from the
+        // report, which is the same discipline `record_halt` follows.
+        self.objectives.observe(
+            crate::blueprint_objectives::RECONCILIATION_BREAKS_ZERO,
+            ingestion.halted.is_none(),
+            reported_at,
+        );
+        if let Some(ratio) = netting {
+            // The objective's floor is read off the objective rather than
+            // written here, so §49.1's 1.5 has exactly one home. An objective
+            // that declares no floor cannot be graded on a ratio and takes no
+            // observation.
+            if let Some(floor) = qip_observability::slo::blueprint_slos()
+                .into_iter()
+                .find(|slo| slo.name == crate::blueprint_objectives::NETTING_RATIO)
+                .and_then(|slo| slo.ratio_floor)
+            {
+                self.objectives.observe(
+                    crate::blueprint_objectives::NETTING_RATIO,
+                    ratio >= floor,
+                    reported_at,
+                );
+            }
+        }
         self.charge_cell_fills(&ingestion.cell, &ingestion.settlement.absorbed);
         self.book_settlement(&ingestion.settlement, now);
         // The cell's feasibility refusals, into the same window the desk's
@@ -11840,6 +11905,17 @@ impl Platform {
                 ));
             }
         }
+        // Blueprint §49.1, last in LEARN because every seam that could have
+        // fed it this cycle has now run. Until this call `blueprint_slos()`
+        // had no caller outside a test, so §49.1 was a set of objectives
+        // nobody evaluated — a declaration reading as a control.
+        //
+        // What it reports is deliberately unflattering: two of the fifteen
+        // objectives are fed by this process and thirteen are unobserved, and
+        // the summary says so in the same sentence as the count that was met.
+        // See `crate::blueprint_objectives` for why a reader that reported
+        // only the first number would be worse than no reader.
+        outcome = crate::blueprint_objectives::fold(outcome, &self.objectives, now);
         for problem in std::mem::take(&mut self.capture_problems) {
             outcome = outcome.with_problem(problem);
         }

@@ -33,6 +33,7 @@
 
 pub mod adaptive_cadence;
 pub mod adversary_review;
+pub mod blueprint_objectives;
 pub mod capacity_review;
 pub mod causal_review;
 pub mod central;
