@@ -1,6 +1,32 @@
 # 0038 — Passkeys are the only end-user credential, and passwords leave the portal
 
-**Status:** *proposed*, 2026-09-05, and **deliberately still proposed** after
+**Status:** **accepted with conditions**, 2026-09-19 — and the conditions are
+stated in a form a person can discharge in one step, because the record's own
+history shows what happens when they are not. **No check was run in this pass
+either.** The lane that took this decision was told it had web-fetch,
+web-search and the Microsoft Learn documentation tools; it had none of them,
+and the four attempts are quoted verbatim under "The four checks, 2026-09-19"
+so that this line cannot be read as though a vendor page had been fetched. It
+also held no credential to `algorik-dev`, so the one probe that answers check
+1 was not made. What changed is the framing, not the evidence: the four checks
+gate **decision 2 only** — which surface verifies the passkey — and nothing
+else in this record ever depended on them. Decisions 1, 3, 4, 5 and 6, the
+refusals (no Rust relying party, no in-tree verifier, no TOTP, no email-link
+recovery) and the Shape A-first ordering are accepted on the tree's evidence
+and the blueprint's own sentence. Decision 2 is accepted as a **decision
+table**: one probe, three outcomes, each mapped to a shape or to a stop, so
+the outcome is read off rather than argued over. The one activation step
+remaining is that probe, and it is the first task of the implementation brief
+at `../architecture/adr-0038-implementation-brief.md`. Two further things this
+pass decided that earlier passes left open: **where a credential record lives
+under Shape B** (the platform's hash-chained event log, decision 2's amendment
+(ii), and never the claims blob), and **where the recovery code's HMAC lives
+under either shape** (inside `StoredProfileClaims`, behind the one writer that
+already exists, single-use and single-attempt — which removes the attempt
+counter (c) said had nowhere to live). Both are in the amended decision 2 and
+decision 5 below.
+
+*Previously:* *proposed*, 2026-09-05, and **deliberately still proposed** after
 the architecture sweep of the same day, which was asked to resolve every open
 record or say exactly what would close it. This one cannot be closed from
 inside the repository, and the reason is worth stating rather than leaving as
@@ -290,6 +316,118 @@ the one that does not need an operator is the one that works at 3 a.m.
 owner against `algorik-dev`, with their outputs quoted into the status line.
 This pass narrowed what they have to decide; it did not answer one of them.
 
+### The four checks, 2026-09-19 — what was tried, what the tree re-settled, and the decision
+
+**What was tried, quoted rather than summarised.** The lane was told it had
+web-fetch, web-search and the Microsoft Learn documentation tools, and was
+asked to answer each check from the primary source. Every one of the four
+names errored:
+
+```
+Error: No such tool available: microsoft_docs_search
+Error: No such tool available: mcp__Microsoft_Learn__microsoft_docs_search
+Error: No such tool available: WebFetch. WebFetch is disabled for this session, in subagents as well as here.
+Error: No such tool available: WebSearch. WebSearch is disabled for this session, in subagents as well as here.
+```
+
+The third and fourth are new: on 2026-09-06 the two web tools were merely
+absent; on 2026-09-19 they were disabled for the session by name. **So this
+pass, like the last, answers no check with a vendor citation**, and the
+evidence classes of 2026-09-06 stand: **[tree]**, **[spec]** (still not
+fetched; still to be checked against the specification before relying on it)
+and **[open]**. The lane also had no shell, so it could not run `git`,
+`cargo` or `curl`; nothing below claims a command was run except the
+repository searches named inline, which were run with the file-search tools
+the lane did have.
+
+**What the tree re-settled, run in the worktree this was written in.**
+
+- Check 2's coupling holds: `password_required = true` sits inside the
+  `email` block whose `enabled` flag is `var.enable_email_password`
+  (`grep -n 'enable_email_password\|password_required' infrastructure/terraform/modules/identity/main.tf`).
+- The portal's Identity Platform client still reaches `v1` only. `grep -n
+  'identitytoolkit\|accounts:' frontend/portal/src/lib/server/identity-platform.ts`
+  shows `https://identitytoolkit.googleapis.com/v1`, `accounts:signUp`,
+  `:sendOobCode`, `:signInWithPassword`, `:lookup`, `:resetPassword`,
+  `:update` — and no `v2`, no `passkey`. `call()` still extracts the ALL_CAPS
+  code from `error.message`, so the probe below arrives as a code.
+- `AuthMethod` still lists `"password"` first
+  (`frontend/packages/auth/src/index.ts`, `grep -n AuthMethod`), and the sealed
+  cookie's `method` union is still `"development" | "password" | "google"`
+  (`grep -n 'readonly method' frontend/portal/src/lib/server/identity.ts`).
+- `grep -rn 'navigator.credentials\|attestationObject' frontend/portal/src`
+  still returns nothing. **One premise of this record has rotted, harmlessly**:
+  "`grep -rln -i passkey backend/crates frontend/portal/src` is empty" is no
+  longer true. It matches the sign-in page and three deprecated auth routes
+  (this record's own applied copy) and one doc comment in
+  `qip-acceptance/tests/documentation.rs` that quotes the old search. No
+  ceremony exists anywhere; the hits are prose about this record.
+- **A finding the earlier passes did not have, and it decides what `qip-api`
+  gets from this record.** `qip-api`'s `Presence` enum
+  (`grep -n 'pub enum Presence' -A 8 backend/crates/apps/qip-api/src/auth.rs`)
+  has exactly one variant, `Unattested { credential_minted_at }`, and its doc
+  comment says "there is no interactive authentication step anywhere in this
+  platform for a token to be the residue of … A credential class that
+  genuinely carried an authentication instant would be a second variant here"
+  (ADR 0065). Every signature-gated route dates its `OperatorIdentity` at
+  `principal.authentication_instant(..)`, which refuses, and the arms that
+  build one pass the literal `"api-bearer-token"` as the method
+  (`grep -n 'OperatorIdentity::verified' backend/crates/apps/qip-api/src/routes.rs`).
+  Four test files already write `"webauthn"` into that method slot
+  (`grep -rn '"webauthn"' backend/crates --include=*.rs`), so the vocabulary is
+  anticipated and nothing produces it. A passkey sign-in, relayed as ADR
+  0042's `method` and `authenticated_at`, is that second variant. **That is
+  the whole of what `qip-api` gains from this record, and it is downstream of
+  ADR 0042** — the API side has no passkey ceremony under either shape, by
+  decision 2 and by (d).
+
+**The decision.** The owner delegated the decision to this lane. Three
+answers were available:
+
+- *Accept.* Refused — it would state that a check ran.
+- *Reject.* Refused — nothing found in three passes argues against passkeys as
+  the credential; every open question is about *where* the passkey is
+  verified. Rejecting would keep the password, which §40.3 forbids and which
+  ADR 0021 and 0022 make the architecture of record.
+- **Accept with conditions**, taken, on this argument: the four checks gate
+  decision 2 and nothing else. Decisions 1, 3, 4, 5 and 6 are the blueprint's
+  own sentence plus discipline the tree already practises, and were never
+  console-dependent; keeping them *proposed* has blocked shape-independent
+  work — the `AuthMethod` narrowing, the virtual-authenticator Playwright
+  harness, the credential list page, the operator recovery surface, the
+  `Presence` variant — for fourteen days on a question they do not turn on.
+  Decision 2 is accepted as a decision table (below) rather than as a shape,
+  with **one activation step**: the probe. Its outcome selects the row. No
+  further architecture pass is needed to read it.
+
+**The one activation step, exactly.** Against `algorik-dev`, with the portal's
+Identity Platform browser key (public by design; selects a project,
+authenticates nobody — `identity-platform.ts` header comment), one call:
+
+```
+POST https://identitytoolkit.googleapis.com/v2/accounts/passkeyEnrollment:start?key=<browser key>
+Authorization: Bearer <an ID token from accounts:signInWithPassword for one scratch account>
+Content-Type: application/json
+
+{"idToken": "<the same ID token>", "tenantId": ""}
+```
+
+Run it through `call()` — a `gipPasskeyProbe()` function the brief specifies —
+or with `curl` by hand. **Record the HTTP status and the ALL_CAPS code, and
+nothing else**: no token, no key, no `localId` reaches this file or any
+commit. **Quote the status and the code into this status line.** Then read
+the table.
+
+| The probe answers | Shape | What happens next |
+|---|---|---|
+| `200` with a `credentialCreationOptions` body | **A** | Checks 2, 3 (second half) and 4 are answered by the brief's next three steps, each of which is one call through the same client and each of which has a named stop. Check 4's stop is the reversal condition already written: an ID token without the custom claims makes Shape A not viable and the answer is Shape B, not a second claim-reading path. |
+| `404`, or `PERMISSION_DENIED`, `OPERATION_NOT_ALLOWED`, `UNSUPPORTED_PASSKEY`-class, or any code naming the feature as unavailable | **B**, under amendment (ii) | The credential record lives in the platform's hash-chained event log (decided below). Shape B additionally **requires ADR 0042 applied first**, because the console has no write path to the API that carries an operator identity until then (ADR 0018 gives it `viewer`). Shape B's dependency is admitted by the ADR 0012 test as decision 2 already argues, and is a frontend `package.json` decision reviewed with its transitive tree. |
+| `200`, but the endpoint is documented as preview, allowlisted or tier-restricted | **neither** | Stay on the deprecated password path with the deprecation notes in place and revisit. This is the third answer the 2026-09-06 pass said the record had no shape for; it still has none, on purpose. Do not fall through to Shape B. |
+
+A fourth outcome — the probe was not run — leaves decision 2 where it is:
+accepted as a table, with no row selected, and nothing under "Shape A" or
+"Shape B" in the brief may be started. The shape-independent work may.
+
 ## Decision
 
 1. **Passkeys (WebAuthn) become the only end-user credential of the portal.**
@@ -349,6 +487,35 @@ This pass narrowed what they have to decide; it did not answer one of them.
    (ADR 0019) and a third-party crate inside the workspace (ADR 0002) to
    solve a browser-side problem.
 
+   **Amended 2026-09-19 — where a credential record lives, decided.** The
+   "custom claim, two passkeys" sentence above is superseded by (a) and (b)
+   of the 2026-09-06 section and is not the store under Shape B. Under
+   **Shape A** the credential lives in Identity Platform beside the account
+   and this repository persists no key material at all; the platform's
+   event log records *lifecycle facts* — enrolled, revoked, recovery code
+   issued, recovery code redeemed — as attribution rows once ADR 0042 gives
+   the console a write path, and until then the only record of an enrolment
+   is Identity Platform's own. Under **Shape B** the credential record is a
+   row in the platform's hash-chained event log, amendment (ii), in this
+   shape: `credential_id`, the COSE public key bytes, `aaguid`, the
+   transports, a person-chosen label, `created_at`, the subject as the
+   opaque `gip:<localId>` the sealed cookie already carries; and a
+   *separate* `AssertionObserved { credential_id, sign_count, at }` row
+   appended on every successful sign-in, so that the signature counter —
+   the one mutable field WebAuthn has — is **derived by replay** and never
+   edited in place. That is the only shape consistent with "nothing may edit
+   history that has been sealed" and with the one-source-of-truth rule; a
+   counter column that is overwritten is a second source of truth by
+   definition. The cost is named rather than hidden: under Shape B the
+   console's sign-in depends on `qip-api` being reachable, a dependency
+   direction taken deliberately (the console already reaches the API on its
+   own credential, ADR 0018); the record type belongs in a lib (`qip-events`
+   or a sibling), the journaling in `qip-kernel`, the routes in `qip-api`,
+   and nothing in `backend/` learns that the frontend exists. Candidate (i)
+   — the merged claim — is refused outright rather than ranked second:
+   the byte budget is the authenticator's, not ours. Candidate (iii) stays
+   refused.
+
 3. **The session stays the sealed cookie of ADR 0019.** Nothing about
    issuance, lifetime, `viewer`-only scope or the absence of revocation
    changes. The blueprint's "bound to a device" and per-action step-up are
@@ -384,6 +551,28 @@ This pass narrowed what they have to decide; it did not answer one of them.
      is issued, the console is not reachable, and the person signs in with
      the new passkey afterwards. A recovery path that cannot open the
      console is a recovery path that cannot be phished into a session.
+
+   **Amended 2026-09-19 — where the code's HMAC lives, and "five attempts"
+   becomes one.** (a) showed that anything written into `customAttributes`
+   beside the profile is deleted by the next profile write, and (c) showed
+   that five attempts need a counter nothing can hold. Both close at once:
+   the recovery entry is a **field of `StoredProfileClaims`** — `{ hmac,
+   issued_at, issued_by }`, roughly 120 bytes inside the 1000 — so there is
+   exactly one writer, `gipWriteProfile`, and one blob, and issuance and
+   invalidation go through the same read-merge-write the profile already
+   uses. Serialisation of the two writers is the desk's: a profile write
+   happens on agreement re-acceptance or a role change, both operator acts,
+   and an operator issues a code; the surface refuses to issue while a
+   profile write for the same account is in flight rather than racing it.
+   The code is **single-use and single-attempt**: a wrong code invalidates
+   the field, and the person asks the desk again. That is a refusal where the
+   earlier text had a count, which is the platform's rule for an input it
+   cannot validate — and a six-digit code spoken over a phone that costs a
+   second call on a typo is a cheaper failure than a counter an attacker can
+   race across stateless instances. Fifteen minutes is measured from
+   `issued_at` inside the field. The event-log row for an issuance carries
+   the subject, the issuing operator, `issued_at` and `expires_at` — never
+   the code, never the HMAC.
 
    Rejected: **TOTP fallback**, which §40.3 names — a TOTP seed is a shared
    secret held on both sides, which is a password with a clock. It is
@@ -461,6 +650,24 @@ page that says "that address is already registered" undoes it.
   a population on today's Cloud Run hostname buys a re-enrolment of everyone at
   the domain migration. Either the migration comes first or the discard is
   accepted deliberately.
+* **If a passkey session ever unlocks a route that moves capital or places an
+  order.** Added 2026-09-19. What a passkey changes on the platform side is
+  `Presence` — `Unattested` gains an `Attested` sibling — and what an attested
+  presence unlocks is the freshness gate on routes that already require
+  `Role::Operator` and a countersignature: eligibility, approvals,
+  reinstatements. `/orders` is `Method::Get` and `Role::Viewer`
+  (`grep -n 'pattern: "/orders"' -B 2 -A 3 backend/crates/apps/qip-api/src/routes.rs`),
+  `api_boundary.rs` reads the route table as text and reviews every mutating
+  route, and `paper_boundary.rs` holds the line beneath both. If a change
+  under this record adds a mutating route that is not a fact about a person,
+  or if `Attested` is ever constructed from anything but a verified ADR 0042
+  assertion whose `method` is `passkey`, the boundary has been moved by an
+  authentication change, which is the one way this record could touch it.
+* **If the probe's outcome is written into the status line without the HTTP
+  status and code, or with anything beside them.** Added 2026-09-19. The
+  table is read off two values. A status line that says "it worked" has not
+  selected a row, and one that carries a token or a `localId` has put an
+  identifier into a committed file.
 * **If a Shape B credential record is ever written into the same
   `customAttributes` blob `gipWriteProfile` replaces.** Added 2026-09-06. The
   next profile write deletes it, silently, and the account then reads as having
@@ -485,6 +692,19 @@ only this:
 The first step toward applying it is the four checks under "Whether Identity
 Platform verifies a passkey itself", run by the owner against the dev
 project, with their outputs quoted into this record's status line.
+
+**The 2026-09-19 pass changed this file, the decision index row, the two
+register rows §40.3 and §40.4 in `docs/DELIVERY-STATUS.md`, and wrote the
+implementation brief at `docs/architecture/adr-0038-implementation-brief.md`.
+Nothing else.** No probe was run against any project (no credential, no
+shell, no web access — the four tool errors are quoted above); no Terraform
+variable moved; no npm package was added; `AuthMethod` still lists
+`"password"`; no ceremony exists. The lane had no shell, so **no gate was run
+by it**: not `cargo test -p qip-acceptance --test documentation --test
+architecture --no-fail-fast`, not `./scripts/check-secrets.sh`. Whoever
+accepts this pass runs both and quotes the `test result:` line and the
+secrets scan's last line; a report of this pass that says either passed is
+false.
 
 **The 2026-09-06 pass changed no file outside this one.** No probe was run
 against any project — the session had no credential and no web access of any
