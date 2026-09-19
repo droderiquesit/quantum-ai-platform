@@ -156,11 +156,18 @@ impl Completion {
     /// The label this outcome is counted under. A source-file literal per
     /// arm, so `qip_edge_cycle_legs_total{completion}` is bounded by this
     /// enum and never by anything a venue said.
+    ///
+    /// `short` rather than `decomposed`: the series counts a leg by what
+    /// *that leg* completed, and the decomposition is what happens to the
+    /// legs behind it. A label naming the consequence would put the first
+    /// short leg of a cycle and the two reduced ones that follow it under the
+    /// same word, and those are the two facts an operator is trying to tell
+    /// apart.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Unanswered => "unanswered",
             Self::Whole => "whole",
-            Self::Reduced { .. } => "decomposed",
+            Self::Reduced { .. } => "short",
             Self::Unviable { .. } => "unviable",
         }
     }

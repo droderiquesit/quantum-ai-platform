@@ -11,7 +11,7 @@
 //! somebody already approved, for as long as the envelope has left to run.
 
 use crate::arbitrage::ArbitrageDesk;
-use crate::decomposition::{Completion, Decomposition, DecompositionPolicy, LegSize};
+use crate::decomposition::{Decomposition, DecompositionPolicy, LegSize};
 use crate::dispersion::{DispersionPolicy, DispersionVerdict, FillTimes};
 use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 use crate::envelope::VerifiedEnvelope;
@@ -5107,10 +5107,14 @@ impl Cell {
                          its planned {planned}: {reason}",
                         cycle.cycle_id
                     ));
-                    self.metrics.cycle_leg(Completion::Unviable {
-                        fraction: decomposition.fraction(),
-                        minimum: decomposition.policy().minimum_viable(),
-                    });
+                    // Not counted on `qip_edge_cycle_legs_total`: that series
+                    // counts legs the cell *sent*, by what each completed,
+                    // and this one never went to a venue. The leg in front of
+                    // it is already counted `unviable` there, and the cell's
+                    // declining to send this one is counted where every other
+                    // refusal is, under the `arbitrage_cycle_broken` gate
+                    // `break_cycle` refuses through. Counting it in both
+                    // would make a single stopped cycle read as two.
                     self.break_cycle(
                         &cycle.cycle_id,
                         position,
