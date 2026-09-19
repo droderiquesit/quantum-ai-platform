@@ -156,15 +156,14 @@ impl OrderState {
         )
     }
 
-    /// Whether the order has been cleared to reach a venue.
-    pub const fn is_risk_cleared(&self) -> bool {
-        matches!(
-            self,
-            Self::RiskApproved { .. }
-                | Self::Working { .. }
-                | Self::PartiallyFilled { .. }
-                | Self::Filled { .. }
-        )
+    /// Whether the order is at a venue that could fill it.
+    ///
+    /// Narrower than "open": a `Created` order has not been through
+    /// pre-trade risk and a `RiskApproved` one has not been sent, and a fill
+    /// reported against either is a venue filling an order it was never
+    /// given — a reconciliation break wearing a fill's clothes, not a fill.
+    pub const fn is_at_venue(&self) -> bool {
+        matches!(self, Self::Working { .. } | Self::PartiallyFilled { .. })
     }
 }
 
@@ -360,10 +359,26 @@ impl Order {
     }
 
     /// Record a fill and advance the state.
+    ///
+    /// Every refusal here comes before the fill is pushed. Until 2026-09-19
+    /// the state was checked with `is_open`, which admits `created` and
+    /// `risk_approved`, so a fill on an order that risk had never cleared —
+    /// or had cleared and nothing had sent — was booked first and refused
+    /// second when the transition to filled proved illegal: the caller saw
+    /// an error and the order carried a fill its state denied. Nothing
+    /// production reaches that path, because the order manager only fills
+    /// what it has marked working; the guard is here so that nothing ever
+    /// can.
     pub fn apply_fill(&mut self, fill: Fill) -> Result<()> {
-        if !self.state.is_open() {
+        if !self.state.is_at_venue() {
+            let why = if self.state.is_terminal() {
+                "and cannot be filled"
+            } else {
+                "and was never sent to a venue, so a fill reported on it is a reconciliation \
+                 break rather than a fill; nothing was booked"
+            };
             return Err(Error::invalid(format!(
-                "order {} is {} and cannot be filled",
+                "order {} is {} {why}",
                 self.order_id.as_str(),
                 self.state.as_str()
             )));
