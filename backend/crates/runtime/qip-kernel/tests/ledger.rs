@@ -209,7 +209,10 @@ fn funding_refusals(platform: &Platform) -> Result<Vec<(UserId, String)>> {
         .into_iter()
         .filter_map(|entry| match entry {
             LedgerEntry::FundingRefused { user, gate, .. } => Some((user, gate)),
-            LedgerEntry::Funded { .. } | LedgerEntry::Booked { .. } => None,
+            LedgerEntry::Funded { .. }
+            | LedgerEntry::Booked { .. }
+            | LedgerEntry::InflowExpected { .. }
+            | LedgerEntry::InflowCancelled { .. } => None,
         })
         .collect())
 }
