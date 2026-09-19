@@ -58,9 +58,36 @@
 //! it is an order path, so it is one somebody reviews.
 
 use qip_capital::exploration::{
-    ExplorationBook, ExplorationPlan, MAXIMUM_OPEN_PROBES, ProbeCandidate, ProbeEvidence,
-    ProbeKind, ProbeOutcome, budget_for,
+    ExplorationPlan, MAXIMUM_OPEN_PROBES, ProbeCandidate, ProbeEvidence, ProbeOutcome, budget_for,
 };
+
+/// The account types an operator surface needs in order to *read* the budget,
+/// re-exported so an application can name them.
+///
+/// Not a convenience. [`ExplorationDesk::book`] has always returned an
+/// [`ExplorationBook`], so an application could already walk the open probes;
+/// what it could not do is say the word [`ProbeKind`], which is the key
+/// `ExplorationBook::record` takes. So the per-kind account — what each class
+/// of question has cost and whether it settled as an observation or as a
+/// probe somebody took up — was unnameable from outside this crate, and a
+/// surface that lists the probes without saying what they learned is the half
+/// of the report an operator does not need.
+///
+/// **The kernel is the seam on purpose, and the rule that looked like the
+/// obstacle is the reason.** `00-boundaries.md` points dependencies inward —
+/// libs, services, runtime, apps — and `api_boundary.rs` refuses a shipped
+/// application-to-`qip-capital` edge. That refusal is not something to route
+/// around by adding the dependency: it exists so that a composition root
+/// reads a domain engine through the runtime that composes it, and so that
+/// what an application may see is a decision this crate takes once rather
+/// than one every application takes for itself.
+///
+/// Read-only, and the omissions are the point. [`ProbeCandidate`],
+/// [`ProbeOutcome`] and [`ExplorationPlan`] stay unexported: proposing a
+/// question, settling one and planning a slate are this module's business,
+/// and an application able to construct any of them could move the budget
+/// without the hold this module takes against the reservation ledger.
+pub use qip_capital::exploration::{ExplorationBook, KindRecord, Probe, ProbeKind};
 use qip_capital::ledger::UserLedger;
 use qip_capital::reservation::ReservationLedger;
 use qip_core::error::{Error, Result};

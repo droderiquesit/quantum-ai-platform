@@ -22,7 +22,6 @@
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_capital::exploration::ProbeKind;
 use qip_capital::ledger::{
     Jurisdiction, Mandate, MandateId, MandateTerms, PermittedFamilies, UserId, UserLedger,
 };
@@ -36,7 +35,12 @@ use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
 use qip_kernel::config::{PlatformConfig, UserMandate};
 use qip_kernel::cycle::Stage;
-use qip_kernel::exploration::{ExplorationDesk, HOLD_ID, PROBE_VALIDITY, review};
+// Through the kernel, not through `qip_capital`. `api_boundary.rs` refuses a
+// shipped application-to-`qip-capital` edge, so the runtime is the only seam
+// an operator surface may read the per-kind account through; importing it
+// here the way an application must is what keeps that seam from rotting into
+// a re-export nothing uses.
+use qip_kernel::exploration::{ExplorationDesk, HOLD_ID, PROBE_VALIDITY, ProbeKind, review};
 use qip_kernel::platform::Platform;
 use qip_learning_engine::self_model::{ComponentKey, ComponentKind, ScoredOutcome, SelfModel};
 use qip_observability::Telemetry;
