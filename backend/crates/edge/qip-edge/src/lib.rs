@@ -56,6 +56,8 @@ pub mod reservation;
 /// What a cell must be shown before it resumes after a crash (§36.3).
 pub mod resume;
 pub mod seam;
+/// §56.2 rule 21: whether a leg's funding is usable when the leg fires.
+pub mod settlement;
 pub mod telemetry;
 
 pub use arbitrage::ArbitrageDesk;
@@ -91,4 +93,5 @@ pub use region::{DarkSource, RegionOutlook};
 pub use reservation::{Rebase, RegionAllocation, RegionTable};
 pub use resume::{ResumeDiscipline, VenueAccount};
 pub use seam::{CellLiquidity, value_kind, value_type};
+pub use settlement::{GATE_SETTLEMENT, SettlementConvention, SettlementTerms};
 pub use telemetry::CellMetrics;
