@@ -113,8 +113,23 @@ impl Portfolio {
             .positions
             .entry(object.object_id.as_str().to_string())
             .or_insert_with(|| {
+                // The instrument's own regulatory record supplies the tax
+                // jurisdiction, and only when it names exactly one. Several
+                // is left unknown rather than narrowed to the first: which of
+                // them governs a holding period is a question this record
+                // does not answer, and answering it here would be the
+                // platform inventing a tax position on an operator's behalf.
+                // Taken once, when the position is opened, because it is the
+                // jurisdiction the lots were acquired in — a later edit to
+                // the instrument record must not retroactively reclassify
+                // gains already realised under the old one.
+                let jurisdiction = match object.regulatory.jurisdictions.len() {
+                    1 => object.regulatory.jurisdictions.iter().next().copied(),
+                    _ => None,
+                };
                 Position::new(object.object_id.clone(), &object.symbol, at)
                     .with_multiplier(object.contract_multiplier)
+                    .with_jurisdiction(jurisdiction)
             });
 
         let cash_flow = position.apply_fill(quantity, price, costs, at, order_id);

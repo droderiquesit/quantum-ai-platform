@@ -5,7 +5,8 @@ use qip_events::{EventBody, Topic};
 use serde::{Deserialize, Serialize};
 
 use crate::lifecycle::PositionLifecycle;
-use crate::lot::{Lot, LotMethod, RealisedTrade, close_lots_with};
+use crate::lot::{HoldingTerm, Lot, LotSelection, RealisedTrade, close_lots_under};
+use qip_financial::constraints::Jurisdiction;
 
 /// Which way a position points.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,7 +50,32 @@ pub struct Position {
     pub contract_multiplier: Decimal,
     /// Closed round trips, for attribution.
     pub closed_trades: Vec<RealisedTrade>,
-    pub lot_method: LotMethod,
+    /// Which lot a closing fill consumes, and whether that choice consults a
+    /// holding-period rule.
+    ///
+    /// Private, like [`Self::lifecycle`] and for the same reason. The only
+    /// writer is [`Position::declare_selection`], which refuses a
+    /// holding-period arm whose jurisdiction is not this position's — so a
+    /// term-aware selection cannot be attached to a position it could never
+    /// classify, and then quietly behave as first-in-first-out for the rest
+    /// of the position's life.
+    selection: LotSelection,
+    /// The single regulatory jurisdiction of the instrument this position is
+    /// in, where it has exactly one.
+    ///
+    /// Copied from `FinancialObject::regulatory` by
+    /// [`crate::portfolio::Portfolio::apply_fill`] when the instrument names
+    /// exactly one jurisdiction, and left `None` when it names none or
+    /// several. Several is not narrowed to the first: which of them governs
+    /// a lot's holding period is a question the instrument record does not
+    /// answer, and picking one would be this platform inventing a tax
+    /// position. `None` is carried forward honestly as
+    /// [`HoldingTerm::Undetermined`] on every trade the position realises.
+    ///
+    /// It sits on the position rather than on each [`Lot`] because it is a
+    /// fact about the instrument, one per position: a copy on every lot would
+    /// be the same fact stored many times, free to drift apart.
+    jurisdiction: Option<Jurisdiction>,
     pub opened_at: Option<Timestamp>,
     pub updated_at: Timestamp,
     /// What the desk is doing about the position, independent of the lot
@@ -77,7 +103,8 @@ impl Position {
             total_costs: Decimal::ZERO,
             contract_multiplier: Decimal::ONE,
             closed_trades: Vec::new(),
-            lot_method: LotMethod::default(),
+            selection: LotSelection::default(),
+            jurisdiction: None,
             opened_at: None,
             updated_at: at,
             lifecycle: PositionLifecycle::Opened,
@@ -106,6 +133,87 @@ impl Position {
     pub fn with_multiplier(mut self, multiplier: Decimal) -> Self {
         self.contract_multiplier = multiplier;
         self
+    }
+
+    /// State the one jurisdiction the instrument sits in.
+    ///
+    /// `None` is a real answer and the one a caller should pass when the
+    /// instrument names no jurisdiction or more than one. See the field's
+    /// documentation for why several is not narrowed to one.
+    pub fn with_jurisdiction(mut self, jurisdiction: Option<Jurisdiction>) -> Self {
+        self.jurisdiction = jurisdiction;
+        self
+    }
+
+    /// The jurisdiction a holding-period rule for this position must name.
+    pub fn jurisdiction(&self) -> Option<Jurisdiction> {
+        self.jurisdiction
+    }
+
+    /// Which lot the next closing fill will consume.
+    pub fn selection(&self) -> LotSelection {
+        self.selection
+    }
+
+    /// Choose how closing fills pick lots, refusing a holding-period rule
+    /// this position could not apply.
+    ///
+    /// The refusal is the point. A [`crate::lot::HoldingPeriodTest`] declared
+    /// for a jurisdiction other than this position's classifies every one of
+    /// its lots as [`HoldingTerm::Undetermined`], which leaves the ordering
+    /// indistinguishable from first-in-first-out — a tax policy that appears
+    /// to be in force and is not. Attaching it is refused here, where the
+    /// mismatch is knowable, rather than discovered later from a realised
+    /// gain that came out short-term when the desk expected long.
+    pub fn declare_selection(&mut self, selection: LotSelection) -> qip_core::Result<()> {
+        if let Some(test) = selection.holding_period_test() {
+            match self.jurisdiction {
+                Some(held) if held == test.jurisdiction() => {}
+                Some(held) => {
+                    return Err(qip_core::error::Error::invalid(format!(
+                        "{} sits in {} but the holding-period rule offered for it was declared \
+                         for {}; declare the rule for {} or close this position under a \
+                         mechanical lot method, because a rule for another jurisdiction would \
+                         order the lots exactly as first-in-first-out while reading as a tax \
+                         policy",
+                        self.symbol,
+                        held.as_str(),
+                        test.jurisdiction().as_str(),
+                        held.as_str(),
+                    )));
+                }
+                None => {
+                    return Err(qip_core::error::Error::invalid(format!(
+                        "{} names no single regulatory jurisdiction, so the holding-period rule \
+                         declared for {} cannot be applied to it; register the instrument with \
+                         exactly one jurisdiction, or close this position under a mechanical lot \
+                         method",
+                        self.symbol,
+                        test.jurisdiction().as_str(),
+                    )));
+                }
+            }
+        }
+        self.selection = selection;
+        Ok(())
+    }
+
+    /// Realised profit split by the term it was realised at.
+    ///
+    /// Every state appears, including the ones with nothing in them, so a
+    /// report cannot read an absent key as a zero it measured. The
+    /// [`HoldingTerm::Undetermined`] share is first, and a desk that finds
+    /// its whole book there is being told no holding-period rule reached it.
+    pub fn realised_by_term(&self) -> std::collections::BTreeMap<HoldingTerm, Decimal> {
+        let mut split: std::collections::BTreeMap<HoldingTerm, Decimal> = HoldingTerm::ALL
+            .iter()
+            .map(|term| (*term, Decimal::ZERO))
+            .collect();
+        for trade in &self.closed_trades {
+            let entry = split.entry(trade.term).or_insert(Decimal::ZERO);
+            *entry += trade.realised_pnl() * self.contract_multiplier;
+        }
+        split
     }
 
     /// Net signed quantity across all lots.
@@ -231,7 +339,7 @@ impl Position {
 
         // Opposite direction: close against existing lots.
         let closing = quantity.abs().min(current.abs());
-        let trades = close_lots_with(
+        let trades = close_lots_under(
             &mut self.lots,
             closing,
             price,
@@ -240,7 +348,8 @@ impl Position {
                 .and_then(|scaled| scaled.checked_div(quantity.abs()))
                 .unwrap_or(Decimal::ZERO),
             at,
-            self.lot_method,
+            self.selection,
+            self.jurisdiction,
         );
         for trade in &trades {
             // Realised profit is measured in instrument units and scaled to
