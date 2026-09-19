@@ -117,24 +117,140 @@ fn profile() -> &'static str {
     }
 }
 
+/// How much work [`machine_probe_nanos`] does. Sized so the probe costs a few
+/// milliseconds unloaded: long enough that one descheduling does not dominate
+/// it, short enough that running it beside every measurement in this file is
+/// not itself the cost of the suite.
+const PROBE_OPERATIONS: u64 = 4_000;
+
+/// Time a fixed, unchanging workload, so that a measurement printed beside it
+/// can be told apart from a machine that was merely busy.
+///
+/// **Nothing under test touches this function, and no threshold in this file
+/// is derived from it.** That second half is deliberate and was arrived at the
+/// hard way. The first attempt at this divided each measurement by the probe's
+/// ratio against a baked-in reference figure for an unloaded machine, and the
+/// figure was wrong by a factor of ten on its first run — which silently
+/// multiplied every ceiling in the file by ten. A calibration constant that is
+/// too low turns twenty-seven controls into controls that cannot fire, and
+/// does it without a single failing test to say so. So the probe informs the
+/// reader and nothing else: the ceilings are asserted against raw wall clock,
+/// exactly as they were.
+fn machine_probe_nanos() -> u128 {
+    let started = Instant::now();
+    let mut map: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut acc: u64 = 0;
+    for i in 0..PROBE_OPERATIONS {
+        let key = i.wrapping_mul(2_654_435_761) % 4_096;
+        map.insert(key, i);
+        acc = acc.wrapping_add(*map.get(&key).unwrap_or(&0));
+        if map.len() > 2_048 {
+            map.clear();
+        }
+    }
+    std::hint::black_box((acc, &map));
+    started.elapsed().as_nanos()
+}
+
 /// Print what a stage measured, and assert only that it was not absurd.
 ///
 /// `ceiling` is per-operation, in microseconds, and is deliberately one to two
 /// orders of magnitude above what an unoptimised build takes. It exists to
 /// catch a change in complexity class, not to police a few percent.
+///
+/// Every line also carries `probe=`, the cost of the fixed workload in
+/// [`machine_probe_nanos`] measured immediately after the stage. That field
+/// exists because this suite spent a session misattributing its own failures.
+/// The message here used to end "this is a change in complexity rather than a
+/// slow machine", and in a container running several cargo builds at once that
+/// sentence was false: the same suite measured 5.113 us/op alone and 27.701
+/// us/op under load against a 20 us ceiling, four separate lanes went looking
+/// for a regression that did not exist, and one of them watched the complexity
+/// property *hold* inside the failing run — the stage fed 4.7x past its bounds
+/// cost less per operation than at bounds. The claim was true about the code
+/// and the number it was made about was measuring the machine. A failure
+/// message naming the wrong cause is worse than one naming none, because it is
+/// acted on.
+///
+/// A wall-clock ceiling cannot distinguish the two cases on its own, and this
+/// function does not pretend otherwise. What it does is hand the reader a
+/// controlled experiment: `probe=` is the same work every time, so re-running
+/// the suite alone and comparing the two `probe=` fields says whether the
+/// machine changed. If the probe fell by roughly the factor the measurement
+/// fell by, it was contention. If the probe barely moved and the measurement
+/// did, it is the code. [`report_scaling`] asserts the complexity property
+/// directly and needs no such experiment.
 fn report(label: &str, operations: usize, elapsed: WallDuration, ceiling_micros: f64) {
     let seconds = elapsed.as_secs_f64();
     let per_operation_micros = seconds * 1e6 / operations as f64;
+    let probe = machine_probe_nanos();
     println!(
         "{label}: {operations} ops in {seconds:.3}s = {:.0} ops/s \
-         ({per_operation_micros:.3} us/op, {} profile, this machine, single-threaded)",
+         ({per_operation_micros:.3} us/op, probe={probe}ns over {PROBE_OPERATIONS} fixed ops, \
+         {} profile, this machine, single-threaded)",
         operations as f64 / seconds,
         profile()
     );
     assert!(
         per_operation_micros < ceiling_micros,
-        "{label} took {per_operation_micros:.3} us/op, past the {ceiling_micros:.0} us ceiling; \
-         this is a change in complexity rather than a slow machine"
+        "{label} took {per_operation_micros:.3} us/op, past the {ceiling_micros:.0} us \
+         ceiling. This is wall clock, so it is not yet evidence of anything about the code: \
+         a busy machine reads identically to a change in complexity, and this suite has \
+         already sent four readers after a regression that did not exist. The probe beside \
+         this measurement — a fixed workload of {PROBE_OPERATIONS} operations that no change \
+         under test can affect — cost {probe}ns. Re-run this suite alone and compare that \
+         field. If it falls by about the factor this measurement falls by, the machine was \
+         the cause; if it barely moves while this measurement does, the change is real. \
+         `book_apply_costs_the_same_per_message_however_many_it_is_fed` asserts the \
+         complexity property without the experiment, and is the shape the rest of this file \
+         should grow toward"
+    );
+}
+
+/// Assert that per-operation cost does not grow when the input does.
+///
+/// This is the property the ceilings in this file are a proxy for, and unlike
+/// a wall-clock ceiling it is load-invariant: both halves run on the same
+/// machine, in the same process, under whatever load is present, so the load
+/// divides out of the ratio instead of being subtracted from the margin.
+///
+/// `tolerance` is how much worse the larger run's per-operation cost may be.
+/// It is not one: a larger run pays more cache pressure at the same complexity
+/// class, and the distinction being drawn here is between constant-ish and
+/// linear-in-N per operation, which is a factor of the size ratio and not a
+/// few percent.
+fn report_scaling(
+    label: &str,
+    small: (usize, WallDuration),
+    large: (usize, WallDuration),
+    tolerance: f64,
+) {
+    let (small_ops, small_elapsed) = small;
+    let (large_ops, large_elapsed) = large;
+    assert!(
+        large_ops > small_ops,
+        "{label}: the larger run must feed more operations than the smaller one, \
+         or this measures nothing"
+    );
+    let small_micros = small_elapsed.as_secs_f64() * 1e6 / small_ops as f64;
+    let large_micros = large_elapsed.as_secs_f64() * 1e6 / large_ops as f64;
+    let growth = large_micros / small_micros;
+    println!(
+        "{label}: {small_ops} ops at {small_micros:.3} us/op vs {large_ops} ops at \
+         {large_micros:.3} us/op = {growth:.2}x per-operation growth over a \
+         {:.1}x larger input ({} profile, this machine, single-threaded)",
+        large_ops as f64 / small_ops as f64,
+        profile()
+    );
+    assert!(
+        growth < tolerance,
+        "{label}: feeding {:.1}x the input made each operation {growth:.2}x more \
+         expensive, past the {tolerance:.1}x tolerance. Per-operation cost that rises \
+         with the size of the input is a complexity class change — a linear scan where \
+         there was a lookup, a whole-structure recomputation per item — and this \
+         assertion is load-invariant, so a busy machine is not the explanation: both \
+         halves were measured on it",
+        large_ops as f64 / small_ops as f64
     );
 }
 
@@ -351,6 +467,56 @@ fn book_apply_costs_what_the_budget_says() -> Result<()> {
     assert_eq!(state.applied(), MESSAGES as u64);
     assert!(state.mid().is_some(), "the book did not end up priceable");
     report("book apply (L2 level set)", MESSAGES, elapsed, 20.0);
+    Ok(())
+}
+
+#[test]
+fn book_apply_costs_the_same_per_message_however_many_it_is_fed() -> Result<()> {
+    // The property the ceiling above is a proxy for, asserted directly. A book
+    // that folds one message in constant time is the whole design; one that
+    // rescans its levels per message is linear in the book and would show up
+    // here as per-operation cost rising with the input.
+    //
+    // This is the load-invariant half of this suite. The ceiling above is a
+    // wall-clock figure and a wall clock on a shared machine measures the
+    // machine; this ratio measures both halves on the same machine moments
+    // apart, so contention cancels. It is here because a lane watched this
+    // exact stage trip its ceiling under a parallel build while the scaling
+    // property visibly held — fed 4.7x past bounds it cost *less* per message
+    // — which is the clearest possible statement that the ceiling and the
+    // property are not the same assertion.
+    const SMALL: usize = 50_000;
+    const LARGE: usize = 250_000;
+
+    let small_stream = level_stream("ACME", SMALL, 0xB0_0C);
+    let large_stream = level_stream("ACME", LARGE, 0xB0_0C);
+
+    let mut small_state = VenueState::aggregated(object("ACME"), venue(), VenueStatus::Open);
+    let started = Instant::now();
+    for message in &small_stream {
+        small_state.apply(message)?;
+    }
+    let small_elapsed = started.elapsed();
+
+    let mut large_state = VenueState::aggregated(object("ACME"), venue(), VenueStatus::Open);
+    let started = Instant::now();
+    for message in &large_stream {
+        large_state.apply(message)?;
+    }
+    let large_elapsed = started.elapsed();
+
+    // Premise: both runs really folded every message they were given. A run
+    // that silently stopped early would make the larger one look cheap per
+    // operation and pass this for the wrong reason.
+    assert_eq!(small_state.applied(), SMALL as u64);
+    assert_eq!(large_state.applied(), LARGE as u64);
+
+    report_scaling(
+        "book apply scaling",
+        (SMALL, small_elapsed),
+        (LARGE, large_elapsed),
+        2.0,
+    );
     Ok(())
 }
 
