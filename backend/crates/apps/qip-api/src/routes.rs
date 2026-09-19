@@ -443,6 +443,21 @@ pub const ROUTES: &[Route] = &[
                   entitlement evaluation, in which withdrawal is never granted",
         success: 200,
     },
+    // The desk's private commitments and the capital calls standing against
+    // them, as the reserve reads them (ADR 0085 §5). At viewer, like the
+    // wallet: it carries no per-user datum — a commitment is the desk's
+    // obligation to a fund, derived from the universe's private-asset
+    // records, and a notice is what a fund demanded of the desk.
+    Route {
+        method: Method::Get,
+        pattern: "/ledger/commitments",
+        required_role: Role::Viewer,
+        summary: "every unfunded private commitment the desk is on the hook for, with the \
+                  capital calls standing against each, their consequence, and what failing an \
+                  overdue one has cost — the obligation `deployable_capital` subtracts before \
+                  anything is sized; nothing here is settled by this build",
+        success: 200,
+    },
     // The one route on this surface that changes anything, and an operator's.
     // Until it existed, an eligibility could be decided only from the
     // deployment's committed configuration or from a test, so the gate the
@@ -518,6 +533,42 @@ pub const ROUTES: &[Route] = &[
                   coming — refused for a reference no book of the user's expects — journalled \
                   before the ledger drops it and answered with the user's updated ledger row; \
                   nothing else on the book moves",
+        success: 200,
+    },
+    // The §43.2 capital-call writer, as ADR 0085 §5 designed it: an operator
+    // files a fund's drawdown notice against one of the desk's commitments,
+    // and can retract one filed in error. Until these existed
+    // `Commitment::record_call` was reached by nothing a deployed process
+    // ran, so the penalty term of every commitment's obligation was
+    // structurally zero and the reserve could not tell a missed call from a
+    // met one. Both raise a typed kernel intent — `Platform::
+    // record_capital_call`, `Platform::withdraw_capital_call` — with the
+    // same `OperatorIdentity` an inflow declaration carries, journalled
+    // before the book adopts them and resumed from the log at the next
+    // boot. Neither pays anything: a notice can only ever raise what the
+    // platform holds back, and nothing this build runs ever settles one
+    // (see `CALL_SETTLEMENT`).
+    Route {
+        method: Method::Post,
+        pattern: "/ledger/commitments/:commitment/capital-calls",
+        required_role: Role::Operator,
+        summary: "file, as the authenticated operator, a fund's capital-call notice against \
+                  one of the desk's private commitments — a reference, an amount, a due \
+                  instant and the consequence of failing it, refused for a commitment the \
+                  universe does not hold, an amount past the undrawn balance, a due instant \
+                  before the notice's own or a reference already standing — journalled before \
+                  the book adopts it and answered with the commitment's updated row; it pays, \
+                  settles and transfers nothing",
+        success: 200,
+    },
+    Route {
+        method: Method::Delete,
+        pattern: "/ledger/commitments/:commitment/capital-calls/:reference",
+        required_role: Role::Operator,
+        summary: "withdraw, as the authenticated operator, a capital-call notice that stood — \
+                  rescinded by the fund or filed in error — refused for a reference no notice \
+                  stands under; journalled before the book drops it and answered with the \
+                  commitment's updated row; the called and unfunded balances do not move",
         success: 200,
     },
     Route {
@@ -1537,6 +1588,115 @@ impl Api {
                     Ok(()) => {
                         let (status, body) = crate::ledger_views::render_fallible(
                             crate::ledger_views::inflow_row(&platform, user, now),
+                        );
+                        Response::json(status, body)
+                    }
+                    Err(error) => Response::json(
+                        crate::registration_views::refusal_status(&error),
+                        crate::registration_views::refusal(error.message()),
+                    ),
+                }
+            }
+            (Method::Get, "/ledger/commitments") => {
+                let (status, body) = crate::ledger_views::render_fallible(
+                    crate::ledger_views::commitments(&platform, now),
+                );
+                Response::json(status, body)
+            }
+            (Method::Post, "/ledger/commitments/:commitment/capital-calls") => {
+                // The commitment is the path's third segment under the
+                // prefix; the route matched, so it is present.
+                let Some(commitment) = path_segment(&request.path, 2) else {
+                    return Response::json(404, r#"{"error":"no such route"}"#);
+                };
+                let filed = match request
+                    .body_as_str()
+                    .map_err(|error| error.message().to_string())
+                    .and_then(crate::ledger_views::CapitalCallBody::parse)
+                {
+                    Ok(filed) => filed,
+                    Err(reason) => {
+                        return Response::json(400, crate::registration_views::refusal(&reason));
+                    }
+                };
+                let notice = match filed.notice() {
+                    Ok(notice) => notice,
+                    Err(reason) => {
+                        return Response::json(400, crate::registration_views::refusal(&reason));
+                    }
+                };
+                // The operator is the authenticated principal, dated the way
+                // every signature-gated route dates it: by asking, and being
+                // refused, because a standing bearer token attests nobody's
+                // presence. The route is authorised in shape and refused in
+                // fact until a per-person credential exists (ADR 0075, ADR
+                // 0076). The commitment is not resolved here first, as the
+                // inflow route resolves its user: whether the book holds
+                // the commitment is the kernel's own refusal, answered 404
+                // by its class, and a route that pre-checked it would be a
+                // second copy of that gate.
+                let authenticated_at =
+                    match principal.authentication_instant("filing a capital call") {
+                        Ok(instant) => instant,
+                        Err(refusal) => {
+                            return Response::json(
+                                403,
+                                crate::registration_views::refusal(refusal.message()),
+                            );
+                        }
+                    };
+                let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
+                    principal.subject.clone(),
+                    "api-bearer-token",
+                    authenticated_at,
+                );
+                match platform.record_capital_call(commitment, notice, &operator, now) {
+                    Ok(()) => {
+                        // The row is read back from the book, not built
+                        // from the request: what the operator sees is what
+                        // the reserve holds, beside the sentence saying it
+                        // will never be settled by this build.
+                        let (status, body) = crate::ledger_views::render_fallible(
+                            crate::ledger_views::commitment_row(&platform, commitment, now),
+                        );
+                        Response::json(status, body)
+                    }
+                    Err(error) => Response::json(
+                        crate::registration_views::refusal_status(&error),
+                        crate::registration_views::refusal(error.message()),
+                    ),
+                }
+            }
+            (Method::Delete, "/ledger/commitments/:commitment/capital-calls/:reference") => {
+                // The commitment is the third segment and the reference the
+                // fifth; the route matched, so both are present.
+                let (Some(commitment), Some(reference)) = (
+                    path_segment(&request.path, 2),
+                    path_segment(&request.path, 4),
+                ) else {
+                    return Response::json(404, r#"{"error":"no such route"}"#);
+                };
+                // Dated as the filing is, and refused as it is, for the same
+                // reason.
+                let authenticated_at =
+                    match principal.authentication_instant("withdrawing a capital call") {
+                        Ok(instant) => instant,
+                        Err(refusal) => {
+                            return Response::json(
+                                403,
+                                crate::registration_views::refusal(refusal.message()),
+                            );
+                        }
+                    };
+                let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
+                    principal.subject.clone(),
+                    "api-bearer-token",
+                    authenticated_at,
+                );
+                match platform.withdraw_capital_call(commitment, reference, &operator, now) {
+                    Ok(()) => {
+                        let (status, body) = crate::ledger_views::render_fallible(
+                            crate::ledger_views::commitment_row(&platform, commitment, now),
                         );
                         Response::json(status, body)
                     }
