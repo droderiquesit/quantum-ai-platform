@@ -87,12 +87,14 @@ moved the code. If a command returns nothing, that absence is the evidence.
 
 | Verdict | Sections | Share |
 |---|---|---|
-| `REACHED` | 40 | 22% |
-| `PARTIAL` | 125 | 69% |
+| `REACHED` | 41 | 23% |
+| `PARTIAL` | 124 | 69% |
 | `UNREACHED` | 1 | 1% |
 | `ABSENT` | 0 | 0% |
 | `NARRATIVE` | 15 | 8% |
 | **Total** | **181** | |
+
+**Recounted 2026-09-19 (later) for §35.1's `PARTIAL → REACHED`** — one row, 40/125 to 41/124, taken with the same command and required to sum to 181 before being written here. It did: 41 + 124 + 1 + 0 + 15. ADR 0080's lane, on the contract's call-path rule, with what has no path stated in the row (`qip_portfolio::Orphaned`'s writer, by decision).
 
 **Recounted 2026-09-19 (late) for §32.1's and §27.2's `PARTIAL → REACHED`** — two rows, 38/127 to 40/125, taken with the same command and required to sum to 181 before being written here. It did: 40 + 125 + 1 + 0 + 15. Both moved in one edge lane implementing ADR 0084 and ADR 0078; every other lane that landed the same evening (rule 21, rule 29, per-venue settlement, the snapshot roll, model serving, the affinity pin, the exploration table, ADRs 0038 and 0078–0084) moved requirements inside rows and no verdict, which is why the tally sat still through eleven merges and moved on the twelfth.
 
