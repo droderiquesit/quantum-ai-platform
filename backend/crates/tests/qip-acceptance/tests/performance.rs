@@ -254,6 +254,79 @@ fn report_scaling(
     );
 }
 
+// --- which ceilings stay, and why -------------------------------------------
+//
+// [`report_scaling`] is the better assertion wherever the property under test
+// is "per-operation cost does not grow with the input", because it is
+// load-invariant and a wall-clock ceiling is not. It is **not** a better
+// assertion everywhere, and converting the rest mechanically would produce
+// tests that pass forever while claiming to guard something. Ten of the
+// twenty-seven ceilings in this file now have a scaling companion beside them;
+// the seventeen that do not are listed here with the reason, because a reader
+// who finds a raw ceiling is entitled to know whether it survived a decision
+// or was overlooked.
+//
+// **Stateless per-operation work.** Nothing accumulates between iterations, so
+// feeding the loop more iterations measures the same thing again and a growth
+// ratio near 1.0 is arithmetic rather than evidence:
+//
+// * `capital admit` — [`CapitalEnvelope::admit`] reads the grant and a
+//   `Utilisation` of scalar counters. Nothing it touches is sized by how many
+//   decisions came before.
+// * `order construct + validate` — a fresh `Order` and five refusals over its
+//   own fields. `OrderManager::next_order_id` increments a `u64`.
+// * `edge feasibility gate` — `qip_edge::feasibility::assess` is a pure
+//   function of one intent and one venue model.
+// * `capital envelope verify (HMAC)` — one HMAC over a fixed-size payload and
+//   a constant-time comparison, by construction the same work every time.
+// * `multi-leg group` — every group is assembled, filled, assessed and settled
+//   from nothing. The axis that would say something here is legs per group,
+//   not groups.
+// * `pre-trade check (5 limits)` — the limit set is fixed and the risk state
+//   is not mutated by the check. The axis that would say something is limits
+//   per set.
+//
+// **A ceiling that is the point, not a proxy.** Here the absolute number is
+// the deliverable and a ratio would answer a question nobody asked:
+//
+// * both `edge halt wire` figures — how long the platform keeps trading after
+//   somebody has told it to stop. A risk desk asks for that in milliseconds.
+//   "It stops in the same time per halt however many halts you send" is true
+//   of a wire that takes a minute.
+// * `arbitrage scan` — the scan is a bounded search whose cost is a property
+//   of the graph, and its cheap case is the one that found nothing. Per-scan
+//   cost is meant to move with the graph; flatness is not the property.
+// * `strategy run` — cost is meant to be linear in the program's node count
+//   and independent of the market, which is what makes it budgetable at all.
+//   The node count is printed in the label for exactly that reason.
+// * `kernel cycle (bounded history)` — the test around it already asserts the
+//   load-invariant half directly, as a ratio between a platform at its
+//   retention bounds and one fed 4.7x past them.
+//
+// **Covered by a scaling assertion at the same seam.** Adding a second ratio
+// over the same accumulating state would be a duplicate, not a guard:
+//
+// * `central instrument feasibility` — the same `OrderManager` store as
+//   `central OMS submit scaling`, with a grid lookup in front.
+// * `edge netting`, `edge internal cross`, `edge resting order expiry` — the
+//   same `Cell` pass loop as `edge work pass scaling`, exercising different
+//   branches inside it.
+//
+// **Measured, printed, and deliberately not asserted.** `journal ship to
+// mirror` has a ratio beside it in
+// `the_journal_chain_costs_the_same_per_entry_however_long_the_chain_gets` and
+// no assertion on it: three consecutive full-suite runs on an idle machine
+// printed 1.40x, 1.63x and 2.02x for identical code, because the call is a few
+// milliseconds dominated by the mirror allocating its copy of the tail. The
+// reasoning is written out where the measurement is taken.
+//
+// **Measured only with one hold standing.** `region reservation` takes a hold
+// and commits it in the same breath, so the ledger never holds more than one
+// and repeating the pair more times grows nothing. The honest axis is the
+// number of *concurrent* holds a region's cells have outstanding, which this
+// fixture does not build; the ceiling stays and this is named rather than
+// papered over.
+
 // --- fixtures ---------------------------------------------------------------
 
 /// `count` level-set messages walking a book around a hundred.
@@ -558,6 +631,74 @@ fn feature_evaluation_costs_what_the_budget_says() -> Result<()> {
         "the graph is not the size the fixture registered"
     );
     report("feature ingest + evaluate", MESSAGES, elapsed, 500.0);
+    Ok(())
+}
+
+#[test]
+fn feature_evaluation_costs_the_same_per_message_however_many_the_engine_has_already_seen()
+-> Result<()> {
+    // The property the ceiling above is a proxy for, on the axis that can
+    // actually run away: uptime.
+    //
+    // The *graph's* size is deliberately not the axis. `FeatureEngine::evaluate`
+    // walks its whole topological order every call and recomputes the nodes a
+    // message dirtied, so per-message cost is linear in the number of
+    // registered features by construction, and a scaling assertion over symbol
+    // count would fail on a design decision rather than on a regression. What
+    // must not grow is the history behind each feature: the realised-volatility
+    // and moving-average windows, and the book `MarketState` keeps. That is a
+    // regression this platform has already shipped once on another path — the
+    // kernel's history series held every observation since assembly and the
+    // deployed cycle went from 2.4ms at cycle 255 to 310ms at cycle 16,728 —
+    // and here it would read as per-message cost rising with the number of
+    // messages already ingested.
+    //
+    // Load-invariant, unlike the ceiling above: both halves are measured on
+    // this machine moments apart, so contention divides out of the ratio
+    // instead of being subtracted from the margin.
+    const SMALL: usize = 5_000;
+    const LARGE: usize = 25_000;
+    let symbols = ["ACME", "BOREAS", "CERES", "DORIS"];
+
+    let feed = |total: usize| -> Result<(WallDuration, usize)> {
+        let mut engine = feature_engine(&symbols)?;
+        let streams: Vec<Vec<MarketMessage>> = symbols
+            .iter()
+            .enumerate()
+            .map(|(index, symbol)| {
+                level_stream(symbol, total / symbols.len(), 0xFEA7 + index as u64)
+            })
+            .collect();
+        let mut computed = 0usize;
+        let started = Instant::now();
+        for (index, stream) in streams.iter().enumerate() {
+            for message in stream {
+                engine.ingest(message)?;
+                let vector = engine
+                    .evaluate(start().saturating_add(Duration::from_millis(
+                        (index * total + computed) as i64,
+                    )))?;
+                computed += vector.len().min(1);
+            }
+        }
+        Ok((started.elapsed(), computed))
+    };
+
+    let (small_elapsed, small_computed) = feed(SMALL)?;
+    let (large_elapsed, large_computed) = feed(LARGE)?;
+
+    // Premise: both runs really evaluated every message they were given. A run
+    // whose evaluations returned nothing would make the larger one look cheap
+    // per message and pass this for the wrong reason.
+    assert_eq!(small_computed, SMALL, "an evaluation returned no vector");
+    assert_eq!(large_computed, LARGE, "an evaluation returned no vector");
+
+    report_scaling(
+        "feature ingest + evaluate scaling",
+        (SMALL, small_elapsed),
+        (LARGE, large_elapsed),
+        2.0,
+    );
     Ok(())
 }
 
@@ -1417,6 +1558,75 @@ fn central_order_submission_costs_what_the_execution_measurements_say() -> Resul
 }
 
 #[test]
+fn central_order_submission_costs_the_same_per_order_however_many_the_manager_already_holds()
+-> Result<()> {
+    // The property the ceiling above is a proxy for, asserted directly on the
+    // axis that grows: `OrderManager` keeps every order it has taken in a
+    // `BTreeMap` and every refusal in a `Vec`, and a desk session is one
+    // manager for the whole session. A submission path that consulted its own
+    // history — a scan for a duplicate, a re-projection of every open order
+    // into the risk state — would cost more per order the longer the session
+    // ran, and the deployed symptom is the one the kernel already produced
+    // once: fine on the bench, degrading with uptime, taken out of rotation by
+    // its own readiness probe hours in.
+    //
+    // Load-invariant where the ceiling is not: both halves run on this machine
+    // moments apart, so contention divides out of the ratio. The ceiling above
+    // stays because it is also the published figure in
+    // `docs/ops/execution-measurements.md`; this asserts the complexity class
+    // the figure is only a proxy for.
+    const SMALL: usize = 5_000;
+    const LARGE: usize = 25_000;
+
+    let submit_all = |orders: usize| -> Result<(WallDuration, usize, usize)> {
+        let mut manager = OrderManager::new(PreTradeChecker::new(risk_limits()));
+        let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 0xC0DE);
+        let autonomy = AutonomyController::new();
+        let state = central_state();
+        let axes = BTreeMap::from([("sector".to_string(), "information_technology".to_string())]);
+
+        let mut accepted = 0usize;
+        let mut filled = 0usize;
+        let started = Instant::now();
+        for _ in 0..orders {
+            let order = central_order(&mut manager, "ACME", dec!("1000"));
+            let result = manager.submit(
+                order,
+                &mut broker,
+                &autonomy,
+                &state,
+                axes.clone(),
+                Some("broker-a".to_string()),
+                start(),
+            );
+            if result.accepted {
+                accepted += 1;
+                filled += result.fills.len();
+            }
+        }
+        Ok((started.elapsed(), accepted, filled))
+    };
+
+    let (small_elapsed, small_accepted, small_filled) = submit_all(SMALL)?;
+    let (large_elapsed, large_accepted, large_filled) = submit_all(LARGE)?;
+
+    // Premise: both runs really submitted and really filled. A run refused at
+    // the first gate costs nothing per order and would pass this trivially.
+    assert_eq!(small_accepted, SMALL, "the small run was refused");
+    assert_eq!(large_accepted, LARGE, "the large run was refused");
+    assert_eq!(small_filled, SMALL, "the small run did not fill");
+    assert_eq!(large_filled, LARGE, "the large run did not fill");
+
+    report_scaling(
+        "central OMS submit scaling",
+        (SMALL, small_elapsed),
+        (LARGE, large_elapsed),
+        2.0,
+    );
+    Ok(())
+}
+
+#[test]
 fn central_instrument_feasibility_costs_what_the_execution_measurements_say() -> Result<()> {
     // The grid installed through `with_instrument_feasibility`, judged where
     // it sits in the submission path — ahead of the safety controls, so an
@@ -1535,6 +1745,69 @@ fn an_edge_work_pass_with_a_fill_and_its_drop_copy_costs_what_the_execution_meas
         PASSES,
         totals.reconcile,
         1_000.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn an_edge_work_pass_costs_the_same_per_pass_however_many_passes_the_cell_has_already_run()
+-> Result<()> {
+    // The property both ceilings above are a proxy for. A cell is the one
+    // process here that is meant to run for weeks without the centre — ADR
+    // 0008, a cell that cannot reach the centre keeps working — so its pass
+    // cost is the number that must not depend on how long it has been up. The
+    // seams that grow across a session are the hash-chained journal, the
+    // per-strategy positions and the settled-order history; a pass that
+    // rescanned any of them would be flat on the bench and ruinous on day
+    // three, which is exactly how the kernel's history regression reached a
+    // deployed node.
+    //
+    // Both halves run on this machine moments apart, so a busy machine cannot
+    // explain a failure here the way it can explain the ceilings above.
+    const SMALL: usize = 500;
+    const LARGE: usize = 2_500;
+
+    let passes = |count: usize| -> Result<PassTotals> {
+        let opening = dec!("1000000000");
+        let table = RegionTable::new(opening)?;
+        let mut cell =
+            edge_cell(&[("alpha", SignalKind::Enter, "100", PricingPolicy::Marketable)])?
+                .with_region_table(table);
+        let mut gateway = PaperVenue {
+            fills: true,
+            ..PaperVenue::default()
+        };
+        run_passes(&mut cell, &mut gateway, count, Duration::from_millis(1))
+    };
+
+    let small = passes(SMALL)?;
+    let large = passes(LARGE)?;
+
+    // Premise: every pass in both runs sent its order and confirmed its fill.
+    // A cell that quietly stopped trading runs cheap passes, and a cheap pass
+    // measured against a working one is the failure mode this assertion would
+    // otherwise be blind to.
+    assert_eq!(
+        small.orders, SMALL,
+        "the short run did not place every pass"
+    );
+    assert_eq!(large.orders, LARGE, "the long run did not place every pass");
+    assert_eq!(small.fills, SMALL, "the short run confirmed no fill");
+    assert_eq!(large.fills, LARGE, "the long run confirmed no fill");
+    assert_eq!(small.refusals, 0, "a gate refused inside the short run");
+    assert_eq!(large.refusals, 0, "a gate refused inside the long run");
+
+    report_scaling(
+        "edge work pass scaling",
+        (SMALL, small.work),
+        (LARGE, large.work),
+        2.0,
+    );
+    report_scaling(
+        "edge drop-copy reconcile + settle scaling",
+        (SMALL, small.reconcile),
+        (LARGE, large.reconcile),
+        2.0,
     );
     Ok(())
 }
@@ -1802,6 +2075,56 @@ fn sequencing_a_contiguous_stream_costs_what_the_execution_measurements_say() ->
 }
 
 #[test]
+fn sequencing_costs_the_same_per_message_however_long_the_stream_has_been_running() -> Result<()> {
+    // The property the ceiling above is a proxy for, and the one the data
+    // domain's rule states outright: bounded retention, always. A sequencer
+    // holds per-stream position and a reorder buffer, and both are on the feed
+    // path of a process that never restarts on purpose. If either grew with
+    // the number of messages already seen — a buffer nothing drains, a seen-set
+    // that only ever gains members — per-message cost would rise with uptime,
+    // and a contiguous stream is precisely the case where nothing should ever
+    // be retained at all.
+    //
+    // Load-invariant: both halves on this machine, moments apart.
+    const SMALL: usize = 50_000;
+    const LARGE: usize = 250_000;
+    const BATCH: usize = 100;
+
+    let run = |messages: usize| -> (WallDuration, usize, Vec<SequenceEvent>) {
+        let stream = level_stream("ACME", messages, 0x5E0);
+        let mut sequencer = Sequencer::new(ReorderPolicy::default());
+        let mut released = 0usize;
+        let mut events: Vec<SequenceEvent> = Vec::new();
+        let started = Instant::now();
+        for chunk in stream.chunks(BATCH) {
+            let batch = sequencer.accept(chunk.to_vec(), start());
+            released += batch.released.len();
+            events.extend(batch.events);
+        }
+        (started.elapsed(), released, events)
+    };
+
+    let (small_elapsed, small_released, small_events) = run(SMALL);
+    let (large_elapsed, large_released, large_events) = run(LARGE);
+
+    // Premise: both runs released every message. A sequencer holding messages
+    // back does less work per message, not more, and would pass this while
+    // being broken.
+    assert_eq!(small_released, SMALL, "the short stream was held back");
+    assert_eq!(large_released, LARGE, "the long stream was held back");
+    assert_eq!(small_events.len(), 1, "the short stream was not contiguous");
+    assert_eq!(large_events.len(), 1, "the long stream was not contiguous");
+
+    report_scaling(
+        "sequencing scaling",
+        (SMALL, small_elapsed),
+        (LARGE, large_elapsed),
+        2.0,
+    );
+    Ok(())
+}
+
+#[test]
 fn arbitrating_two_redundant_lines_costs_what_the_execution_measurements_say() -> Result<()> {
     // Two lines carrying the same stream, the A line always first: every
     // unit is published once from A and recognised as a duplicate from B.
@@ -1848,6 +2171,75 @@ fn arbitrating_two_redundant_lines_costs_what_the_execution_measurements_say() -
         2 * MESSAGES,
         elapsed,
         20.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn line_arbitration_costs_the_same_per_unit_however_long_the_lines_have_been_running() -> Result<()>
+{
+    // The arbiter's window is the bounded-retention claim in the one place a
+    // duplicate suppressor is most tempted to break it: to recognise line B's
+    // copy of a unit it must remember line A's, and the cheap way to be always
+    // right is to remember every unit forever. That is an unbounded working set
+    // on the feed path — prohibited outright by the data domain's rule — and it
+    // does not fail, it degrades, which is why a ceiling on a fixed message
+    // count cannot see it. Feeding five times the stream and asserting the
+    // per-unit cost did not rise is the assertion that can.
+    const SMALL: usize = 25_000;
+    const LARGE: usize = 125_000;
+    const BATCH: usize = 100;
+
+    let run = |messages: usize| -> (WallDuration, usize, usize, usize) {
+        let stream = level_stream("ACME", messages, 0xA5B);
+        // Wider than a batch, for the reason the ceiling test above gives: B's
+        // copy arrives a whole batch after A's, and a unit that has left the
+        // window is a `Missed` rather than a duplicate.
+        let mut arbiter = LineArbiter::new("feed-a", &["line-a", "line-b"], 4 * BATCH);
+        let mut released = 0usize;
+        let mut published = 0usize;
+        let mut duplicates = 0usize;
+        let started = Instant::now();
+        for chunk in stream.chunks(BATCH) {
+            for line in ["line-a", "line-b"] {
+                let outcome = arbiter.accept(line, chunk.to_vec(), start());
+                released += outcome.released.len();
+                for event in &outcome.events {
+                    match event {
+                        ArbitrationEvent::Published { .. } => published += 1,
+                        ArbitrationEvent::Duplicate { .. } => duplicates += 1,
+                        other => panic!("two clean lines produced {other:?}"),
+                    }
+                }
+            }
+        }
+        (started.elapsed(), released, published, duplicates)
+    };
+
+    let (small_elapsed, small_released, small_published, small_duplicates) = run(SMALL);
+    let (large_elapsed, large_released, large_published, large_duplicates) = run(LARGE);
+
+    // Premise: both runs published every unit once and recognised the second
+    // line's copy of every one. An arbiter that dropped a line does half the
+    // work and would read here as flat.
+    assert_eq!(small_released, SMALL, "the short merge lost units");
+    assert_eq!(large_released, LARGE, "the long merge lost units");
+    assert_eq!(small_published, SMALL, "the short run republished");
+    assert_eq!(large_published, LARGE, "the long run republished");
+    assert_eq!(
+        small_duplicates, SMALL,
+        "the short run missed line B's copies"
+    );
+    assert_eq!(
+        large_duplicates, LARGE,
+        "the long run missed line B's copies"
+    );
+
+    report_scaling(
+        "line arbitration scaling",
+        (2 * SMALL, small_elapsed),
+        (2 * LARGE, large_elapsed),
+        2.0,
     );
     Ok(())
 }
@@ -1939,6 +2331,68 @@ fn verifying_and_applying_a_policy_payload_costs_what_the_execution_measurements
 }
 
 #[test]
+fn applying_a_policy_payload_costs_the_same_per_payload_however_many_the_cell_has_applied()
+-> Result<()> {
+    // The centre publishes to a cell for as long as the cell lives, so the
+    // anti-replay sequence only ever goes up and the narrowing chain only ever
+    // gets longer. The property is that applying the ten-thousandth payload
+    // costs what the first did. A cell that rescanned its applied history to
+    // decide whether a sequence was a replay — the obvious wrong way to make
+    // replay protection airtight — would pass a ceiling measured over two
+    // thousand payloads and starve a cell that had been up for a week.
+    //
+    // Both halves run on this machine moments apart, so this fires on the
+    // complexity class and not on the machine.
+    const SMALL: usize = 500;
+    const LARGE: usize = 2_500;
+
+    let apply_all = |count: usize| -> Result<(WallDuration, usize, Option<u64>)> {
+        let mut cell = edge_cell(&[])?;
+        let issued = start().saturating_add(Duration::from_secs(2));
+        let payloads: Vec<PolicyPayload> = (1..=count as u64)
+            .map(|sequence| {
+                PolicyPayload::unproduced(sequence, EDGE_CELL, issued).signed(EDGE_POLICY_KEY)
+            })
+            .collect::<Result<_>>()?;
+
+        let mut applied = 0usize;
+        let started = Instant::now();
+        for payload in payloads {
+            let verified = VerifiedPolicy::verify(payload, EDGE_POLICY_KEY, EDGE_CELL, issued)?;
+            cell.apply_policy(verified, issued)?;
+            applied += 1;
+        }
+        Ok((started.elapsed(), applied, cell.policy_sequence()))
+    };
+
+    let (small_elapsed, small_applied, small_sequence) = apply_all(SMALL)?;
+    let (large_elapsed, large_applied, large_sequence) = apply_all(LARGE)?;
+
+    // Premise: every payload was verified and applied in sequence. A cell that
+    // refused them all does no work and would read as perfectly flat.
+    assert_eq!(small_applied, SMALL);
+    assert_eq!(large_applied, LARGE);
+    assert_eq!(
+        small_sequence,
+        Some(SMALL as u64),
+        "the short run did not apply every payload"
+    );
+    assert_eq!(
+        large_sequence,
+        Some(LARGE as u64),
+        "the long run did not apply every payload"
+    );
+
+    report_scaling(
+        "policy payload verify + apply scaling",
+        (SMALL, small_elapsed),
+        (LARGE, large_elapsed),
+        2.0,
+    );
+    Ok(())
+}
+
+#[test]
 fn the_journal_chain_costs_what_the_execution_measurements_say() -> Result<()> {
     // The hash chain under every decision: a record sealed onto the previous
     // digest, the whole chain re-verified, and the unshipped tail handed to a
@@ -1989,6 +2443,115 @@ fn the_journal_chain_costs_what_the_execution_measurements_say() -> Result<()> {
         RECORDS,
         shipping,
         50.0,
+    );
+    Ok(())
+}
+
+#[test]
+fn the_journal_chain_costs_the_same_per_entry_however_long_the_chain_gets() -> Result<()> {
+    // The three ceilings above, as the property they stand for. A hash chain
+    // is the one structure where the linear implementation is both obvious and
+    // catastrophic: seal an entry by hashing what came before it and recording
+    // is O(chain); re-derive the tail digest on every ship and shipping is too.
+    // Both are correct, both pass every functional test in the workspace, and
+    // both make a cell that has been up a day cost a hundred times what the
+    // measurement said. Nothing in this repository can replay a decision
+    // without this chain, so it is not a structure that may quietly degrade.
+    //
+    // Two assertions, not three, and the third is the interesting one.
+    //
+    // The record is on the pass and the verify is what a replay pays; both
+    // ratios are stable and both are asserted. The ship is measured and
+    // deliberately **not** asserted: at these sizes it is a few milliseconds
+    // whose cost is dominated by the mirror allocating its own copy of the
+    // tail, not by anything algorithmic, and across three consecutive
+    // full-suite runs on an idle machine it printed 1.40x, 1.63x and 2.02x
+    // for the same code. An assertion whose noise is the size of the effect
+    // it claims to detect is not a loose control, it is a control that fires
+    // on the wrong thing — and widening the tolerance until the noise fits
+    // under it is how this file nearly ended up with twenty-seven ceilings
+    // that could not fire at all. So the number is printed for a reader and
+    // the claim is not made. Making it assertable needs a fixture that ships
+    // a fixed batch out of chains of two different lengths, which is a
+    // different fixture from this one.
+    const SHORT: usize = 10_000;
+    const LONG: usize = 50_000;
+
+    struct ChainTiming {
+        recording: WallDuration,
+        verifying: WallDuration,
+        shipping: WallDuration,
+        recorded: usize,
+        shipped: usize,
+        verified: bool,
+    }
+
+    let chain = |records: usize| -> Result<ChainTiming> {
+        let decisions: Vec<Decision> = (0..records)
+            .map(|index| Decision::Refused {
+                gate: "performance".to_string(),
+                reason: format!("record {index} of a measured chain"),
+            })
+            .collect();
+        let mut journal = Journal::new();
+
+        let started = Instant::now();
+        for decision in decisions {
+            journal.record(decision, start());
+        }
+        let recording = started.elapsed();
+
+        let started = Instant::now();
+        let verified = journal.verify();
+        let verifying = started.elapsed();
+
+        let mut mirror = MemoryMirror::new();
+        let started = Instant::now();
+        let shipped = ship(&mut journal, &mut mirror, EDGE_CELL, Vec::new(), start())?;
+        let shipping = started.elapsed();
+
+        Ok(ChainTiming {
+            recording,
+            verifying,
+            shipping,
+            recorded: journal.len(),
+            shipped,
+            verified: verified == Ok(()),
+        })
+    };
+
+    let short = chain(SHORT)?;
+    let long = chain(LONG)?;
+
+    // Premise: both chains were really written, really verified and really
+    // shipped. A chain that stopped early is cheap per entry in exactly the
+    // direction that would make this pass.
+    assert_eq!(short.recorded, SHORT, "the short chain lost entries");
+    assert_eq!(long.recorded, LONG, "the long chain lost entries");
+    assert!(short.verified, "the short chain does not verify");
+    assert!(long.verified, "the long chain does not verify");
+    assert_eq!(short.shipped, SHORT, "the short chain was not all shipped");
+    assert_eq!(long.shipped, LONG, "the long chain was not all shipped");
+
+    report_scaling(
+        "journal record scaling",
+        (SHORT, short.recording),
+        (LONG, long.recording),
+        2.0,
+    );
+    report_scaling(
+        "journal verify scaling",
+        (SHORT, short.verifying),
+        (LONG, long.verifying),
+        2.0,
+    );
+    println!(
+        "journal ship scaling (printed, not asserted — see the comment above): \
+         {SHORT} ops at {:.3} us/op vs {LONG} ops at {:.3} us/op ({} profile, this machine, \
+         single-threaded)",
+        short.shipping.as_secs_f64() * 1e6 / SHORT as f64,
+        long.shipping.as_secs_f64() * 1e6 / LONG as f64,
+        profile()
     );
     Ok(())
 }
