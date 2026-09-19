@@ -1065,6 +1065,192 @@ mod tests {
     }
 
     #[test]
+    fn a_feature_that_drifts_past_the_estimators_bound_degrades_every_model_that_reads_it()
+    -> Result<()> {
+        // §21.1's sentence, as the property rather than as the function:
+        // "one that drifts past its bound marks *every* model depending on
+        // it as degraded". The failure this guards is a join that returns
+        // the first match, or the model the round happened to fit, and
+        // leaves a second card reading the same moved feature reported as
+        // calm. `degraded_models` was built, tested and called by nothing
+        // until this wire, so nothing had ever asserted the "every" part
+        // against a registry holding more than one card.
+        let mut desk = learning_desk();
+        let calm = super::tests_support::learnable(400);
+
+        let first = desk
+            .maybe_learn(&subject(), &calm, 1, at())?
+            .ok_or_else(|| Error::not_found("the first round"))?;
+        // Premise: a desk with no stream reference measures nothing, and
+        // reports that by an empty map rather than by a zero index. Without
+        // this the assertions below would pass on a desk that never compared
+        // anything.
+        assert!(
+            first.degraded.is_empty(),
+            "the first round degraded {} model(s) against no reference at all",
+            first.degraded.len()
+        );
+
+        // A second fit on the same calm series, so the registry holds two
+        // cards reading the same five features before anything moves.
+        let second = desk
+            .maybe_learn(&subject(), &calm, 2, at())?
+            .ok_or_else(|| Error::not_found("the second round"))?;
+        drop(second);
+        assert!(
+            desk.registry().len() >= 2,
+            "the registry holds {} card(s); the 'every model' property cannot be tested \
+             against one",
+            desk.registry().len()
+        );
+
+        // Now a regime none of them was fitted on.
+        let shocked = super::tests_support::shocked(400);
+        let third = desk
+            .maybe_learn(&subject(), &shocked, 3, at())?
+            .ok_or_else(|| Error::not_found("the third round"))?;
+
+        // Premise: something actually drifted past the estimators' own
+        // floor. An empty drifted set would make every assertion below
+        // vacuously true, which is the shape of test this repository has
+        // already been burnt by.
+        let drifted = third.drifted_features();
+        assert!(
+            !drifted.is_empty(),
+            "no feature moved past the estimators' floor, so this proves nothing about the \
+             join; the shocked fixture is not a regime change"
+        );
+
+        // The property. Every card naming a drifted feature is in the map,
+        // and nothing else is -- except this round's own fit, which joined
+        // the registry *after* the comparison ran. Measuring a model against
+        // a window that includes the rows it was fitted on is the question
+        // the module refuses to ask, so its absence is the behaviour and not
+        // a gap in the join.
+        let fitted_this_round = third
+            .registration
+            .as_ref()
+            .map(|registration| registration.reference.clone());
+        for card in desk.registry().iter() {
+            if fitted_this_round.as_deref() == Some(card.reference().as_str()) {
+                continue;
+            }
+            let reads_a_drifted_feature = card
+                .features
+                .iter()
+                .any(|feature| drifted.contains(feature.as_str()));
+            assert_eq!(
+                reads_a_drifted_feature,
+                third.degraded.contains_key(&card.reference()),
+                "{} reads {:?}; the drifted set is {:?} and the degraded map {} it",
+                card.reference(),
+                card.features,
+                drifted,
+                if third.degraded.contains_key(&card.reference()) {
+                    "holds"
+                } else {
+                    "omits"
+                }
+            );
+        }
+
+        // And the join's own entries name only features the card declares,
+        // so a model is never degraded by a feature it does not read.
+        for (reference, features) in &third.degraded {
+            let card = desk
+                .registry()
+                .get(reference)
+                .ok_or_else(|| Error::not_found(format!("a card for {reference}")))?;
+            assert!(
+                features.iter().all(|f| card.features.contains(f)),
+                "{reference} was degraded by {features:?}, which is not a subset of the {:?} \
+                 it reads",
+                card.features
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_model_the_desk_kept_no_sample_for_is_still_degraded_by_a_feature_it_reads() -> Result<()> {
+        // The half of §21.1 the per-model comparison structurally cannot
+        // reach. A card the desk holds no fitted sample for is invisible to
+        // `worst_drift`, so its `drift_score` stays at the 0.0 it was
+        // created with for ever and `decision_eligibility`'s drift branch
+        // can never refuse it -- the exact shape of `MaxExpectedShortfall`,
+        // a control connected to a value nothing writes. The feature-level
+        // join is the only thing in this desk that can write it.
+        let mut desk = learning_desk();
+        let calm = super::tests_support::learnable(400);
+        desk.maybe_learn(&subject(), &calm, 1, at())?
+            .ok_or_else(|| Error::not_found("the first round"))?;
+
+        // A card from somewhere else entirely: same feature vocabulary, no
+        // fitted sample on this desk.
+        let stranger = qip_ai::registry::ModelCard::new(
+            qip_core::ids::ModelId::from_string("MDL0000000000000000000BBB"),
+            "stranger",
+            "1.0.0",
+            "another-desk",
+            at(),
+        )
+        .with_features(FEATURES.iter().map(|f| (*f).to_string()).collect());
+        let stranger_reference = stranger.reference();
+        let tracked_before = desk.tracked();
+        desk.registry_mut().register(stranger);
+
+        // Premise, in three parts: the desk kept exactly one fitted sample,
+        // the registry now holds two cards -- so one of them has no sample
+        // and `worst_drift` cannot reach it -- and the stranger's drift
+        // score is the zero nobody wrote.
+        assert_eq!(
+            tracked_before, 1,
+            "the desk kept {tracked_before} fitted sample(s); this test needs exactly the one \
+             it fitted so that the second card is provably unsampled"
+        );
+        assert_eq!(
+            desk.registry().len(),
+            2,
+            "the registry holds {} card(s) against one fitted sample",
+            desk.registry().len()
+        );
+        assert_eq!(
+            desk.tracked(),
+            tracked_before,
+            "registering a card gave the desk a fitted sample for it"
+        );
+        assert_eq!(
+            desk.registry()
+                .get(&stranger_reference)
+                .map(|card| card.drift_score),
+            Some(0.0),
+            "the stranger arrived with a drift score somebody had already written"
+        );
+
+        let shocked = super::tests_support::shocked(400);
+        let round = desk
+            .maybe_learn(&subject(), &shocked, 2, at())?
+            .ok_or_else(|| Error::not_found("the second round"))?;
+
+        assert!(
+            round.degraded.contains_key(&stranger_reference),
+            "a regime change left {stranger_reference} undegraded; the degraded map is {:?}",
+            round.degraded.keys().collect::<Vec<_>>()
+        );
+        let score = desk
+            .registry()
+            .get(&stranger_reference)
+            .map(|card| card.drift_score)
+            .ok_or_else(|| Error::not_found("the stranger's card"))?;
+        assert!(
+            score > 0.0,
+            "the join named {stranger_reference} as degraded and its card still reads \
+             {score:.6}; the measurement did not reach the value the eligibility check reads"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_drifted_model_in_production_may_no_longer_inform_a_decision() -> Result<()> {
         // The half that matters to an operator. A development-stage card is
         // refused for its stage before drift is ever read, so only a promoted
