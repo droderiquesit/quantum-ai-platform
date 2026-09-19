@@ -41,12 +41,38 @@
 //!
 //! Every arm is reachable from a direct call, and this crate's tests reach
 //! all eight. From a `qip_edge::Cell` the position is narrower and is stated
-//! here so a reader does not take the module for eight delivered rows: a cell
-//! supplies no hedge depth, no resting-order state and no firm-quote window,
-//! so §30.2 never finds paths 4, 5 or 6 eligible there; and
+//! here so a reader does not take the module for eight delivered rows.
+//!
+//! **From a cell, the arms that can fire are 1, 2, 3 and 4.** A cell supplies
+//! no resting-order state and no firm-quote window, so §30.2 never finds
+//! paths 5 or 6 eligible there — `qip_edge`'s `Cell::mirror_facts_for` states
+//! both as a `false` and a `None` it can honestly hold, and a cycle whose
+//! only possible path was one of the two is refused whole by the router. And
 //! `ArbitrageDesk::new` refuses a graph holding a synthetic edge, so paths 7
-//! and 8 are unreachable one layer earlier still. From a cell, the arms that
-//! can fire are 1, 2 and 3.
+//! and 8 are unreachable one layer earlier still.
+//!
+//! **Path 4 is the correction, and the sentence it replaces is why this
+//! paragraph is worth keeping accurate.** This read "a cell supplies no hedge
+//! depth … so §30.2 never finds paths 4, 5 or 6 eligible there" and "the arms
+//! that can fire are 1, 2 and 3", which stopped being true when
+//! `qip_edge`'s `Cell::local_hedges_for` landed: a mirrored cell holds books
+//! for every venue its operator configured, which is more than the cycle's
+//! own instruments, so it can state a local hedge's depth. The hedge is read
+//! once and handed to both the router and [`check`], so a cycle cannot be
+//! assigned path 4 on one snapshot and gated on another. A reader who
+//! believed the old sentence would have found [`HedgeExtension`] guarding a
+//! path nothing could reach and been right to delete it — which is how a
+//! working control is removed by someone tidying up, and the reason the
+//! claim is stated as a runnable check rather than left as prose:
+//!
+//! ```text
+//! grep -n 'ExecutionPath::HedgedBridging' backend/crates/edge/qip-edge/tests/cross_region.rs
+//! ```
+//!
+//! Those assertions sit inside tests that drive a real `Cell::work` pass, so
+//! they fail if the cell stops reaching the arm. Nothing here is deployed:
+//! `qip-edge-node` runs `Cell::work` only under the simulated feed, and no
+//! execution node exists.
 
 use crate::mirror::{
     Direction, DistributedReference, InventoryBand, MirrorPermission, SizeDiscipline,
