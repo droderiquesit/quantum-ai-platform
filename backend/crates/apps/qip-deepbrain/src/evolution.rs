@@ -557,6 +557,9 @@ impl EvolutionEngine {
                 refusal.message(),
             )));
         }
+        // The regime the platform classified for this subject, read once and
+        // handed to the desk: the key its model-class board scores under.
+        let regime = platform.regime_context(subject.as_str());
         let descriptor = self.adapter.descriptor();
         let window = match campaign::assemble(
             platform,
@@ -576,7 +579,9 @@ impl EvolutionEngine {
                 return Ok(Some(LearningRound::refused_at_door(&subject, reason)));
             }
         };
-        let mut round = self.learning.learn_window(&subject, &window.bars, now)?;
+        let mut round = self
+            .learning
+            .learn_window(&subject, &window.bars, &regime, now)?;
         round.campaign = Some(window.summary);
         Ok(Some(round))
     }
