@@ -61,8 +61,9 @@ use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
 use qip_kernel::platform::Platform;
 use qip_lifecycle::evidence::{
-    CrossValidationRun, FeatureTiming, HoldoutEvidence, KillCondition, LeakageAudit, PaperEvidence,
-    PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence, StrategyEvidence,
+    CrossValidationRun, DatasetManifest, FeatureTiming, HoldoutEvidence, KillCondition,
+    LeakageAudit, PaperEvidence, PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence,
+    StrategyEvidence,
 };
 use qip_lifecycle::trials::StrategyFamily;
 use qip_market::bar::{Bar, Interval};
@@ -292,9 +293,23 @@ fn strong_scaled(
     })
 }
 
+/// A manifest wide enough for every hand-built holdout in this suite: the
+/// gate checks the series and its folds fit inside the bars it names.
+fn fixture_manifest() -> Result<DatasetManifest> {
+    DatasetManifest::new(
+        "obj-AAA",
+        VENUE,
+        2_000,
+        start().saturating_sub(Duration::from_days(2_000)),
+        start(),
+        qip_core::sha256_hex(b"fixture bars"),
+    )
+}
+
 fn full_evidence(id: &StrategyId, cell: &str) -> Result<StrategyEvidence> {
     Ok(StrategyEvidence::new()
         .with_holdout(strong_holdout()?)
+        .with_simulation(fixture_manifest()?)
         .with_paper(strong_paper())
         .with_shadow(strong_shadow())
         .with_pilot(strong_pilot(id, cell, start())?)
@@ -4945,6 +4960,7 @@ fn register_family(platform: &mut Platform, lineage: &str, count: usize) -> Resu
                 periods_per_year: 252.0,
                 cross_validation: honest_cross_validation(300)?,
                 leakage: clean_leakage_audit(),
+                manifest: fixture_manifest()?,
             },
             start(),
         )?;
@@ -5837,6 +5853,155 @@ fn a_refusal_that_cannot_withdraw_a_venue_never_evicts_one_that_can() -> Result<
             qip_contracts::feasibility::GATE_WITHDRAWN_VENUE
         ) >= 2000,
         "the echoes were dropped from the series as well as from the window"
+    );
+    Ok(())
+}
+
+// --- blueprint rule 29: simulated against recorded data ----------------------
+
+/// Daily bars as the foundry sees them, unwrapped from the sensed records.
+fn recorded_bars(symbol: &str, count: usize) -> Vec<Bar> {
+    bars(symbol, count)
+        .into_iter()
+        .filter_map(|record| match record {
+            SensedRecord::Bar(bar) => Some(*bar),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_dataset_manifest_names_the_bars_by_content_so_an_edited_price_is_a_different_dataset()
+-> Result<()> {
+    use qip_kernel::central::foundry::recorded_manifest;
+
+    let on = ObjectId::from_string("obj-AAA");
+    let history = recorded_bars("AAA", 600);
+    assert_eq!(history.len(), 600, "premise: the fixture produced the bars");
+
+    let manifest = recorded_manifest(&on, &history)?;
+    assert_eq!(manifest.bars, 600);
+    assert_eq!(manifest.venue, VENUE);
+    assert_eq!(manifest.first_open, history[0].open_time);
+    assert_eq!(manifest.last_open, history[599].open_time);
+    assert_eq!(manifest.content_hash.len(), 64);
+
+    // The same history, manifested again, is the same dataset.
+    assert_eq!(recorded_manifest(&on, &history)?, manifest);
+
+    // One close edited by a tick is not.
+    let mut edited = history.clone();
+    edited[300].close = edited[300].close + dec!("0.01");
+    let other = recorded_manifest(&on, &edited)?;
+    assert_ne!(other.content_hash, manifest.content_hash);
+    assert_eq!(other.bars, manifest.bars, "only the content differs");
+
+    // No history is no dataset, and a history at two venues is two.
+    let error = recorded_manifest(&on, &[]).expect_err("nothing to manifest");
+    assert!(
+        error.message().contains("no recorded bars"),
+        "{}",
+        error.message()
+    );
+    let mut mixed = history.clone();
+    mixed[10].venue = "XLON".to_string();
+    let error = recorded_manifest(&on, &mixed).expect_err("two venues");
+    assert!(
+        error.message().contains("XNYS") && error.message().contains("XLON"),
+        "{}",
+        error.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn the_ladder_refuses_holdout_evidence_that_was_never_simulated_and_admits_the_foundrys()
+-> Result<()> {
+    use qip_evolution::grammar::Grammar;
+    use qip_evolution::palette::FeaturePalette;
+    use qip_kernel::central::foundry::{HoldoutInputs, StrategyFoundry, recorded_manifest};
+
+    // The failure this guards: the holdout gate deflated whatever series it
+    // was handed, so a candidate whose "holdout" was typed into a fixture
+    // climbed the first rung exactly as one that a SimulationClock had
+    // walked over a year of bars. Both halves are proven on one platform:
+    // the foundry's evidence — the production path, which manifests the
+    // bars the candidate was simulated over — is admitted, and the same
+    // evidence with the manifest removed is refused.
+    let mut platform = platform(PlatformConfig::default())?;
+    let on = ObjectId::from_string("obj-AAA");
+    let catalogue = family_catalogue(&on)?;
+    let grammar = Grammar::over(FeaturePalette::from_catalogue(&catalogue, &on)?);
+    let mut foundry = StrategyFoundry::new(catalogue, grammar, CELL, venue(), "rule-29", 29)?;
+    foundry.search(8)?;
+    let pending: Vec<StrategyId> = foundry
+        .pending()
+        .iter()
+        .take(2)
+        .map(|candidate| candidate.id().clone())
+        .collect();
+    assert_eq!(
+        pending.len(),
+        2,
+        "premise: the search produced two candidates"
+    );
+
+    let history = recorded_bars("AAA", 1_000);
+    for strategy in &pending {
+        foundry.register(
+            platform.central_mut().factory_mut(),
+            strategy,
+            HoldoutInputs {
+                returns: good_returns(9, 300, 0.0018),
+                in_sample_folds: vec![vec![0.001; 40]],
+                out_of_sample_folds: vec![vec![0.0006; 20]],
+                periods_per_year: 252.0,
+                cross_validation: honest_cross_validation(300)?,
+                leakage: clean_leakage_audit(),
+                manifest: recorded_manifest(&on, &history)?,
+            },
+            start(),
+        )?;
+    }
+
+    // The production path: the foundry attached the manifest of the bars.
+    let factory = platform.central_mut().factory_mut();
+    let simulated = &pending[0];
+    let carried = factory
+        .candidate(simulated)
+        .and_then(|candidate| candidate.evidence().simulation.clone())
+        .ok_or_else(|| qip_core::Error::not_found("the registered candidate's manifest"))?;
+    assert_eq!(carried.bars, 1_000);
+    let promotion = factory.promote(simulated, None, "simulated over recorded bars", start())?;
+    assert_eq!(promotion.to, GateStage::Holdout);
+
+    // The same evidence with nothing establishing a simulation.
+    let unsimulated = &pending[1];
+    let mut evidence = factory
+        .candidate(unsimulated)
+        .map(|candidate| candidate.evidence().clone())
+        .ok_or_else(|| qip_core::Error::not_found("the second candidate"))?;
+    assert!(
+        evidence.simulation.is_some(),
+        "premise: the foundry filled it"
+    );
+    evidence.simulation = None;
+    factory.submit_evidence(unsimulated, evidence)?;
+    let error = factory
+        .promote(unsimulated, None, "a series from nowhere", start())
+        .expect_err("holdout evidence without a dataset manifest is refused");
+    assert_eq!(error.code(), "guard", "{error:?}");
+    assert!(
+        error
+            .message()
+            .contains("holdout_simulated_against_recorded_data"),
+        "the refusal names the check: {}",
+        error.message()
+    );
+    assert_eq!(
+        factory.ledger().stage_of(unsimulated),
+        GateStage::Candidate,
+        "a refused promotion moves nothing"
     );
     Ok(())
 }

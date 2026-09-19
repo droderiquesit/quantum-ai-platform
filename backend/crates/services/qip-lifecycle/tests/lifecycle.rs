@@ -28,8 +28,9 @@ use qip_lifecycle::demotion::{
     RetirementThreshold,
 };
 use qip_lifecycle::evidence::{
-    CrossValidationRun, FeatureTiming, HoldoutEvidence, KillCondition, LeakageAudit, PaperEvidence,
-    PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence, StrategyEvidence,
+    CrossValidationRun, DatasetManifest, FeatureTiming, HoldoutEvidence, KillCondition,
+    LeakageAudit, PaperEvidence, PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence,
+    StrategyEvidence,
 };
 use qip_lifecycle::gates::{
     Admission, Gate, HoldoutGate, PaperGate, PilotGate, ScaledGate, ShadowGate,
@@ -280,9 +281,27 @@ fn strong_scaled(pilot_start: Timestamp, now: Timestamp) -> Result<ScaledEvidenc
     })
 }
 
+/// The manifest of the recorded bars a holdout was simulated over, wide
+/// enough for every series this suite builds by hand.
+fn simulated_over(bars: usize) -> Result<DatasetManifest> {
+    DatasetManifest::new(
+        "obj-AAA",
+        "XNYS",
+        bars,
+        start().saturating_sub(Duration::from_days(bars as i64)),
+        start(),
+        qip_core::sha256_hex(b"recorded bars"),
+    )
+}
+
+fn simulated() -> Result<DatasetManifest> {
+    simulated_over(2_000)
+}
+
 fn full_evidence(pilot_start: Timestamp, now: Timestamp) -> Result<StrategyEvidence> {
     Ok(StrategyEvidence::new()
         .with_holdout(strong_holdout()?)
+        .with_simulation(simulated()?)
         .with_paper(strong_paper())
         .with_shadow(strong_shadow())
         .with_pilot(strong_pilot(pilot_start)?)
@@ -432,7 +451,9 @@ fn a_strategy_failing_one_check_is_not_promoted_however_strong_the_rest() -> Res
         known_at: start().saturating_add(Duration::from_days(1)),
         used_at: start(),
     });
-    let evidence = StrategyEvidence::new().with_holdout(holdout);
+    let evidence = StrategyEvidence::new()
+        .with_holdout(holdout)
+        .with_simulation(simulated()?);
 
     let outcome =
         HoldoutGate::default().evaluate(&strategy(), &charged(evidence.clone())?, start());
@@ -478,7 +499,11 @@ fn a_cross_validation_run_that_did_not_purge_is_caught_by_reconstruction() -> Re
     // which is what plain k-fold on a time series looks like.
     holdout.cross_validation.purged = 0;
     holdout.cross_validation.embargoed = 0;
-    let evidence = charged(StrategyEvidence::new().with_holdout(holdout))?;
+    let evidence = charged(
+        StrategyEvidence::new()
+            .with_holdout(holdout)
+            .with_simulation(simulated()?),
+    )?;
 
     let outcome = HoldoutGate::default().evaluate(&strategy(), &evidence, start());
     assert!(!outcome.passed);
@@ -1272,7 +1297,9 @@ fn a_second_run_is_corrected_against_the_first_runs_trials_as_well() -> Result<(
     let mut holdout = strong_holdout()?;
     holdout.holdout_returns = good_returns(3, 400, 0.0010);
     assert_eq!(holdout.trials, 12);
-    let evidence = StrategyEvidence::new().with_holdout(holdout.clone());
+    let evidence = StrategyEvidence::new()
+        .with_holdout(holdout.clone())
+        .with_simulation(simulated()?);
 
     // Premise: a single-run correction and a two-run correction differ, in
     // the direction of more trials meaning less confidence.
@@ -1341,7 +1368,9 @@ fn a_second_run_is_corrected_against_the_first_runs_trials_as_well() -> Result<(
 /// and each refusal names the act that would make the count known.
 #[test]
 fn a_promotion_whose_lifetime_trial_count_is_unknown_is_refused_naming_what_to_do() -> Result<()> {
-    let evidence = StrategyEvidence::new().with_holdout(strong_holdout()?);
+    let evidence = StrategyEvidence::new()
+        .with_holdout(strong_holdout()?)
+        .with_simulation(simulated()?);
 
     // Premise: with a known count the same evidence passes the same gate.
     attempt_promotion(
@@ -2010,7 +2039,9 @@ fn every_sharpe_this_crate_reports_is_the_simulation_engines_sharpe() -> Result<
 #[test]
 fn a_holdout_admission_carries_the_band_its_validation_produced() -> Result<()> {
     let mut ledger = ledger()?;
-    let evidence = StrategyEvidence::new().with_holdout(strong_holdout()?);
+    let evidence = StrategyEvidence::new()
+        .with_holdout(strong_holdout()?)
+        .with_simulation(simulated()?);
     assert!(
         ledger.holdout_band(&strategy()).is_none(),
         "premise: nothing yet"
@@ -2245,7 +2276,11 @@ fn judging_or_admitting_without_a_holdout_band_is_refused() -> Result<()> {
     assert!(error.message().contains("holdout gate"), "{error:?}");
 
     // The same evidence admits with its band and is refused without it.
-    let evidence = charged(StrategyEvidence::new().with_holdout(strong_holdout()?))?;
+    let evidence = charged(
+        StrategyEvidence::new()
+            .with_holdout(strong_holdout()?)
+            .with_simulation(simulated()?),
+    )?;
     let admission = HoldoutGate::default().admit(&strategy(), &evidence, start());
     assert!(
         admission.outcome.passed && admission.band.is_some(),
@@ -3136,5 +3171,85 @@ fn a_corridor_that_funds_no_strategy_is_refused_rather_than_permitted_by_default
     // And the premise: the identical corridor with a subject is admitted, so
     // the refusal above is about the empty set and not about the route.
     treasury_corridor()?;
+    Ok(())
+}
+
+// --- blueprint rule 29: the series must have come out of a simulation --------
+
+#[test]
+fn holdout_evidence_that_was_never_simulated_is_refused_and_with_its_manifest_is_admitted()
+-> Result<()> {
+    // The failure this guards: the gate recomputed a deflated Sharpe from
+    // whatever series it was handed, so nothing distinguished a series a
+    // simulation produced over recorded bars from one typed into a fixture.
+    // Premise first: every other check passes on this evidence, so the one
+    // refusal below is the manifest's and not a weaker series' failing for
+    // some other reason.
+    let bare = charged(StrategyEvidence::new().with_holdout(strong_holdout()?))?;
+    let outcome = HoldoutGate::default().evaluate(&strategy(), &bare, start());
+    let others_failing: Vec<&String> = outcome
+        .failures()
+        .iter()
+        .map(|(name, _, _)| name)
+        .filter(|name| name.as_str() != "holdout_simulated_against_recorded_data")
+        .collect();
+    assert!(
+        others_failing.is_empty(),
+        "premise: only the manifest check may fail, but these did: {others_failing:?}"
+    );
+    assert!(!outcome.passed, "{outcome:?}");
+    let (_, _, detail) = outcome
+        .findings
+        .iter()
+        .find(|(name, _, _)| name == "holdout_simulated_against_recorded_data")
+        .expect("the check was recorded");
+    assert!(detail.contains("no dataset manifest"), "{detail}");
+
+    // The same series with the manifest of the bars it was simulated over.
+    let simulated_evidence = bare.clone().with_simulation(simulated()?);
+    let admitted = HoldoutGate::default().evaluate(&strategy(), &simulated_evidence, start());
+    assert!(admitted.passed, "{:?}", admitted.failures());
+
+    // A manifest the series cannot have come out of: fewer bars than the
+    // holdout and its folds span. The series is 400 held out over 400
+    // cross-validated observations, so 799 bars is one short.
+    let too_short = bare.with_simulation(simulated_over(799)?);
+    let refused = HoldoutGate::default().evaluate(&strategy(), &too_short, start());
+    assert!(!refused.passed);
+    let (_, _, detail) = refused
+        .findings
+        .iter()
+        .find(|(name, _, _)| name == "holdout_simulated_against_recorded_data")
+        .expect("the check was recorded");
+    assert!(
+        detail.contains("800 observation(s)") && detail.contains("799 bar(s)"),
+        "{detail}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_dataset_manifest_refuses_to_describe_nothing_or_to_carry_a_hash_nobody_computed() -> Result<()>
+{
+    let hash = qip_core::sha256_hex(b"recorded bars");
+    assert!(DatasetManifest::new("obj-AAA", "XNYS", 0, start(), start(), &hash).is_err());
+    assert!(DatasetManifest::new("", "XNYS", 10, start(), start(), &hash).is_err());
+    assert!(DatasetManifest::new("obj-AAA", " ", 10, start(), start(), &hash).is_err());
+    assert!(
+        DatasetManifest::new(
+            "obj-AAA",
+            "XNYS",
+            10,
+            start().saturating_add(Duration::from_days(1)),
+            start(),
+            &hash
+        )
+        .is_err()
+    );
+    assert!(DatasetManifest::new("obj-AAA", "XNYS", 10, start(), start(), "deadbeef").is_err());
+    assert!(
+        DatasetManifest::new("obj-AAA", "XNYS", 10, start(), start(), hash.to_uppercase()).is_err()
+    );
+    assert!(DatasetManifest::new("obj-AAA", "XNYS", 10, start(), start(), &hash).is_ok());
     Ok(())
 }

@@ -64,18 +64,18 @@
 use crate::central::factory::{StrategyCandidate, StrategyFactory};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
+use qip_core::ObjectId;
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_evolution::challenger::TrialLedger;
 use qip_evolution::generate::{Candidate, GenerationRun, StrategyGenerator};
 use qip_evolution::grammar::Grammar;
 use qip_evolution::mutate::MutationRun;
-use qip_core::ObjectId;
 use qip_lifecycle::evidence::{
     CrossValidationRun, DatasetManifest, HoldoutEvidence, LeakageAudit, StrategyEvidence,
 };
-use qip_market::bar::Bar;
 use qip_lifecycle::trials::StrategyFamily;
+use qip_market::bar::Bar;
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::StrategyCompiler;
 

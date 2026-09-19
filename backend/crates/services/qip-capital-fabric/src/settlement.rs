@@ -26,10 +26,13 @@
 //! * **The convention.** T+0, T+1 and T+2 count settlement days, not calendar
 //!   days, which is the whole reason a Friday T+2 lands on Tuesday.
 
+use crate::location::Region;
+use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
 use qip_financial::calendar::MarketHours;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// How many settlement days after the value date funds arrive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -273,5 +276,131 @@ impl SettlementCalendar {
             settlement_days: self.convention.days(),
             days_in_flight_stat: available_at.since(instructed_at).as_days_f64(),
         })
+    }
+}
+
+/// Settlement calendars per jurisdiction, and which jurisdiction each venue
+/// settles in.
+///
+/// Blueprint §34.1 says an adapter's settlement rules are "joined to the
+/// settlement calendar for this venue's jurisdiction". Until this type
+/// existed the planner held exactly one [`SettlementCalendar`] and applied
+/// it to every lane, so a forecast at a Tokyo venue was quoted on the same
+/// cut-off and the same non-settlement days as one at a New York venue, and
+/// the sentence in [`crate::location`] promising that a mis-keyed region
+/// "reads as a place the fabric has no calendar for — which the settlement
+/// module refuses" described a refusal that did not exist.
+///
+/// The book is the join. A jurisdiction is declared with its calendar; a
+/// venue is assigned to a declared jurisdiction; a lane asks for its venue's
+/// calendar and is refused — not defaulted — when the venue was never
+/// assigned or the lane's own region disagrees with the assignment. Both
+/// refusals name the act that clears them.
+///
+/// `BTreeMap` rather than a hash map because the book is described in
+/// refusal messages and journal detail, and a replay that reorders is not a
+/// replay.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SettlementBook {
+    jurisdictions: BTreeMap<Region, SettlementCalendar>,
+    venues: BTreeMap<VenueId, Region>,
+}
+
+impl SettlementBook {
+    /// An empty book: every venue refused until declared.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Declare a jurisdiction's calendar.
+    ///
+    /// Refuses a second declaration for the same jurisdiction. Two calendars
+    /// for one jurisdiction is two opinions about when Friday's transfer
+    /// lands, and the planner would apply whichever was declared last
+    /// without anyone having decided that.
+    pub fn declare_jurisdiction(
+        &mut self,
+        region: Region,
+        calendar: SettlementCalendar,
+    ) -> Result<()> {
+        if self.jurisdictions.contains_key(&region) {
+            return Err(Error::invalid(format!(
+                "jurisdiction {region} already has a settlement calendar declared; a second \
+                 declaration would silently replace the one every assigned venue settles on"
+            )));
+        }
+        self.jurisdictions.insert(region, calendar);
+        Ok(())
+    }
+
+    /// Assign a venue to the jurisdiction it settles in.
+    ///
+    /// Refuses a jurisdiction with no calendar declared, and a venue already
+    /// assigned elsewhere: a venue that settles in two jurisdictions is a
+    /// venue whose transfers land on two different days.
+    pub fn assign_venue(&mut self, venue: VenueId, region: Region) -> Result<()> {
+        if !self.jurisdictions.contains_key(&region) {
+            return Err(Error::invalid(format!(
+                "venue {venue} cannot settle in {region}: no settlement calendar is declared \
+                 for that jurisdiction. Declare it with `declare_jurisdiction` first"
+            )));
+        }
+        if let Some(existing) = self.venues.get(&venue) {
+            return Err(Error::invalid(format!(
+                "venue {venue} already settles in {existing}; assigning it to {region} as well \
+                 would give its transfers two settlement days"
+            )));
+        }
+        self.venues.insert(venue, region);
+        Ok(())
+    }
+
+    /// The jurisdiction a venue was assigned to, if any.
+    pub fn jurisdiction_of(&self, venue: &VenueId) -> Option<&Region> {
+        self.venues.get(venue)
+    }
+
+    /// The calendar a jurisdiction declared, if any.
+    pub fn calendar_of(&self, region: &Region) -> Option<&SettlementCalendar> {
+        self.jurisdictions.get(region)
+    }
+
+    /// The calendar a venue settles on, or the refusal naming why not.
+    ///
+    /// `region` is the jurisdiction the caller believes the venue is in —
+    /// the lane's own [`crate::location::CapitalLocation::region`] — and it
+    /// must agree with the assignment. A lane keyed on a region the venue
+    /// does not settle in is a mis-keyed location, and quoting it on the
+    /// venue's real calendar would make the plan right for the wrong reason.
+    pub fn calendar_for(&self, venue: &VenueId, region: &Region) -> Result<&SettlementCalendar> {
+        let assigned = self.venues.get(venue).ok_or_else(|| {
+            Error::invalid(format!(
+                "venue {venue} has no settlement jurisdiction declared, so no calendar can \
+                 quote when a transfer to it lands. Assign it with `assign_venue` rather than \
+                 assuming a convention"
+            ))
+        })?;
+        if assigned != region {
+            return Err(Error::invalid(format!(
+                "venue {venue} settles in {assigned} but this lane is keyed on {region}; the \
+                 lane's jurisdiction and the venue's disagree, and one of them is wrong"
+            )));
+        }
+        self.jurisdictions.get(assigned).ok_or_else(|| {
+            Error::invalid(format!(
+                "venue {venue} is assigned to {assigned}, which has no calendar; the book was \
+                 built inconsistently"
+            ))
+        })
+    }
+
+    /// Every venue assigned, with its jurisdiction, in venue order.
+    pub fn venues(&self) -> impl Iterator<Item = (&VenueId, &Region)> {
+        self.venues.iter()
+    }
+
+    /// Every jurisdiction declared, in region order.
+    pub fn jurisdictions(&self) -> impl Iterator<Item = (&Region, &SettlementCalendar)> {
+        self.jurisdictions.iter()
     }
 }

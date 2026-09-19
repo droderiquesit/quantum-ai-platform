@@ -92,7 +92,7 @@
 
 use crate::forecast::{DemandForecast, DemandKind};
 use crate::location::CapitalLocation;
-use crate::settlement::{SettlementCalendar, SettlementQuote};
+use crate::settlement::{SettlementBook, SettlementQuote};
 use crate::transfer::{FxRates, ShortfallAsymmetry, TransferCost, TransferCostModel};
 use qip_capital::allocation::{AllocationPlan, CapitalAllocator};
 use qip_contracts::venue::VenueId;
@@ -436,7 +436,11 @@ struct Candidate {
 pub struct PrePositioningPlanner {
     allocator: CapitalAllocator,
     transfer: TransferCostModel,
-    calendar: SettlementCalendar,
+    /// Calendars per jurisdiction and the venue-to-jurisdiction join. One
+    /// calendar for every lane was the state until §34.1's settlement
+    /// provision was read properly: a Tokyo lane and a New York lane were
+    /// quoted on the same cut-off and the same weekends.
+    settlement: SettlementBook,
     shortfall_buffer_cap: f64,
 }
 
@@ -456,16 +460,21 @@ impl PrePositioningPlanner {
     /// of a funding decision. Past this the bound is simply not reported.
     const RELAXATION_CANDIDATE_LIMIT: usize = 48;
 
-    /// Build a planner around a live allocator, a cost model and a calendar.
+    /// Build a planner around a live allocator, a cost model and a book of
+    /// settlement calendars.
+    ///
+    /// A lane at a venue the book has no jurisdiction for is refused in the
+    /// plan rather than quoted on a default calendar; see
+    /// [`SettlementBook::calendar_for`].
     pub fn new(
         allocator: CapitalAllocator,
         transfer: TransferCostModel,
-        calendar: SettlementCalendar,
+        settlement: SettlementBook,
     ) -> Self {
         Self {
             allocator,
             transfer,
-            calendar,
+            settlement,
             shortfall_buffer_cap: Self::DEFAULT_SHORTFALL_BUFFER_CAP,
         }
     }
@@ -487,9 +496,10 @@ impl PrePositioningPlanner {
         &self.allocator
     }
 
-    /// The settlement calendar in force.
-    pub fn calendar(&self) -> &SettlementCalendar {
-        &self.calendar
+    /// The settlement calendars in force, per jurisdiction, and the venues
+    /// assigned to each.
+    pub fn settlement(&self) -> &SettlementBook {
+        &self.settlement
     }
 
     /// Build a pre-positioning plan against the live allocation.
@@ -526,9 +536,44 @@ impl PrePositioningPlanner {
             let interval = forecast.interval();
             let needed_by = forecast.needed_by();
 
+            // The venue's own jurisdiction's calendar, or a refusal recorded
+            // on the lane. Not the whole plan: the other lanes are still
+            // priceable, and a plan that fell over because one venue was
+            // undeclared would leave every declared venue unfunded too.
+            let calendar = match self
+                .settlement
+                .calendar_for(&forecast.location.venue, &forecast.location.region)
+            {
+                Ok(calendar) => calendar,
+                Err(error) => {
+                    refusals.push(Refusal {
+                        location: forecast.location.clone(),
+                        kind: forecast.kind,
+                        reason: RefusalReason::Unpriceable,
+                        detail: error.message().to_string(),
+                    });
+                    lanes.push(LaneContext {
+                        location: forecast.location.clone(),
+                        kind: forecast.kind,
+                        on_hand,
+                        forecast_lower: interval.lower(),
+                        forecast_point: interval.point(),
+                        forecast_upper: interval.upper(),
+                        needed_by,
+                        // No calendar, so no lag can be quoted; zero here is
+                        // "unquoted", and the refusal beside it says so.
+                        reactive_lag: Duration::ZERO,
+                        committed_for: needed_by.since(at),
+                        positioned: Decimal::ZERO,
+                        transfer_cost: Decimal::ZERO,
+                    });
+                    continue;
+                }
+            };
+
             // What waiting would cost: the lag between the demand appearing and
             // capital instructed at that moment actually landing.
-            let reactive = self.calendar.quote(needed_by)?;
+            let reactive = calendar.quote(needed_by)?;
             let reactive_lag = reactive.available_at.since(needed_by);
 
             let lane = LaneContext {
@@ -562,7 +607,7 @@ impl PrePositioningPlanner {
                 continue;
             }
 
-            let quote = self.calendar.quote(at)?;
+            let quote = calendar.quote(at)?;
             if !quote.arrives_by(needed_by) {
                 refusals.push(Refusal {
                     location: forecast.location.clone(),
@@ -572,7 +617,7 @@ impl PrePositioningPlanner {
                         "instructed {} the cut-off, {} settlement makes the capital usable \
                          at {}, which is {:.2} day(s) after it is needed at {}",
                         if quote.made_cutoff { "inside" } else { "after" },
-                        self.calendar.convention().as_str(),
+                        calendar.convention().as_str(),
                         quote.available_at.to_rfc3339(),
                         quote.lateness(needed_by).as_days_f64(),
                         needed_by.to_rfc3339(),

@@ -86,7 +86,7 @@
 //! use qip_capital_fabric::{
 //!     CapitalLocation, DemandForecast, DemandKind, FundingCurve, FxRates, Interval,
 //!     LocationBalance, PrePositioningPlanner, PrePositioningRequest, Region,
-//!     SettlementCalendar, SettlementConvention, TransferCostModel,
+//!     SettlementBook, SettlementCalendar, SettlementConvention, TransferCostModel,
 //! };
 //! use qip_contracts::venue::VenueId;
 //! use qip_core::{Currency, Decimal, Duration, Timestamp, dec};
@@ -105,6 +105,14 @@
 //!     )?,
 //!     DrawdownSchedule::default(),
 //! );
+//! // Each venue settles on its own jurisdiction's calendar; a venue the book
+//! // does not name is refused in the plan rather than quoted on a default.
+//! let mut settlement = SettlementBook::new();
+//! settlement.declare_jurisdiction(
+//!     Region::new("apac"),
+//!     SettlementCalendar::weekday(SettlementConvention::T1)?,
+//! )?;
+//! settlement.assign_venue(VenueId::new("XTKS"), Region::new("apac"))?;
 //! let planner = PrePositioningPlanner::new(
 //!     allocator,
 //!     TransferCostModel::new(
@@ -114,7 +122,7 @@
 //!         dec!("25"),
 //!         300.0,
 //!     )?,
-//!     SettlementCalendar::weekday(SettlementConvention::T1)?,
+//!     settlement,
 //! );
 //!
 //! let tokyo = CapitalLocation::new(Region::new("apac"), Currency::JPY, VenueId::new("XTKS"));
@@ -176,5 +184,5 @@ pub use plan::{
     LaneContext, LocationBalance, PrePositionMove, PrePositioningPlan, PrePositioningPlanner,
     PrePositioningRequest, Refusal, RefusalReason,
 };
-pub use settlement::{SettlementCalendar, SettlementConvention, SettlementQuote};
+pub use settlement::{SettlementBook, SettlementCalendar, SettlementConvention, SettlementQuote};
 pub use transfer::{FundingCurve, FxRates, ShortfallAsymmetry, TransferCost, TransferCostModel};

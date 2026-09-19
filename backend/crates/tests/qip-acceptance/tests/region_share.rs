@@ -54,8 +54,9 @@ use qip_kernel::central::{
 };
 use qip_kernel::{Platform, PlatformConfig};
 use qip_lifecycle::evidence::{
-    CrossValidationRun, FeatureTiming, HoldoutEvidence, KillCondition, LeakageAudit, PaperEvidence,
-    PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence, StrategyEvidence,
+    CrossValidationRun, DatasetManifest, FeatureTiming, HoldoutEvidence, KillCondition,
+    LeakageAudit, PaperEvidence, PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence,
+    StrategyEvidence,
 };
 use qip_lifecycle::trials::StrategyFamily;
 use qip_observability::Telemetry;
@@ -273,6 +274,14 @@ fn full_evidence(id: &StrategyId, cell: &str) -> Result<StrategyEvidence> {
     };
     Ok(StrategyEvidence::new()
         .with_holdout(holdout)
+        .with_simulation(DatasetManifest::new(
+            "obj-AAA",
+            "XNYS",
+            2_000,
+            start().saturating_sub(Duration::from_days(2_000)),
+            start(),
+            qip_core::sha256_hex(b"recorded bars"),
+        )?)
         .with_paper(paper)
         .with_shadow(shadow)
         .with_pilot(pilot)

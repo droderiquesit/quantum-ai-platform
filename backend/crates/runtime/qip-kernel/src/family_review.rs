@@ -636,7 +636,7 @@ mod tests {
     use super::*;
     use qip_core::Duration;
     use qip_lifecycle::evidence::{
-        CrossValidationRun, FeatureTiming, HoldoutEvidence, LeakageAudit,
+        CrossValidationRun, DatasetManifest, FeatureTiming, HoldoutEvidence, LeakageAudit,
     };
     use qip_lifecycle::gates::HoldoutGate;
     use qip_lifecycle::trials::TrialBook;
@@ -731,6 +731,17 @@ mod tests {
                 self.evidence.push(
                     StrategyEvidence::new()
                         .with_holdout(evidence)
+                        .with_simulation(
+                            DatasetManifest::new(
+                                "obj",
+                                "XSIM",
+                                2_000,
+                                at(),
+                                at(),
+                                qip_core::sha256_hex(b"population bars"),
+                            )
+                            .expect("a well-formed manifest"),
+                        )
                         .with_trial_account(account),
                 );
             }
