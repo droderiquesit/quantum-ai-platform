@@ -5891,7 +5891,7 @@ fn a_dataset_manifest_names_the_bars_by_content_so_an_edited_price_is_a_differen
 
     // One close edited by a tick is not.
     let mut edited = history.clone();
-    edited[300].close = edited[300].close + dec!("0.01");
+    edited[300].close += dec!("0.01");
     let other = recorded_manifest(&on, &edited)?;
     assert_ne!(other.content_hash, manifest.content_hash);
     assert_eq!(other.bars, manifest.bars, "only the content differs");
