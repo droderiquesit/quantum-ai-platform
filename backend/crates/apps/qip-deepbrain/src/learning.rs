@@ -71,7 +71,7 @@
 //! nobody ever wrote.
 
 use qip_ai::evaluation::DriftReport;
-use qip_ai::registry::ModelRegistry;
+use qip_ai::registry::{ModelCard, ModelRegistry};
 use qip_core::error::{Error, Result};
 use qip_core::{ObjectId, Timestamp};
 use qip_kernel::central::models::{ModelRegistration, register_fit};
@@ -104,6 +104,56 @@ const FEATURES: [&str; 5] = [
 /// a row with a smaller window; it is a row whose features are computed from
 /// data that is not there.
 const LOOKBACK: usize = 10;
+
+/// The prefix every dataset this desk fits under carries, ahead of the
+/// subject's own identifier.
+///
+/// Load-bearing rather than cosmetic: `register_fit` copies the dataset name
+/// onto the card, and that copy is the only record of *which instrument* a
+/// standing model was fitted on that outlives this process's own bookkeeping.
+/// Changing the shape here without changing [`card_subject`] would leave every
+/// card unattributable, and an unattributable card is one this desk declines to
+/// measure.
+const DATASET_PREFIX: &str = "bars-";
+
+/// The dataset name a round on `subject` fits under.
+fn dataset_name(subject: &ObjectId) -> String {
+    format!("{DATASET_PREFIX}{}", subject.as_str())
+}
+
+/// The instrument a card was fitted on, as the card itself records it.
+///
+/// `None` when the card names no bar dataset at all, and `None` again when it
+/// names two different subjects — refusing rather than picking the first,
+/// because a model fitted across two instruments has no single window its
+/// drift could honestly be measured against, and guessing one is precisely the
+/// failure this function exists to stop.
+fn card_subject(card: &ModelCard) -> Option<&str> {
+    let mut found: Option<&str> = None;
+    for dataset in &card.training_datasets {
+        let Some(subject) = dataset.strip_prefix(DATASET_PREFIX) else {
+            continue;
+        };
+        match found {
+            None => found = Some(subject),
+            Some(seen) if seen == subject => {}
+            Some(_) => return None,
+        }
+    }
+    found
+}
+
+/// A standing model's fitted feature sample, and the instrument it is of.
+///
+/// The subject is held beside the columns rather than derived when needed: the
+/// desk compares samples long after the round that produced them, and a
+/// comparison that has to re-derive which instrument a sample came from is one
+/// that will eventually derive it wrongly. See [`LearningDesk::reference`].
+#[derive(Clone, Debug)]
+struct FittedSample {
+    subject: String,
+    columns: BTreeMap<String, Vec<f64>>,
+}
 
 /// How the learning loop is tuned.
 #[derive(Clone, Debug)]
@@ -152,6 +202,22 @@ pub struct LearningRound {
     /// a card fitted before the desk last took a stream reference is measured
     /// here even though the desk kept no sample for it.
     pub degraded: BTreeMap<String, BTreeSet<String>>,
+    /// Standing models this round could measure for drift by no route,
+    /// because their card names no instrument it was fitted on.
+    ///
+    /// Reported rather than swallowed. A card nobody measures keeps the drift
+    /// score `ModelCard::decision_eligibility` reads at zero, so it reads as
+    /// undrifted forever — the `MaxExpectedShortfall` shape, a control
+    /// connected to a value nothing writes. The desk will not guess an
+    /// instrument for such a card, because a drift score taken against the
+    /// wrong one is worse than none; so it names the card instead, on the
+    /// round line an operator reads.
+    ///
+    /// Distinct from a card fitted on a *different* subject, which is absent
+    /// from this list and from [`Self::drift`] alike: that is ordinary
+    /// rotation, and that card is measured on the round its own instrument
+    /// comes up.
+    pub unattributed: Vec<String>,
     /// Models the registry will no longer let inform a decision, with why.
     pub ineligible: Vec<String>,
     /// The student distilled from this round's teacher onto the same holdout
@@ -190,6 +256,7 @@ impl LearningRound {
             registration: None,
             drift: Vec::new(),
             degraded: BTreeMap::new(),
+            unattributed: Vec::new(),
             ineligible: Vec::new(),
             distillation: None,
             distillation_refusal: None,
@@ -240,6 +307,14 @@ impl LearningRound {
             Some(campaign) => format!("; {}", campaign.describe()),
             None => String::new(),
         };
+        let unattributed = if self.unattributed.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; {} model(s) measurable against no instrument",
+                self.unattributed.len()
+            )
+        };
         let degraded = if self.degraded.is_empty() {
             String::new()
         } else {
@@ -250,8 +325,8 @@ impl LearningRound {
             )
         };
         format!(
-            "learning: {registered}; {} model(s) measured for drift, {} ineligible{degraded}\
-             {distilled}{campaign}",
+            "learning: {registered}; {} model(s) measured for drift, {} \
+             ineligible{unattributed}{degraded}{distilled}{campaign}",
             self.drift.len(),
             self.ineligible.len()
         )
@@ -299,14 +374,25 @@ pub struct LearningDesk {
     config: LearningConfig,
     policy: SkillPolicy,
     registry: ModelRegistry,
-    /// Per registered model, the feature columns it was fitted on.
+    /// Per registered model, the feature columns it was fitted on and the
+    /// instrument those columns are of.
     ///
     /// Kept because drift is a comparison against *what this model saw*, and
     /// nothing else in the platform remembers that. A drift score computed
     /// against the current window's own earlier half would be measuring the
     /// data's recent stability rather than this model's distance from its
     /// training set.
-    reference: BTreeMap<String, BTreeMap<String, Vec<f64>>>,
+    ///
+    /// The subject is half the key in practice. The deep brain rotates
+    /// subjects — `EvolutionEngine::maybe_learn` re-takes the choice every
+    /// round from whichever instrument currently carries the greatest notional
+    /// depth — and this map was once compared wholesale against whatever
+    /// window the round brought. A model fitted on one instrument was then
+    /// scored against another's bars, and `ModelCard::decision_eligibility`
+    /// refuses on that score: a model could be ruled out of decisions by a
+    /// stability index of 12.4 that was about a different instrument. That is
+    /// worse than no score, because it reads as a measurement.
+    reference: BTreeMap<String, FittedSample>,
     /// The feature stream as it stood when the desk last fitted, held as
     /// summaries rather than as the stream.
     ///
@@ -328,7 +414,18 @@ pub struct LearningDesk {
     /// only mark it degraded where its own window would not have — the
     /// direction a control is allowed to be wrong in, and it is re-measured
     /// from scratch every round rather than latched.
-    stream_reference: Option<FeatureEstimators>,
+    ///
+    /// Keyed by subject, and that is the narrowest keying the join stays
+    /// sound under. "One answer for every model reading this feature" has to
+    /// hold, or `degraded_models` is joining one model's distance from its
+    /// own training window onto another's card. It holds *within* a subject:
+    /// every model fitted on this instrument reads the same `return_1` and the
+    /// question "has it moved" has one answer for all of them. It does not
+    /// hold across subjects, because `return_1` on one instrument moving says
+    /// nothing about `return_1` on another — so a single global reference made
+    /// the join unsound in exactly the way the per-model derivation it was
+    /// built to avoid would have.
+    stream_reference: BTreeMap<String, FeatureEstimators>,
     /// Fits attempted, which is what a model's version is drawn from.
     fits: u64,
     seed: u64,
@@ -352,7 +449,7 @@ impl LearningDesk {
             policy: SkillPolicy::default(),
             registry: ModelRegistry::new(),
             reference: BTreeMap::new(),
-            stream_reference: None,
+            stream_reference: BTreeMap::new(),
             fits: 0,
             seed,
             stats: LearningStats::default(),
@@ -441,6 +538,10 @@ impl LearningDesk {
     fn learn(&mut self, subject: &ObjectId, bars: &[Bar], now: Timestamp) -> Result<LearningRound> {
         self.stats.rounds += 1;
         let columns = feature_columns(bars);
+        // Every comparison below is scoped to this instrument. A model fitted
+        // on another one is left alone this round, not measured against these
+        // bars; it is measured when its own subject next comes round.
+        let on_subject = subject.as_str();
 
         // Drift first, against the window as it stands *before* this round's
         // fit joins the registry. Measuring a model against a window that
@@ -456,16 +557,28 @@ impl LearningDesk {
         // the first would be the `MaxExpectedShortfall` failure inverted: not
         // a control that cannot fire, but one rewired to fire less than it did
         // before the wire was added.
-        let (stream, current) = self.stream_drift(&columns)?;
+        let (stream, current) = self.stream_drift(on_subject, &columns)?;
         let drifted: BTreeSet<String> = stream.keys().cloned().collect();
         // Collected before the registry is borrowed mutably below, and owned
         // because `record_drift` needs the mutable borrow while the join's
         // result is still being read.
-        let dependencies: Vec<(String, Vec<String>)> = self
-            .registry
-            .iter()
-            .map(|card| (card.reference(), card.features.clone()))
-            .collect();
+        //
+        // Only cards this instrument's features can speak for. A card the desk
+        // kept no sample for is still here — that is the whole point of the
+        // feature-level join — provided the card itself says it was fitted on
+        // this subject. One that says nothing is carried out as `unattributed`
+        // rather than measured or silently dropped.
+        let mut unattributed: Vec<String> = Vec::new();
+        let mut dependencies: Vec<(String, Vec<String>)> = Vec::new();
+        for card in self.registry.iter() {
+            match card_subject(card) {
+                Some(fitted_on) if fitted_on == on_subject => {
+                    dependencies.push((card.reference(), card.features.clone()));
+                }
+                Some(_) => {}
+                None => unattributed.push(card.reference()),
+            }
+        }
         let degraded = degraded_models(
             &drifted,
             dependencies
@@ -474,9 +587,12 @@ impl LearningDesk {
         );
 
         let mut measured: BTreeMap<String, (f64, String)> = BTreeMap::new();
-        for (reference, fitted_on) in &self.reference {
+        for (reference, sample) in &self.reference {
+            if sample.subject != on_subject {
+                continue;
+            }
             if let Some((worst_feature, index)) =
-                worst_drift(fitted_on, &columns, self.config.drift_bins)
+                worst_drift(&sample.columns, &columns, self.config.drift_bins)
             {
                 measured.insert(reference.clone(), (index, worst_feature));
             }
@@ -520,14 +636,24 @@ impl LearningDesk {
                     } else {
                         self.stats.without_skill += 1;
                     }
-                    self.reference
-                        .insert(registration.reference.clone(), columns);
+                    self.reference.insert(
+                        registration.reference.clone(),
+                        FittedSample {
+                            subject: on_subject.to_string(),
+                            columns,
+                        },
+                    );
                     // The stream reference moves forward only on a round that
-                    // fitted. A round that could not fit leaves it where it
-                    // was, so the next comparison is still against a
-                    // distribution some model was actually trained on rather
-                    // than against the last window that happened to arrive.
-                    self.stream_reference = Some(current);
+                    // fitted, and only for the subject that round fitted on. A
+                    // round that could not fit leaves it where it was, so the
+                    // next comparison is still against a distribution some
+                    // model was actually trained on rather than against the
+                    // last window that happened to arrive — and a round on a
+                    // different instrument leaves this one's alone, so
+                    // rotation does not silently replace one instrument's
+                    // reference distribution with another's.
+                    self.stream_reference
+                        .insert(on_subject.to_string(), current);
                     (Some(registration), distillation, distillation_refusal)
                 }
                 // A round that could not fit is not a round that found
@@ -541,6 +667,7 @@ impl LearningDesk {
                         registration: None,
                         drift,
                         degraded,
+                        unattributed,
                         ineligible: vec![error.message().to_string()],
                         distillation: None,
                         distillation_refusal: None,
@@ -562,6 +689,7 @@ impl LearningDesk {
             registration,
             drift,
             degraded,
+            unattributed,
             ineligible,
             distillation,
             distillation_refusal,
@@ -581,10 +709,12 @@ impl LearningDesk {
     /// them. A fixed threshold here would be comparing signal plus estimator
     /// noise against a number chosen without knowing how much noise there was.
     ///
-    /// Empty on the first round of a desk's life, and after any round that
-    /// could not fit, because there is no reference to compare against. That
-    /// is reported as "nothing measured" by there being no entry, not as
-    /// "nothing moved" by an index of zero.
+    /// Empty on this subject's first round, and after any round on this
+    /// subject that could not fit, because there is no reference for *this
+    /// instrument* to compare against. That is reported as "nothing measured"
+    /// by there being no entry, not as "nothing moved" by an index of zero —
+    /// and, since the reference is per subject, never as a shift measured
+    /// against a distribution belonging to some other instrument.
     ///
     /// The returned summaries are the caller's to install as the next
     /// reference, and are deliberately *not* installed here: a round that
@@ -593,6 +723,7 @@ impl LearningDesk {
     /// for one without the other.
     fn stream_drift(
         &mut self,
+        on_subject: &str,
         columns: &BTreeMap<String, Vec<f64>>,
     ) -> Result<(BTreeMap<String, StreamingDrift>, FeatureEstimators)> {
         let seed = self.seed;
@@ -602,7 +733,7 @@ impl LearningDesk {
                 current.observe(name, *value)?;
             }
         }
-        let material = match &mut self.stream_reference {
+        let material = match self.stream_reference.get_mut(on_subject) {
             None => BTreeMap::new(),
             Some(reference) => current
                 .drift_against(reference, DRIFT_BUCKETS)?
@@ -651,13 +782,7 @@ impl LearningDesk {
             )));
         }
 
-        let dataset = TrainingDataset::new(
-            format!("bars-{}", subject.as_str()),
-            names,
-            rows,
-            targets,
-            times,
-        )?;
+        let dataset = TrainingDataset::new(dataset_name(subject), names, rows, targets, times)?;
         // Versioned by the desk's own fit count, not by the observation
         // count. `ModelRegistry::register` replaces a card of the same
         // reference outright, and two rounds over the same amount of history
@@ -826,6 +951,12 @@ mod tests {
 
     fn subject() -> ObjectId {
         ObjectId::from_string("OBJ0000000000000000000AAA")
+    }
+
+    /// A second instrument. The deep brain rotates subjects, so two of them
+    /// reaching one desk is the ordinary case rather than a contrived one.
+    fn other_subject() -> ObjectId {
+        ObjectId::from_string("OBJ0000000000000000000ZZZ")
     }
 
     fn at() -> Timestamp {
@@ -1185,8 +1316,12 @@ mod tests {
         desk.maybe_learn(&subject(), &calm, 1, at())?
             .ok_or_else(|| Error::not_found("the first round"))?;
 
-        // A card from somewhere else entirely: same feature vocabulary, no
-        // fitted sample on this desk.
+        // A card from somewhere else entirely: same feature vocabulary, same
+        // instrument, no fitted sample on this desk. The training dataset is
+        // what says "same instrument" -- the desk will not join one
+        // instrument's drifted features onto a card fitted on another, and a
+        // card that names no instrument is reported unmeasurable rather than
+        // measured against a guess.
         let stranger = qip_ai::registry::ModelCard::new(
             qip_core::ids::ModelId::from_string("MDL0000000000000000000BBB"),
             "stranger",
@@ -1194,7 +1329,8 @@ mod tests {
             "another-desk",
             at(),
         )
-        .with_features(FEATURES.iter().map(|f| (*f).to_string()).collect());
+        .with_features(FEATURES.iter().map(|f| (*f).to_string()).collect())
+        .with_training_data(vec![dataset_name(&subject())]);
         let stranger_reference = stranger.reference();
         let tracked_before = desk.tracked();
         desk.registry_mut().register(stranger);
@@ -1225,6 +1361,14 @@ mod tests {
                 .map(|card| card.drift_score),
             Some(0.0),
             "the stranger arrived with a drift score somebody had already written"
+        );
+        assert_eq!(
+            desk.registry()
+                .get(&stranger_reference)
+                .and_then(card_subject),
+            Some(subject().as_str()),
+            "the stranger names no instrument, so the join below would be proving that an \
+             unattributed card is measured rather than that an unsampled one is"
         );
 
         let shocked = super::tests_support::shocked(400);
@@ -1432,6 +1576,277 @@ mod tests {
         assert!(
             reason.contains("coefficient"),
             "the refusal reason does not name why the fit could not be determined: {reason}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_drifted_feature_degrades_only_the_models_fitted_on_the_instrument_it_drifted_on()
+    -> Result<()> {
+        // The feature-level join, which is the second of the two routes a
+        // drift score can reach a card by and the one a per-model reference
+        // cannot fix. `return_1` moving on one instrument says nothing about
+        // `return_1` on another, so joining this round's drifted feature set
+        // onto every card in the registry marks models degraded on evidence
+        // from a series they have never seen -- and `decision_eligibility`
+        // refuses on the score that join writes.
+        let mut desk = learning_desk();
+        let calm = super::tests_support::learnable(400);
+        let first = desk
+            .maybe_learn(&subject(), &calm, 1, at())?
+            .and_then(|round| round.registration)
+            .ok_or_else(|| Error::not_found("a registration on the first subject"))?
+            .reference;
+        let second = desk
+            .maybe_learn(&other_subject(), &calm, 2, at())?
+            .and_then(|round| round.registration)
+            .ok_or_else(|| Error::not_found("a registration on the second subject"))?
+            .reference;
+
+        // The premise, in three parts: two distinct cards are standing, they
+        // are attributed to different instruments, and they read the same
+        // features -- so the join below has something to reach them both by
+        // and nothing but the subject can tell them apart.
+        assert_ne!(
+            first, second,
+            "both rounds registered the same card, so there is only one model here"
+        );
+        assert_eq!(
+            desk.registry().get(&first).and_then(card_subject),
+            Some(subject().as_str())
+        );
+        assert_eq!(
+            desk.registry().get(&second).and_then(card_subject),
+            Some(other_subject().as_str())
+        );
+        assert_eq!(
+            desk.registry()
+                .get(&first)
+                .map(|card| card.features.clone()),
+            desk.registry()
+                .get(&second)
+                .map(|card| card.features.clone()),
+            "the two cards read different features, so the join could separate them without \
+             ever consulting the instrument"
+        );
+
+        // The second instrument, and only the second, changes regime.
+        let shocked = super::tests_support::shocked(400);
+        let round = desk
+            .maybe_learn(&other_subject(), &shocked, 3, at())?
+            .ok_or_else(|| Error::not_found("a round on the second subject"))?;
+
+        // The premise for the exclusion: the join did fire, on the card fitted
+        // where the features actually moved.
+        assert!(
+            round.degraded.contains_key(&second),
+            "the join degraded nothing on the instrument that moved, so the exclusion below \
+             proves nothing; degraded is {:?}",
+            round.degraded.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !round.degraded.contains_key(&first),
+            "a model fitted on {} was degraded by features that drifted on {}",
+            subject().as_str(),
+            other_subject().as_str()
+        );
+        assert_eq!(
+            desk.registry().get(&first).map(|card| card.drift_score),
+            Some(0.0),
+            "the join wrote a drift score onto a card fitted on an instrument this round \
+             never looked at"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_card_naming_no_instrument_is_reported_unmeasurable_rather_than_measured_against_a_guess()
+    -> Result<()> {
+        // The other half of the subject fix, and the half that could have
+        // become a silent gap. A card the desk cannot attribute to an
+        // instrument is measured by neither route, so its drift score stays
+        // the zero nobody wrote and `decision_eligibility` reads it as
+        // undrifted forever. That is the `MaxExpectedShortfall` shape, so the
+        // desk names the card on the round rather than letting it disappear.
+        let mut desk = learning_desk();
+        let calm = super::tests_support::learnable(400);
+        desk.maybe_learn(&subject(), &calm, 1, at())?
+            .ok_or_else(|| Error::not_found("the first round"))?;
+
+        // Same features, same everything -- except it says nothing about what
+        // it was fitted on.
+        let orphan = qip_ai::registry::ModelCard::new(
+            qip_core::ids::ModelId::from_string("MDL0000000000000000000CCC"),
+            "orphan",
+            "1.0.0",
+            "another-desk",
+            at(),
+        )
+        .with_features(FEATURES.iter().map(|f| (*f).to_string()).collect());
+        let orphan_reference = orphan.reference();
+        desk.registry_mut().register(orphan);
+
+        // The premise: the card really does name no instrument, and really is
+        // in the registry the round walks.
+        assert_eq!(
+            desk.registry()
+                .get(&orphan_reference)
+                .and_then(card_subject),
+            None,
+            "the fixture card names an instrument, so it is not the case under test"
+        );
+        assert_eq!(
+            desk.registry().len(),
+            2,
+            "the registry holds {} card(s); the orphan is not in the set the round walks",
+            desk.registry().len()
+        );
+
+        let shocked = super::tests_support::shocked(400);
+        let round = desk
+            .maybe_learn(&subject(), &shocked, 2, at())?
+            .ok_or_else(|| Error::not_found("the second round"))?;
+
+        // Premise for the absence: the round's drift pass did fire, on the
+        // card it could attribute.
+        assert!(
+            !round.degraded.is_empty(),
+            "no model was degraded at all, so the orphan's absence proves nothing"
+        );
+        assert!(
+            !round.degraded.contains_key(&orphan_reference),
+            "a card naming no instrument was degraded by this instrument's drifted features"
+        );
+        assert_eq!(
+            desk.registry()
+                .get(&orphan_reference)
+                .map(|card| card.drift_score),
+            Some(0.0),
+            "an unattributable card was given a drift score anyway"
+        );
+        assert!(
+            round.unattributed.contains(&orphan_reference),
+            "the round measured nothing for {orphan_reference} and said nothing about it \
+             either; the round names {:?}",
+            round.unattributed
+        );
+        assert!(
+            round
+                .describe()
+                .contains("measurable against no instrument"),
+            "the round's own line hides the unmeasurable card: {}",
+            round.describe()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_model_is_never_measured_for_drift_against_bars_of_a_subject_it_was_not_fitted_on()
+    -> Result<()> {
+        // The deep brain rotates subjects: `EvolutionEngine::maybe_learn`
+        // picks whichever subject currently carries the greatest notional
+        // depth, and re-takes that choice every round. This desk held one
+        // reference sample per model and compared every one of them against
+        // whatever window the round brought, so a model fitted on one
+        // instrument was scored for drift against another instrument's bars.
+        // `ModelCard::decision_eligibility` refuses on that score, so a model
+        // could be ruled out of decisions by a number that was about a
+        // different instrument entirely -- which is worse than no number,
+        // because it reads as a measurement.
+        let mut desk = learning_desk();
+        let calm = super::tests_support::learnable(400);
+        let reference = desk
+            .maybe_learn(&subject(), &calm, 1, at())?
+            .and_then(|round| round.registration)
+            .ok_or_else(|| Error::not_found("a registration on the first subject"))?
+            .reference;
+
+        // The premise, in two parts: the model is standing and the desk holds
+        // its sample, and its drift score is the zero nobody wrote.
+        assert_eq!(
+            desk.tracked(),
+            1,
+            "the desk kept no fitted sample, so nothing below could be measured either way"
+        );
+        assert_eq!(
+            desk.registry().get(&reference).map(|card| card.drift_score),
+            Some(0.0),
+            "the card began with a drift score somebody had already written"
+        );
+
+        // A different instrument, in a regime the first one never visited.
+        let shocked = super::tests_support::shocked(400);
+        let second = desk
+            .maybe_learn(&other_subject(), &shocked, 2, at())?
+            .ok_or_else(|| Error::not_found("a round on the second subject"))?;
+
+        // The premise that makes the absence below mean something: the round
+        // really ran its drift pass and really fitted, so a missing
+        // observation is a refusal to measure rather than a round that did
+        // nothing at all.
+        assert!(
+            second.registration.is_some(),
+            "the second round fitted nothing: {:?}",
+            second.ineligible
+        );
+        assert!(
+            !second
+                .drift
+                .iter()
+                .any(|observation| { observation.reference == reference }),
+            "a model fitted on {} was scored for drift against {}'s bars: {:?}",
+            subject().as_str(),
+            other_subject().as_str(),
+            second
+                .drift
+                .iter()
+                .map(|observation| (
+                    observation.reference.clone(),
+                    observation.population_stability_index
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !second.degraded.contains_key(&reference),
+            "the feature-level join degraded a model using another instrument's drifted \
+             features: {:?}",
+            second.degraded.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            desk.registry().get(&reference).map(|card| card.drift_score),
+            Some(0.0),
+            "the card's drift score moved on a round that never saw its instrument"
+        );
+
+        // The complement, without which the assertions above would also pass
+        // if drift measurement had simply been switched off: the same shock
+        // on the model's *own* subject is measured, and past its threshold.
+        let third = desk
+            .maybe_learn(&subject(), &shocked, 3, at())?
+            .ok_or_else(|| Error::not_found("a round back on the first subject"))?;
+        let observation = third
+            .drift
+            .iter()
+            .find(|observation| observation.reference == reference)
+            .ok_or_else(|| {
+                Error::not_found("drift measured against the model's own subject's bars")
+            })?;
+        assert!(
+            observation.above_threshold,
+            "a regime change on the model's own instrument produced a stability index of \
+             {:.3}, which did not pass its threshold",
+            observation.population_stability_index
+        );
+        // And the stream-level reference is per subject too. Round two shocked
+        // a different instrument; had that replaced this one's reference
+        // distribution -- as a single global reference did -- the third round
+        // would compare shocked bars against shocked estimators and the
+        // feature-level join would find nothing to degrade.
+        assert!(
+            third.degraded.contains_key(&reference),
+            "the round on the model's own instrument degraded nothing: a round on another \
+             instrument moved this one's stream reference; degraded is {:?}",
+            third.degraded.keys().collect::<Vec<_>>()
         );
         Ok(())
     }
