@@ -341,6 +341,19 @@ pub enum Decision {
         pending: Vec<String>,
         resumed: bool,
     },
+    /// The venue a signal's intent was reasoned at, chosen among the venues
+    /// whose book for the instrument was usable at the pass instant, by the
+    /// tightest quoted spread (ADR 0078, §27.2's consolidation).
+    ///
+    /// `candidates` is every venue compared and the spread it was compared
+    /// on, in venue order, decimals as strings — so a reader can verify the
+    /// pick from the chain alone. A pick a replay cannot verify is a pick
+    /// nobody can audit.
+    VenueChosen {
+        object: String,
+        venue: String,
+        candidates: Vec<(String, String)>,
+    },
 }
 
 impl Decision {
@@ -372,6 +385,7 @@ impl Decision {
             Self::RegionOutlookChanged { .. } => "region_outlook_changed",
             Self::ReconciliationRequired { .. } => "reconciliation_required",
             Self::VenueReconciled { .. } => "venue_reconciled",
+            Self::VenueChosen { .. } => "venue_chosen",
         }
     }
 }

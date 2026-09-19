@@ -449,6 +449,25 @@ impl CellConfig {
                 self.cell_id
             )));
         }
+        // ADR 0078, decision three: no reserved venue identifier, now or
+        // later. `qip-routing`'s consolidator reserves this name for "the
+        // strategy chose no venue"; a cell configured with it would have
+        // `venue_for` choose it and `place_net` send an order to a venue
+        // literally named so. In this crate the venue is chosen before the
+        // intent exists, so the sentinel has nothing to mean here.
+        if let Some(reserved) = self
+            .venues
+            .iter()
+            .find(|venue| venue.as_str() == qip_routing::UNSPECIFIED_VENUE)
+        {
+            return Err(Error::invalid(format!(
+                "cell {} was assembled with the venue {}, which is the reserved name for an \
+                 intent that chose no venue; a cell chooses the venue itself before an intent \
+                 exists, so name a real venue in QIP_VENUES",
+                self.cell_id,
+                reserved.as_str()
+            )));
+        }
         if let Some(interval) = self.crossing_interval {
             Self::check_crossing_interval(interval)?;
         }
@@ -2888,7 +2907,7 @@ impl Cell {
             return Ok(None);
         }
 
-        let Some(venue) = self.venue_for(&signal.object_id) else {
+        let Some(venue) = self.venue_for(&signal.object_id, now) else {
             self.refuse(
                 report,
                 "venue_selection",
@@ -6692,16 +6711,73 @@ impl Cell {
             .and_then(|policy| policy.payload().feasibility_constraints.value())
     }
 
-    fn venue_for(&self, object: &ObjectId) -> Option<VenueId> {
-        self.config
-            .venues
+    /// The venue a signal on `object` is reasoned at, chosen before the
+    /// intent exists (ADR 0078).
+    ///
+    /// This is §27.2's consolidation: every strategy's signal on one
+    /// instrument in one pass resolves here to the same venue, lands on the
+    /// same netting key and becomes one order. "Best" is the tightest quoted
+    /// top-of-book spread among the configured venues whose book is usable
+    /// at this instant — present, not stale, accepting orders, serving a mid
+    /// — compared in `Decimal`, ties broken by `VenueId` order rather than
+    /// configured order so two cells configured in different orders choose
+    /// alike. The choice is journaled with every candidate and the spread it
+    /// was compared on, so the pick is reproducible from the chain alone.
+    /// The spread is the one cost the cell measures itself on every pass;
+    /// a fee floor from policy slot 11 may join later and may never override
+    /// a staleness refusal. Nothing here calls the centre (ADR 0008).
+    ///
+    /// **When no book is usable, the first venue holding any book at all is
+    /// returned rather than `None`, and no choice is journaled.** That is
+    /// not a substitution: the gates in `intent_for` then refuse it under
+    /// the specific reason — `stale_book`, `venue_status`, `pricing` — which
+    /// an operator can act on, where a `venue_selection` refusal would say
+    /// only that nothing was chosen. `None`, and that refusal, is for a cell
+    /// holding no book for the instrument at any venue it may reach.
+    fn venue_for(&mut self, object: &ObjectId, now: Timestamp) -> Option<VenueId> {
+        // A `BTreeMap` because the candidate order reaches the journal and
+        // decides the tie-break.
+        let mut candidates: BTreeMap<VenueId, Decimal> = BTreeMap::new();
+        let mut fallback: Option<VenueId> = None;
+        for venue in &self.config.venues {
+            let Some(state) = self.liquidity.get(venue, object) else {
+                continue;
+            };
+            if state.status() == VenueStatus::Unreachable {
+                continue;
+            }
+            if fallback.is_none() {
+                fallback = Some(venue.clone());
+            }
+            if state.is_stale() || !state.status().accepts_orders() || state.mid().is_none() {
+                continue;
+            }
+            let Some(spread) = state.spread() else {
+                continue;
+            };
+            candidates.insert(venue.clone(), spread);
+        }
+        let chosen = candidates
             .iter()
-            .find(|venue| {
-                self.liquidity
-                    .get(venue, object)
-                    .is_some_and(|state| state.status() != VenueStatus::Unreachable)
+            .min_by(|(venue_a, spread_a), (venue_b, spread_b)| {
+                spread_a.cmp(spread_b).then(venue_a.cmp(venue_b))
             })
-            .cloned()
+            .map(|(venue, _)| venue.clone());
+        let Some(chosen) = chosen else {
+            return fallback;
+        };
+        self.journal.record(
+            Decision::VenueChosen {
+                object: object.as_str().to_string(),
+                venue: chosen.as_str().to_string(),
+                candidates: candidates
+                    .iter()
+                    .map(|(venue, spread)| (venue.as_str().to_string(), spread.to_string()))
+                    .collect(),
+            },
+            now,
+        );
+        Some(chosen)
     }
 
     /// Take the region hold for an admitted size, or refuse it.
