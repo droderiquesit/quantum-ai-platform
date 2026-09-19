@@ -4,11 +4,20 @@
 //! Fill-time dispersion is the dominant risk on any multi-venue execution: a
 //! cycle whose legs arrive five milliseconds apart is a position for five
 //! milliseconds, and the cost of unwinding it is paid at whatever the market
-//! did in between. §32.1 names five mechanisms against it. This module is the
-//! pre-trade one — *dispersion-aware* admission, which "bounds worst-case
-//! unwind cost rather than reducing its probability" — and it is the only one
-//! of the five a cell can hold on its own: latency-equalised dispatch needs a
-//! timer wheel on a dispatch thread, and this process has neither.
+//! did in between. §32.1 names five mechanisms against it. This module holds
+//! two of them. The pre-trade one is *dispersion-aware* admission, which
+//! "bounds worst-case unwind cost rather than reducing its probability". The
+//! other is latency-equalised dispatch, which this module doc said until ADR
+//! 0084 "needs a timer wheel on a dispatch thread, and this process has
+//! neither" — that was the wrong obstacle. What the cell computes is a
+//! [`ReleaseSchedule`]: a release instant per venue, `max_median - median`,
+//! as a pure function of the same fill-time window the admission gate reads,
+//! so the slowest venue is released first and every leg is expected to arrive
+//! together. The instant travels through `Placer::place`'s `at`, whose
+//! meaning is "release no earlier than", and whatever holds the leg until
+//! then — the simulated gateway, driven by the pass instant; a release thread
+//! in the node, when a real gateway exists — lives outside this crate, so a
+//! replay of the same passes computes the same schedule.
 //!
 //! **The measurement is the cell's own and nothing else's.** The interval is
 //! from the instant the cell sent an order to the instant the venue's own
@@ -33,7 +42,7 @@
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::time::Duration;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// The spread between the slowest and fastest leg a cycle may carry.
 ///
@@ -310,6 +319,66 @@ impl FillTimes {
         DispersionVerdict::Within { spread, measured }
     }
 
+    /// When each leg of a multi-venue cycle is released, relative to the
+    /// decision instant (§32.1, ADR 0084).
+    ///
+    /// Offsets are `max_median - median(venue)` over the distinct venues in
+    /// `venues`, so the slowest venue is released first and every leg is
+    /// expected to arrive together. A pure function of this window, which is
+    /// a pure function of the reports the pass was handed — so a replay of
+    /// the same passes computes the same schedule, and nothing here reads a
+    /// clock.
+    ///
+    /// **A venue with no median gets offset zero and makes the schedule
+    /// unequalised, and it does not refuse.** The reason is the module's
+    /// standing one: a venue has no fill times until it fills something. What
+    /// the schedule does instead is say so — [`ReleaseSchedule::unmeasured`]
+    /// names the venues it could not place, and every offset is zero rather
+    /// than equalised against the venues it could, because a schedule that
+    /// held the measured legs back to meet a leg whose arrival nobody has
+    /// measured would be holding a decision for a number nobody computed.
+    ///
+    /// A single-venue schedule has one offset of zero and is equalised: rule
+    /// 22 says "wherever more than one venue is involved", and one venue is
+    /// trivially equalised rather than exempt, whatever its measurement.
+    pub fn release_schedule(&self, venues: &[VenueId]) -> ReleaseSchedule {
+        let mut medians: BTreeMap<VenueId, Option<Duration>> = BTreeMap::new();
+        for venue in venues {
+            medians
+                .entry(venue.clone())
+                .or_insert_with(|| self.median(venue.as_str()));
+        }
+        let unmeasured: BTreeSet<VenueId> = medians
+            .iter()
+            .filter(|(_, median)| median.is_none())
+            .map(|(venue, _)| venue.clone())
+            .collect();
+        let equalised = medians.len() <= 1 || unmeasured.is_empty();
+        let slowest = medians
+            .values()
+            .flatten()
+            .map(|median| median.as_nanos())
+            .max()
+            .unwrap_or(0);
+        let offsets = medians
+            .iter()
+            .map(|(venue, median)| {
+                let offset = match median {
+                    Some(median) if unmeasured.is_empty() => {
+                        Duration::from_nanos(slowest.saturating_sub(median.as_nanos()))
+                    }
+                    _ => Duration::ZERO,
+                };
+                (venue.clone(), offset)
+            })
+            .collect();
+        ReleaseSchedule {
+            offsets,
+            equalised,
+            unmeasured,
+        }
+    }
+
     /// What every venue's history holds, in venue order.
     pub fn summary(&self) -> Vec<VenueFillTimeState> {
         self.venues
@@ -321,6 +390,50 @@ impl FillTimes {
                 anomalies: history.anomalies,
             })
             .collect()
+    }
+}
+
+/// When each leg of a multi-venue cycle is released, relative to the pass
+/// (ADR 0084). Built by [`FillTimes::release_schedule`] and read at the seam
+/// where a leg's `release_at` is stamped.
+///
+/// Honest about what it could not equalise: a schedule with a non-empty
+/// [`Self::unmeasured`] set carries every offset at zero and reads
+/// `equalised: false`, so the journal entry for a leg sent under it says the
+/// cycle went out unequalised rather than looking like one that was.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseSchedule {
+    /// Venue → delay after the decision instant. A `BTreeMap` because the
+    /// order reaches the journal.
+    offsets: BTreeMap<VenueId, Duration>,
+    /// Whether every offset is the one the measurements call for. False when
+    /// two or more venues are involved and any of them is unmeasured.
+    equalised: bool,
+    /// The venues the schedule had no median for. Each has offset zero.
+    unmeasured: BTreeSet<VenueId>,
+}
+
+impl ReleaseSchedule {
+    /// How long after the decision instant `venue` is released. Zero for a
+    /// venue the schedule was not built over, because a leg the schedule
+    /// does not know cannot be held for a number it never computed.
+    pub fn offset(&self, venue: &VenueId) -> Duration {
+        self.offsets.get(venue).copied().unwrap_or(Duration::ZERO)
+    }
+
+    /// Every offset, in venue order.
+    pub const fn offsets(&self) -> &BTreeMap<VenueId, Duration> {
+        &self.offsets
+    }
+
+    /// Whether the legs were released so as to arrive together.
+    pub const fn equalised(&self) -> bool {
+        self.equalised
+    }
+
+    /// The venues no offset could be computed for.
+    pub const fn unmeasured(&self) -> &BTreeSet<VenueId> {
+        &self.unmeasured
     }
 }
 
