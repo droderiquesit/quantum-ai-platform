@@ -993,9 +993,15 @@ impl LearningDesk {
         // board, so a round cannot vote for itself: the class registered now
         // is decided by what earlier rounds in this regime showed.
         let (chosen, reason) = choose_class(&self.classes, regime);
+        // The class is in the model's name, so the registry reference a
+        // strategy candidate carries says which function it is. Nothing
+        // else on the card records the class: `register_fit` copies the
+        // features, the dataset and the holdout figures, and a card that
+        // could be a linear fit or a sixty-stump ensemble without saying
+        // which is a card a reviewer cannot read.
         let spec_for = |family: ModelFamily| {
             TrainingSpec::new(
-                format!("bar-teacher-{}", subject.as_str()),
+                format!("bar-{}-{}", family.as_str(), subject.as_str()),
                 format!("0.{}.0", self.fits),
                 "central-research",
                 dataset.name(),
@@ -1702,6 +1708,184 @@ mod tests {
         assert!(!desk.enabled());
         assert_eq!(desk.tracked(), 0);
         assert_eq!(desk.stats().rounds, 0);
+    }
+
+    /// A second regime key, for the property that a precedent earned in one
+    /// regime decides nothing in another.
+    const OTHER_REGIME: &str = "quiet/calm";
+
+    #[test]
+    fn a_round_fits_the_baseline_and_the_challenger_and_scores_each_class_in_the_regime()
+    -> Result<()> {
+        // §5.4's meta-learning domain — "which model class works in which
+        // regime" — had one class to choose from, so the board it needed
+        // could never hold a comparison. A round now fits both and tells the
+        // board about both, under the regime the platform classified.
+        let mut desk = learning_desk();
+        // The premise: nothing has been scored before the round.
+        assert!(desk.class_board().is_empty());
+
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+        let choice = round
+            .class_choice
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a class choice on a round that registered"))?;
+
+        let baseline = desk
+            .class_board()
+            .score(BASELINE_CLASS.as_str(), REGIME)
+            .ok_or_else(|| Error::not_found("the baseline's score in the regime"))?;
+        let challenger = desk
+            .class_board()
+            .score(CHALLENGER_CLASS.as_str(), REGIME)
+            .ok_or_else(|| Error::not_found("the challenger's score in the regime"))?;
+        assert_eq!(baseline.observations(), 1);
+        assert_eq!(challenger.observations(), 1);
+        assert_eq!(
+            desk.class_board()
+                .score(BASELINE_CLASS.as_str(), OTHER_REGIME),
+            None,
+            "a round in one regime scored a class in another"
+        );
+        // What the board was told is what the choice reports, and the
+        // challenger was actually fitted rather than refused.
+        assert!(
+            choice.challenger_skilled.is_some(),
+            "the challenger was not fitted on a learnable series"
+        );
+        assert_eq!(
+            baseline.observed(),
+            if choice.baseline_skilled { 1.0 } else { 0.0 }
+        );
+        // With no precedent the readable class is registered.
+        assert_eq!(choice.registered, BASELINE_CLASS.as_str());
+        assert_eq!(choice.reason, ClassReason::NoEstablishedPrecedent);
+        assert_eq!(choice.regime, REGIME);
+        assert!(
+            round.describe().contains("no established precedent"),
+            "the round line does not say why the class was chosen: {}",
+            round.describe()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_established_precedent_for_the_challenger_registers_it_in_that_regime_and_nowhere_else()
+    -> Result<()> {
+        // The control this board exists to drive: the class that is
+        // registered and distilled. Without this, the board would be a
+        // record nothing reads — the `MaxExpectedShortfall` shape.
+        let mut desk = learning_desk();
+        for _ in 0..60 {
+            desk.observe_class(&CHALLENGER_CLASS, REGIME, true);
+            desk.observe_class(&BASELINE_CLASS, REGIME, false);
+        }
+        // The premise: the precedent is established by the board's own band
+        // and prefers the challenger, in this regime only.
+        let precedent = desk
+            .class_board()
+            .score(CHALLENGER_CLASS.as_str(), REGIME)
+            .ok_or_else(|| Error::not_found("the seeded precedent"))?;
+        assert!(
+            precedent.is_confident(),
+            "sixty observations are not established"
+        );
+        assert_eq!(
+            desk.class_board()
+                .score(CHALLENGER_CLASS.as_str(), OTHER_REGIME),
+            None
+        );
+
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+        let choice = round
+            .class_choice
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a class choice on a round that registered"))?;
+        assert_eq!(choice.reason, ClassReason::PrecedentPrefersChallenger);
+        assert_eq!(choice.registered, CHALLENGER_CLASS.as_str());
+        // The card in the registry is the challenger's, not a relabelled
+        // baseline: the class is in the name the card was registered under,
+        // because nothing else on a card records it.
+        let reference = &round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference;
+        let card = desk
+            .registry()
+            .get(reference)
+            .ok_or_else(|| Error::not_found("the registered card"))?;
+        assert_eq!(
+            card.name,
+            format!("bar-{}-{}", CHALLENGER_CLASS.as_str(), subject().as_str())
+        );
+
+        // The same desk, a regime with no precedent: the baseline again.
+        let round = desk
+            .maybe_learn(&subject(), &bars, OTHER_REGIME, 2, at())?
+            .ok_or_else(|| Error::not_found("a second round"))?;
+        let choice = round
+            .class_choice
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a class choice on the second round"))?;
+        assert_eq!(choice.reason, ClassReason::NoEstablishedPrecedent);
+        assert_eq!(choice.registered, BASELINE_CLASS.as_str());
+        Ok(())
+    }
+
+    #[test]
+    fn an_established_precedent_that_does_not_beat_the_baseline_keeps_the_baseline() -> Result<()> {
+        // A tie is not a preference. The readable class is registered unless
+        // the other one has actually done better in this regime; a board
+        // that flipped on equal evidence would be choosing on noise.
+        let mut desk = learning_desk();
+        for _ in 0..60 {
+            desk.observe_class(&CHALLENGER_CLASS, REGIME, true);
+            desk.observe_class(&BASELINE_CLASS, REGIME, true);
+        }
+        let challenger = desk
+            .class_board()
+            .score(CHALLENGER_CLASS.as_str(), REGIME)
+            .ok_or_else(|| Error::not_found("the seeded challenger precedent"))?;
+        let baseline = desk
+            .class_board()
+            .score(BASELINE_CLASS.as_str(), REGIME)
+            .ok_or_else(|| Error::not_found("the seeded baseline precedent"))?;
+        // The premise: established, and equal.
+        assert!(challenger.is_confident());
+        assert!((challenger.score() - baseline.score()).abs() < 1e-12);
+
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+        let choice = round
+            .class_choice
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a class choice on a round that registered"))?;
+        assert_eq!(choice.reason, ClassReason::PrecedentBelowBaseline);
+        assert_eq!(choice.registered, BASELINE_CLASS.as_str());
+        Ok(())
+    }
+
+    #[test]
+    fn a_round_with_no_regime_key_is_refused_rather_than_scored_under_one_context() {
+        // An empty key would fold every regime into one cell and the board
+        // would learn which class works in no regime at all.
+        let mut desk = learning_desk();
+        let bars = super::tests_support::learnable(400);
+        let refused = desk.learn_window(&subject(), &bars, "  ", at());
+        assert!(refused.is_err(), "an empty regime key was accepted");
+        assert!(
+            desk.class_board().is_empty(),
+            "a refused round still scored"
+        );
     }
 
     #[test]
