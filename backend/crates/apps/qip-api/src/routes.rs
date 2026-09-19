@@ -486,6 +486,40 @@ pub const ROUTES: &[Route] = &[
                   nothing and places no order",
         success: 200,
     },
+    // The §40.12 "Add capital" writer, as far as ADR 0085 lets it go: an
+    // operator records that a user says a deposit is on its way, and can
+    // record that it is not. Until these two existed `UserLedger::
+    // expect_inflow` was reached by nothing a deployed process ran and
+    // `cancel_inflow` did not exist, so `/ledger/users` rendered an
+    // `expected_inflows` list nothing could ever put a row in. Both raise a
+    // typed kernel intent — `Platform::expect_inflow`, `Platform::
+    // cancel_inflow` — with the same `OperatorIdentity` an eligibility
+    // decision carries, journalled before the ledger adopts them and
+    // resumed from the log at the next boot. Neither moves money: a
+    // declaration is held beside the balance and outside `available`, and
+    // nothing this build runs ever posts it (see `INFLOW_POSTING`).
+    Route {
+        method: Method::Post,
+        pattern: "/ledger/users/:user/expected-inflows",
+        required_role: Role::Operator,
+        summary: "declare, as the authenticated operator, that one user says a deposit is on \
+                  its way — a reference and an amount held beside the balance and outside \
+                  `available`, refused for an ineligible user, a reused reference or an amount \
+                  the mandate could never take in — journalled before the ledger adopts it and \
+                  answered with the user's updated ledger row; it receives, posts and invests \
+                  nothing",
+        success: 200,
+    },
+    Route {
+        method: Method::Delete,
+        pattern: "/ledger/users/:user/expected-inflows/:reference",
+        required_role: Role::Operator,
+        summary: "record, as the authenticated operator, that a declared deposit is not \
+                  coming — refused for a reference no book of the user's expects — journalled \
+                  before the ledger drops it and answered with the user's updated ledger row; \
+                  nothing else on the book moves",
+        success: 200,
+    },
     Route {
         method: Method::Get,
         pattern: "/wallet",
@@ -1370,6 +1404,140 @@ impl Api {
                                 )
                             });
                         let (status, body) = crate::ledger_views::render_fallible(rendered);
+                        Response::json(status, body)
+                    }
+                    Err(error) => Response::json(
+                        crate::registration_views::refusal_status(&error),
+                        crate::registration_views::refusal(error.message()),
+                    ),
+                }
+            }
+            (Method::Post, "/ledger/users/:user/expected-inflows") => {
+                // The user is the path's third segment under the prefix; the
+                // route matched, so it is present.
+                let Some(user) = path_segment(&request.path, 2) else {
+                    return Response::json(404, r#"{"error":"no such route"}"#);
+                };
+                let declared = match request
+                    .body_as_str()
+                    .map_err(|error| error.message().to_string())
+                    .and_then(crate::ledger_views::InflowDeclarationBody::parse)
+                {
+                    Ok(declared) => declared,
+                    Err(reason) => {
+                        return Response::json(400, crate::registration_views::refusal(&reason));
+                    }
+                };
+                // The user is taken from the mandate registry rather than
+                // built from the path, as the eligibility route takes it: a
+                // declaration is a claim on a mandate holder's book, and one
+                // recorded against a user nobody enrolled would be a record
+                // `/ledger/users` never shows.
+                let Some(held) = platform
+                    .user_ledger()
+                    .mandates()
+                    .keys()
+                    .find(|held| held.as_str() == user)
+                    .cloned()
+                else {
+                    return Response::json(
+                        404,
+                        crate::registration_views::refusal(&format!(
+                            "no mandate is registered for `{user}`, and an inflow is declared \
+                             against a mandate holder's book; enrol the mandate first"
+                        )),
+                    );
+                };
+                let declaration = match declared.declaration() {
+                    Ok(declaration) => declaration,
+                    Err(reason) => {
+                        return Response::json(400, crate::registration_views::refusal(&reason));
+                    }
+                };
+                // The operator is the authenticated principal, dated the way
+                // every signature-gated route dates it: by asking, and being
+                // refused, because a standing bearer token attests nobody's
+                // presence. See `Principal::authentication_instant`; the
+                // route is authorised in shape and refused in fact until a
+                // per-person credential exists (ADR 0075, ADR 0076).
+                let authenticated_at =
+                    match principal.authentication_instant("declaring an expected inflow") {
+                        Ok(instant) => instant,
+                        Err(refusal) => {
+                            return Response::json(
+                                403,
+                                crate::registration_views::refusal(refusal.message()),
+                            );
+                        }
+                    };
+                let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
+                    principal.subject.clone(),
+                    "api-bearer-token",
+                    authenticated_at,
+                );
+                match platform.expect_inflow(&held, declaration, &operator, now) {
+                    Ok(()) => {
+                        // The row is read back from the ledger, not built
+                        // from the request: what the operator sees is what
+                        // the ledger holds, beside the sentence saying it
+                        // will never be posted by this build.
+                        let (status, body) = crate::ledger_views::render_fallible(
+                            crate::ledger_views::inflow_row(&platform, user, now),
+                        );
+                        Response::json(status, body)
+                    }
+                    Err(error) => Response::json(
+                        crate::registration_views::refusal_status(&error),
+                        crate::registration_views::refusal(error.message()),
+                    ),
+                }
+            }
+            (Method::Delete, "/ledger/users/:user/expected-inflows/:reference") => {
+                // The user is the third segment and the reference the fifth;
+                // the route matched, so both are present.
+                let (Some(user), Some(reference)) = (
+                    path_segment(&request.path, 2),
+                    path_segment(&request.path, 4),
+                ) else {
+                    return Response::json(404, r#"{"error":"no such route"}"#);
+                };
+                let Some(held) = platform
+                    .user_ledger()
+                    .mandates()
+                    .keys()
+                    .find(|held| held.as_str() == user)
+                    .cloned()
+                else {
+                    return Response::json(
+                        404,
+                        crate::registration_views::refusal(&format!(
+                            "no mandate is registered for `{user}`, so no inflow can be \
+                             expected for them and none cancelled"
+                        )),
+                    );
+                };
+                // Dated as the declaration is, and refused as it is, for the
+                // same reason.
+                let authenticated_at =
+                    match principal.authentication_instant("cancelling an expected inflow") {
+                        Ok(instant) => instant,
+                        Err(refusal) => {
+                            return Response::json(
+                                403,
+                                crate::registration_views::refusal(refusal.message()),
+                            );
+                        }
+                    };
+                let operator = qip_risk_engine::autonomy::OperatorIdentity::verified(
+                    principal.subject.clone(),
+                    "api-bearer-token",
+                    authenticated_at,
+                );
+                match platform.cancel_inflow(&held, reference, &operator, now) {
+                    Ok(()) => {
+                        let (status, body) = crate::ledger_views::render_fallible(
+                            crate::ledger_views::inflow_row(&platform, user, now),
+                        );
                         Response::json(status, body)
                     }
                     Err(error) => Response::json(

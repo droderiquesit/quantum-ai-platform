@@ -896,6 +896,17 @@ fn every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent() {
         ("Post", "/risk/recalibrations/:rule/approvals"),
         ("Post", "/ledger/users/:user/eligibility"),
         ("Post", "/ledger/users/:user/investment-requests"),
+        // The tenth and eleventh (ADR 0085): an operator declares that a
+        // user says a deposit is on its way, and records that it is not.
+        // Admitted on the eligibility decision's terms and narrower: the
+        // identity is the session's, the body carries a strategy, a
+        // reference and an amount and nothing that could receive or post
+        // one, and the ledger holds the amount outside `available` by
+        // construction. Neither can move money in either direction; the
+        // most a declaration can do is be rendered, and the most a
+        // cancellation can do is stop rendering it.
+        ("Post", "/ledger/users/:user/expected-inflows"),
+        ("Delete", "/ledger/users/:user/expected-inflows/:reference"),
         ("Post", "/venues/:venue/reinstatements"),
     ]
     .into_iter()
@@ -1187,6 +1198,19 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         // anything moves.
         "reinstate_venue",
         "decide_eligibility",
+        // `expect_inflow` and `cancel_inflow` — the §40.12 declaration and
+        // its withdrawal (ADR 0085), the same class as `decide_eligibility`
+        // and admitted on the same terms: the operator is the session's and
+        // the body cannot carry one; the user is resolved against the
+        // mandate registry; the record is journalled before the ledger
+        // adopts it and resumed from the log at the next boot. `&mut` is for
+        // the journal append and the ledger's expected-inflow map, which
+        // `CashBalance::available` excludes by construction, so neither can
+        // size, fund, reserve or post anything. `post_inflow` — the only
+        // seam that would turn a declaration into settled cash — is
+        // deliberately absent from this list and reached by no route.
+        "expect_inflow",
+        "cancel_inflow",
         // `decide_investment` — §40.9's `investment-api` intent, and the one
         // the blueprint gives it. It is `&mut` for the journal append: the
         // decision is the ledger's answer about what the mandate *would*
