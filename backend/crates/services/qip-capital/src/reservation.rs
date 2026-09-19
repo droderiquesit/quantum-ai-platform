@@ -27,11 +27,50 @@
 //! committed. A commit that succeeded against a lapsed hold would spend
 //! capital the free balance already counts as available — the double-spend
 //! this module exists to prevent, reintroduced at its own back door.
+//!
+//! # The expiry had no ceiling, so the third ending was optional
+//!
+//! The third bullet above is a promise — "cannot pin capital forever" — and
+//! until [`MAXIMUM_RESERVATION_VALIDITY`] existed a caller could void it
+//! through this module's own front door, silently. [`ReservationLedger::reserve`]
+//! computed the expiry with `Timestamp::saturating_add`, so a validity larger
+//! than the remaining range of the clock *clamped* to [`Timestamp::MAX`] —
+//! the value [`qip_core::Timestamp`] documents as the sentinel meaning "no
+//! upper bound". A hold taken in 2023 with an unbounded validity was still
+//! live a century later, `free` stayed at zero, and every subsequent
+//! reservation was refused for want of capital that nothing would ever
+//! release. A control that stops the platform sizing positions, while
+//! reading as the control working, is the worst shape a refusal can take.
+//!
+//! Two things close it, and both can fire. A validity past the ceiling is
+//! **refused**, not truncated, because a caller told their hold was granted
+//! and silently given a shorter one is a caller who will believe the wrong
+//! expiry. And the expiry arithmetic is checked rather than saturating, so a
+//! `now` near the end of the clock's range refuses too — `Timestamp::MAX` is
+//! a real constructible value that point-in-time views already pass around.
+//!
+//! The ceiling is a day, and it is not a number picked to fit its callers.
+//! Both production callers already assume it: the kernel holds a constructed
+//! proposal for twenty-four hours, and `qip_kernel::exploration`'s
+//! `PROBE_VALIDITY` is "a day, matching the hold a constructed proposal
+//! takes, so exploration capital cannot be pinned for longer than
+//! return-seeking capital can". This makes that shared assumption structural
+//! instead of a coincidence between two call sites. [`crate::envelope`] took
+//! the same decision one module over, for the same reason and with the same
+//! shape: expiry is the only revocation mechanism either type has, so the
+//! ceiling on it is the whole of the guarantee.
 
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+/// The longest a reservation may hold capital before it lapses.
+///
+/// A day. See this module's documentation for why a ceiling has to exist at
+/// all, and why this is the day both production callers already assume
+/// rather than a bound chosen to admit them.
+pub const MAXIMUM_RESERVATION_VALIDITY: Duration = Duration::from_hours(24);
 
 /// One live hold on the free balance.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -145,6 +184,11 @@ impl ReservationLedger {
     /// a second reservation against the same capital cannot also pass. The
     /// refusal is a refusal — the caller resizes, releases something, or
     /// waits; nothing is clamped and nothing queues.
+    ///
+    /// `validity` is bounded by [`MAXIMUM_RESERVATION_VALIDITY`] and a longer
+    /// one is refused rather than shortened, for the reason this module's
+    /// documentation gives: expiry is the only thing that frees a hold nobody
+    /// resolves, so an unbounded validity is an unbounded hold.
     pub fn reserve(
         &mut self,
         id: impl Into<String>,
@@ -171,6 +215,31 @@ impl ReservationLedger {
                  before its own creation holds nothing",
             ));
         }
+        if validity > MAXIMUM_RESERVATION_VALIDITY {
+            return Err(Error::denied(format!(
+                "a reservation may not hold capital for longer than {:.1} hour(s), and {id} \
+                 asked for {:.1}; expiry is the only thing that frees a hold nobody commits \
+                 or releases, so a longer one is refused rather than truncated — hold for \
+                 less, or re-reserve when this one lapses",
+                MAXIMUM_RESERVATION_VALIDITY.as_secs_f64() / 3600.0,
+                validity.as_secs_f64() / 3600.0
+            )));
+        }
+        // Checked rather than saturating: a saturating expiry lands on
+        // `Timestamp::MAX`, which is the sentinel for "no upper bound", and
+        // the hold would pin its capital for the rest of the clock's range.
+        let Some(expires_at) = now
+            .as_nanos()
+            .checked_add(validity.as_nanos())
+            .map(Timestamp::from_nanos)
+        else {
+            return Err(Error::numeric(format!(
+                "a reservation for {id} taken at {now} and valid for {:.1} hour(s) expires \
+                 past the end of the clock; reserve at an instant the expiry can be \
+                 represented from",
+                validity.as_secs_f64() / 3600.0
+            )));
+        };
         if self.reservations.contains_key(&id) {
             return Err(Error::invalid(format!(
                 "{id} already holds a reservation; commit or release it before reserving again"
@@ -191,7 +260,7 @@ impl ReservationLedger {
             Reservation {
                 amount,
                 reserved_at: now,
-                expires_at: now.saturating_add(validity),
+                expires_at,
             },
         );
         Ok(())

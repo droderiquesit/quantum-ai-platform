@@ -449,14 +449,36 @@ impl Hypothesis {
     /// is worth acting on at all. How *much* to commit to it is a second
     /// question with a second answer: see
     /// [`Hypothesis::confidence_for_sizing`].
+    ///
+    /// **This is where §56.5 rule 56 — "no belief exceeds a confidence
+    /// threshold on a single information source" — is actually held**, and it
+    /// is held here rather than in [`Hypothesis::meets_action_bar`] on
+    /// purpose. `meets_action_bar` is reached only through
+    /// [`crate::engine::ReasoningEngine::clears_action_bar`], which no
+    /// production caller invokes: the cycle reads this function and
+    /// [`Hypothesis::confidence_for_sizing`] directly and sizes on the result.
+    /// A rule enforced only in a gate nobody calls is not enforced, so the
+    /// bound lives in the value every reader already takes.
     pub fn effective_confidence(&self) -> f64 {
+        // No special case for an empty supporting set, and the absence is
+        // deliberate. `EvidenceSet::concentration` answers 0.0 when nothing
+        // supports the claim, which read naively would make a belief standing
+        // on no source at all the one thing the rule never touched — but
+        // `Hypothesis::form` cannot produce such a hypothesis and
+        // `Hypothesis::validate` refuses one, so the guard would be a branch
+        // that can never be taken. This repository's standing example of what
+        // not to ship is a limit that reads as protection and cannot fire,
+        // and a branch nobody can reach is the same mistake one level down.
+        // `a_hypothesis_with_only_contradicting_evidence_is_refused` in
+        // `tests/reasoning.rs` is what keeps that refusal true.
         let concentration = self.evidence.concentration();
-        // Full weight up to half the support from one origin, falling linearly
-        // to 60% when it all comes from one.
-        let penalty = if concentration <= 0.5 {
+        // Full weight up to `CONCENTRATION_KNEE` of the support from one
+        // origin, falling linearly to `SINGLE_ORIGIN_CONFIDENCE_CEILING` when
+        // it all comes from one.
+        let penalty = if concentration <= CONCENTRATION_KNEE {
             1.0
         } else {
-            1.0 - 0.8 * (concentration - 0.5)
+            1.0 - CONCENTRATION_SLOPE * (concentration - CONCENTRATION_KNEE)
         };
         self.confidence * penalty
     }
@@ -612,6 +634,43 @@ impl Hypothesis {
 /// would make one marginal dissent decide between full size and none, and the
 /// number it turned on would be nobody's judgement.
 const FULL_DISAGREEMENT_PENALTY: f64 = 0.6;
+
+/// §56.5 rule 56's threshold: the most a belief may be worth once every item
+/// supporting it traces to one origin.
+///
+/// Stated as a constant rather than buried in the discount's slope because
+/// the rule is about this number and nothing else, and because the slope is
+/// now *derived* from it — see [`CONCENTRATION_SLOPE`]. Before that the two
+/// were independent literals and a later edit to the slope could have moved
+/// the ceiling without anybody noticing the rule had changed.
+///
+/// **There is deliberately no `.min(SINGLE_ORIGIN_CONFIDENCE_CEILING)` in
+/// [`Hypothesis::effective_confidence`], and that absence is the design.** A
+/// posterior is bounded strictly below one by the log-odds clamp in
+/// [`crate::bayes`], so a single-origin thesis already leaves the discount at
+/// `confidence * SINGLE_ORIGIN_CONFIDENCE_CEILING`, which is below the
+/// ceiling for every confidence the update can produce. A clamp written
+/// beside it could never fire, and this repository's standing example of what
+/// not to ship is a limit that reads as protection and cannot. The bound is
+/// a property of the arithmetic; `an_all_one_origin_thesis_never_exceeds_the_single_origin_ceiling`
+/// in `tests/reasoning.rs` is what stops the arithmetic drifting away from it.
+pub const SINGLE_ORIGIN_CONFIDENCE_CEILING: f64 = 0.6;
+
+/// Share of the supporting weight one origin may hold before the discount
+/// starts.
+///
+/// Half: up to here the thesis has at least as much weight behind other
+/// origins as behind its largest, which is corroboration by any reading.
+const CONCENTRATION_KNEE: f64 = 0.5;
+
+/// Slope of the concentration discount, derived so that the discount lands
+/// exactly on [`SINGLE_ORIGIN_CONFIDENCE_CEILING`] at full concentration.
+///
+/// Derived rather than written as `0.8` so that the rule's threshold and the
+/// arithmetic that enforces it cannot disagree: change the ceiling and this
+/// follows it.
+const CONCENTRATION_SLOPE: f64 =
+    (1.0 - SINGLE_ORIGIN_CONFIDENCE_CEILING) / (1.0 - CONCENTRATION_KNEE);
 
 /// Floor on how much a weak causal chain can discount the evidence.
 ///

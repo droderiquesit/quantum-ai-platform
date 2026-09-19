@@ -20,7 +20,7 @@ use qip_capital::envelope::{EnvelopeIssuer, EnvelopeTerms, MAXIMUM_ENVELOPE_VALI
 use qip_capital::exposure::{AggregateExposure, CellPosition, ConcentrationLimits};
 use qip_capital::margin::{MarginModel, assess_liquidity};
 use qip_capital::recall::{RecallReason, RecallRegister, RecallState};
-use qip_capital::reservation::ReservationLedger;
+use qip_capital::reservation::{MAXIMUM_RESERVATION_VALIDITY, ReservationLedger};
 use qip_contracts::governance::Approval;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
@@ -1169,6 +1169,102 @@ fn an_expired_reservation_cannot_be_committed() -> Result<()> {
     Ok(())
 }
 
+// A hold whose validity nobody bounded pinned its capital for the rest of the
+// clock's range. This is not hypothetical and it was not a theoretical
+// overflow: `reserve` computed the expiry with `Timestamp::saturating_add`,
+// so a validity larger than the remaining range clamped to `Timestamp::MAX` —
+// the value `qip_core` documents as the sentinel meaning "no upper bound". A
+// probe against the code before this test existed took a hold in 2023 with
+// `Duration::from_nanos(i64::MAX)` and found `free` still zero a century
+// later, with `is_expired` false at every instant in between. The module
+// promises in its own first paragraphs that a hold "lapses so an abandoned
+// proposal cannot pin capital forever"; the clamp made that promise optional
+// for any caller who asked for long enough, and made the resulting
+// denial-of-capital indistinguishable from the double-spend control working.
+#[test]
+fn a_reservation_asking_to_outlive_the_ceiling_is_refused_rather_than_shortened() -> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+
+    // Premise: the ceiling is a real bound rather than the whole clock, and
+    // the amount and id are ones the ledger would otherwise accept — so the
+    // refusal below can only be the validity gate.
+    assert!(MAXIMUM_RESERVATION_VALIDITY < Duration::from_nanos(i64::MAX));
+    assert!(dec!("600000") <= ledger.free(start()));
+
+    let over = MAXIMUM_RESERVATION_VALIDITY + Duration::from_secs(1);
+    let refused = ledger
+        .reserve("proposal-1", dec!("600000"), start(), over)
+        .expect_err("a hold outliving the ceiling was granted");
+    assert_eq!(refused.code(), "denied");
+    assert!(
+        refused.message().contains("truncated"),
+        "the refusal must say the hold was not silently shortened: {refused}"
+    );
+
+    // Refused, not shortened: nothing is held and the free balance is whole.
+    // A truncating ceiling would leave a hold here with an expiry the caller
+    // never asked for and does not know about.
+    assert!(ledger.reservation("proposal-1").is_none());
+    assert_eq!(ledger.free(start()), dec!("1000000"));
+
+    // And the gate admits a good value — at the ceiling exactly, which is
+    // what both production callers pass. A gate that refused everything
+    // would stop the platform sizing anything and would pass the half above.
+    ledger.reserve(
+        "proposal-1",
+        dec!("600000"),
+        start(),
+        MAXIMUM_RESERVATION_VALIDITY,
+    )?;
+    let held = ledger
+        .reservation("proposal-1")
+        .expect("a hold at the ceiling must be granted");
+    assert_eq!(
+        held.expires_at,
+        start().saturating_add(MAXIMUM_RESERVATION_VALIDITY)
+    );
+
+    // The hold the ceiling admits still ends: the point of bounding the
+    // validity is that expiry actually arrives.
+    assert!(!held.is_expired(start()));
+    assert!(held.is_expired(start().saturating_add(MAXIMUM_RESERVATION_VALIDITY)));
+    Ok(())
+}
+
+// The second half of the same failure, at the other end of the clock.
+// `Timestamp::MAX` is a real constructible value — `qip_core` documents it as
+// the sentinel a point-in-time view passes for "no upper bound" — so a caller
+// reserving at one is not a contrived input. Saturating there produced an
+// expiry equal to the instant it was taken at, which is a hold that is
+// already lapsed and a caller who believes they hold capital they do not.
+#[test]
+fn a_reservation_whose_expiry_runs_past_the_end_of_the_clock_is_refused_rather_than_saturated()
+-> Result<()> {
+    let mut ledger = ReservationLedger::new(dec!("1000000"))?;
+
+    // Premise: this validity is inside the ceiling, so the refusal below is
+    // the overflow gate and not the one the test above pins.
+    let validity = Duration::from_hours(1);
+    assert!(validity <= MAXIMUM_RESERVATION_VALIDITY);
+
+    let refused = ledger
+        .reserve("proposal-1", dec!("600000"), Timestamp::MAX, validity)
+        .expect_err("an expiry past the end of the clock was granted");
+    assert_eq!(refused.code(), "numeric");
+    assert!(ledger.reservation("proposal-1").is_none());
+    assert_eq!(ledger.free(start()), dec!("1000000"));
+
+    // The gate admits a good value: the same hold, one hour earlier on the
+    // clock, is granted and expires when it says it will.
+    let representable = Timestamp::from_nanos(i64::MAX - validity.as_nanos());
+    ledger.reserve("proposal-1", dec!("600000"), representable, validity)?;
+    let held = ledger
+        .reservation("proposal-1")
+        .expect("a representable expiry must be granted");
+    assert_eq!(held.expires_at, Timestamp::MAX);
+    Ok(())
+}
+
 // --- every capital gate rule, both halves -----------------------------------
 //
 // | Rule | Pass fixture | Veto fixture |
@@ -1177,6 +1273,8 @@ fn an_expired_reservation_cannot_be_committed() -> Result<()> {
 // | reservation names an id | `a_reservation_that_names_nothing_is_refused` (premise) | the same test |
 // | reservation holds a positive amount | `a_reservation_for_a_non_positive_amount_is_refused` (premise) | the same test |
 // | reservation has a positive validity | `a_reservation_with_no_validity_is_refused` (premise) | the same test |
+// | reservation validity under the ceiling | `a_reservation_asking_to_outlive_the_ceiling_is_refused_rather_than_shortened` (ceiling-exact half) | the same test |
+// | reservation expiry is representable | `a_reservation_whose_expiry_runs_past_the_end_of_the_clock_is_refused_rather_than_saturated` (representable half) | the same test |
 // | one live hold per id | `a_second_reservation_under_the_same_id_is_refused_until_the_first_ends` | the same test |
 // | ledger opens over a non-negative balance | `a_ledger_cannot_open_over_a_negative_balance` | the same test |
 // | commit and release need a live hold | `committing_a_reservation_spends_the_capital_rather_than_returning_it` | `committing_or_releasing_a_reservation_nobody_made_is_refused`, `an_expired_reservation_cannot_be_committed` |

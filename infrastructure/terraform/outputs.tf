@@ -396,3 +396,25 @@ output "kms_protection_level" {
 
   value = module.secrets.key_protection_level
 }
+
+output "deploy_attribute_condition" {
+  description = <<-EOT
+    The condition deciding which GitHub repository may federate into this
+    project, as the workload identity pool provider is planned with it.
+
+    Published so the deployment trust boundary can be asserted on without a
+    credential. `.claude/rules/domains/infrastructure.md` records why this
+    value has a harness rather than only a validation: an identity derived from
+    a repository variable once carried an apt-install advisory into the
+    workload-identity audience, and every run afterwards failed on an audience
+    nobody could explain. The identity is derived from committed tfvars, and
+    `tests/deploy-identity.tftest.hcl` proves the gate on that value both
+    refuses a malformed repository and admits a well-formed one.
+
+    Reading it is not the same as checking the project. This is what the
+    configuration would build; compare it against the deployed provider before
+    believing either.
+  EOT
+
+  value = module.cicd.deploy_attribute_condition
+}
