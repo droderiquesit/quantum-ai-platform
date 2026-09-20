@@ -3579,6 +3579,29 @@ impl Platform {
         )
     }
 
+    /// [`Self::new`] with a model provider: the deterministic language model
+    /// and the provider the composition root hands in. What `qip-api` uses,
+    /// which narrates through no hosted model and serves through the in-tree
+    /// provider.
+    pub fn new_serving(
+        config: PlatformConfig,
+        context: Context,
+        telemetry: Telemetry,
+        universe: Universe,
+        limits: LimitSet,
+        model_provider: Box<dyn ModelProvider>,
+    ) -> Result<Self> {
+        Self::with_model_provider(
+            config,
+            context,
+            telemetry,
+            universe,
+            limits,
+            Arc::new(DeterministicModel::new()),
+            model_provider,
+        )
+    }
+
     /// Assemble a platform that serves trained models through the given
     /// provider (ADR 0083 §4).
     ///

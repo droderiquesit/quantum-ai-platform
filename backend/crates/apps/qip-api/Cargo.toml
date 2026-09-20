@@ -19,6 +19,10 @@ qip-storage.workspace = true
 qip-agents.workspace = true
 qip-risk-engine.workspace = true
 qip-kernel.workspace = true
+# The in-tree model provider the composition root hands the kernel (ADR
+# 0083 §4). A workspace crate, not a third-party one; the kernel already
+# links it, so the graph gains no edge the application layer did not have.
+qip-training.workspace = true
 qip-web.workspace = true
 # The mesh backbone's central half: the API is the composition root that
 # serves the spine's endpoints, drains the delta inbox into the platform and

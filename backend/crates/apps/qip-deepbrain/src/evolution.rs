@@ -594,6 +594,11 @@ impl EvolutionEngine {
             .learning
             .learn_window(&subject, &window.bars, &regime, now)?;
         round.campaign = Some(window.summary);
+        // The promote stage, with the platform in hand: the desk fitted
+        // without one, and the provider that rescores the candidate and its
+        // incumbents is the platform's (ADR 0083 §4). Its outcome rides the
+        // round so the cycle line says what happened to the fit.
+        round.promotion = self.learning.promote_candidate(platform, now)?;
         Ok(Some(round))
     }
 

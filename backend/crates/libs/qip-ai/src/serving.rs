@@ -194,7 +194,7 @@ pub fn unserved_refusal(
 }
 
 /// A model a provider has loaded and will score. Off the hot path only.
-pub trait ServedModel: std::fmt::Debug {
+pub trait ServedModel: std::fmt::Debug + Send + Sync {
     /// The card reference the artifact named.
     fn reference(&self) -> &str;
     fn format(&self) -> ModelFormat;
@@ -212,7 +212,7 @@ pub trait ServedModel: std::fmt::Debug {
 }
 
 /// Where a served model comes from.
-pub trait ModelProvider: std::fmt::Debug {
+pub trait ModelProvider: std::fmt::Debug + Send + Sync {
     fn name(&self) -> &str;
     /// The formats this provider serves. A caller may check before asking.
     fn serves(&self) -> &[ModelFormat];
