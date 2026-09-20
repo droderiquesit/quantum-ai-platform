@@ -381,24 +381,47 @@ jobs:
               *) echo "$base names no reviewed digest in vendored-images.txt" >&2; exit 1 ;;
             esac
             base_ref="${prefix}/${base}@${base_digest}"
-            dest_ref="${prefix}/${dest}:${tag}"
-            echo "::group::building ${dest} from ${base}@${base_digest}"
-            docker build \
-              --build-arg "ARGOCD_BASE=${base_ref}" \
-              -f "$dockerfile" \
-              -t "$dest_ref" \
-              infrastructure/docker
-            echo "::endgroup::"
+            # The tag carries a fingerprint of everything that determines the
+            # bytes: the reviewed base digest and the Dockerfile that patches
+            # it. Two reasons, and the second is the one that bit.
+            #
+            # The registry has tag immutability enabled, so re-pushing a
+            # fixed tag fails with `manifest invalid: cannot update tag ...`
+            # — run 25 died exactly there, having already built and scanned a
+            # perfectly good image. A fingerprinted tag never collides with a
+            # different build and always collides with an identical one.
+            #
+            # And it makes "already built" decidable. A container build is
+            # not reproducible byte-for-byte, so rebuilding unchanged inputs
+            # would mint a new digest every run and invalidate the digest
+            # pinned in the overlays on every single vendor run. With this,
+            # the digest moves when the inputs move and not otherwise.
+            fingerprint="$( { printf '%s\n' "${base_digest}"; cat "$dockerfile"; } | sha256sum | cut -c1-12)"
+            dest_ref="${prefix}/${dest}:${tag}-${fingerprint}"
+            if existing_digest="$(crane digest "$dest_ref" 2>/dev/null)" && [ -n "${existing_digest}" ]; then
+              echo "${dest_ref} already exists at ${existing_digest}; the base and the Dockerfile are unchanged."
+            else
+              echo "::group::building ${dest} from ${base}@${base_digest}"
+              docker build \
+                --build-arg "ARGOCD_BASE=${base_ref}" \
+                -f "$dockerfile" \
+                -t "$dest_ref" \
+                infrastructure/docker
+              echo "::endgroup::"
+              docker push "$dest_ref"
+            fi
 
             # The same two scans the mirror loop runs, same flags, same
-            # order. The blocking one is fatal on the spot here: a derived
-            # image that still carries a CRITICAL is not a fix, and there is
-            # nothing further downstream to catch it.
+            # order. Run on EVERY pass, including one that skipped the build:
+            # a vulnerability database moves under a fixed image, so an
+            # image clean last week is not thereby clean today, and a gate
+            # that only examines what it just built stops being a gate the
+            # moment a build is cached. The blocking one is fatal on the spot
+            # here, because there is nothing downstream to catch it.
             trivy image --severity CRITICAL,HIGH --exit-code 0 --ignore-unfixed "$dest_ref"
             trivy image --severity CRITICAL --exit-code 1 --ignore-unfixed "$dest_ref"
 
-            docker push "$dest_ref"
-            digest="$(docker inspect --format='{{index .RepoDigests 0}}' "$dest_ref" | sed 's/.*@//')"
+            digest="$(crane digest "$dest_ref")"
             case "$digest" in
               sha256:*) ;;
               *) echo "could not read a digest back for ${dest_ref}" >&2; exit 1 ;;
