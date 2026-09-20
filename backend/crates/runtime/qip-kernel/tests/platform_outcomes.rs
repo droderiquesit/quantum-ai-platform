@@ -852,7 +852,7 @@ fn learn_scores_the_retained_plan_against_the_demand_inside_its_window_and_not_b
                 .ok()
                 .map(|envelope| envelope.body)
         })
-        .last()
+        .next_back()
         .expect("the cycle was journaled");
     let journal = entry
         .pre_positioning
