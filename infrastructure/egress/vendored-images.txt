@@ -251,7 +251,7 @@ quay.io/argoproj/argocd@sha256:e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d0
 
 # Redis 8.2.3 on Alpine, the one Argo CD's install manifest names for its
 # cache; the same manifest names it by this tag.
-public.ecr.aws/docker/library/redis@sha256:08ad0b1d280850169a790dba1393ff7a90aef951fc19632cf4d3ce4f78e679ba vendor/redis 8.2.3-alpine
+public.ecr.aws/docker/library/redis@sha256:e957842a3e7962bfe3e5ab9814eab06e029a2f0d7b0f5d74178af12713b9ab4d vendor/redis 8.2.9-alpine
 
 # Kargo v1.11.4, one image for its five components
 # (infrastructure/gitops/bootstrap/kargo/SOURCE.md).
@@ -280,4 +280,4 @@ gcr.io/gke-release/cnrm/operator@sha256:ed4bd32055c435af80a33131ff8a92c9d75b22c2
 # infrastructure/gitops/envs/README.md). The newest `-slim` tag in the
 # registry's tag list on the day; it carries gcloud, python3 and curl and
 # no kubectl, which the hook does not need.
-gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:87eaf69da735ab8dfc1c640df1e85a467a4feedf2256d35dad368f970d9cd35f vendor/google-cloud-cli 583.0.0-slim
+gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:0673a69a1e178abb079941b326e718aedf3f57bdf5343465e365d826472edd83 vendor/google-cloud-cli 585.0.0-slim

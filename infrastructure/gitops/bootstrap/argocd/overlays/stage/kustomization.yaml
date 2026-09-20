@@ -9,11 +9,11 @@ resources:
 - ../../base
 images:
 - name: quay.io/argoproj/argocd
-  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-stage/vendor/argocd
-  digest: sha256:e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d03aae816a2e7097b
+  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-stage/vendor/argocd-patched
+  digest: sha256:da7f314017cdc8e59475889137d0d7d1ee16b1f4b5b7778c7508649e450749a5
 - name: public.ecr.aws/docker/library/redis
   newName: europe-west2-docker.pkg.dev/unprovisioned/qip-stage/vendor/redis
-  digest: sha256:08ad0b1d280850169a790dba1393ff7a90aef951fc19632cf4d3ce4f78e679ba
+  digest: sha256:e957842a3e7962bfe3e5ab9814eab06e029a2f0d7b0f5d74178af12713b9ab4d
 patches:
 - target:
     kind: ServiceAccount

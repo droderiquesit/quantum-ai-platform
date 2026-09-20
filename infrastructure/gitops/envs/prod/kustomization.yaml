@@ -32,4 +32,4 @@ images:
   digest: sha256:574348fada8eb1130b448132287d76626dfb07525b16668075382f8e154a45a8
 - name: google-cloud-cli
   newName: europe-west2-docker.pkg.dev/unprovisioned/qip-prod/vendor/google-cloud-cli
-  digest: sha256:87eaf69da735ab8dfc1c640df1e85a467a4feedf2256d35dad368f970d9cd35f
+  digest: sha256:0673a69a1e178abb079941b326e718aedf3f57bdf5343465e365d826472edd83

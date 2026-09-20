@@ -28,6 +28,34 @@ directory. Recorded here so this note covers every byte under `upstream/`:
 sha256  b748b7715b56a19f4b19c07cf31b98dfee4380d6533b6c12ca1bd15392aeaa3b  upstream/kustomization.yaml
 ```
 
+## What actually runs is a patched Argo CD, not this digest
+
+`vendored-images.txt` still names `quay.io/argoproj/argocd@sha256:e2aadfa...`
+and that line is still the reviewed base — but the overlays no longer point
+at it. They point at `vendor/argocd-patched`, built by `vendor.yml` from that
+base, because the base fails the platform's own CRITICAL gate on
+CVE-2025-68121 and no upstream release fixes it.
+
+The finding is in two third-party binaries Argo CD *downloads* rather than
+builds: `hack/installers/install-kustomize.sh` fetches the prebuilt kustomize
+release tarball, which is why a go1.24.0 binary sits inside an image whose own
+builder stage is far newer. `git-lfs` is deleted in the derived image (nothing
+here uses Git LFS) and `kustomize` is rebuilt from its own tagged source at the
+same v5.8.1 on a patched toolchain. `infrastructure/docker/argocd-patched.Dockerfile`
+carries the argument and the build-time assertions.
+
+**The derived digest is per-environment**, and that is a property of the build
+rather than a choice: a container build is not reproducible byte-for-byte, so
+each environment's `vendor.yml` run produces its own. Only `dev` has one that
+was actually built —
+`sha256:da7f314017cdc8e59475889137d0d7d1ee16b1f4b5b7778c7508649e450749a5`,
+from run 23 on 2026-09-20. The value in the `test`, `stage` and `prod`
+overlays is that same string standing in for one nothing has produced, which
+is safe only because those three environments carry `project_id =
+"unprovisioned"` and their registry paths say so on their face. Provisioning
+any of them means running `vendor.yml` for it and pinning the digest that run
+prints.
+
 The two images that run are in `infrastructure/egress/vendored-images.txt`;
 `overlays/<env>/kustomization.yaml` moves them to the environment's registry
 at those digests. Dex is not vendored because nothing configures it: the

@@ -2840,7 +2840,35 @@ fn admissible(image: &str, vendored: &[(String, String)]) -> Result<&'static str
         *source_digest == digest && repository.ends_with(&format!("/{destination}"))
     });
     if mirrored {
-        Ok("mirrored")
+        return Ok("mirrored");
+    }
+    // The second legitimate path, and the reason it is second rather than an
+    // exception: an upstream image can carry a finding with no upstream
+    // remedy, and `infrastructure/egress/derived-images.txt` declares the
+    // ones this pipeline patches instead. A derived image's digest cannot
+    // appear in the mirror list, because it is produced by the build rather
+    // than copied — what makes it admissible is that `vendor.yml` builds it
+    // from a reviewed base, scans it with the identical
+    // `--severity CRITICAL --exit-code 1` gate its base failed, and signs it
+    // with the identical attestor.
+    //
+    // Narrow deliberately: the destination must be declared in that file. An
+    // overlay naming some other image this pipeline never built is still
+    // refused, which is the property this whole function exists for.
+    let derived =
+        std::fs::read_to_string(repository_root().join("infrastructure/egress/derived-images.txt"))
+            .unwrap_or_default();
+    let declared = derived.lines().any(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return false;
+        }
+        line.split_whitespace()
+            .nth(2)
+            .is_some_and(|destination| repository.ends_with(&format!("/{destination}")))
+    });
+    if declared {
+        Ok("derived")
     } else {
         Err(format!(
             "`{image}`: {VENDORED} has no line whose source digest is {digest} and whose \
