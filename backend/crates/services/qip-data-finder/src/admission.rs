@@ -540,7 +540,7 @@ pub struct RefusedSource {
 /// was tried, on the NWS precedent, as the text producer
 /// `qip_market_ingestion::narrative` has never had. The gate before any
 /// code is to read the SEC's own terms and fair-access policy from sec.gov,
-/// and they could not be read: four attempts between 08:41Z and 08:55Z,
+/// and they could not be read: five attempts between 08:41Z and 09:14Z,
 /// three `User-Agent` shapes (never a personal address), every page
 /// including `robots.txt`, all answered `403` by the SEC's own edge with a
 /// page titled "Request Rate Threshold Exceeded" whose body reads, verbatim,
