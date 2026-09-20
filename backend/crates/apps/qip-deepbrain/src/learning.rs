@@ -1531,6 +1531,176 @@ mod tests {
         )
     }
 
+    /// A platform serving through the in-tree provider, as the deep brain's
+    /// root assembles one (ADR 0083 §4).
+    fn serving_platform() -> Result<Platform> {
+        let config = qip_kernel::PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(at(), config.seed);
+        Platform::new_serving(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            qip_risk::limits::LimitSet::conservative_default(),
+            Box::new(InTreeProvider),
+        )
+    }
+
+    #[test]
+    fn a_skilled_candidate_is_promoted_against_no_incumbent_and_an_equal_successor_is_not()
+    -> Result<()> {
+        // The promote stage had no caller: the desk registered at development
+        // stage and said promotion was a governed act elsewhere. This drives
+        // the rule end to end — a fit that clears the skill bar is promoted
+        // through the platform's provider and journalled; a second fit of the
+        // same series is the same function, ties the incumbent on the same
+        // held-out rows and is refused by name; and a fit with no skill is
+        // refused before the provider is asked.
+        let mut desk = learning_desk();
+        let mut platform = serving_platform()?;
+        let bars = super::tests_support::learnable(400);
+
+        let first_round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the first round"))?;
+        let first_reference = first_round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        assert!(
+            first_round.registration.as_ref().is_some_and(|r| r.passed),
+            "premise: the first fit cleared the skill bar"
+        );
+        assert_eq!(
+            desk.registry().get(&first_reference).map(|card| card.stage),
+            Some(ModelStage::Development),
+            "premise: a registered card enters at development stage"
+        );
+        assert!(platform.model_promotions().is_empty(), "premise: nothing promoted yet");
+
+        let first = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate from the first round"))?;
+        let PromotionOutcome::Promoted {
+            reference,
+            incumbent_rmse,
+            distilled,
+            displaced,
+            ..
+        } = &first
+        else {
+            return Err(Error::invalid(format!("the first candidate was not promoted: {}", first.describe())));
+        };
+        assert_eq!(reference, &first_reference);
+        assert_eq!(*incumbent_rmse, None, "there was no incumbent to score");
+        assert!(displaced.is_empty());
+        assert_eq!(
+            desk.registry().get(&first_reference).map(|card| card.stage),
+            Some(ModelStage::Production)
+        );
+        assert_eq!(platform.model_promotions().len(), 1);
+        assert_eq!(desk.stats().promoted, 1);
+        // What the cells are told agrees with what the fidelity policy
+        // admitted, in both directions. On this fixture the linear student
+        // of the linear teacher is *not* admitted — it reproduces 0.76 of
+        // the teacher's variation against the 0.80 bar and disagrees on
+        // 18.6% of decisions against the 5% tolerated, printed below so a
+        // reader need not re-derive it — so the promotion is advisory-only
+        // and the manifest refuses to produce; a fixture that admits one
+        // must land the distillate's own digest in the manifest.
+        let shortfalls = first_round
+            .distillation
+            .as_ref()
+            .map(|distillation| FidelityPolicy::default().shortfalls(distillation.fidelity()));
+        println!("fidelity shortfalls on this fixture: {shortfalls:?}");
+        match distilled {
+            Some(digest) => {
+                let manifest = platform.model_manifest()?;
+                assert_eq!(
+                    manifest.manifest().models.values().next().map(String::as_str),
+                    Some(digest.as_str()),
+                    "the manifest does not name the promoted distillate by its own digest"
+                );
+                assert!(first.describe().contains("named to the cells"));
+            }
+            None => {
+                let refusal = platform
+                    .model_manifest()
+                    .err()
+                    .map(|error| error.message().to_string())
+                    .unwrap_or_default();
+                assert!(
+                    refusal.contains("1 advisory-only"),
+                    "an advisory-only promotion produced a manifest, or the refusal does not \
+                     count it: {refusal} (fidelity shortfalls: {shortfalls:?})"
+                );
+                assert!(
+                    first.describe().contains("nothing is named to the cells"),
+                    "{}",
+                    first.describe()
+                );
+            }
+        }
+
+        // The same series again: the same function under a new version.
+        // Equal error on the same rows is not strictly better, so the
+        // incumbent keeps its place and the refusal names it.
+        let second_round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 2, at())?
+            .ok_or_else(|| Error::not_found("the second round"))?;
+        let second_reference = second_round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a second registration"))?
+            .reference
+            .clone();
+        assert_ne!(second_reference, first_reference, "premise: a new version");
+        let second = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate from the second round"))?;
+        let PromotionOutcome::NotPromoted { reason, .. } = &second else {
+            return Err(Error::invalid(format!("an equal successor was promoted: {}", second.describe())));
+        };
+        assert!(
+            reason.contains(&first_reference) && reason.contains("strictly better"),
+            "the refusal does not name the incumbent it tied: {reason}"
+        );
+        assert_eq!(
+            desk.registry().get(&first_reference).map(|card| card.stage),
+            Some(ModelStage::Production),
+            "the incumbent lost its place to a tie"
+        );
+        assert_eq!(
+            desk.registry().get(&second_reference).map(|card| card.stage),
+            Some(ModelStage::Development)
+        );
+        assert_eq!(platform.model_promotions().len(), 1, "a refused promotion was recorded");
+
+        // And nothing without skill reaches the provider at all.
+        let mut fresh = learning_desk();
+        let mut unserved = serving_platform()?;
+        let noise = super::tests_support::unlearnable(400);
+        let round = fresh
+            .maybe_learn(&subject(), &noise, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the noise round"))?;
+        assert!(
+            round.registration.as_ref().is_some_and(|r| !r.passed),
+            "premise: the noise fit did not clear the skill bar"
+        );
+        let outcome = fresh
+            .promote_candidate(&mut unserved, at())?
+            .ok_or_else(|| Error::not_found("a candidate from the noise round"))?;
+        assert!(
+            matches!(&outcome, PromotionOutcome::NotPromoted { reason, .. } if reason.contains("skill bar")),
+            "{}",
+            outcome.describe()
+        );
+        assert!(unserved.model_promotions().is_empty());
+        Ok(())
+    }
+
     #[test]
     fn a_round_registers_a_model_carrying_its_own_out_of_sample_verdict() -> Result<()> {
         // Nothing in any running process had ever built a registry, fitted a
