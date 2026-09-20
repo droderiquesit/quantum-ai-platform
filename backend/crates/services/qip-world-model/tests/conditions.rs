@@ -162,12 +162,16 @@ fn a_condition_failure_against_a_link_the_graph_never_claimed_marks_nothing() ->
     graph.add(edge("AAA", "BBB", at(1_000))?);
     assert_eq!(graph.len(), 1, "premise: the graph holds exactly one link");
 
-    let marked = graph.record_condition_failure("CCC", "DDD", "bear/stressed", at(2_000))?;
+    let marked = graph
+        .record_condition_failure("CCC", "DDD", "bear/stressed", at(2_000))?
+        .marked;
     assert_eq!(
         marked, 0,
         "a link nobody claimed was reported as having been marked"
     );
-    let marked = graph.record_condition_failure("AAA", "BBB", "bear/stressed", at(2_000))?;
+    let marked = graph
+        .record_condition_failure("AAA", "BBB", "bear/stressed", at(2_000))?
+        .marked;
     assert_eq!(
         marked, 1,
         "the link the graph does hold was not marked, so the writer cannot fire at all"
@@ -184,7 +188,9 @@ fn a_condition_failure_is_not_written_onto_an_edge_that_was_not_yet_knowable() -
     let mut graph = CausalGraph::new();
     graph.add(edge("AAA", "BBB", at(5_000))?);
 
-    let marked = graph.record_condition_failure("AAA", "BBB", "bear/stressed", at(1_000))?;
+    let marked = graph
+        .record_condition_failure("AAA", "BBB", "bear/stressed", at(1_000))?
+        .marked;
     assert_eq!(marked, 0, "an edge from the future was conditioned");
     assert!(
         graph.edges()[0].fails_in.is_empty(),
@@ -192,7 +198,9 @@ fn a_condition_failure_is_not_written_onto_an_edge_that_was_not_yet_knowable() -
     );
 
     // The admitting half: at an instant the edge was knowable, it marks.
-    let marked = graph.record_condition_failure("AAA", "BBB", "bear/stressed", at(9_000))?;
+    let marked = graph
+        .record_condition_failure("AAA", "BBB", "bear/stressed", at(9_000))?
+        .marked;
     assert_eq!(marked, 1, "a knowable edge was not marked");
     Ok(())
 }
@@ -239,7 +247,9 @@ fn recording_a_condition_failure_does_not_make_a_stale_graph_read_fresh() -> Res
         "premise: the graph records the instant it absorbed the edge"
     );
 
-    let marked = graph.record_condition_failure("AAA", "BBB", "bear/stressed", at(9_000))?;
+    let marked = graph
+        .record_condition_failure("AAA", "BBB", "bear/stressed", at(9_000))?
+        .marked;
     assert_eq!(marked, 1, "premise: the failure really was recorded");
     assert_eq!(
         graph.last_updated(),

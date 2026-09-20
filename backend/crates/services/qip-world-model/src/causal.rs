@@ -10,10 +10,46 @@
 //! edge's strength, and effects below a floor are dropped. Without that, a
 //! shock reaches everything and the "third-order effect" the charter asks for
 //! becomes a list of every instrument in the universe.
+//!
+//! # Retirement — ADR 0087
+//!
+//! Blueprint §9.4's second handling ends "an edge that fails its conditions is
+//! retired, not patched", and until ADR 0087 nothing here retired anything:
+//! [`CausalGraph::record_condition_failure`] wrote `KnownToFail` and every
+//! reader went on propagating along the edge. An edge whose own test has
+//! refused it [`RETIREMENT_CONSECUTIVE_FAILURES`] passes running in one regime
+//! is now retired *from inference*: it leaves [`CausalGraph::outgoing`] and
+//! [`CausalGraph::incoming`], and so [`CausalGraph::propagate`] and
+//! [`CausalGraph::explanations`], as of the instant it retired; it is skipped
+//! by [`CausalGraph::reestimate`] and never re-estimated back; and it stays in
+//! [`CausalGraph::edges`] under [`EdgeStanding::Retired`] with the regime, the
+//! instant and the run that retired it, because a record deleted is a record
+//! nobody can audit. A re-established link is a new edge with new evidence.
+//! What retirement deliberately does *not* do is release anything a
+//! whole-graph reader constrains — see the ADR.
 
 use qip_core::{Duration, Error, Result, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+/// How many consecutive condition failures in one regime retire an edge —
+/// ADR 0087's N.
+///
+/// Three, and the argument is a debounce, not a significance level. The
+/// platform's precedence pass re-runs a pair's test every cycle over a
+/// window that slides by one bar, so consecutive results share almost all of
+/// their data and cannot be counted as independent refutations; the number
+/// that would make them independent is the window length, and a run that
+/// long would outlive most regimes. What three buys is narrower and honest:
+/// one failure is a sighting, and it already writes
+/// [`ConditionStanding::KnownToFail`]; the second is the same window one bar
+/// on, which can still be a single gap or corporate action in the tape; the
+/// third is a run — the test has refused the claim on every pass since the
+/// run began, and a hold in between would have reset it
+/// ([`CausalGraph::add`]). The reversal condition is in the ADR: when the
+/// pass records the window it tested over, this count should become
+/// failures over non-overlapping windows.
+pub const RETIREMENT_CONSECUTIVE_FAILURES: usize = 3;
 
 /// A link, as re-estimation keys it: cause, effect and the mechanism claimed
 /// between them.
@@ -196,6 +232,56 @@ pub struct CausalEdge {
     /// protection and cannot fire.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub fails_in: BTreeSet<String>,
+    /// The run of consecutive condition failures this edge is currently on,
+    /// if any — the counter ADR 0087's retirement fires on.
+    ///
+    /// One run, in one regime: a failure recorded under a different regime
+    /// starts a fresh run at one, so nothing carries across a regime
+    /// boundary and a regime the edge has never been observed in starts from
+    /// zero. A recorded hold for the same pair in the run's regime clears it
+    /// ([`CausalGraph::add`]). `None` on every edge that has never failed,
+    /// and on a retired one — the run that retired it is inside
+    /// [`Self::retired`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_run: Option<FailureRun>,
+    /// Why and when this edge was retired, if it has been — ADR 0087.
+    ///
+    /// A mark that readers honour, not a deletion: the edge stays in
+    /// [`CausalGraph::edges`] so the record of what was claimed, what refuted
+    /// it and when survives. Point in time is the load-bearing detail: a
+    /// reader asking about an instant *before* [`Retirement::at`] still sees
+    /// the edge, because at that instant it was not yet retired, and a
+    /// backtest that saw the future retirement would be reasoning from a
+    /// graph it did not have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired: Option<Retirement>,
+}
+
+/// The consecutive condition failures an edge is currently accumulating in
+/// one regime.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailureRun {
+    /// The regime every failure in the run was recorded under.
+    pub regime: String,
+    /// How many, including the first sighting.
+    pub failures: usize,
+    /// When the first failure of the run became knowable.
+    pub began: Timestamp,
+}
+
+/// Why and when an edge was retired — the record §9.4's "retired, not
+/// patched" leaves behind.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retirement {
+    /// The regime the retiring run was recorded under.
+    pub regime: String,
+    /// When the retiring failure became knowable — the instant from which
+    /// readers stop seeing the edge.
+    pub at: Timestamp,
+    /// How many consecutive failures the run reached.
+    pub consecutive_failures: usize,
+    /// When the run began.
+    pub run_began: Timestamp,
 }
 
 /// How an edge stands in one named regime — blueprint §9.1's conditions
@@ -245,6 +331,11 @@ pub enum EdgeStanding {
     /// At least one is. §9.4: "the edge is treated as suggestive rather than
     /// established".
     Suggestive,
+    /// Its own test refused it [`RETIREMENT_CONSECUTIVE_FAILURES`] passes
+    /// running in one regime — ADR 0087. Relied on for nothing; kept for the
+    /// record. Outranks the other two, because a retired edge with no
+    /// confounder is not "established", it is retired.
+    Retired,
 }
 
 impl EdgeStanding {
@@ -252,6 +343,7 @@ impl EdgeStanding {
         match self {
             Self::Established => "established",
             Self::Suggestive => "suggestive",
+            Self::Retired => "retired",
         }
     }
 }
@@ -311,6 +403,8 @@ impl CausalEdge {
             suspected_confounders: BTreeSet::new(),
             holds_in: BTreeSet::new(),
             fails_in: BTreeSet::new(),
+            failure_run: None,
+            retired: None,
         })
     }
 
@@ -440,6 +534,35 @@ impl CausalEdge {
         for regime in self.holds_in.iter().chain(self.fails_in.iter()) {
             Self::check_regime(regime, &self.cause, &self.effect, self.mechanism)?;
         }
+        // ADR 0087: a re-established link is a new edge with new evidence.
+        // An edge arriving already retired would be admitted as a record of
+        // a retirement nobody here observed, and one arriving mid-run would
+        // retire on a failure that was not the third — a run smuggled in
+        // rather than accumulated.
+        if let Some(retirement) = &self.retired {
+            return Err(Error::invalid(format!(
+                "the edge {:?} -> {:?} via {} is being claimed carrying a retirement recorded at \
+                 {} under regime {:?}; a retired edge is never re-admitted, so claim a new edge \
+                 with the evidence that re-establishes the link instead",
+                self.cause,
+                self.effect,
+                self.mechanism.as_str(),
+                retirement.at.to_rfc3339(),
+                retirement.regime
+            )));
+        }
+        if let Some(run) = &self.failure_run {
+            return Err(Error::invalid(format!(
+                "the edge {:?} -> {:?} via {} is being claimed already {} failure(s) into a run \
+                 under regime {:?}; a claimed edge starts its own run from nothing, so drop the \
+                 run rather than claiming an edge the graph would retire early",
+                self.cause,
+                self.effect,
+                self.mechanism.as_str(),
+                run.failures,
+                run.regime
+            )));
+        }
         Ok(())
     }
 
@@ -554,11 +677,34 @@ impl CausalEdge {
     /// is to make it consider them, not to have this function guess on its
     /// behalf.
     pub fn standing(&self) -> EdgeStanding {
-        if self.suspected_confounders.is_empty() {
+        if self.retired.is_some() {
+            EdgeStanding::Retired
+        } else if self.suspected_confounders.is_empty() {
             EdgeStanding::Established
         } else {
             EdgeStanding::Suggestive
         }
+    }
+
+    /// Whether this edge has been retired at all — ADR 0087.
+    ///
+    /// Not point-in-time; most readers want [`Self::retired_by`]. This one is
+    /// for the record: "was this edge ever retired", which a report over the
+    /// whole graph asks and a propagation must not.
+    pub fn is_retired(&self) -> bool {
+        self.retired.is_some()
+    }
+
+    /// Whether this edge was retired at or before `known_at`.
+    ///
+    /// The point-in-time reading, and the one every inference reader uses.
+    /// An edge retired *after* the instant asked about was, at that instant,
+    /// a live edge; answering "retired" for it would let a backtest reason
+    /// from a refutation it had not yet obtained.
+    pub fn retired_by(&self, known_at: Timestamp) -> bool {
+        self.retired
+            .as_ref()
+            .is_some_and(|retirement| retirement.at <= known_at)
     }
 
     pub fn with_evidence(mut self, evidence: Vec<String>) -> Self {
@@ -726,6 +872,33 @@ pub struct Reestimation {
     pub refreshed: bool,
 }
 
+/// One edge a condition failure retired — ADR 0087.
+///
+/// The key and the transmission are carried so the caller can journal what
+/// was retired without reading the graph back, and so the entry names the
+/// number the platform stops propagating along.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RetiredEdge {
+    pub cause: String,
+    pub effect: String,
+    pub mechanism: Mechanism,
+    /// The edge's effective transmission at retirement.
+    pub transmission: f64,
+    pub retirement: Retirement,
+}
+
+/// What one recorded condition failure did.
+///
+/// Returned rather than reduced to a count, because retirement is a fact a
+/// caller must journal and a count of marked edges cannot carry it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConditionFailures {
+    /// Live edges of the pair, knowable by then, that took the failure.
+    pub marked: usize,
+    /// The subset this failure retired, in the graph's own order.
+    pub retired: Vec<RetiredEdge>,
+}
+
 /// One node in a propagated shock.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Effect {
@@ -850,6 +1023,33 @@ impl CausalGraph {
     /// current than the newest thing it holds, and letting it rewind would
     /// turn a replay of history into a stale reading.
     pub fn add(&mut self, edge: CausalEdge) {
+        // ADR 0087: a hold recorded for the pair breaks a run of failures.
+        // The platform's precedence pass writes a pass as a *new* edge
+        // carrying `holds_in = {regime}` rather than marking the edge it
+        // already holds, so without this the older edge's run would count
+        // only the failures and never the pass between them — "consecutive"
+        // would mean "cumulative", and a link that clears its bar every
+        // other cycle would retire on the third miss.
+        if !edge.holds_in.is_empty()
+            && let Some(indices) = self.by_cause.get(&edge.cause)
+        {
+            let siblings: Vec<usize> = indices.clone();
+            for index in siblings {
+                let Some(held) = self.edges.get_mut(index) else {
+                    continue;
+                };
+                if held.effect != edge.effect || held.retired.is_some() {
+                    continue;
+                }
+                if held
+                    .failure_run
+                    .as_ref()
+                    .is_some_and(|run| edge.holds_in.contains(&run.regime))
+                {
+                    held.failure_run = None;
+                }
+            }
+        }
         let index = self.edges.len();
         self.by_cause
             .entry(edge.cause.clone())
@@ -986,6 +1186,15 @@ impl CausalGraph {
         let mut decayed: BTreeMap<(EdgeKey, usize), DecayedEdge> = BTreeMap::new();
         let mut matched: BTreeSet<EdgeKey> = BTreeSet::new();
         for (index, edge) in self.edges.iter_mut().enumerate() {
+            // ADR 0087: never re-estimated back. A retired edge takes no
+            // strength from new claims and is not reported decayed either —
+            // it is neither live nor stale, it is retired — so the claims
+            // that would have matched it fall through to `unmatched` below
+            // unless a live edge holds the same link, which is the new edge
+            // a re-established link is.
+            if edge.retired.is_some() {
+                continue;
+            }
             let key = edge.key();
             let Some(support) = in_horizon.get(&key) else {
                 let previously_marked = edge.decayed_at;
@@ -1073,19 +1282,35 @@ impl CausalGraph {
     /// `regime` and did not clear its bar — blueprint §9.1's conditions
     /// layer, written.
     ///
-    /// Returns how many edges were marked. **Zero is a real and ordinary
-    /// answer**: a link nobody ever claimed has no edge to condition, and a
-    /// caller that read a zero as "marked" would be reporting a segmentation
-    /// that never happened.
+    /// Reports how many edges were marked and which, if any, this failure
+    /// retired. **Zero marked is a real and ordinary answer**: a link nobody
+    /// ever claimed has no edge to condition, and a caller that read a zero
+    /// as "marked" would be reporting a segmentation that never happened.
+    ///
+    /// # Retirement — ADR 0087
+    ///
+    /// Each live edge of the pair keeps one [`FailureRun`]. A failure under
+    /// the run's regime extends it; a failure under any other regime starts
+    /// a fresh run at one, so a regime boundary resets the count and a regime
+    /// the edge has never been observed in cannot retire it on its first
+    /// sighting — the same first-sighting rule the kernel's regime-transition
+    /// marker uses. When a run reaches [`RETIREMENT_CONSECUTIVE_FAILURES`]
+    /// the edge is retired as of `known_at`: [`CausalEdge::retired`] records
+    /// the regime, the instant and the run, the run itself is cleared, and
+    /// from that instant [`Self::outgoing`] and [`Self::incoming`] — and so
+    /// [`Self::propagate`] and [`Self::explanations`] — no longer return it.
+    /// An edge already retired is left alone and not counted as marked: it
+    /// takes no further failures, and it takes no further holds either.
     ///
     /// # What this deliberately does not do
     ///
     /// It does not drop the edge, attenuate its strength, or move
     /// [`Self::last_updated`].
     ///
-    /// Not dropping, for [`CausalEdge::decayed_at`]'s reason: a failed test
-    /// under one regime does not disprove a link, and deleting it would
-    /// destroy the record a later regime would be judged against.
+    /// Not dropping, even on retirement, for [`CausalEdge::decayed_at`]'s
+    /// reason: a retired edge is the record of a claim and of what refuted
+    /// it, and deleting it would destroy the evidence a later reviewer would
+    /// judge the re-established link against.
     ///
     /// Not `last_updated`, and that one is the load-bearing refusal.
     /// `qip_contracts::degradation::CausalGraphFreshness::assess` reads that
@@ -1106,16 +1331,16 @@ impl CausalGraph {
         effect: &str,
         regime: &str,
         known_at: Timestamp,
-    ) -> Result<usize> {
+    ) -> Result<ConditionFailures> {
         if regime.trim().is_empty() {
             return Err(Error::invalid(format!(
                 "a condition failure recorded against {cause:?} -> {effect:?} names the regime                  {regime:?}; label the regime at the segmenter that produced it, because a                  failure filed under no condition is a failure no reader can ever match to one"
             )));
         }
+        let mut report = ConditionFailures::default();
         let Some(indices) = self.by_cause.get(cause) else {
-            return Ok(0);
+            return Ok(report);
         };
-        let mut marked = 0usize;
         // Collected first so the immutable borrow of `by_cause` ends before
         // the edges are touched.
         let targets: Vec<usize> = indices.clone();
@@ -1123,13 +1348,55 @@ impl CausalGraph {
             let Some(edge) = self.edges.get_mut(index) else {
                 continue;
             };
-            if edge.effect != effect || edge.recorded_at > known_at {
+            if edge.effect != effect || edge.recorded_at > known_at || edge.retired.is_some() {
                 continue;
             }
             edge.fails_in.insert(regime.to_string());
-            marked += 1;
+            report.marked += 1;
+            let run = match edge.failure_run.take() {
+                Some(mut run) if run.regime == regime => {
+                    run.failures += 1;
+                    run
+                }
+                // A different regime, or no run at all: the first sighting
+                // in this regime, counted as one and never as a retirement.
+                _ => FailureRun {
+                    regime: regime.to_string(),
+                    failures: 1,
+                    began: known_at,
+                },
+            };
+            if run.failures >= RETIREMENT_CONSECUTIVE_FAILURES {
+                let retirement = Retirement {
+                    regime: run.regime,
+                    at: known_at,
+                    consecutive_failures: run.failures,
+                    run_began: run.began,
+                };
+                report.retired.push(RetiredEdge {
+                    cause: edge.cause.clone(),
+                    effect: edge.effect.clone(),
+                    mechanism: edge.mechanism,
+                    transmission: edge.transmission(),
+                    retirement: retirement.clone(),
+                });
+                edge.retired = Some(retirement);
+            } else {
+                edge.failure_run = Some(run);
+            }
         }
-        Ok(marked)
+        Ok(report)
+    }
+
+    /// Edges retired at or before `known_at` — ADR 0087's record, read back.
+    ///
+    /// Point-in-time like every other reader, so a report as of an instant
+    /// before a retirement does not list it.
+    pub fn retired(&self, known_at: Timestamp) -> Vec<&CausalEdge> {
+        self.edges
+            .iter()
+            .filter(|edge| edge.retired_by(known_at))
+            .collect()
     }
 
     /// Edges known by `known_at` whose own test has failed under the regime
@@ -1156,7 +1423,13 @@ impl CausalGraph {
         &self.edges
     }
 
-    /// Edges leaving `cause`, known by `known_at`.
+    /// Edges leaving `cause`, known by `known_at` and not retired by then.
+    ///
+    /// The two filters are the two halves of point in time: an edge recorded
+    /// after the instant was not yet knowable, and an edge retired at or
+    /// before it was no longer relied on (ADR 0087). Both are asked of the
+    /// same `known_at`, so a reader cannot see a future claim or a past
+    /// refutation it did not have.
     pub fn outgoing(&self, cause: &str, known_at: Timestamp) -> Vec<&CausalEdge> {
         self.by_cause
             .get(cause)
@@ -1164,13 +1437,14 @@ impl CausalGraph {
                 indices
                     .iter()
                     .filter_map(|i| self.edges.get(*i))
-                    .filter(|e| e.recorded_at <= known_at)
+                    .filter(|e| e.recorded_at <= known_at && !e.retired_by(known_at))
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    /// Edges arriving at `effect` — what could explain a move.
+    /// Edges arriving at `effect` — what could explain a move — known by
+    /// `known_at` and not retired by then, on [`Self::outgoing`]'s terms.
     pub fn incoming(&self, effect: &str, known_at: Timestamp) -> Vec<&CausalEdge> {
         self.by_effect
             .get(effect)
@@ -1178,7 +1452,7 @@ impl CausalGraph {
                 indices
                     .iter()
                     .filter_map(|i| self.edges.get(*i))
-                    .filter(|e| e.recorded_at <= known_at)
+                    .filter(|e| e.recorded_at <= known_at && !e.retired_by(known_at))
                     .collect()
             })
             .unwrap_or_default()

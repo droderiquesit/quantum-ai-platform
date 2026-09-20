@@ -368,9 +368,20 @@ impl WorldModel {
     /// nothing to fill it — the platform was already computing the evidence
     /// and dropping it on the floor.
     ///
-    /// It deliberately journals nothing and moves no freshness: see
-    /// [`CausalGraph::record_condition_failure`] for why a graph whose edges
-    /// are failing must not read as a graph that was just refreshed.
+    /// A failure that does not retire journals nothing and moves no
+    /// freshness: see [`CausalGraph::record_condition_failure`] for why a
+    /// graph whose edges are failing must not read as a graph that was just
+    /// refreshed. A failure that *retires* an edge (ADR 0087) is journaled,
+    /// once per edge, under [`ChangeKind::CausalEdgeRetired`], because from
+    /// that instant every propagation in the platform stops running along it
+    /// and a change of that size with nothing in the record naming it is the
+    /// failure this crate exists to refuse. Freshness still does not move:
+    /// a retirement is the graph losing a claim, not absorbing one.
+    ///
+    /// Returns how many edges the link had to mark — the count the kernel's
+    /// stage detail prints — and nothing about retirement, which the journal
+    /// and [`CausalGraph::retired`] carry. The return type is the kernel's
+    /// seam and is left as it is.
     pub fn record_causal_condition_failure(
         &mut self,
         cause: &str,
@@ -378,8 +389,27 @@ impl WorldModel {
         regime: &str,
         known_at: Timestamp,
     ) -> Result<usize> {
-        self.causal
-            .record_condition_failure(cause, effect, regime, known_at)
+        let report = self
+            .causal
+            .record_condition_failure(cause, effect, regime, known_at)?;
+        for retired in &report.retired {
+            self.journal.push(Change::new(
+                ChangeKind::CausalEdgeRetired,
+                format!("{}->{}", retired.cause, retired.effect),
+                format!(
+                    "{} link retired: its own test failed {} consecutive pass(es) under regime \
+                     {:?} since {}; it no longer propagates, explains or re-estimates, and a \
+                     re-established link is a new edge",
+                    retired.mechanism.as_str(),
+                    retired.retirement.consecutive_failures,
+                    retired.retirement.regime,
+                    retired.retirement.run_began.to_rfc3339()
+                ),
+                retired.transmission,
+                known_at,
+            ));
+        }
+        Ok(report.marked)
     }
 
     /// Absorb evidence about a causal link, and re-estimate the causal graph
@@ -947,6 +977,18 @@ impl WorldModel {
             ("nodes".to_string(), self.graph.node_count()),
             ("facts".to_string(), self.graph.fact_count()),
             ("causal_claims".to_string(), self.causal.len()),
+            // Inside `causal_claims`, not beside it: a retired edge stays in
+            // the graph (ADR 0087), so the total alone reads the same before
+            // and after a retirement, and a surface that showed only the
+            // total would show a graph that never lost a claim.
+            (
+                "causal_claims_retired".to_string(),
+                self.causal
+                    .edges()
+                    .iter()
+                    .filter(|e| e.is_retired())
+                    .count(),
+            ),
             ("features".to_string(), self.features.feature_count()),
             ("feature_values".to_string(), self.features.value_count()),
             // Both dimensions of the feature store, because they fail

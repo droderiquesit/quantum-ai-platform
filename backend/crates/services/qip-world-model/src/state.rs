@@ -22,6 +22,12 @@ pub enum ChangeKind {
     CausalClaimAdded,
     /// A previously believed fact turned out to be wrong.
     BeliefRevised,
+    /// A causal edge's own test refused it enough passes running in one
+    /// regime that the platform stopped relying on it — ADR 0087. Its own
+    /// kind rather than [`Self::BeliefRevised`], because a revised belief is
+    /// still held and a retired edge is not; a reader filtering the journal
+    /// for revisions must not find retirements among them, and the reverse.
+    CausalEdgeRetired,
 }
 
 /// One difference between two world states.
