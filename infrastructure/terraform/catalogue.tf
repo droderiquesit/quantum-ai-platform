@@ -572,22 +572,87 @@ locals {
   # Each zone's identities, for the ledger and fabric grants in
   # modules/trust-zones: the accounts of the workloads placed there.
   #
-  # OpenObserve is merged in rather than folded into the comprehension: it is
-  # not a member of `cloud_run_catalogue` (see the module below for why), so a
-  # comprehension reading only that map would silently omit the one workload
-  # in the management zone. No `permitted_paths` names `management` as a
-  # source or destination in any environment today, so nothing yet reads this
-  # entry — but an identity a zone's own module cannot see is an identity a
-  # future path grant would silently miss.
-  zone_identities = merge(
+  # The management zone is merged in rather than folded into the
+  # comprehension, because none of its identities is a member of
+  # `cloud_run_catalogue`: OpenObserve is instantiated on its own below (see
+  # the module for why), and the control plane's three controllers — Config
+  # Connector, Argo CD and Kargo — are `modules/gitops-control-plane`'s, whose
+  # nodes sit on the management subnet and carry the management tag (the
+  # module takes both from `module.trust_zones`) and so are in the zone in
+  # every sense the firewall can see. Until 2026-09-19 only OpenObserve was
+  # listed here, so the root's `trust_zones.identities` output named one of
+  # the four accounts the zone actually held, and a `permitted_paths` entry
+  # from `management` would have granted the ledger or the fabric to the
+  # dashboard and not to the deployer. No environment declares such a path
+  # today, so nothing yet reads this entry — but an identity a zone's own
+  # module cannot see is an identity a future path grant would silently
+  # miss, and §46.1's management zone is "Deploy" before it is anything
+  # else.
+  #
+  # `concat` rather than `sort`, and the order is load-bearing: the module
+  # keys each grant on the zone and the *position*, so the list must be
+  # stable across plans, and `sort` over a list whose members are unknown
+  # until the accounts exist yields a wholly unknown list — its length
+  # included — which no plan-time check downstream can read. A `count`
+  # module's instances iterate in index order and the three controller
+  # outputs are named, so this order is fixed by the configuration alone.
+  placed_identities = merge(
     {
       for zone in distinct([for workload in local.cloud_run_catalogue : workload.trust_zone]) :
       zone => sort([for name, workload in module.cloud_run : workload.service_account_email if workload.trust_zone == zone])
     },
     {
-      "management" = sort([for workload in module.openobserve : workload.service_account_email])
+      "management" = concat(
+        [for workload in module.openobserve : workload.service_account_email],
+        var.gitops_enabled ? [
+          module.gitops_control_plane[0].kcc_service_account_email,
+          module.gitops_control_plane[0].argocd_service_account_email,
+          module.gitops_control_plane[0].kargo_service_account_email,
+        ] : []
+      )
     }
   )
+
+  # What the module is handed: the placements above, narrowed to the zones
+  # this environment declared. The narrowing drops nothing from a plan that
+  # succeeds — `identities_are_placed` below refuses the plan whenever the
+  # unfiltered map places anyone in a zone the tfvars did not declare, and
+  # it reads `placed_identities`, not this. Two maps rather than one because
+  # `modules/trust-zones` refuses the same mistake in its own validation, and
+  # a `terraform test` run can expect a failure only from a root object: had
+  # the root passed the unfiltered map through, the module's refusal would
+  # have been an error no harness could name, and the root's own precondition
+  # would have been provable only by a run that always failed for a second
+  # reason. So the root refuses first, with the message that names the
+  # missing decision, and the module's validation stands for any caller that
+  # is not this root.
+  zone_identities = {
+    for zone, emails in local.placed_identities : zone => emails if contains(keys(var.trust_zones), zone)
+  }
+}
+
+# The plan refuses to place an identity in a zone this environment never
+# declared, whichever module placed it.
+#
+# `catalogue_is_placed` below, `openobserve_is_placed` beside it and
+# `gitops_is_placed` in main.tf each guard one source and say what to
+# declare; this is the guard that does not need to know the source. It
+# exists because `zone_identities` above is narrowed to declared zones
+# before it reaches the module, and a narrowing with no refusal behind it
+# would be a placement silently dropped the day a fourth source is merged in
+# without a guard of its own — an identity in a zone's subnet, under its
+# tag, and in no zone's grant list.
+resource "terraform_data" "identities_are_placed" {
+  input = sort(keys(local.placed_identities))
+
+  lifecycle {
+    precondition {
+      condition = alltrue([
+        for zone, emails in local.placed_identities : contains(keys(var.trust_zones), zone) || length(emails) == 0
+      ])
+      error_message = "An identity is placed in a trust zone this environment does not declare in `trust_zones`: ${join(", ", [for zone, emails in local.placed_identities : zone if length(emails) > 0 && !contains(keys(var.trust_zones), zone)])}. It would sit in no zone's grant list and under no zone's rule while its workload ran. Declare the zone's range in the tfvars — `management` for the control plane and OpenObserve — or turn the workload off."
+    }
+  }
 }
 
 # The plan refuses a catalogue that is not fully placed.

@@ -433,3 +433,97 @@ run "a_zone_egressing_from_another_region_is_refused" {
 
   expect_failures = [google_compute_router_nat.egress[0]]
 }
+
+# --- the identities placed in a zone ----------------------------------------
+
+# `zone_identities`' description promised, from the day the variable was
+# written, that "a zone named here that is not in `zones` is refused". Until
+# 2026-09-19 no validation implemented it: the one block checked the thirteen
+# names, so an identity under a blueprint zone this environment never declared
+# was admitted, earned nothing (the grant lists iterate `permitted_paths`
+# filtered to declared zones), sat under no rule, and was listed in the root's
+# output under a zone as if it were governed. A promise in a description is
+# the exact shape of control that reads as protection and cannot fire. The
+# three runs below are the refusal, the admission that proves an identity in
+# a declared zone actually becomes a grant, and the one shape the root sends
+# in three of four environments — a zone named with nobody in it.
+
+run "an_identity_placed_in_a_zone_this_deployment_never_declared_is_refused" {
+  command = plan
+
+  variables {
+    zones = {
+      "cognition" = { region = "us-east4", subnet_cidr = "10.90.3.0/24" }
+    }
+    zone_identities = {
+      # A node's identity, in an environment that declared no execution
+      # subnet. The name is one of the thirteen, so the first validation
+      # admits it; only the second can see that the zone is not here.
+      "execution" = ["qip-dev-newyork-1-node@tz-plan-harness.iam.gserviceaccount.com"]
+    }
+  }
+
+  expect_failures = [var.zone_identities]
+}
+
+run "an_identity_in_a_declared_zone_with_a_read_path_earns_the_ledger_grant" {
+  command = plan
+
+  variables {
+    zones = {
+      "application-identity" = { region = "us-east4", subnet_cidr = "10.90.1.0/24" }
+      "ledger"               = { region = "us-east4", subnet_cidr = "10.90.9.0/24" }
+    }
+    permitted_paths = {
+      "application-reads-ledger" = {
+        from  = "application-identity"
+        to    = "ledger"
+        mode  = "read"
+        ports = [9010]
+        note  = "§46.1: application and identity may read the ledger"
+      }
+    }
+    zone_identities = {
+      "application-identity" = [
+        "qip-dev-api@tz-plan-harness.iam.gserviceaccount.com",
+        "qip-dev-web@tz-plan-harness.iam.gserviceaccount.com",
+      ]
+    }
+    ledger_database = {
+      instance = "qip-dev-ledger"
+      database = "ledger"
+    }
+  }
+
+  # The admitting half, and it asserts on the grant rather than on the plan
+  # succeeding: two identities placed in a zone with a `read` path are two
+  # `databaseReader` bindings and no `databaseUser`. A validation that
+  # refused every non-empty list would fail here, which is what makes the
+  # refusal above evidence of a gate and not of a module that says no.
+  assert {
+    condition     = length(google_spanner_database_iam_member.ledger_read) == 2 && length(google_spanner_database_iam_member.ledger_append) == 0
+    error_message = "two identities in a declared zone with a read path did not become exactly two ledger read grants; the identity list no longer reaches the grant, or the mode no longer decides the role"
+  }
+}
+
+run "a_zone_named_with_no_identity_in_it_is_admitted_even_if_undeclared" {
+  command = plan
+
+  variables {
+    zones = {
+      "cognition" = { region = "us-east4", subnet_cidr = "10.90.3.0/24" }
+    }
+    zone_identities = {
+      # The root's real shape wherever OpenObserve is off: `management` is
+      # merged into the map unconditionally and arrives empty. An empty list
+      # places nobody, so there is nothing outside a boundary to refuse, and a
+      # gate that refused it would refuse every plan in test, stage and prod.
+      "management" = []
+    }
+  }
+
+  assert {
+    condition     = length(google_compute_firewall.deny_egress) == 1
+    error_message = "a zone named with an empty identity list stopped the plan; the root sends exactly this shape in every environment without OpenObserve"
+  }
+}
