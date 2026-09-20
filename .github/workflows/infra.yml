@@ -905,31 +905,76 @@ jobs:
           kubectl -n cert-manager rollout restart deployment/cert-manager-cainjector
           kubectl -n cert-manager rollout status deployment/cert-manager-cainjector --timeout=300s
 
-          echo "waiting for the cainjector to publish cert-manager's CA bundle..."
-          injected=0
+          # Wait for what the next phase actually needs: a webhook that
+          # answers and whose certificate the API server can verify.
+          #
+          # The previous version of this waited for a `caBundle` to appear on
+          # the ValidatingWebhookConfiguration, which is *how* that usually
+          # becomes true rather than *whether* it is. Runs 59 and 60 both
+          # timed out on it with three healthy pods and a freshly restarted
+          # cainjector, and the poll could say nothing about why — it was
+          # watching one implementation detail of a mechanism with several.
+          #
+          # A server-side dry-run of a Certificate goes through admission,
+          # so it calls the webhook and verifies its certificate, and
+          # creates nothing. That is precisely the operation Kargo's own
+          # Certificate performs three phases later, which is where this
+          # kept failing. If the dry-run succeeds, that apply will too; if it
+          # never does, the message below is the one the operator needs
+          # rather than a fact about a field.
+          echo "waiting for cert-manager's webhook to answer a validation request..."
+          probe="$(mktemp)"
+          # printf rather than a heredoc: a heredoc terminator has to sit at
+          # the start of its line, and this script is a YAML block scalar
+          # whose every line is indented. The first draft of this put
+          # `CERTPROBE` at column zero and ended the scalar in the middle of
+          # a shell command, which `yaml.safe_load` refused.
+          printf '%s\n' \
+            'apiVersion: cert-manager.io/v1' \
+            'kind: Certificate' \
+            'metadata:' \
+            '  name: qip-bootstrap-webhook-probe' \
+            '  namespace: cert-manager' \
+            'spec:' \
+            '  secretName: qip-bootstrap-webhook-probe' \
+            '  dnsNames: [probe.qip-bootstrap.invalid]' \
+            '  issuerRef:' \
+            '    name: qip-bootstrap-probe' \
+            '    kind: Issuer' > "$probe"
+          answered=0
+          probe_error=""
           for _ in $(seq 60); do
-            bundle="$(kubectl get validatingwebhookconfiguration cert-manager-webhook \
-              -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>/dev/null || true)"
-            if [ -n "${bundle}" ]; then injected=1; break; fi
+            if probe_error="$(kubectl apply --dry-run=server -f "$probe" 2>&1)"; then
+              answered=1
+              break
+            fi
             sleep 5
           done
-          if [ "${injected}" -ne 1 ]; then
-            echo "::error title=cainjector never published a CA bundle::cert-manager's webhook configuration still carries no caBundle after five minutes, so anything cert-manager validates will fail with 'certificate signed by unknown authority'." >&2
+          rm -f "$probe"
+          if [ "${answered}" -ne 1 ]; then
+            echo "::error title=cert-manager's webhook never answered::a server-side dry-run of a Certificate still fails after five minutes, so every later apply that cert-manager validates will fail too." >&2
+            echo "${probe_error}" >&2
             kubectl -n cert-manager get pods -o wide >&2 || true
-            # Read objects, not logs. `kubectl logs` needs
-            # `container.pods.getLogs`, which this identity does not hold and
-            # is not being granted to make a diagnostic work — run 59's own
-            # diagnostic died on that Forbidden and told us nothing. What
-            # actually answers the question is whether the Secret the
-            # cainjector copies from exists at all.
-            echo "does the CA secret the cainjector reads exist?" >&2
-            kubectl -n cert-manager get secret cert-manager-webhook-ca \
-              -o jsonpath='{.metadata.name}{" has keys: "}{range $k, $v := .data}{$k}{" "}{end}{"\n"}' >&2 || \
-              echo "  no cert-manager-webhook-ca secret: the webhook has not generated its CA, so there is nothing to inject." >&2
-            kubectl -n cert-manager get events --sort-by=.lastTimestamp 2>&1 | tail -20 >&2 || true
+            # Read objects, not logs and not events: `kubectl logs` needs
+            # `container.pods.getLogs` and `get events` needs
+            # `container.events.list`, neither of which this identity holds.
+            # Run 59 and run 60 each lost their whole diagnostic to that, and
+            # `.claude/rules/domains/infrastructure.md` refuses widening a
+            # grant to make an error go away. Ask what this identity can
+            # already answer.
+            echo "the CA secret the webhook generates:" >&2
+            kubectl -n cert-manager get secret cert-manager-webhook-ca -o name >&2 \
+              || echo "  absent — the webhook has not generated its serving CA" >&2
+            echo "the injection annotation and the bundle on the webhook configuration:" >&2
+            kubectl get validatingwebhookconfiguration cert-manager-webhook \
+              -o jsonpath='{.metadata.annotations}' >&2 || true
+            echo "" >&2
+            kubectl get validatingwebhookconfiguration cert-manager-webhook \
+              -o jsonpath='{.webhooks[0].clientConfig.caBundle}' >&2 || true
+            echo "" >&2
             exit 1
           fi
-          echo "cert-manager's CA bundle is published; its webhook can be verified."
+          echo "cert-manager's webhook answers and its certificate verifies."
           # 2. Argo CD.
           apply "${gitops}/bootstrap/argocd/overlays/${ENVIRONMENT}"
           kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
