@@ -98,6 +98,7 @@ name = "qip-api"
 version = "0.1.0"
 dependencies = [
  "qip-agents",
+ "qip-ai",
  "qip-capital",
  "qip-compliance",
  "qip-contracts",
@@ -118,6 +119,7 @@ dependencies = [
  "qip-simulation-engine",
  "qip-storage",
  "qip-strategy",
+ "qip-training",
  "qip-transport",
  "qip-web",
  "serde",
