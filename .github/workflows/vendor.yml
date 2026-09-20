@@ -169,6 +169,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq trivy
 
       - name: mirror, verify, scan, attest
+        id: mirror
         env:
           BINAUTHZ_ATTESTOR: ${{ steps.identity.outputs.attestor }}
           BINAUTHZ_KEY_VERSION: ${{ steps.identity.outputs.key_version }}
@@ -330,17 +331,122 @@ jobs:
           # whose every line was refused also mirrors nothing and would
           # otherwise be reported as a parse regression — the wrong cause,
           # stated confidently.
-          if [ -n "${refused}" ]; then
-            echo "the CRITICAL gate refused:${refused}" >&2
-            echo "Each was copied into the registry and deliberately not attested, so Binary" >&2
-            echo "Authorization denies it wherever a manifest names it. Every other line was" >&2
-            echo "mirrored and attested normally, which is the whole reason a refusal is" >&2
-            echo "collected here rather than fatal at the first finding." >&2
-            echo "Resolve by removing the vulnerable bytes: a newer upstream digest, or a" >&2
-            echo "derived image this pipeline builds, scans and attests. Never an ignore file." >&2
-            exit 1
-          fi
+          # The refusal is *recorded* here and judged at the end of the job,
+          # after the derive step below has had its chance. A base image this
+          # pipeline patches is expected to fail this gate — that is why it is
+          # patched — and failing the job here would mean the fix could never
+          # run. Later is not softer: `the gate's verdict` refuses anything
+          # still unresolved, and runs on `always()` so a derive step that
+          # dies cannot take its base's judgement down with it.
+          echo "${refused}" > "${RUNNER_TEMP}/refused.txt"
           # An empty run means the list parsed to nothing, which is far more
           # likely a format regression than a decision to vendor nothing.
           [ "$mirrored" -gt 0 ] || { echo "no images were mirrored; the list parsed to nothing." >&2; exit 1; }
           echo "mirrored and attested ${mirrored} image(s)."
+          [ -z "${refused}" ] || echo "refused by the CRITICAL gate, pending the derive step:${refused}"
+
+      # Build the images whose fix is to remove the vulnerable bytes.
+      #
+      # An upstream image can carry a finding with no upstream remedy:
+      # CVE-2025-68121 lives in two third-party binaries Argo CD *downloads*
+      # rather than builds, so no Argo CD release fixes it and no newer
+      # kustomize exists to pin. The choice is then to suppress the finding
+      # or to remove the bytes. This does the second, and the derived image
+      # goes through the identical CRITICAL gate and the identical attestor,
+      # so a patch that did not work is refused exactly as its base was.
+      - name: derive, scan and attest the patched images
+        id: derive
+        if: always() && steps.mirror.outcome != 'skipped'
+        env:
+          BINAUTHZ_ATTESTOR: ${{ steps.identity.outputs.attestor }}
+          BINAUTHZ_KEY_VERSION: ${{ steps.identity.outputs.key_version }}
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          GCP_REGION: ${{ steps.identity.outputs.region }}
+        run: |
+          set -euo pipefail
+          prefix="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/qip-${TARGET_ENVIRONMENT}"
+          list=infrastructure/egress/derived-images.txt
+          : > "${RUNNER_TEMP}/resolved.txt"
+          [ -f "$list" ] || { echo "no derived images declared."; exit 0; }
+          resolved=""
+          while read -r base dockerfile dest tag; do
+            case "$base" in ""|\#*) continue ;; esac
+            # The base digest is read out of the reviewed list rather than
+            # typed here: one source of truth for what is being patched, so
+            # this file and that list cannot disagree.
+            base_digest="$(awk -v p="$base" '$2==p {print $1}' infrastructure/egress/vendored-images.txt | head -1)"
+            base_digest="${base_digest#*@}"
+            case "$base_digest" in
+              sha256:*) ;;
+              *) echo "$base names no reviewed digest in vendored-images.txt" >&2; exit 1 ;;
+            esac
+            base_ref="${prefix}/${base}@${base_digest}"
+            dest_ref="${prefix}/${dest}:${tag}"
+            echo "::group::building ${dest} from ${base}@${base_digest}"
+            docker build \
+              --build-arg "ARGOCD_BASE=${base_ref}" \
+              -f "$dockerfile" \
+              -t "$dest_ref" \
+              infrastructure/docker
+            echo "::endgroup::"
+
+            # The same two scans the mirror loop runs, same flags, same
+            # order. The blocking one is fatal on the spot here: a derived
+            # image that still carries a CRITICAL is not a fix, and there is
+            # nothing further downstream to catch it.
+            trivy image --severity CRITICAL,HIGH --exit-code 0 --ignore-unfixed "$dest_ref"
+            trivy image --severity CRITICAL --exit-code 1 --ignore-unfixed "$dest_ref"
+
+            docker push "$dest_ref"
+            digest="$(docker inspect --format='{{index .RepoDigests 0}}' "$dest_ref" | sed 's/.*@//')"
+            case "$digest" in
+              sha256:*) ;;
+              *) echo "could not read a digest back for ${dest_ref}" >&2; exit 1 ;;
+            esac
+            artifact="${prefix}/${dest}@${digest}"
+            existing=$(gcloud container binauthz attestations list \
+              --project "${GCP_PROJECT}" --attestor "${BINAUTHZ_ATTESTOR}" \
+              --attestor-project "${GCP_PROJECT}" --artifact-url "${artifact}" \
+              --format='value(name)')
+            if [ -n "${existing}" ]; then
+              echo "${artifact} is already attested."
+            elif ! signing="$(gcloud beta container binauthz attestations sign-and-create \
+                --project "${GCP_PROJECT}" --artifact-url "${artifact}" \
+                --attestor "${BINAUTHZ_ATTESTOR}" --attestor-project "${GCP_PROJECT}" \
+                --keyversion "${BINAUTHZ_KEY_VERSION}" 2>&1)"; then
+              case "${signing}" in
+                *"subject of a conflict"*|*"ALREADY_EXISTS"*)
+                  echo "${artifact} was attested concurrently." ;;
+                *) echo "${signing}" >&2; exit 1 ;;
+              esac
+            fi
+            resolved="${resolved} ${base}"
+            echo "::notice title=derived image ready::${dest} = ${digest}"
+            echo "PIN THIS DIGEST in the bootstrap overlay for ${dest}: ${digest}"
+          done < "$list"
+          echo "${resolved}" > "${RUNNER_TEMP}/resolved.txt"
+
+      # The gate's verdict, once every remedy has had its chance.
+      - name: the gate's verdict
+        if: always() && steps.mirror.outcome != 'skipped'
+        run: |
+          set -euo pipefail
+          refused="$(cat "${RUNNER_TEMP}/refused.txt" 2>/dev/null || echo '')"
+          resolved="$(cat "${RUNNER_TEMP}/resolved.txt" 2>/dev/null || echo '')"
+          still=""
+          for dest in ${refused}; do
+            case " ${resolved} " in
+              *" ${dest} "*) echo "${dest} failed the gate and was replaced by an attested derived image." ;;
+              *) still="${still} ${dest}" ;;
+            esac
+          done
+          if [ -n "${still}" ]; then
+            echo "the CRITICAL gate refused, with no remedy:${still}" >&2
+            echo "Each was copied into the registry and deliberately not attested, so Binary" >&2
+            echo "Authorization denies it wherever a manifest names it." >&2
+            echo "Resolve by removing the vulnerable bytes: a newer upstream digest, or an" >&2
+            echo "entry in infrastructure/egress/derived-images.txt so this pipeline builds," >&2
+            echo "scans and attests a patched image. Never an ignore file." >&2
+            exit 1
+          fi
+          echo "every vendored image is attested, or superseded by an attested derived image."

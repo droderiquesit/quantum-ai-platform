@@ -1,0 +1,35 @@
+# Images this pipeline PATCHES rather than mirrors byte-for-byte.
+#
+# `vendored-images.txt` is the adoption path for foreign code that runs here
+# unchanged: its promise is that the bytes reviewed are the bytes that run,
+# and that promise is why the digest is the unit of review. This file is the
+# narrow exception, and it is narrow on purpose.
+#
+# An upstream image can carry a finding with no upstream remedy. Argo CD's
+# is the case that forced this file: CVE-2025-68121 lives in two third-party
+# binaries Argo CD *downloads* rather than builds
+# (`hack/installers/install-kustomize.sh` fetches the prebuilt kustomize
+# release tarball), so no Argo CD release fixes it, and the Go module proxy
+# shows no kustomize newer than the v5.8.1 already in the image. Pinning
+# forward reaches nothing. The only remaining choices are to suppress the
+# finding or to remove the bytes, and this repository does not suppress.
+#
+# What is promised here is therefore different, and weaker, and stated
+# rather than implied: **the bytes that run are the reviewed base plus
+# exactly the change in the named Dockerfile, and the result is scanned by
+# the same gate and signed by the same attestor as everything else.** The
+# review surface is the base digest in `vendored-images.txt` plus the
+# Dockerfile in git. Nothing here is exempt from the CRITICAL gate — a
+# patched image that still carries a finding is refused exactly as its base
+# was, and `the gate's verdict` step refuses a base whose derived build did
+# not run at all.
+#
+# A line here does NOT remove its base from `vendored-images.txt`: the base
+# is still mirrored, still scanned, and still left unattested when it fails.
+# What the line adds is a remedy the gate will accept in its place.
+#
+# Format: <base-destination-path> <dockerfile> <destination-path> <tag>
+# The destination lands at <registry>/<destination-path>:<tag>, and the
+# digest the build produces is printed by the run for pinning into the
+# bootstrap overlay. The tag is for humans; the overlay names the digest.
+vendor/argocd infrastructure/docker/argocd-patched.Dockerfile vendor/argocd-patched v3.5.2-patched

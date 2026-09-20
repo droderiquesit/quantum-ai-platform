@@ -1977,17 +1977,31 @@ fn one_image_the_critical_gate_refuses_fails_the_run_and_starves_no_other_line()
         "vendor.yml no longer collects a refused image; the first finding ends the step again \
          and every later line in the list goes unmirrored"
     );
+    // The verdict is carried to a later step and taken there, after the
+    // derive step has had its chance: a base image this pipeline patches is
+    // *expected* to fail the gate, and failing the job the moment it does
+    // would mean the remedy could never run. Later is not softer — the
+    // verdict step refuses anything the derive step did not resolve, and it
+    // runs on `always()` so a derive step that dies cannot take the one
+    // check that would have refused its base down with it.
     assert!(
-        vendor.contains("if [ -n \"${refused}\" ]; then") && {
-            let tail = vendor
-                .split_once("if [ -n \"${refused}\" ]; then")
-                .unwrap()
-                .1;
-            let end = tail.find("\n          fi").unwrap_or(tail.len());
-            tail[..end].contains("exit 1")
-        },
-        "vendor.yml collects refusals and then does not fail the run on them, which is worse \
-         than the behaviour it replaced: the gate would report and admit"
+        vendor.contains("refused.txt") && vendor.contains("resolved.txt"),
+        "vendor.yml no longer carries the refusal list to a verdict step; refusals are \
+         collected and then nothing judges them"
+    );
+    let verdict = vendor
+        .split_once("- name: the gate's verdict")
+        .expect("vendor.yml has no verdict step, so a refusal is recorded and the run passes")
+        .1;
+    assert!(
+        verdict.contains("if: always()"),
+        "the verdict step does not run on `always()`; a failing derive step would skip the \
+         judgement of the base it was supposed to remedy"
+    );
+    assert!(
+        verdict.contains("exit 1"),
+        "the verdict step cannot fail the run, so an image that failed the CRITICAL gate with \
+         no remedy is reported and admitted — worse than the behaviour this replaced"
     );
 
     // A refused image must not be attested. The `continue` is what holds
