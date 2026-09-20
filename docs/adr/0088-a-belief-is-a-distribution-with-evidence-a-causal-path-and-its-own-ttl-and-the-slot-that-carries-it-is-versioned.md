@@ -8,7 +8,7 @@
 - **Date**: 2026-09-20
 - **Supersedes**: nothing. Corrects one premise the lane was briefed with:
   that a cell *consumes* the belief priors. It consumes the slot's
-  freshness; the values reach no cell (§1).
+  freshness; the values reach no cell (Context, fact 2).
 - **Related**: ADR 0005 (confidence is arithmetic, never assigned), ADR 0007
   (attribution), ADR 0063 (evidence posture and the reasoning engine's
   distinct handling of absence and conflict), ADR 0080 (the thirteenth
@@ -127,7 +127,7 @@ retired by a later record once no verifier depends on it. Concretely:
    so the order is part of the decision.
 5. `BeliefPriors` keeps being produced, unchanged, until every cell reads
    `Beliefs` for freshness; a further record retires it. Two slots carrying
-   overlapping facts is a cost (§4) accepted for the length of the rollout
+   overlapping facts is a cost (under "What it costs") accepted for the length of the rollout
    and no longer.
 
 ### 3. The three owners, and the fourth party
@@ -185,7 +185,7 @@ retired by a later record once no verifier depends on it. Concretely:
   cell and the cell's sizing is a multiplier on freshness; a mean on the
   wire is a second source of the same fact the priors already carry.
 
-## Reversal conditions
+## What would make this wrong
 
 1. If a cell begins to read belief values rather than freshness, the
    consumer half of this record becomes a sizing decision and needs its own
@@ -194,7 +194,7 @@ retired by a later record once no verifier depends on it. Concretely:
    `Beta` derivation is replaced by the engine's own form under a new
    `BeliefDistribution` arm, by amendment.
 3. If the payload contract adopts a per-slot version field in place of the
-   item-per-change rule, §2 is superseded by that record.
+   item-per-change rule, the versioning rule above is superseded by that record.
 
 ## Evidence
 

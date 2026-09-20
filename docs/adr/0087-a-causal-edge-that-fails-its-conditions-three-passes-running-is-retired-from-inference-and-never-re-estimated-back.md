@@ -63,7 +63,7 @@ which can still be a single gap or corporate action in the tape. Three is a
 run: the test has refused the claim on every pass since the run began, and a
 hold in between would have reset it. The number that would make consecutive
 results independent is the window length, and a run that long would outlive
-most regimes; that is the reversal condition in §6, not a reason to pick it.
+most regimes; that is the first condition under "What would make this wrong", not a reason to pick it.
 
 Per edge, one `FailureRun { regime, failures, began }`. A failure recorded
 under the run's regime extends it; a failure under any other regime starts a
@@ -83,7 +83,7 @@ every other cycle would retire on its third miss.
 Failures are recorded pair-wise, for every mechanism the pair carries; that
 was the prior lane's decision and retirement follows the record rather than
 adding a second rule. A hand-asserted supply-chain claim the precedence test
-refuses three passes running is retired. §5 names the cost.
+refuses three passes running is retired. "What it costs" names the cost.
 
 ### 2. What retirement does
 
@@ -136,7 +136,7 @@ refuses three passes running is retired. §5 names the cost.
   states the asymmetry that decides it: a wrong edge kept costs a
   suboptimal allocation, a wrong edge released could cost an unbounded
   position. Each whole-graph reader's owner decides whether and how to honour
-  `is_retired_by`; the digest's owner in particular is named in §6.
+  `is_retired_by`; the digest's owner in particular is named under "What would make this wrong".
 - **It does not change `failing_their_regime`.** A retired edge is the
   most-failing kind and stays in that count, which is what the causal review
   prints. No separate retired figure reaches the stage detail without a
@@ -179,7 +179,7 @@ refuses three passes running is retired. §5 names the cost.
   inside the horizon"; retirement is "evidence against". Two facts, two
   marks.
 
-## Reversal conditions
+## What would make this wrong
 
 1. When the precedence pass records the window it tested over, the count
    becomes failures over non-overlapping windows, and the constant's doc
