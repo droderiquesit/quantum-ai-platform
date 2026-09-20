@@ -14,29 +14,39 @@
 //! exists to explain.
 //!
 //! So retention is now always bounded, and what happens at the ceiling depends
-//! on what the record is:
+//! on what the record is — which every record states through its topic's
+//! declared §22.1 retention class, [`Topic::retention_class`] (ADR 0089,
+//! blueprint §56.4 rule 33). Until that ADR the tier was derived from the
+//! topic's *group* with two topics named by exception, so what the log kept
+//! was a fact about which stage of the cycle a topic belonged to rather
+//! than a fact about the record; now the log reads the class at both seams
+//! (`make_room` and `roll`) and nothing else:
 //!
-//! 1. **Replaceable observations go first.** A record whose
-//!    [`Topic::is_lossy_tolerable`] is true — ticks, quotes, book snapshots,
-//!    computed features — is replaced by the next one within milliseconds.
-//!    These are evicted oldest-first and counted in
-//!    [`EventLog::evicted_replaceable`].
+//! 1. **Replaceable records go first.** A record whose class is replaceable
+//!    ([`crate::retention::Retention::is_replaceable`]: transient ticks,
+//!    quotes and book deltas; derived state such as computed features and
+//!    the world model's change stream) is replaced by the next one within
+//!    milliseconds or rebuilt from what produced it. These are evicted
+//!    oldest-first and counted in [`EventLog::evicted_replaceable`].
 //! 2. **Then other observations, reluctantly.** Trades, bars, corporate
-//!    actions, news and alternative data are not replaceable in the same
-//!    breath, but they are *observations of the outside world*: re-readable
-//!    from the source, and still on disk for a file-backed log, because the
-//!    file is the durable copy and this index is a working set. They are
-//!    evicted only after every replaceable record has already gone, and
-//!    counted separately in [`EventLog::evicted_observations`] — a non-zero
-//!    count is the signal that retention is too small for the traffic, which
-//!    the first counter alone would not distinguish.
+//!    actions, news and alternative data — the referenced and series classes
+//!    — are not replaceable in the same breath, but they are *observations
+//!    of the outside world*: re-readable from the source, and still on disk
+//!    for a file-backed log, because the file is the durable copy and this
+//!    index is a working set. They are evicted only after every replaceable
+//!    record has already gone, and counted separately in
+//!    [`EventLog::evicted_observations`] — a non-zero count is the signal
+//!    that retention is too small for the traffic, which the first counter
+//!    alone would not distinguish.
 //! 3. **The audit trail is never evicted; the append is refused instead.**
-//!    A record whose [`Topic::requires_permanent_retention`] is true — reason,
-//!    decide, act, learn, the kill switch and autonomy changes — is why this
-//!    log exists. Dropping one to make room for the next would leave the
-//!    platform acting with no account of what it did, which is worse than
-//!    stopping. When nothing evictable remains, [`EventLog::append`] returns a
-//!    refusal naming the fix and writes nothing, in memory or to the file.
+//!    A record whose class is permanent
+//!    ([`crate::retention::Retention::is_permanent`]: every verdict, order,
+//!    fill, hypothesis, lesson, and the platform's own lifecycle and control
+//!    record) is why this log exists. Dropping one to make room for the next
+//!    would leave the platform acting with no account of what it did, which
+//!    is worse than stopping. When nothing evictable remains,
+//!    [`EventLog::append`] returns a refusal naming the fix and the incoming
+//!    record's class, and writes nothing, in memory or to the file.
 //!
 //! # What this does not fix
 //!
@@ -72,7 +82,8 @@
 //! platform kept depended on how busy it had been rather than on any stated
 //! retention, and the blueprint's stated retention for event-anchored book
 //! state is ninety days rolling (§54.2, §22.1). So a second bound can now run
-//! beside the first: a replaceable record ([`Topic::is_lossy_tolerable`])
+//! beside the first: a record whose declared class is replaceable
+//! ([`Topic::retention_class`]) and which is
 //! older than [`EventLog::snapshot_window`] behind the newest instant the log
 //! has recorded is rolled off the index and counted in
 //! [`EventLog::rolled_by_age`]. Four things about its shape are deliberate.
@@ -735,26 +746,30 @@ impl EventLog {
             // Two passes rather than one: every replaceable record must be gone
             // before an observation is touched, so the counters mean what they
             // say and the cheap loss is always taken first.
+            // The victim is chosen by each record's declared retention class
+            // (ADR 0089) and by nothing else: the replaceable tier first,
+            // then any class that is not permanent, then a refusal.
             let victim = self
                 .records
                 .iter()
-                .position(|r| r.event.topic.is_lossy_tolerable())
+                .position(|r| r.event.topic.retention_class().is_replaceable())
                 .map(|index| (index, true))
                 .or_else(|| {
                     self.records
                         .iter()
-                        .position(|r| !r.event.topic.requires_permanent_retention())
+                        .position(|r| !r.event.topic.retention_class().is_permanent())
                         .map(|index| (index, false))
                 });
             let Some((index, replaceable)) = victim else {
                 self.appends_refused = self.appends_refused.saturating_add(1);
                 return Err(Error::guard(format!(
-                    "event log is full at {} records and every retained record requires permanent \
-                     retention, so none may be dropped to admit a {} record; archive the log and \
-                     start a new one, or open it with a larger capacity — this log will not \
-                     discard an audit record to keep running",
+                    "event log is full at {} records and every retained record's class requires \
+                     permanent retention, so none may be dropped to admit a {} record (class {}); \
+                     archive the log and start a new one, or open it with a larger capacity — \
+                     this log will not discard an audit record to keep running",
                     self.capacity,
-                    incoming.name()
+                    incoming.name(),
+                    incoming.retention_class().as_str()
                 )));
             };
             self.records.remove(index);
@@ -800,13 +815,14 @@ impl EventLog {
     /// Drop every replaceable record recorded more than the window before
     /// `newest`. Nothing else is a candidate: an observation is the fallback
     /// series' business and a permanent record is the audit trail's, and
-    /// this filters on the same predicate the pressure eviction spends
+    /// this filters on the same declared class the pressure eviction spends
     /// first so the two bounds agree about what is cheap to lose.
     fn roll(&mut self, window: Duration, newest: Timestamp) {
         let cutoff = newest.saturating_sub(window);
         let before = self.records.len();
         self.records.retain(|record| {
-            !record.event.topic.is_lossy_tolerable() || record.event.recorded_at >= cutoff
+            !record.event.topic.retention_class().is_replaceable()
+                || record.event.recorded_at >= cutoff
         });
         let rolled = before.saturating_sub(self.records.len());
         if rolled == 0 {

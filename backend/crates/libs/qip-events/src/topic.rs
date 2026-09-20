@@ -5,6 +5,7 @@
 //! it — the point being that a new event cannot be introduced without the
 //! routing, documentation and observability for it being considered.
 
+use crate::retention::RetentionClass;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -504,23 +505,158 @@ impl Topic {
         }
     }
 
+    /// The §22.1 retention class every record on this topic is filed under
+    /// (ADR 0089, blueprint §56.4 rule 33).
+    ///
+    /// Exhaustive on purpose and with no wildcard arm: a topic added without
+    /// a row here does not compile, which is the rule's "data with no class
+    /// does not get written" held by the type system rather than by a
+    /// reviewer. The event log's two retention seams read this and nothing
+    /// else — see `qip_events::log` — and [`Self::is_lossy_tolerable`] and
+    /// [`Self::requires_permanent_retention`] are derived from it, so what a
+    /// record *is* is stated once.
+    ///
+    /// Every assignment is the row of §22.1 whose "what" column names the
+    /// thing the topic carries, with three that are readings rather than
+    /// quotations and are argued in ADR 0089: the Understand group's
+    /// per-resolution records are *derived state* (the world model is the
+    /// semantic memory the table says is kept indefinitely; the log's
+    /// record of an update to it is rebuilt from the observations that
+    /// produced it, and a log that kept every resolution for ever would
+    /// refuse the next fill to keep one); the Simulate group and a data
+    /// quality failure are *compact derived* series; and every System
+    /// lifecycle fact is *irreplaceable*, because only this platform has
+    /// them — which makes the kill switch's release as permanent as its
+    /// engagement, where the group-derived tier kept one and dropped the
+    /// other.
+    pub const fn retention_class(&self) -> RetentionClass {
+        match self {
+            // Raw ticks, book deltas, quote updates: a bounded ring, then
+            // gone. The next one arrives in milliseconds.
+            Self::MarketTick | Self::MarketQuote | Self::MarketOrderBook => {
+                RetentionClass::Transient
+            }
+            // A bar is the fallback series' business: three years behind
+            // the newest, for an instrument in an active universe.
+            Self::MarketBar => RetentionClass::FallbackSeries,
+            // External market history, filings, registries, and the
+            // platform's own manifest of what it fetched: re-readable from
+            // the source, referenced by content hash, never copied.
+            Self::MarketTrade
+            | Self::MarketCorporateAction
+            | Self::FundamentalUpdated
+            | Self::MacroUpdated
+            | Self::NewsReceived
+            | Self::AlternativeDataReceived
+            | Self::ReferenceDataUpdated
+            | Self::DataReferenceRecorded => RetentionClass::Referenced,
+            // A validation failure is a per-source count, kept as a series.
+            Self::DataQualityFailed => RetentionClass::CompactDerived,
+            // Features, moments, and the world model's change stream: the
+            // structure holding the state is bounded in memory, and the
+            // log's copy is rebuilt from the observations that produced it.
+            Self::EntityUpdated
+            | Self::EntityResolved
+            | Self::RelationshipUpdated
+            | Self::WorldModelUpdated
+            | Self::FeatureComputed => RetentionClass::DerivedState,
+            // Signals, anomalies, opportunities: compressed state with an
+            // outcome, indexed for retrieval, kept indefinitely.
+            Self::SignalGenerated
+            | Self::AnomalyDetected
+            | Self::RegimeChanged
+            | Self::OpportunityDetected
+            | Self::OpportunityRanked => RetentionClass::Episodic,
+            // Hypotheses, evidence, challenges, verdicts on a thesis: beliefs
+            // and extracted facts, kept indefinitely.
+            Self::InvestigationStarted
+            | Self::HypothesisCreated
+            | Self::EvidenceAttached
+            | Self::HypothesisChallenged
+            | Self::HypothesisApproved
+            | Self::HypothesisRejected
+            | Self::ThesisInvalidated
+            | Self::AgentRunCompleted => RetentionClass::Semantic,
+            // Solver deltas and counterfactual scores: series, not
+            // observations.
+            Self::SimulationStarted
+            | Self::SimulationCompleted
+            | Self::ScenarioEvaluated
+            | Self::StrategyCreated => RetentionClass::CompactDerived,
+            // Verdicts, and the policy a region was given: only this
+            // platform has these, permanently.
+            Self::OptimizationRequested
+            | Self::OptimizationCompleted
+            | Self::SolverBenchmarked
+            | Self::PortfolioProposed
+            | Self::RiskEvaluated
+            | Self::RiskApproved
+            | Self::PolicyDistributed
+            | Self::RiskRejected
+            | Self::ComplianceEvaluated
+            | Self::RiskRuleRecalibration
+            | Self::VenueWithdrawn
+            | Self::VenueReinstated => RetentionClass::Irreplaceable,
+            // Own orders, fills, positions, reconciliations, a region going
+            // dark: permanently.
+            Self::OrderProposed
+            | Self::OrderApproved
+            | Self::OrderSubmitted
+            | Self::OrderAmended
+            | Self::OrderCancelled
+            | Self::OrderRejected
+            | Self::OrderFilled
+            | Self::PositionUpdated
+            | Self::PnlUpdated
+            | Self::ReconciliationCompleted
+            | Self::RegionDark
+            | Self::RegionLit => RetentionClass::Irreplaceable,
+            // Outcomes, attributions, lessons, a source's revision, a
+            // campaign's close: compressed state with its outcome, indexed
+            // for retrieval, kept indefinitely.
+            Self::OutcomeObserved
+            | Self::AttributionCompleted
+            | Self::HypothesisScored
+            | Self::ModelEvaluated
+            | Self::LearningCompleted
+            | Self::LessonRecorded
+            | Self::SourceRevisionDetected
+            | Self::ResearchCampaignClosed
+            | Self::ResearchCampaignFlagged
+            | Self::RiskRuleDefended
+            | Self::RiskRuleDormant
+            | Self::SizingReviewed
+            | Self::FamilyAllocationReviewed => RetentionClass::Episodic,
+            // The platform's own lifecycle and control record: only this
+            // platform has these, permanently.
+            Self::ServiceStarted
+            | Self::ServiceStopped
+            | Self::KillSwitchEngaged
+            | Self::KillSwitchReleased
+            | Self::AutonomyLevelChanged
+            | Self::BudgetExhausted
+            | Self::SystemAlert => RetentionClass::Irreplaceable,
+        }
+    }
+
     /// Whether losing an event on this topic is acceptable.
     ///
     /// Market ticks are replaceable — the next one arrives in milliseconds.
     /// An order fill is not: losing one corrupts the position record.
-    pub fn is_lossy_tolerable(&self) -> bool {
-        matches!(
-            self,
-            Self::MarketTick | Self::MarketQuote | Self::MarketOrderBook | Self::FeatureComputed
-        )
+    /// Derived from [`Self::retention_class`] rather than listed beside it,
+    /// so the streaming router, the mesh and the log agree about which
+    /// records are cheap to lose because they read one declaration.
+    pub const fn is_lossy_tolerable(&self) -> bool {
+        self.retention_class().is_replaceable()
     }
 
     /// Whether the topic must be retained indefinitely for audit.
-    pub fn requires_permanent_retention(&self) -> bool {
-        matches!(
-            self.group(),
-            TopicGroup::Reason | TopicGroup::Decide | TopicGroup::Act | TopicGroup::Learn
-        ) || matches!(self, Self::KillSwitchEngaged | Self::AutonomyLevelChanged)
+    ///
+    /// Derived from [`Self::retention_class`]: until ADR 0089 this was
+    /// computed from [`Self::group`] with two exceptions named by hand, and
+    /// the kill switch's engagement was permanent while its release was not.
+    pub const fn requires_permanent_retention(&self) -> bool {
+        self.retention_class().is_permanent()
     }
 }
 
