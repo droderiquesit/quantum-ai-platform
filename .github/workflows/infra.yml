@@ -132,7 +132,7 @@ on:
           - test
           - stage
       action:
-        description: "plan (read-only), up (apply), suspend (destroy the control-plane cluster and nothing else — the one resource that bills while idle; a later up recreates it), down (destroy the execution nodes; no environment declares any, so it is a no-op today), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name)"
+        description: "plan (read-only), up (apply), suspend (destroy the control-plane cluster and nothing else — the one resource that bills while idle; a later up recreates it), down (destroy the execution nodes; no environment declares any, so it is a no-op today), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name), force-unlock (release a state lock a cancelled run left behind; requires its id)"
         required: true
         default: "plan"
         type: choice
@@ -142,6 +142,12 @@ on:
           - suspend
           - down
           - teardown
+          - force-unlock
+      lock_id:
+        description: "Only for force-unlock: the lock ID Terraform printed. Required, and deliberately not defaulted — see the step."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -456,6 +462,40 @@ jobs:
           set -euo pipefail
           files="-var-file=../environments/${ENVIRONMENT}/terraform.tfvars"
           echo "files=$files" >> "$GITHUB_OUTPUT"
+
+      # Release a state lock a cancelled run left behind.
+      #
+      # Cancelling a run mid-apply orphans the lock: Terraform is killed
+      # before it can release, and every later run then dies in `init` or
+      # `plan` on a 412 from the lock object. Run 55 did exactly this — I
+      # cancelled a destroy 34 seconds in, and run 56 could not reclaim,
+      # plan or apply anything afterwards.
+      #
+      # **The lock id is required and deliberately has no default.** Terraform
+      # guards `force-unlock` the same way, for the same reason: a lock is
+      # sometimes held by an apply that is genuinely still running, and
+      # breaking that one lets two applies write the same state. Naming the
+      # id means reading the error that printed it, which means looking at
+      # what holds the lock before breaking it. An unlock that takes no
+      # argument is an unlock nobody had to think about.
+      - name: force-unlock
+        if: inputs.action == 'force-unlock'
+        env:
+          LOCK_ID: ${{ inputs.lock_id }}
+        run: |
+          set -euo pipefail
+          # Character set before the value reaches a command line. A lock id
+          # is a decimal integer; anything else is either a mistake or an
+          # injection, and both are refused here rather than interpreted.
+          case "${LOCK_ID}" in
+            "") echo "force-unlock needs the lock id from the error that reported it." >&2
+                echo "Read it from the failing run: 'Lock Info:' names ID, Who, Operation and Created." >&2
+                echo "Check that the operation is not one still running before you break its lock." >&2
+                exit 1 ;;
+            *[!0-9]*) echo "lock id '${LOCK_ID}' is not a decimal integer." >&2; exit 1 ;;
+          esac
+          terraform -chdir=infrastructure/terraform force-unlock -force "${LOCK_ID}"
+          echo "released ${LOCK_ID}; the next apply can acquire the lock."
 
       - name: plan
         if: inputs.action == 'plan'
