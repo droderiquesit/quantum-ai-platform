@@ -881,6 +881,30 @@ jobs:
           # A poll rather than `kubectl wait`, because the condition is "this
           # field is non-empty" and `--for=jsonpath=` can only match an exact
           # value.
+          # Make the cainjector re-read the world before waiting on it.
+          #
+          # The webhook configurations carry
+          # `cert-manager.io/inject-ca-from-secret: cert-manager/cert-manager-webhook-ca`,
+          # the webhook pod generates that Secret itself
+          # (`--dynamic-serving-ca-secret-name`), and the cainjector copies
+          # the CA out of it into the two configurations.
+          #
+          # The step above applies those configurations with `--server-side
+          # --force-conflicts`, and the vendored manifest declares no
+          # `caBundle` — so each apply takes ownership of that field and
+          # *removes* whatever the cainjector put there. The cainjector
+          # watches the **Secret**, not the configuration, so a caBundle
+          # deleted underneath it produces no event it reacts to, and it
+          # waits for its own resync. Runs 58 and 59 both sat there: three
+          # healthy pods, an empty caBundle, and nothing that was going to
+          # change either.
+          #
+          # A restart is the smallest thing that makes it reconcile now.
+          # On a first install it costs one pod cycle and changes nothing;
+          # on a re-apply it is the difference between working and hanging.
+          kubectl -n cert-manager rollout restart deployment/cert-manager-cainjector
+          kubectl -n cert-manager rollout status deployment/cert-manager-cainjector --timeout=300s
+
           echo "waiting for the cainjector to publish cert-manager's CA bundle..."
           injected=0
           for _ in $(seq 60); do
@@ -892,7 +916,17 @@ jobs:
           if [ "${injected}" -ne 1 ]; then
             echo "::error title=cainjector never published a CA bundle::cert-manager's webhook configuration still carries no caBundle after five minutes, so anything cert-manager validates will fail with 'certificate signed by unknown authority'." >&2
             kubectl -n cert-manager get pods -o wide >&2 || true
-            kubectl -n cert-manager logs deployment/cert-manager-cainjector --tail=30 >&2 || true
+            # Read objects, not logs. `kubectl logs` needs
+            # `container.pods.getLogs`, which this identity does not hold and
+            # is not being granted to make a diagnostic work — run 59's own
+            # diagnostic died on that Forbidden and told us nothing. What
+            # actually answers the question is whether the Secret the
+            # cainjector copies from exists at all.
+            echo "does the CA secret the cainjector reads exist?" >&2
+            kubectl -n cert-manager get secret cert-manager-webhook-ca \
+              -o jsonpath='{.metadata.name}{" has keys: "}{range $k, $v := .data}{$k}{" "}{end}{"\n"}' >&2 || \
+              echo "  no cert-manager-webhook-ca secret: the webhook has not generated its CA, so there is nothing to inject." >&2
+            kubectl -n cert-manager get events --sort-by=.lastTimestamp 2>&1 | tail -20 >&2 || true
             exit 1
           fi
           echo "cert-manager's CA bundle is published; its webhook can be verified."
