@@ -2,10 +2,11 @@
 #
 # The three grants in main.tf used to carry
 # `count = var.enable_vertex_ai && var.training_service_account != "" ? 1 : 0`.
-# That expression is unresolvable when the plan is saved — the account is a
-# Cloud Run service account email, unknown until apply — so `plan -out` failed
-# on all three and `infra.yml`'s `up` never reached an apply. The gate is now
-# `var.enable_vertex_ai` alone, and the empty-account half is a precondition.
+# The account is a Cloud Run service account email, which `terraform import`
+# cannot know — it evaluates the configuration with no plan behind it — so
+# `infra.yml`'s `up` failed on all three while reclaiming what the teardown
+# left standing, before any apply. The gate is now `var.enable_vertex_ai`
+# alone, and the empty-account half is a precondition.
 #
 # A precondition is not visible to `terraform validate` and not visible to a
 # Rust test reading the HCL: both see the text, and text cannot tell a rule

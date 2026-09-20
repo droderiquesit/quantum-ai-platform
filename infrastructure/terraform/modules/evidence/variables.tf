@@ -63,10 +63,12 @@ variable "writer_service_accounts" {
 
     An empty map is no writers, not all of them.
 
-    A map rather than a list of emails because an email here is a Cloud Run
-    service account that does not exist until the apply that creates it, and a
-    `for_each` key has to be known when the plan is saved. The component name
-    is known from the configuration alone; the email is the value under it.
+    A map rather than a list of emails because an email here belongs to a
+    Cloud Run service account that does not exist yet, and `terraform import`
+    — which `infra.yml` runs before every `up` — evaluates this configuration
+    with no plan behind it and so cannot name an instance key made of one. The
+    component name is known from the configuration alone; the email is the
+    value under it.
   EOT
 
   type    = map(string)

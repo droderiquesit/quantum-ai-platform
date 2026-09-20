@@ -137,16 +137,24 @@ resource "google_vertex_ai_endpoint" "serving" {
 # # Why the empty-account guard is a precondition and not part of `count`
 #
 # This read `count = var.enable_vertex_ai && var.training_service_account != ""`
-# until 2026-09-20, and that expression cannot be resolved when a plan is
-# saved. The account arrives as `module.cloud_run["deepbrain"].service_account_email`,
-# which is unknown until apply; an unknown operand makes the whole `&&`
-# unknown, because HCL's logical operators evaluate both sides rather than
-# short-circuiting on a known `false`. A bare `terraform plan` tolerates that
-# and `terraform plan -out=FILE` does not, so `infra.yml`'s reclaim step —
-# the one that puts the undeletable keys and buckets back into state before an
-# apply can collide with them — failed here before it could plan anything.
-# Gating on `var.enable_vertex_ai` alone is known at plan time and is what
-# every other resource in this module already does.
+# until 2026-09-20. The account arrives as
+# `module.cloud_run["deepbrain"].service_account_email`, and whether that is
+# known depends on which command is running. A plan knows it — the provider
+# derives a service account's email from its id and project — so `terraform
+# plan` was fine. `terraform import` has no plan behind it: a resource not yet
+# in state has no attributes at all, the email is unknown, and the whole `&&`
+# goes unknown with it, because HCL's logical operators evaluate both sides
+# rather than short-circuiting on a known `false`. That is why this refused in
+# an environment carrying `enable_vertex_ai = false`, where the left operand
+# alone decides the answer.
+#
+# It is not an exotic command. `infra.yml`'s `up` begins by reclaiming what
+# the teardown could not delete — the key ring, the nine keys, the five
+# buckets — and reclaiming means `terraform import`, once per object, up to
+# four rounds. Run 35519136534 saved a plan reading `Plan: 185 to add` and
+# then failed on its first import, on these three resources and eight others.
+# Gating on `var.enable_vertex_ai` alone reads only a variable, which every
+# command knows, and is what every other resource in this module already does.
 #
 # The empty-account guarantee is not dropped; it moves to a precondition,
 # evaluated at apply when the value is known. It is strictly stronger there.

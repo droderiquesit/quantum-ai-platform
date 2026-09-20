@@ -547,10 +547,12 @@ module "evidence" {
   # whoever is asking. Deliberately two identities: the component that writes
   # the record and the component that shows it should not be the same one.
   #
-  # Keyed by component rather than passed as a list of emails: a service
-  # account email is unknown until the apply that creates it, and a `for_each`
-  # over unknown values cannot be saved to a plan file. The key names who is
-  # being granted, which is also the more readable thing to find in a diff.
+  # Keyed by component rather than passed as a list of emails: these accounts
+  # do not exist yet, and `terraform import` — which `infra.yml` runs against
+  # this configuration before every `up` — evaluates it with no plan behind
+  # it, so an instance key made of one is a key it cannot enumerate. The
+  # component name is the key instead, which is also the more readable thing
+  # to find in a diff.
   #
   # Neither map may grow to include a role that can delete. See the module.
   writer_service_accounts = { deepbrain = module.cloud_run["deepbrain"].service_account_email }

@@ -109,13 +109,20 @@ resource "google_storage_bucket" "evidence" {
 # guarantee.
 #
 # Keyed by component, not by email. `for_each = toset(var.writer_service_accounts)`
-# made every email an instance key, and a key has to be known when the plan is
-# saved. These emails are `module.cloud_run[...].service_account_email` and are
-# unknown until apply, so `terraform plan -out=FILE` refused this resource
-# outright and `infra.yml`'s `up` could not reach an apply at all — the remedy
-# Terraform's own error names is a map whose keys are static in the
-# configuration and whose values carry the apply-time result. The component
-# name is that static key; the email stays where it was, in `each.value`.
+# made every email an instance key, and these emails are
+# `module.cloud_run[...].service_account_email`. A plan can key on those — the
+# provider derives the email from the account's id and project, so run
+# 35519136534's plan named this binding
+# `writers["qip-deepbrain-dev@…"]` and saved. `terraform import` cannot:
+# it evaluates the configuration with no plan behind it, a resource not yet in
+# state has no attributes, and an instance key nobody can enumerate is
+# refused. `infra.yml`'s `up` reclaims what the teardown could not delete by
+# importing it, so the step that has to run before any apply died here.
+#
+# The remedy is the one Terraform's own error names: a map whose keys are
+# static in the configuration and whose values carry the apply-time result.
+# The component name is that static key; the email stays where it was, in
+# `each.value`.
 resource "google_storage_bucket_iam_member" "writers" {
   for_each = var.writer_service_accounts
 
