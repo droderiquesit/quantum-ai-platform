@@ -98,14 +98,73 @@ passing results" — refuses twice.
 
 ## Decision
 
-**`gitops_enabled = false` in `infrastructure/environments/dev/terraform.tfvars`
-for as long as no published Argo CD image passes the gate.**
+**A new `suspend` action on `infra.yml` destroys the control-plane cluster
+and nothing else, for as long as no published Argo CD image passes the gate.**
 
-The cluster is destroyed; everything else in dev stands. The manifests, the
-overlays, the bootstrap step, the vendored digests and ADR 0036 are
-untouched, and the bootstrap step already exits zero and says so when the
-flag is not `true`, so an `up` against a suspended environment is a clean
-success rather than a skipped failure.
+```
+terraform destroy -target='module.gitops_control_plane[0].google_container_cluster.control_plane'
+```
+
+Everything else in dev stands, and everything else in that module stands too:
+the etcd key, the three controller identities, the registry DNS zones. The
+manifests, the overlays, the bootstrap step, the vendored digests and ADR 0036
+are untouched.
+
+### The first version of this decision was `gitops_enabled = false`, and it was refused by a guard that is right
+
+This record said that, it was committed, and run 54 aborted at plan time
+(<https://github.com/droderiquesit/quantum-ai-platform/actions/runs/35531628713>,
+`failure`, two minutes — too fast to have destroyed anything):
+
+```
+│ Error: Instance cannot be destroyed
+│   on modules/gitops-control-plane/main.tf line 103:
+│  103: resource "google_kms_crypto_key" "etcd" {
+│ Resource module.gitops_control_plane[0].google_kms_crypto_key.etcd has
+│ lifecycle.prevent_destroy set, but the plan calls for this resource to be
+│ destroyed.
+```
+
+Closing the flag takes the module's `count` to zero, and that plans a destroy
+of every resource in it — including a KMS key whose own comment says why it
+may not go: "Destroying the key makes every Secret in etcd unreadable at once,
+and the failure appears on the next control-plane restart rather than now."
+
+**The guard is not wrong, it is merely unable to say "unless the cluster is
+going too".** `prevent_destroy` is a property of one resource and cannot read
+the rest of the plan. So it fires on a plan where the etcd it protects is
+being destroyed anyway, which is a false positive — and a false positive on a
+control like this is the price of the control, not a reason to remove it. It
+is not removed, not made an input, and not routed around with a `-target`
+that would smuggle the key out of the plan's scope.
+
+It is worth writing down that the first attempt was wrong, because the shape
+of the error is instructive: a switch that reads as "turn the feature off"
+was in fact "delete everything the feature ever touched", and the only thing
+that noticed was a lifecycle rule on one resource three files down.
+
+### What a durable suspension needs, and why it is not in this commit
+
+The etcd key does not belong inside a module gated on whether a cluster
+exists. A KMS key cannot really be deleted — destroying one schedules its
+versions and leaves the name claimed for ever, which is the whole argument of
+`scripts/terraform-undeletable.py` — so it outlives the cluster by nature and
+should outlive it in the configuration too. Moving it to the root beside the
+ring, with a `moved` block so the existing key is not destroyed and recreated,
+would let `gitops_enabled = false` close cleanly and make the suspension
+declarative.
+
+That is a module interface change (`etcd_key_id` in, the resource and its
+output out, the `database_encryption` reference and the service-agent grant
+repointed) plus a `moved` block that has to be exactly right against live
+state, and it is named here rather than done in a hurry at the end of a long
+session. Until it lands, the suspension is an act rather than a posture.
+
+**The cost of that, stated plainly: a later plain `up` recreates the cluster
+and the meter restarts**, because the configuration still says there should be
+one. That is the same contract `down` and `up` already have for the execution
+nodes. The tfvars comment beside `gitops_enabled` and the `suspend` step's own
+comment both say it, so the next reader meets the caveat wherever they arrive.
 
 **Why this is not a cost decision dressed as a security one, and not the
 reverse.** Two independent facts point the same way and either alone would
@@ -126,23 +185,28 @@ be weaker:
 Neither fact makes the other true. Together they mean the suspension costs
 nothing but the ten minutes an `up` takes to rebuild.
 
-**Why the flag and not a teardown.** `teardown` is the owner's act by name
-(ADR 0040 decision 13) and takes resources out of state that no `up` can
-put back without the reclaim step. One tfvars word destroys exactly the
-module that bills and leaves the rest of the apply untouched.
+**Why a targeted destroy and not a teardown.** `teardown` is the owner's act
+by name (ADR 0040 decision 13) and takes resources out of state that no `up`
+can put back without the reclaim step. One target destroys exactly the
+resource that bills and leaves everything else in state, where the next `up`
+finds it.
 
 **The `deletion_protection` half, and why it is two applies.** The literal
 in `modules/gitops-control-plane/main.tf` is `true`, and the provider reads
 it *from state* at delete time — the module's own comment records that a
 commit on 2026-09-13 got this wrong for about an hour. So the sequence is:
-flip the literal to `false` with `gitops_enabled` still `true` and apply,
-which is an in-place update that writes `false` into state; then set
-`gitops_enabled = false` and apply, which destroys; then restore the
-literal to `true`, so the cluster the next `up` creates is protected from
-the first minute. The flag **does not become a module input**. An input is
-a switch a later tfvars can throw with nobody deciding anything, which is
-what `a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read` refuses
-in `modules/cloudrun`; a literal flipped and restored leaves no permanent
+flip the literal to `false` and apply, which is an in-place update that
+writes `false` into state; then `suspend`, which destroys the cluster; then
+restore the literal to `true`, so the cluster the next `up` creates is
+protected from its first minute. Run 53's `up` step did the first half and
+its log carries the evidence —
+`~ deletion_protection = true -> false` and
+`Apply complete! Resources: 0 added, 1 changed, 0 destroyed`
+(<https://github.com/droderiquesit/quantum-ai-platform/actions/runs/35530874039>).
+The flag **does not become a module input**. An input is a switch a later
+tfvars can throw with nobody deciding anything, which is what
+`a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read` refuses in
+`modules/cloudrun`; a literal flipped and restored leaves no permanent
 switch behind.
 
 ## What it costs
@@ -162,14 +226,20 @@ switch behind.
 * **The first `up` after reinstatement is the long one.** Creating an
   Autopilot cluster and waiting for its nodes is the thirty-to-forty minute
   step that run 37 failed inside. That risk is re-taken on reinstatement.
-* **The three DNS zones and three controller identities go with it**, since
-  they are in the same module. They cost almost nothing and are recreated
-  by the same apply.
+* **The suspension is not durable against a routine `up`.** `gitops_enabled`
+  stays `true`, so the configuration still says there should be a cluster and
+  the next plain `up` builds one. This is the price of not weakening the etcd
+  key's guard, and it is the one cost here that a reader could be caught by
+  rather than merely inconvenienced by — so it is written in three places:
+  here, in the tfvars beside the flag, and in the `suspend` step itself.
+* **The module's other resources stay in state and stay declared**, which is
+  the point of targeting one address, but it means Terraform still believes
+  in three controller identities and two registry DNS zones whose cluster is
+  gone. They cost cents and they are what makes the rebuild a plain create.
 
 ## What would make this wrong
 
-Any one of these, and the change is `gitops_enabled = true` plus one
-dispatch:
+Any one of these, and the change is one `up` dispatch:
 
 1. A published Argo CD image whose bundled kustomize reports `go1.24.13` or
    above (or `go1.25.7`, or `go1.26.0-rc.3`). **Re-check by measurement and
@@ -208,3 +278,13 @@ dispatch:
 * **Leave it running and say nothing.** The estate would keep billing for a
   cluster whose controllers cannot install, and the next reader would find
   a green apply and a failed run and draw the wrong conclusion from each.
+* **Remove `prevent_destroy` from the etcd key, or make it an input.** It is
+  the one-line change that would have made `gitops_enabled = false` work, and
+  it is the reason this ADR has a section about a refused plan instead. The
+  guard's false positive costs a dispatch; its absence costs an etcd nobody
+  can read, discovered at the next control-plane restart.
+* **`terraform state rm` the etcd key before applying, the way `teardown`
+  does.** `teardown` is allowed to do that because it is a named act with a
+  human behind it and a reclaim step that puts the object back. Generalising
+  it into `up` — "quietly drop any protected resource this plan would
+  destroy" — turns every `prevent_destroy` in the tree into a comment.

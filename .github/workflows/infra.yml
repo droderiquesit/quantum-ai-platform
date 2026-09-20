@@ -24,14 +24,20 @@
 #     controllers it schedules and for its regional control plane while idle.
 #     `down` deliberately leaves it standing, because tearing it down takes
 #     Argo CD, Kargo and both App credentials with it. That standing cost is
-#     named in the ADR rather than hidden here; ADR 0093 records the day it
-#     was suspended in dev, by `gitops_enabled = false` rather than by
-#     `down`, and why.
+#     named in the ADR rather than hidden here, and ADR 0093 records the day
+#     it was suspended in dev and why.
 #
-# So the honest summary is that `down` stops the meter only in an
-# environment that declares execution nodes, and no environment does. The
-# two levers that work are the always-on floors in the manifests and
-# `gitops_enabled` in the tfvars, and neither is an action on this workflow. The workflow authenticates by
+# So `down` stops the meter only in an environment that declares execution
+# nodes, and none does. **`suspend` is the action that reaches the thing
+# which actually bills**: a targeted destroy of the control-plane cluster
+# alone, leaving the etcd key, the controller identities and the registry
+# zones in state. It is deliberately not `gitops_enabled = false` — closing
+# that flag takes the module's `count` to zero, which plans a destroy of an
+# etcd key declaring `prevent_destroy`, and Terraform aborts the plan. The
+# guard is right and is not weakened for this; the step's own comment and
+# ADR 0093 carry the argument and the durable fix. The other standing cost,
+# the always-on floors in `gitops/envs/<env>/{fastbrain,deepbrain}.yaml`, is
+# not an action here at all. The workflow authenticates by
 # workload identity federation as the `qip-infra` account `modules/cicd`
 # creates; no key exists anywhere in this path.
 #
@@ -126,13 +132,14 @@ on:
           - test
           - stage
       action:
-        description: "plan (read-only), up (apply), down (destroy the execution nodes to stop the meter; everything else stands), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name)"
+        description: "plan (read-only), up (apply), suspend (destroy the control-plane cluster and nothing else — the one resource that bills while idle; a later up recreates it), down (destroy the execution nodes; no environment declares any, so it is a no-op today), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name)"
         required: true
         default: "plan"
         type: choice
         options:
           - plan
           - up
+          - suspend
           - down
           - teardown
 
@@ -847,6 +854,49 @@ jobs:
           # 8. The Kargo chain, into the namespace the project created.
           apply "${gitops}/kargo/overlays/${ENVIRONMENT}"
           echo "bootstrapped ${cluster}; Argo CD reconciles ${gitops}/envs/${ENVIRONMENT} from here on."
+
+      - name: suspend
+        if: inputs.action == 'suspend'
+        env:
+          VAR_FILES: ${{ steps.vars.outputs.files }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          # Destroy the control-plane cluster and nothing else.
+          #
+          # It is the one resource in this estate that bills while idle. A
+          # regional Autopilot control plane is charged whether or not a Pod
+          # runs; `execution_nodes = {}` everywhere so `down` reaches nothing;
+          # and the Cloud Run services are manifests this cluster reconciles,
+          # so they do not exist while it cannot start. What is left after
+          # this step — KMS key versions, fourteen secret versions, one DNS
+          # zone, a small registry, a few buckets, a NAT with no instances
+          # behind it — is single-digit dollars a month at list price.
+          #
+          # **Why this is not `gitops_enabled = false`, which is the switch a
+          # reader expects.** That closes the module's `count`, and the plan
+          # then destroys `google_kms_crypto_key.etcd`, which declares
+          # `prevent_destroy` because losing it makes every Secret in etcd
+          # unreadable at the next control-plane restart rather than now.
+          # Terraform aborts the whole plan. That guard is right and is not
+          # weakened here; the durable fix is to move the key out of the gated
+          # module, which is a `moved` block and a module interface change and
+          # belongs in its own commit. ADR 0093 records both.
+          #
+          # **The cost of this shape, said plainly**: the configuration still
+          # says there should be a cluster, so a later plain `up` recreates it
+          # and the meter restarts. This action is a deliberate act with a
+          # deliberate undo, in the same way `down` and `up` are for the
+          # execution nodes — not a durable posture. The tfvars comment beside
+          # `gitops_enabled` says the same thing where the switch is.
+          #
+          # The address is targeted rather than the module, so the etcd key,
+          # the three controller identities and the registry DNS zones stay in
+          # state and come back with the cluster.
+          terraform -chdir=infrastructure/terraform destroy -input=false -auto-approve \
+            -target='module.gitops_control_plane[0].google_container_cluster.control_plane' \
+            ${VAR_FILES}
+          echo "the ${ENVIRONMENT} control-plane cluster is gone; everything else in its module stands."
 
       - name: down
         if: inputs.action == 'down'

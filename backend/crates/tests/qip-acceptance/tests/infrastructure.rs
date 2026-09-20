@@ -4341,14 +4341,37 @@ fn the_infrastructure_workflow_cannot_touch_production() {
          is what makes the comparison below it a comparison rather than a \
          parser's first sight of somebody else's script."
     );
-    // And the destructive action is targeted, never a full destroy: KMS keys
-    // and the workload identity pool are soft-deleted by name, so a full
+    // And every destructive action is targeted, never a full destroy: KMS
+    // keys and the workload identity pool are soft-deleted by name, so a full
     // destroy/apply cycle collides with its own remains — including this
-    // workflow's own authentication. The target is the execution nodes,
-    // the one thing that bills while idle.
+    // workflow's own authentication.
+    //
+    // There are two targets now, and the loop below asserts the *property* —
+    // that no `terraform destroy` here runs without one — rather than a
+    // single spelling. It checked for `-target=module.execution_node` on
+    // every destroy until 2026-09-20, which read as the property and was a
+    // literal: a second targeted destroy was refused by a test whose own
+    // comment said it was guarding against untargeted ones. The two
+    // spellings are pinned individually below, so widening the loop takes no
+    // coverage away — `down`'s target and `suspend`'s are each asserted by
+    // name, and the loop now catches a third destroy the day somebody adds
+    // one without a target, which it could not have done before.
+    //
+    // The comment here also used to call the execution nodes "the one thing
+    // that bills while idle". They are not, and were not: `execution_nodes`
+    // is `{}` in every environment, so `down` destroys nothing, while the
+    // control-plane cluster bills by ADR 0036's own account. ADR 0093.
     assert!(
         infra.contains("-target=module.execution_node"),
         "infra.yml's down is no longer targeted at the execution nodes"
+    );
+    assert!(
+        infra.contains(
+            "-target='module.gitops_control_plane[0].google_container_cluster.control_plane'"
+        ),
+        "infra.yml's suspend no longer names the control-plane cluster by address; a broader \
+         target takes the etcd key, the controller identities and the registry zones with it, \
+         and the key refuses at plan time (ADR 0093)"
     );
     let text = without_comments(&infra);
     let destroys: Vec<String> = text
@@ -4357,14 +4380,16 @@ fn the_infrastructure_workflow_cannot_touch_production() {
         .map(|line| line.trim().to_string())
         .collect();
     assert!(
-        !destroys.is_empty(),
-        "infra.yml no longer destroys anything"
+        destroys.len() >= 2,
+        "infra.yml declares {} terraform destroy invocations; down and suspend are both \
+         expected, and a loop over one of them proves less than it appears to",
+        destroys.len()
     );
     for destroy in &destroys {
         let after = text.split(destroy.as_str()).nth(1).unwrap_or_default();
         let next_lines: String = after.lines().take(2).collect::<Vec<_>>().join("\n");
         assert!(
-            next_lines.contains("-target=module.execution_node"),
+            next_lines.contains("-target="),
             "infra.yml runs an untargeted destroy: `{destroy}` is not followed by a target"
         );
     }

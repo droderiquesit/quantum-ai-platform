@@ -204,9 +204,8 @@ them. **No figure is written here, and the sentence that used to carry one
 said in the same breath that the command counted them "rather than a figure
 typed here" and then typed twelve** — which is the shape this document's own
 provenance section warns about, a number that reads as measured and is not.
-It was twelve on 2026-09-20 and became thirteen the same day when
-`gitops_enabled` closed in dev (ADR 0093), which is how long such a figure
-survives here.
+It printed twelve on 2026-09-20; run the command rather than trusting that,
+because the sentence it replaced was true on the day it was written too.
 
 That is not a gap list; several are closed by decision. But a closed switch is
 the difference between a capability that exists in the tree and one that
@@ -217,17 +216,23 @@ switch is off.
 grep -rhoE '^[a-z_]+ *= *(false|\{\}|null|\[\])' infrastructure/environments/*/terraform.tfvars | sort -u
 ```
 
-The ones that hold the most: `gitops_enabled = false` in dev (**suspended
-2026-09-20, ADR 0093** — with it closed no control plane exists, and since
-ADR 0036 made every Cloud Run service a manifest that control plane
-reconciles, no service deploys; it is closed because the cluster could not
-install its own controllers, not to stop deployment, and the gate that
-stopped deployment stopped it first), `execution_nodes = {}` (no edge node
-exists, so every pass-time series and the whole regional plane reach no
-process), `workload_metrics_exist = false` (every alert policy evaluates to
-`count = 0`), `metrics_collector_image_digest = null` (refused, not pending —
-the published sidecar fails this platform's Trivy gate), and
-`enable_spanner = false` (the ledger grants are created but empty).
+The ones that hold the most: `execution_nodes = {}` (no edge node exists, so
+every pass-time series and the whole regional plane reach no process),
+`workload_metrics_exist = false` (every alert policy evaluates to `count = 0`),
+`metrics_collector_image_digest = null` (refused, not pending — the published
+sidecar fails this platform's Trivy gate), and `enable_spanner = false` (the
+ledger grants are created but empty).
+
+**One switch that is *not* here, and the reason is worth a sentence.**
+`gitops_enabled` is still `true` in dev although the control-plane cluster is
+suspended (ADR 0093), so the list above and the command below both read as if
+a control plane were running. It is not: `infra.yml`'s `suspend` action
+destroys the cluster by address, leaving the rest of the module in state,
+because closing the flag takes the module's `count` to zero and plans a
+destroy of an etcd key declaring `prevent_destroy` — which Terraform refuses
+at plan time, correctly. So this environment is in a state the tfvars cannot
+express, a later plain `up` will rebuild the cluster, and the ADR says what it
+would take to make the flag able to close.
 
 Whether each closure is a decision or an oversight is answered by the section
 rows above and by `docs/adr/`, which is where decisions live. This replaced a

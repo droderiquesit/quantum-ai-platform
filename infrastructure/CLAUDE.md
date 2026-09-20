@@ -107,10 +107,15 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   `vendor.yml`'s CRITICAL gate on CVE-2025-68121 with no upstream release
   that fixes it — so the bootstrap dies on cert-manager's images never
   having been mirrored, three steps downstream of the cause. ADR 0093
-  records it and suspends the cluster with `gitops_enabled = false` rather
-  than leave a control plane billing for controllers it cannot install. So
-  the infrastructure is applied, the platform is not deployed, and "applied"
-  has stopped implying "serving" in this tree.
+  records it and suspends the cluster rather than leave a control plane
+  billing for controllers it cannot install. So the infrastructure is
+  applied, the platform is not deployed, and "applied" has stopped implying
+  "serving" in this tree. **The suspension is `infra.yml`'s `suspend` action
+  — a targeted destroy of the cluster — and not `gitops_enabled = false`,
+  which Terraform refuses at plan time because closing the module's `count`
+  plans a destroy of an etcd key declaring `prevent_destroy`.** So dev is in
+  a state its tfvars cannot express, and a plain `up` rebuilds the cluster;
+  ADR 0093 says what it would take to make the flag able to close.
   What is still
   true is the rule: an agent shows the plan and a person applies, and
   `docs/DELIVERY-STATUS.md` records what each plan and each observation
