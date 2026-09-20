@@ -18,7 +18,10 @@
 //! words, and nothing here reinterprets a row it does not enforce — the
 //! event-anchored 90-day roll and the per-class size accounting are
 //! [`Retention`] values with no structure behind them yet, and the enum says
-//! so rather than implying otherwise.
+//! so rather than implying otherwise. Since ADR 0089 the type itself lives
+//! in `qip_events::retention`, where every `Topic` declares its row and the
+//! event log retains by it; this module re-exports it and keeps the one row
+//! that needed a structure of its own.
 //!
 //! # The fallback series
 //!
@@ -46,122 +49,14 @@ use qip_market::bar::{Bar, Interval};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// The nine rows of §22.1's table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RetentionClass {
-    /// Raw ticks, book deltas, quote updates, source text.
-    Transient,
-    /// Features, moments, covariance, sketches, reservoirs.
-    DerivedState,
-    /// Own orders, fills, intents, verdicts, quotes, receipt timestamps,
-    /// transfers.
-    Irreplaceable,
-    /// Per-strategy returns, family correlations, dispersion by venue pair,
-    /// solver deltas, counterfactual scores.
-    CompactDerived,
-    /// Compressed state with outcome, indexed for retrieval.
-    Episodic,
-    /// Entities, relations, causal edges, beliefs, extracted facts.
-    Semantic,
-    /// Book state at each own order, fill, quote, veto, unwind.
-    EventAnchored,
-    /// Bars for instruments in an active class or universe.
-    FallbackSeries,
-    /// External market history, filings, registries.
-    Referenced,
-}
-
-/// A row's answer to "retained?", in the table's own terms.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Retention {
-    /// A bounded ring measured in seconds, then gone.
-    Never,
-    /// In memory, fixed size regardless of throughput.
-    InMemoryFixed,
-    /// Permanently; only this platform has these.
-    Permanent,
-    /// Series, not observations.
-    Series,
-    /// Indefinitely; compressed meaning.
-    Indefinite,
-    /// A rolling window.
-    Rolling(Duration),
-    /// For a stated span behind the newest observation.
-    For(Duration),
-    /// A manifest with source, range and content hash; fetched on demand.
-    ManifestOnly,
-}
-
-impl RetentionClass {
-    /// The nine rows in the table's own order.
-    pub const ALL: [Self; 9] = [
-        Self::Transient,
-        Self::DerivedState,
-        Self::Irreplaceable,
-        Self::CompactDerived,
-        Self::Episodic,
-        Self::Semantic,
-        Self::EventAnchored,
-        Self::FallbackSeries,
-        Self::Referenced,
-    ];
-
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Transient => "transient",
-            Self::DerivedState => "derived_state",
-            Self::Irreplaceable => "irreplaceable",
-            Self::CompactDerived => "compact_derived",
-            Self::Episodic => "episodic",
-            Self::Semantic => "semantic",
-            Self::EventAnchored => "event_anchored",
-            Self::FallbackSeries => "fallback_series",
-            Self::Referenced => "referenced",
-        }
-    }
-
-    /// The row's "what" column.
-    pub const fn what(&self) -> &'static str {
-        match self {
-            Self::Transient => "raw ticks, book deltas, quote updates, source text",
-            Self::DerivedState => "features, moments, covariance, sketches, reservoirs",
-            Self::Irreplaceable => {
-                "own orders, fills, intents, verdicts, quotes, receipt timestamps, transfers"
-            }
-            Self::CompactDerived => {
-                "per-strategy returns, family correlations, dispersion by venue pair, solver \
-                 deltas, counterfactual scores"
-            }
-            Self::Episodic => "compressed state with outcome, indexed for retrieval",
-            Self::Semantic => "entities, relations, causal edges, beliefs, extracted facts",
-            Self::EventAnchored => "book state at each own order, fill, quote, veto, unwind",
-            Self::FallbackSeries => {
-                "one-minute OHLCV for instruments in an active class or universe"
-            }
-            Self::Referenced => "external market history, filings, registries",
-        }
-    }
-
-    /// The row's "retained?" column.
-    pub const fn retention(&self) -> Retention {
-        match self {
-            Self::Transient => Retention::Never,
-            Self::DerivedState => Retention::InMemoryFixed,
-            Self::Irreplaceable => Retention::Permanent,
-            Self::CompactDerived => Retention::Series,
-            Self::Episodic | Self::Semantic => Retention::Indefinite,
-            Self::EventAnchored => Retention::Rolling(Duration::from_days(90)),
-            Self::FallbackSeries => Retention::For(FALLBACK_RETENTION),
-            Self::Referenced => Retention::ManifestOnly,
-        }
-    }
-}
-
-/// How far behind its newest bar a fallback series reaches: three years,
-/// counted in days so a leap day does not shorten it.
-pub const FALLBACK_RETENTION: Duration = Duration::from_days(3 * 365 + 1);
+/// §22.1's table, re-exported from the crate the event log reads it in.
+///
+/// ADR 0089 moved [`RetentionClass`], [`Retention`] and
+/// [`FALLBACK_RETENTION`] down into `qip-events`: the log is where the
+/// platform's retained bytes live, a lib may not depend on a service, and a
+/// class the log could not read was a class nothing retained by. The names
+/// here are the same names, so every caller of this crate is unchanged.
+pub use qip_events::retention::{FALLBACK_RETENTION, Retention, RetentionClass};
 
 /// Daily bars held per instrument: three years of trading days is about
 /// 756, three years of calendar days is 1,096, and a source that serves a

@@ -17,10 +17,12 @@ pub mod bus;
 pub mod envelope;
 pub mod log;
 pub mod registry;
+pub mod retention;
 pub mod topic;
 
 pub use bus::{EventBus, HandlerOutcome, Subscription};
 pub use envelope::{AnyEvent, Envelope, EventBody};
 pub use log::{EventFilter, EventLog, LogStats};
 pub use registry::{SchemaDescriptor, SchemaRegistry};
+pub use retention::{FALLBACK_RETENTION, Retention, RetentionClass};
 pub use topic::{Topic, TopicGroup};
