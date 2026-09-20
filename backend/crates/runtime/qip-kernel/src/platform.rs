@@ -70,6 +70,7 @@ use qip_ai::memory::{
     Recall, RegimeLabel, StanceDirection,
 };
 use qip_ai::retrieval::SearchIndex;
+use qip_ai::serving::{ModelProvider, NoProvider};
 use qip_capital::ledger::{
     AttributedFill, Capability, DecidedBy, EligibilityDecision, EligibilityRecord,
     EligibilityRegistry, Entitlement, InvestmentDecision, InvestmentOutcome, InvestmentRequest,
@@ -362,6 +363,18 @@ pub struct Platform {
     /// references. The consequence of a revision lives in
     /// `crate::references`.
     pub(crate) references: qip_data_finder::ledger::ReferenceLedger,
+    /// Who serves a trained model off the hot path (ADR 0083 §4). Handed
+    /// in by the composition root through [`Self::with_model_provider`];
+    /// [`Self::new`] holds [`NoProvider`], which serves nothing, so a
+    /// process assembled without one promotes and scores no model rather
+    /// than reaching for a provider inside the kernel. Read only through
+    /// `crate::model_serving`.
+    pub(crate) model_provider: Box<dyn ModelProvider>,
+    /// Every model this process has promoted, by card reference, rebuilt
+    /// from the log at assembly and written only by
+    /// `Platform::promote_model`. What the `trained_models` slot is
+    /// produced from; see `crate::model_serving`.
+    pub(crate) model_promotions: BTreeMap<String, crate::model_serving::ModelPromotion>,
     /// §22.1's fallback series: the daily bars the platform has observed,
     /// per instrument, under three stated bounds — insurance against a
     /// source withdrawing its archive, and what the research campaign falls
@@ -3555,6 +3568,36 @@ impl Platform {
         limits: LimitSet,
         language_model: Arc<dyn LanguageModel>,
     ) -> Result<Self> {
+        Self::with_model_provider(
+            config,
+            context,
+            telemetry,
+            universe,
+            limits,
+            language_model,
+            Box::new(NoProvider),
+        )
+    }
+
+    /// Assemble a platform that serves trained models through the given
+    /// provider (ADR 0083 §4).
+    ///
+    /// The seam the two central roots use: `qip-deepbrain` and `qip-api`
+    /// pass `qip_training::serve::InTreeProvider`, and every other caller —
+    /// [`Self::new`], [`Self::with_language_model`], every test that does
+    /// not care about serving — gets [`NoProvider`], which serves nothing.
+    /// The provider is not on `PlatformConfig` for the reason the language
+    /// model is not: the config is a serialisable record of how the
+    /// platform was assembled, and a provider is code.
+    pub fn with_model_provider(
+        config: PlatformConfig,
+        context: Context,
+        telemetry: Telemetry,
+        universe: Universe,
+        limits: LimitSet,
+        language_model: Arc<dyn LanguageModel>,
+        model_provider: Box<dyn ModelProvider>,
+    ) -> Result<Self> {
         let now = context.now();
 
         // Opened here, before anything else is built, for the same reason the
@@ -3930,6 +3973,8 @@ impl Platform {
             data_finder,
             admitted_sources: BTreeMap::new(),
             references: Self::resume_references(&event_log)?,
+            model_provider,
+            model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
             fallback: qip_data_finder::retention::FallbackSeries::bounded(),
             fallback_refused: BTreeSet::new(),
             source_leads: qip_data_finder::freshness::LeadLedger::new(),

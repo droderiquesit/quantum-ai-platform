@@ -240,6 +240,48 @@ pub trait ModelProvider: std::fmt::Debug {
     }
 }
 
+/// The provider a platform holds when its composition root handed in none.
+///
+/// It serves nothing and says so with the same sentence every provider
+/// uses, naming itself, so a log line from a process assembled without a
+/// provider reads "the null provider does not serve `distilled_linear`"
+/// rather than a panic or a silent `None`. Fail-closed by construction: a
+/// `Platform` built through `Platform::new` promotes and serves no model
+/// until a root passes `qip_training::serve::InTreeProvider` through
+/// `Platform::with_model_provider`, and every test that does not care about
+/// serving gets exactly the platform every root had before ADR 0083.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NoProvider;
+
+impl NoProvider {
+    pub const NAME: &'static str = "the null provider";
+}
+
+impl ModelProvider for NoProvider {
+    fn name(&self) -> &str {
+        Self::NAME
+    }
+
+    fn serves(&self) -> &[ModelFormat] {
+        &[]
+    }
+
+    fn serve(&self, artifact: &ModelArtifact) -> Result<Box<dyn ServedModel>> {
+        // `admit` refuses every format, since this provider serves none;
+        // the `Err` branch is the only way out and the match makes that
+        // legible rather than relying on an unreachable `Ok`.
+        match self.admit(artifact) {
+            Err(refusal) => Err(refusal),
+            Ok(()) => Err(unserved_refusal(
+                &artifact.reference,
+                artifact.format.as_str(),
+                Self::NAME,
+                &[],
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

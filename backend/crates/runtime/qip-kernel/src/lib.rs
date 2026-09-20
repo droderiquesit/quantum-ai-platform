@@ -47,6 +47,7 @@ pub mod falsification;
 pub mod family_review;
 pub mod feature_statistics;
 pub mod hedge_review;
+pub mod model_serving;
 pub mod platform;
 pub mod pre_positioning;
 pub mod precedent_declines;
@@ -64,6 +65,7 @@ pub mod venue_review;
 pub use central::{CellReport, CentralPlane, StrategyDna, StrategyFactory};
 pub use config::{EventLogDestination, PlatformConfig};
 pub use cycle::{CycleReport, Stage, StageOutcome};
+pub use model_serving::{DistilledManifestEntry, ModelManifestIssue, ModelPromotion};
 pub use platform::{
     ChainAbsorption, CycleJournalEntry, Platform, RecordedPrediction, SourceAssessment,
     UniverseAssembled,
