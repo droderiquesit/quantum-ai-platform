@@ -47,6 +47,7 @@ use crate::family_review::{
     FAMILY_FINDING_PROPOSED, FAMILY_FINDING_WITHDRAWN, FamilyAllocationReview, FamilyMember,
     FamilyStanding, Misallocation, MisallocationFinding,
 };
+use crate::pre_positioning::{PrePositioningJournal, PrePositioningPlanned, PrePositioningScored};
 use crate::rule_review::{
     PROPOSAL_ENACTED, PROPOSAL_WITHDRAWN, RecalibrationProposal, RegretEvidence, RuleActivity,
     RuleDefence, RuleDormant, RuleRegret, RuleReviewJournal, regret_by_rule,
@@ -607,6 +608,15 @@ pub struct Platform {
     pre_positioner: PrePositioningPlanner,
     /// Observed demand per lane, in arrival order.
     demand_history: BTreeMap<(CapitalLocation, DemandKind), Vec<DemandObservation>>,
+    /// The pre-positioning plan retained for scoring, until its window
+    /// closes. One at a time, by design: a plan scored before its horizon
+    /// elapsed is scored against a world in which nothing has been needed
+    /// yet, and two plans over one window would learn from the same day
+    /// twice. See `crate::pre_positioning`.
+    pending_pre_positioning: Option<PrePositioningPlan>,
+    /// The pre-positioning score LEARN produced this cycle, for the cycle
+    /// journal. Cleared at the top of LEARN like its siblings.
+    cycle_pre_positioning: Option<PrePositioningJournal>,
     /// Places the REASON stage's question on the intelligence ladder before
     /// the platform answers it.
     ///
@@ -2265,6 +2275,12 @@ pub struct CycleJournalEntry {
     /// Defaulted so an older journal replays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub horizon_arming: Option<HorizonArming>,
+    /// What LEARN scored of blueprint §25.2's pre-positioning this cycle: the
+    /// plan whose window closed, measured against the demand recorded inside
+    /// it. Absent on every cycle but the one that closes a window. Defaulted
+    /// so an older journal replays.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pre_positioning: Option<PrePositioningJournal>,
     /// Which solver sized this cycle's proposal and what the classical
     /// baseline scored (ADR 0006).
     ///
@@ -3959,6 +3975,8 @@ impl Platform {
             forecaster: DemandForecaster::new(),
             pre_positioner,
             demand_history: BTreeMap::new(),
+            pending_pre_positioning: None,
+            cycle_pre_positioning: None,
             cost_engine: CostEngine::new(DataCostModel::new()),
             cost_router: Router::default(),
             reason_routing: None,
@@ -8451,6 +8469,7 @@ impl Platform {
             strategy_review: self.cycle_strategy_review.clone(),
             family_structure: self.cycle_family_structure,
             horizon_arming: self.cycle_horizon_arming.clone(),
+            pre_positioning: self.cycle_pre_positioning.clone(),
             // Taken, not cloned. A cycle that reaches no construction — a
             // platform that has observed nothing, so REASON approves no thesis
             // — must journal no comparison rather than inherit the last
@@ -12032,6 +12051,13 @@ impl Platform {
             detail.push_str(&format!("; {}", capped.join(", ")));
         }
         detail.push_str(&format!("; {exploration}"));
+        // Blueprint §25.2's movement half: how much to move and where, on
+        // the same forecasts the funding sentence above was built from. The
+        // plan is a record and a sentence; nothing here reaches the fabric's
+        // gate, and `crate::pre_positioning` says why that is a decision.
+        let (pre_positioning, pre_positioning_problems) =
+            self.plan_pre_positioning(forecasts.len(), now);
+        detail.push_str(&format!("; {pre_positioning}"));
 
         // Blueprint §31.4's hedge survey, run against the book this stage has
         // just sized into. In DECIDE because a hedge is a decision about the
@@ -12042,6 +12068,9 @@ impl Platform {
         let hedges = self.review_hedges(now);
         detail.push_str(&format!("; {}", hedges.summary()));
         let mut outcome = StageOutcome::ran(Stage::Decide, legs, detail);
+        for problem in pre_positioning_problems {
+            outcome = outcome.with_problem(problem);
+        }
         // One problem per refusal, carrying the engine's own message. Folded
         // into a count they would tell an operator that a hedge did not happen
         // without saying which exposure is still naked, and the exposure is
@@ -12612,6 +12641,7 @@ impl Platform {
         self.cycle_rule_review = None;
         self.cycle_family_structure = None;
         self.cycle_horizon_arming = None;
+        self.cycle_pre_positioning = None;
         // The wallet, against the book ACT left. A refusal by the control is
         // a record the journal keeps; an error here is the journal or the
         // log refusing the record, which is a problem on the cycle's record
@@ -12665,6 +12695,19 @@ impl Platform {
         let (reviewed, problems) = self.review_cross_margin(now);
         if let Some(reviewed) = reviewed {
             let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
+        // Blueprint §25.2's movement half, closed: the plan DECIDE retained
+        // is scored against what the lanes actually needed once its window
+        // has elapsed, and not a cycle before. Until this call
+        // `evaluate_pre_positioning` had no caller outside tests, so the
+        // forecaster was confident and never accurate or inaccurate.
+        let (scored, problems) = self.score_pre_positioning(now);
+        if let Some(scored) = scored {
+            let detail = format!("{}; {scored}", outcome.detail);
             outcome = StageOutcome { detail, ..outcome };
         }
         for problem in problems {
@@ -16770,6 +16813,134 @@ impl Platform {
     ) -> Result<PlanScore> {
         let plan = self.pre_position(now, horizon)?;
         qip_capital_fabric::evaluate(&plan, realised)
+    }
+
+    /// Blueprint §25.2's "how much to move" and "where", answered on every
+    /// DECIDE that forecasts a funding lane, and one plan per window retained
+    /// for LEARN to score.
+    ///
+    /// Returns the stage sentence and any problems. The sentence is never
+    /// empty: a cycle with no lane forecast says so, because a treasury that
+    /// reads as silent is indistinguishable from one nobody wired in. A plan
+    /// is retained only once it is on the log — a score of a plan the log
+    /// does not hold would be a second source of truth for the plan — and a
+    /// plan with no lanes is reported and not retained, since there is
+    /// nothing in it a window could measure.
+    ///
+    /// `forecast_lanes` is the count DECIDE already has in hand; passing it
+    /// spares the planner's solve on the common quiet cycle without this
+    /// method re-deriving the forecasts to find out.
+    fn plan_pre_positioning(
+        &mut self,
+        forecast_lanes: usize,
+        now: Timestamp,
+    ) -> (String, Vec<String>) {
+        if forecast_lanes == 0 {
+            return (
+                "nothing to pre-position: no lane is forecast".to_string(),
+                Vec::new(),
+            );
+        }
+        let plan = match self.pre_position(now, CAPITAL_HORIZON) {
+            Ok(plan) => plan,
+            Err(error) => {
+                return (
+                    "no pre-positioning plan could be built".to_string(),
+                    vec![format!(
+                        "capital was forecast at {forecast_lanes} lane(s) and no pre-positioning \
+                         plan could be built against it: {}",
+                        error.message()
+                    )],
+                );
+            }
+        };
+        let mut sentence = format!("pre-positioning: {}", plan.describe());
+        let mut problems = Vec::new();
+        match &self.pending_pre_positioning {
+            Some(pending) => sentence.push_str(&format!(
+                "; the plan of {} is retained for scoring when its window closes at {}",
+                pending.at.to_rfc3339(),
+                crate::pre_positioning::window_closes_at(pending.at, CAPITAL_HORIZON).to_rfc3339()
+            )),
+            None if plan.lanes.is_empty() => {}
+            None => {
+                let record = PrePositioningPlanned {
+                    cycle: self.cycle,
+                    horizon: CAPITAL_HORIZON,
+                    plan: plan.clone(),
+                };
+                match self.journal_record(record, "kernel/pre-positioning", now) {
+                    Ok(()) => {
+                        self.pending_pre_positioning = Some(plan);
+                        sentence.push_str("; retained for scoring when its window closes");
+                    }
+                    Err(error) => problems.push(format!(
+                        "the pre-positioning plan was reported to the desk and not journalled, \
+                         so it will not be scored: {}",
+                        error.message()
+                    )),
+                }
+            }
+        }
+        (sentence, problems)
+    }
+
+    /// Score the retained pre-positioning plan once its window has closed,
+    /// against the demand the platform recorded inside that window.
+    ///
+    /// Nothing before the window closes: a plan scored against a partial
+    /// world reads as one that over-moved, and a forecaster judged that way
+    /// learns to send nothing. A plan that cannot be scored is released
+    /// rather than kept, because a plan that can never be scored would
+    /// otherwise block every plan after it from being retained.
+    fn score_pre_positioning(&mut self, now: Timestamp) -> (Option<String>, Vec<String>) {
+        let closes_at = match &self.pending_pre_positioning {
+            Some(plan) => crate::pre_positioning::window_closes_at(plan.at, CAPITAL_HORIZON),
+            None => return (None, Vec::new()),
+        };
+        if now < closes_at {
+            return (None, Vec::new());
+        }
+        let Some(plan) = self.pending_pre_positioning.take() else {
+            return (None, Vec::new());
+        };
+        let realised =
+            crate::pre_positioning::realised_between(&self.demand_history, plan.at, closes_at);
+        let score = match qip_capital_fabric::evaluate(&plan, &realised) {
+            Ok(score) => score,
+            Err(error) => {
+                return (
+                    None,
+                    vec![format!(
+                        "the pre-positioning plan of {} could not be scored and is released \
+                         unscored: {}",
+                        plan.at.to_rfc3339(),
+                        error.message()
+                    )],
+                );
+            }
+        };
+        let record = PrePositioningScored {
+            cycle: self.cycle,
+            planned_at: plan.at,
+            scored_at: now,
+            moves_planned: plan.moves.len(),
+            score,
+        };
+        let sentence = format!(
+            "pre-positioning plan of {} scored: {}",
+            plan.at.to_rfc3339(),
+            record.score.describe()
+        );
+        self.cycle_pre_positioning = Some(PrePositioningJournal::of(&record));
+        let mut problems = Vec::new();
+        if let Err(error) = self.journal_record(record, "kernel/pre-positioning", now) {
+            problems.push(format!(
+                "the pre-positioning score was reported to the desk and not journalled: {}",
+                error.message()
+            ));
+        }
+        (Some(sentence), problems)
     }
 
     // --- what the platform charges itself -----------------------------------
