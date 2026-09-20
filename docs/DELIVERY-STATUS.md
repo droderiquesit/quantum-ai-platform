@@ -186,7 +186,8 @@ These are not backlog. No amount of engineering in this container closes them.
 
 | Blocker | What it holds | To clear it |
 |---|---|---|
-| No deployment | Every ingestion claim, all runtime observability, the entire cloud plane | One authenticated `terraform apply` a person dispatches through `infra.yml`. **`dev` was applied (runs 34–38) and then torn down on 2026-09-13 on the owner's instruction** — the Cloud Run services, the control-plane cluster and 166 Terraform-managed resources are gone; 55 free entries remain (API enablement, the workflow's identity, an empty VPC and two subnets Google's egress addresses still hold). The "Infrastructure register" entry in Provenance has the three run URLs and the remainder verbatim. Nothing is deployed anywhere. |
+| No deployment | Every ingestion claim, all runtime observability, the entire cloud plane | **The infrastructure is applied again and no service runs on it, and those are two different facts.** `dev` was applied (runs 34–38), torn down on 2026-09-13 on the owner's instruction, and re-applied on 2026-09-20: run 52 (<https://github.com/droderiquesit/quantum-ai-platform/actions/runs/35527644424>) reports `Apply complete! Resources: 0 added, 1 changed, 0 destroyed` over **238 Terraform-managed resources**. The run's conclusion is nonetheless `failure`, on the bootstrap step that follows the apply. **No Cloud Run service exists**: ADR 0036 released them from Terraform into `RunService` manifests reconciled by Config Connector, which Argo CD installs, and the Argo CD row below says why it does not. So the 32 `module.cloud_run` entries in state are identities, grants and buckets, not services, and this row is cleared by the row below it rather than by another apply. The "Infrastructure register" entry in Provenance has every run URL. |
+| Argo CD fails the scan gate | **Every service deployment**, the whole GitOps path, and with them the control-plane cluster's reason to exist | An upstream release, and nothing in this repository. `vendor.yml`'s blocking `--severity CRITICAL` gate refuses the Argo CD image on CVE-2025-68121 (GO-2026-4337, `crypto/tls` session resumption, fixed in go1.24.13 / go1.25.7 / go1.26.0-rc.3) in its bundled `kustomize` and `git-lfs`; the mirror loop runs under `set -euo pipefail` and Argo CD is its first control-plane line, so **cert-manager's three images are never copied either** — which is the `cert-manager-webhook exceeded its progress deadline` that ends run 52, three steps downstream of its cause. **Measured, not read off a release note**: each image's `COPY /usr/local/bin/<tool>` layer was pulled from quay's v2 API and the Go build stamp read out of the binary — v3.5.3 ships byte-identical kustomize and git-lfs layers to the refused v3.5.2 (same size, same stamp), and v3.6.0-rc1 rebuilds git-lfs and helm while still carrying kustomize on `go1.24.0`. And there is no newer kustomize to adopt: `https://proxy.golang.org/sigs.k8s.io/kustomize/kustomize/v5/@latest` ends at v5.8.1 dated 2026-02-09, the version Argo CD already ships. Do **not** clear with a scanner exception, an `.trivyignore`, or a per-image acknowledgement — `vendor.yml`'s own comment records that the acknowledgement file which once existed covered exactly these binaries. ADR 0093 records the consequence: the dev cluster is suspended rather than left billing for a control plane whose controllers cannot install. |
 | Metrics collector | Cloud Run scrape ingestion | Google publishing a sidecar that passes the Trivy gate. Do **not** clear with a scanner exception |
 | Option-quote licensing | The volatility surface's caller (ADR 0050) | An owner-side vendor licensing evaluation |
 | ADR 0038 unaccepted | Passkeys | Four checks only the owner can run against `algorik-dev` |
@@ -197,23 +198,36 @@ These are not backlog. No amount of engineering in this container closes them.
 
 ## Configuration switches held closed in every environment
 
-Twelve Terraform settings sit in a closed position — `false`, `{}`, `null` or
+Some Terraform settings sit in a closed position — `false`, `{}`, `null` or
 `[]` — across the four environment files, and the command below is what counts
-them rather than a figure typed here. That is not a gap list; several are
-closed by decision. But a closed switch is the difference between a capability
-that exists in the tree and one that exists in a deployment, so no row above
-can be read as "operating" while its switch is off.
+them. **No figure is written here, and the sentence that used to carry one
+said in the same breath that the command counted them "rather than a figure
+typed here" and then typed twelve** — which is the shape this document's own
+provenance section warns about, a number that reads as measured and is not.
+It was twelve on 2026-09-20 and became thirteen the same day when
+`gitops_enabled` closed in dev (ADR 0093), which is how long such a figure
+survives here.
+
+That is not a gap list; several are closed by decision. But a closed switch is
+the difference between a capability that exists in the tree and one that
+exists in a deployment, so no row above can be read as "operating" while its
+switch is off.
 
 ```
 grep -rhoE '^[a-z_]+ *= *(false|\{\}|null|\[\])' infrastructure/environments/*/terraform.tfvars | sort -u
 ```
 
-The four that hold the most: `execution_nodes = {}` (no edge node exists, so
-every pass-time series and the whole regional plane reach no process),
-`workload_metrics_exist = false` (every alert policy evaluates to `count = 0`),
-`metrics_collector_image_digest = null` (refused, not pending — the published
-sidecar fails this platform's Trivy gate), and `enable_spanner = false` (the
-ledger grants are created but empty).
+The ones that hold the most: `gitops_enabled = false` in dev (**suspended
+2026-09-20, ADR 0093** — with it closed no control plane exists, and since
+ADR 0036 made every Cloud Run service a manifest that control plane
+reconciles, no service deploys; it is closed because the cluster could not
+install its own controllers, not to stop deployment, and the gate that
+stopped deployment stopped it first), `execution_nodes = {}` (no edge node
+exists, so every pass-time series and the whole regional plane reach no
+process), `workload_metrics_exist = false` (every alert policy evaluates to
+`count = 0`), `metrics_collector_image_digest = null` (refused, not pending —
+the published sidecar fails this platform's Trivy gate), and
+`enable_spanner = false` (the ledger grants are created but empty).
 
 Whether each closure is a decision or an oversight is answered by the section
 rows above and by `docs/adr/`, which is where decisions live. This replaced a

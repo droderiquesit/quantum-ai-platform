@@ -108,7 +108,24 @@ public_ingress  = {}
 # the ADR asks for and `docs/ops/missing-infrastructure-register.md` will
 # record. The endpoint's /28 sits above the management zone's /24 and below
 # the execution nodes' ladder (10.65.0.0/16 upward), overlapping neither.
-gitops_enabled                = true
+#
+# **Suspended 2026-09-20 (ADR 0093), and the paragraph above is left standing
+# because it describes what comes back.** Every published Argo CD image fails
+# `vendor.yml`'s blocking CRITICAL gate on CVE-2025-68121 in its bundled
+# `kustomize` and `git-lfs`, and no release on any line fixes it — measured by
+# reading the Go build stamp out of each image's `COPY /usr/local/bin/<tool>`
+# layer, not read off a release note. So the cluster cannot install the
+# controllers that are its whole purpose, and a regional Autopilot control
+# plane bills whether or not a Pod runs. This flag is the whole suspension:
+# nothing else in the tree changes, every manifest and overlay stays, and
+# `true` plus one `up` brings it back in about the time the cluster takes to
+# create. What would make that right is in ADR 0093's own section; the short
+# version is an Argo CD image whose kustomize reports `go1.24.13` or above.
+#
+# Note what this does **not** do: it does not stop any service deploying,
+# because none was deploying. The same gate that suspends the cluster is
+# what stopped the services, and it stopped them first.
+gitops_enabled                = false
 gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 
 # --- The one node ADR 0035 authorises, and the two values it still lacks -----

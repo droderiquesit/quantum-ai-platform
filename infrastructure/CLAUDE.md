@@ -97,8 +97,21 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   the workflow's own identity, an empty VPC and two subnets Google's
   `serverless-ipv4-*` addresses still hold — and nine KMS keys, five
   `force_destroy = false` buckets and the state bucket stand outside state.
-  The register in `docs/DELIVERY-STATUS.md` lists them. Nothing is deployed
-  anywhere now. What is still
+  The register in `docs/DELIVERY-STATUS.md` lists them.
+  **Re-applied 2026-09-20**, and the two halves of that sentence do not
+  agree the way a reader expects, so both are said: `infra.yml` run 52
+  reports `Apply complete! Resources: 0 added, 1 changed, 0 destroyed` over
+  238 resources, and **no Cloud Run service exists**. ADR 0036 released the
+  services from Terraform into `RunService` manifests that Config Connector
+  reconciles, Argo CD installs Config Connector, and the Argo CD image fails
+  `vendor.yml`'s CRITICAL gate on CVE-2025-68121 with no upstream release
+  that fixes it — so the bootstrap dies on cert-manager's images never
+  having been mirrored, three steps downstream of the cause. ADR 0093
+  records it and suspends the cluster with `gitops_enabled = false` rather
+  than leave a control plane billing for controllers it cannot install. So
+  the infrastructure is applied, the platform is not deployed, and "applied"
+  has stopped implying "serving" in this tree.
+  What is still
   true is the rule: an agent shows the plan and a person applies, and
   `docs/DELIVERY-STATUS.md` records what each plan and each observation
   found. It absorbed the missing-infrastructure register on 2026-09-07,
