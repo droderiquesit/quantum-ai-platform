@@ -4112,11 +4112,11 @@ fn the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it() {
                 }
                 continue;
             }
-            if let Some((before, after)) = line.split_once("<<-") {
-                if before.contains("description") {
-                    heredoc = Some(after.trim().to_string());
-                    continue;
-                }
+            if let Some((before, after)) = line.split_once("<<-")
+                && before.contains("description")
+            {
+                heredoc = Some(after.trim().to_string());
+                continue;
             }
             let opened = line.matches('{').count();
             let closed = line.matches('}').count();
@@ -7542,11 +7542,11 @@ fn the_default_openobserve_posture_names_no_anonymous_invoker() {
                 }
                 continue;
             }
-            if let Some((before, after)) = line.split_once("<<-") {
-                if before.contains("description") {
-                    heredoc = Some(after.trim().to_string());
-                    continue;
-                }
+            if let Some((before, after)) = line.split_once("<<-")
+                && before.contains("description")
+            {
+                heredoc = Some(after.trim().to_string());
+                continue;
             }
             let opened = line.matches('{').count();
             let closed = line.matches('}').count();
