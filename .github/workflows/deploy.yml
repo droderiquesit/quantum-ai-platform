@@ -434,6 +434,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq trivy
           prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
           trivy image \
+              --no-progress \
             --severity CRITICAL,HIGH \
             --exit-code 1 \
             --ignore-unfixed \

@@ -221,6 +221,7 @@ jobs:
             # covering the next is how a suppression file becomes a
             # blindfold.
             trivy image \
+              --no-progress \
               --severity CRITICAL,HIGH \
               --exit-code 0 \
               --ignore-unfixed \
@@ -245,6 +246,7 @@ jobs:
             # A gate that also decides which *other* images exist is two
             # controls wearing one name. This is the second one removed.
             if ! trivy image \
+              --no-progress \
               --severity CRITICAL \
               --exit-code 1 \
               --ignore-unfixed \
@@ -434,8 +436,8 @@ jobs:
             # that only examines what it just built stops being a gate the
             # moment a build is cached. The blocking one is fatal on the spot
             # here, because there is nothing downstream to catch it.
-            trivy image --severity CRITICAL,HIGH --exit-code 0 --ignore-unfixed "$dest_ref"
-            trivy image --severity CRITICAL --exit-code 1 --ignore-unfixed "$dest_ref"
+            trivy image --no-progress --severity CRITICAL,HIGH --exit-code 0 --ignore-unfixed "$dest_ref"
+            trivy image --no-progress --severity CRITICAL --exit-code 1 --ignore-unfixed "$dest_ref"
 
             digest="$(crane digest "$dest_ref")"
             case "$digest" in

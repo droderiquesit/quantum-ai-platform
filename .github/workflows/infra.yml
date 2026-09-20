@@ -850,7 +850,218 @@ jobs:
             kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap -k "$1"
           }
 
-          # 1. cert-manager, and wait for its webhook: Kargo's render names a
+          # The order below is a dependency order, and it was not.
+          #
+          # cert-manager used to be phase 1 and Argo CD phase 2, so a
+          # cert-manager that would not finish — which is what runs 58, 59
+          # and 60 each hit — stopped Argo CD being installed at all. Argo CD
+          # does not depend on cert-manager. Its entire mention of it is one
+          # line in a ConfigMap telling Argo CD *not to watch*
+          # `cert-manager.io/CertificateRequest`, which is an exclusion, not
+          # a dependency.
+          #
+          # What needs cert-manager is Kargo, whose chart provisions its
+          # admission webhooks' TLS as a cert-manager `Certificate` — the
+          # README beside this tree explains why that is cheaper than an
+          # operator-supplied keypair nobody rotates.
+          #
+          # So Argo CD, Config Connector and the Application go first and are
+          # proven; cert-manager and Kargo follow. A Kargo problem still
+          # fails this run — it is not made non-fatal, because a run that
+          # reports success having installed half the control plane is the
+          # thing this file has been correcting all day — but it fails with
+          # Argo CD already up and reconciling, which is what an operator
+          # needs when the two are independent.
+          # 1. Argo CD, which depends on nothing below it.
+          apply "${gitops}/bootstrap/argocd/overlays/${ENVIRONMENT}"
+          kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
+          kubectl -n argocd rollout status deployment/argocd-repo-server --timeout=300s
+          # 2. The Config Connector operator, vendored, and its CRDs. Run 34
+          #    found the addon refused on Autopilot (`addons
+          #    {"config-connector"} are not supported for Autopilot
+          #    clusters`), so the operator arrives here like the three
+          #    controllers above it. Its `ConfigConnector` CRD must be
+          #    established before the object below names it, or the apply
+          #    fails on a kind the API server does not know yet.
+          apply "${gitops}/bootstrap/config-connector-operator/overlays/${ENVIRONMENT}"
+          kubectl -n configconnector-operator-system rollout status statefulset/configconnector-operator --timeout=300s
+          kubectl wait --for=condition=Established crd/configconnectors.core.cnrm.cloud.google.com --timeout=300s
+          # 3. Config Connector's one object, and the namespace the manifests
+          #    land in; then wait for the controller the operator installs to
+          #    pick up the identity. The four cnrm-system images are the
+          #    operator's own, from gcr.io/gke-release, and this wait is
+          #    where an admission policy that does not admit them says so —
+          #    bootstrap/config-connector-operator/SOURCE.md.
+          apply "${gitops}/bootstrap/config-connector/overlays/${ENVIRONMENT}"
+          # The ConfigConnector object's own condition first, and only then
+          # the pods it causes to exist.
+          #
+          # `kubectl wait` on a *label selector* returns immediately with
+          # "no matching resources found" when nothing matches yet, and the
+          # operator has not created the controller pods at the instant this
+          # line is reached. So the wait below was a wait that could succeed
+          # by finding nothing — the exact shape of control this repository
+          # calls a defect rather than a spare part, and it would have handed
+          # the next command a controller that was not running.
+          kubectl wait --for=condition=Healthy configconnector/configconnector.core.cnrm.cloud.google.com --timeout=300s
+          kubectl -n cnrm-system rollout status statefulset/cnrm-controller-manager --timeout=300s
+          # 4. Argo CD's App credential, from Secret Manager, as a
+          #    Kubernetes Secret. Kargo's is read at the same time and
+          #    applied in phase 11, because the namespace it lands in does
+          #    not exist until Kargo's Project controller makes one.
+          umask 077
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          for controller in argocd kargo; do
+            gcloud secrets versions access latest \
+              --secret "qip-github-app-${controller}-${ENVIRONMENT}" \
+              --project "${GCP_PROJECT}" --out-file "${scratch}/${controller}.json"
+          done
+          python3 - "$scratch" "https://github.com/${repository}.git" <<'PY'
+          import json, sys
+          scratch, repo_url = sys.argv[1], sys.argv[2]
+          def read(controller):
+              with open(f"{scratch}/{controller}.json", encoding="utf-8") as handle:
+                  payload = json.load(handle)
+              for key in ("app_id", "installation_id", "private_key"):
+                  if not payload.get(key):
+                      sys.exit(f"the {controller} App payload carries no {key}; seed it as bootstrap/README.md describes")
+              return payload
+          argocd = read("argocd")
+          kargo = read("kargo")
+          secrets = [
+              {"apiVersion": "v1", "kind": "Secret",
+               "metadata": {"name": "qip-repository", "namespace": "argocd",
+                            "labels": {"argocd.argoproj.io/secret-type": "repository"}},
+               "stringData": {"type": "git", "url": repo_url,
+                              "githubAppID": str(argocd["app_id"]),
+                              "githubAppInstallationID": str(argocd["installation_id"]),
+                              "githubAppPrivateKey": argocd["private_key"]}},
+              {"apiVersion": "v1", "kind": "Secret",
+               "metadata": {"name": "qip-repository", "namespace": "qip",
+                            "labels": {"kargo.akuity.io/cred-type": "git"}},
+               "stringData": {"repoURL": repo_url,
+                              "githubAppID": str(kargo["app_id"]),
+                              "githubAppInstallationID": str(kargo["installation_id"]),
+                              "githubAppPrivateKey": kargo["private_key"]}},
+          ]
+          # Two files, not one, because the two land at different times.
+          # Argo CD's goes into `argocd`, which exists now. Kargo's goes into
+          # `qip`, which does not exist until Kargo's own Project controller
+          # creates it — and that is now after Argo CD is proven, so applying
+          # both here would fail on a namespace nobody had made yet.
+          for name, item in (("argocd", secrets[0]), ("kargo", secrets[1])):
+              with open(f"{scratch}/secret-{name}.json", "w", encoding="utf-8") as handle:
+                  json.dump(item, handle)
+          PY
+          kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap \
+            -f "${scratch}/secret-argocd.json" >/dev/null
+          rm -f "${scratch}/argocd.json" "${scratch}/kargo.json" "${scratch}/secret-argocd.json"
+          echo "projected the Argo CD App credential into argocd/qip-repository; the value was not printed."
+
+          # 5. Argo CD's admin credential, if this environment publishes a
+          #     front door and somebody has seeded one.
+          #
+          # The overlay that adds a load balancer also sets
+          # `admin.enabled: "true"`, because IAP authenticates a person and
+          # then hands them an Argo CD with no account to be. This projects
+          # the credential that account uses.
+          #
+          # **An unseeded secret disables the account rather than defaulting
+          # it.** Argo CD with `admin.enabled` true and no `admin.password`
+          # in `argocd-secret` generates one into a Secret on first start,
+          # which is a credential nobody chose, nobody rotates and nobody
+          # knows — behind a front door that is already published. So the
+          # absence of a version turns the flag back off, and the operator
+          # gets a control plane nobody can log into, which is the failure
+          # they can diagnose rather than the one they cannot see.
+          #
+          # The value is a bcrypt hash, seeded out of band like every other
+          # secret here, and is never printed: `--format` is not used, the
+          # value is piped, and only its presence is reported.
+          admin_secret="qip-argocd-admin-password-${ENVIRONMENT}"
+          if [ -d "${gitops}/bootstrap/gateway/overlays/${ENVIRONMENT}" ]; then
+            if gcloud secrets versions list "$admin_secret" --project "${GCP_PROJECT}" \
+                 --filter='state:ENABLED' --format='value(name)' 2>/dev/null | grep -q .; then
+              hash="$(gcloud secrets versions access latest --secret "$admin_secret" --project "${GCP_PROJECT}")"
+              kubectl -n argocd patch secret argocd-secret --type=merge -p \
+                "{\"stringData\":{\"admin.password\":\"${hash}\",\"admin.passwordMtime\":\"$(date -u +%FT%TZ)\"}}" >/dev/null
+              unset hash
+              echo "projected the Argo CD admin credential from ${admin_secret}; the value was not printed."
+            else
+              echo "::warning title=no Argo CD admin credential::${admin_secret} holds no enabled version, so the local admin account is being disabled rather than left with a password nobody chose."
+              kubectl -n argocd patch configmap argocd-cm --type=merge -p \
+                '{"data":{"admin.enabled":"false"}}' >/dev/null
+              echo "Seed it and re-run: printf '%s' '<bcrypt-hash>' | gcloud secrets versions add ${admin_secret} --project ${GCP_PROJECT} --data-file=-"
+            fi
+          fi
+
+          # 6. The Argo CD project and this environment's Application.
+          apply "${gitops}/argocd/overlays/${ENVIRONMENT}"
+
+          # 7. The front door, if this environment has one.
+          #
+          # Applied last because it is the only part that publishes anything:
+          # a Gateway in front of controllers that are not yet running would
+          # serve 502 to an operator who then has to work out whether the
+          # load balancer or the controller is at fault. Applied at all only
+          # where the overlay exists, so an environment without a front door
+          # needs no flag here — the absence of the directory is the
+          # statement, and it cannot drift from the tfvars that reserved the
+          # address, because the apply simply has nothing to do.
+          #
+          # What this makes reachable is two controller UIs behind Identity-
+          # Aware Proxy. It does not touch the API server, the nodes or the
+          # private endpoint, and an operator who has not been granted
+          # `roles/iap.httpsResourceAccessor` is refused by Google's front
+          # end before the request reaches the cluster.
+          if [ -d "${gitops}/bootstrap/gateway/overlays/${ENVIRONMENT}" ]; then
+            apply "${gitops}/bootstrap/gateway/overlays/${ENVIRONMENT}"
+            echo "the ${ENVIRONMENT} GitOps front door is applied; the load balancer takes a few minutes to program and the managed certificate stays in PROVISIONING until its A records resolve."
+          else
+            echo "no gateway overlay for ${ENVIRONMENT}; the control plane stays reachable only through the Connect gateway."
+          fi
+
+          # 8. Prove the sync rather than announcing it.
+          #
+          # This step used to end by printing "Argo CD reconciles ... from
+          # here on" and exiting zero, without one check that the Application
+          # had been admitted, that the repository credential worked, or that
+          # a single manifest had synced. A step whose last line is a claim
+          # about the future is the thing `.claude/rules/00-enterprise-governance.md`
+          # exists to refuse: "never report that a check passed unless you ran
+          # it and read its output". This job was reporting a successful
+          # bootstrap on the strength of the last `kubectl apply` returning
+          # zero, which says only that the API server accepted the document.
+          #
+          # `wait --for=jsonpath` is used rather than a poll loop because a
+          # loop that gives up has to decide what to do next, and there is
+          # only one right answer: fail, and say which half is wrong.
+          echo "waiting for the ${ENVIRONMENT} Application to sync and report healthy..."
+          if ! kubectl -n argocd wait --for=jsonpath='{.status.sync.status}'=Synced \
+              "application/qip-${ENVIRONMENT}" --timeout=600s; then
+            echo "::error title=Application never synced::qip-${ENVIRONMENT} did not reach Synced." >&2
+            kubectl -n argocd get "application/qip-${ENVIRONMENT}" \
+              -o jsonpath='{.status.sync.status}{"\n"}{.status.conditions}{"\n"}' >&2 || true
+            exit 1
+          fi
+          if ! kubectl -n argocd wait --for=jsonpath='{.status.health.status}'=Healthy \
+              "application/qip-${ENVIRONMENT}" --timeout=600s; then
+            echo "::error title=Application synced but is not healthy::qip-${ENVIRONMENT} reached Synced and not Healthy." >&2
+            echo "Synced means Argo CD applied what the manifests say; Healthy means the objects it applied came up. A sync that is not healthy is a reconciler that did its job over manifests that cannot run." >&2
+            kubectl -n argocd get "application/qip-${ENVIRONMENT}" \
+              -o jsonpath='{.status.health.status}{"\n"}{.status.conditions}{"\n"}' >&2 || true
+            exit 1
+          fi
+          echo "bootstrapped ${cluster}; qip-${ENVIRONMENT} is Synced and Healthy, and Argo CD reconciles ${gitops}/envs/${ENVIRONMENT} from here on."
+
+          # --- From here on: Kargo, and the cert-manager it needs ----------
+          #
+          # Everything above is Argo CD's path and is now proven. What
+          # follows is independent of it, and a failure below leaves an
+          # operator with a working Argo CD and a named Kargo problem rather
+          # than neither.
+          # 9. cert-manager, and wait for its webhook: Kargo's render names a
           #    Certificate the webhook must admit.
           apply "${gitops}/bootstrap/cert-manager/overlays/${ENVIRONMENT}"
           # All three, not just the webhook. The webhook is what admits the
@@ -975,11 +1186,7 @@ jobs:
             exit 1
           fi
           echo "cert-manager's webhook answers and its certificate verifies."
-          # 2. Argo CD.
-          apply "${gitops}/bootstrap/argocd/overlays/${ENVIRONMENT}"
-          kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
-          kubectl -n argocd rollout status deployment/argocd-repo-server --timeout=300s
-          # 3. Kargo.
+          # 10. Kargo, which is what cert-manager above is for.
           apply "${gitops}/bootstrap/kargo/overlays/${ENVIRONMENT}"
           kubectl -n kargo rollout status deployment/kargo-api --timeout=300s
           kubectl -n kargo rollout status deployment/kargo-controller --timeout=300s
@@ -991,183 +1198,23 @@ jobs:
           # running to reconcile.
           kubectl -n kargo rollout status deployment/kargo-webhooks-server --timeout=300s
           kubectl -n kargo rollout status deployment/kargo-management-controller --timeout=300s
-          # 4. The Config Connector operator, vendored, and its CRDs. Run 34
-          #    found the addon refused on Autopilot (`addons
-          #    {"config-connector"} are not supported for Autopilot
-          #    clusters`), so the operator arrives here like the three
-          #    controllers above it. Its `ConfigConnector` CRD must be
-          #    established before the object below names it, or the apply
-          #    fails on a kind the API server does not know yet.
-          apply "${gitops}/bootstrap/config-connector-operator/overlays/${ENVIRONMENT}"
-          kubectl -n configconnector-operator-system rollout status statefulset/configconnector-operator --timeout=300s
-          kubectl wait --for=condition=Established crd/configconnectors.core.cnrm.cloud.google.com --timeout=300s
-          # 5. Config Connector's one object, and the namespace the manifests
-          #    land in; then wait for the controller the operator installs to
-          #    pick up the identity. The four cnrm-system images are the
-          #    operator's own, from gcr.io/gke-release, and this wait is
-          #    where an admission policy that does not admit them says so —
-          #    bootstrap/config-connector-operator/SOURCE.md.
-          apply "${gitops}/bootstrap/config-connector/overlays/${ENVIRONMENT}"
-          # The ConfigConnector object's own condition first, and only then
-          # the pods it causes to exist.
-          #
-          # `kubectl wait` on a *label selector* returns immediately with
-          # "no matching resources found" when nothing matches yet, and the
-          # operator has not created the controller pods at the instant this
-          # line is reached. So the wait below was a wait that could succeed
-          # by finding nothing — the exact shape of control this repository
-          # calls a defect rather than a spare part, and it would have handed
-          # the next command a controller that was not running.
-          kubectl wait --for=condition=Healthy configconnector/configconnector.core.cnrm.cloud.google.com --timeout=300s
-          kubectl -n cnrm-system rollout status statefulset/cnrm-controller-manager --timeout=300s
 
-          # 6. The two credentials, from Secret Manager, as Kubernetes
-          #    Secrets. Kargo's lands in the project's namespace, so the
-          #    project goes first and is waited for.
+          # 11. Kargo's Project, the credential that lands in the namespace
+          #     it creates, and the promotion chain.
           kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap \
             -f "${gitops}/kargo/base/project.yaml"
           kubectl wait --for=condition=Ready project/qip --timeout=300s
-          umask 077
-          scratch="$(mktemp -d)"
-          trap 'rm -rf "$scratch"' EXIT
-          for controller in argocd kargo; do
-            gcloud secrets versions access latest \
-              --secret "qip-github-app-${controller}-${ENVIRONMENT}" \
-              --project "${GCP_PROJECT}" --out-file "${scratch}/${controller}.json"
-          done
-          python3 - "$scratch" "https://github.com/${repository}.git" <<'PY'
-          import json, sys
-          scratch, repo_url = sys.argv[1], sys.argv[2]
-          def read(controller):
-              with open(f"{scratch}/{controller}.json", encoding="utf-8") as handle:
-                  payload = json.load(handle)
-              for key in ("app_id", "installation_id", "private_key"):
-                  if not payload.get(key):
-                      sys.exit(f"the {controller} App payload carries no {key}; seed it as bootstrap/README.md describes")
-              return payload
-          argocd = read("argocd")
-          kargo = read("kargo")
-          secrets = [
-              {"apiVersion": "v1", "kind": "Secret",
-               "metadata": {"name": "qip-repository", "namespace": "argocd",
-                            "labels": {"argocd.argoproj.io/secret-type": "repository"}},
-               "stringData": {"type": "git", "url": repo_url,
-                              "githubAppID": str(argocd["app_id"]),
-                              "githubAppInstallationID": str(argocd["installation_id"]),
-                              "githubAppPrivateKey": argocd["private_key"]}},
-              {"apiVersion": "v1", "kind": "Secret",
-               "metadata": {"name": "qip-repository", "namespace": "qip",
-                            "labels": {"kargo.akuity.io/cred-type": "git"}},
-               "stringData": {"repoURL": repo_url,
-                              "githubAppID": str(kargo["app_id"]),
-                              "githubAppInstallationID": str(kargo["installation_id"]),
-                              "githubAppPrivateKey": kargo["private_key"]}},
-          ]
-          with open(f"{scratch}/secrets.json", "w", encoding="utf-8") as handle:
-              json.dump({"apiVersion": "v1", "kind": "List", "items": secrets}, handle)
-          PY
+
+          # Kargo's own App credential, now that the namespace its Project
+          # controller creates actually exists.
           kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap \
-            -f "${scratch}/secrets.json" >/dev/null
-          rm -f "${scratch}"/*.json
-          echo "projected the two App credentials into argocd/qip-repository and qip/qip-repository; neither value was printed."
+            -f "${scratch}/secret-kargo.json" >/dev/null
+          rm -f "${scratch}/secret-kargo.json"
+          echo "projected the Kargo App credential into qip/qip-repository; the value was not printed."
 
-          # 6b. Argo CD's admin credential, if this environment publishes a
-          #     front door and somebody has seeded one.
-          #
-          # The overlay that adds a load balancer also sets
-          # `admin.enabled: "true"`, because IAP authenticates a person and
-          # then hands them an Argo CD with no account to be. This projects
-          # the credential that account uses.
-          #
-          # **An unseeded secret disables the account rather than defaulting
-          # it.** Argo CD with `admin.enabled` true and no `admin.password`
-          # in `argocd-secret` generates one into a Secret on first start,
-          # which is a credential nobody chose, nobody rotates and nobody
-          # knows — behind a front door that is already published. So the
-          # absence of a version turns the flag back off, and the operator
-          # gets a control plane nobody can log into, which is the failure
-          # they can diagnose rather than the one they cannot see.
-          #
-          # The value is a bcrypt hash, seeded out of band like every other
-          # secret here, and is never printed: `--format` is not used, the
-          # value is piped, and only its presence is reported.
-          admin_secret="qip-argocd-admin-password-${ENVIRONMENT}"
-          if [ -d "${gitops}/bootstrap/gateway/overlays/${ENVIRONMENT}" ]; then
-            if gcloud secrets versions list "$admin_secret" --project "${GCP_PROJECT}" \
-                 --filter='state:ENABLED' --format='value(name)' 2>/dev/null | grep -q .; then
-              hash="$(gcloud secrets versions access latest --secret "$admin_secret" --project "${GCP_PROJECT}")"
-              kubectl -n argocd patch secret argocd-secret --type=merge -p \
-                "{\"stringData\":{\"admin.password\":\"${hash}\",\"admin.passwordMtime\":\"$(date -u +%FT%TZ)\"}}" >/dev/null
-              unset hash
-              echo "projected the Argo CD admin credential from ${admin_secret}; the value was not printed."
-            else
-              echo "::warning title=no Argo CD admin credential::${admin_secret} holds no enabled version, so the local admin account is being disabled rather than left with a password nobody chose."
-              kubectl -n argocd patch configmap argocd-cm --type=merge -p \
-                '{"data":{"admin.enabled":"false"}}' >/dev/null
-              echo "Seed it and re-run: printf '%s' '<bcrypt-hash>' | gcloud secrets versions add ${admin_secret} --project ${GCP_PROJECT} --data-file=-"
-            fi
-          fi
-
-          # 7. The Argo CD project and this environment's Application.
-          apply "${gitops}/argocd/overlays/${ENVIRONMENT}"
-          # 8. The Kargo chain, into the namespace the project created.
+          # The Kargo chain, into the namespace the project created.
           apply "${gitops}/kargo/overlays/${ENVIRONMENT}"
-
-          # 8b. The front door, if this environment has one.
-          #
-          # Applied last because it is the only part that publishes anything:
-          # a Gateway in front of controllers that are not yet running would
-          # serve 502 to an operator who then has to work out whether the
-          # load balancer or the controller is at fault. Applied at all only
-          # where the overlay exists, so an environment without a front door
-          # needs no flag here — the absence of the directory is the
-          # statement, and it cannot drift from the tfvars that reserved the
-          # address, because the apply simply has nothing to do.
-          #
-          # What this makes reachable is two controller UIs behind Identity-
-          # Aware Proxy. It does not touch the API server, the nodes or the
-          # private endpoint, and an operator who has not been granted
-          # `roles/iap.httpsResourceAccessor` is refused by Google's front
-          # end before the request reaches the cluster.
-          if [ -d "${gitops}/bootstrap/gateway/overlays/${ENVIRONMENT}" ]; then
-            apply "${gitops}/bootstrap/gateway/overlays/${ENVIRONMENT}"
-            echo "the ${ENVIRONMENT} GitOps front door is applied; the load balancer takes a few minutes to program and the managed certificate stays in PROVISIONING until its A records resolve."
-          else
-            echo "no gateway overlay for ${ENVIRONMENT}; the control plane stays reachable only through the Connect gateway."
-          fi
-
-          # 9. Prove the sync rather than announcing it.
-          #
-          # This step used to end by printing "Argo CD reconciles ... from
-          # here on" and exiting zero, without one check that the Application
-          # had been admitted, that the repository credential worked, or that
-          # a single manifest had synced. A step whose last line is a claim
-          # about the future is the thing `.claude/rules/00-enterprise-governance.md`
-          # exists to refuse: "never report that a check passed unless you ran
-          # it and read its output". This job was reporting a successful
-          # bootstrap on the strength of the last `kubectl apply` returning
-          # zero, which says only that the API server accepted the document.
-          #
-          # `wait --for=jsonpath` is used rather than a poll loop because a
-          # loop that gives up has to decide what to do next, and there is
-          # only one right answer: fail, and say which half is wrong.
-          echo "waiting for the ${ENVIRONMENT} Application to sync and report healthy..."
-          if ! kubectl -n argocd wait --for=jsonpath='{.status.sync.status}'=Synced \
-              "application/qip-${ENVIRONMENT}" --timeout=600s; then
-            echo "::error title=Application never synced::qip-${ENVIRONMENT} did not reach Synced." >&2
-            kubectl -n argocd get "application/qip-${ENVIRONMENT}" \
-              -o jsonpath='{.status.sync.status}{"\n"}{.status.conditions}{"\n"}' >&2 || true
-            exit 1
-          fi
-          if ! kubectl -n argocd wait --for=jsonpath='{.status.health.status}'=Healthy \
-              "application/qip-${ENVIRONMENT}" --timeout=600s; then
-            echo "::error title=Application synced but is not healthy::qip-${ENVIRONMENT} reached Synced and not Healthy." >&2
-            echo "Synced means Argo CD applied what the manifests say; Healthy means the objects it applied came up. A sync that is not healthy is a reconciler that did its job over manifests that cannot run." >&2
-            kubectl -n argocd get "application/qip-${ENVIRONMENT}" \
-              -o jsonpath='{.status.health.status}{"\n"}{.status.conditions}{"\n"}' >&2 || true
-            exit 1
-          fi
-          echo "bootstrapped ${cluster}; qip-${ENVIRONMENT} is Synced and Healthy, and Argo CD reconciles ${gitops}/envs/${ENVIRONMENT} from here on."
+          echo "bootstrapped Kargo; its chain promotes into ${gitops}/envs/${ENVIRONMENT} from here on."
 
       - name: suspend
         if: inputs.action == 'suspend'
