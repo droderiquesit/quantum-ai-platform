@@ -140,6 +140,24 @@ def resolve(resource, project):
     """
     kind = resource["type"]
     change = resource["change"]
+    if kind == "google_identity_platform_config":
+        # Answered before the name check below, because this resource has no
+        # name to check: it is one configuration per project, addressed by the
+        # project id alone. Asked for a `name` it does not declare, the check
+        # deferred it as "the plan does not yet know what it would be called",
+        # which reads as a timing problem and is really a category error — the
+        # first version of this branch sat underneath that check and could
+        # never be reached, and the apply failed again in exactly the way it
+        # was written to prevent.
+        #
+        # The probe asks whether `identitytoolkit.googleapis.com` is enabled,
+        # which is a proxy and is named as one: the configuration exists once
+        # the API has been turned on and configured, and this asks only the
+        # first half. It is used because `gcloud services list` is the same
+        # surface every other probe here already depends on, and because the
+        # failure mode of the proxy being wrong is a loud `terraform import`
+        # error rather than a resource quietly built twice.
+        return f"identity|{project}", project
     name = known(change, "name")
     if not name:
         return None, "the plan does not yet know what it would be called"
@@ -170,17 +188,6 @@ def resolve(resource, project):
         )
     if kind == "google_storage_bucket":
         return f"bucket|{project}|{name}", f"{project}/{name}"
-    if kind == "google_identity_platform_config":
-        # One configuration per project, imported by the project id alone.
-        #
-        # The probe asks whether `identitytoolkit.googleapis.com` is enabled,
-        # which is a proxy and is named as one: the configuration exists once
-        # the API has been turned on and configured, and this asks only the
-        # first half. It is used because `gcloud services list` is the same
-        # surface every other step here already depends on, and because the
-        # failure mode of the proxy being wrong is a loud `terraform import`
-        # error rather than a resource quietly built twice.
-        return f"identity|{project}", project
     return None, f"this step has no way to ask Google whether a {kind} exists"
 
 
