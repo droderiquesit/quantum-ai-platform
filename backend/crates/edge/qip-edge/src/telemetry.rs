@@ -266,6 +266,88 @@ pub const EDGE_FILL_TIME_UNMEASURED: &str = "qip_edge_fill_time_unmeasured_venue
 /// on `repriced` alone, and `unchanged` is what tells them apart.
 pub const EDGE_ARBITRAGE_EDGE_REFRESHES: &str = "qip_edge_arbitrage_edge_refreshes_total";
 
+/// The adversary posture the applied policy's slot 12 states for each
+/// configured venue (§41.5 item 12), as a one-hot gauge over
+/// [`AdversaryPostureLabel`].
+///
+/// The first non-test reader of that slot on the edge, and a reader that
+/// **changes no behaviour** — said here because the centre's producer says
+/// the same and a chart must not be taken for a control. What it changes is
+/// that a posture the centre found now reaches the cell's own exposition,
+/// beside the refusals and the orders it charts for the same venue, so an
+/// operator at a cell can see what the centre believes about the
+/// counterparty there without asking the centre. What a cell may *do* with
+/// a posture is a decision this repository has not taken; until it does,
+/// this is a fact carried and not a rule applied.
+///
+/// `posture` is six source-file literals and `venue` is the configured
+/// venue list, so the series is bounded by both. Every arm is written on
+/// every policy application — one for the posture stated, zero for the
+/// rest — so a venue that went from `adapting` to `benign` does not keep a
+/// stale `adapting` reading at one.
+pub const EDGE_VENUE_ADVERSARY_POSTURE: &str = "qip_edge_venue_adversary_posture";
+
+/// What slot 12 says about one venue, as this build can read it.
+///
+/// Four arms mirror the centre's `AdversaryPosture` by its `as_str`
+/// literals. The other two are the edge's own and are what make the series
+/// honest: `unstated` is a venue the slot carries no profile for — or a slot
+/// the centre has not produced — and `unknown` is a posture string this
+/// build does not know, which is a version skew and not a finding about the
+/// venue. Collapsing either into `unmeasured` would report the centre's
+/// silence as the centre's measurement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdversaryPostureLabel {
+    Unmeasured,
+    Benign,
+    Deteriorating,
+    Adapting,
+    Unstated,
+    Unknown,
+}
+
+impl AdversaryPostureLabel {
+    /// Every arm, in the order the series is written.
+    pub const ALL: [Self; 6] = [
+        Self::Unmeasured,
+        Self::Benign,
+        Self::Deteriorating,
+        Self::Adapting,
+        Self::Unstated,
+        Self::Unknown,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unmeasured => "unmeasured",
+            Self::Benign => "benign",
+            Self::Deteriorating => "deteriorating",
+            Self::Adapting => "adapting",
+            Self::Unstated => "unstated",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Read the posture the slot states for a venue, or say why it cannot.
+    ///
+    /// `None` is a venue the slot does not name. A profile that names the
+    /// venue but carries no string `posture`, or one this build cannot map,
+    /// is `Unknown` rather than an error: the payload was verified whole and
+    /// applied already, and a chart is not the place to refuse it.
+    pub fn read(profile: Option<&serde_json::Value>) -> Self {
+        let Some(profile) = profile else {
+            return Self::Unstated;
+        };
+        match profile.get("posture").and_then(serde_json::Value::as_str) {
+            Some("unmeasured") => Self::Unmeasured,
+            Some("benign") => Self::Benign,
+            Some("deteriorating") => Self::Deteriorating,
+            Some("adapting") => Self::Adapting,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 /// Configured venues the cell holds no settlement terms for (§56.2 rule 21).
 ///
 /// The idle reading of the settlement gate, for the reason
@@ -429,6 +511,11 @@ impl CellMetrics {
         m.describe(
             EDGE_FILL_TIME_UNMEASURED,
             "configured venues with too few fills for their fill time to be judged",
+        );
+        m.describe(
+            EDGE_VENUE_ADVERSARY_POSTURE,
+            "the adversary posture the applied policy states for a configured venue, one-hot \
+             over unmeasured, benign, deteriorating, adapting, unstated, unknown",
         );
         m.describe(
             EDGE_ARBITRAGE_EDGE_REFRESHES,
@@ -846,6 +933,21 @@ impl CellMetrics {
         let venues = venues as f64;
         self.metrics
             .gauge(EDGE_FILL_TIME_UNMEASURED, self.base.clone(), venues);
+    }
+
+    /// The posture slot 12 states for one configured venue, one-hot over
+    /// every [`AdversaryPostureLabel`] arm so an earlier posture cannot
+    /// linger at one after the centre has moved the venue off it.
+    pub fn adversary_posture(&self, venue: &str, posture: AdversaryPostureLabel) {
+        for arm in AdversaryPostureLabel::ALL {
+            let mut labels = self.with("venue", venue);
+            labels.insert("posture".to_string(), arm.as_str().to_string());
+            self.metrics.gauge(
+                EDGE_VENUE_ADVERSARY_POSTURE,
+                labels,
+                if arm == posture { 1.0 } else { 0.0 },
+            );
+        }
     }
 
     /// What §30.1's edge update did on one pass: how many trade edges were

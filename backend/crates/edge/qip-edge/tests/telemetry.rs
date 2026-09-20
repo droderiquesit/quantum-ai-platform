@@ -1215,3 +1215,144 @@ fn a_restarted_cell_publishes_how_many_venues_have_yet_to_answer_and_the_gauge_f
     );
     Ok(())
 }
+// --- slot 12 at the cell -------------------------------------------------------
+
+/// The slot-12 series for this cell's venue, one arm.
+fn posture_gauge(metrics: &Metrics, arm: &str) -> Option<f64> {
+    metrics.snapshot().gauge(
+        qip_edge::telemetry::EDGE_VENUE_ADVERSARY_POSTURE,
+        &labels([
+            ("cell", CELL),
+            ("region", REGION),
+            ("venue", VENUE),
+            ("posture", arm),
+        ]),
+    )
+}
+
+/// A policy whose only produced slot is slot 12, naming `venue` with the
+/// given profile.
+fn policy_with_profile(
+    sequence: u64,
+    issued_at: Timestamp,
+    venue: &str,
+    profile: serde_json::Value,
+) -> Result<VerifiedPolicy> {
+    let mut payload = PolicyPayload::unproduced(sequence, CELL, issued_at);
+    payload.adversary_profiles = Slot::produced(
+        qip_contracts::policy::AdversaryProfiles {
+            venues: [(venue.to_string(), profile)].into_iter().collect(),
+        },
+        issued_at,
+    );
+    VerifiedPolicy::verify(payload.signed(POLICY_KEY)?, POLICY_KEY, CELL, issued_at)
+}
+
+#[test]
+fn slot_twelves_posture_for_a_configured_venue_reaches_the_cells_exposition_one_hot_and_moves_with_the_policy()
+-> Result<()> {
+    // The failure this closes: slot 12 was produced at the centre and read by
+    // nothing on the edge, so a posture the centre found about a venue
+    // reached no process that trades there. It is now charted at the cell —
+    // and charted one-hot, because a gauge that only ever wrote the current
+    // arm would leave `adapting` at one for ever after the venue went benign.
+    use qip_edge::telemetry::AdversaryPostureLabel;
+    let (mut cell, metrics) = wired_cell()?;
+
+    // Premise: nothing is charted and nothing is stated before a policy.
+    assert_eq!(
+        posture_gauge(&metrics, "adapting"),
+        None,
+        "the premise failed: a posture was charted before any policy"
+    );
+    assert_eq!(
+        cell.adversary_posture(&venue()),
+        AdversaryPostureLabel::Unstated,
+        "the premise failed: a cell with no policy states a posture"
+    );
+
+    // The centre says this venue is adapting.
+    cell.apply_policy(
+        policy_with_profile(
+            1,
+            t(10),
+            VENUE,
+            serde_json::json!({ "posture": "adapting", "measured": 12 }),
+        )?,
+        t(10),
+    )?;
+    assert_eq!(
+        cell.adversary_posture(&venue()),
+        AdversaryPostureLabel::Adapting
+    );
+    assert_eq!(
+        posture_gauge(&metrics, "adapting"),
+        Some(1.0),
+        "the stated posture is not at one"
+    );
+    for arm in [
+        "unmeasured",
+        "benign",
+        "deteriorating",
+        "unstated",
+        "unknown",
+    ] {
+        assert_eq!(
+            posture_gauge(&metrics, arm),
+            Some(0.0),
+            "the {arm} arm was not written at zero beside the stated one"
+        );
+    }
+
+    // The next payload names a venue this cell is not configured for and
+    // says nothing about this one: the venue is unstated, `adapting` drops
+    // to zero rather than lingering, and no series is minted for a venue
+    // outside the deployment's list.
+    cell.apply_policy(
+        policy_with_profile(
+            2,
+            t(20),
+            "ELSEWHERE",
+            serde_json::json!({ "posture": "benign" }),
+        )?,
+        t(20),
+    )?;
+    assert_eq!(
+        cell.adversary_posture(&venue()),
+        AdversaryPostureLabel::Unstated
+    );
+    assert_eq!(
+        posture_gauge(&metrics, "adapting"),
+        Some(0.0),
+        "the earlier posture lingered at one after the centre stopped stating it"
+    );
+    assert_eq!(posture_gauge(&metrics, "unstated"), Some(1.0));
+    assert_eq!(
+        metrics.snapshot().gauge(
+            qip_edge::telemetry::EDGE_VENUE_ADVERSARY_POSTURE,
+            &labels([
+                ("cell", CELL),
+                ("region", REGION),
+                ("venue", "ELSEWHERE"),
+                ("posture", "benign"),
+            ]),
+        ),
+        None,
+        "a payload naming an unconfigured venue minted a series for it"
+    );
+
+    // A posture string this build does not know is charted as unknown, not
+    // as any measurement.
+    cell.apply_policy(
+        policy_with_profile(3, t(30), VENUE, serde_json::json!({ "posture": "hostile" }))?,
+        t(30),
+    )?;
+    assert_eq!(
+        cell.adversary_posture(&venue()),
+        AdversaryPostureLabel::Unknown
+    );
+    assert_eq!(posture_gauge(&metrics, "unknown"), Some(1.0));
+    assert_eq!(posture_gauge(&metrics, "unstated"), Some(0.0));
+    assert_eq!(posture_gauge(&metrics, "unmeasured"), Some(0.0));
+    Ok(())
+}

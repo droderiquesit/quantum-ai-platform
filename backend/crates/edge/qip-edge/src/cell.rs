@@ -27,7 +27,7 @@ use crate::reservation::RegionTable;
 use crate::resume::{ResumeDiscipline, VenueAccount};
 use crate::seam::CellLiquidity;
 use crate::settlement::{self, GATE_SETTLEMENT, SettlementTerms};
-use crate::telemetry::{CellMetrics, RegionShareOutcome};
+use crate::telemetry::{AdversaryPostureLabel, CellMetrics, RegionShareOutcome};
 use qip_arbitrage::liquidity::LiquiditySource;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
 use qip_contracts::capital::{CapitalGrant, Utilisation};
@@ -2200,10 +2200,43 @@ impl Cell {
         // happened. Recording it before would publish a payload the cell might
         // still have refused.
         self.metrics.policy_applied(sequence);
+        // Slot 12, read after the swap for the same reason the sequence is:
+        // the posture charted is the posture of a payload the cell holds.
+        self.record_adversary_postures();
         // After the swap, so the share is applied from a payload the cell has
         // already accepted whole and never from one it went on to refuse.
         self.apply_region_share(sequence, now);
         Ok(())
+    }
+
+    /// The adversary posture the applied policy's slot 12 states for one of
+    /// this cell's venues (§41.5 item 12), as this build reads it.
+    ///
+    /// `Unstated` for a venue the slot does not name, a slot the centre has
+    /// not produced, or a cell with no policy at all; `Unknown` for a
+    /// posture string this build cannot map. Read whatever the slot's
+    /// freshness: a stale posture is the last thing the centre said, and the
+    /// chart says what was said rather than nothing. Nothing that decides
+    /// reads this — see [`crate::telemetry::EDGE_VENUE_ADVERSARY_POSTURE`].
+    pub fn adversary_posture(&self, venue: &VenueId) -> AdversaryPostureLabel {
+        let profile = self
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.payload().adversary_profiles.value())
+            .and_then(|profiles| profiles.venues.get(venue.as_str()));
+        AdversaryPostureLabel::read(profile)
+    }
+
+    /// Chart slot 12 for every configured venue, one-hot per venue.
+    ///
+    /// Over `config.venues` and not over the slot's own keys, so the label
+    /// set stays the deployment's venue list and a payload naming a venue
+    /// this cell was never configured for mints no series.
+    fn record_adversary_postures(&self) {
+        for venue in &self.config.venues {
+            self.metrics
+                .adversary_posture(venue.as_str(), self.adversary_posture(venue));
+        }
     }
 
     /// Re-base the region table to this cell's share of its region's grant,
