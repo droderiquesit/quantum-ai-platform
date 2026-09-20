@@ -73,10 +73,6 @@ fn an_edge_retires_on_the_third_consecutive_failure_in_one_regime_and_not_on_the
     // first failure would make "known to fail" and "retired" the same event
     // and §9.4 names them as two; a retirement that never came would leave
     // the clause unbuilt, which is where the row stood.
-    assert_eq!(
-        RETIREMENT_CONSECUTIVE_FAILURES, 3,
-        "premise: the argued N is three; if it moves, move the counts below and the ADR"
-    );
     let mut graph = one_edge_graph()?;
 
     let before_last = fail(
@@ -99,13 +95,13 @@ fn an_edge_retires_on_the_third_consecutive_failure_in_one_regime_and_not_on_the
         "premise: the run is being counted"
     );
 
-    let third = at(2_000 + 2 * 100);
+    let third = at(2_000 + (RETIREMENT_CONSECUTIVE_FAILURES as i64 - 1) * 100);
     let report = graph.record_condition_failure("AAA", "BBB", "bear", third)?;
     assert_eq!(report.marked, 1);
     assert_eq!(
         report.retired.len(),
         1,
-        "the third consecutive failure retires the edge"
+        "the Nth consecutive failure retires the edge"
     );
     assert_eq!(
         graph.edges()[0].retired,
@@ -127,6 +123,16 @@ fn an_edge_retires_on_the_third_consecutive_failure_in_one_regime_and_not_on_the
     assert_eq!(fourth.marked, 0, "a retired edge takes no further failures");
     assert!(fourth.retired.is_empty());
     Ok(())
+}
+
+#[test]
+fn the_retirement_count_is_the_three_adr_0087_argues() {
+    // Pinned on purpose, and on its own so that a mutation of the number
+    // fails a test naming the record that argues it rather than a premise
+    // inside some other test. The ADR's argument is a debounce over a
+    // sliding window, not a significance level; a lane that moves this
+    // number owes the ADR an amendment saying what changed in the pass.
+    assert_eq!(RETIREMENT_CONSECUTIVE_FAILURES, 3);
 }
 
 #[test]
@@ -334,9 +340,11 @@ fn a_retired_edge_is_never_re_estimated_back_and_its_claims_report_unmatched() -
         .with_evidence(vec!["fresh".to_string()]);
     let report = graph.reestimate([claim], Duration::from_days(30), now)?;
 
+    // Bit-for-bit: the property is that the number did not move at all,
+    // not that it stayed within a tolerance a re-estimation could hide in.
     assert_eq!(
-        graph.edges()[0].strength,
-        strength_at_retirement,
+        graph.edges()[0].strength.to_bits(),
+        strength_at_retirement.to_bits(),
         "a claim inside the horizon must not move a retired edge's strength"
     );
     assert!(
@@ -360,8 +368,8 @@ fn a_retired_edge_is_never_re_estimated_back_and_its_claims_report_unmatched() -
     let again = graph.reestimate([claim], Duration::from_days(30), now)?;
     assert_eq!(again.updated.len(), 1, "the new edge is re-estimated");
     assert_eq!(
-        graph.edges()[0].strength,
-        strength_at_retirement,
+        graph.edges()[0].strength.to_bits(),
+        strength_at_retirement.to_bits(),
         "and the retired one still is not"
     );
     Ok(())
