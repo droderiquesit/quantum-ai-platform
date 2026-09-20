@@ -11,3 +11,60 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../upstream
+  # Leader election in this namespace rather than kube-system, which GKE
+  # Autopilot refuses at runtime while accepting the RBAC that describes it.
+  # The file says what that cost.
+  - leader-election.yaml
+
+# The two Deployments that elect. Patched rather than forked: the upstream
+# manifest is vendored byte-for-byte and this is the one argument that has
+# to differ on Autopilot.
+#
+# The whole `args` list is restated for each, rather than a JSON-patch
+# `replace` on an index. The first draft did use indices, and index 1 is
+# `--leader-election-namespace` on the cainjector but
+# `--cluster-resource-namespace=$(POD_NAMESPACE)` on the controller — so it
+# silently deleted the argument that tells cert-manager where to look for
+# its own resources, and left the kube-system election in place at index 2.
+# The rendered output is checked against these lists, which is how that was
+# caught; an index is a position and what we mean is a flag.
+patches:
+  - target:
+      kind: Deployment
+      name: cert-manager-cainjector
+      namespace: cert-manager
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: cert-manager-cainjector
+        namespace: cert-manager
+      spec:
+        template:
+          spec:
+            containers:
+              - name: cert-manager-cainjector
+                args:
+                  - --v=2
+                  - --leader-election-namespace=cert-manager
+  - target:
+      kind: Deployment
+      name: cert-manager
+      namespace: cert-manager
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: cert-manager
+        namespace: cert-manager
+      spec:
+        template:
+          spec:
+            containers:
+              - name: cert-manager-controller
+                args:
+                  - --v=2
+                  - --cluster-resource-namespace=$(POD_NAMESPACE)
+                  - --leader-election-namespace=cert-manager
+                  - --acme-http01-solver-image=quay.io/jetstack/cert-manager-acmesolver:v1.21.1
+                  - --max-concurrent-challenges=60

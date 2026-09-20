@@ -1,0 +1,54 @@
+# Leader election in cert-manager's own namespace, not in kube-system.
+#
+# The upstream manifest runs the controller and the cainjector with
+# `--leader-election-namespace=kube-system` and creates the Role and
+# RoleBinding for it there. On a GKE Autopilot cluster that does not work,
+# and it fails in the worst possible way: **silently**.
+#
+# Autopilot manages `kube-system` and refuses writes to it from workload
+# identities. The RBAC objects above apply without complaint — creating a
+# Role in kube-system is not the same as writing a Lease in kube-system at
+# runtime — so nothing in the install looks wrong. The cainjector then
+# starts, tries to acquire its Lease, is refused, and retries for ever. It
+# reports `1/1 Running`, its Deployment rolls out cleanly, and it injects
+# nothing, because a cainjector that is not the leader does no work.
+#
+# That cost four runs to find. Runs 58 through 61 each installed
+# cert-manager, saw three healthy pods, and then failed three phases later
+# on `x509: certificate signed by unknown authority` — the CA bundle was
+# never injected into the webhook configuration, and run 61's probe proved
+# every other link in the chain was fine: the `cert-manager-webhook-ca`
+# Secret existed, the `inject-ca-from-secret` annotation was present, and
+# the `caBundle` was empty.
+#
+# So the two Deployments are patched to elect in `cert-manager`, and these
+# are the Role and RoleBinding that permit it there. The upstream objects
+# in `kube-system` are left alone: they are inert once nothing elects
+# there, and deleting objects out of a vendored manifest is a bigger change
+# than adding two beside it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cert-manager:leaderelection-local
+  namespace: cert-manager
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cert-manager:leaderelection-local
+  namespace: cert-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cert-manager:leaderelection-local
+subjects:
+  - kind: ServiceAccount
+    name: cert-manager
+    namespace: cert-manager
+  - kind: ServiceAccount
+    name: cert-manager-cainjector
+    namespace: cert-manager
