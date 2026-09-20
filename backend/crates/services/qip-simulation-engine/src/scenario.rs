@@ -439,3 +439,443 @@ impl StressTester {
         Ok(results)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Blueprint §23.7's third and fourth methods.
+//
+// The library above answers two of the section's four rows: historical
+// replay (shocks that occurred, at the correlations that held then) and
+// correlation stress (shocks scaled beyond history, assuming the same
+// structure). Both reach a position only through a beta to a named factor,
+// so a position the factor model cannot measure is stressed by nothing, and
+// a position two mechanisms downstream of a driver the library never names
+// is stressed as if that driver did not exist. The two constructions below
+// are the rows that close those gaps, and each states what it cannot do.
+// ---------------------------------------------------------------------------
+
+/// A move that arrived at a node by propagation through the causal graph.
+///
+/// The simulation engine does not depend on the world model, so the walk
+/// happens elsewhere and its result crosses this seam as plain facts: which
+/// node moved, by how much, how many hops from the origin, and how long
+/// after the origin's own move. `magnitude` is a signed fraction of the
+/// target's own price, with every transmission and sign flip along the path
+/// already applied — which is why [`causal_exposures`] loads a position on
+/// its own node at exactly one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PropagatedShock {
+    pub target: String,
+    pub magnitude: f64,
+    /// Hops from the origin; zero is the origin itself.
+    pub order: usize,
+    pub over_days: f64,
+}
+
+/// Where the size of a driver's shock came from.
+///
+/// Recorded on the scenario rather than left in the caller, because a
+/// causal stress whose origin shock was invented reads identically, in its
+/// loss figure, to one whose origin shock was measured — and the section's
+/// own rationale for the library is that a scenario nobody can argue with is
+/// not a control.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DriverShockSizing {
+    /// The largest single-period move the platform's own tape holds for the
+    /// driver: a move that happened, so nobody has to defend its plausibility.
+    ObservedWorstPeriod,
+    /// [`STANDARD_DRIVER_SHOCK`], for a driver the tape has never priced — a
+    /// macro node a document claimed, or an instrument with one close.
+    StandardDriverShock,
+}
+
+impl DriverShockSizing {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ObservedWorstPeriod => "observed_worst_period",
+            Self::StandardDriverShock => "standard_driver_shock",
+        }
+    }
+}
+
+/// The shock applied at a driver the tape cannot size, as a fraction.
+///
+/// Ten percent is the round figure between the library's mildest hypothetical
+/// equity move (`liquidity-freeze`, 8%) and its mildest historical one
+/// (`correlation-breakdown`, 15%): large enough that a chain of two
+/// mechanisms at half transmission each still clears the propagation floor,
+/// small enough that it is not a claim about a crisis. It is a number someone
+/// chose, and [`DriverShockSizing::StandardDriverShock`] on the scenario says
+/// so wherever it was used.
+pub const STANDARD_DRIVER_SHOCK: f64 = 0.10;
+
+/// The name prefix every causal scenario carries, so a reader of a report can
+/// tell the section's third method from its first two without the definition
+/// beside it.
+pub const CAUSAL_SCENARIO_PREFIX: &str = "causal:";
+
+/// The name of the section's fourth method's scenario, fixed so the chart it
+/// reaches carries a bounded label.
+pub const ADVERSARIAL_SCENARIO_NAME: &str = "adversarial-worst-plausible";
+
+/// The two factor names [`StressTester::apply`] reads as yield moves and
+/// signs the other way. A propagated shock is a price move and must never be
+/// filed under either, so a causal target with one of these names is refused
+/// rather than silently inverted.
+const YIELD_QUOTED_FACTORS: [&str; 2] = ["rates", "credit"];
+
+/// Build the section's third method from one propagation: a shock at
+/// `origin`, walked through mechanisms, landing on whichever of `exposures`
+/// it reached.
+///
+/// Returns `Ok(None)` when the walk reached no held position — a driver the
+/// book does not sit downstream of is not a scenario, and a scenario shocking
+/// nothing would be refused by [`Scenario::validate`] anyway. The origin
+/// itself is a target when it is held: a driver the book holds moves by the
+/// initial shock before anything downstream does.
+///
+/// Every shock in the result is filed under the *target's own id* rather than
+/// a factor name, which is the whole difference from the library: the
+/// position is reached because a path in the graph reaches it, not because a
+/// regression over the tape gave it a beta. Apply the result to
+/// [`causal_exposures`] of the same book, never to the factor-loaded ones.
+pub fn causal_scenario(
+    origin: &str,
+    initial_shock: f64,
+    sizing: DriverShockSizing,
+    propagated: &[PropagatedShock],
+    exposures: &[FactorExposure],
+) -> Result<Option<Scenario>> {
+    if origin.trim().is_empty() {
+        return Err(Error::invalid(
+            "a causal scenario needs a driver to shock; an origin with no name cannot be \
+             propagated from",
+        ));
+    }
+    if !initial_shock.is_finite() || initial_shock == 0.0 {
+        return Err(Error::invalid(format!(
+            "a driver shock of {initial_shock} at {origin} is not a move; size it from the tape \
+             or from STANDARD_DRIVER_SHOCK"
+        )));
+    }
+    let held: BTreeSet<&str> = exposures
+        .iter()
+        .map(|exposure| exposure.object_id.as_str())
+        .collect();
+
+    let mut shocks: Vec<FactorShock> = Vec::new();
+    let mut reached: BTreeSet<String> = BTreeSet::new();
+    let mut deepest = 0usize;
+    if held.contains(origin) {
+        shocks.push(FactorShock::new(origin, initial_shock, 0.0));
+        reached.insert(origin.to_string());
+    }
+    for effect in propagated {
+        if !effect.magnitude.is_finite() {
+            return Err(Error::numeric(format!(
+                "the propagation from {origin} reached {} with a magnitude of {}, which is not a \
+                 move; repair the edge's strength or confidence at its source rather than \
+                 stressing on it",
+                effect.target, effect.magnitude
+            )));
+        }
+        if !held.contains(effect.target.as_str()) {
+            continue;
+        }
+        if YIELD_QUOTED_FACTORS.contains(&effect.target.as_str()) {
+            return Err(Error::invalid(format!(
+                "a held position is named {:?}, which the stress tester reads as a yield move \
+                 and signs the other way; a propagated price move cannot be filed under it — \
+                 rename the object",
+                effect.target
+            )));
+        }
+        // The walk keeps the strongest path per target, so a target appears
+        // once; refusing a second appearance rather than summing keeps this
+        // from double-charging a position if that ever changes upstream.
+        if !reached.insert(effect.target.clone()) {
+            return Err(Error::invalid(format!(
+                "the propagation from {origin} reached {} twice; a target must carry one \
+                 strongest path, or the position is charged for two moves it can only make one of",
+                effect.target
+            )));
+        }
+        deepest = deepest.max(effect.order);
+        shocks.push(FactorShock::new(
+            effect.target.clone(),
+            effect.magnitude,
+            effect.over_days,
+        ));
+    }
+    if shocks.is_empty() {
+        return Ok(None);
+    }
+    let description = format!(
+        "Causal propagation: a {:+.2}% move at driver {origin}, sized by {}, walked through the \
+         causal graph's mechanisms to {} held position(s) up to {deepest} hop(s) away. Reaches \
+         exposures no beta connects to the driver; says nothing about positions no path reaches.",
+        initial_shock * 100.0,
+        sizing.as_str(),
+        shocks.len(),
+    );
+    Ok(Some(Scenario {
+        name: format!("{CAUSAL_SCENARIO_PREFIX}{origin}"),
+        description,
+        shocks,
+        // A propagated move is one path, not a joint distribution; there is
+        // no correlation to assume and none is asserted.
+        stressed_correlation: None,
+        // Calm-market exit costs. A causal shock is a move at one driver, and
+        // the section's row makes no claim about liquidity; inflating the
+        // exit here would be a second, unstated scenario inside this one.
+        liquidity_multiplier: 1.0,
+        historical: false,
+    }))
+}
+
+/// The book loaded on its own nodes, for applying a [`causal_scenario`].
+///
+/// Each position carries exactly one sensitivity — one, to its own object id
+/// — because the propagation already carried every transmission along the
+/// path, and a beta on top of it would count the mechanism twice. The
+/// factor-loaded exposures the library is applied to are left untouched.
+pub fn causal_exposures(exposures: &[FactorExposure]) -> Vec<FactorExposure> {
+    exposures
+        .iter()
+        .map(|exposure| FactorExposure {
+            object_id: exposure.object_id.clone(),
+            notional: exposure.notional,
+            betas: BTreeMap::from([(exposure.object_id.clone(), 1.0)]),
+        })
+        .collect()
+}
+
+/// One move in the adversarial sequence.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AdversarialStep {
+    pub factor: String,
+    /// The move, signed against the book.
+    pub magnitude: f64,
+    pub over_days: f64,
+    /// The book's signed currency sensitivity to a unit move in the factor,
+    /// after the yield-quoted sign convention: the sum of notional times beta
+    /// over every position carrying the factor. Its sign is what chose the
+    /// move's sign.
+    pub book_sensitivity: f64,
+    /// This step's own loss, in currency units. Never negative.
+    pub loss: f64,
+    /// Loss as a fraction of equity once this step and every step before it
+    /// have landed, with the exit cost charged from the first step.
+    pub cumulative_loss_fraction: f64,
+}
+
+/// The section's fourth method: the worst plausible sequence of factor
+/// moves given the positions actually held.
+///
+/// *Plausible* is bounded by the library: no factor moves further than the
+/// largest magnitude any scenario in the library states for it, and no
+/// faster than the shortest window any states. *Worst* is decided by the
+/// book: each factor moves in the direction that loses money on the net
+/// sensitivity the held positions carry to it. *Sequence* is the order in
+/// which the moves land, largest loss first — under a linear model every
+/// order sums to the same total, so the ordering that matters is the one
+/// that breaches soonest, and `first_breach` names the step at which it
+/// does. A desk reading it learns how many adverse moves the book absorbs
+/// before it is outside tolerance, which no single-point scenario says.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AdversarialSequence {
+    pub scenario: Scenario,
+    pub steps: Vec<AdversarialStep>,
+    pub result: ScenarioResult,
+    /// Zero-based index of the first step whose cumulative loss exceeds the
+    /// tolerance it was constructed against, if any does.
+    pub first_breach: Option<usize>,
+    /// The tolerance `first_breach` was judged against.
+    pub tolerance: f64,
+    /// Factors the library shocks that no held position carries a beta for.
+    /// The sequence could not include them, and a reader must not take their
+    /// absence for a book that is immune to them.
+    pub unsized_factors: Vec<String>,
+}
+
+impl AdversarialSequence {
+    /// The stage's one-line detail.
+    pub fn summarise(&self) -> String {
+        let path: Vec<String> = self
+            .steps
+            .iter()
+            .map(|step| format!("{} {:+.2}%", step.factor, step.magnitude * 100.0))
+            .collect();
+        let breach = match self.first_breach {
+            Some(index) => format!(
+                ", breaches {:.0}% tolerance at step {} of {}",
+                self.tolerance * 100.0,
+                index + 1,
+                self.steps.len()
+            ),
+            None => format!(
+                ", inside {:.0}% tolerance after every step",
+                self.tolerance * 100.0
+            ),
+        };
+        let unsized_note = if self.unsized_factors.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", {} library factor(s) with no exposure to size: {}",
+                self.unsized_factors.len(),
+                self.unsized_factors.join(", ")
+            )
+        };
+        format!(
+            "{}: {:.2}% loss over [{}]{breach}{unsized_note}",
+            self.scenario.name,
+            self.result.loss_fraction * 100.0,
+            path.join(", ")
+        )
+    }
+}
+
+impl StressTester {
+    /// Construct and apply the adversarial sequence for a book, or `None`
+    /// when the book carries no sensitivity to any factor the library
+    /// shocks — there is then nothing to sign against, and a sequence of
+    /// zero steps would be a report of safety nobody measured.
+    ///
+    /// `library` is the plausibility envelope; `tolerance` is the loss
+    /// fraction `first_breach` is judged against and is the caller's, not
+    /// this module's.
+    pub fn adversarial_sequence(
+        &self,
+        library: &[Scenario],
+        exposures: &[FactorExposure],
+        equity: f64,
+        tolerance: f64,
+        at: Timestamp,
+    ) -> Result<Option<AdversarialSequence>> {
+        if library.is_empty() {
+            return Err(Error::invalid(
+                "an adversarial sequence needs a library to bound plausibility; with no scenario \
+                 stated there is no largest move to stay inside",
+            ));
+        }
+        if !(0.0..1.0).contains(&tolerance) {
+            return Err(Error::invalid(format!(
+                "a stress tolerance of {tolerance} is not a fraction of equity below one"
+            )));
+        }
+        for scenario in library {
+            scenario.validate()?;
+        }
+        // The envelope: per factor, the largest magnitude and the shortest
+        // window any library scenario states.
+        let mut envelope: BTreeMap<&str, (f64, f64)> = BTreeMap::new();
+        let mut liquidity_multiplier = 1.0_f64;
+        for scenario in library {
+            liquidity_multiplier = liquidity_multiplier.max(scenario.liquidity_multiplier);
+            for shock in &scenario.shocks {
+                let entry = envelope
+                    .entry(shock.factor.as_str())
+                    .or_insert((0.0, f64::INFINITY));
+                entry.0 = entry.0.max(shock.magnitude.abs());
+                entry.1 = entry.1.min(shock.over_days);
+            }
+        }
+
+        let mut steps: Vec<AdversarialStep> = Vec::new();
+        let mut unsized_factors: Vec<String> = Vec::new();
+        for (factor, (bound, over_days)) in &envelope {
+            // The same convention `apply` uses, mirrored here so the sign
+            // this chooses is the sign that loses money there.
+            let convention = if YIELD_QUOTED_FACTORS.contains(factor) {
+                -1.0
+            } else {
+                1.0
+            };
+            let mut carried = false;
+            let mut sensitivity = 0.0_f64;
+            for exposure in exposures {
+                if let Some(beta) = exposure.betas.get(*factor) {
+                    carried = true;
+                    sensitivity += convention * exposure.notional.to_f64() * beta;
+                }
+            }
+            if !carried {
+                unsized_factors.push((*factor).to_string());
+                continue;
+            }
+            if !sensitivity.is_finite() {
+                return Err(Error::numeric(format!(
+                    "the book's sensitivity to {factor} is {sensitivity}, which cannot be signed \
+                     against; a beta or a notional that is not a number is a source to repair"
+                )));
+            }
+            if sensitivity == 0.0 {
+                // Carried and exactly flat: a long and a short that cancel.
+                // No direction hurts, so no step — and it is not unsized,
+                // because it was measured.
+                continue;
+            }
+            let magnitude = -bound * sensitivity.signum();
+            steps.push(AdversarialStep {
+                factor: (*factor).to_string(),
+                magnitude,
+                over_days: *over_days,
+                book_sensitivity: sensitivity,
+                loss: bound * sensitivity.abs(),
+                cumulative_loss_fraction: 0.0,
+            });
+        }
+        if steps.is_empty() {
+            return Ok(None);
+        }
+        // Largest loss first, ties by name so the sequence is reproducible.
+        steps.sort_by(|a, b| {
+            b.loss
+                .partial_cmp(&a.loss)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.factor.cmp(&b.factor))
+        });
+
+        let scenario = Scenario {
+            name: ADVERSARIAL_SCENARIO_NAME.to_string(),
+            description: format!(
+                "Adversarial: every factor the held book is sensitive to, moved to the largest \
+                 magnitude any of the {} library scenarios states for it, in the direction that \
+                 loses on the book's net sensitivity, landing largest loss first, at the \
+                 library's widest exit cost. Constructed from the positions, not from history.",
+                library.len()
+            ),
+            shocks: steps
+                .iter()
+                .map(|step| FactorShock::new(step.factor.clone(), step.magnitude, step.over_days))
+                .collect(),
+            // Every move lands against the book at once: the worst case is
+            // the one in which nothing diversifies.
+            stressed_correlation: Some(1.0),
+            liquidity_multiplier,
+            historical: false,
+        };
+        let result = self.apply(&scenario, exposures, equity, at)?;
+
+        // The exit cost is charged at the first step: a book that must be
+        // unwound pays to unwind whichever move comes first.
+        let mut cumulative = result.liquidation_cost;
+        let mut first_breach = None;
+        for (index, step) in steps.iter_mut().enumerate() {
+            cumulative += step.loss;
+            step.cumulative_loss_fraction = cumulative / equity;
+            if first_breach.is_none() && step.cumulative_loss_fraction > tolerance {
+                first_breach = Some(index);
+            }
+        }
+        Ok(Some(AdversarialSequence {
+            scenario,
+            steps,
+            result,
+            first_breach,
+            tolerance,
+            unsized_factors,
+        }))
+    }
+}
