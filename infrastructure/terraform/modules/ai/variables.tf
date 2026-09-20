@@ -44,7 +44,17 @@ variable "enable_vertex_ai" {
 }
 
 variable "training_service_account" {
-  description = "Service account training jobs run as. Empty means none is bound."
+  description = <<-EOT
+    Service account training jobs run as.
+
+    Empty is refused when `enable_vertex_ai` is true, by a precondition on each
+    of the three grants in main.tf rather than by their `count`. It used to
+    mean "none is bound", which was the wrong answer to an unset value: the
+    module provisioned the bucket, the endpoint and the metadata store and
+    granted nothing on them, so the first sign of the mistake was a training
+    job denied on its own staging bucket. It is still ignored entirely when
+    `enable_vertex_ai` is false, because then there is nothing to bind to.
+  EOT
   type        = string
   default     = ""
 }

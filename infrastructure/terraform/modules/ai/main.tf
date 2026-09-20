@@ -133,30 +133,77 @@ resource "google_vertex_ai_endpoint" "serving" {
 # configuration for exactly that reason. Nothing is lost by narrowing it,
 # because the thirty-day lifecycle rule above is what removes scratch. Deletion
 # is the bucket's policy rather than the workload's privilege.
+#
+# # Why the empty-account guard is a precondition and not part of `count`
+#
+# This read `count = var.enable_vertex_ai && var.training_service_account != ""`
+# until 2026-09-20, and that expression cannot be resolved when a plan is
+# saved. The account arrives as `module.cloud_run["deepbrain"].service_account_email`,
+# which is unknown until apply; an unknown operand makes the whole `&&`
+# unknown, because HCL's logical operators evaluate both sides rather than
+# short-circuiting on a known `false`. A bare `terraform plan` tolerates that
+# and `terraform plan -out=FILE` does not, so `infra.yml`'s reclaim step —
+# the one that puts the undeletable keys and buckets back into state before an
+# apply can collide with them — failed here before it could plan anything.
+# Gating on `var.enable_vertex_ai` alone is known at plan time and is what
+# every other resource in this module already does.
+#
+# The empty-account guarantee is not dropped; it moves to a precondition,
+# evaluated at apply when the value is known. It is strictly stronger there.
+# Inside the `count`, an empty account produced zero bindings and said nothing
+# — a grant that silently does not exist is the "control that cannot fire"
+# shape this repository names as a defect, and the first evidence of it would
+# have been a training job denied on its own staging bucket with no line in
+# any file to explain why. A precondition refuses loudly and names the fix.
 resource "google_storage_bucket_iam_member" "training_writer" {
-  count = var.enable_vertex_ai && var.training_service_account != "" ? 1 : 0
+  count = var.enable_vertex_ai ? 1 : 0
 
   bucket = google_storage_bucket.training[0].name
   role   = "roles/storage.objectCreator"
   member = "serviceAccount:${var.training_service_account}"
+
+  lifecycle {
+    precondition {
+      condition     = var.training_service_account != ""
+      error_message = "enable_vertex_ai is true and training_service_account is empty, so this grant would name `serviceAccount:` with no account after it. Pass the account training runs as, or set enable_vertex_ai = false."
+    }
+  }
 }
 
+# Same gate and same precondition as the writer above, for the same two
+# reasons; the argument for both is written out there.
 resource "google_storage_bucket_iam_member" "training_reader" {
-  count = var.enable_vertex_ai && var.training_service_account != "" ? 1 : 0
+  count = var.enable_vertex_ai ? 1 : 0
 
   bucket = google_storage_bucket.training[0].name
   role   = "roles/storage.objectViewer"
   member = "serviceAccount:${var.training_service_account}"
+
+  lifecycle {
+    precondition {
+      condition     = var.training_service_account != ""
+      error_message = "enable_vertex_ai is true and training_service_account is empty, so this grant would name `serviceAccount:` with no account after it. Pass the account training runs as, or set enable_vertex_ai = false."
+    }
+  }
 }
 
 # `aiplatform.user`, not `aiplatform.admin`: a training workload submits jobs
 # and reads its own results. Creating and deleting endpoints is a deployment
 # action, and a workload that could do it could also replace the model serving
 # live traffic without a deployment anyone reviewed.
+# Gated and guarded like the two above. This one is a project-level grant, so
+# an empty account here would be the same silence at a wider scope.
 resource "google_project_iam_member" "training_user" {
-  count = var.enable_vertex_ai && var.training_service_account != "" ? 1 : 0
+  count = var.enable_vertex_ai ? 1 : 0
 
   project = var.project_id
   role    = "roles/aiplatform.user"
   member  = "serviceAccount:${var.training_service_account}"
+
+  lifecycle {
+    precondition {
+      condition     = var.training_service_account != ""
+      error_message = "enable_vertex_ai is true and training_service_account is empty, so this grant would name `serviceAccount:` with no account after it. Pass the account training runs as, or set enable_vertex_ai = false."
+    }
+  }
 }
