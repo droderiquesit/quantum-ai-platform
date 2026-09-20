@@ -10,7 +10,7 @@
 //! expiring — and the worst it can do while cut off is spend an amount
 //! somebody already approved, for as long as the envelope has left to run.
 
-use crate::arbitrage::ArbitrageDesk;
+use crate::arbitrage::{ArbitrageDesk, EdgeRefresh};
 use crate::decomposition::{Decomposition, DecompositionPolicy, LegSize};
 use crate::dispersion::{DispersionPolicy, DispersionVerdict, FillTimes, ReleaseSchedule};
 use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
@@ -27,7 +27,7 @@ use crate::reservation::RegionTable;
 use crate::resume::{ResumeDiscipline, VenueAccount};
 use crate::seam::CellLiquidity;
 use crate::settlement::{self, GATE_SETTLEMENT, SettlementTerms};
-use crate::telemetry::{CellMetrics, RegionShareOutcome};
+use crate::telemetry::{AdversaryPostureLabel, CellMetrics, RegionShareOutcome};
 use qip_arbitrage::liquidity::LiquiditySource;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
 use qip_contracts::capital::{CapitalGrant, Utilisation};
@@ -674,6 +674,13 @@ pub struct WorkReport {
     /// what the cell held and what it built, which the refusal pair cannot
     /// carry. Empty on a pass whose applied policy names nothing.
     pub dispositions: Vec<DispositionLine>,
+    /// §30.1's edge update as this pass ran it: how many of the desk's trade
+    /// edges were re-quoted because their book had moved, and how many were
+    /// left holding their rate. `None` on a pass that ran no refresh — no
+    /// desk, a halt, or a degradation that paused the scan — which is a
+    /// different fact from a refresh that found nothing moved, and the two
+    /// must not read alike.
+    pub edge_refresh: Option<EdgeRefresh>,
     pub halted: bool,
 }
 
@@ -2193,10 +2200,43 @@ impl Cell {
         // happened. Recording it before would publish a payload the cell might
         // still have refused.
         self.metrics.policy_applied(sequence);
+        // Slot 12, read after the swap for the same reason the sequence is:
+        // the posture charted is the posture of a payload the cell holds.
+        self.record_adversary_postures();
         // After the swap, so the share is applied from a payload the cell has
         // already accepted whole and never from one it went on to refuse.
         self.apply_region_share(sequence, now);
         Ok(())
+    }
+
+    /// The adversary posture the applied policy's slot 12 states for one of
+    /// this cell's venues (§41.5 item 12), as this build reads it.
+    ///
+    /// `Unstated` for a venue the slot does not name, a slot the centre has
+    /// not produced, or a cell with no policy at all; `Unknown` for a
+    /// posture string this build cannot map. Read whatever the slot's
+    /// freshness: a stale posture is the last thing the centre said, and the
+    /// chart says what was said rather than nothing. Nothing that decides
+    /// reads this — see [`crate::telemetry::EDGE_VENUE_ADVERSARY_POSTURE`].
+    pub fn adversary_posture(&self, venue: &VenueId) -> AdversaryPostureLabel {
+        let profile = self
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.payload().adversary_profiles.value())
+            .and_then(|profiles| profiles.venues.get(venue.as_str()));
+        AdversaryPostureLabel::read(profile)
+    }
+
+    /// Chart slot 12 for every configured venue, one-hot per venue.
+    ///
+    /// Over `config.venues` and not over the slot's own keys, so the label
+    /// set stays the deployment's venue list and a payload naming a venue
+    /// this cell was never configured for mints no series.
+    fn record_adversary_postures(&self) {
+        for venue in &self.config.venues {
+            self.metrics
+                .adversary_posture(venue.as_str(), self.adversary_posture(venue));
+        }
     }
 
     /// Re-base the region table to this cell's share of its region's grant,
@@ -2420,8 +2460,17 @@ impl Cell {
     }
 
     /// Track an instrument at a venue.
+    ///
+    /// A state inserted here replaces whatever the cell held for the pair
+    /// wholesale, so the desk is told to forget which books it has read: a
+    /// replacement can carry the same `(observed_at, observations)` pair as
+    /// the state it displaced while showing a different touch, and §30.1's
+    /// affected-edge filter would otherwise keep a rate no book holds.
     pub fn track(&mut self, state: VenueState) {
         self.liquidity.insert(state);
+        if let Some(installed) = self.desk.as_mut() {
+            installed.desk.forget_books();
+        }
     }
 
     /// Deploy a strategy, the program its plan indexes into, and the verified
@@ -5282,7 +5331,12 @@ impl Cell {
             let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) else {
                 return Ok(Vec::new());
             };
-            desk.refresh(&self.liquidity)?;
+            let refresh = desk.refresh(&self.liquidity)?;
+            // Charted and reported the moment it is known. A count of
+            // affected edges computed and dropped would be the §30.1 row
+            // claiming an incremental update it does not make.
+            self.metrics.edge_refresh(refresh);
+            report.edge_refresh = Some(refresh);
             desk.scan(&self.liquidity, now)
         };
 
@@ -5901,12 +5955,20 @@ impl Cell {
     /// # What this cannot promise, and what it does instead
     ///
     /// The blueprint's cycle is atomic-or-cancelled. This cell's
-    /// [`Placer`] can place and cannot cancel, and no fill reaches the cell
-    /// until the drop-copy is reconciled, so there is nothing here a
-    /// `LegGroup` could act on: the coordinator in
-    /// `qip-execution-engine::multileg` decides what to unwind from fills it
-    /// is told about, and this seam is told nothing. Building one here would
-    /// be a control with no input.
+    /// [`Placer`] can place, can withdraw a *resting* order where the
+    /// gateway has a cancel path ([`Placer::can_cancel`]), and cannot send
+    /// a compensating order; a leg that has already filled is a position
+    /// this seam has no way to reverse. The fills it does learn of arrive
+    /// through [`Placer::execution_reports`] and are read by §32.1's size
+    /// decomposition below, which sizes the legs *behind* a short one and
+    /// can do nothing about the legs already away. So there is still
+    /// nothing here a `LegGroup` could act on: the coordinator in
+    /// `qip-execution-engine::multileg` decides what to unwind from fills
+    /// and can place the compensating orders, and this seam cannot.
+    /// Building one here would be a control with no output. (This
+    /// paragraph said "cannot cancel" and "no fill reaches the cell until
+    /// the drop-copy is reconciled" until 2026-09-19; both had been false
+    /// since the withdrawal path and the execution-report channel landed.)
     ///
     /// What the cell can do is refuse to carry on. A leg the venue refuses
     /// after an earlier leg went out leaves the cell holding a position it

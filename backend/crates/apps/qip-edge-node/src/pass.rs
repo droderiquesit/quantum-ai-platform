@@ -70,6 +70,14 @@ pub struct PassStats {
     pub repriced: u64,
     /// Reconciliation breaks found after a pass; each one has halted the cell.
     pub breaks: u64,
+    /// Trade edges of the arbitrage graph re-quoted because their book had
+    /// moved, summed over every pass that ran a refresh (§30.1).
+    pub edges_repriced: u64,
+    /// Trade edges left holding their rate because their book had not
+    /// moved, summed the same way. The denominator for the line above: a
+    /// node whose books never move and a node with no desk both report zero
+    /// re-priced, and only this tells them apart.
+    pub edges_unchanged: u64,
 }
 
 /// What one turn of the loop did.
@@ -198,6 +206,12 @@ pub fn run_pass(
     stats.signals = stats.signals.saturating_add(report.signals.len() as u64);
     stats.orders = stats.orders.saturating_add(report.orders.len() as u64);
     stats.fills = stats.fills.saturating_add(report.fills.len() as u64);
+    if let Some(refresh) = report.edge_refresh {
+        stats.edges_repriced = stats.edges_repriced.saturating_add(refresh.repriced as u64);
+        stats.edges_unchanged = stats
+            .edges_unchanged
+            .saturating_add(refresh.unchanged as u64);
+    }
     // One list, oldest first, so the report names every fill this turn
     // confirmed whichever side of the halt check it was confirmed on.
     report.fills.splice(0..0, already_out);

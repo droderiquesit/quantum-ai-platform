@@ -1021,3 +1021,199 @@ fn a_policy_payload_cannot_make_a_venue_this_cell_is_not_configured_for_reachabl
     );
     Ok(())
 }
+
+// --- §30.1's edge update: affected edges only --------------------------------
+
+/// A decoder that turns one tab-separated line into one `LevelSet`, so a test
+/// can move a tracked book by the path a packet takes — decoded, sequenced,
+/// applied — rather than by replacing the state, which is the one path the
+/// affected-edge filter is told to distrust.
+#[derive(Debug)]
+struct PreparedDecoder {
+    venue: VenueId,
+    sequence: u64,
+    consumed: usize,
+    diagnostics: qip_protocols::decoder::Diagnostics,
+}
+
+impl qip_protocols::decoder::Decoder for PreparedDecoder {
+    fn decode(&mut self, bytes: &[u8], captured_at: Timestamp) -> Result<Vec<MarketMessage>> {
+        let text = std::str::from_utf8(bytes).map_err(|e| Error::invalid(e.to_string()))?;
+        let fields: Vec<&str> = text.trim().split('\t').collect();
+        let [market, side, price, size] = fields[..] else {
+            return Err(Error::invalid("a prepared line has four fields"));
+        };
+        let side = match side {
+            "B" => BookSide::Bid,
+            "A" => BookSide::Ask,
+            other => return Err(Error::invalid(format!("side {other} is neither B nor A"))),
+        };
+        let message = MarketMessage::new(
+            object(market),
+            Origin::new(self.venue.clone(), "feed-b", 0, self.sequence),
+            MessageBody::LevelSet {
+                side,
+                price: d(price),
+                quantity: d(size),
+                order_count: None,
+            },
+            captured_at,
+            captured_at,
+        );
+        self.sequence += 1;
+        self.consumed = bytes.len();
+        Ok(vec![message])
+    }
+
+    fn protocol(&self) -> &str {
+        "prepared"
+    }
+
+    fn consumed(&self) -> usize {
+        self.consumed
+    }
+
+    fn diagnostics(&self) -> &qip_protocols::decoder::Diagnostics {
+        &self.diagnostics
+    }
+}
+
+#[test]
+fn a_pass_re_quotes_only_the_edges_whose_book_moved_and_charts_both_counts() -> Result<()> {
+    // The failure this closes: `refresh` walked every trade edge on every
+    // pass whether its book had moved or not, so §30.1's "recompute weight
+    // for affected edges only" was claimed by a row and done by nothing. The
+    // affected set is now computed, and — the half that makes it checkable —
+    // returned, charted and reported rather than dropped.
+    use qip_arbitrage::graph::EdgeKind;
+    use qip_edge::arbitrage::EdgeRefresh;
+    use qip_edge::telemetry::EDGE_ARBITRAGE_EDGE_REFRESHES;
+    use qip_protocols::FeedKey;
+
+    let (mut cell, metrics) = cell_with(ethereum_books()?, desk(ethereum_graph()?, 4)?, None)?;
+    cell.protocols_mut().register(
+        venue(),
+        "feed-b",
+        Box::new(PreparedDecoder {
+            venue: venue(),
+            sequence: 0,
+            consumed: 0,
+            diagnostics: qip_protocols::decoder::Diagnostics::default(),
+        }),
+    )?;
+    let mut gateway = RecordingGateway::default();
+
+    // Premise: the desk's graph holds three trade edges — one over each of
+    // the three books, the ETHUSDT one consuming asks — so the counts below
+    // are about the filter and not about the graph's shape.
+    let trade_edges = cell
+        .arbitrage()
+        .expect("the desk was installed")
+        .graph()
+        .edges()
+        .iter()
+        .filter(|edge| matches!(edge.kind, EdgeKind::Trade { .. }))
+        .count();
+    assert_eq!(
+        trade_edges, 3,
+        "the premise failed: the graph is not three trade edges"
+    );
+
+    // The first pass has read no book, so the template's placeholder rate
+    // on every edge is replaced.
+    let first = cell.work(t(10), &mut gateway)?;
+    assert_eq!(
+        first.edge_refresh,
+        Some(EdgeRefresh {
+            repriced: 3,
+            unchanged: 0
+        }),
+        "the first pass did not re-quote every edge: {:?}",
+        first.edge_refresh
+    );
+    // No book has moved since, so nothing is re-quoted — and the pass says
+    // so with a count, rather than reading like a pass that ran no desk.
+    let second = cell.work(t(11), &mut gateway)?;
+    assert_eq!(
+        second.edge_refresh,
+        Some(EdgeRefresh {
+            repriced: 0,
+            unchanged: 3
+        }),
+        "a pass over unchanged books re-quoted something: {:?}",
+        second.edge_refresh
+    );
+
+    // Move exactly one book, by the production path: a better ask on
+    // ETHUSDT arrives as a decoded, sequenced message.
+    let decoded = cell.on_bytes(
+        &FeedKey::new(venue(), "feed-b"),
+        b"ETHUSDT\tA\t3000.05\t150",
+        t(12),
+    )?;
+    assert_eq!(decoded, 1, "the premise failed: the line did not decode");
+    let best_ask = cell
+        .liquidity()
+        .get(&venue(), &object("ETHUSDT"))
+        .and_then(|state| state.best_ask())
+        .map(|level| level.price);
+    assert_eq!(
+        best_ask,
+        Some(d("3000.05")),
+        "the premise failed: the ETHUSDT book did not move"
+    );
+
+    // Only the edge over that book is re-quoted; the two over the books
+    // that did not move keep their rate.
+    let third = cell.work(t(12), &mut gateway)?;
+    assert_eq!(
+        third.edge_refresh,
+        Some(EdgeRefresh {
+            repriced: 1,
+            unchanged: 2
+        }),
+        "the affected set was not the one edge over the moved book: {:?}",
+        third.edge_refresh
+    );
+    // And the re-quoted edge holds the new touch, not the old one — the
+    // filter must skip only what did not move, never what did.
+    let ask_rate = cell
+        .arbitrage()
+        .expect("the desk was installed")
+        .graph()
+        .edges()
+        .iter()
+        .find_map(|edge| match &edge.kind {
+            EdgeKind::Trade {
+                market,
+                side: BookSide::Ask,
+            } if market.as_str() == "ETHUSDT" => Some(edge.indicative_rate),
+            _ => None,
+        });
+    assert_eq!(
+        ask_rate,
+        Decimal::ONE.checked_div(d("3000.05")),
+        "the ETHUSDT ask edge does not hold the new touch"
+    );
+
+    // The series: both arms, summed over the three passes, so a scraper can
+    // tell a desk whose books never move from a desk with no trade edge.
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.counter(
+            EDGE_ARBITRAGE_EDGE_REFRESHES,
+            &labels([("cell", CELL), ("region", REGION), ("outcome", "repriced")]),
+        ),
+        4,
+        "the repriced arm did not sum to 3 + 0 + 1"
+    );
+    assert_eq!(
+        snapshot.counter(
+            EDGE_ARBITRAGE_EDGE_REFRESHES,
+            &labels([("cell", CELL), ("region", REGION), ("outcome", "unchanged")]),
+        ),
+        5,
+        "the unchanged arm did not sum to 0 + 3 + 2"
+    );
+    Ok(())
+}
