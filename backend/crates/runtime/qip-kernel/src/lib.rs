@@ -33,6 +33,7 @@
 
 pub mod adaptive_cadence;
 pub mod adversary_review;
+pub mod asset_class_registry;
 pub mod blueprint_objectives;
 pub mod capacity_review;
 pub mod causal_review;
@@ -65,6 +66,7 @@ pub mod venue_review;
 pub use central::{CellReport, CentralPlane, StrategyDna, StrategyFactory};
 pub use config::{EventLogDestination, PlatformConfig};
 pub use cycle::{CycleReport, Stage, StageOutcome};
+pub use asset_class_registry::{AssetClassRecord, AssetClassRegistry, ValuationEngine};
 pub use model_serving::{DistilledManifestEntry, ModelManifestIssue, ModelPromotion};
 pub use platform::{
     CapitalGrantEntry, ChainAbsorption, CycleJournalEntry, Platform, RecordedPrediction,

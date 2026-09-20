@@ -714,6 +714,13 @@ pub struct Platform {
     /// drift from it the way absorbed state would — and absorbed state is
     /// now shared rather than projected, see the `world` field.
     asset_classes: BTreeMap<String, AssetClass>,
+    /// The classes this platform is registered to trade (blueprint §17.7),
+    /// and the gate `Self::new` admits the universe through. Built at
+    /// assembly from the shipped table and never from the universe: a
+    /// registry derived from what a catalogue happened to contain would
+    /// admit whatever it was given, which is the capability claim §17.7
+    /// exists to refuse. Read through `crate::asset_class_registry`.
+    pub(crate) asset_class_registry: crate::asset_class_registry::AssetClassRegistry,
     /// The exposure buckets every instrument this platform was assembled to
     /// trade belongs to, keyed by object id then axis — the same projection
     /// of reference data as `asset_classes`, taken at the same moment for
@@ -3732,6 +3739,33 @@ impl Platform {
             .iter()
             .map(|object| (object.object_id.as_str().to_string(), object.asset_class))
             .collect();
+        // §17.7's gate between architecturally reachable and actually
+        // supported, asked here — before the universe moves into the desk
+        // and before a cycle can run — because an instrument in a class this
+        // platform cannot price, settle or assign a strategy family to is an
+        // invalid configuration and not a runtime surprise. A composition
+        // root refuses invalid configuration by stopping; the alternative
+        // considered and rejected was pushing the instrument onto
+        // `not_decision_grade`, which nothing reads to refuse anything, and
+        // would have made this a record rather than a control.
+        //
+        // Every instrument is admitted, not the first failure only: an
+        // operator correcting a catalogue needs the whole list, and refusing
+        // one at a time would take as many restarts as there are bad rows.
+        let asset_class_registry = crate::asset_class_registry::AssetClassRegistry::shipped()?;
+        let unsupported: Vec<String> = universe
+            .iter()
+            .filter_map(|object| asset_class_registry.admit(object).err())
+            .map(|error| error.message().to_string())
+            .collect();
+        if let Some(first) = unsupported.first() {
+            return Err(Error::invalid(format!(
+                "{} instrument(s) in this universe are in classes this platform is not \
+                 registered to trade, and assembly stops rather than serving a book it cannot \
+                 value: {first}",
+                unsupported.len()
+            )));
+        }
         // The exposure buckets, taken here too. Until this existed the
         // aggregate was fed no axis at all, so `MaxConcentration` and
         // `MaxBucketExposure` — two limits in every default set — evaluated
@@ -4125,6 +4159,7 @@ impl Platform {
             universe_assembled,
             inherited_through,
             asset_classes,
+            asset_class_registry,
             exposure_axes,
             liquidity_reference,
             cycle_ledger: None,
