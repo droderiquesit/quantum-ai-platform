@@ -10,7 +10,7 @@ resources:
 images:
 - name: quay.io/argoproj/argocd
   newName: europe-west2-docker.pkg.dev/unprovisioned/qip-stage/vendor/argocd-patched
-  digest: sha256:da7f314017cdc8e59475889137d0d7d1ee16b1f4b5b7778c7508649e450749a5
+  digest: sha256:04fbf149f9aa2ca530f2dc29c80ed4abe05317ed27db00225ae7ab681131d001
 - name: public.ecr.aws/docker/library/redis
   newName: europe-west2-docker.pkg.dev/unprovisioned/qip-stage/vendor/redis
   digest: sha256:e957842a3e7962bfe3e5ab9814eab06e029a2f0d7b0f5d74178af12713b9ab4d

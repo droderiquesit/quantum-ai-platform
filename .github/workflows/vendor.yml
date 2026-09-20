@@ -408,7 +408,23 @@ jobs:
                 -t "$dest_ref" \
                 infrastructure/docker
               echo "::endgroup::"
-              docker push "$dest_ref"
+              # A concurrent run publishing the identical tag is success, not
+              # a collision. Runs 26 and 27 raced — a push to main triggers
+              # this workflow and the dispatch beside it started four seconds
+              # later — so the `crane digest` probe above found nothing and
+              # the push then lost to the other run. The tag carries a
+              # fingerprint of the base digest and the Dockerfile, so a tag
+              # that exists was built from the identical inputs by whoever
+              # got there first, and the scan below examines whatever it
+              # actually points at rather than what this run built. Any other
+              # push failure is still fatal.
+              if ! push="$(docker push "$dest_ref" 2>&1)"; then
+                case "$push" in
+                  *"tag immutability"*|*"cannot update tag"*)
+                    echo "${dest_ref} was published concurrently; scanning what the tag points at." ;;
+                  *) echo "$push" >&2; exit 1 ;;
+                esac
+              fi
             fi
 
             # The same two scans the mirror loop runs, same flags, same

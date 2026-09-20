@@ -48,8 +48,8 @@ carries the argument and the build-time assertions.
 rather than a choice: a container build is not reproducible byte-for-byte, so
 each environment's `vendor.yml` run produces its own. Only `dev` has one that
 was actually built —
-`sha256:da7f314017cdc8e59475889137d0d7d1ee16b1f4b5b7778c7508649e450749a5`,
-from run 23 on 2026-09-20. The value in the `test`, `stage` and `prod`
+`sha256:04fbf149f9aa2ca530f2dc29c80ed4abe05317ed27db00225ae7ab681131d001`,
+from run 26 on 2026-09-20, the first fully green vendor run. The value in the `test`, `stage` and `prod`
 overlays is that same string standing in for one nothing has produced, which
 is safe only because those three environments carry `project_id =
 "unprovisioned"` and their registry paths say so on their face. Provisioning
