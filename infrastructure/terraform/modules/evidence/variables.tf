@@ -58,19 +58,31 @@ variable "retention_locked" {
 
 variable "writer_service_accounts" {
   description = <<-EOT
-    Accounts granted object *creation* and nothing else.
+    Accounts granted object *creation* and nothing else, keyed by the name of
+    the component each account belongs to.
 
-    An empty list is no writers, not all of them.
+    An empty map is no writers, not all of them.
+
+    A map rather than a list of emails because an email here is a Cloud Run
+    service account that does not exist until the apply that creates it, and a
+    `for_each` key has to be known when the plan is saved. The component name
+    is known from the configuration alone; the email is the value under it.
   EOT
 
-  type    = list(string)
-  default = []
+  type    = map(string)
+  default = {}
 }
 
 variable "reader_service_accounts" {
-  description = "Accounts granted object read. Empty by default."
-  type        = list(string)
-  default     = []
+  description = <<-EOT
+    Accounts granted object read, keyed by component name. Empty by default,
+    and an empty map is no readers rather than all of them.
+
+    A map for the same reason as the writers above.
+  EOT
+
+  type    = map(string)
+  default = {}
 }
 
 variable "kms_protection_level" {

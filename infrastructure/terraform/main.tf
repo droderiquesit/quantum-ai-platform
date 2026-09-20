@@ -547,9 +547,14 @@ module "evidence" {
   # whoever is asking. Deliberately two identities: the component that writes
   # the record and the component that shows it should not be the same one.
   #
-  # Neither list may grow to include a role that can delete. See the module.
-  writer_service_accounts = [module.cloud_run["deepbrain"].service_account_email]
-  reader_service_accounts = [module.cloud_run["api"].service_account_email]
+  # Keyed by component rather than passed as a list of emails: a service
+  # account email is unknown until the apply that creates it, and a `for_each`
+  # over unknown values cannot be saved to a plan file. The key names who is
+  # being granted, which is also the more readable thing to find in a diff.
+  #
+  # Neither map may grow to include a role that can delete. See the module.
+  writer_service_accounts = { deepbrain = module.cloud_run["deepbrain"].service_account_email }
+  reader_service_accounts = { api = module.cloud_run["api"].service_account_email }
 }
 
 module "data" {

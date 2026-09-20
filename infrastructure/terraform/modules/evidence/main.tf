@@ -107,8 +107,17 @@ resource "google_storage_bucket" "evidence" {
 # no read, no list, no overwrite and no delete. A workload that writes evidence
 # and cannot read it back is not an inconvenience — it is the shape of the
 # guarantee.
+#
+# Keyed by component, not by email. `for_each = toset(var.writer_service_accounts)`
+# made every email an instance key, and a key has to be known when the plan is
+# saved. These emails are `module.cloud_run[...].service_account_email` and are
+# unknown until apply, so `terraform plan -out=FILE` refused this resource
+# outright and `infra.yml`'s `up` could not reach an apply at all — the remedy
+# Terraform's own error names is a map whose keys are static in the
+# configuration and whose values carry the apply-time result. The component
+# name is that static key; the email stays where it was, in `each.value`.
 resource "google_storage_bucket_iam_member" "writers" {
-  for_each = toset(var.writer_service_accounts)
+  for_each = var.writer_service_accounts
 
   bucket = google_storage_bucket.evidence.name
   role   = "roles/storage.objectCreator"
@@ -118,8 +127,9 @@ resource "google_storage_bucket_iam_member" "writers" {
 # Readers read. Separate accounts from the writers on purpose: the component
 # that produces evidence and the component that serves it to an auditor should
 # not be the same identity.
+# Keyed by component for the same reason as the writers above.
 resource "google_storage_bucket_iam_member" "readers" {
-  for_each = toset(var.reader_service_accounts)
+  for_each = var.reader_service_accounts
 
   bucket = google_storage_bucket.evidence.name
   role   = "roles/storage.objectViewer"
