@@ -48,6 +48,7 @@
 //! and not in the audit trail.
 
 pub mod belief;
+pub mod causal;
 pub mod darkness;
 pub mod dna;
 pub mod episodic;
@@ -64,6 +65,7 @@ pub mod structure;
 pub mod whitelist;
 
 pub use belief::{BeliefIssue, BeliefOutcome};
+pub use causal::{CausalIssue, CausalOutcome};
 pub use darkness::{LastHeard, RegionDarkness, RegionTransition};
 pub use dna::{DnaPayload, StrategyDna};
 pub use episodic::{EpisodicIssue, EpisodicOutcome};

@@ -36,7 +36,7 @@
 
 use crate::central::darkness::{RegionSpokeAgain, RegionTransition, RegionWentDark};
 use crate::central::{
-    AbsorbedFill, BeliefIssue, CellIngestion, CellOutcome, CellReport, CentralPlane,
+    AbsorbedFill, BeliefIssue, CausalIssue, CellIngestion, CellOutcome, CellReport, CentralPlane,
     DispositionOutcome, EpisodicIssue, FamilyStructureJournal, GrantManifests, HorizonArming,
     LearningReport, RegionMembership, WhitelistIssue,
 };
@@ -4745,6 +4745,61 @@ impl Platform {
         let envelope = StreamEnvelope::seal(
             self.context.ids().generate::<EventKind>(now),
             Lineage::root(correlation_id, "kernel/belief"),
+            issue.clone(),
+            now,
+            now,
+            facts,
+        )?;
+        self.event_log.append(&envelope.to_frame()?)?;
+        self.journal.publish(envelope, now)?;
+        Ok(issue)
+    }
+
+    /// Produce the cycle's causal digest — the payload's `causal_digest`
+    /// slot, blueprint §8.3's compact regional digest — and journal it.
+    ///
+    /// One issue per cycle rather than one per cell: the graph is the
+    /// platform's, so every cell receives the same digest, and a record per
+    /// cell would be seven claims about one fact.
+    ///
+    /// The digest is over the edges `CausalGraph::edges` holds that
+    /// re-estimation has not marked decayed, gated and stamped on
+    /// `CausalGraph::last_updated` — the same fact
+    /// [`Self::central_degradation`] reads for the centre's own §6.2 row 2.
+    /// The two must agree: a centre reading row 2 unavailable while shipping
+    /// a cell a row 2 that is fresh would be two claims about one capability,
+    /// and the louder one would be the one that sizes an order. See
+    /// [`crate::central::causal`] for why the stamp is the newest absorption
+    /// here and the oldest open belief in slot 3, and for the day-against-
+    /// quarter gap between the cell's time to live and the centre's horizon,
+    /// which is left standing because it falls the safe way.
+    ///
+    /// Journaled produced or not, like the whitelist, the digest and the
+    /// priors beside it, because a platform whose graph never reaches a cell
+    /// is exactly the fact an operator asking why every region allocates
+    /// unconditionally has to be able to find.
+    pub fn issue_causal_digest(&mut self, now: Timestamp) -> Result<CausalIssue> {
+        let issue = {
+            let world = self.world.read();
+            let causal = world.causal();
+            CausalIssue::derive(causal.edges().iter(), causal.last_updated(), now)?
+        };
+        let correlation_id = self
+            .context
+            .ids()
+            .generate::<qip_core::lineage::CorrelationKind>(now);
+        let facts = EventFacts::derived(
+            SourceIdentity::new(
+                SourceId::new("qip-kernel"),
+                SourceType::Internal,
+                StreamRegion::new(HOME_REGION),
+            ),
+            Subject::unattributed(),
+            CausalIssue::TOPIC,
+        );
+        let envelope = StreamEnvelope::seal(
+            self.context.ids().generate::<EventKind>(now),
+            Lineage::root(correlation_id, "kernel/causal"),
             issue.clone(),
             now,
             now,
