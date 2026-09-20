@@ -457,6 +457,55 @@ def classify_hit(root, hit):
     return "production"
 
 
+SECTION = re.compile(r"^\d+(?:\.\d+)*$")
+
+#: A register row is `| section | title | verdict | evidence |` — four cells.
+REGISTER_ROW_CELLS = 4
+
+
+def row_cells(line):
+    """The cells a Markdown renderer sees in `line`, splitting on unescaped pipes.
+
+    A `|` inside a cell must be written `\|`, including inside a code span:
+    backticks do not protect it. Anything else starts a new cell.
+    """
+    parts = re.split(r"(?<!\\)\|", line)
+    return parts[1:-1] if len(parts) >= 2 else []
+
+
+def shape_faults(text):
+    """Register rows a renderer shows differently from how they read in the file.
+
+    Two faults, both invisible in the raw Markdown and both fatal in the
+    rendered table, and neither is something the emptiness checker can see
+    because it reads the file rather than the rendering.
+
+    **More cells than columns.** A re-score appended as a second verdict and a
+    second evidence cell, instead of replacing the first, leaves six cells in a
+    four-column table. The renderer drops everything past the fourth, so what a
+    reader sees under the verdict is the *superseded* evidence — and the
+    re-score that contradicts it renders nowhere at all. This is not
+    hypothetical: §29.3 sat at `REACHED` that way while the sentence rendered
+    beneath it said the opposite, and the row was only caught when somebody
+    counted its cells by hand. §29.1 and §30.2 carried the same fault.
+
+    **An unescaped pipe.** One `| sort -u` inside an evidence cell truncated
+    §45.1 to 220 characters of 6,843 in the rendering. The file looked complete;
+    the page showed a fragment. Both faults are reported as one class because
+    the cause is the same character and the remedy is the same escape.
+    """
+    faults = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.startswith("|"):
+            continue
+        cells = row_cells(line)
+        if not cells or not SECTION.match(cells[0].strip()):
+            continue
+        if len(cells) != REGISTER_ROW_CELLS:
+            faults.append((number, cells[0].strip(), len(cells)))
+    return faults
+
+
 def claims(text):
     """Yield (kind, section, verdict, command) for every checkable claim.
 
@@ -610,6 +659,24 @@ def self_test():
         for name, lines, want in filter_cases:
             check(f"filter {name}", code_lines(lines), want)
 
+        # Row shape, because the two faults it catches are invisible in the
+        # raw file and fatal in the rendering, and both hid a false verdict.
+        shape_cases = [
+            ("four cells", "| 1.1 | Title | REACHED | evidence |", []),
+            ("shell pipe splits the cell",
+             "| 2.2 | Title | PARTIAL | `grep -rn x | grep -v tests` and so on |",
+             [(1, "2.2", 5)]),
+            ("escaped pipe is one cell",
+             "| 2.2 | Title | PARTIAL | `grep -rn x \\| grep -v tests` and so on |", []),
+            ("an appended re-score leaves six",
+             "| 29.3 | Title | REACHED | old evidence | REACHED | new evidence |",
+             [(1, "29.3", 6)]),
+            # The shape table and the prose below it are not register rows.
+            ("shape table ignored", "| `REACHED` | 44 | 24% |", []),
+        ]
+        for name, line, want in shape_cases:
+            check(f"shape-row {name}", shape_faults(line), want)
+
     # A retraction appended after the command it retracts. §40.5's real text,
     # trimmed: without this the row reads as stale while it is correcting
     # itself, and with a rule that ignored the token check, the unrelated
@@ -678,6 +745,17 @@ def main():
     unpositionable = 0
     violations = []
     prose_only = []
+
+    for number, section, count in shape_faults(text):
+        print(
+            f"SHAPE      §{section} (line {number}) renders as {count} cells, not "
+            f"{REGISTER_ROW_CELLS}"
+        )
+        print(
+            "       An unescaped `|` splits a cell. Everything past the fourth is "
+            "dropped by the renderer, so a reader sees a different row than the file holds."
+        )
+        print()
 
     for kind, section, verdict, command in claims(text):
         if UNSAFE.search(command) or UNBOUNDED.match(command):
