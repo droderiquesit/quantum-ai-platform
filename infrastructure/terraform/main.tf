@@ -522,7 +522,7 @@ module "registry" {
   # binary this platform does not build, and nothing inside it ever calls
   # this platform's registry API to check its own provenance — the same
   # reason it carries no `deployer_service_account` in catalogue.tf.
-  pull_service_accounts = [for workload in module.cloud_run : workload.service_account_email]
+  pull_service_accounts = { for name, workload in module.cloud_run : name => workload.service_account_email }
 }
 
 module "evidence" {

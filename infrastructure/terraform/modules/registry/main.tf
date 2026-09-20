@@ -59,7 +59,7 @@ resource "google_artifact_registry_repository_iam_member" "ci_push" {
 # are listed as well because a workload reading its own image digest — for the
 # provenance an audit asks for — reads it through the same API.
 resource "google_artifact_registry_repository_iam_member" "pull" {
-  for_each = toset(var.pull_service_accounts)
+  for_each = var.pull_service_accounts
 
   project    = var.project_id
   location   = google_artifact_registry_repository.images.location
