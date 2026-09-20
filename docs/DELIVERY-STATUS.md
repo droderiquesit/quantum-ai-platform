@@ -548,12 +548,19 @@ the ones that change what a row means.
   the join to counterfactual scores; nothing yet producing `belief_priors`)
   is about the causal graph's population, and re-reading both against this
   change found no sentence of either that this writer makes false. The
-  `causal_digest` payload slot is still refused rather than shipped: nothing
-  in `qip-api::mesh` produces it, which is a distinct, still-open question
-  from whether the graph the digest would summarise ever holds anything —
+  `causal_digest` payload slot **was** still refused rather than shipped when
+  this bullet was written; since 2026-09-20 (lane W1, d5c6266) it is
+  produced — `Platform::issue_causal_digest` in
+  `backend/crates/runtime/qip-kernel/src/central/causal.rs`, assigned in
+  `qip-api/src/mesh.rs` beside the belief and episodic slots
+  (`grep -n 'payload.causal_digest =' backend/crates/apps/qip-api/src/mesh.rs`),
+  stamped with the graph's newest absorption and never the issue instant, and
+  read at the cell as `Capability::CausalGraph`. That is a distinct question
+  from whether the graph the digest summarises ever holds anything, which is
+  the sparse-and-narrow finding above and still stands —
   `backend/crates/runtime/qip-kernel/src/central/whitelist.rs`'s own causal-digest
-  bullet is corrected in the same change, in place, dated, for the same
-  reason this one is rather than by deleting what it said before.
+  bullet was corrected in the same change as this one, in place, dated, rather
+  than by deleting what it said before.
 - **The transfer gate's seven vetoes and three bound attestations are built,
   and a producer for `FabricCommand::Gate` now exists — this bullet was
   itself stale until 2026-09-12.** It read "nothing issues a `Gate` command"
