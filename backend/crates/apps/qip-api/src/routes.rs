@@ -1287,8 +1287,20 @@ impl Api {
             // that does not serialise answers 500 with the reason rather
             // than panicking under the lock every other route waits on.
             (Method::Get, "/ledger/users") => {
+                // The refusal this caller would get at the declaration
+                // route, obtained by making the same call that route makes
+                // rather than by asserting what it would answer — the
+                // discipline `/venues/withdrawals` keeps for the
+                // reinstatement signature. A reader of this body is the
+                // person who would declare an inflow, and ADR 0065 means the
+                // act cannot be taken; saying so here costs one call and
+                // saves a console attempting a write to discover it.
+                let inflow_refusal = principal
+                    .authentication_instant("declaring an expected inflow")
+                    .err()
+                    .map(|refusal| refusal.message().to_string());
                 let (status, body) = crate::ledger_views::render_fallible(
-                    crate::ledger_views::ledger_users(&platform, now),
+                    crate::ledger_views::ledger_users(&platform, now, inflow_refusal),
                 );
                 Response::json(status, body)
             }

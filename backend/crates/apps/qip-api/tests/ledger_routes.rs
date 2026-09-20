@@ -406,6 +406,7 @@ fn documented_keys(path: &str) -> &'static [&'static str] {
             "products",
             "fills_journalled",
             "inflow_posting",
+            "inflow_refusal",
             "users",
         ],
         "/ledger/commitments" => &[
@@ -2058,6 +2059,47 @@ fn the_inflow_routes_refuse_every_role_below_operator_by_name_and_the_operator_f
         0,
         "a refused request reached the event log"
     );
+    Ok(())
+}
+
+#[test]
+fn the_users_body_carries_the_refusal_this_caller_would_get_at_the_declaration_route() -> Result<()>
+{
+    // The gap lane F1 named and could not close from the frontend: the
+    // console had only `inflow_posting` — a sentence about the *build* — and
+    // to learn what *this operator* would be told it would have had to
+    // attempt the write, which is a mutating request sent to discover a
+    // fact. `/venues/withdrawals` solved the same problem for the
+    // reinstatement signature; this is that pattern on the two inflow
+    // routes.
+    let rig = rig_with(
+        PlatformConfig::default().with_user_mandates(vec![enrolment("alice", dec!("1000"))?]),
+    )?;
+
+    // Premise: the route answers at all, and its body really does carry the
+    // build-wide sentence — so the assertion below is about a *second*,
+    // different field and not about the one that was already there.
+    let (_, body) = body_of(rig.call(Method::Get, "/ledger/users", OPERATOR_TOKEN));
+    assert_eq!(body["inflow_posting"], serde_json::json!(INFLOW_POSTING));
+
+    // The property: the field carries the refusal the declaration route
+    // actually answers with, for this caller — compared against the route's
+    // own answer rather than against a literal, so the two cannot drift.
+    let refusal = body["inflow_refusal"]
+        .as_str()
+        .ok_or_else(|| qip_core::Error::invalid(format!("no inflow_refusal: {body}")))?
+        .to_string();
+    assert!(refusal.contains(NO_PRESENCE), "{refusal}");
+    let declared = rig.declare("alice", OPERATOR_TOKEN, &declaration_body());
+    assert_eq!(declared.status, 403);
+    let (declared_text, _) = body_of(declared);
+    assert!(
+        declared_text.contains(&refusal),
+        "the rendered refusal is not what the route answers:\n  rendered: {refusal}\n  route:    {declared_text}"
+    );
+
+    // And nothing was written by either read.
+    assert_eq!(rig.ledger_records()?, 0);
     Ok(())
 }
 

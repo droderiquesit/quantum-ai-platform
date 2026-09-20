@@ -136,6 +136,7 @@ Field by field:
 | `products` | `string[]` | The strategy families registered with the central factory, which are the products an entitlement is evaluated against. Empty on a fresh platform. |
 | `fills_journalled` | integer | Attributed fills the ledger has booked since assembly, whichever basis each was booked under. |
 | `inflow_posting` | string | A constant sentence: no declared inflow is ever posted by this build, so every `expected_inflows` entry is a claim and never becomes a balance here (ADR 0085). Render it beside any expected inflow shown. |
+| `inflow_refusal` | string or null | The refusal **this caller** would receive at `POST`/`DELETE` of an expected inflow, or `null` if they would get past the presence gate. Distinct from `inflow_posting`, which is a fact about the build: this is a fact about the reader, and it is `"…a standing bearer token cannot carry it…"` for every credential this deployment accepts (ADR 0065, ADR 0076). A page offering a declaration form renders this instead of attempting the write to discover it. |
 | `users[].user_id` | string | The ledger's user id. `"desk"` is the platform's own book and is always present; the rest are the configuration's enrolments, in id order. |
 | `users[].mandate.capital` | money string | Capital under management. |
 | `users[].mandate.currency` | string | ISO 4217 code. |
