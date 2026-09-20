@@ -903,8 +903,18 @@ jobs:
           # by finding nothing — the exact shape of control this repository
           # calls a defect rather than a spare part, and it would have handed
           # the next command a controller that was not running.
-          kubectl wait --for=condition=Healthy configconnector/configconnector.core.cnrm.cloud.google.com --timeout=300s
-          kubectl -n cnrm-system rollout status statefulset/cnrm-controller-manager --timeout=300s
+          # Fifteen minutes, not five, and the reason is Autopilot.
+          #
+          # Run 62 timed out here at 300s — and the diagnostic then showed
+          # every cnrm pod `1/1 Running`, aged 4m12s, on a node named
+          # `gk3-...-nap-...`. That `nap` is node auto-provisioning:
+          # Autopilot had no node these pods fitted on, so it built one, and
+          # the clock a fixed cluster would spend scheduling is spent
+          # provisioning instead. The wait was correct and the budget was
+          # wrong, which is a different defect from the four before it — the
+          # condition being waited on was the right one.
+          kubectl wait --for=condition=Healthy configconnector/configconnector.core.cnrm.cloud.google.com --timeout=900s
+          kubectl -n cnrm-system rollout status statefulset/cnrm-controller-manager --timeout=900s
           # 4. Argo CD's App credential, from Secret Manager, as a
           #    Kubernetes Secret. Kargo's is read at the same time and
           #    applied in phase 11, because the namespace it lands in does
