@@ -861,6 +861,41 @@ jobs:
           kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=300s
           kubectl -n cert-manager rollout status deployment/cert-manager --timeout=300s
           kubectl -n cert-manager rollout status deployment/cert-manager-cainjector --timeout=300s
+          # And then wait for the cainjector to have actually done its job.
+          #
+          # Three rollouts being complete says the pods are running. It does
+          # not say the cainjector has patched cert-manager's CA into the
+          # webhook configurations, and until it has, the API server cannot
+          # verify the webhook's certificate — so every later apply that
+          # touches a resource cert-manager validates fails with
+          #
+          #   failed calling webhook "webhook.cert-manager.io": ...
+          #   x509: certificate signed by unknown authority
+          #
+          # which run 58 hit on Kargo's Certificate, three phases downstream.
+          # This is the same defect as the label-selector wait two phases up
+          # wearing different clothes: a readiness check that passes before
+          # the thing it gates is ready, and hands the failure to whoever
+          # runs next.
+          #
+          # A poll rather than `kubectl wait`, because the condition is "this
+          # field is non-empty" and `--for=jsonpath=` can only match an exact
+          # value.
+          echo "waiting for the cainjector to publish cert-manager's CA bundle..."
+          injected=0
+          for _ in $(seq 60); do
+            bundle="$(kubectl get validatingwebhookconfiguration cert-manager-webhook \
+              -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>/dev/null || true)"
+            if [ -n "${bundle}" ]; then injected=1; break; fi
+            sleep 5
+          done
+          if [ "${injected}" -ne 1 ]; then
+            echo "::error title=cainjector never published a CA bundle::cert-manager's webhook configuration still carries no caBundle after five minutes, so anything cert-manager validates will fail with 'certificate signed by unknown authority'." >&2
+            kubectl -n cert-manager get pods -o wide >&2 || true
+            kubectl -n cert-manager logs deployment/cert-manager-cainjector --tail=30 >&2 || true
+            exit 1
+          fi
+          echo "cert-manager's CA bundle is published; its webhook can be verified."
           # 2. Argo CD.
           apply "${gitops}/bootstrap/argocd/overlays/${ENVIRONMENT}"
           kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
