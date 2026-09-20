@@ -4095,7 +4095,29 @@ fn the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it() {
     for path in files_with_extension("infrastructure/terraform", "tf") {
         let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
         let mut validation_depth: usize = 0;
+        // A heredoc opened by `description = <<-EOT`, until its terminator.
+        //
+        // The validation skip below exists because a refusal naming an
+        // anonymous principal read as a grant. A *description* naming one
+        // reads the same way and grants even less: it is prose, and the only
+        // thing it can do is explain why the principal is refused. Without
+        // this, the way to pass the scanner is to describe the guard less
+        // clearly than it deserves — which is the scanner teaching the file
+        // to be worse.
+        let mut heredoc: Option<String> = None;
         for line in content.lines() {
+            if let Some(terminator) = heredoc.clone() {
+                if line.trim() == terminator {
+                    heredoc = None;
+                }
+                continue;
+            }
+            if let Some((before, after)) = line.split_once("<<-") {
+                if before.contains("description") {
+                    heredoc = Some(after.trim().to_string());
+                    continue;
+                }
+            }
             let opened = line.matches('{').count();
             let closed = line.matches('}').count();
             // `precondition` alongside `validation`: both are constructs that
@@ -6218,6 +6240,29 @@ const TRADING_BINARIES: [&str; 6] = [
 /// by what each directory is for. A kind outside its directory's list is
 /// either a controller nobody decided on or a workload on the cluster.
 fn permitted_kinds(relative: &str) -> &'static [&'static str] {
+    // The front door, and only the front door.
+    //
+    // These three kinds publish a controller outside the cluster, so they
+    // are permitted in the one directory whose whole purpose is to do that
+    // deliberately — and nowhere else. Adding them to the shared bootstrap
+    // list below would have been one line shorter and would have let a
+    // `Gateway` appear under `bootstrap/argocd/`, where nothing reviews it
+    // as an exposure decision.
+    //
+    // `Namespace` rather than a fourth entry: the Gateway needs one of its
+    // own, and it is the same kind the list below already admits.
+    if relative.starts_with("infrastructure/gitops/bootstrap/gateway") {
+        return &[
+            "Namespace",
+            "Gateway",
+            "HTTPRoute",
+            "GCPBackendPolicy",
+            // The overlay and base files themselves, as everywhere else
+            // under gitops: a Kustomization is how the directory is
+            // assembled, not something it installs.
+            "Kustomization",
+        ];
+    }
     if relative.starts_with("infrastructure/gitops/bootstrap") {
         // Upstream installs of Argo CD and Kargo, and the namespace and
         // bindings Config Connector's identity needs: everything a
@@ -7480,7 +7525,29 @@ fn the_default_openobserve_posture_names_no_anonymous_invoker() {
     for path in files_with_extension("infrastructure/terraform/modules/openobserve", "tf") {
         let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
         let mut validation_depth: usize = 0;
+        // A heredoc opened by `description = <<-EOT`, until its terminator.
+        //
+        // The validation skip below exists because a refusal naming an
+        // anonymous principal read as a grant. A *description* naming one
+        // reads the same way and grants even less: it is prose, and the only
+        // thing it can do is explain why the principal is refused. Without
+        // this, the way to pass the scanner is to describe the guard less
+        // clearly than it deserves — which is the scanner teaching the file
+        // to be worse.
+        let mut heredoc: Option<String> = None;
         for line in content.lines() {
+            if let Some(terminator) = heredoc.clone() {
+                if line.trim() == terminator {
+                    heredoc = None;
+                }
+                continue;
+            }
+            if let Some((before, after)) = line.split_once("<<-") {
+                if before.contains("description") {
+                    heredoc = Some(after.trim().to_string());
+                    continue;
+                }
+            }
             let opened = line.matches('{').count();
             let closed = line.matches('}').count();
             let entering =

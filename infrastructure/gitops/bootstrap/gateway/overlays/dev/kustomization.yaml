@@ -1,0 +1,14 @@
+# The GitOps front door for dev: the Gateway, the HTTP-to-HTTPS redirect, the
+# two routes, and IAP on both backends.
+#
+# The address and the certificate this Gateway names are created by
+# `infrastructure/terraform/modules/gitops-gateway` and are not Kubernetes
+# objects. The A records for both hostnames are created at the registrar by
+# hand, because algorik.ai answers from nameservers outside this project;
+# until they resolve, the managed certificate stays in PROVISIONING and the
+# hostnames do not serve.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - routes.yaml

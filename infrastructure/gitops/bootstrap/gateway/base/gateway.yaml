@@ -1,0 +1,44 @@
+# The load balancer, as a Kubernetes object.
+#
+# `gke-l7-global-external-managed` is the GatewayClass GKE reconciles into a
+# global external Application Load Balancer. The address and the certificate
+# are created by Terraform (`modules/gitops-gateway`) and named here, rather
+# than left for the controller to allocate, because both have to outlive this
+# object: the address is what the registrar's A record points at, and a
+# controller-allocated one changes whenever the Gateway is recreated.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: gitops
+  namespace: gitops-gateway
+  annotations:
+    # The reserved global address, by name. A Gateway that cannot find it
+    # fails to program rather than quietly allocating a different one.
+    networking.gke.io/addresses: qip-dev-gitops
+    networking.gke.io/certmap: ""
+spec:
+  gatewayClassName: gke-l7-global-external-managed
+  listeners:
+    # HTTPS only, and the HTTP listener below exists solely to redirect.
+    # A control plane reachable over plaintext is a control plane whose
+    # session cookie is readable by every network between the operator and
+    # Google.
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        options:
+          # The Google-managed certificate Terraform created. Named by the
+          # pre-shared-cert annotation because a managed certificate is a
+          # Compute resource rather than a Kubernetes Secret.
+          networking.gke.io/pre-shared-certs: qip-dev-gitops
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All

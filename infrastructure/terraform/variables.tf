@@ -1328,3 +1328,49 @@ variable "public_edge" {
     error_message = "public_edge names an application backend and no hostnames. Nothing would be created and the tfvars would read as though the API were published. Declare the hostnames the edge answers on, or remove the backend."
   }
 }
+
+# --- the GitOps control plane's front door ------------------------------------
+
+variable "gitops_gateway_enabled" {
+  type        = bool
+  description = <<-EOT
+    Whether the GitOps control plane gets a public front door: a global
+    external Application Load Balancer, a Google-managed certificate, and
+    Identity-Aware Proxy deciding who may pass.
+
+    False by default, and the default is the argument. ADR 0036 built this
+    cluster with a private endpoint and no public address; turning this on is
+    a deliberate widening of that, environment by environment, and an
+    environment that never sets it keeps exactly the posture the ADR
+    described. Nothing about enabling it opens the API server — the nodes and
+    the endpoint stay private, and what becomes reachable is two controller
+    UIs, behind an identity check Google performs before the request enters
+    the VPC.
+  EOT
+  default     = false
+}
+
+variable "gitops_argocd_hostname" {
+  type        = string
+  description = "The public name Argo CD answers on. Only read when gitops_gateway_enabled."
+  default     = ""
+}
+
+variable "gitops_kargo_hostname" {
+  type        = string
+  description = "The public name Kargo answers on. Only read when gitops_gateway_enabled."
+  default     = ""
+}
+
+variable "gitops_iap_members" {
+  type        = list(string)
+  description = <<-EOT
+    Exactly who may pass IAP and reach Argo CD or Kargo, as IAM members.
+
+    The module refuses `allUsers` and `allAuthenticatedUsers`. This is the
+    entire access list for a controller that can reconcile arbitrary
+    manifests into the cluster, so it is written out per environment and
+    never defaulted to something convenient.
+  EOT
+  default     = []
+}

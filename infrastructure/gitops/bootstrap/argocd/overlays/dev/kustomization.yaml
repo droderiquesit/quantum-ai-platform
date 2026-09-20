@@ -23,4 +23,32 @@ patches:
 - target:
     kind: ConfigMap
     name: argocd-cm
-  patch: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: argocd-cm\ndata:\n  url: https://argocd.qip-dev.internal\n"
+  # `url` is what Argo CD puts in every link it generates and every OAuth
+  # redirect it builds. It said `https://argocd.qip-dev.internal`, a name
+  # that resolves nowhere, which was honest while nothing reached the
+  # service and is wrong now that something does.
+  #
+  # `admin.enabled` goes back to true here, and the base's `false` is left
+  # alone on purpose. The base is what an environment with no front door
+  # gets: no Dex, no local account, nothing to authenticate as, which is the
+  # right posture for a service nobody can reach. This overlay is the one
+  # that puts a load balancer in front, so it is the one that owes the
+  # cluster an identity to log in with — and the credential it uses is
+  # projected from Secret Manager by the bootstrap, never written here.
+  #
+  # The account is the *second* gate. IAP decides who may reach the service;
+  # this decides who may act on it. Read the tfvars section that enables the
+  # front door for why one of those alone is not enough.
+  patch: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: argocd-cm\ndata:\n  url: https://argocd.algorik.ai\n  admin.enabled: \"true\"\n"
+- target:
+    kind: ConfigMap
+    name: argocd-cmd-params-cm
+  # TLS terminates at the load balancer, so argocd-server speaks plaintext
+  # to it and must be told to stop redirecting to HTTPS itself.
+  #
+  # Without this the server answers the health check with a 308 to https,
+  # the backend never becomes healthy, and the Gateway serves 502 for a
+  # service that is running perfectly well. `insecure` names the hop between
+  # Google's front end and the Pod, inside the VPC, after IAP has already
+  # decided the caller may be there — not the hop a browser makes.
+  patch: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: argocd-cmd-params-cm\ndata:\n  server.insecure: \"true\"\n"

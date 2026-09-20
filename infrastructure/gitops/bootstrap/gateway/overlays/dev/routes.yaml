@@ -1,0 +1,77 @@
+# What each hostname reaches, and the identity check in front of both.
+#
+# The routes live in the overlay rather than the base because a hostname is
+# an environment's fact: `argocd.algorik.ai` is dev's front door and another
+# environment's would be a different name against a different certificate.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: argocd
+  namespace: argocd
+spec:
+  parentRefs:
+    - name: gitops
+      namespace: gitops-gateway
+      sectionName: https
+  hostnames:
+    - argocd.algorik.ai
+  rules:
+    - backendRefs:
+        - name: argocd-server
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kargo
+  namespace: kargo
+spec:
+  parentRefs:
+    - name: gitops
+      namespace: gitops-gateway
+      sectionName: https
+  hostnames:
+    - kargo.algorik.ai
+  rules:
+    - backendRefs:
+        - name: kargo-api
+          port: 80
+---
+# Identity-Aware Proxy, on each backend.
+#
+# **This is the gate.** Without these two objects the Gateway above is a
+# plain load balancer publishing a GitOps control plane to the internet, and
+# the only thing between a stranger and `kubectl apply` would be Argo CD's
+# own login page. With them, Google checks the caller against
+# `roles/iap.httpsResourceAccessor` before the request is forwarded at all.
+#
+# `oauth2ClientSecret` is deliberately absent: GKE uses Google-managed OAuth
+# when no client is named, so there is no secret to mint, store or rotate.
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: argocd-iap
+  namespace: argocd
+spec:
+  default:
+    iap:
+      enabled: true
+  targetRef:
+    group: ""
+    kind: Service
+    name: argocd-server
+---
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: kargo-iap
+  namespace: kargo
+spec:
+  default:
+    iap:
+      enabled: true
+  targetRef:
+    group: ""
+    kind: Service
+    name: kargo-api

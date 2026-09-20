@@ -240,6 +240,22 @@ resource "google_container_cluster" "control_plane" {
     channel = "REGULAR"
   }
 
+  # The Gateway API, which is what puts a load balancer in front of Argo CD
+  # and Kargo without any of this module knowing their hostnames.
+  #
+  # `CHANNEL_STANDARD` installs the `gateway.networking.k8s.io` CRDs and the
+  # GKE controller that reconciles a `Gateway` into a Google load balancer.
+  # Without it a `Gateway` object is a document the API server does not
+  # recognise, and `kubectl apply` fails on a missing kind rather than on
+  # anything a reader would connect to load balancing.
+  #
+  # Enabling the API creates no load balancer and opens no path: a Gateway
+  # has to be applied, and the one this platform applies terminates behind
+  # Identity-Aware Proxy. What this line does is make that possible at all.
+  gateway_api_config {
+    channel = "CHANNEL_STANDARD"
+  }
+
   # The same project policy every Cloud Run revision is evaluated against
   # (modules/binaryauthorization): deny by default, admit what the attestor
   # signed. `PROJECT_SINGLETON_POLICY_ENFORCE` is the only value that

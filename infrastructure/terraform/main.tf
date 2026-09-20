@@ -314,6 +314,21 @@ module "secrets" {
     # environment for the same reason the venue credential is.
     "qip-github-app-argocd",
     "qip-github-app-kargo",
+    # Argo CD's local admin password, as a bcrypt hash.
+    #
+    # The base ships `admin.enabled: "false"` and deletes Dex, which together
+    # leave Argo CD with no identity at all to authenticate as — an operator
+    # who passes IAP arrives at a login page with no account. So a credential
+    # exists, and it is the *second* gate rather than the only one: IAP
+    # decides who may reach the service, this decides who may act on it.
+    # Either alone would be a single point of failure in front of a
+    # controller that can reconcile arbitrary manifests into the cluster.
+    #
+    # Created empty, like every other secret here. `infra.yml`'s bootstrap
+    # projects it into `argocd-secret` and refuses to enable the account when
+    # the secret holds no version, so an unseeded environment gets a control
+    # plane nobody can log into rather than one with a blank password.
+    "qip-argocd-admin-password",
   ]
 
   # The venue credential is readable only by an environment that could use it,
@@ -877,6 +892,30 @@ resource "terraform_data" "gitops_is_placed" {
       error_message = "gitops_enabled is true and gitops_master_ipv4_cidr_block is null. The control plane's private endpoint needs a /28 that overlaps no subnet; set it in the environment's tfvars."
     }
   }
+}
+
+# The public front door to that control plane, and IAP in front of it.
+#
+# Gated on the same flag as the cluster, plus its own: a Gateway with no
+# cluster behind it reconciles nothing, and an environment that wants a
+# private control plane and no front door is a posture this platform should
+# be able to hold. `gitops_gateway_enabled = false` leaves the cluster
+# reachable exactly as ADR 0036 built it — through the Connect gateway and
+# nowhere else.
+module "gitops_gateway" {
+  source = "./modules/gitops-gateway"
+  count  = var.gitops_enabled && var.gitops_gateway_enabled ? 1 : 0
+
+  depends_on = [module.services]
+
+  project_id     = var.project_id
+  project_number = local.project_number
+  environment    = var.environment
+
+  argocd_hostname = var.gitops_argocd_hostname
+  kargo_hostname  = var.gitops_kargo_hostname
+
+  iap_members = var.gitops_iap_members
 }
 
 module "gitops_control_plane" {

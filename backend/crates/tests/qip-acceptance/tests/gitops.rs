@@ -2759,9 +2759,30 @@ fn no_controller_manifest_publishes_a_service_and_the_argo_server_is_cluster_ip(
                     manifest.describe()
                 );
             }
-            "Ingress" | "Gateway" | "HTTPRoute" | "ManagedCertificate" | "FrontendConfig" => {
+            // A Gateway and its routes publish a controller outside the
+            // cluster, which this test refused outright until 2026-09-20.
+            // The refusal is now conditional, and the condition is checked
+            // below rather than here: **a published backend must be behind
+            // Identity-Aware Proxy.**
+            //
+            // The old blanket ban was the right default and the wrong
+            // invariant. It said "nothing is published", which stopped
+            // being true the moment an operator needed to see what Argo CD
+            // was reconciling, and a ban that has to be lifted teaches the
+            // next reader that the whole check is negotiable. What actually
+            // matters is that Google decides who may reach these services
+            // before a request enters the VPC — and nothing enforced that,
+            // so deleting one `GCPBackendPolicy` would have published a
+            // GitOps control plane nakedly with every test still green.
+            //
+            // `Ingress`, `ManagedCertificate` and `FrontendConfig` stay
+            // refused. They are the older path to the same load balancer and
+            // this platform does not use them, so admitting them would widen
+            // the surface for nothing.
+            "Ingress" | "ManagedCertificate" | "FrontendConfig" => {
                 panic!(
-                    "{} publishes a controller outside the cluster",
+                    "{} publishes a controller outside the cluster by a path this platform does \
+                     not use; the Gateway API is the one that is checked for IAP",
                     manifest.describe()
                 );
             }
@@ -2779,6 +2800,61 @@ fn no_controller_manifest_publishes_a_service_and_the_argo_server_is_cluster_ip(
             }
             _ => {}
         }
+    }
+
+    // Publication implies IAP, and this is where that is enforced.
+    //
+    // A `GCPBackendPolicy` with `iap.enabled: true` is what makes Google
+    // check the caller against `roles/iap.httpsResourceAccessor` before the
+    // request is forwarded into the VPC at all. Without one, the Gateway is
+    // a plain load balancer and the only thing between a stranger and a
+    // controller that can reconcile arbitrary manifests into this cluster is
+    // that controller's own login page.
+    //
+    // So every backend any HTTPRoute names must carry such a policy. The
+    // check is written this way round — over routes, requiring a policy —
+    // because the reverse would pass a route somebody added without one.
+    let manifests = manifests_under(GITOPS);
+    let protected: Vec<String> = manifests
+        .iter()
+        .filter(|manifest| manifest.kind() == "GCPBackendPolicy")
+        .filter(|manifest| {
+            text_at(&manifest.value, &["spec", "default", "iap", "enabled"]).as_deref()
+                == Some("true")
+        })
+        .filter_map(|manifest| text_at(&manifest.value, &["spec", "targetRef", "name"]))
+        .collect();
+    let mut published = 0usize;
+    for manifest in manifests
+        .iter()
+        .filter(|manifest| manifest.kind() == "HTTPRoute")
+    {
+        for backend in list_at(&manifest.value, &["spec", "rules"])
+            .into_iter()
+            .flat_map(|rule| list_at(rule, &["backendRefs"]))
+        {
+            let name = text_at(backend, &["name"]).unwrap_or_default();
+            assert!(
+                protected.contains(&name),
+                "{} routes to `{name}`, which no GCPBackendPolicy protects with `iap.enabled: \
+                 true`; that publishes a GitOps controller to the internet with nothing but its \
+                 own login page in front of it",
+                manifest.describe()
+            );
+            published += 1;
+        }
+    }
+    // A route with no backend at all is the redirect, which carries no
+    // traffic to a controller and needs no policy. But if *nothing* is
+    // published, the loop above asserted nothing, and this test would pass
+    // on a tree where somebody had deleted every policy and every route
+    // together. Say which state we are in rather than being silently vacuous.
+    if published == 0 {
+        assert!(
+            protected.is_empty(),
+            "GCPBackendPolicy objects exist but no HTTPRoute routes to any backend; either the \
+             routes were removed and the policies left behind, or this test is checking nothing"
+        );
     }
 }
 

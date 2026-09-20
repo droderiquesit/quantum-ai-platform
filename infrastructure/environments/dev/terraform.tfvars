@@ -497,3 +497,47 @@ console_egress_cidr = "10.0.16.0/26"
 #     rate_limit_requests_per_minute = 600
 #     permitted_regions              = []
 #   }
+
+# --- The GitOps control plane's public front door ----------------------------
+#
+# ADR 0036 built this cluster with a private endpoint and no public address,
+# and this section is the deliberate, environment-scoped widening of that.
+# What becomes reachable is two controller UIs; the API server, the nodes and
+# the endpoint are untouched and stay private.
+#
+# The order of the gates is the design. A request hits a Google load
+# balancer, terminates TLS on a Google-managed certificate, and is then
+# handed to Identity-Aware Proxy, which checks the caller against
+# `roles/iap.httpsResourceAccessor` **before** anything reaches the cluster.
+# An unauthenticated request is refused by Google's front end and never
+# becomes a packet on the VPC, so Argo CD's login page is not an
+# internet-facing surface.
+#
+# Behind IAP there is still a password, and the redundancy is deliberate:
+# IAP decides who may reach the service, Argo CD decides who may act on it.
+# A misconfigured IAP policy still meets a credential; a leaked credential
+# still meets IAP. One gate in front of a controller that can reconcile
+# arbitrary manifests into this cluster is one gate too few.
+gitops_gateway_enabled = true
+gitops_argocd_hostname = "argocd.algorik.ai"
+gitops_kargo_hostname  = "kargo.algorik.ai"
+
+# **Empty, and seeded out of band — like every credential in this tree.**
+#
+# An IAM member is an account identifier, and this repository does not carry
+# those: `.claude/rules/00-enterprise-governance.md` refuses a token, key or
+# account identifier in code, and a committed `user:someone@example.com` is
+# exactly that. It would also be the one line of this configuration that has
+# to change whenever a person joins or leaves, in a file reviewed by commit.
+#
+# So the front door is applied admitting nobody, which is a posture rather
+# than a failure, and an operator is granted by name afterwards:
+#
+#   gcloud projects add-iam-policy-binding algorik-dev \
+#     --member='user:YOU@example.com' \
+#     --role='roles/iap.httpsResourceAccessor'
+#
+# Until somebody runs that, the hostnames resolve, the certificate serves,
+# and IAP refuses every caller. That is the correct state for a control
+# plane whose operators have not been named yet.
+gitops_iap_members = []
