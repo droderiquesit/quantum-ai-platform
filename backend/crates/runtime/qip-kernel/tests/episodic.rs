@@ -834,3 +834,114 @@ fn a_precedent_says_what_the_platform_declined_on_the_episodes_it_recalled_and_w
     );
     Ok(())
 }
+#[test]
+fn the_learn_stage_reads_regime_experience_from_memory_and_journals_it_with_the_blind_spots()
+-> Result<()> {
+    // Blueprint §13.1's regime-experience and blind-spot rows, proven
+    // through `run_cycle` rather than the store's own method: the failure
+    // this guards is a report that exists and is read by nothing, which is
+    // exactly what the self-model's other five dimensions were until this
+    // lane. Two things have to hold. Before anything resolves, the stage
+    // still says so — twenty blind spots and no experience, rather than
+    // silence — and once the resolving cycle has moved an episode into
+    // memory, the next cycle's LEARN reads it back, names the regime it was
+    // reasoned in, and puts the report on the sealed journal entry.
+    let (second_at, third_at) = resolution_instants()?;
+
+    // Premise one: on a fresh platform the line is present and empty. The
+    // first cycle's LEARN runs before any thesis has resolved.
+    let mut fresh_platform = fresh()?;
+    fresh_platform.observe(bars("AAA", 120));
+    let first = fresh_platform.run_cycle(start());
+    let learn = first.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn
+            .detail
+            .contains("regime experience: none, memory holds no knowable episode")
+            && learn.detail.contains("20 of 20 regime(s) are blind spots"),
+        "a platform that has resolved nothing must say it has no experience, not nothing: {}",
+        learn.detail
+    );
+    let entries = fresh_platform.journal_entries()?;
+    let sealed = entries.last().expect("one cycle was journalled");
+    let report = sealed
+        .experience
+        .as_ref()
+        .expect("the empty report is journalled, because 'no experience' is a finding");
+    assert_eq!(report.episodes_examined, 0);
+    assert_eq!(
+        report.blind_spots.len(),
+        20,
+        "five market by four volatility regimes"
+    );
+    assert_eq!(report.regimes_traded(), 0);
+
+    // Then the resolving cycle and the one after it. `three_cycles` asserts
+    // its own premise: the second cycle's LEARN said "episode(s) remembered",
+    // so by the third cycle memory holds at least one knowable episode.
+    let (platform, _) = three_cycles(second_at, third_at)?;
+
+    let entries = platform.journal_entries()?;
+    let sealed = entries.last().expect("three cycles were journalled");
+    let report = sealed
+        .experience
+        .as_ref()
+        .expect("LEARN journals the experience report on every cycle");
+    let knowable = report.episodes_examined;
+    assert!(
+        knowable >= 1,
+        "the report is over what memory holds knowable at the stage instant, and the \
+         resolving cycle put one episode there"
+    );
+    assert_eq!(
+        report.regimes.len(),
+        1,
+        "one instrument, one regime label: {:?}",
+        report.regimes
+    );
+    assert!(
+        report.unknown.is_empty(),
+        "an episode stamped by `regime_label` names a regime the enum product knows: {:?}",
+        report.unknown
+    );
+    assert_eq!(
+        report.blind_spots.len(),
+        19,
+        "every regime but the one reasoned in is a blind spot: {:?}",
+        report.blind_spots
+    );
+    let (key, experience) = report.regimes.iter().next().expect("one regime");
+    assert!(
+        !report.blind_spots.contains(key),
+        "a regime with an episode cannot also be a blind spot"
+    );
+    assert_eq!(experience.episodes, knowable);
+    // The label reads as the enums spell it, which is how a reader would
+    // grep the cost router for it.
+    assert!(
+        key.split_once('/').is_some_and(|(market, volatility)| {
+            qip_cost_router::MarketRegime::ALL
+                .iter()
+                .any(|m| m.as_str() == market)
+                && qip_cost_router::VolatilityRegime::ALL
+                    .iter()
+                    .any(|v| v.as_str() == volatility)
+        }),
+        "the regime key {key} is not a market/volatility pair the enums spell"
+    );
+
+    // And the stage detail carries the same finding, so an operator reading
+    // the cycle summary and one reading the journal see one fact.
+    let learned = platform
+        .journal_entries()?
+        .last()
+        .map(|entry| entry.summary.clone())
+        .expect("a summary");
+    assert!(
+        learned.contains("regime experience: traded through")
+            && learned.contains("(reasoned in 1)")
+            && learned.contains("19 blind spot(s)"),
+        "the LEARN detail does not carry the experience line: {learned}"
+    );
+    Ok(())
+}
