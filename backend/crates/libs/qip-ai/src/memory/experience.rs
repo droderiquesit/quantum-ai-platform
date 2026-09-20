@@ -288,7 +288,7 @@ mod tests {
             },
             horizon: Duration::from_hours(24),
             decision,
-            outcome: resolved.then(|| EpisodeOutcome {
+            outcome: resolved.then_some(EpisodeOutcome {
                 resolved_at: known_at,
                 expected_move_bps: Some(12.0),
                 realised_move_bps: 10.0,
