@@ -2,13 +2,36 @@
 #
 # This is the workflow that lets an operator — or an agent working for one —
 # iterate the infrastructure from the repository: plan a change, apply it,
-# and shut the execution nodes down when nobody is testing, which is where
-# most of the money goes — every Cloud Run service scales to zero and costs
-# nothing standing. The control-plane cluster of ADR 0036 does not: Autopilot
-# bills for the controllers it schedules and for its control plane while
-# idle, and `down` deliberately leaves it standing, because tearing it down
-# takes Argo CD, Kargo and both App credentials with it. That standing cost
-# is named in the ADR rather than hidden here. The workflow authenticates by
+# and shut the execution nodes down when nobody is testing.
+#
+# **Two things in this estate bill while idle, and `down` reaches neither of
+# them.** This paragraph said `down` was "where most of the money goes" and
+# that "every Cloud Run service scales to zero and costs nothing standing",
+# and both halves were false in the same direction — the cheerful one:
+#
+#   * `execution_nodes = {}` in every environment, so `module.execution_node`
+#     is empty and `down` destroys nothing at all. It is a no-op today.
+#   * Two of the four Cloud Run services are pinned always-on, and the
+#     catalogue says why in each entry's `always_on_justification`: the fast
+#     brain and the deep brain each run a loop on their own clock over one
+#     hash-chained log, nothing requests them, so a zero floor is a research
+#     loop that ran until the first idle retirement and never again.
+#     `gitops/envs/<env>/{fastbrain,deepbrain}.yaml` carry
+#     `minInstanceCount: 1` and a `maxInstanceCount: 1` ceiling, which is the
+#     other half of the same argument — a second instance forks the chain.
+#     6 vCPU and 10 GiB stand allocated whenever those services exist.
+#   * The control-plane cluster of ADR 0036: Autopilot bills for the
+#     controllers it schedules and for its regional control plane while idle.
+#     `down` deliberately leaves it standing, because tearing it down takes
+#     Argo CD, Kargo and both App credentials with it. That standing cost is
+#     named in the ADR rather than hidden here; ADR 0093 records the day it
+#     was suspended in dev, by `gitops_enabled = false` rather than by
+#     `down`, and why.
+#
+# So the honest summary is that `down` stops the meter only in an
+# environment that declares execution nodes, and no environment does. The
+# two levers that work are the always-on floors in the manifests and
+# `gitops_enabled` in the tfvars, and neither is an action on this workflow. The workflow authenticates by
 # workload identity federation as the `qip-infra` account `modules/cicd`
 # creates; no key exists anywhere in this path.
 #
@@ -20,10 +43,13 @@
 #
 # ## Why `down` is not `destroy`
 #
-# `down` destroys `module.execution_node` — the C3 machines, the resources
-# that bill by the hour — and leaves the Cloud Run services (which bill by
-# the request), identity, KMS, secrets, the registry and the state bucket
-# standing. That asymmetry is deliberate:
+# `down` destroys `module.execution_node` — the C3 machines, which bill by
+# the hour whenever an environment declares any — and leaves the Cloud Run
+# services, identity, KMS, secrets, the registry and the state bucket
+# standing. That asymmetry is deliberate. What it is *not* is a claim that
+# what it leaves is free: this sentence used to say the services "bill by
+# the request", and two of the four bill by the second whether or not a
+# request ever arrives. See the header above.
 #
 #   * KMS keys cannot be truly deleted — destroying them schedules key
 #     versions for destruction and the key names stay claimed, so a full
@@ -829,12 +855,22 @@ jobs:
         run: |
           set -euo pipefail
           # Targeted on purpose — see the header for why a full destroy is a
-          # trap. The execution nodes are the only thing here that bills
-          # while idle: a Cloud Run service at zero instances costs nothing,
-          # and its `deletion_protection` refuses a destroy in any case. The
-          # node's group, template, subnet, identity and rules go together
-          # and `up` recreates them from the same tfvars — in shadow mode,
-          # as always.
+          # trap. The node's group, template, subnet, identity and rules go
+          # together and `up` recreates them from the same tfvars — in shadow
+          # mode, as always.
+          #
+          # This comment used to say the execution nodes were "the only thing
+          # here that bills while idle", and that a Cloud Run service at zero
+          # instances costs nothing. The second clause is true and does not
+          # describe this estate: the fast brain and the deep brain are pinned
+          # at a floor of one, on the argument in their catalogue entries, so
+          # they are never at zero. The first clause is false twice over —
+          # the control-plane cluster bills while idle by ADR 0036's own
+          # account, and `execution_nodes = {}` in every environment, so this
+          # step destroys nothing at all and stops no meter. It is kept
+          # because an environment may declare nodes tomorrow; it is not a
+          # cost control today, and reading it as one is how the estate went
+          # on billing for a cluster nobody had looked at.
           terraform -chdir=infrastructure/terraform destroy -input=false -auto-approve \
             -target=module.execution_node \
             ${VAR_FILES}

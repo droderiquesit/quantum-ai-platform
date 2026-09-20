@@ -179,6 +179,74 @@ docker.io/openobserve/openobserve@sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9
 # new digest there, and a new SOURCE.md, in one commit.
 
 # Argo CD v3.5.2 (infrastructure/gitops/bootstrap/argocd/SOURCE.md).
+#
+# This line is REFUSED by the platform's own scan gate and is deliberately
+# left at v3.5.2 rather than moved forward, because moving it forward does
+# not clear the refusal. vendor.yml run 35528637815 (dev, 2026-09-20) mirrored
+# the image and Trivy failed it:
+#
+#   usr/local/bin/git-lfs    (gobinary)  Total: 1 (CRITICAL: 1)
+#   usr/local/bin/kustomize  (gobinary)  Total: 1 (CRITICAL: 1)
+#   stdlib  CVE-2025-68121  CRITICAL  "Unexpected session resumption in
+#   crypto/tls"; fixed in go1.24.13, go1.25.7 and go1.26.0-rc.3
+#   (confirmed against the Go vulnerability database as GO-2026-4337:
+#    https://api.osv.dev/v1/query {"package":{"name":"stdlib",
+#    "ecosystem":"Go"},"version":"1.25.3"}).
+#
+# The finding is NOT in Argo CD's own binary. It is in two third-party
+# binaries the image copies in from upstream release artefacts, and that is
+# what makes the obvious remedy — pin a newer Argo CD — useless. Measured
+# rather than assumed, on 2026-09-20, by pulling each image's `COPY
+# /usr/local/bin/<tool>` layer from quay's v2 API and reading the Go build
+# stamp out of the binary (`strings -a <bin> | grep -oE '^go1\.[0-9]+(\.[0-9]+)?$'`):
+#
+#   tag            kustomize   git-lfs   helm
+#   v3.4.9         go1.24.0    go1.25.3  go1.24.11
+#   v3.5.2 (here)  go1.24.0    go1.25.3  —
+#   v3.5.3         go1.24.0    go1.25.3  —
+#   v3.6.0-rc1     go1.24.0    go1.27.0  go1.27.1
+#
+# So v3.5.3 — published 2026-09-14, the newest release on the 3.5 line — ships
+# byte-identical kustomize and git-lfs layers to the ones already refused
+# here: same size, same build stamp. Upgrading to it would fail the identical
+# gate, and would look like remediation in the git history. The 3.6 release
+# candidate rebuilds git-lfs and helm on a patched Go and still carries
+# kustomize on go1.24.0, which is four patch releases behind the fix — every
+# Argo CD image published to date, on every line, carries that one binary.
+#
+# The blocker is therefore upstream kustomize, not Argo CD, and there is no
+# newer kustomize to adopt either — which is the half that turns "pin a newer
+# release" from slow into impossible. The Go module proxy, which publishes
+# every tag the project has cut, ends at the version already in the image:
+#
+#   curl -sS https://proxy.golang.org/sigs.k8s.io/kustomize/kustomize/v5/@latest
+#   {"Version":"v5.8.1","Time":"2026-02-09T16:11:22Z",...}
+#
+# and `strings -a` on the binary above reports `v5.8.1`. So the newest
+# kustomize in existence on 2026-09-20 was cut seven months earlier, is the
+# one Argo CD already ships, and is the one built on go1.24.0. No pin, on
+# either project, reaches a fixed build.
+#
+# What that leaves, stated so the next reader does not re-derive it: the
+# remedies are (1) upstream kustomize cutting a release on go1.24.13 or above,
+# (2) this platform building kustomize from source on a patched toolchain and
+# copying it over the attested base — which would make the platform a *builder*
+# of third-party code rather than a mirror of reviewed bytes, and is an ADR
+# decision rather than an implementation detail, or (3) a scanner exception,
+# which `.claude/rules/` and this file both refuse. No change in this
+# repository clears it under (1) or (3). It is deliberately not waved through, and the
+# argument for waving it through is worth naming because it is a good one:
+# the platform's Argo CD renders kustomize overlays from this repository's own
+# committed tree and terminates no TLS session with it, so the finding is very
+# likely unreachable here. That reasoning is how a scanner exception gets
+# written, and an exception written once outlives the release that needed it.
+# The rule here is to fix rather than suppress; this fix is upstream's to ship.
+#
+# Re-check by re-running the measurement above, not by reading a release note:
+# a kustomize layer whose size has moved off 12660920 bytes is the signal that
+# it was rebuilt at all. A tag whose kustomize reports go1.24.13 or above (or
+# go1.25.7, or go1.26.0-rc.3) makes this a one-line change — a new digest in a
+# new commit, with a new SOURCE.md, per this file's second paragraph.
 quay.io/argoproj/argocd@sha256:e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d03aae816a2e7097b vendor/argocd v3.5.2
 
 # Redis 8.2.3 on Alpine, the one Argo CD's install manifest names for its

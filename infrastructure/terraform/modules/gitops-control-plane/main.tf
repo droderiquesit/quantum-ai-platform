@@ -193,7 +193,21 @@ resource "google_container_cluster" "control_plane" {
   # anything, which is exactly what
   # `a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read` refuses in
   # `modules/cloudrun`.
-  deletion_protection = true
+  #
+  # **Flipped to `false` on 2026-09-20 for one apply, and restored by the
+  # commit that follows the destroy.** ADR 0093 suspends this cluster in dev
+  # while no published Argo CD image passes `vendor.yml`'s CRITICAL gate, and
+  # the two-apply sequence the paragraph above describes is exactly what that
+  # takes: this value has to reach *state* before `gitops_enabled = false`
+  # can destroy anything. The cluster is not tainted — run 52's apply was
+  # `0 added, 1 changed, 0 destroyed` — so it is planned as an in-place
+  # update, which is the case the paragraph above says carries `false`
+  # through first. It does not become an input on the way past, for the
+  # reason the paragraph above gives.
+  #
+  # If you are reading this literal as `false` and no destroy is in flight,
+  # the restore commit was lost. Put it back.
+  deletion_protection = false
 
   # Private in both directions. The endpoint has no public address at all,
   # rather than one behind an allowlist, and the only range that may reach
