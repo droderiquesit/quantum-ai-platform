@@ -193,15 +193,19 @@
 //!   site beside `seed_demo_world`'s. So the graph is no longer empty *by
 //!   construction* in every process; it is empty in *most* cycles, because
 //!   the bar is deliberately strict and most instrument pairs in any given
-//!   universe will not clear it. That does not move this bullet's
-//!   conclusion: nothing in this module or `qip-api/src/mesh.rs` produces
-//!   the `causal_digest` slot, and a producer built today would still be
-//!   shipping "we assert these are the active edges" against a graph that
-//!   is honestly sparse rather than honestly empty — a materially different
-//!   but still-open question, not the one this paragraph answers. What
-//!   would have to exist is unchanged: a digest producer that states its
-//!   own freshness rather than stamping a fresh instant on whatever the
-//!   graph happens to hold.
+//!   universe will not clear it. Until 2026-09-20 that did not move this
+//!   bullet's conclusion — nothing in this module or `qip-api/src/mesh.rs`
+//!   produced the `causal_digest` slot, and what would have to exist was "a
+//!   digest producer that states its own freshness rather than stamping a
+//!   fresh instant on whatever the graph happens to hold". **That producer
+//!   now exists and this bullet is closed**: [`super::causal`], reached from
+//!   `Platform::issue_causal_digest` and called once per cycle from
+//!   `qip-api/src/mesh.rs` beside the belief and episodic issues. It ships
+//!   nothing for a graph that has absorbed no claim, leaves decayed edges out
+//!   and ships nothing when only those remain, and stamps the slot with
+//!   `CausalGraph::last_updated` — the fact the centre's own row 2 is judged
+//!   on — so a graph that is honestly sparse ships a short list rather than
+//!   an assertion, and a graph that is honestly empty ships nothing.
 //!
 //! The episodic third was true when it was written and is not now. The LEARN
 //! stage moves each resolved thesis's episode into `Platform::episodes`

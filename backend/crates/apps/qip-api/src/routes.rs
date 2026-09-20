@@ -2191,6 +2191,7 @@ impl Api {
                                 .chain(policy_pending.shares.iter())
                                 .chain(policy_pending.episodic.iter())
                                 .chain(policy_pending.beliefs.iter())
+                                .chain(policy_pending.causal.iter())
                             {
                                 eprintln!("qip-api: {line}");
                             }

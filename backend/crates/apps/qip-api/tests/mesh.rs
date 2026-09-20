@@ -1590,7 +1590,7 @@ fn a_policy_venue_the_grant_does_not_permit_ships_the_slot_unproduced_and_names_
 // so the common case is a produced slot that already reads stale; the
 // widening is the ten minutes after a resolution, not a standing state.
 
-use qip_contracts::degradation::{Capability, Freshness, StrategyClass};
+use qip_contracts::degradation::{AllocationMode, Capability, Freshness, StrategyClass};
 use qip_contracts::policy::{PolicyItem, PolicyPayload, Slot};
 use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
@@ -1878,6 +1878,276 @@ fn a_cycle_ships_slot_three_stamped_with_the_oldest_open_belief_and_the_halving_
     // The boundary: issuing policy reached no venue and this platform could
     // never reach one.
     assert!(!platform.is_live_capable());
+    Ok(())
+}
+// ---------------------------------------------------------------------------
+// The causal digest — the payload's last cognition slot, produced from the
+// graph the UNDERSTAND stage's own temporal-precedence writer filled.
+// ---------------------------------------------------------------------------
+
+fn lagged_object(symbol: &str) -> ObjectId {
+    ObjectId::from_string(format!("obj-{symbol}"))
+}
+
+/// Two instruments, because a causal edge needs a cause and an effect.
+fn lagged_universe() -> Result<qip_financial::universe::Universe> {
+    let mut universe = qip_financial::universe::Universe::new();
+    for symbol in ["AAA", "BBB"] {
+        universe.insert(
+            FinancialObject::builder(
+                lagged_object(symbol),
+                symbol,
+                InstrumentType::CommonStock,
+                LiquidityProfile::listed(dec!("5000000"), 3.0),
+            )
+            .venue(DESK_VENUE)
+            .sector(Sector::InformationTechnology)
+            .price(dec!("100"))
+            .provenance(Provenance::synthetic("test", start()))
+            .build(start())?,
+        )?;
+    }
+    Ok(universe)
+}
+
+fn lagged_bar(symbol: &str, at: Timestamp, open: f64, close: f64) -> Result<SensedRecord> {
+    Ok(SensedRecord::Bar(Box::new(Bar {
+        object_id: lagged_object(symbol),
+        venue: DESK_VENUE.to_string(),
+        interval: Interval::Day,
+        open_time: at,
+        open: Decimal::from_f64(open).ok_or_else(|| Error::numeric("a representable open"))?,
+        high: Decimal::from_f64(open.max(close) * 1.002)
+            .ok_or_else(|| Error::numeric("a representable high"))?,
+        low: Decimal::from_f64(open.min(close) * 0.998)
+            .ok_or_else(|| Error::numeric("a representable low"))?,
+        close: Decimal::from_f64(close).ok_or_else(|| Error::numeric("a representable close"))?,
+        volume: dec!("1000000"),
+        trade_count: 5_000,
+        vwap: Decimal::from_f64((open + close) / 2.0),
+        quality: DataQuality::default(),
+    })))
+}
+
+/// A deterministic, bounded pseudo-random sequence in roughly `[-scale,
+/// scale]` — the same xorshift `qip-kernel/tests/causal_precedence.rs` uses,
+/// so the pair that clears the writer's bar there clears it here.
+fn lagged_noise(seed: u64, count: usize, scale: f64) -> Vec<f64> {
+    let mut state = seed;
+    (0..count)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let unit = (state % 1_000_000) as f64 / 1_000_000.0;
+            (unit - 0.5) * 2.0 * scale
+        })
+        .collect()
+}
+
+fn lagged_bars(symbol: &str, returns: &[f64]) -> Result<Vec<SensedRecord>> {
+    let count = returns.len();
+    let mut price = 100.0_f64;
+    let mut out = Vec::with_capacity(count);
+    for (i, log_return) in returns.iter().enumerate() {
+        let open = price;
+        price *= log_return.exp();
+        let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+        out.push(lagged_bar(symbol, at, open, price)?);
+    }
+    Ok(out)
+}
+
+/// A platform whose UNDERSTAND stage has written one temporal-precedence
+/// edge from its own bar history — the production writer, not a seed.
+fn causal_platform() -> Result<(Platform, Timestamp)> {
+    let count = 120;
+    let cause = lagged_noise(11, count, 0.02);
+    let effect_noise = lagged_noise(22, count, 0.004);
+    let mut effect = vec![0.0; count];
+    for t in 1..count {
+        effect[t] = 0.8 * cause[t - 1] + effect_noise[t];
+    }
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        qip_observability::Telemetry::silent(),
+        lagged_universe()?,
+        qip_risk::limits::LimitSet::conservative_default(),
+    )?;
+    platform.observe(lagged_bars("AAA", &cause)?);
+    platform.observe(lagged_bars("BBB", &effect)?);
+    platform.run_cycle(start());
+    Ok((platform, start().saturating_add(Duration::from_secs(1))))
+}
+
+#[test]
+fn the_causal_digest_ships_the_edges_the_understand_stage_wrote_stamped_with_the_graphs_own_instant()
+-> Result<()> {
+    // The end-to-end proof that the slot is produced from the graph the
+    // cycle actually filled. Two things this has to get right: that the
+    // stamp is the graph's newest absorption rather than the shipper's
+    // instant, and that the widening it grants — the causal-stale factor
+    // lifted, allocation moved to regime-conditional — expires on the
+    // graph's silence without anyone republishing anything.
+    let (mut platform, asked_at) = causal_platform()?;
+
+    // Premise one: the production writer put an edge in the graph. Without
+    // this the assertions below would pass on a graph that was never filled.
+    let graph_updated_at = platform
+        .world()
+        .causal()
+        .last_updated()
+        .ok_or_else(|| Error::invalid("premise: the cycle wrote no causal edge"))?;
+    let held = platform.world().causal().len();
+    assert!(held > 0, "premise: the graph holds no edge");
+
+    // Premise two, and the state every deployed centre shipped: a payload
+    // whose causal slot is unproduced narrows the cell and allocates
+    // unconditionally.
+    let unwired = PolicyPayload::unproduced(1, CELL, asked_at);
+    assert_eq!(unwired.causal_digest, Slot::unproduced());
+    let narrowed = unwired.narrowing(asked_at);
+    assert_eq!(
+        narrowed.freshness(Capability::CausalGraph),
+        Freshness::Unavailable,
+        "an unproduced causal slot must read unavailable, or this test proves nothing"
+    );
+    assert_eq!(narrowed.allocation_mode(), AllocationMode::Unconditional);
+    let floor = narrowed.sizing_multiplier();
+
+    let pending = qip_api::mesh::pending_policy(
+        &mut platform,
+        [CELL.to_string()].into_iter(),
+        None,
+        asked_at,
+    );
+    assert_eq!(pending.payloads.len(), 1, "one cell, one payload");
+    let (cell, payload) = &pending.payloads[0];
+    assert_eq!(cell, CELL);
+
+    let digest = payload.causal_digest.value().ok_or_else(|| {
+        Error::invalid("the causal slot shipped unproduced from a platform holding an edge")
+    })?;
+    assert_eq!(
+        digest.active_edges.len(),
+        held,
+        "every non-decayed edge the graph holds is named: {:?}",
+        digest.active_edges
+    );
+    assert!(
+        digest
+            .active_edges
+            .iter()
+            .any(|key| key == "obj-AAA->obj-BBB:temporal_precedence"),
+        "the edge the writer established is not named as it was established: {:?}",
+        digest.active_edges
+    );
+
+    // The instant is the graph's and not the shipper's.
+    assert_eq!(
+        payload.causal_digest.produced_at(),
+        Some(graph_updated_at),
+        "the causal slot is not stamped with the graph's newest absorption"
+    );
+    assert_ne!(
+        payload.causal_digest.produced_at(),
+        Some(asked_at),
+        "the causal slot was stamped with the issue instant"
+    );
+
+    // One line per cycle, not one per cell: the graph is the platform's.
+    assert_eq!(
+        pending.causal.len(),
+        1,
+        "one graph, one line: {:?}",
+        pending.causal
+    );
+    assert!(
+        pending.causal[0].contains("active edge(s)")
+            && pending.causal[0].contains("newest absorption"),
+        "the operator line does not say what shipped: {}",
+        pending.causal[0]
+    );
+
+    // The widening, exactly: a second after the edge was written the cell
+    // no longer narrows on the graph and allocates regime-conditionally.
+    let widened = payload.narrowing(asked_at);
+    assert_eq!(widened.freshness(Capability::CausalGraph), Freshness::Fresh);
+    assert_eq!(
+        widened.allocation_mode(),
+        AllocationMode::RegimeConditional,
+        "a fresh causal slot did not move allocation, so wiring the producer changed nothing"
+    );
+    assert!(
+        widened.sizing_multiplier() > floor,
+        "a fresh causal slot did not lift the causal-stale factor: {} against {floor}",
+        widened.sizing_multiplier()
+    );
+
+    // And past the slot's own time to live the same payload narrows again
+    // without anything being republished: the widening expires on the
+    // graph's silence, not the shipper's.
+    let later = asked_at
+        .saturating_add(PolicyItem::CausalDigest.time_to_live())
+        .saturating_add(Duration::from_secs(60));
+    assert_eq!(
+        payload.narrowing(later).sizing_multiplier(),
+        floor,
+        "a digest older than its time to live must stop excusing the widening"
+    );
+    assert_eq!(
+        payload.narrowing(later).allocation_mode(),
+        AllocationMode::Unconditional
+    );
+    Ok(())
+}
+
+#[test]
+fn a_platform_whose_graph_has_absorbed_nothing_ships_the_causal_slot_unproduced_and_says_why()
+-> Result<()> {
+    // The refusal half, and the state of every fresh deployment: no pair
+    // has cleared the writer's bar, so the graph is empty and the slot must
+    // not be produced — an empty produced list would read at a cell as a
+    // fresh graph and lift the narrowing on nothing.
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        qip_observability::Telemetry::silent(),
+        memory_universe()?,
+        qip_risk::limits::LimitSet::conservative_default(),
+    )?;
+    assert_eq!(
+        platform.world().causal().last_updated(),
+        None,
+        "premise: the graph has absorbed nothing"
+    );
+    let asked_at = start().saturating_add(Duration::from_secs(1));
+    let pending = qip_api::mesh::pending_policy(
+        &mut platform,
+        [CELL.to_string()].into_iter(),
+        None,
+        asked_at,
+    );
+    let (_, payload) = &pending.payloads[0];
+    assert_eq!(payload.causal_digest, Slot::unproduced());
+    assert_eq!(
+        payload
+            .narrowing(asked_at)
+            .freshness(Capability::CausalGraph),
+        Freshness::Unavailable
+    );
+    assert_eq!(pending.causal.len(), 1, "{:?}", pending.causal);
+    assert!(
+        pending.causal[0].contains("not shipped")
+            && pending.causal[0].contains("absorbed no claim"),
+        "the operator line does not say why nothing shipped: {}",
+        pending.causal[0]
+    );
     Ok(())
 }
 

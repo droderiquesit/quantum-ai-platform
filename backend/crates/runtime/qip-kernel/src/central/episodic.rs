@@ -13,8 +13,10 @@
 //! `WorldModel::claim_causal` a second, real caller
 //! (`Platform::discover_temporal_precedence`) — the kernel can now hold a
 //! causal edge, narrowly and rarely, which `whitelist.rs`'s own bullet
-//! restates and dates; this module is still not that producer, and the
-//! `causal_digest` slot is still unproduced regardless. The episodic third
+//! restates and dates; this module is still not that producer. The
+//! `causal_digest` slot gained one on 2026-09-20 — [`super::causal`], which
+//! ships nothing for a graph that has absorbed no claim and stamps the
+//! graph's own newest absorption otherwise. The episodic third
 //! does not hold either, and stopped holding when the LEARN stage began
 //! moving a resolved thesis's episode into memory: `Platform::remember_resolved`
 //! is called from `calibrate_resolved`, which `stage_learn` calls, so

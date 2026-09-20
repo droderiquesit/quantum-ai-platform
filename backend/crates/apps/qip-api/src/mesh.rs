@@ -673,6 +673,17 @@ pub struct PendingPolicy {
     /// process has formed no belief" and "every belief it holds is older than
     /// five minutes" — are different sentences rather than the same silence.
     pub beliefs: Vec<String>,
+    /// One line per **cycle**, not per cell: what the causal digest carries
+    /// and from how many active edges, or why nothing was produced.
+    ///
+    /// Beside the belief line and for the same reason: the graph is the
+    /// platform's, so seven copies would be seven claims about one thing. An
+    /// operator asking why every region allocates unconditionally and sizes
+    /// under the causal-stale factor reads the answer here, and the two
+    /// answers they need to tell apart — "this process has absorbed no
+    /// causal claim" and "every edge it holds has decayed" — are different
+    /// sentences rather than the same silence.
+    pub causal: Vec<String>,
 }
 
 /// The policy payloads one cycle should ship, one per configured cell.
@@ -687,7 +698,9 @@ pub struct PendingPolicy {
 /// produces and journals it, the episodic digest, as
 /// [`Platform::issue_episodic_digest`] takes it over the LEARN stage's own
 /// memory, the belief priors, as [`Platform::issue_belief_priors`] states the
-/// beliefs REASON has formed and LEARN has not yet resolved, and the
+/// beliefs REASON has formed and LEARN has not yet resolved, the causal
+/// digest, as [`Platform::issue_causal_digest`] states the edges the graph
+/// holds that re-estimation has not decayed, and the
 /// feasibility constraints, as
 /// [`Platform::feasibility_constraints`] reports the venues the platform has
 /// withdrawn. Every other slot ships unproduced and reads as unavailable at
@@ -827,6 +840,25 @@ pub fn pending_policy(
             Slot::unproduced()
         }
     };
+    // The causal digest, once per cycle for the same reason slots 3 and 4
+    // are: the graph is the platform's, not any one cell's. A refusal ships
+    // the slot unproduced — the state every payload carried while this slot
+    // had no producer — and says why, because "the centre holds no causal
+    // edge" and "the centre's record of its own graph contradicts itself"
+    // are different faults with different owners and they narrow a cell
+    // identically.
+    let causal = match platform.issue_causal_digest(now) {
+        Ok(issue) => {
+            pending.causal.push(issue.describe());
+            issue.slot()
+        }
+        Err(error) => {
+            pending
+                .causal
+                .push(format!("causal digest: not shipped, {}", error.message()));
+            Slot::unproduced()
+        }
+    };
     for cell in cells {
         let sequence = now.as_nanos().max(0) as u64;
         let mut payload = PolicyPayload::unproduced(sequence, &cell, now);
@@ -890,6 +922,16 @@ pub fn pending_policy(
         // value, and the reader should not have to work out which path left
         // it.
         payload.belief_priors = belief.clone();
+        // The same causal digest for every cell, stamped with the graph's
+        // own newest absorption rather than this instant. Assigned
+        // unconditionally for the same reason slots 3 and 4 are: an
+        // unproduced slot assigned and an unproduced slot left alone are the
+        // same fail-closed value, and the reader should not have to work out
+        // which path left it. What a fresh slot changes at the cell is §6.2
+        // row 2 — the causal-stale sizing factor is lifted and allocation
+        // moves to regime-conditional — which is why the producer refuses
+        // rather than guesses; see `qip_kernel::central::causal`.
+        payload.causal_digest = causal.clone();
         // Slot 11, assigned unconditionally and to every cell, including
         // when nothing is withdrawn. An empty set is a statement — "the
         // centre is applying no withdrawal" — and a cell that could not tell
