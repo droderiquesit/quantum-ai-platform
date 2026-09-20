@@ -87,12 +87,14 @@ moved the code. If a command returns nothing, that absence is the evidence.
 
 | Verdict | Sections | Share |
 |---|---|---|
-| `REACHED` | 44 | 24% |
-| `PARTIAL` | 121 | 67% |
+| `REACHED` | 45 | 25% |
+| `PARTIAL` | 120 | 66% |
 | `UNREACHED` | 1 | 1% |
 | `ABSENT` | 0 | 0% |
 | `NARRATIVE` | 15 | 8% |
 | **Total** | **181** | |
+
+**Recounted 2026-09-20 (later) for §17.7's `PARTIAL → REACHED`** — one row, 44/121 to 45/120, taken with the same command over the rows and required to sum to 181 before being written here. It did: 45 + 120 + 1 + 0 + 15. The asset-class registry now refuses assembly over an instrument whose class this platform is not registered to trade, which is a control rather than a record: the orchestrator checked that the refusal reaches `Platform::new` and stops it, rather than taking the lane's word for it.
 
 **Recounted 2026-09-20 for three crossings — §9.4, §5.5 and §23.7** — 41/124 to 44/121, taken with the same command over the rows and required to sum to 181 before being written here. It did: 44 + 121 + 1 + 0 + 15. §9.4 crossed on ADR 0087's retirement of a causal edge that fails its conditions three passes running (lane Y2); §5.5 and §23.7 crossed together on causal shock propagation and the adversarial sequence reaching `stage_simulate` through `Platform::stress_the_book` (lane W4b), whose call path and whose two load-bearing tests were verified by the orchestrator rather than taken on the lane's word, because that lane stopped without handing back.
 
