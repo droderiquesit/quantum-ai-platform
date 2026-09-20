@@ -913,7 +913,34 @@ jobs:
           # provisioning instead. The wait was correct and the budget was
           # wrong, which is a different defect from the four before it — the
           # condition being waited on was the right one.
-          kubectl wait --for=condition=Healthy configconnector/configconnector.core.cnrm.cloud.google.com --timeout=900s
+          # `.status.healthy`, which is a boolean **field**, not a condition.
+          #
+          # This waited on `--for=condition=Healthy` and timed out at 300s,
+          # then at 900s, while the diagnostic showed the operator and
+          # `cnrm-controller-manager` both `1/1 Running`. Config Connector was
+          # healthy the whole time. The ConfigConnector CR simply has no
+          # `conditions` array — its status is `{healthy: bool, errors: []}` —
+          # and `kubectl wait --for=condition=` on a resource that never
+          # publishes that condition does not say "no such condition". It
+          # waits, and then reports a timeout, which reads exactly like a
+          # component that failed to come up.
+          #
+          # That is the fifth wait in this step to have been on the wrong
+          # thing, and the second I wrote myself: I replaced a label-selector
+          # wait that could succeed by finding nothing with one that could
+          # only ever fail. Raising the timeout to 900s was treating a wrong
+          # condition as a short budget — the distinction the previous commit
+          # made a point of, applied to the wrong defect.
+          if ! kubectl wait --for=jsonpath='{.status.healthy}'=true \
+              configconnector/configconnector.core.cnrm.cloud.google.com --timeout=900s; then
+            echo "::error title=Config Connector never reported healthy::the operator did not bring up its controllers." >&2
+            # Print the status that was actually being waited on, so the next
+            # failure here is about Config Connector rather than about a
+            # guess. `errors` is where the operator says what it could not do.
+            kubectl get configconnector/configconnector.core.cnrm.cloud.google.com \
+              -o jsonpath='{"healthy="}{.status.healthy}{"  errors="}{.status.errors}{"\n"}' >&2 || true
+            exit 1
+          fi
           kubectl -n cnrm-system rollout status statefulset/cnrm-controller-manager --timeout=900s
           # 4. Argo CD's App credential, from Secret Manager, as a
           #    Kubernetes Secret. Kargo's is read at the same time and
