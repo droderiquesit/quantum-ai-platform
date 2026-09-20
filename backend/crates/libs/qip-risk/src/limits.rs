@@ -38,6 +38,25 @@ pub const RISK_LIMITS_PATH_VARIABLE: &str = "QIP_RISK_LIMITS_PATH";
 /// [`RiskState`].
 pub const COUNTERPARTY_AXIS: &str = "counterparty";
 
+/// The exposure axis a private-market holding's manager is charged to —
+/// blueprint §17.5's "also concentration, manager, vintage and duration
+/// risk; the risk envelope needs new dimensions", the manager half.
+///
+/// Exported for the reason [`COUNTERPARTY_AXIS`] is: `qip-kernel` reads the
+/// manager off the record (the issuer of a private-asset or fund position)
+/// and files the bucket under this name, and the shipped
+/// `manager-concentration` cap looks it up. A listed instrument feeds no
+/// bucket here — its issuer is an obligor, not a manager whose judgement the
+/// holding depends on — so the axis is absent on a book of listed names and
+/// [`LimitKind::MaxAxisWeight`] records nothing rather than refusing.
+pub const MANAGER_AXIS: &str = "manager";
+
+/// The exposure axis a private-market holding's vintage year is charged to —
+/// §17.5's vintage half. Bucketed by the year as the administrator reports
+/// it, so a book that put every commitment to work in one year reads as one
+/// bet on that year's entry prices, which is what vintage risk is.
+pub const VINTAGE_AXIS: &str = "vintage";
+
 /// The name [`RiskState::with_tail_risk`] files its value-at-risk refusal
 /// under, when the return series it was handed cannot be measured.
 ///
@@ -1612,6 +1631,34 @@ impl LimitSet {
                     },
                 )
                 .with_rationale("bounds single-jurisdiction political and currency risk"),
+            )
+            .with(
+                Limit::new(
+                    "manager-concentration",
+                    LimitKind::MaxAxisWeight {
+                        axis: MANAGER_AXIS.into(),
+                        limit: 0.20,
+                    },
+                )
+                .with_rationale(
+                    "a private-market position is a bet on its manager's judgement as much as \
+                     on its assets, and a manager cannot be exited: no manager may hold more \
+                     than a fifth of equity across every fund and vehicle it runs",
+                ),
+            )
+            .with(
+                Limit::new(
+                    "vintage-concentration",
+                    LimitKind::MaxAxisWeight {
+                        axis: VINTAGE_AXIS.into(),
+                        limit: 0.30,
+                    },
+                )
+                .with_rationale(
+                    "commitments drawn in one year are one bet on that year's entry prices, and \
+                     the bet cannot be unwound for the life of the lockup: no vintage may hold \
+                     more than this share of equity",
+                ),
             )
             .with(
                 Limit::new(

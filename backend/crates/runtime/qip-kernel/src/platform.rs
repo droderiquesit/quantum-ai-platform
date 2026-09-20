@@ -1466,13 +1466,38 @@ const LIQUIDITY_FIGURE: &str = "liquidity";
 /// A value the record leaves blank feeds no bucket: the builder defaults the
 /// venue to an empty string, and an empty-string bucket would be a real
 /// counter under a name nobody chose.
+///
+/// Two axes are fed only by a private-market record, for blueprint §17.5's
+/// "the risk envelope needs new dimensions" — manager and vintage. The
+/// manager is the record's issuer on a private-asset or fund position and
+/// nothing else: a listed name's issuer is an obligor, and charging it here
+/// would make the manager cap a second issuer cap over the equity book. The
+/// vintage is the year the administrator reports, which
+/// `PrivateAssetDetails::checked` has already refused if it is not one. The
+/// third dimension the section names, duration, is not an axis: a private
+/// holding's lockup already raises its exit days through
+/// [`exit_days_with_forecast`], which `MaxDaysToLiquidate` and `MinLiquidity`
+/// read, so the envelope had that dimension before it had these two.
 fn exposure_axes_of(object: &qip_financial::object::FinancialObject) -> BTreeMap<String, String> {
+    use qip_financial::extensions::Extension;
     let mut axes = BTreeMap::new();
+    let manager = match &object.extension {
+        Extension::PrivateAsset(_) | Extension::Fund(_) => {
+            object.issuer.clone().unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+    let vintage = match &object.extension {
+        Extension::PrivateAsset(details) => details.vintage_year.to_string(),
+        _ => String::new(),
+    };
     for (axis, bucket) in [
         ("sector", object.sector.as_str().to_string()),
         ("country", object.geography.clone()),
         ("asset_class", object.asset_class.as_str().to_string()),
         ("venue", object.venue.clone()),
+        (qip_risk::limits::MANAGER_AXIS, manager),
+        (qip_risk::limits::VINTAGE_AXIS, vintage),
     ] {
         if !bucket.trim().is_empty() {
             axes.insert(axis.to_string(), bucket);
@@ -17584,6 +17609,250 @@ mod decide_tests {
     /// The name the shipped set gives the per-factor cap. See
     /// [`CAUSAL_DRIVER_LIMIT`] for why this is a constant.
     const FACTOR_LIMIT: &str = "factor-concentration";
+
+    /// The names the shipped set gives §17.5's two private-market caps. See
+    /// [`CAUSAL_DRIVER_LIMIT`] for why these are constants compared for
+    /// equality: both end in the word every other axis cap ends in.
+    const MANAGER_LIMIT: &str = "manager-concentration";
+    const VINTAGE_LIMIT: &str = "vintage-concentration";
+
+    /// A private fund run by `manager`, of `vintage`, with committed equal to
+    /// called so the commitment engine has nothing to refuse, and each on
+    /// its own sector and country so the caps on those axes stay quiet
+    /// however many funds a test holds.
+    fn private_fund(
+        index: usize,
+        manager: &str,
+        vintage: u32,
+    ) -> qip_financial::object::FinancialObject {
+        use qip_financial::asset_class::Sector;
+        use qip_financial::extensions::{Extension, PrivateAssetDetails};
+        use qip_financial::quality::Provenance;
+
+        let sectors = [
+            Sector::InformationTechnology,
+            Sector::HealthCare,
+            Sector::Industrials,
+            Sector::Energy,
+            Sector::Financials,
+            Sector::Utilities,
+        ];
+        let countries = ["US", "GB", "DE", "FR", "JP", "CA"];
+        let now = Timestamp::from_secs(1_760_000_000);
+        qip_financial::object::FinancialObject::builder(
+            qip_core::ObjectId::from_string(format!("fund-{index:02}")),
+            format!("FUND{index:02}"),
+            qip_financial::asset_class::InstrumentType::PrivateEquityFund,
+            qip_financial::costs::LiquidityProfile::illiquid(90.0, 250.0),
+        )
+        .venue("OTC")
+        .geography(countries[index % countries.len()])
+        .sector(sectors[index % sectors.len()])
+        .issuer(manager)
+        .price(Decimal::from_int(100))
+        .extension(Extension::PrivateAsset(PrivateAssetDetails {
+            vintage_year: vintage,
+            committed_capital: Decimal::from_int(400_000),
+            called_capital: Decimal::from_int(400_000),
+            distributed_capital: Decimal::ZERO,
+            residual_value: Decimal::from_int(500_000),
+            stage: "buyout".to_string(),
+            lockup_years: 7.0,
+            capital_call_notice_days: 10,
+        }))
+        .provenance(Provenance::synthetic("administrator", now))
+        .build(now)
+        .expect("a private fund record")
+    }
+
+    /// A ten-million book over the given funds, so that every notional below
+    /// is a share of equity a reader can check against the shipped bounds.
+    fn private_market_platform(funds: Vec<qip_financial::object::FinancialObject>) -> Platform {
+        let config = PlatformConfig::default().with_initial_equity(Decimal::from_int(10_000_000));
+        let (context, _clock) =
+            qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        let mut universe = Universe::new();
+        for fund in funds {
+            universe.insert(fund).expect("insertable");
+        }
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// Charge a fill in `instrument` to the aggregate through the axes the
+    /// platform's own reference data projects for it — the same map the
+    /// production fill path hands `apply_fill` — so a breach below is one
+    /// the record produced and not one the test wrote in.
+    fn hold_through_reference_axes(platform: &mut Platform, instrument: &str, notional: Decimal) {
+        let axes = platform.exposure_axes_for(instrument);
+        platform
+            .aggregates
+            .apply_fill(DESK_STRATEGY, instrument, &axes, notional)
+            .expect("a fill of positive notional in a named instrument is aggregated");
+    }
+
+    #[test]
+    fn the_per_manager_limit_can_actually_fire() {
+        // Blueprint §17.5: "Risk is market risk" elsewhere; in private
+        // markets it is "also concentration, manager, vintage and duration
+        // risk", and "the risk envelope needs new dimensions". Until this the
+        // envelope had none for a manager: four funds run by one general
+        // partner, each inside the position-weight cap and each in its own
+        // sector and country, read as four independent bets to every control
+        // the platform had, and a manager cannot be exited when the
+        // judgement the four share turns out to be wrong.
+        let funds = (0..4)
+            .map(|i| private_fund(i, "gp-alpha", 2019 + i as u32))
+            .collect();
+        let mut platform = private_market_platform(funds);
+
+        // The premise: an empty book breaches neither cap, and the record
+        // projects the manager axis at all — a cap on an axis the fill never
+        // writes is the `MaxExpectedShortfall` shape.
+        let quiet = platform.risk_state();
+        assert!(!breaches(&quiet, MANAGER_LIMIT));
+        assert!(!breaches(&quiet, VINTAGE_LIMIT));
+        let axes = platform.exposure_axes_for("fund-00");
+        assert_eq!(
+            axes.get(qip_risk::limits::MANAGER_AXIS).map(String::as_str),
+            Some("gp-alpha"),
+            "the record's issuer is not projected as the manager: {axes:?}"
+        );
+
+        // Four funds at 700,000 against ten million: 2,800,000 under one
+        // manager is 0.28 of equity, past the 0.20 manager cap, while each
+        // fund is its own vintage at 0.07 — under the vintage cap's 0.85
+        // warning threshold, so only one of the two caps can explain the
+        // refusal. Every other cap is comfortably satisfied: 0.07 per name
+        // against 0.10, 0.28 gross against 1.5, and one sector and one
+        // country per fund.
+        for i in 0..4 {
+            hold_through_reference_axes(
+                &mut platform,
+                &format!("fund-{i:02}"),
+                Decimal::from_int(700_000),
+            );
+        }
+        let state = platform.risk_state();
+        let charged = state
+            .axis_exposures
+            .get(qip_risk::limits::MANAGER_AXIS)
+            .and_then(|buckets| buckets.get("gp-alpha"))
+            .copied()
+            .unwrap_or_else(|| panic!("no bucket for the manager: {:?}", state.axis_exposures));
+        assert_eq!(charged, Decimal::from_int(2_800_000));
+        assert!(
+            blocks(&state, MANAGER_LIMIT),
+            "2,800,000 under one manager against 10,000,000 of equity did not block on the \
+             manager cap: {:?}",
+            LimitSet::conservative_default().check(&state).breaches
+        );
+        assert!(
+            !breaches(&state, VINTAGE_LIMIT),
+            "0.07 of equity per vintage is under the vintage cap's warning threshold and must \
+             not even warn"
+        );
+        // And the veto is the pre-trade one, not only the monitor's: the next
+        // order in the same manager is refused by name.
+        let check = LimitSet::conservative_default().check(&state);
+        assert!(
+            check
+                .blocking()
+                .iter()
+                .any(|b| b.limit_name == MANAGER_LIMIT)
+        );
+    }
+
+    #[test]
+    fn the_per_vintage_limit_can_actually_fire() {
+        // The vintage half of the same row. Four funds by four managers, all
+        // committed in one year: no manager holds more than 0.0875 of equity,
+        // and the book is a single bet on 2021's entry prices that no other
+        // cap can see.
+        let managers = ["gp-alpha", "gp-beta", "gp-gamma", "gp-delta"];
+        let funds = (0..4).map(|i| private_fund(i, managers[i], 2021)).collect();
+        let mut platform = private_market_platform(funds);
+        let axes = platform.exposure_axes_for("fund-00");
+        assert_eq!(
+            axes.get(qip_risk::limits::VINTAGE_AXIS).map(String::as_str),
+            Some("2021"),
+            "the record's vintage year is not projected: {axes:?}"
+        );
+
+        // Four at 875,000: 3,500,000 in one vintage is 0.35 of equity, past
+        // the 0.30 vintage cap; 0.0875 per manager and per name is under
+        // both the 0.20 manager cap and the 0.10 position-weight cap.
+        for i in 0..4 {
+            hold_through_reference_axes(
+                &mut platform,
+                &format!("fund-{i:02}"),
+                Decimal::from_int(875_000),
+            );
+        }
+        let state = platform.risk_state();
+        let charged = state
+            .axis_exposures
+            .get(qip_risk::limits::VINTAGE_AXIS)
+            .and_then(|buckets| buckets.get("2021"))
+            .copied()
+            .unwrap_or_else(|| panic!("no bucket for the vintage: {:?}", state.axis_exposures));
+        assert_eq!(charged, Decimal::from_int(3_500_000));
+        assert!(
+            blocks(&state, VINTAGE_LIMIT),
+            "3,500,000 in one vintage against 10,000,000 of equity did not block on the \
+             vintage cap: {:?}",
+            LimitSet::conservative_default().check(&state).breaches
+        );
+        assert!(
+            !breaches(&state, MANAGER_LIMIT),
+            "no manager holds more than 0.0875 of equity and the manager cap must not warn"
+        );
+    }
+
+    #[test]
+    fn a_listed_name_feeds_no_manager_bucket() {
+        // The manager axis is a private-market dimension. A listed equity has
+        // an issuer too, and charging it here would turn the manager cap into
+        // a second issuer cap over the equity book — a control firing on a
+        // fact it was not written for. Absent, not empty: `MaxAxisWeight`
+        // records nothing on an absent axis.
+        use qip_financial::asset_class::Sector;
+        use qip_financial::quality::Provenance;
+        let now = Timestamp::from_secs(1_760_000_000);
+        let listed = qip_financial::object::FinancialObject::builder(
+            qip_core::ObjectId::from_string("listed-00"),
+            "LSTD",
+            qip_financial::asset_class::InstrumentType::CommonStock,
+            qip_financial::costs::LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+        )
+        .venue("XNYS")
+        .geography("US")
+        .sector(Sector::InformationTechnology)
+        .issuer("Listed Holdings plc")
+        .price(Decimal::from_int(100))
+        .provenance(Provenance::synthetic("test", now))
+        .build(now)
+        .expect("a listed record");
+        let platform = private_market_platform(vec![listed]);
+        let axes = platform.exposure_axes_for("listed-00");
+        // Premise: the record does carry an issuer and does project its
+        // other axes, so an absent manager axis is a decision, not a blank.
+        assert_eq!(
+            axes.get("sector").map(String::as_str),
+            Some("information_technology")
+        );
+        assert!(
+            !axes.contains_key(qip_risk::limits::MANAGER_AXIS),
+            "a listed name's issuer reached the manager axis: {axes:?}"
+        );
+        assert!(!axes.contains_key(qip_risk::limits::VINTAGE_AXIS));
+    }
 
     /// A ten-million book, stated here rather than taken from the default, so
     /// that the notionals the two shared-cause tests charge are arithmetic a
