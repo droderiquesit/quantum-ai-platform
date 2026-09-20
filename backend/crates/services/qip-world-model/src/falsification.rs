@@ -297,7 +297,9 @@ const fn unwired_reason(source: HypothesisSource) -> &'static str {
             "the causal graph has no co-movement walk, so there is nothing to find a gap in"
         }
         HypothesisSource::HighSurpriseEpisode => {
-            "an episode records no surprise, so the most-wrong situations cannot be ranked"
+            "surprise is recorded per recalled precedent (`worst_surprise_bps`) and read by \
+             sizing and an operator, not by any proposer; the most-wrong situations can be \
+             ranked and nothing turns the ranking into a claim"
         }
         HypothesisSource::CounterfactualAnomaly => {
             "counterfactual scores are read by sizing and by no proposer"
