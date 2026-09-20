@@ -87,12 +87,14 @@ moved the code. If a command returns nothing, that absence is the evidence.
 
 | Verdict | Sections | Share |
 |---|---|---|
-| `REACHED` | 41 | 23% |
-| `PARTIAL` | 124 | 69% |
+| `REACHED` | 44 | 24% |
+| `PARTIAL` | 121 | 67% |
 | `UNREACHED` | 1 | 1% |
 | `ABSENT` | 0 | 0% |
 | `NARRATIVE` | 15 | 8% |
 | **Total** | **181** | |
+
+**Recounted 2026-09-20 for three crossings — §9.4, §5.5 and §23.7** — 41/124 to 44/121, taken with the same command over the rows and required to sum to 181 before being written here. It did: 44 + 121 + 1 + 0 + 15. §9.4 crossed on ADR 0087's retirement of a causal edge that fails its conditions three passes running (lane Y2); §5.5 and §23.7 crossed together on causal shock propagation and the adversarial sequence reaching `stage_simulate` through `Platform::stress_the_book` (lane W4b), whose call path and whose two load-bearing tests were verified by the orchestrator rather than taken on the lane's word, because that lane stopped without handing back.
 
 **Recounted 2026-09-19 (later) for §35.1's `PARTIAL → REACHED`** — one row, 40/125 to 41/124, taken with the same command and required to sum to 181 before being written here. It did: 41 + 124 + 1 + 0 + 15. ADR 0080's lane, on the contract's call-path rule, with what has no path stated in the row (`qip_portfolio::Orphaned`'s writer, by decision).
 
