@@ -31,7 +31,9 @@ pub mod vocabulary;
 pub mod world;
 
 pub use causal::{
-    CausalEdge, CausalGraph, ConditionStanding, EdgeStanding, Effect, Mechanism, PropagationResult,
+    CausalEdge, CausalGraph, ConditionFailures, ConditionStanding, EdgeStanding, Effect,
+    FailureRun, Mechanism, PropagationResult, RETIREMENT_CONSECUTIVE_FAILURES, RetiredEdge,
+    Retirement,
 };
 pub use confounder::{Confounder, ConfounderSet, ConfounderStanding};
 pub use exposure::{
