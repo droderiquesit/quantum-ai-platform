@@ -6794,7 +6794,10 @@ fn two_operators_present_together_issue_a_grant_through_the_platforms_intent_and
         first_at,
     )?;
     assert_eq!(first.outcome, "awaiting_countersignature");
-    assert_eq!(first.cell, CELL, "the approval names the cell the allocator sized at");
+    assert_eq!(
+        first.cell, CELL,
+        "the approval names the cell the allocator sized at"
+    );
     assert!(
         platform.central().envelope(CELL, &id).is_none(),
         "one signature issued an envelope"
@@ -6839,7 +6842,10 @@ fn two_operators_present_together_issue_a_grant_through_the_platforms_intent_and
         requested_by: grant.requested_by.clone(),
     };
     assert_eq!(grant.subject, request.subject());
-    assert_eq!(grant.approvers, vec!["alice.chen".to_string(), "bram.oduya".to_string()]);
+    assert_eq!(
+        grant.approvers,
+        vec!["alice.chen".to_string(), "bram.oduya".to_string()]
+    );
     assert!(
         !grant.approvers.contains(&grant.requested_by),
         "a signer is recorded as the requester: {}",
@@ -6883,7 +6889,9 @@ fn one_operator_signing_a_capital_grant_twice_is_refused_and_nothing_is_issued()
         )
         .expect_err("one person completed a dual approval");
     assert!(
-        error.message().contains("a second session is not a second person"),
+        error
+            .message()
+            .contains("a second session is not a second person"),
         "{}",
         error.message()
     );
@@ -6983,7 +6991,10 @@ fn the_learn_stage_measures_family_structure_on_a_corpus_granted_through_the_ope
     let mut grants = Vec::new();
     for id in &ids {
         let issued = grant_through_intent(&mut platform, id, start())?;
-        assert_eq!(issued.outcome, "issued", "the intent did not issue {id}: {issued:?}");
+        assert_eq!(
+            issued.outcome, "issued",
+            "the intent did not issue {id}: {issued:?}"
+        );
         grants.push(
             issued
                 .gross_limit
@@ -7031,7 +7042,10 @@ fn the_learn_stage_measures_family_structure_on_a_corpus_granted_through_the_ope
 
     let measuring_at = start().saturating_add(Duration::from_days(CLUSTERING_WINDOW as i64));
     assert_eq!(
-        platform.central().realised_calendar(measuring_at).day_count(),
+        platform
+            .central()
+            .realised_calendar(measuring_at)
+            .day_count(),
         CLUSTERING_WINDOW,
         "the calendar does not retain every session the intent granted"
     );

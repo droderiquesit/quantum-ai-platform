@@ -2598,13 +2598,26 @@ fn the_trained_models_slot_ships_unproduced_until_a_distillate_is_promoted_and_t
     .with_holdout(0.25);
     let teacher = LocalTrainer::new().fit(&spec, &data, start())?;
     let mut registry = ModelRegistry::new();
-    let registration = register_fit(&mut registry, &teacher, &SkillPolicy::default(), "mesh-tests", start())?;
-    assert!(registration.passed, "premise: the fit cleared the skill bar");
+    let registration = register_fit(
+        &mut registry,
+        &teacher,
+        &SkillPolicy::default(),
+        "mesh-tests",
+        start(),
+    )?;
+    assert!(
+        registration.passed,
+        "premise: the fit cleared the skill bar"
+    );
     let student = DistilledModel::linear("bar-linear-mesh", 0.1, vec![0.5, -0.25])?;
     let promoted_at = start().saturating_add(Duration::from_hours(1));
     let artifact = InTreeProvider::pack(&teacher)?;
     platform.promote_model(&mut registry, &artifact, Some(&student), &[], promoted_at)?;
-    assert_ne!(student.digest(), artifact.digest, "premise: the cell's digest is not the artifact's");
+    assert_ne!(
+        student.digest(),
+        artifact.digest,
+        "premise: the cell's digest is not the artifact's"
+    );
 
     let pending = qip_api::mesh::pending_policy(
         &mut platform,

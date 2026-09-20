@@ -7,6 +7,11 @@
 //! it through `register_fit`, so the card's evaluation is the fit's own and
 //! not a `passed: true` asserted by the test.
 
+// The workspace denies `panic_in_result_fn` for production code, where an
+// assertion that aborts a `Result`-returning function is a bug. In a test the
+// assertion is the deliverable, and `?` is what keeps the setup readable.
+#![allow(clippy::panic_in_result_fn)]
+
 use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry, ModelStage};
 use qip_ai::serving::ModelProvider;
 use qip_core::error::{Error, Result};

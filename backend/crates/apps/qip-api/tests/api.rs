@@ -2322,7 +2322,8 @@ fn a_capital_grant_is_refused_below_operator_on_presence_at_operator_and_on_a_bo
     let assembled = assemble()?;
     let api = assembled.api.clone();
     let path = "/api/v1/strategies/strat-1/capital-grants";
-    let body = r#"{"rationale":"the pilot gate passed and the allocator sized it inside the budget"}"#;
+    let body =
+        r#"{"rationale":"the pilot gate passed and the allocator sized it inside the budget"}"#;
 
     // Premise: the route is in the table at operator, and a viewer's token
     // is live for a route it may read.
@@ -2332,8 +2333,13 @@ fn a_capital_grant_is_refused_below_operator_on_presence_at_operator_and_on_a_bo
         .expect("the capital-grant route is in the table");
     assert_eq!(route.required_role, Role::Operator);
     assert_eq!(
-        api.handle(&with_body(Method::Get, "/api/v1/wallet", Some("viewer-token"), ""))
-            .status,
+        api.handle(&with_body(
+            Method::Get,
+            "/api/v1/wallet",
+            Some("viewer-token"),
+            ""
+        ))
+        .status,
         200,
         "premise: the viewer's credential is live"
     );
@@ -2356,7 +2362,12 @@ fn a_capital_grant_is_refused_below_operator_on_presence_at_operator_and_on_a_bo
     // person accountable, and it must not be reachable only past a gate
     // that today refuses everyone.
     let named = r#"{"approver":"somebody.else","rationale":"the pilot gate passed and the allocator sized it"}"#;
-    let response = api.handle(&with_body(Method::Post, path, Some("operator-token"), named));
+    let response = api.handle(&with_body(
+        Method::Post,
+        path,
+        Some("operator-token"),
+        named,
+    ));
     let text = String::from_utf8_lossy(&response.body).into_owned();
     assert_eq!(response.status, 400, "{text}");
     assert!(

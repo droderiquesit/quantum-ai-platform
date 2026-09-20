@@ -63,10 +63,10 @@ pub mod valuation;
 pub mod venue_admission;
 pub mod venue_review;
 
+pub use asset_class_registry::{AssetClassRecord, AssetClassRegistry, ValuationEngine};
 pub use central::{CellReport, CentralPlane, StrategyDna, StrategyFactory};
 pub use config::{EventLogDestination, PlatformConfig};
 pub use cycle::{CycleReport, Stage, StageOutcome};
-pub use asset_class_registry::{AssetClassRecord, AssetClassRegistry, ValuationEngine};
 pub use model_serving::{DistilledManifestEntry, ModelManifestIssue, ModelPromotion};
 pub use platform::{
     CapitalGrantEntry, ChainAbsorption, CycleJournalEntry, Platform, RecordedPrediction,

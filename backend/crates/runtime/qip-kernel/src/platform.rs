@@ -103,6 +103,7 @@ use qip_chain::{
     BridgeFailure, BridgeLedger, BridgeTransfer, ChainState, ChainUpdate, Confirmations,
     ConfirmedView,
 };
+use qip_compliance::approval::OperatorCredential;
 use qip_contracts::edge::Deduction;
 use qip_contracts::governance::Usage;
 use qip_contracts::message::BookSide;
@@ -178,7 +179,6 @@ use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::factor::FactorRisk;
 use qip_risk::limits::{LimitSet, RiskState};
 use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
-use qip_compliance::approval::OperatorCredential;
 use qip_risk_engine::monitor::RiskMonitor;
 use qip_risk_engine::pretrade::PreTradeChecker;
 use qip_simulation_engine::agents::CounterpartyAgent;
@@ -290,7 +290,8 @@ pub struct Platform {
     /// is held beside the approval because `ApprovalChain::grant` needs both
     /// people's credentials fresh at the instant of issue: a first signer who
     /// is no longer present cannot be represented by a name in a record.
-    pending_capital_grants: BTreeMap<StrategyId, (qip_contracts::governance::Approval, OperatorCredential)>,
+    pending_capital_grants:
+        BTreeMap<StrategyId, (qip_contracts::governance::Approval, OperatorCredential)>,
     /// The fabric journal: every wallet, corridor, destination and gate
     /// decision as the command and its outcome, replayable. Its working
     /// copy of the log is process-local; the platform's own event log
@@ -6749,7 +6750,10 @@ impl Platform {
                         first.subject
                     )));
                 }
-                require_countersignature_rationale(&format!("{strategy}'s capital grant"), rationale)?;
+                require_countersignature_rationale(
+                    &format!("{strategy}'s capital grant"),
+                    rationale,
+                )?;
                 let approval = first.countersigned_by(operator.subject())?;
                 // The pair's decision, journalled before the plane is asked:
                 // a grant in the plane without its decision in the log is

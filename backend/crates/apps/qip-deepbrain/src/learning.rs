@@ -899,7 +899,18 @@ impl LearningDesk {
                 }
             }
             let incumbent_rmse = rmse(&scores, targets);
-            if !(candidate_rmse < incumbent_rmse) {
+            // Strictly less, and written as a `partial_cmp` rather than as
+            // `>=` because the two differ on the case that matters: an
+            // incomparable pair. `candidate >= incumbent` is *false* when
+            // either error is NaN, so the `>=` form would promote a
+            // candidate whose error could not be computed; this form
+            // promotes only on a definite `Less` and refuses everything
+            // else, which is the fail-closed direction for a rule with no
+            // person behind it.
+            if !matches!(
+                candidate_rmse.partial_cmp(&incumbent_rmse),
+                Some(std::cmp::Ordering::Less)
+            ) {
                 return not_promoted(format!(
                     "incumbent {incumbent} scores rmse {incumbent_rmse:.6} on the {} held-out \
                      row(s) and the candidate {candidate_rmse:.6}; a candidate that is not \
@@ -907,12 +918,14 @@ impl LearningDesk {
                     rows.len()
                 ));
             }
-            best_incumbent = Some(best_incumbent.map_or(incumbent_rmse, |best| best.min(incumbent_rmse)));
+            best_incumbent =
+                Some(best_incumbent.map_or(incumbent_rmse, |best| best.min(incumbent_rmse)));
         }
-        let student = candidate
-            .distillation
-            .as_ref()
-            .and_then(|distillation| distillation.approved_student(&FidelityPolicy::default()).ok());
+        let student = candidate.distillation.as_ref().and_then(|distillation| {
+            distillation
+                .approved_student(&FidelityPolicy::default())
+                .ok()
+        });
         let published = match platform.promote_model(
             &mut self.registry,
             &artifact,
@@ -1350,12 +1363,10 @@ impl LearningDesk {
             .split_at_fraction(spec.holdout_fraction)
             .map(|(_, probe)| probe);
         let (distillation, distillation_refusal) = match &probe {
-            Ok(probe) => {
-                match distil(&teacher, probe, StudentForm::Linear { ridge: 1e-3 }, 0.0) {
-                    Ok(distillation) => (Some(distillation), None),
-                    Err(error) => (None, Some(error.message().to_string())),
-                }
-            }
+            Ok(probe) => match distil(&teacher, probe, StudentForm::Linear { ridge: 1e-3 }, 0.0) {
+                Ok(distillation) => (Some(distillation), None),
+                Err(error) => (None, Some(error.message().to_string())),
+            },
             Err(error) => (None, Some(error.message().to_string())),
         };
         // Held for the promote stage, which the engine runs with the
@@ -1578,7 +1589,10 @@ mod tests {
             Some(ModelStage::Development),
             "premise: a registered card enters at development stage"
         );
-        assert!(platform.model_promotions().is_empty(), "premise: nothing promoted yet");
+        assert!(
+            platform.model_promotions().is_empty(),
+            "premise: nothing promoted yet"
+        );
 
         let first = desk
             .promote_candidate(&mut platform, at())?
@@ -1591,7 +1605,10 @@ mod tests {
             ..
         } = &first
         else {
-            return Err(Error::invalid(format!("the first candidate was not promoted: {}", first.describe())));
+            return Err(Error::invalid(format!(
+                "the first candidate was not promoted: {}",
+                first.describe()
+            )));
         };
         assert_eq!(reference, &first_reference);
         assert_eq!(*incumbent_rmse, None, "there was no incumbent to score");
@@ -1619,7 +1636,12 @@ mod tests {
             Some(digest) => {
                 let manifest = platform.model_manifest()?;
                 assert_eq!(
-                    manifest.manifest().models.values().next().map(String::as_str),
+                    manifest
+                        .manifest()
+                        .models
+                        .values()
+                        .next()
+                        .map(String::as_str),
                     Some(digest.as_str()),
                     "the manifest does not name the promoted distillate by its own digest"
                 );
@@ -1661,7 +1683,10 @@ mod tests {
             .promote_candidate(&mut platform, at())?
             .ok_or_else(|| Error::not_found("a candidate from the second round"))?;
         let PromotionOutcome::NotPromoted { reason, .. } = &second else {
-            return Err(Error::invalid(format!("an equal successor was promoted: {}", second.describe())));
+            return Err(Error::invalid(format!(
+                "an equal successor was promoted: {}",
+                second.describe()
+            )));
         };
         assert!(
             reason.contains(&first_reference) && reason.contains("strictly better"),
@@ -1673,10 +1698,16 @@ mod tests {
             "the incumbent lost its place to a tie"
         );
         assert_eq!(
-            desk.registry().get(&second_reference).map(|card| card.stage),
+            desk.registry()
+                .get(&second_reference)
+                .map(|card| card.stage),
             Some(ModelStage::Development)
         );
-        assert_eq!(platform.model_promotions().len(), 1, "a refused promotion was recorded");
+        assert_eq!(
+            platform.model_promotions().len(),
+            1,
+            "a refused promotion was recorded"
+        );
 
         // And nothing without skill reaches the provider at all.
         let mut fresh = learning_desk();
