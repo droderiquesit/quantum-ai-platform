@@ -16710,7 +16710,7 @@ impl Platform {
     ) -> (String, Vec<String>) {
         if forecast_lanes == 0 {
             return (
-                "no funding lane is forecast, so there is nothing to pre-position".to_string(),
+                "nothing to pre-position: no lane is forecast".to_string(),
                 Vec::new(),
             );
         }

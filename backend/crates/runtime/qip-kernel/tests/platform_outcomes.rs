@@ -659,3 +659,216 @@ fn the_journal_records_what_the_cycle_cost() -> Result<()> {
     );
     Ok(())
 }
+
+// --- blueprint §25.2's movement half, on the loop --------------------------
+
+/// The plans DECIDE has retained, decoded off the log.
+fn plans_retained(platform: &Platform) -> Vec<qip_kernel::pre_positioning::PrePositioningPlanned> {
+    platform
+        .event_log()
+        .by_topic(qip_events::Topic::PortfolioProposed)
+        .into_iter()
+        .filter_map(|record| {
+            qip_streaming::envelope::StreamEnvelope::from_frame(record)
+                .ok()?
+                .decode::<qip_kernel::pre_positioning::PrePositioningPlanned>()
+                .ok()
+                .map(|envelope| envelope.body)
+        })
+        .collect()
+}
+
+/// The scores LEARN has journaled, decoded off the log.
+fn plans_scored(platform: &Platform) -> Vec<qip_kernel::pre_positioning::PrePositioningScored> {
+    platform
+        .event_log()
+        .by_topic(qip_events::Topic::OutcomeObserved)
+        .into_iter()
+        .filter_map(|record| {
+            qip_streaming::envelope::StreamEnvelope::from_frame(record)
+                .ok()?
+                .decode::<qip_kernel::pre_positioning::PrePositioningScored>()
+                .ok()
+                .map(|envelope| envelope.body)
+        })
+        .collect()
+}
+
+/// A platform whose forecaster has a lane to forecast: two fills a day apart.
+fn platform_with_a_funding_lane() -> Result<(Platform, CapitalLocation)> {
+    let mut platform = platform(PlatformConfig::default())?;
+    fill_one(&mut platform, start())?;
+    fill_one(
+        &mut platform,
+        start().saturating_add(Duration::from_days(1)),
+    )?;
+    let lane = platform
+        .demand_lanes()
+        .first()
+        .map(|(location, _, _)| (*location).clone())
+        .expect("premise: the two fills gave the forecaster a lane");
+    Ok((platform, lane))
+}
+
+#[test]
+fn decide_plans_the_pre_positioning_on_its_forecasts_and_retains_one_plan_per_window() -> Result<()>
+{
+    // Until this was on the loop, `pre_position` had no caller outside tests:
+    // every DECIDE said where capital would be needed and nothing ever said
+    // how much to send or where.
+    let (mut platform, _) = platform_with_a_funding_lane()?;
+    let at = start().saturating_add(Duration::from_days(2));
+    assert!(
+        !platform
+            .forecast_capital_demand(at, Duration::from_days(1))
+            .is_empty(),
+        "premise: a lane is forecast at the decision instant"
+    );
+    assert!(
+        plans_retained(&platform).is_empty(),
+        "premise: nothing planned yet"
+    );
+
+    let report = platform.run_cycle(at);
+    let decide = report
+        .stage(Stage::Decide)
+        .expect("DECIDE ran")
+        .detail
+        .clone();
+    assert!(
+        decide.contains("; pre-positioning: ") && decide.contains("transfer(s) committing"),
+        "DECIDE says how much it would move: {decide}"
+    );
+    assert!(
+        decide.contains("; retained for scoring when its window closes"),
+        "the first plan of a window is retained: {decide}"
+    );
+    let retained = plans_retained(&platform);
+    assert_eq!(retained.len(), 1, "one plan on the log");
+    assert_eq!(retained[0].plan.at, at);
+    assert_eq!(retained[0].horizon, Duration::from_days(1));
+    assert!(
+        plans_scored(&platform).is_empty(),
+        "nothing is scored the cycle it is planned"
+    );
+
+    // A second cycle inside the same window plans again — the sentence is
+    // never silent — and retains nothing new, because the window is spoken
+    // for.
+    let later = at.saturating_add(Duration::from_hours(1));
+    let report = platform.run_cycle(later);
+    let decide = report
+        .stage(Stage::Decide)
+        .expect("DECIDE ran")
+        .detail
+        .clone();
+    assert!(decide.contains("; pre-positioning: "), "{decide}");
+    assert!(
+        decide.contains("is retained for scoring when its window closes at"),
+        "the pending plan is named rather than replaced: {decide}"
+    );
+    assert_eq!(
+        plans_retained(&platform).len(),
+        1,
+        "still one plan on the log"
+    );
+    assert!(
+        plans_scored(&platform).is_empty(),
+        "the window has not closed"
+    );
+    Ok(())
+}
+
+#[test]
+fn learn_scores_the_retained_plan_against_the_demand_inside_its_window_and_not_before() -> Result<()>
+{
+    // A plan scored before its window closes is scored against a world in
+    // which nothing has been needed yet, and reads as one that over-moved.
+    let (mut platform, lane) = platform_with_a_funding_lane()?;
+    let at = start().saturating_add(Duration::from_days(2));
+    platform.run_cycle(at);
+    assert_eq!(
+        plans_retained(&platform).len(),
+        1,
+        "premise: a plan is retained"
+    );
+
+    // Demand arises inside the window, on the lane the plan considered.
+    let needed = dec!("250000");
+    platform.record_capital_demand(
+        lane.clone(),
+        DemandKind::Cash,
+        at.saturating_add(Duration::from_hours(2)),
+        needed,
+    );
+    let inside = platform.run_cycle(at.saturating_add(Duration::from_hours(3)));
+    let learn = inside
+        .stage(Stage::Learn)
+        .expect("LEARN ran")
+        .detail
+        .clone();
+    assert!(
+        !learn.contains("pre-positioning plan of"),
+        "not scored while the window is open: {learn}"
+    );
+    assert!(plans_scored(&platform).is_empty());
+
+    // The window closes; the plan is scored against what the lane needed.
+    let closes = at.saturating_add(Duration::from_days(1));
+    let report = platform.run_cycle(closes);
+    let learn = report
+        .stage(Stage::Learn)
+        .expect("LEARN ran")
+        .detail
+        .clone();
+    assert!(
+        learn.contains("; pre-positioning plan of ") && learn.contains(" scored: "),
+        "LEARN reports the score: {learn}"
+    );
+    let scored = plans_scored(&platform);
+    assert_eq!(scored.len(), 1, "one score on the log");
+    assert_eq!(scored[0].planned_at, at);
+    assert_eq!(scored[0].scored_at, closes);
+    let outcome = scored[0]
+        .score
+        .lanes
+        .iter()
+        .find(|outcome| outcome.location == lane && outcome.kind == DemandKind::Cash)
+        .expect("the lane the plan considered is scored");
+    assert_eq!(
+        outcome.realised, needed,
+        "the score reads the demand recorded inside the window, not the forecast"
+    );
+    // The cycle journal carries the same headline, and the plan is released so
+    // the next cycle can retain another.
+    let entry = platform
+        .replay_journal(
+            &qip_events::EventFilter::new().topic(qip_events::Topic::LearningCompleted),
+        )?
+        .iter()
+        .filter_map(|event| {
+            event
+                .decode::<qip_kernel::platform::CycleJournalEntry>()
+                .ok()
+                .map(|envelope| envelope.body)
+        })
+        .last()
+        .expect("the cycle was journaled");
+    let journal = entry
+        .pre_positioning
+        .expect("the closing cycle's entry carries the score");
+    assert_eq!(journal.planned_at, at);
+    assert_eq!(journal.covered, scored[0].score.covered);
+    let next = platform.run_cycle(closes.saturating_add(Duration::from_hours(1)));
+    let decide = next
+        .stage(Stage::Decide)
+        .expect("DECIDE ran")
+        .detail
+        .clone();
+    assert!(
+        decide.contains("; retained for scoring when its window closes"),
+        "a new window opens once the last was scored: {decide}"
+    );
+    assert_eq!(plans_retained(&platform).len(), 2);
+    Ok(())
+}
