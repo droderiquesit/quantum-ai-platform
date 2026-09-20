@@ -256,10 +256,29 @@ pub struct LedgerUsersView {
     /// [`INFLOW_POSTING`]: why every `expected_inflows` entry below is a
     /// claim and never becomes a balance in this build.
     pub inflow_posting: &'static str,
+    /// The refusal *this caller* would receive at the two inflow routes, or
+    /// `None` if they would get past the presence gate.
+    ///
+    /// The `reinstatement_refusal` pattern on `/venues/withdrawals`, and here
+    /// for the same reason: a console about to offer a declaration form is
+    /// rendering for the person who would submit it, and ADR 0065 means the
+    /// signature cannot be taken. Without this the portal had only the route
+    /// contract's own sentence to show — a statement about the build rather
+    /// than about the caller — or it would have had to attempt the write to
+    /// find out, which is a mutating request sent to learn a fact.
+    ///
+    /// Obtained by making the same call the route makes rather than by
+    /// asserting what it would answer, so it cannot drift from the gate.
+    pub inflow_refusal: Option<String>,
     pub users: Vec<UserView>,
 }
 
-/// Build `/ledger/users` from the platform at `now`.
+/// Build `/ledger/users` from the platform at `now`, with the caller's own
+/// inflow refusal.
+///
+/// `inflow_refusal` is passed in by the handler that holds the principal,
+/// because this module has no principal and must not invent one — the rule
+/// `venue_views::withdrawals` already keeps.
 ///
 /// Every figure is read at request time; nothing is cached between calls,
 /// because a mandate that changed or a fill that landed is reflected on the
@@ -267,7 +286,11 @@ pub struct LedgerUsersView {
 /// kernel's registry — the desk and each mandate the configuration enrolled
 /// — in user-id order, and a user's balances are the books the kernel's
 /// pro-rata split and funding actually moved.
-pub fn ledger_users(platform: &Platform, now: Timestamp) -> Result<LedgerUsersView, String> {
+pub fn ledger_users(
+    platform: &Platform,
+    now: Timestamp,
+    inflow_refusal: Option<String>,
+) -> Result<LedgerUsersView, String> {
     let ledger = platform.user_ledger();
     let products: Vec<String> = platform
         .central()
@@ -284,6 +307,7 @@ pub fn ledger_users(platform: &Platform, now: Timestamp) -> Result<LedgerUsersVi
         products,
         fills_journalled: ledger.fills_journalled(),
         inflow_posting: INFLOW_POSTING,
+        inflow_refusal,
         users: user_rows(platform, now, None)?,
     })
 }

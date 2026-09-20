@@ -6733,3 +6733,347 @@ fn the_per_cell_view_of_scheduled_unwinds_names_only_that_cells_lots_keyed_by_in
     );
     Ok(())
 }
+
+// --- the operator's capital grant (ADR 0075; blueprint §36.3) ----------------
+
+/// The producer every capital-grant signature record carries, as a literal so
+/// this suite reads the log the way a replay would rather than through the
+/// kernel's constant.
+const CAPITAL_GRANT_PRODUCER: &str = "kernel/capital-grant";
+
+fn grant_records(platform: &Platform) -> Result<Vec<qip_kernel::CapitalGrantEntry>> {
+    platform
+        .event_log()
+        .records()
+        .iter()
+        .filter(|record| record.event.lineage.producer == CAPITAL_GRANT_PRODUCER)
+        .map(|record| {
+            qip_streaming::envelope::StreamEnvelope::from_frame(&record.event)
+                .and_then(|envelope| envelope.decode::<qip_kernel::CapitalGrantEntry>())
+                .map(|envelope| envelope.body)
+        })
+        .collect()
+}
+
+/// A platform with one strategy standing at pilot, sized by the allocator,
+/// and no envelope — the state the operator route finds.
+fn platform_at_pilot(id: &StrategyId) -> Result<Platform> {
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    register(platform.central_mut(), id, CELL)?;
+    walk_to(platform.central_mut(), id, GateStage::Pilot)?;
+    assert!(
+        platform.central().envelope(CELL, id).is_none(),
+        "premise: {id} stands at pilot and holds no envelope"
+    );
+    assert!(
+        grant_records(&platform)?.is_empty(),
+        "premise: no grant record before anyone signs"
+    );
+    Ok(platform)
+}
+
+#[test]
+fn two_operators_present_together_issue_a_grant_through_the_platforms_intent_and_the_decision_is_logged_before_the_envelope()
+-> Result<()> {
+    // `CentralPlane::issue` had no production caller, and its doc forbids a
+    // cycle stage being one. This is the route's intent: two people, the
+    // approval naming the cell the allocator sizes at, the pair's decision
+    // in the log before the plane is asked, and the envelope after.
+    let id = strategy();
+    let mut platform = platform_at_pilot(&id)?;
+    let first_at = start();
+    let second_at = start().saturating_add(Duration::from_mins(2));
+
+    let first = platform.issue_capital(
+        &id,
+        &operator("alice.chen", first_at),
+        first_at,
+        "the pilot gate passed and the allocator sized it inside the budget",
+        first_at,
+    )?;
+    assert_eq!(first.outcome, "awaiting_countersignature");
+    assert_eq!(
+        first.cell, CELL,
+        "the approval names the cell the allocator sized at"
+    );
+    assert!(
+        platform.central().envelope(CELL, &id).is_none(),
+        "one signature issued an envelope"
+    );
+    assert_eq!(platform.pending_capital_grant(&id), Some(first_at));
+
+    let second = platform.issue_capital(
+        &id,
+        &operator("bram.oduya", second_at),
+        second_at,
+        "reviewed the allocation and the pilot evidence independently",
+        second_at,
+    )?;
+    assert_eq!(second.outcome, "issued", "{second:?}");
+    assert_eq!(second.second_approver.as_deref(), Some("bram.oduya"));
+    let envelope = platform
+        .central()
+        .envelope(CELL, &id)
+        .ok_or_else(|| qip_core::Error::not_found("the envelope the pair issued"))?;
+    assert_eq!(second.gross_limit, Some(envelope.gross_limit()));
+    assert!(platform.pending_capital_grant(&id).is_none());
+
+    // The approval the chain recorded names the request's own subject —
+    // `CapitalRequest::subject`'s form, spelled by the compliance type and
+    // not by this test — and the requester is the allocator, never a signer.
+    let grant = platform
+        .central()
+        .compliance()
+        .approvals()
+        .grants()
+        .last()
+        .cloned()
+        .ok_or_else(|| qip_core::Error::not_found("the chain's grant record"))?;
+    let request = CapitalRequest {
+        strategy: id.clone(),
+        cell: CELL.to_string(),
+        gross_limit: envelope.gross_limit(),
+        order_limit: envelope.order_limit(),
+        loss_limit: envelope.loss_limit(),
+        venues: vec![venue()],
+        expires_at: envelope.expires_at(),
+        requested_by: grant.requested_by.clone(),
+    };
+    assert_eq!(grant.subject, request.subject());
+    assert_eq!(
+        grant.approvers,
+        vec!["alice.chen".to_string(), "bram.oduya".to_string()]
+    );
+    assert!(
+        !grant.approvers.contains(&grant.requested_by),
+        "a signer is recorded as the requester: {}",
+        grant.requested_by
+    );
+
+    // Three records, in the order the acts happened: the first signature,
+    // the pair's decision, then the plane's answer. The middle one is what
+    // "journalled before the plane mutates" means, and a process that died
+    // between the second and third records would leave a decision with no
+    // outcome — a crash to investigate, never a grant to assume.
+    let records = grant_records(&platform)?;
+    let outcomes: Vec<&str> = records.iter().map(|entry| entry.outcome.as_str()).collect();
+    assert_eq!(
+        outcomes,
+        vec!["awaiting_countersignature", "countersigned", "issued"]
+    );
+    assert_eq!(records[2].gross_limit, Some(envelope.gross_limit()));
+    Ok(())
+}
+
+#[test]
+fn one_operator_signing_a_capital_grant_twice_is_refused_and_nothing_is_issued() -> Result<()> {
+    let id = strategy();
+    let mut platform = platform_at_pilot(&id)?;
+    platform.issue_capital(
+        &id,
+        &operator("alice.chen", start()),
+        start(),
+        "the pilot gate passed and the allocator sized it inside the budget",
+        start(),
+    )?;
+    let again = start().saturating_add(Duration::from_mins(1));
+    let error = platform
+        .issue_capital(
+            &id,
+            &operator("alice.chen", again),
+            again,
+            "signing again from a second session to complete my own approval",
+            again,
+        )
+        .expect_err("one person completed a dual approval");
+    assert!(
+        error
+            .message()
+            .contains("a second session is not a second person"),
+        "{}",
+        error.message()
+    );
+    assert!(platform.central().envelope(CELL, &id).is_none());
+    assert_eq!(
+        grant_records(&platform)?.len(),
+        1,
+        "a refused countersignature reached the log as a decision"
+    );
+    // The first signature still stands for a genuine second person.
+    assert_eq!(platform.pending_capital_grant(&id), Some(start()));
+    Ok(())
+}
+
+#[test]
+fn a_first_signature_older_than_the_credential_window_is_discarded_rather_than_completed()
+-> Result<()> {
+    // The chain needs both signers present at issue, so a first signature
+    // held past the credential window could only ever be refused by the
+    // chain. Discarded here by name instead, and both must sign again.
+    let id = strategy();
+    let mut platform = platform_at_pilot(&id)?;
+    platform.issue_capital(
+        &id,
+        &operator("alice.chen", start()),
+        start(),
+        "the pilot gate passed and the allocator sized it inside the budget",
+        start(),
+    )?;
+    let later = start().saturating_add(Duration::from_mins(16));
+    let error = platform
+        .issue_capital(
+            &id,
+            &operator("bram.oduya", later),
+            later,
+            "reviewed the allocation and the pilot evidence independently",
+            later,
+        )
+        .expect_err("a stale first signature was completed");
+    assert!(error.message().contains("discarded"), "{}", error.message());
+    assert!(platform.central().envelope(CELL, &id).is_none());
+    assert!(
+        platform.pending_capital_grant(&id).is_none(),
+        "the stale signature was left standing"
+    );
+    Ok(())
+}
+
+/// Blueprint §23.1 LEVEL 1 on a corpus the *operator route* granted.
+///
+/// The test above this file's `the_learn_stage_measures_no_family_structure_
+/// on_a_corpus_the_centre_never_granted` pins the measurement empty when the
+/// plane's `issue` is never reached, and the granting test beside it reaches
+/// `issue` directly, as no binary could. This one grants every session
+/// through `Platform::issue_capital` — the intent the route raises — so the
+/// LEARN stage's clustering is shown to be fed by the path a deployment has,
+/// and not only by a test calling the plane.
+#[test]
+fn the_learn_stage_measures_family_structure_on_a_corpus_granted_through_the_operator_intent()
+-> Result<()> {
+    use qip_kernel::central::CLUSTERING_WINDOW;
+
+    let mut config = PlatformConfig::default();
+    config.central.per_cell = Decimal::from_int(9_000_000);
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    let ids = [
+        StrategyId::new("granted-alpha"),
+        StrategyId::new("granted-beta"),
+        StrategyId::new("granted-gamma"),
+    ];
+    for id in &ids {
+        register(platform.central_mut(), id, CELL)?;
+        walk_to(platform.central_mut(), id, GateStage::Pilot)?;
+    }
+    // Two people, each present at the instant of issue, on every grant —
+    // at the session's own instant, because the envelope is live from the
+    // instant the countersignature issues it and a report at the session's
+    // instant reads a grant issued a minute later as not yet held.
+    let grant_through_intent = |platform: &mut Platform, id: &StrategyId, at: Timestamp| {
+        platform.issue_capital(
+            id,
+            &operator("alice.chen", at),
+            at,
+            "the pilot gate passed and the allocator sized it inside the budget",
+            at,
+        )?;
+        platform.issue_capital(
+            id,
+            &operator("bram.oduya", at),
+            at,
+            "reviewed the allocation and the pilot evidence independently",
+            at,
+        )
+    };
+
+    let mut grants = Vec::new();
+    for id in &ids {
+        let issued = grant_through_intent(&mut platform, id, start())?;
+        assert_eq!(
+            issued.outcome, "issued",
+            "the intent did not issue {id}: {issued:?}"
+        );
+        grants.push(
+            issued
+                .gross_limit
+                .ok_or_else(|| qip_core::Error::not_found("the issued grant's gross limit"))?,
+        );
+    }
+    let quantity = grants[0]
+        .checked_div(dec!("1000"))
+        .ok_or_else(|| qip_core::Error::numeric("a thousand divides any grant"))?;
+
+    for session in 0..(CLUSTERING_WINDOW as i64) {
+        let at = start().saturating_add(Duration::from_days(session));
+        let mut orders = Vec::new();
+        let mut fills = Vec::new();
+        for (index, id) in ids.iter().enumerate() {
+            // Re-granted each session through the same intent: an envelope
+            // lives eight hours, and a day under a lapsed one is not a day
+            // under a grant.
+            grant_through_intent(&mut platform, id, at)?;
+            let shape = if index < 2 {
+                ((session % 11) as f64 - 5.0) * 0.002
+            } else {
+                ((session % 7) as f64 - 3.0) * 0.002
+            };
+            let wobble = ((session % 3) as f64 - 1.0) * 0.0003 * ((index + 1) as f64);
+            let pnl = Decimal::from_f64((shape + wobble) * grants[index].to_f64())
+                .ok_or_else(|| qip_core::Error::numeric("a finite return"))?;
+            let (session_orders, session_fills) =
+                session_fills(id, &format!("g{session}-{index}"), quantity, pnl, at)?;
+            orders.extend(session_orders);
+            fills.extend(session_fills);
+        }
+        let ingestion = platform.ingest_cell_report(
+            CellReport::new(CELL, at)
+                .with_orders(orders)
+                .with_fills(fills),
+            at,
+        )?;
+        assert!(
+            ingestion.settlement.refused.is_empty(),
+            "premise: session {session} settled: {:?}",
+            ingestion.settlement.refused
+        );
+    }
+
+    let measuring_at = start().saturating_add(Duration::from_days(CLUSTERING_WINDOW as i64));
+    assert_eq!(
+        platform
+            .central()
+            .realised_calendar(measuring_at)
+            .day_count(),
+        CLUSTERING_WINDOW,
+        "the calendar does not retain every session the intent granted"
+    );
+    let measured = platform
+        .central()
+        .family_structure(measuring_at)?
+        .ok_or_else(|| {
+            qip_core::Error::not_found("a clustering over a corpus the operator route granted")
+        })?;
+    assert_eq!(measured.strategies, 3);
+    assert_eq!(measured.sessions, CLUSTERING_WINDOW);
+    assert!(
+        measured.mean_intra_family_correlation > measured.mean_inter_family_correlation,
+        "the two strategies on one factor are filed together: intra {} inter {}",
+        measured.mean_intra_family_correlation,
+        measured.mean_inter_family_correlation
+    );
+
+    let report = platform.run_cycle(measuring_at);
+    let learn = report
+        .stage(Stage::Learn)
+        .ok_or_else(|| qip_core::Error::not_found("the LEARN stage ran"))?;
+    assert!(
+        learn
+            .detail
+            .contains("3 strategy(ies) clustered into 2 family(ies)"),
+        "the stage says what it measured: {}",
+        learn.detail
+    );
+    Ok(())
+}

@@ -2526,6 +2526,128 @@ fn retiring_order_and_fill(
 /// A platform whose centre holds one lot — a hundred bought at fifty, at
 /// `CELL` — for a strategy it has since retired by decay. Returns the
 /// strategy and the instant of its retirement.
+/// Slot 1 (ADR 0083 §5): unproduced until a distillate is promoted, then
+/// produced from the platform's own promoted set and stamped with the
+/// promotion's instant, naming the distillate by the digest a cell checks.
+#[test]
+fn the_trained_models_slot_ships_unproduced_until_a_distillate_is_promoted_and_then_names_it_by_the_cells_digest()
+-> Result<()> {
+    use qip_ai::registry::ModelRegistry;
+    use qip_kernel::central::models::register_fit;
+    use qip_strategy::model::DistilledModel;
+    use qip_training::dataset::TrainingDataset;
+    use qip_training::job::TrainingSpec;
+    use qip_training::local::{LocalTrainer, ModelFamily, SkillPolicy};
+    use qip_training::serve::InTreeProvider;
+
+    let config = PlatformConfig::default();
+    let context = Context::new(Arc::new(ManualClock::new(start())), config.seed);
+    let mut platform = Platform::new_serving(
+        config,
+        context,
+        qip_observability::Telemetry::silent(),
+        qip_financial::universe::Universe::new(),
+        qip_risk::limits::LimitSet::conservative_default(),
+        Box::new(InTreeProvider),
+    )?;
+    let asked_at = start().saturating_add(Duration::from_hours(2));
+
+    // Before any promotion: the slot ships unproduced and the line says why.
+    let pending = qip_api::mesh::pending_policy(
+        &mut platform,
+        [CELL.to_string()].into_iter(),
+        None,
+        asked_at,
+    );
+    assert_eq!(pending.payloads.len(), 1, "one cell, one payload");
+    assert_eq!(pending.payloads[0].1.trained_models, Slot::unproduced());
+    assert_eq!(pending.models.len(), 1, "one line per cycle");
+    assert!(
+        pending.models[0].starts_with("trained models: not shipped"),
+        "{}",
+        pending.models[0]
+    );
+
+    // A real fit, registered through the same seam the deep brain uses, so
+    // the card's evaluation is the fit's own and not asserted here.
+    let mut rows = Vec::new();
+    let mut targets = Vec::new();
+    let mut times = Vec::new();
+    for i in 0..200usize {
+        let a = (i as f64 * 0.37).sin();
+        let b = (i as f64 * 0.11).cos();
+        let residual = ((i * 7919) % 13) as f64 / 13.0 * 0.02 - 0.01;
+        rows.push(vec![a, b]);
+        targets.push(0.5 * a - 0.25 * b + 0.1 + residual);
+        times.push(start().saturating_add(Duration::from_mins(i as i64)));
+    }
+    let data = TrainingDataset::new(
+        "mesh-serving-data",
+        vec!["a".to_string(), "b".to_string()],
+        rows,
+        targets,
+        times,
+    )?;
+    let spec = TrainingSpec::new(
+        "bar-linear-mesh",
+        "0.1.0",
+        "mesh-tests",
+        data.name(),
+        ModelFamily::Linear { ridge: 1e-6 },
+    )
+    .with_holdout(0.25);
+    let teacher = LocalTrainer::new().fit(&spec, &data, start())?;
+    let mut registry = ModelRegistry::new();
+    let registration = register_fit(
+        &mut registry,
+        &teacher,
+        &SkillPolicy::default(),
+        "mesh-tests",
+        start(),
+    )?;
+    assert!(
+        registration.passed,
+        "premise: the fit cleared the skill bar"
+    );
+    let student = DistilledModel::linear("bar-linear-mesh", 0.1, vec![0.5, -0.25])?;
+    let promoted_at = start().saturating_add(Duration::from_hours(1));
+    let artifact = InTreeProvider::pack(&teacher)?;
+    platform.promote_model(&mut registry, &artifact, Some(&student), &[], promoted_at)?;
+    assert_ne!(
+        student.digest(),
+        artifact.digest,
+        "premise: the cell's digest is not the artifact's"
+    );
+
+    let pending = qip_api::mesh::pending_policy(
+        &mut platform,
+        [CELL.to_string()].into_iter(),
+        None,
+        asked_at,
+    );
+    let (_, payload) = &pending.payloads[0];
+    let manifest = payload
+        .trained_models
+        .value()
+        .ok_or_else(|| Error::invalid("slot 1 shipped unproduced from a platform that promoted"))?;
+    assert_eq!(
+        manifest.models.get(student.name()),
+        Some(&student.digest()),
+        "the manifest does not name the distillate by the digest `Cell::check_models_promoted` compares"
+    );
+    // Stamped with the promotion's instant and not the shipper's: a
+    // manifest that stopped changing last week must read that old at every
+    // cell.
+    assert_eq!(payload.trained_models.produced_at(), Some(promoted_at));
+    assert_ne!(payload.trained_models.produced_at(), Some(asked_at));
+    assert!(
+        pending.models[0].starts_with("trained models: shipped 1 distillate(s)"),
+        "{}",
+        pending.models[0]
+    );
+    Ok(())
+}
+
 fn platform_with_a_retired_lot() -> Result<(Platform, StrategyId, Timestamp)> {
     let config = PlatformConfig::default();
     let (context, _clock) = Context::deterministic(start(), config.seed);

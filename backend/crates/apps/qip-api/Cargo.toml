@@ -19,6 +19,10 @@ qip-storage.workspace = true
 qip-agents.workspace = true
 qip-risk-engine.workspace = true
 qip-kernel.workspace = true
+# The in-tree model provider the composition root hands the kernel (ADR
+# 0083 §4). A workspace crate, not a third-party one; the kernel already
+# links it, so the graph gains no edge the application layer did not have.
+qip-training.workspace = true
 qip-web.workspace = true
 # The mesh backbone's central half: the API is the composition root that
 # serves the spine's endpoints, drains the delta inbox into the platform and
@@ -44,6 +48,9 @@ qip-data-finder.workspace = true
 # maintains. Dev-only: the serving binary never names the edge crate — the
 # composition root's decode goes through `qip_mesh::delta`.
 qip-edge.workspace = true
+# The model registry the serving test registers a real fit into (ADR 0083).
+# Dev-only: the serving binary holds no registry — the deep brain does.
+qip-ai.workspace = true
 # The whitelist tests need a live grant in the plane, and the only door a
 # grant enters by is `CentralPlane::issue` — behind a compiled strategy, a
 # full evidence set and a dual approval. These are the crates that fixture is

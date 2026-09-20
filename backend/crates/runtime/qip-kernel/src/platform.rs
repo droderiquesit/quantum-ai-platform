@@ -70,6 +70,7 @@ use qip_ai::memory::{
     Recall, RegimeLabel, StanceDirection,
 };
 use qip_ai::retrieval::SearchIndex;
+use qip_ai::serving::{ModelProvider, NoProvider};
 use qip_capital::ledger::{
     AttributedFill, Capability, DecidedBy, EligibilityDecision, EligibilityRecord,
     EligibilityRegistry, Entitlement, InvestmentDecision, InvestmentOutcome, InvestmentRequest,
@@ -102,6 +103,7 @@ use qip_chain::{
     BridgeFailure, BridgeLedger, BridgeTransfer, ChainState, ChainUpdate, Confirmations,
     ConfirmedView,
 };
+use qip_compliance::approval::OperatorCredential;
 use qip_contracts::edge::Deduction;
 use qip_contracts::governance::Usage;
 use qip_contracts::message::BookSide;
@@ -283,6 +285,15 @@ pub struct Platform {
     /// is the gap between two of them, and losing it costs one re-signature
     /// and no record.
     pending_promotions: BTreeMap<StrategyId, qip_contracts::governance::Approval>,
+    /// The first signature on a capital grant, held with the signer's
+    /// compliance credential until the second person signs
+    /// ([`Self::issue_capital`]). Held rather than journalled as standing,
+    /// for the reason [`Self::pending_promotions`] gives, and the credential
+    /// is held beside the approval because `ApprovalChain::grant` needs both
+    /// people's credentials fresh at the instant of issue: a first signer who
+    /// is no longer present cannot be represented by a name in a record.
+    pending_capital_grants:
+        BTreeMap<StrategyId, (qip_contracts::governance::Approval, OperatorCredential)>,
     /// The fabric journal: every wallet, corridor, destination and gate
     /// decision as the command and its outcome, replayable. Its working
     /// copy of the log is process-local; the platform's own event log
@@ -364,6 +375,18 @@ pub struct Platform {
     /// references. The consequence of a revision lives in
     /// `crate::references`.
     pub(crate) references: qip_data_finder::ledger::ReferenceLedger,
+    /// Who serves a trained model off the hot path (ADR 0083 §4). Handed
+    /// in by the composition root through [`Self::with_model_provider`];
+    /// [`Self::new`] holds [`NoProvider`], which serves nothing, so a
+    /// process assembled without one promotes and scores no model rather
+    /// than reaching for a provider inside the kernel. Read only through
+    /// `crate::model_serving`.
+    pub(crate) model_provider: Box<dyn ModelProvider>,
+    /// Every model this process has promoted, by card reference, rebuilt
+    /// from the log at assembly and written only by
+    /// `Platform::promote_model`. What the `trained_models` slot is
+    /// produced from; see `crate::model_serving`.
+    pub(crate) model_promotions: BTreeMap<String, crate::model_serving::ModelPromotion>,
     /// §22.1's fallback series: the daily bars the platform has observed,
     /// per instrument, under three stated bounds — insurance against a
     /// source withdrawing its archive, and what the research campaign falls
@@ -694,6 +717,13 @@ pub struct Platform {
     /// drift from it the way absorbed state would — and absorbed state is
     /// now shared rather than projected, see the `world` field.
     asset_classes: BTreeMap<String, AssetClass>,
+    /// The classes this platform is registered to trade (blueprint §17.7),
+    /// and the gate `Self::new` admits the universe through. Built at
+    /// assembly from the shipped table and never from the universe: a
+    /// registry derived from what a catalogue happened to contain would
+    /// admit whatever it was given, which is the capability claim §17.7
+    /// exists to refuse. Read through `crate::asset_class_registry`.
+    pub(crate) asset_class_registry: crate::asset_class_registry::AssetClassRegistry,
     /// The exposure buckets every instrument this platform was assembled to
     /// trade belongs to, keyed by object id then axis — the same projection
     /// of reference data as `asset_classes`, taken at the same moment for
@@ -1146,6 +1176,29 @@ const PROMOTION_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
 /// A stale first signature is not silently discarded: the countersignature
 /// attempt is refused, naming the age, and the pair start again.
 const PROMOTION_APPROVAL_WINDOW: Duration = Duration::from_hours(24);
+
+/// The freshness window an operator's identity must fall inside to sign a
+/// capital grant, and the whole of the window the first signature is held
+/// for. The same fifteen minutes as the promotion signature, and the reason
+/// the two windows are one number here where the promotion holds its first
+/// signature for a day: `ApprovalChain::grant` requires *both* signers'
+/// credentials fresh at the instant the envelope is issued — a person who
+/// signed this morning is not present now — so a first signature older than
+/// the credential window could never complete, and holding it longer would
+/// hold a signature that can only be refused.
+const CAPITAL_GRANT_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
+
+/// The producer on every capital-grant signature record, told apart from
+/// the promotion, registration and eligibility records that share its
+/// topic.
+const CAPITAL_GRANT_ORIGIN: &str = "kernel/capital-grant";
+
+/// Who a capital grant is requested by, as `ApprovalChain::grant` records
+/// it: the platform's own allocator, which sized the envelope the pair sign
+/// for. Named so that neither signer can be the requester — the chain
+/// refuses an approver who is — and so a grant record never reads as though
+/// a person asked for the capital they then approved.
+const CAPITAL_GRANT_REQUESTER: &str = "qip-kernel/allocator";
 
 /// The shortest rationale either signature on a dual approval may state, in
 /// trimmed characters.
@@ -3289,6 +3342,43 @@ impl EventBody for PromotionApprovalEntry {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// One operator's signature on a capital grant, the pair's countersigned
+/// decision, and the outcome the central plane returned — each its own
+/// record, in that order.
+///
+/// Three outcomes, and the middle one is the point: `countersigned` is
+/// written *before* [`CentralPlane::issue`] is asked, so the log holds the
+/// pair's decision even if the process dies between the decision and the
+/// envelope; `issued` or `refused` follows with the plane's answer. A grant
+/// is therefore never in the plane without its decision in the log, and a
+/// decision in the log with no outcome after it is a crash to investigate
+/// rather than a grant to assume.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CapitalGrantEntry {
+    pub strategy: String,
+    /// The cell the allocator sized the grant at, and so the cell the
+    /// approval's subject names.
+    pub cell: String,
+    pub approver: String,
+    pub second_approver: Option<String>,
+    pub rationale: String,
+    /// `awaiting_countersignature`, `countersigned`, `issued` or `refused`.
+    pub outcome: String,
+    pub detail: Option<String>,
+    /// The envelope's gross limit once issued. Money, as `Decimal`.
+    pub gross_limit: Option<Decimal>,
+    pub expires_at: Option<Timestamp>,
+    pub at: Timestamp,
+}
+
+impl EventBody for CapitalGrantEntry {
+    /// The same never-evicted group the promotion signature sits in, for the
+    /// same reason: a decision that puts capital behind a strategy. Told
+    /// apart by [`CAPITAL_GRANT_ORIGIN`].
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 /// One operator's signature on a recalibration proposal, and — on the
 /// second — the artefact the pair produced.
 ///
@@ -3652,6 +3742,59 @@ impl Platform {
         limits: LimitSet,
         language_model: Arc<dyn LanguageModel>,
     ) -> Result<Self> {
+        Self::with_model_provider(
+            config,
+            context,
+            telemetry,
+            universe,
+            limits,
+            language_model,
+            Box::new(NoProvider),
+        )
+    }
+
+    /// [`Self::new`] with a model provider: the deterministic language model
+    /// and the provider the composition root hands in. What `qip-api` uses,
+    /// which narrates through no hosted model and serves through the in-tree
+    /// provider.
+    pub fn new_serving(
+        config: PlatformConfig,
+        context: Context,
+        telemetry: Telemetry,
+        universe: Universe,
+        limits: LimitSet,
+        model_provider: Box<dyn ModelProvider>,
+    ) -> Result<Self> {
+        Self::with_model_provider(
+            config,
+            context,
+            telemetry,
+            universe,
+            limits,
+            Arc::new(DeterministicModel::new()),
+            model_provider,
+        )
+    }
+
+    /// Assemble a platform that serves trained models through the given
+    /// provider (ADR 0083 §4).
+    ///
+    /// The seam the two central roots use: `qip-deepbrain` and `qip-api`
+    /// pass `qip_training::serve::InTreeProvider`, and every other caller —
+    /// [`Self::new`], [`Self::with_language_model`], every test that does
+    /// not care about serving — gets [`NoProvider`], which serves nothing.
+    /// The provider is not on `PlatformConfig` for the reason the language
+    /// model is not: the config is a serialisable record of how the
+    /// platform was assembled, and a provider is code.
+    pub fn with_model_provider(
+        config: PlatformConfig,
+        context: Context,
+        telemetry: Telemetry,
+        universe: Universe,
+        limits: LimitSet,
+        language_model: Arc<dyn LanguageModel>,
+        model_provider: Box<dyn ModelProvider>,
+    ) -> Result<Self> {
         let now = context.now();
 
         // Opened here, before anything else is built, for the same reason the
@@ -3694,6 +3837,33 @@ impl Platform {
             .iter()
             .map(|object| (object.object_id.as_str().to_string(), object.asset_class))
             .collect();
+        // §17.7's gate between architecturally reachable and actually
+        // supported, asked here — before the universe moves into the desk
+        // and before a cycle can run — because an instrument in a class this
+        // platform cannot price, settle or assign a strategy family to is an
+        // invalid configuration and not a runtime surprise. A composition
+        // root refuses invalid configuration by stopping; the alternative
+        // considered and rejected was pushing the instrument onto
+        // `not_decision_grade`, which nothing reads to refuse anything, and
+        // would have made this a record rather than a control.
+        //
+        // Every instrument is admitted, not the first failure only: an
+        // operator correcting a catalogue needs the whole list, and refusing
+        // one at a time would take as many restarts as there are bad rows.
+        let asset_class_registry = crate::asset_class_registry::AssetClassRegistry::shipped()?;
+        let unsupported: Vec<String> = universe
+            .iter()
+            .filter_map(|object| asset_class_registry.admit(object).err())
+            .map(|error| error.message().to_string())
+            .collect();
+        if let Some(first) = unsupported.first() {
+            return Err(Error::invalid(format!(
+                "{} instrument(s) in this universe are in classes this platform is not \
+                 registered to trade, and assembly stops rather than serving a book it cannot \
+                 value: {first}",
+                unsupported.len()
+            )));
+        }
         // The exposure buckets, taken here too. Until this existed the
         // aggregate was fed no axis at all, so `MaxConcentration` and
         // `MaxBucketExposure` — two limits in every default set — evaluated
@@ -4027,6 +4197,8 @@ impl Platform {
             data_finder,
             admitted_sources: BTreeMap::new(),
             references: Self::resume_references(&event_log)?,
+            model_provider,
+            model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
             fallback: qip_data_finder::retention::FallbackSeries::bounded(),
             fallback_refused: BTreeSet::new(),
             source_leads: qip_data_finder::freshness::LeadLedger::new(),
@@ -4085,6 +4257,7 @@ impl Platform {
             universe_assembled,
             inherited_through,
             asset_classes,
+            asset_class_registry,
             exposure_axes,
             liquidity_reference,
             cycle_ledger: None,
@@ -4122,6 +4295,7 @@ impl Platform {
             products: ProductCatalogue::new(),
             registrations: RegistrationRegistry::shipped(),
             pending_promotions: BTreeMap::new(),
+            pending_capital_grants: BTreeMap::new(),
             fabric,
             holdings_observed: BTreeMap::new(),
             wallet_tolerances: ToleranceSchedule::new(),
@@ -6519,6 +6693,219 @@ impl Platform {
                 Ok(entry)
             }
         }
+    }
+
+    /// Sign a capital grant to a strategy standing on a capital-holding rung,
+    /// and issue it once two people have (blueprint §36.3's centre column;
+    /// ADR 0075).
+    ///
+    /// # Why this exists
+    ///
+    /// [`CentralPlane::issue`] is the only writer of the plane's envelopes,
+    /// and until this intent it had no production caller: no cell ever held
+    /// a live grant, `retain_grants` retained no day, and the LEARN stage's
+    /// family measurement (§23.1) ran over an empty calendar on every cycle.
+    /// The plane's own doc says a cycle stage must never be that caller —
+    /// it would have to manufacture the approval and the credentials, which
+    /// is forging control 4 — so the caller is an operator route raising
+    /// this intent, and the identity is the session's.
+    ///
+    /// # The shape, and what each half refuses
+    ///
+    /// Two signatures by two people, held and completed exactly as
+    /// [`Self::approve_promotion`] holds and completes a promotion, with two
+    /// differences that are the grant's own. First, the approval's subject
+    /// is `capital:{strategy}@{cell}` — `CapitalRequest::subject`'s form —
+    /// and the cell is the one the allocator sizes the grant at *now*, so
+    /// the first signature names a request the plane will actually build,
+    /// and a countersignature after the allocator has moved the strategy to
+    /// another cell is refused naming both rather than issued somewhere the
+    /// first signer never saw. Second, the first signer's compliance
+    /// credential is held with the signature: `ApprovalChain::grant` needs
+    /// both people fresh at the instant of issue, so the window a first
+    /// signature stands for is the credential window and not a day.
+    ///
+    /// `authenticated_at` is taken beside `operator` rather than read off it
+    /// because [`OperatorIdentity`] exposes no instant and the compliance
+    /// credential needs one; the route obtains both from the same
+    /// `Principal::authentication_instant`, which is the presence gate. In
+    /// this build that gate refuses every standing credential (ADR 0065), so
+    /// this intent is authorised in shape and refused in fact until a
+    /// per-person credential exists (ADR 0076) — the route's tests prove it
+    /// from both sides.
+    ///
+    /// # What it cannot do
+    ///
+    /// Grant more than the allocator sized, to a strategy below pilot, or
+    /// into a dark region: every one of those is the plane's refusal, made
+    /// on the same call and journalled as `refused`. The pair authorise an
+    /// attempt, not an outcome — the same rule the promotion keeps. And a
+    /// grant funds a simulated desk: the envelope a cell enforces is the
+    /// bound on paper orders, and nothing here touches the three
+    /// paper-trading layers.
+    pub fn issue_capital(
+        &mut self,
+        strategy: &StrategyId,
+        operator: &OperatorIdentity,
+        authenticated_at: Timestamp,
+        rationale: &str,
+        now: Timestamp,
+    ) -> Result<CapitalGrantEntry> {
+        if !operator.is_fresh(now, CAPITAL_GRANT_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to sign a \
+                 capital grant",
+                operator.subject(),
+                CAPITAL_GRANT_CREDENTIAL_AGE
+            )));
+        }
+        let credential =
+            OperatorCredential::verified(operator.subject(), operator.method(), authenticated_at)?;
+        // The cell the plane will size this grant at, taken from the same
+        // allocation `CentralPlane::issue` builds, under the same drawdown.
+        // A strategy the allocator sizes at nothing has no envelope to sign
+        // for, and the refusal names the allocator's reason rather than
+        // holding a signature that could only be refused later.
+        let drawdown = self.drawdown();
+        let plan = self.central.allocate(drawdown, now)?;
+        let cell = match plan.for_strategy(strategy) {
+            Some(allocation) => allocation.cell.clone(),
+            None => {
+                let reason = plan
+                    .refusals
+                    .iter()
+                    .find(|(id, _)| id == strategy)
+                    .map(|(_, reason)| reason.clone())
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{strategy} stands at {}, which holds no capital, or has no proposal \
+                             for the allocator to size",
+                            self.central.factory().stage_of(strategy).as_str()
+                        )
+                    });
+                return Err(Error::denied(format!(
+                    "no capital grant to sign for {strategy}: {reason}"
+                )));
+            }
+        };
+        // `CapitalRequest::subject`'s form, so the approval names the request
+        // the chain will check it against; `tests/capital_grants.rs` pins the
+        // two spellings together.
+        let subject = format!("capital:{}@{cell}", strategy.as_str());
+
+        match self.pending_capital_grants.get(strategy).cloned() {
+            None => {
+                let approval = qip_contracts::governance::Approval::new(
+                    subject,
+                    operator.subject(),
+                    now,
+                    rationale.to_string(),
+                )?;
+                let entry = CapitalGrantEntry {
+                    strategy: strategy.as_str().to_string(),
+                    cell,
+                    approver: approval.approver.clone(),
+                    second_approver: None,
+                    rationale: approval.rationale.clone(),
+                    outcome: "awaiting_countersignature".to_string(),
+                    detail: None,
+                    gross_limit: None,
+                    expires_at: None,
+                    at: now,
+                };
+                self.journal_record(entry.clone(), CAPITAL_GRANT_ORIGIN, now)?;
+                self.pending_capital_grants
+                    .insert(strategy.clone(), (approval, credential));
+                Ok(entry)
+            }
+            Some((first, first_credential)) => {
+                if first.at.saturating_add(CAPITAL_GRANT_CREDENTIAL_AGE) < now {
+                    self.pending_capital_grants.remove(strategy);
+                    return Err(Error::denied(format!(
+                        "the first signature on {strategy}'s capital grant was given at {} and a \
+                         countersignature must follow within {:?}, because both signers must be \
+                         present when the envelope is issued; it has been discarded and both \
+                         signatures must be given again",
+                        first.at.to_rfc3339(),
+                        CAPITAL_GRANT_CREDENTIAL_AGE
+                    )));
+                }
+                if first.approver == operator.subject() {
+                    return Err(Error::denied(format!(
+                        "{} has already signed {strategy}'s capital grant; a dual approval needs \
+                         two people, and a second session is not a second person",
+                        operator.subject()
+                    )));
+                }
+                if first.subject != subject {
+                    self.pending_capital_grants.remove(strategy);
+                    return Err(Error::denied(format!(
+                        "the first signature on {strategy}'s capital grant named `{}` and the \
+                         allocator now sizes it as `{subject}`; the book moved between the two \
+                         signatures, so the first has been discarded and both must be given \
+                         again on today's allocation",
+                        first.subject
+                    )));
+                }
+                require_countersignature_rationale(
+                    &format!("{strategy}'s capital grant"),
+                    rationale,
+                )?;
+                let approval = first.countersigned_by(operator.subject())?;
+                // The pair's decision, journalled before the plane is asked:
+                // a grant in the plane without its decision in the log is
+                // the state this ordering makes impossible.
+                let decided = CapitalGrantEntry {
+                    strategy: strategy.as_str().to_string(),
+                    cell: cell.clone(),
+                    approver: approval.approver.clone(),
+                    second_approver: approval.second_approver.clone(),
+                    rationale: rationale.to_string(),
+                    outcome: "countersigned".to_string(),
+                    detail: None,
+                    gross_limit: None,
+                    expires_at: None,
+                    at: now,
+                };
+                self.journal_record(decided.clone(), CAPITAL_GRANT_ORIGIN, now)?;
+                let outcome = self.central.issue(
+                    strategy,
+                    CAPITAL_GRANT_REQUESTER,
+                    &approval,
+                    &[first_credential, credential],
+                    drawdown,
+                    now,
+                );
+                // Cleared either way, as the promotion clears its pair: a
+                // pending signature left behind a refusal would let a later
+                // countersignature retry the plane without a fresh review.
+                self.pending_capital_grants.remove(strategy);
+                let mut entry = decided;
+                match &outcome {
+                    Ok(issued) => {
+                        entry.outcome = "issued".to_string();
+                        entry.gross_limit = Some(issued.envelope().gross_limit());
+                        entry.expires_at = Some(issued.envelope().expires_at());
+                    }
+                    Err(error) => {
+                        entry.outcome = "refused".to_string();
+                        entry.detail = Some(error.message().to_string());
+                    }
+                }
+                self.journal_record(entry.clone(), CAPITAL_GRANT_ORIGIN, now)?;
+                outcome?;
+                Ok(entry)
+            }
+        }
+    }
+
+    /// The first signature standing on a strategy's capital grant, if any —
+    /// for a view that says a countersignature is awaited without saying by
+    /// whom, the split `pending_promotion` keeps.
+    pub fn pending_capital_grant(&self, strategy: &StrategyId) -> Option<Timestamp> {
+        self.pending_capital_grants
+            .get(strategy)
+            .map(|(approval, _)| approval.at)
     }
 
     /// Journal a registration and adopt it — in that order, and only after

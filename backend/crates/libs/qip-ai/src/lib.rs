@@ -34,4 +34,4 @@ pub use language::{
 };
 pub use registry::{ModelCard, ModelRegistry, ModelStage};
 pub use retrieval::{Document, RetrievalResult, SearchIndex};
-pub use serving::{ModelArtifact, ModelFormat, ModelProvider, ServedModel};
+pub use serving::{ModelArtifact, ModelFormat, ModelProvider, NoProvider, ServedModel};

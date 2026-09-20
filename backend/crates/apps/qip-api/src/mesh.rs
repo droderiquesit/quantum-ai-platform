@@ -684,6 +684,16 @@ pub struct PendingPolicy {
     /// causal claim" and "every edge it holds has decayed" — are different
     /// sentences rather than the same silence.
     pub causal: Vec<String>,
+    /// One line per **cycle**, not per cell: what the `trained_models` slot
+    /// carries — every promoted distillate by the digest a cell checks on
+    /// install — or why nothing was produced (ADR 0083 §5).
+    ///
+    /// Beside the causal line and for the same reason: the promoted set is
+    /// the platform's, resumed from its own log, so seven copies would be
+    /// seven claims about one thing. The two answers an operator needs to
+    /// tell apart — "this process has resumed no promotion" and "every
+    /// promotion it holds named no distillate" — are in the sentence.
+    pub models: Vec<String>,
 }
 
 /// The policy payloads one cycle should ship, one per configured cell.
@@ -859,6 +869,26 @@ pub fn pending_policy(
             Slot::unproduced()
         }
     };
+    // Slot 1, once per cycle for the same reason slots 3, 4 and the causal
+    // digest are: the promoted set is the platform's, not any one cell's. A
+    // refusal ships the slot unproduced — the state every payload carried
+    // while this slot had no producer — and says why, because "the deep
+    // brain promoted no distillate" and "this process has not resumed the
+    // promotion" are different faults with different owners and they narrow
+    // a cell identically: `Cell::check_models_promoted` refuses any plan
+    // carrying a model inline until the manifest names it.
+    let models = match platform.model_manifest() {
+        Ok(issue) => {
+            pending.models.push(issue.describe());
+            issue.slot()
+        }
+        Err(error) => {
+            pending
+                .models
+                .push(format!("trained models: not shipped, {}", error.message()));
+            Slot::unproduced()
+        }
+    };
     for cell in cells {
         let sequence = now.as_nanos().max(0) as u64;
         let mut payload = PolicyPayload::unproduced(sequence, &cell, now);
@@ -932,6 +962,15 @@ pub fn pending_policy(
         // moves to regime-conditional — which is why the producer refuses
         // rather than guesses; see `qip_kernel::central::causal`.
         payload.causal_digest = causal.clone();
+        // The same manifest for every cell, stamped with the newest
+        // promotion it names rather than this instant. Assigned
+        // unconditionally for the reason the three slots above are: an
+        // unproduced slot assigned and an unproduced slot left alone are
+        // the same fail-closed value. What a produced slot changes at the
+        // cell is exactly one thing — a plan carrying a named distillate
+        // inline may be installed — and nothing about sizing or pausing:
+        // `PolicyItem::capability` maps this slot to no §6.2 capability.
+        payload.trained_models = models.clone();
         // Slot 11, assigned unconditionally and to every cell, including
         // when nothing is withdrawn. An empty set is a statement — "the
         // centre is applying no withdrawal" — and a cell that could not tell

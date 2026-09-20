@@ -209,7 +209,14 @@ impl ModelCard {
 }
 
 /// Every model the platform knows about.
-#[derive(Debug, Default)]
+///
+/// `Clone` so a caller that must journal a promotion *before* the registry
+/// adopts it can promote a scratch copy first, write the record, and then
+/// replace the live registry — the discipline the kernel's registration and
+/// eligibility paths already keep. A registry is a map of cards measured in
+/// kilobytes; the copy is cheaper than a log that names a promotion the
+/// registry then refused.
+#[derive(Clone, Debug, Default)]
 pub struct ModelRegistry {
     cards: BTreeMap<String, ModelCard>,
 }

@@ -219,7 +219,20 @@ fn run() -> Result<()> {
     // The limit set, read once here and never again: a bound reaches a
     // running process through this file and nothing else (ADR 0061).
     let (limits, limits_banner) = load_risk_limits()?;
-    let mut platform = Platform::new(config, context, telemetry, catalogue.universe, limits)?;
+    // The model provider (ADR 0083 §4), handed in here rather than reached
+    // for inside the kernel: the in-tree provider serves the four forms this
+    // platform trains and nothing else. This process trains and promotes no
+    // model — the deep brain does — so what it serves today is the
+    // manifest it resumes from its own log, and a served score reaches no
+    // filter here until a model of the kind §39.1 row 10 names exists.
+    let mut platform = Platform::new_serving(
+        config,
+        context,
+        telemetry,
+        catalogue.universe,
+        limits,
+        Box::new(qip_training::serve::InTreeProvider),
+    )?;
 
     // The trust root, before anything is served: install the operator's
     // envelope key when the deployment provides one, and refuse to run

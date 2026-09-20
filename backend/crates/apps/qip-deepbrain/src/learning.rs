@@ -49,10 +49,9 @@
 //!    allowed to run. Every round that registers a teacher now distils it on
 //!    the same holdout tail the fit's own diagnostics were scored against,
 //!    and the result -- or, when the probe set could not support a fit, the
-//!    reason -- is held on [`LearningRound::distillation`]. This module still
-//!    does not promote a distillate any more than it promotes a teacher: the
-//!    student is a fact this round produced, for whatever governs
-//!    `qip-contracts::policy::PendingPolicy::trained_models` to act on.
+//!    reason -- is held on [`LearningRound::distillation`], and the student
+//!    the fidelity policy admits is what a promotion names to the cells —
+//!    see "Promotion" below.
 //!
 //! # Why the maximum across features and not the mean
 //!
@@ -86,13 +85,35 @@
 //! can read the coefficients of. The board is bounded by construction: two
 //! classes by the product of two regime enums.
 //!
-//! # What it does not do
+//! # Promotion, and the rule it follows
 //!
-//! It does not promote. A registered card enters at development stage and
-//! moving it to one that permits decisions stays a governed act elsewhere.
-//! This module only ensures that when that decision is taken, the evidence on
-//! the card is true and its drift score is a measurement rather than a zero
-//! nobody ever wrote.
+//! Until 2026-09-20 this module did not promote: a registered card entered
+//! at development stage and "moving it to one that permits decisions stays a
+//! governed act elsewhere" — and there was no elsewhere. The blueprint's
+//! promote stage (§21.2) is *candidate against incumbent on held-out
+//! folds*, and ADR 0083 §5 makes it `ModelRegistry::promote_artifact` plus
+//! the artifact written by the composition root. Both halves are here now,
+//! in [`LearningDesk::promote_candidate`], as one deterministic rule rather
+//! than a signature, because what a promoted model may do is bounded by
+//! the same ADR: it may be an advisory *input* to a deterministic filter,
+//! and its distillate may run inline in a plan a cell installs only if the
+//! manifest names it. No promoted model sets a size, a limit or a
+//! permission, so the rule is evidence, not authority.
+//!
+//! The rule, in the order it refuses. The round's registration cleared the
+//! skill bar. The platform's provider serves the packed artifact and scores
+//! every held-out row identically to the fit's own prediction — the ADR's
+//! "no second arithmetic", checked rather than assumed. Every production
+//! model on the same subject is rescored by the same provider on the same
+//! held-out rows, and the candidate's error is strictly lower than each;
+//! an incumbent this desk holds no artifact for cannot be rescored and
+//! blocks the promotion by name. Then, and only then,
+//! `Platform::promote_model` journals the promotion before the registry
+//! adopts it, retiring the incumbents it beat on the same record.
+//!
+//! What it still does not do: write the artifact. That is the composition
+//! root's, which puts the returned `<digest>.json` under its storage —
+//! `qip-deepbrain/src/main.rs`, beside the cycle line.
 //!
 //! It does not transfer across venues or asset classes. The board is keyed by
 //! regime and by nothing else; a precedent earned on one instrument is read
@@ -100,10 +121,12 @@
 //! instrument's, and that is the whole of what this module claims.
 
 use qip_ai::evaluation::DriftReport;
-use qip_ai::registry::{ModelCard, ModelRegistry};
+use qip_ai::registry::{ModelCard, ModelRegistry, ModelStage, PublishedArtifact};
+use qip_ai::serving::ModelArtifact;
 use qip_core::error::{Error, Result};
 use qip_core::{ObjectId, Timestamp};
 use qip_evolution::scoring::{Outcome, Scoreboard};
+use qip_kernel::Platform;
 use qip_kernel::central::models::{ModelRegistration, register_fit};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
@@ -111,7 +134,8 @@ use qip_training::dataset::TrainingDataset;
 use qip_training::distill::{Distillation, FidelityPolicy, StudentForm, distil};
 use qip_training::estimators::{DRIFT_BUCKETS, FeatureEstimators, StreamingDrift, degraded_models};
 use qip_training::job::TrainingSpec;
-use qip_training::local::{LocalTrainer, ModelFamily, SkillPolicy};
+use qip_training::local::{LocalTrainer, ModelFamily, SkillPolicy, TrainedTeacher};
+use qip_training::serve::InTreeProvider;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The features a bar-derived model reads, in the order the dataset carries
@@ -382,6 +406,103 @@ pub struct LearningRound {
     /// answer to "which model class works in this regime". `None` on a round
     /// that registered nothing.
     pub class_choice: Option<ClassChoice>,
+    /// What the promote stage did with this round's candidate, once the
+    /// engine asked (`LearningDesk::promote_candidate`). `None` on a round
+    /// that fitted nothing, or one a test drove without a platform.
+    pub promotion: Option<PromotionOutcome>,
+}
+
+/// The promote stage's answer for one round's candidate.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PromotionOutcome {
+    /// The candidate beat every incumbent on the held-out rows and the
+    /// platform journalled the promotion.
+    Promoted {
+        reference: String,
+        /// The digest-named artifact for the composition root to write.
+        published: PublishedArtifact,
+        /// `DistilledModel::digest()` of the student the manifest names,
+        /// where the fidelity policy admitted one.
+        distilled: Option<String>,
+        /// The production references this promotion retired.
+        displaced: Vec<String>,
+        /// Root-mean-square error of the candidate on the held-out rows, as
+        /// the provider served it. A statistic (`f64`), never money.
+        candidate_rmse: f64,
+        /// The best incumbent's error on the same rows, where one stood.
+        incumbent_rmse: Option<f64>,
+        holdout_rows: usize,
+    },
+    /// The candidate stays at development stage, and why.
+    NotPromoted { reference: String, reason: String },
+}
+
+impl PromotionOutcome {
+    pub fn reference(&self) -> &str {
+        match self {
+            Self::Promoted { reference, .. } | Self::NotPromoted { reference, .. } => reference,
+        }
+    }
+
+    /// The artifact to write, on a promotion.
+    pub fn published(&self) -> Option<&PublishedArtifact> {
+        match self {
+            Self::Promoted { published, .. } => Some(published),
+            Self::NotPromoted { .. } => None,
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Promoted {
+                reference,
+                published,
+                distilled,
+                displaced,
+                candidate_rmse,
+                incumbent_rmse,
+                holdout_rows,
+            } => format!(
+                "promoted {reference} as {} (rmse {candidate_rmse:.6} on {holdout_rows} held-out \
+                 row(s){}), {}, {}",
+                published.file_name,
+                match incumbent_rmse {
+                    Some(rmse) => format!(" against the incumbent's {rmse:.6}"),
+                    None => " with no incumbent to beat".to_string(),
+                },
+                match distilled {
+                    Some(digest) => format!("distillate {digest} named to the cells"),
+                    None => "no distillate admitted so nothing is named to the cells".to_string(),
+                },
+                if displaced.is_empty() {
+                    "nothing displaced".to_string()
+                } else {
+                    format!("displaced {}", displaced.join(", "))
+                }
+            ),
+            Self::NotPromoted { reference, reason } => {
+                format!("{reference} not promoted: {reason}")
+            }
+        }
+    }
+}
+
+/// The candidate a round fitted, held until the engine asks the platform's
+/// provider to rescore it and every incumbent on the same held-out rows.
+///
+/// Held rather than promoted inside `learn`, because the desk fits without
+/// a platform in hand — its own tests drive it that way — and the provider
+/// is the platform's (ADR 0083 §4). One candidate at a time: a round that
+/// fits replaces the last, and a round that does not fit clears it, so a
+/// stale candidate can never be promoted against a newer window's rows.
+#[derive(Clone, Debug)]
+struct PromotionCandidate {
+    subject: String,
+    passed_skill_bar: bool,
+    teacher: TrainedTeacher,
+    distillation: Option<Distillation>,
+    /// The holdout tail the fit was scored on and the student was probed on.
+    holdout: TrainingDataset,
 }
 
 impl LearningRound {
@@ -398,6 +519,7 @@ impl LearningRound {
             distillation_refusal: None,
             campaign: None,
             refused_by_door: Some(reason.into()),
+            promotion: None,
             class_choice: None,
         }
     }
@@ -465,9 +587,13 @@ impl LearningRound {
                 self.drifted_features().len()
             )
         };
+        let promotion = match &self.promotion {
+            Some(outcome) => format!("; {}", outcome.describe()),
+            None => String::new(),
+        };
         format!(
             "learning: {registered}{class}; {} model(s) measured for drift, {} \
-             ineligible{unattributed}{degraded}{distilled}{campaign}",
+             ineligible{unattributed}{degraded}{distilled}{promotion}{campaign}",
             self.drift.len(),
             self.ineligible.len()
         )
@@ -508,6 +634,8 @@ pub struct LearningStats {
     /// Kept separately from `rounds`, which counts fits attempted: a node
     /// refused every round and a node that never came due read differently.
     pub refused_at_door: u64,
+    /// Rounds whose candidate the promote stage promoted.
+    pub promoted: u64,
 }
 
 /// Fits models from observed bars and watches the ones it has fitted age.
@@ -515,6 +643,16 @@ pub struct LearningDesk {
     config: LearningConfig,
     policy: SkillPolicy,
     registry: ModelRegistry,
+    /// This round's candidate for the promote stage; see
+    /// [`PromotionCandidate`].
+    candidate: Option<PromotionCandidate>,
+    /// The artifact of every model this desk promoted, by reference, so an
+    /// incumbent can be rescored on a later candidate's held-out rows by
+    /// the same provider. Bounded by the registry: a displaced reference is
+    /// dropped when its promotion record names it displaced. An incumbent
+    /// absent here — a card promoted by a process this desk did not run —
+    /// blocks a promotion by name rather than being assumed beaten.
+    promoted_artifacts: BTreeMap<String, ModelArtifact>,
     /// Per registered model, the feature columns it was fitted on and the
     /// instrument those columns are of.
     ///
@@ -595,6 +733,8 @@ impl LearningDesk {
             config,
             policy: SkillPolicy::default(),
             registry: ModelRegistry::new(),
+            candidate: None,
+            promoted_artifacts: BTreeMap::new(),
             reference: BTreeMap::new(),
             stream_reference: BTreeMap::new(),
             classes: Scoreboard::models(),
@@ -667,6 +807,150 @@ impl LearningDesk {
             return Ok(None);
         }
         Ok(Some(self.learn(subject, bars, regime, now)?))
+    }
+
+    /// The promote stage for the last round's candidate (blueprint §21.2,
+    /// ADR 0083 §5), against the platform's provider.
+    ///
+    /// `Ok(None)` when no round has fitted since the last call. Every
+    /// refusal short of an `Err` is a [`PromotionOutcome::NotPromoted`]
+    /// naming its reason, because a candidate that stays at development
+    /// stage is a fact for the round line and not a failure of the node
+    /// loop. An `Err` is a held-out row the fit itself could not score,
+    /// which is a defect in the fit rather than a verdict on it.
+    pub fn promote_candidate(
+        &mut self,
+        platform: &mut Platform,
+        now: Timestamp,
+    ) -> Result<Option<PromotionOutcome>> {
+        let Some(candidate) = self.candidate.take() else {
+            return Ok(None);
+        };
+        let reference = candidate.teacher.reference();
+        let not_promoted = |reason: String| {
+            Ok(Some(PromotionOutcome::NotPromoted {
+                reference: reference.clone(),
+                reason,
+            }))
+        };
+        if !candidate.passed_skill_bar {
+            return not_promoted("it did not clear the skill bar on its own holdout".to_string());
+        }
+        let artifact = InTreeProvider::pack(&candidate.teacher)?;
+        let served = match platform.serve_model(&artifact) {
+            Ok(served) => served,
+            Err(error) => return not_promoted(error.message().to_string()),
+        };
+        let rows = candidate.holdout.rows();
+        let targets = candidate.holdout.targets();
+        if rows.is_empty() {
+            return not_promoted("its holdout tail holds no row to score it on".to_string());
+        }
+        // ADR 0083's "no second arithmetic", checked: the provider's score
+        // on every held-out row is the fit's own prediction, exactly. A
+        // provider whose arithmetic differed by an ulp would be a second
+        // implementation of the model, and the promotion refuses it.
+        let mut candidate_scores = Vec::with_capacity(rows.len());
+        for (index, row) in rows.iter().enumerate() {
+            let own = candidate.teacher.predict(row)?;
+            let score = match served.score(row) {
+                Ok(score) => score,
+                Err(error) => return not_promoted(error.message().to_string()),
+            };
+            if score.to_bits() != own.to_bits() {
+                return not_promoted(format!(
+                    "the provider scored held-out row {index} at {score} where the fit \
+                     predicts {own}; a served model that disagrees with the function it \
+                     claims to be is not the model that was evaluated"
+                ));
+            }
+            candidate_scores.push(score);
+        }
+        let candidate_rmse = rmse(&candidate_scores, targets);
+        // Every production model on this subject, rescored by the same
+        // provider on the same rows. Strictly lower error or nothing: on a
+        // tie the incumbent keeps its place, which is the fail-closed
+        // direction for a rule with no person behind it.
+        let incumbents: Vec<String> = self
+            .registry
+            .iter()
+            .filter(|card| card.stage == ModelStage::Production)
+            .filter(|card| card_subject(card) == Some(candidate.subject.as_str()))
+            .map(ModelCard::reference)
+            .collect();
+        let mut best_incumbent: Option<f64> = None;
+        for incumbent in &incumbents {
+            let Some(held) = self.promoted_artifacts.get(incumbent) else {
+                return not_promoted(format!(
+                    "incumbent {incumbent} stands in production and this desk holds no \
+                     artifact to rescore it with; a candidate cannot be shown better than a \
+                     model nobody can score"
+                ));
+            };
+            let served_incumbent = match platform.serve_model(held) {
+                Ok(served) => served,
+                Err(error) => return not_promoted(error.message().to_string()),
+            };
+            let mut scores = Vec::with_capacity(rows.len());
+            for row in rows {
+                match served_incumbent.score(row) {
+                    Ok(score) => scores.push(score),
+                    Err(error) => return not_promoted(error.message().to_string()),
+                }
+            }
+            let incumbent_rmse = rmse(&scores, targets);
+            // Strictly less, and written as a `partial_cmp` rather than as
+            // `>=` because the two differ on the case that matters: an
+            // incomparable pair. `candidate >= incumbent` is *false* when
+            // either error is NaN, so the `>=` form would promote a
+            // candidate whose error could not be computed; this form
+            // promotes only on a definite `Less` and refuses everything
+            // else, which is the fail-closed direction for a rule with no
+            // person behind it.
+            if !matches!(
+                candidate_rmse.partial_cmp(&incumbent_rmse),
+                Some(std::cmp::Ordering::Less)
+            ) {
+                return not_promoted(format!(
+                    "incumbent {incumbent} scores rmse {incumbent_rmse:.6} on the {} held-out \
+                     row(s) and the candidate {candidate_rmse:.6}; a candidate that is not \
+                     strictly better keeps the incumbent in place",
+                    rows.len()
+                ));
+            }
+            best_incumbent =
+                Some(best_incumbent.map_or(incumbent_rmse, |best| best.min(incumbent_rmse)));
+        }
+        let student = candidate.distillation.as_ref().and_then(|distillation| {
+            distillation
+                .approved_student(&FidelityPolicy::default())
+                .ok()
+        });
+        let published = match platform.promote_model(
+            &mut self.registry,
+            &artifact,
+            student,
+            &incumbents,
+            now,
+        ) {
+            Ok(published) => published,
+            Err(error) => return not_promoted(error.message().to_string()),
+        };
+        for incumbent in &incumbents {
+            self.promoted_artifacts.remove(incumbent);
+        }
+        self.promoted_artifacts
+            .insert(reference.clone(), artifact.clone());
+        self.stats.promoted += 1;
+        Ok(Some(PromotionOutcome::Promoted {
+            reference,
+            published,
+            distilled: student.map(|model| model.digest()),
+            displaced: incumbents,
+            candidate_rmse,
+            incumbent_rmse: best_incumbent,
+            holdout_rows: rows.len(),
+        }))
     }
 
     /// Whether the cadence says a round runs this cycle. Split from
@@ -852,6 +1136,10 @@ impl LearningDesk {
                 // than propagated, so one unfittable subject does not stop
                 // the node.
                 Err(error) => {
+                    // A round that could not fit leaves no candidate, so the
+                    // engine's promote step cannot promote the previous
+                    // window's fit against this one.
+                    self.candidate = None;
                     return Ok(LearningRound {
                         subject: subject.as_str().to_string(),
                         registration: None,
@@ -864,6 +1152,7 @@ impl LearningDesk {
                         campaign: None,
                         refused_by_door: None,
                         class_choice: None,
+                        promotion: None,
                     });
                 }
             };
@@ -887,6 +1176,7 @@ impl LearningDesk {
             campaign: None,
             refused_by_door: None,
             class_choice,
+            promotion: None,
         })
     }
 
@@ -1069,19 +1359,46 @@ impl LearningDesk {
         // teacher's training set, not how well it tracks the teacher's
         // actual behaviour -- the same reason the fit itself is scored on a
         // holdout rather than in sample.
-        let (distillation, distillation_refusal) =
-            match dataset.split_at_fraction(spec.holdout_fraction) {
-                Ok((_, probe)) => {
-                    match distil(&teacher, &probe, StudentForm::Linear { ridge: 1e-3 }, 0.0) {
-                        Ok(distillation) => (Some(distillation), None),
-                        Err(error) => (None, Some(error.message().to_string())),
-                    }
-                }
+        let probe = dataset
+            .split_at_fraction(spec.holdout_fraction)
+            .map(|(_, probe)| probe);
+        let (distillation, distillation_refusal) = match &probe {
+            Ok(probe) => match distil(&teacher, probe, StudentForm::Linear { ridge: 1e-3 }, 0.0) {
+                Ok(distillation) => (Some(distillation), None),
                 Err(error) => (None, Some(error.message().to_string())),
-            };
+            },
+            Err(error) => (None, Some(error.message().to_string())),
+        };
+        // Held for the promote stage, which the engine runs with the
+        // platform in hand. A holdout the dataset could not split leaves no
+        // candidate: there are no rows to rescore an incumbent on, and a
+        // promotion decided on nothing is the thing this stage exists to
+        // refuse.
+        self.candidate = probe.ok().map(|holdout| PromotionCandidate {
+            subject: subject.as_str().to_string(),
+            passed_skill_bar: registration.passed,
+            teacher,
+            distillation: distillation.clone(),
+            holdout,
+        });
 
         Ok((registration, distillation, distillation_refusal, choice))
     }
+}
+
+/// Root-mean-square error of scores against targets, over the rows both
+/// have. A statistic over returns, `f64` throughout; nothing here is money.
+fn rmse(scores: &[f64], targets: &[f64]) -> f64 {
+    let n = scores.len().min(targets.len());
+    if n == 0 {
+        return f64::INFINITY;
+    }
+    let sum: f64 = scores
+        .iter()
+        .zip(targets)
+        .map(|(score, target)| (score - target).powi(2))
+        .sum();
+    (sum / n as f64).sqrt()
 }
 
 /// The largest population stability index across the features two samples
@@ -1223,6 +1540,196 @@ mod tests {
             },
             7,
         )
+    }
+
+    /// A platform serving through the in-tree provider, as the deep brain's
+    /// root assembles one (ADR 0083 §4).
+    fn serving_platform() -> Result<Platform> {
+        let config = qip_kernel::PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(at(), config.seed);
+        Platform::new_serving(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            qip_risk::limits::LimitSet::conservative_default(),
+            Box::new(InTreeProvider),
+        )
+    }
+
+    #[test]
+    fn a_skilled_candidate_is_promoted_against_no_incumbent_and_an_equal_successor_is_not()
+    -> Result<()> {
+        // The promote stage had no caller: the desk registered at development
+        // stage and said promotion was a governed act elsewhere. This drives
+        // the rule end to end — a fit that clears the skill bar is promoted
+        // through the platform's provider and journalled; a second fit of the
+        // same series is the same function, ties the incumbent on the same
+        // held-out rows and is refused by name; and a fit with no skill is
+        // refused before the provider is asked.
+        let mut desk = learning_desk();
+        let mut platform = serving_platform()?;
+        let bars = super::tests_support::learnable(400);
+
+        let first_round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the first round"))?;
+        let first_reference = first_round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        assert!(
+            first_round.registration.as_ref().is_some_and(|r| r.passed),
+            "premise: the first fit cleared the skill bar"
+        );
+        assert_eq!(
+            desk.registry().get(&first_reference).map(|card| card.stage),
+            Some(ModelStage::Development),
+            "premise: a registered card enters at development stage"
+        );
+        assert!(
+            platform.model_promotions().is_empty(),
+            "premise: nothing promoted yet"
+        );
+
+        let first = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate from the first round"))?;
+        let PromotionOutcome::Promoted {
+            reference,
+            incumbent_rmse,
+            distilled,
+            displaced,
+            ..
+        } = &first
+        else {
+            return Err(Error::invalid(format!(
+                "the first candidate was not promoted: {}",
+                first.describe()
+            )));
+        };
+        assert_eq!(reference, &first_reference);
+        assert_eq!(*incumbent_rmse, None, "there was no incumbent to score");
+        assert!(displaced.is_empty());
+        assert_eq!(
+            desk.registry().get(&first_reference).map(|card| card.stage),
+            Some(ModelStage::Production)
+        );
+        assert_eq!(platform.model_promotions().len(), 1);
+        assert_eq!(desk.stats().promoted, 1);
+        // What the cells are told agrees with what the fidelity policy
+        // admitted, in both directions. On this fixture the linear student
+        // of the linear teacher is *not* admitted — it reproduces 0.76 of
+        // the teacher's variation against the 0.80 bar and disagrees on
+        // 18.6% of decisions against the 5% tolerated, printed below so a
+        // reader need not re-derive it — so the promotion is advisory-only
+        // and the manifest refuses to produce; a fixture that admits one
+        // must land the distillate's own digest in the manifest.
+        let shortfalls = first_round
+            .distillation
+            .as_ref()
+            .map(|distillation| FidelityPolicy::default().shortfalls(distillation.fidelity()));
+        println!("fidelity shortfalls on this fixture: {shortfalls:?}");
+        match distilled {
+            Some(digest) => {
+                let manifest = platform.model_manifest()?;
+                assert_eq!(
+                    manifest
+                        .manifest()
+                        .models
+                        .values()
+                        .next()
+                        .map(String::as_str),
+                    Some(digest.as_str()),
+                    "the manifest does not name the promoted distillate by its own digest"
+                );
+                assert!(first.describe().contains("named to the cells"));
+            }
+            None => {
+                let refusal = platform
+                    .model_manifest()
+                    .err()
+                    .map(|error| error.message().to_string())
+                    .unwrap_or_default();
+                assert!(
+                    refusal.contains("1 advisory-only"),
+                    "an advisory-only promotion produced a manifest, or the refusal does not \
+                     count it: {refusal} (fidelity shortfalls: {shortfalls:?})"
+                );
+                assert!(
+                    first.describe().contains("nothing is named to the cells"),
+                    "{}",
+                    first.describe()
+                );
+            }
+        }
+
+        // The same series again: the same function under a new version.
+        // Equal error on the same rows is not strictly better, so the
+        // incumbent keeps its place and the refusal names it.
+        let second_round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 2, at())?
+            .ok_or_else(|| Error::not_found("the second round"))?;
+        let second_reference = second_round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a second registration"))?
+            .reference
+            .clone();
+        assert_ne!(second_reference, first_reference, "premise: a new version");
+        let second = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate from the second round"))?;
+        let PromotionOutcome::NotPromoted { reason, .. } = &second else {
+            return Err(Error::invalid(format!(
+                "an equal successor was promoted: {}",
+                second.describe()
+            )));
+        };
+        assert!(
+            reason.contains(&first_reference) && reason.contains("strictly better"),
+            "the refusal does not name the incumbent it tied: {reason}"
+        );
+        assert_eq!(
+            desk.registry().get(&first_reference).map(|card| card.stage),
+            Some(ModelStage::Production),
+            "the incumbent lost its place to a tie"
+        );
+        assert_eq!(
+            desk.registry()
+                .get(&second_reference)
+                .map(|card| card.stage),
+            Some(ModelStage::Development)
+        );
+        assert_eq!(
+            platform.model_promotions().len(),
+            1,
+            "a refused promotion was recorded"
+        );
+
+        // And nothing without skill reaches the provider at all.
+        let mut fresh = learning_desk();
+        let mut unserved = serving_platform()?;
+        let noise = super::tests_support::unlearnable(400);
+        let round = fresh
+            .maybe_learn(&subject(), &noise, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the noise round"))?;
+        assert!(
+            round.registration.as_ref().is_some_and(|r| !r.passed),
+            "premise: the noise fit did not clear the skill bar"
+        );
+        let outcome = fresh
+            .promote_candidate(&mut unserved, at())?
+            .ok_or_else(|| Error::not_found("a candidate from the noise round"))?;
+        assert!(
+            matches!(&outcome, PromotionOutcome::NotPromoted { reason, .. } if reason.contains("skill bar")),
+            "{}",
+            outcome.describe()
+        );
+        assert!(unserved.model_promotions().is_empty());
+        Ok(())
     }
 
     #[test]

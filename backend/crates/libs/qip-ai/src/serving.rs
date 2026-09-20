@@ -194,7 +194,7 @@ pub fn unserved_refusal(
 }
 
 /// A model a provider has loaded and will score. Off the hot path only.
-pub trait ServedModel: std::fmt::Debug {
+pub trait ServedModel: std::fmt::Debug + Send + Sync {
     /// The card reference the artifact named.
     fn reference(&self) -> &str;
     fn format(&self) -> ModelFormat;
@@ -212,7 +212,7 @@ pub trait ServedModel: std::fmt::Debug {
 }
 
 /// Where a served model comes from.
-pub trait ModelProvider: std::fmt::Debug {
+pub trait ModelProvider: std::fmt::Debug + Send + Sync {
     fn name(&self) -> &str;
     /// The formats this provider serves. A caller may check before asking.
     fn serves(&self) -> &[ModelFormat];
@@ -237,6 +237,48 @@ pub trait ModelProvider: std::fmt::Debug {
             ));
         }
         artifact.verify_digest()
+    }
+}
+
+/// The provider a platform holds when its composition root handed in none.
+///
+/// It serves nothing and says so with the same sentence every provider
+/// uses, naming itself, so a log line from a process assembled without a
+/// provider reads "the null provider does not serve `distilled_linear`"
+/// rather than a panic or a silent `None`. Fail-closed by construction: a
+/// `Platform` built through `Platform::new` promotes and serves no model
+/// until a root passes `qip_training::serve::InTreeProvider` through
+/// `Platform::with_model_provider`, and every test that does not care about
+/// serving gets exactly the platform every root had before ADR 0083.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NoProvider;
+
+impl NoProvider {
+    pub const NAME: &'static str = "the null provider";
+}
+
+impl ModelProvider for NoProvider {
+    fn name(&self) -> &str {
+        Self::NAME
+    }
+
+    fn serves(&self) -> &[ModelFormat] {
+        &[]
+    }
+
+    fn serve(&self, artifact: &ModelArtifact) -> Result<Box<dyn ServedModel>> {
+        // `admit` refuses every format, since this provider serves none;
+        // the `Err` branch is the only way out and the match makes that
+        // legible rather than relying on an unreachable `Ok`.
+        match self.admit(artifact) {
+            Err(refusal) => Err(refusal),
+            Ok(()) => Err(unserved_refusal(
+                &artifact.reference,
+                artifact.format.as_str(),
+                Self::NAME,
+                &[],
+            )),
+        }
     }
 }
 

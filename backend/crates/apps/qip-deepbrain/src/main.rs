@@ -215,14 +215,26 @@ fn run() -> Result<()> {
     // The limit set, read once here and never again: a bound reaches a
     // running process through this file and nothing else (ADR 0061).
     let (limits, limits_banner) = load_risk_limits()?;
-    let mut platform = Platform::with_language_model(
+    // The model provider (ADR 0083 §4), handed in here as the language
+    // model is: the in-tree provider serves the four forms this platform
+    // trains and nothing else, and the kernel's own constructor holds one
+    // that serves nothing, so a platform a test builds promotes no model.
+    let mut platform = Platform::with_model_provider(
         platform_config,
         context,
         telemetry,
         catalogue.universe,
         limits,
         language_model.chain.clone(),
+        Box::new(qip_training::serve::InTreeProvider),
     )?;
+    // Where a promoted model's artifact goes (ADR 0083 §5): the registry is
+    // a library and performs no I/O, `Platform::promote_model` hands back
+    // the digest-named bytes, and this root writes them under its own
+    // storage beside the event log that holds the promotion record. Opened
+    // before anything runs, so a store that cannot be opened stops the
+    // process rather than the first promotion.
+    let model_artifacts = config.storage.key_value(MODEL_ARTIFACTS_NAMESPACE)?;
 
     // The trust root, before anything is served: install the operator's
     // envelope key when the deployment provides one, and refuse to run
@@ -615,6 +627,25 @@ fn run() -> Result<()> {
             }
             if let Some(round) = &outcome.learning {
                 println!("  {}", round.describe());
+                // The artifact, written under the digest the promotion
+                // record names. A write that fails is printed and not
+                // swallowed: the promotion stands in the log either way,
+                // and an operator reading the cycle line must see that the
+                // file a deployment would carry is not where the record
+                // says it is.
+                if let Some(published) = round.promotion.as_ref().and_then(|p| p.published()) {
+                    match write_model_artifact(model_artifacts.as_ref(), published) {
+                        Ok(()) => println!(
+                            "  model artifact written: {MODEL_ARTIFACTS_NAMESPACE}/{}",
+                            published.file_name
+                        ),
+                        Err(error) => println!(
+                            "  model artifact NOT written ({}): {}",
+                            published.file_name,
+                            error.message()
+                        ),
+                    }
+                }
                 // Named individually, not summed. An operator needs to know
                 // *which* model has moved away from what it was fitted on, and
                 // which feature carried it there.
@@ -822,6 +853,26 @@ fn relabel(error: &Error, message: String) -> Error {
         Error::Guard(_) => Error::Guard(message),
         Error::Timeout(_) => Error::Timeout(message),
     }
+}
+
+/// The key-value namespace a promoted model's artifact is written under,
+/// beside `event-log`, `trial-book` and `universe` on the same storage.
+const MODEL_ARTIFACTS_NAMESPACE: &str = "model-artifacts";
+
+/// Write a promoted artifact under its digest-named key, as the JSON the
+/// registry rendered it in, so `ModelArtifact::from_json` reads it back and
+/// `verify_digest` can check the bytes against the name.
+fn write_model_artifact(
+    store: &dyn qip_storage::KeyValueStore,
+    published: &qip_ai::registry::PublishedArtifact,
+) -> Result<()> {
+    let value: serde_json::Value = serde_json::from_str(&published.contents).map_err(|error| {
+        Error::invalid(format!(
+            "the registry rendered {} as text that is not JSON: {error}",
+            published.file_name
+        ))
+    })?;
+    store.put(&published.file_name, value)
 }
 
 /// What this process will do, before it does any of it.
