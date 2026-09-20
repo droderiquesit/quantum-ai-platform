@@ -178,6 +178,10 @@ jobs:
           set -euo pipefail
           prefix="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/qip-${TARGET_ENVIRONMENT}"
           mirrored=0
+          # Destinations the CRITICAL gate refused. Collected rather than fatal
+          # at the first one, and the run fails on them after the loop; the
+          # scan below says why the difference is worth a variable.
+          refused=""
           while read -r source dest tag; do
             case "$source" in ""|\#*) continue ;; esac
             source_digest="${source#*@}"
@@ -220,11 +224,34 @@ jobs:
               --exit-code 0 \
               --ignore-unfixed \
               "$image"
-            trivy image \
+            # The blocking gate is recorded rather than fatal *on the spot*,
+            # and the run still fails at the end. Nothing is softened: an
+            # image that fails here is not attested, so Binary Authorization
+            # denies it wherever a manifest names it, and the job exits
+            # non-zero.
+            #
+            # What changes is that one refused image no longer starves the
+            # rest of the list. Under `set -euo pipefail` the first failing
+            # scan ended the whole step, and Argo CD is the first
+            # control-plane line — so redis, Kargo, cert-manager's three, the
+            # Config Connector operator and the google-cloud-cli were never
+            # copied at all. The registry then held no cert-manager images,
+            # and `infra.yml`'s bootstrap died on `deployment
+            # "cert-manager-webhook" exceeded its progress deadline`: a
+            # failure three steps downstream of its cause, naming a component
+            # that was never the problem.
+            #
+            # A gate that also decides which *other* images exist is two
+            # controls wearing one name. This is the second one removed.
+            if ! trivy image \
               --severity CRITICAL \
               --exit-code 1 \
               --ignore-unfixed \
-              "$image"
+              "$image"; then
+              echo "::error title=CRITICAL finding::${dest} (${source}) fails the CRITICAL gate; mirrored, not attested."
+              refused="${refused} ${dest}"
+              continue
+            fi
 
             # The index digest, and every platform manifest under it.
             #
@@ -271,6 +298,20 @@ jobs:
             done
             mirrored=$((mirrored + 1))
           done < infrastructure/egress/vendored-images.txt
+          # The refusal check comes before the empty-run check, because a list
+          # whose every line was refused also mirrors nothing and would
+          # otherwise be reported as a parse regression — the wrong cause,
+          # stated confidently.
+          if [ -n "${refused}" ]; then
+            echo "the CRITICAL gate refused:${refused}" >&2
+            echo "Each was copied into the registry and deliberately not attested, so Binary" >&2
+            echo "Authorization denies it wherever a manifest names it. Every other line was" >&2
+            echo "mirrored and attested normally, which is the whole reason a refusal is" >&2
+            echo "collected here rather than fatal at the first finding." >&2
+            echo "Resolve by removing the vulnerable bytes: a newer upstream digest, or a" >&2
+            echo "derived image this pipeline builds, scans and attests. Never an ignore file." >&2
+            exit 1
+          fi
           # An empty run means the list parsed to nothing, which is far more
           # likely a format regression than a decision to vendor nothing.
           [ "$mirrored" -gt 0 ] || { echo "no images were mirrored; the list parsed to nothing." >&2; exit 1; }

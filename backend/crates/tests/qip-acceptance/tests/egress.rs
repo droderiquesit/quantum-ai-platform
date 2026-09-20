@@ -1937,6 +1937,104 @@ fn the_vendor_workflow_attests_every_platform_manifest_and_not_only_the_index() 
 }
 
 #[test]
+fn one_image_the_critical_gate_refuses_fails_the_run_and_starves_no_other_line() {
+    // This has already cost a day, and the shape of the cost is the point.
+    //
+    // The blocking scan is `--exit-code 1` inside a `set -euo pipefail`
+    // script, so the first refused image ended the *whole* step. Argo CD is
+    // the first control-plane line in `vendored-images.txt`, and it fails on
+    // CVE-2025-68121 in two bundled third-party binaries — so redis, Kargo,
+    // cert-manager's three images, the Config Connector operator and the
+    // google-cloud-cli were never copied at all. The registry held no
+    // cert-manager images, and `infra.yml`'s bootstrap then died on
+    // `deployment "cert-manager-webhook" exceeded its progress deadline`:
+    // a failure three steps downstream of its cause, naming a component
+    // that was never the problem.
+    //
+    // A gate that also decides which *other* images exist is two controls
+    // wearing one name. This pins the separation — and pins, just as hard,
+    // that the gate itself did not get softer in the process.
+    let vendor = read(".github/workflows/vendor.yml");
+
+    // Premise first. If the blocking scan has stopped blocking, everything
+    // below is a test about a gate that no longer gates, and it would pass.
+    let blocking = vendor
+        .split_once("--severity CRITICAL \\")
+        .expect("vendor.yml still runs a CRITICAL-only scan")
+        .1;
+    let blocking_end = blocking
+        .find("\"$image\"")
+        .expect("the CRITICAL scan names the image");
+    assert!(
+        blocking[..blocking_end].contains("--exit-code 1"),
+        "vendor.yml's CRITICAL scan no longer exits non-zero on a finding; the gate has been \
+         softened, which is the one change this test exists to refuse"
+    );
+
+    // The refusal is collected and the run fails on it after the loop.
+    assert!(
+        vendor.contains("if ! trivy image") && vendor.contains("refused=\"${refused} ${dest}\""),
+        "vendor.yml no longer collects a refused image; the first finding ends the step again \
+         and every later line in the list goes unmirrored"
+    );
+    assert!(
+        vendor.contains("if [ -n \"${refused}\" ]; then") && {
+            let tail = vendor
+                .split_once("if [ -n \"${refused}\" ]; then")
+                .unwrap()
+                .1;
+            let end = tail.find("\n          fi").unwrap_or(tail.len());
+            tail[..end].contains("exit 1")
+        },
+        "vendor.yml collects refusals and then does not fail the run on them, which is worse \
+         than the behaviour it replaced: the gate would report and admit"
+    );
+
+    // A refused image must not be attested. The `continue` is what holds
+    // that, and without it the loop falls through to sign-and-create.
+    let refusal = vendor
+        .split_once("if ! trivy image")
+        .expect("the guarded scan exists")
+        .1;
+    let branch_end = refusal
+        .find("\n            fi")
+        .expect("the refusal branch closes");
+    assert!(
+        refusal[..branch_end].contains("continue"),
+        "vendor.yml records a refused image and then carries on into the attestation; a \
+         refused image signed is a refused image admitted, which is the whole gate undone"
+    );
+
+    // And no suppression has crept in beside the separation. These are the
+    // spellings that would turn this from a fix into a blindfold, and
+    // `vendor.yml`'s own header records that an acknowledgement file once
+    // existed and covered exactly the findings still open today.
+    //
+    // Read from the commands, not the file: the first draft asserted over
+    // the whole text and failed on `acknowledgement` in the very paragraph
+    // explaining that the acknowledgement file had been *removed*. A check
+    // that matches its own documentation reports a violation nobody
+    // committed, and the obvious repair — deleting the word from the prose —
+    // would have paid for the test by making the file explain itself less.
+    let commands = without_comments(&vendor);
+    for blindfold in [
+        ".trivyignore",
+        "--ignorefile",
+        "--ignore-policy",
+        "--skip-files",
+        "--skip-dirs",
+        "acknowledge",
+    ] {
+        assert!(
+            !commands.contains(blindfold),
+            "vendor.yml names `{blindfold}`; a finding is resolved by removing the vulnerable \
+             bytes — a newer upstream digest, or a derived image this pipeline builds and \
+             attests — never by telling the scanner to look away"
+        );
+    }
+}
+
+#[test]
 fn the_health_listener_is_the_only_wide_bind_and_it_forwards_nowhere() {
     // The trade this file makes, held in one place. `health` binds 0.0.0.0
     // because Cloud Run probes it from outside the container's namespace, and
