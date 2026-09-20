@@ -67,7 +67,7 @@ pub use config::{EventLogDestination, PlatformConfig};
 pub use cycle::{CycleReport, Stage, StageOutcome};
 pub use model_serving::{DistilledManifestEntry, ModelManifestIssue, ModelPromotion};
 pub use platform::{
-    ChainAbsorption, CycleJournalEntry, Platform, RecordedPrediction, SourceAssessment,
-    UniverseAssembled,
+    CapitalGrantEntry, ChainAbsorption, CycleJournalEntry, Platform, RecordedPrediction,
+    SourceAssessment, UniverseAssembled,
 };
 pub use valuation::CreditRegister;
