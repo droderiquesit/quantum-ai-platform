@@ -923,6 +923,20 @@ fn every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent() {
             "/ledger/commitments/:commitment/capital-calls/:reference",
         ),
         ("Post", "/venues/:venue/reinstatements"),
+        // The fourteenth (ADR 0075; blueprint §36.3): the capital grant,
+        // admitted on the promotion's four grounds and one more that is the
+        // grant's own. The approver is the session and the body is screened
+        // by the promotion's own `PromotionApprovalRequest::parse`, a
+        // rationale and nothing else. Two distinct people, held and refused
+        // in the kernel exactly as the promotion is, and both dated by the
+        // presence gate so the route refuses in fact in this build. The pair
+        // authorise an attempt: `CentralPlane::issue` re-runs the allocator
+        // and can refuse the rung, the size or a dark region. And the fifth
+        // ground: what two signatures produce is an envelope the *allocator*
+        // sized — the route carries no amount, no cell and no venue, so a
+        // caller can name nothing about the grant but the strategy in the
+        // path, and the envelope bounds paper orders at a simulated desk.
+        ("Post", "/strategies/:strategy/capital-grants"),
     ]
     .into_iter()
     .map(|(method, pattern)| (method.to_string(), pattern.to_string()))
@@ -1238,6 +1252,20 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         // the removal itself, and every signature is journaled before
         // anything moves.
         "reinstate_venue",
+        // `issue_capital` — the operator signature that asks the central
+        // plane to issue a capital envelope (ADR 0075; blueprint §36.3),
+        // admitted on the same terms as `approve_promotion`: the approver is
+        // the session's and the body cannot carry one; it needs two
+        // different people, held and refused in the kernel; the subject is
+        // a strategy the allocator already sizes, so a strategy below pilot
+        // or with no proposal is refused before a signature is held; and the
+        // pair authorise an attempt the plane may refuse. `&mut` is for the
+        // journal, the pending-signature table and the plane's own issue,
+        // which is journalled as the pair's decision before it is asked and
+        // as the outcome after. Nothing here can name an amount: the
+        // envelope is whatever the allocator sized under the platform's own
+        // drawdown, and it bounds paper orders at a simulated desk.
+        "issue_capital",
         "decide_eligibility",
         // `expect_inflow` and `cancel_inflow` — the §40.12 declaration and
         // its withdrawal (ADR 0085), the same class as `decide_eligibility`

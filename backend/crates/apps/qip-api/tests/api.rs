@@ -2197,6 +2197,11 @@ const OPERATOR_CALLS: &[(Method, &str, &str)] = &[
     ),
     (
         Method::Post,
+        "/strategies/strat-1/capital-grants",
+        r#"{"rationale":"the pilot gate passed and the allocator sized it inside the budget"}"#,
+    ),
+    (
+        Method::Post,
         "/risk/recalibrations/max-leverage/approvals",
         r#"{"rationale":"the bound was measured against three months of realised gross"}"#,
     ),
@@ -2300,6 +2305,86 @@ fn every_mutating_operator_route_is_either_gated_on_presence_or_named_as_needing
             route.pattern
         );
     }
+    Ok(())
+}
+
+/// The capital-grant route (ADR 0075; blueprint §36.3), proven from both
+/// sides: refused on the role below operator, refused on presence at the
+/// operator — on the gate's own sentence — and refused on a body that names
+/// an approver, with nothing journalled and no envelope issued by any of
+/// them. The presence walk above covers the operator half for every route;
+/// this one is here because the grant is the route whose successful outcome
+/// is capital behind a strategy, and its refusals deserve to be read one by
+/// one.
+#[test]
+fn a_capital_grant_is_refused_below_operator_on_presence_at_operator_and_on_a_body_naming_an_approver()
+-> Result<()> {
+    let assembled = assemble()?;
+    let api = assembled.api.clone();
+    let path = "/api/v1/strategies/strat-1/capital-grants";
+    let body = r#"{"rationale":"the pilot gate passed and the allocator sized it inside the budget"}"#;
+
+    // Premise: the route is in the table at operator, and a viewer's token
+    // is live for a route it may read.
+    let route = ROUTES
+        .iter()
+        .find(|route| route.pattern == "/strategies/:strategy/capital-grants")
+        .expect("the capital-grant route is in the table");
+    assert_eq!(route.required_role, Role::Operator);
+    assert_eq!(
+        api.handle(&with_body(Method::Get, "/api/v1/wallet", Some("viewer-token"), ""))
+            .status,
+        200,
+        "premise: the viewer's credential is live"
+    );
+
+    let response = api.handle(&with_body(Method::Post, path, Some("viewer-token"), body));
+    let text = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 403, "{text}");
+    assert!(
+        text.contains("requires the operator role") && !text.contains(NO_PRESENCE),
+        "the viewer must be refused on the role and not further in: {text}"
+    );
+
+    let response = api.handle(&with_body(Method::Post, path, Some("operator-token"), body));
+    let text = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 403, "{text}");
+    assert!(text.contains(NO_PRESENCE), "{text}");
+
+    // A body naming an approver is refused by position, before the
+    // presence gate: the screen is what keeps a caller from naming the
+    // person accountable, and it must not be reachable only past a gate
+    // that today refuses everyone.
+    let named = r#"{"approver":"somebody.else","rationale":"the pilot gate passed and the allocator sized it"}"#;
+    let response = api.handle(&with_body(Method::Post, path, Some("operator-token"), named));
+    let text = String::from_utf8_lossy(&response.body).into_owned();
+    assert_eq!(response.status, 400, "{text}");
+    assert!(
+        text.contains("position 1") && !text.contains("somebody.else"),
+        "the screen must refuse by position and never echo the key: {text}"
+    );
+
+    // Nothing written and nothing issued by any of the three.
+    let platform = assembled
+        .platform
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+        platform
+            .event_log()
+            .records()
+            .iter()
+            .filter(|record| record.event.lineage.producer == "kernel/capital-grant")
+            .count(),
+        0,
+        "a refused request reached the event log"
+    );
+    assert!(
+        platform
+            .pending_capital_grant(&qip_contracts::StrategyId::new("strat-1"))
+            .is_none(),
+        "a refused request left a first signature standing"
+    );
     Ok(())
 }
 
