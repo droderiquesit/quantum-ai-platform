@@ -282,6 +282,27 @@ HASH_COMMENT_SUFFIXES = (
 )
 
 
+def code_lines(lines):
+    """The lines of a grep's output that are code rather than prose.
+
+    A line `hit_text` cannot parse counts as code, and that test comes first,
+    because `is_comment_line` cannot read a text that is not there. Written the
+    other way round — `not is_comment_line(*hit_text(line)) or hit_text(line)
+    == (None, None)` — Python evaluates the call before the guard meant to
+    protect it, and the whole audit dies with a `TypeError` on the first row
+    whose command prints something no grep shape matches. That is not
+    hypothetical: §43.4 cites a `... | wc -l` whose output is a bare count, and
+    this tool crashed on every register that carried that row rather than
+    reporting the rows it had already checked.
+    """
+    kept = []
+    for line in lines:
+        path, text = hit_text(line)
+        if text is None or not is_comment_line(path, text):
+            kept.append(line)
+    return kept
+
+
 def is_comment_line(path, text):
     """Whether `text`, read as a line of `path`, is prose rather than code.
 
@@ -573,6 +594,22 @@ def self_test():
         for name, hit, want in shape_cases:
             check(f"shape {name}", hit_text(hit), want)
 
+        # The filter over a whole grep output, because its two helpers are
+        # each correct and the order it called them in was not. A `wc -l`
+        # count matches no grep shape, and reading it as prose — or asking
+        # the comment rule to read a text that is not there — loses the row.
+        filter_cases = [
+            ("count is code", ["5"], ["5"]),
+            ("comment dropped", ["crates/a/src/lib.rs:1:/// a note"], []),
+            ("code kept", ["crates/a/src/lib.rs:1:    foo();"],
+             ["crates/a/src/lib.rs:1:    foo();"]),
+            ("mixed", ["0", "crates/a/src/lib.rs:1:/// a note",
+                       "crates/a/src/lib.rs:2:    foo();"],
+             ["0", "crates/a/src/lib.rs:2:    foo();"]),
+        ]
+        for name, lines, want in filter_cases:
+            check(f"filter {name}", code_lines(lines), want)
+
     # A retraction appended after the command it retracts. §40.5's real text,
     # trimmed: without this the row reads as stale while it is correcting
     # itself, and with a rule that ignored the token check, the unrelated
@@ -669,12 +706,7 @@ def main():
             # alphabetical, so a row whose one real hit sat in a file late in
             # the walk was shown as three doc comments and read as noise.
             lines = output.splitlines()
-            code = [
-                line
-                for line in lines
-                if not is_comment_line(*hit_text(line))
-                or hit_text(line) == (None, None)
-            ]
+            code = code_lines(lines)
             head = "\n".join(code[:3] if code else lines[:3])
             remainder = (len(code) if code else len(lines)) - 3
             if remainder > 0:
