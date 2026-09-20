@@ -532,6 +532,32 @@ pub struct RefusedSource {
 /// central bank that publishes option-*implied* series (the Bank of England,
 /// under the Open Government Licence) publishes a model output the ADR's
 /// requirement 2 refuses as the engine's input regardless of its licence.
+///
+/// # A fourth source that could not be read: the SEC's EDGAR (2026-09-20)
+///
+/// The public-domain route *should* exist for §7.1's Corporate class — the
+/// SEC's EDGAR filings are a work of the United States Government — and it
+/// was tried, on the NWS precedent, as the text producer
+/// `qip_market_ingestion::narrative` has never had. The gate before any
+/// code is to read the SEC's own terms and fair-access policy from sec.gov,
+/// and they could not be read: four attempts between 08:41Z and 08:55Z,
+/// three `User-Agent` shapes (never a personal address), every page
+/// including `robots.txt`, all answered `403` by the SEC's own edge with a
+/// page titled "Request Rate Threshold Exceeded" whose body reads, verbatim,
+/// "Automated access to our sites must comply with SEC.gov's Privacy and
+/// Security Policy" and points to `www.sec.gov/developer` for "Fair Access
+/// guidelines". The session's outbound proxy shares one egress address and
+/// that address was over the SEC's threshold before the first request.
+///
+/// So EDGAR is in the same state as Bybit and Binance above: nothing was
+/// read, so it is neither refused here nor admissible, and no connector was
+/// written for it — the ordering the data rule demands. Two facts for the
+/// retry, from the SEC's own page rather than from its terms: the policy
+/// requires a *declared* `User-Agent` carrying company and contact
+/// information, which `qip_transport`'s fixed `user-agent` cannot carry
+/// (the NWS entry records the same limit, where it was a recommendation
+/// rather than a requirement); and the request-rate ceiling, once read, is
+/// a manifest fact the connector must refuse to run without.
 pub fn refusals() -> Vec<RefusedSource> {
     vec![
         RefusedSource {
