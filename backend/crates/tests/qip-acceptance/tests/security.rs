@@ -2698,7 +2698,7 @@ const RETURN_TYPE_PROBES: [(&str, bool); 6] = [
 /// exclusion is invisible at review time — it is how the three previous
 /// versions of this scan came to guard nothing — whereas a row with a wrong
 /// reason is something a reader can argue with.
-const REVIEWED_WEIGHT_MOVERS: [(&str, &str, &str); 11] = [
+const REVIEWED_WEIGHT_MOVERS: [(&str, &str, &str); 12] = [
     (
         "apps/qip-cli/src/demo/mod.rs",
         "cycle",
@@ -2738,8 +2738,22 @@ const REVIEWED_WEIGHT_MOVERS: [(&str, &str, &str); 11] = [
         "runtime/qip-kernel/src/central/plane.rs",
         "issue",
         "the only writer of a capital envelope, refusing a rung that holds no capital and a \
-         strategy with no proposal; ADR 0064's first blocker is that it is reached from nothing \
-         but a test",
+         strategy with no proposal. ADR 0064's first blocker was that it is reached from \
+         nothing but a test; that is no longer true — `Platform::issue_capital` below is its \
+         production caller as of 2026-09-20 — and what still holds is that no family figure \
+         reaches it: the size is the allocator's, under the platform's own drawdown, and the \
+         two signatures authorise an attempt at that size and cannot name another",
+    ),
+    (
+        "runtime/qip-kernel/src/platform.rs",
+        "issue_capital",
+        "the operator intent that calls `CentralPlane::issue` — ADR 0075's route, two \
+         signatures from two people, each dated by the presence gate. It moves a weight in \
+         exactly one direction and cannot choose it: the envelope is whatever the allocator \
+         sized under the platform's own drawdown, the route carries no amount, cell or venue, \
+         and a caller names only the strategy in the path. No family figure reaches it — ADR \
+         0086 decides that a correlation family may become a cap and never a weight — and the \
+         plane still refuses the rung, the allocation and a dark region on the same call",
     ),
     (
         "runtime/qip-kernel/src/central/plane.rs",
