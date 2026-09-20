@@ -612,6 +612,15 @@ jobs:
                               --project "$one" --location "$two" --keyring "$three") ;;
                 bucket)  ask=(gcloud storage buckets describe "gs://${two}"
                               --project "$one") ;;
+                # Identity Platform's configuration cannot be deleted and the
+                # API stays on through a teardown by decision, so an `up` over
+                # a rebuilt environment is refused outright rather than
+                # colliding on a name. `services list` is the proxy the script
+                # documents: it answers whether the API is on, which is the
+                # first half of "a configuration exists". Standard gcloud, the
+                # same surface the other probes use.
+                identity) ask=(gcloud services list --enabled --project "$one"
+                               --filter=config.name:identitytoolkit.googleapis.com) ;;
                 *) echo "no probe for ${kind} at ${address}" >&2; exit 1 ;;
               esac
               if "${ask[@]}" --format='value(name)' >/dev/null 2>"$denial" </dev/null; then

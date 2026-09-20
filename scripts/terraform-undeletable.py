@@ -60,7 +60,20 @@ KEY_RING_PATH = re.compile(r"^projects/([^/]+)/locations/([^/]+)/keyRings/([^/]+
 # parse. It is the one resource in this category the teardown's own list has
 # never named, and the one an `up` would hit first, because every crypto key
 # hangs off it.
-NAME_SURVIVES_DESTRUCTION = ("google_kms_key_ring", "google_kms_crypto_key")
+NAME_SURVIVES_DESTRUCTION = (
+    "google_kms_key_ring",
+    "google_kms_crypto_key",
+    # Identity Platform's configuration is one per project and cannot be
+    # deleted at all: `modules/identity` keeps `identitytoolkit.googleapis.com`
+    # on through a destroy (`disable_on_destroy = false`, because tearing the
+    # API down would orphan the customer directory), and the configuration
+    # outlives the state that described it. A later create does not collide on
+    # a name the way a key ring does — it is refused outright, with
+    # `Error 400: INVALID_PROJECT_ID : Identity Platform has already been
+    # enabled for this project`, which is what stopped run 35523253654 after
+    # it had already built 173 resources.
+    "google_identity_platform_config",
+)
 
 # An object write is an overwrite, not a claim on a name: creating one over an
 # existing object of the same key succeeds. These appear in the teardown's list
@@ -157,6 +170,17 @@ def resolve(resource, project):
         )
     if kind == "google_storage_bucket":
         return f"bucket|{project}|{name}", f"{project}/{name}"
+    if kind == "google_identity_platform_config":
+        # One configuration per project, imported by the project id alone.
+        #
+        # The probe asks whether `identitytoolkit.googleapis.com` is enabled,
+        # which is a proxy and is named as one: the configuration exists once
+        # the API has been turned on and configured, and this asks only the
+        # first half. It is used because `gcloud services list` is the same
+        # surface every other step here already depends on, and because the
+        # failure mode of the proxy being wrong is a loud `terraform import`
+        # error rather than a resource quietly built twice.
+        return f"identity|{project}", project
     return None, f"this step has no way to ask Google whether a {kind} exists"
 
 
