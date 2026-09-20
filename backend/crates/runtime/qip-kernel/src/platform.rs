@@ -19058,6 +19058,273 @@ mod simulate_tests {
             (liquidation_cost / equity).max(0.0)
         );
     }
+
+    /// Seat one claim in the world model's graph, as the UNDERSTAND stage's
+    /// writer would, at full strength and confidence so the transmission is
+    /// exactly one and the expected loss below needs no second derivation.
+    fn claim(platform: &Platform, cause: &str, effect: &str) {
+        platform
+            .world
+            .update(|world| {
+                world.claim_causal(
+                    qip_world_model::causal::CausalEdge::new(
+                        cause,
+                        effect,
+                        qip_world_model::causal::Mechanism::DiscountRate,
+                        1.0,
+                        Duration::from_days(1),
+                        start(),
+                    )
+                    .expect("a strength in [0, 1] is admitted")
+                    .with_confidence(1.0)
+                    .expect("a confidence in [0, 1] is admitted"),
+                )
+            })
+            .expect("an edge naming both ends is admitted");
+    }
+
+    #[test]
+    fn a_shock_at_a_claimed_driver_reaches_a_position_the_factor_model_cannot_see() {
+        // Blueprint §23.7's third row: "a shock at a driver, propagated
+        // through mechanisms, reaching exposures no correlation would
+        // connect". The failure it closes is concrete: a position with no
+        // tape — a new listing, a private mark — has no beta, so every
+        // library scenario lists it `unmodelled` and it reads as immune to
+        // everything. If the world model holds a claim that a driver moves
+        // it, the graph can reach what the regression cannot.
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 80);
+        for (object, quantity) in [("AAPL", 100), ("PRIV-NEW", 1_000)] {
+            platform.capital.positions.insert(
+                object.to_string(),
+                PositionLot {
+                    quantity: Decimal::from_int(quantity),
+                    average_price: Decimal::from_int(100),
+                },
+            );
+        }
+        let driver = "policy-rate-shock";
+        claim(&platform, driver, "PRIV-NEW");
+
+        let outcome = platform.stage_simulate(start());
+        let stress = platform
+            .stress_report()
+            .expect("an open position is stressed");
+
+        // Premise: the library cannot see PRIV-NEW. Without this, a causal
+        // result reaching it would prove nothing the beta did not already.
+        assert_eq!(stress.unmodelled_positions, 1, "{}", outcome.detail);
+        let library_worst = stress.worst().expect("the library was applied");
+        assert!(
+            library_worst.unmodelled.iter().any(|id| id == "PRIV-NEW"),
+            "the factor model must not have a beta for the untaped position: {:?}",
+            library_worst.unmodelled
+        );
+
+        // Property: the one driver the graph holds is walked, reaches the
+        // book, and the untaped position loses exactly its notional times the
+        // standard driver shock at a transmission of one — 100,000 at 10% —
+        // whichever sign the mechanism carries, because both are tried and
+        // the worse kept.
+        assert_eq!(stress.causal_drivers, 1, "{}", outcome.detail);
+        assert_eq!(stress.causal_drivers_unconnected, 0);
+        let causal = stress
+            .worst_causal()
+            .expect("the claimed driver reaches a held position");
+        assert_eq!(causal.scenario, format!("causal:{driver}"));
+        let hit = causal
+            .positions
+            .iter()
+            .find(|impact| impact.object_id == "PRIV-NEW")
+            .expect("the propagation reached the untaped position");
+        let expected_loss = -100_000.0 * STANDARD_DRIVER_SHOCK;
+        assert!(
+            (hit.profit_and_loss - expected_loss).abs() < 1e-6,
+            "the loss through the graph is {} and not {expected_loss}",
+            hit.profit_and_loss
+        );
+        assert!(
+            causal.unmodelled.iter().any(|id| id == "AAPL"),
+            "a position no path reaches is listed rather than credited: {:?}",
+            causal.unmodelled
+        );
+
+        // And the chart carries the worst driver under a fixed label, never
+        // the driver's own name: a driver is a node the world model absorbed,
+        // and its cardinality is nobody's to bound.
+        let snapshot = platform.telemetry().metrics.snapshot();
+        let charted = snapshot
+            .gauge(
+                names::SIMULATION_STRESS_LOSS_FRACTION,
+                &labels([("scenario", CAUSAL_WORST_DRIVER_LABEL)]),
+            )
+            .expect("the worst causal loss is charted under the fixed label");
+        assert!((charted - causal.loss_fraction).abs() < 1e-12);
+        assert!(
+            snapshot
+                .gauge(
+                    names::SIMULATION_STRESS_LOSS_FRACTION,
+                    &labels([("scenario", causal.scenario.as_str())]),
+                )
+                .is_none(),
+            "a driver id reached the gauge's label"
+        );
+        assert!(
+            outcome
+                .detail
+                .contains("causal: 1 of 1 driver(s) reach the book"),
+            "the stage detail says what the walk found: {}",
+            outcome.detail
+        );
+    }
+
+    #[test]
+    fn a_driver_on_the_tape_is_shocked_by_its_own_worst_observed_move() {
+        // The size of a driver's shock is the one number in a causal stress
+        // that somebody has to choose, and the honest choice is a move that
+        // happened. A driver with a tape is shocked by its largest observed
+        // single-period log move; the standard shock is for drivers the tape
+        // has never priced, and this test is what keeps the two from being
+        // swapped.
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 80);
+        for (object, quantity) in [("AAPL", 100), ("SUPPLIER", 1_000)] {
+            platform.capital.positions.insert(
+                object.to_string(),
+                PositionLot {
+                    quantity: Decimal::from_int(quantity),
+                    average_price: Decimal::from_int(100),
+                },
+            );
+        }
+        claim(&platform, "AAPL", "SUPPLIER");
+
+        // The bound, computed here from the same closes: the largest |ln|
+        // step in the alternating fixture, which is not the standard shock.
+        let closes = platform.price_history.get("AAPL").expect("history was fed");
+        let worst_move = closes
+            .windows(2)
+            .map(|pair| (pair[1] / pair[0]).ln().abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            worst_move > 0.0 && (worst_move - STANDARD_DRIVER_SHOCK).abs() > 1e-3,
+            "premise: the tape's worst move {worst_move} must be distinguishable from the \
+             standard shock"
+        );
+
+        platform.stage_simulate(start());
+        let stress = platform.stress_report().expect("the book is stressed");
+        let causal = stress
+            .causal
+            .iter()
+            .find(|result| result.scenario == "causal:AAPL")
+            .expect("the taped driver is walked");
+        // The driver is held, so it moves at order zero by the bound itself;
+        // the supplier one hop away moves by the bound at a transmission of
+        // one. Both lose notional times the bound.
+        for (object, notional) in [("AAPL", 10_000.0), ("SUPPLIER", 100_000.0)] {
+            let hit = causal
+                .positions
+                .iter()
+                .find(|impact| impact.object_id == object)
+                .unwrap_or_else(|| panic!("{object} was not reached: {causal:?}"));
+            let expected = -notional * worst_move;
+            assert!(
+                (hit.profit_and_loss - expected).abs() < 1e-6,
+                "{object} lost {} and not its notional times the tape's worst move {expected}",
+                hit.profit_and_loss
+            );
+        }
+    }
+
+    #[test]
+    fn the_adversarial_sequence_is_built_from_the_book_and_raised_at_the_step_it_breaches() {
+        // Blueprint §23.7's fourth row: "the simulator constructs the worst
+        // plausible sequence given current positions". A book big enough
+        // that the library's largest equity move alone takes a fifth of
+        // equity: the sequence must breach at its first step and the stage
+        // must say so, because a breach filed in a report nobody reads is
+        // the shape this stage was rebuilt to stop.
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 80);
+        // Half of equity in one name at 100, from the platform's own equity
+        // rather than a figure assumed here: the first draft of this test
+        // hard-coded a quantity sized for a ten-million book, the default is
+        // larger, and the sequence stayed inside tolerance — a premise that
+        // was never asserted. The position is marked into equity, so a
+        // notional equal to the pre-position equity leaves the tester a book
+        // twice that size holding half of itself in one name; the largest
+        // library equity move (-50%) then takes a quarter of it at the first
+        // step. Whole units; the crossing to `f64` is a fixture's, not money.
+        let equity = platform.capital.equity();
+        let quantity = Decimal::from_int((equity.to_f64() / 100.0).floor() as i64);
+        platform.capital.positions.insert(
+            "AAPL".to_string(),
+            PositionLot {
+                quantity,
+                average_price: Decimal::from_int(100),
+            },
+        );
+
+        let outcome = platform.stage_simulate(start());
+        let stress = platform.stress_report().expect("the book is stressed");
+        let sequence = stress
+            .adversarial
+            .as_ref()
+            .expect("a position with a beta gives the sequence a direction");
+        // The premise, against the equity the tester actually stressed: half
+        // the notional must exceed a fifth of it, or "breaches at step one"
+        // below would be asserting nothing about the construction.
+        let notional = quantity.to_f64() * 100.0;
+        assert!(
+            notional * 0.5 > sequence.result.equity_before * 0.2,
+            "premise: {notional} at -50% does not breach a fifth of {}",
+            sequence.result.equity_before
+        );
+
+        // Premise: with one instrument on the tape its beta is exactly one,
+        // and the only library factor the book carries is equity.
+        assert_eq!(stress.modelled_positions, 1);
+        assert_eq!(
+            sequence.steps.len(),
+            1,
+            "one carried factor, one step: {}",
+            sequence.summarise()
+        );
+        let step = &sequence.steps[0];
+        assert_eq!(step.factor, qip_risk::market_factor::EQUITY_SHOCK);
+
+        // Property: the move is the library's largest equity magnitude,
+        // signed against a long book — and not the library's own sign, which
+        // would pass for a long book and fail for a short one.
+        let largest = standard_library()
+            .iter()
+            .flat_map(|scenario| scenario.shocks.iter())
+            .filter(|shock| shock.factor == qip_risk::market_factor::EQUITY_SHOCK)
+            .map(|shock| shock.magnitude.abs())
+            .fold(0.0_f64, f64::max);
+        assert!((step.magnitude - (-largest)).abs() < 1e-12, "{step:?}");
+        assert!(step.book_sensitivity > 0.0);
+        assert_eq!(sequence.first_breach, Some(0), "{}", sequence.summarise());
+        assert!(
+            outcome
+                .problems
+                .iter()
+                .any(|problem| problem.starts_with("adversarial sequence breaches")),
+            "the breach is raised on the stage: {:?}",
+            outcome.problems
+        );
+        let charted = platform
+            .telemetry()
+            .metrics
+            .snapshot()
+            .gauge(
+                names::SIMULATION_STRESS_LOSS_FRACTION,
+                &labels([("scenario", ADVERSARIAL_SCENARIO_NAME)]),
+            )
+            .expect("the adversarial loss is charted under its fixed name");
+        assert!((charted - sequence.result.loss_fraction).abs() < 1e-12);
+    }
 }
 
 #[cfg(test)]

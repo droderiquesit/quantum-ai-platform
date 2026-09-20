@@ -322,3 +322,118 @@ fn a_position_the_factor_cannot_measure_is_counted_unmodelled_and_not_dropped() 
     );
     Ok(())
 }
+
+// --- through the graph --------------------------------------------------------
+
+/// Bars for `symbol` whose log returns follow `returns` exactly, starting
+/// from a price of 100 and stepping one day per observation, oldest first.
+/// The same fixture `causal_precedence.rs` drives the UNDERSTAND writer with.
+fn bars_from_returns(symbol: &str, returns: &[f64], count: usize) -> Vec<SensedRecord> {
+    let mut price = 100.0_f64;
+    (0..count)
+        .map(|i| {
+            let open = price;
+            price *= returns[i].exp();
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            SensedRecord::Bar(Box::new(Bar {
+                object_id: object(symbol),
+                venue: "XNYS".to_string(),
+                interval: Interval::Day,
+                open_time: at,
+                open: Decimal::from_f64(open).expect("a price"),
+                high: Decimal::from_f64(open.max(price) * 1.002).expect("a price"),
+                low: Decimal::from_f64(open.min(price) * 0.998).expect("a price"),
+                close: Decimal::from_f64(price).expect("a price"),
+                volume: dec!("1000000"),
+                trade_count: 5_000,
+                vwap: Decimal::from_f64((open + price) / 2.0),
+                quality: DataQuality::default(),
+            }))
+        })
+        .collect()
+}
+
+/// A deterministic, bounded pseudo-random sequence in roughly `[-scale,
+/// scale]`; deterministic means a failure reproduces byte-for-byte.
+fn noise(seed: u64, count: usize, scale: f64) -> Vec<f64> {
+    let mut state = seed;
+    (0..count)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let unit = (state % 1_000_000) as f64 / 1_000_000.0;
+            (unit - 0.5) * 2.0 * scale
+        })
+        .collect()
+}
+
+#[test]
+fn a_driver_the_understand_stage_established_from_the_tape_is_stressed_through_the_graph()
+-> Result<()> {
+    // The whole wire, production writer to production reader: UNDERSTAND
+    // establishes obj-AAA -> obj-BBB from a real lagged pair on the tape,
+    // and SIMULATE, on the next cycle, walks that edge from its driver into
+    // the held position. Nothing here seats an edge by hand — a stress path
+    // proven only against a hand-claimed graph would say nothing about
+    // whether the graph the platform actually builds ever reaches it.
+    let count = 120;
+    let cause_returns = noise(11, count, 0.02);
+    let mut effect_returns = vec![0.0; count];
+    let effect_noise = noise(22, count, 0.004);
+    for t in 1..count {
+        effect_returns[t] = 0.8 * cause_returns[t - 1] + effect_noise[t];
+    }
+    let mut platform = platform()?;
+    platform.observe(bars_from_returns("AAA", &cause_returns, count));
+    platform.observe(bars_from_returns("BBB", &effect_returns, count));
+    buy(&mut platform, "BBB", dec!("100"), start())?;
+
+    // First cycle: the writer runs. Premise, asserted rather than assumed:
+    // the graph now holds the edge the stress will walk.
+    platform.run_cycle(start());
+    let edges = platform.world().causal().edges().to_vec();
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge.cause == "obj-AAA" && edge.effect == "obj-BBB"),
+        "premise: UNDERSTAND did not establish obj-AAA -> obj-BBB: {edges:?}"
+    );
+
+    // Second cycle: the reader runs against the graph as it now stands.
+    let report = platform.run_cycle(start().saturating_add(Duration::from_days(1)));
+    let simulate = report
+        .stage(Stage::Simulate)
+        .expect("the cycle runs every stage");
+    let stress = platform.stress_report().expect("the book is stressed");
+    assert!(
+        stress.causal_drivers >= 1,
+        "no driver was walked from the graph the platform built: {}",
+        simulate.detail
+    );
+    let through_aaa = stress
+        .causal
+        .iter()
+        .find(|result| result.scenario == "causal:obj-AAA")
+        .unwrap_or_else(|| {
+            panic!(
+                "the established driver was not stressed through the graph: {}",
+                simulate.detail
+            )
+        });
+    let hit = through_aaa
+        .positions
+        .iter()
+        .find(|impact| impact.object_id == "obj-BBB")
+        .expect("the walk from obj-AAA reached the held obj-BBB");
+    assert!(
+        hit.profit_and_loss < 0.0,
+        "the worse of the two signs is kept, so the reached position loses: {hit:?}"
+    );
+    assert!(
+        simulate.produced > stress.scenarios.len() + usize::from(stress.adversarial.is_some()),
+        "the causal scenarios applied are billed on the stage: {}",
+        simulate.detail
+    );
+    Ok(())
+}
