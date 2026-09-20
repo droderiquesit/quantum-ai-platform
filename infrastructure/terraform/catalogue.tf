@@ -733,6 +733,7 @@ module "cloud_run" {
   # must act as the service's own identity to do it. Null where there is no
   # control plane, which is a service nothing can move — the honest state of
   # an environment that has not turned the reconciler on.
+  deployer_present         = var.gitops_enabled
   deployer_service_account = var.gitops_enabled ? module.gitops_control_plane[0].kcc_service_account_email : null
 }
 
@@ -868,6 +869,7 @@ module "openobserve" {
 
   # Config Connector creates this service's revisions too, from the manifest
   # beside the three built workloads'. Null where there is no control plane.
+  deployer_present         = var.gitops_enabled
   deployer_service_account = var.gitops_enabled ? module.gitops_control_plane[0].kcc_service_account_email : null
 }
 

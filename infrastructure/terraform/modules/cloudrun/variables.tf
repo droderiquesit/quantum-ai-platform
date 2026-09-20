@@ -427,6 +427,28 @@ variable "collector_image_digest" {
   }
 }
 
+variable "deployer_present" {
+  description = <<-EOT
+    Whether this environment has a reconciler at all, known from a variable
+    rather than from an account that does not exist yet.
+
+    `count` on the grant below reads this and never the account's email. The
+    two say the same thing to a reader, and only one of them can be answered
+    by a command that has no plan behind it: `terraform import` evaluates the
+    configuration with nothing in state, so an email produced by another
+    module is unknown, and a `count` reading it is unknown too — which is a
+    refusal, not a zero. The reclaim step in `infra.yml` runs exactly that
+    command against an environment being rebuilt from nothing, and four such
+    counts stopped it.
+
+    True with no account is refused rather than silently granted to nobody;
+    see the precondition on the grant.
+  EOT
+
+  type    = bool
+  default = false
+}
+
 variable "deployer_service_account" {
   description = <<-EOT
     The account that creates this service's revisions and must therefore be

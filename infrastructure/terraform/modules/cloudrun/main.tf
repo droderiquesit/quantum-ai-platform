@@ -269,11 +269,28 @@ resource "google_service_account" "workload" {
 # as every identity in the project, the infra account included. Under ADR
 # 0036 the caller is Config Connector's identity; before it, the pipeline's.
 resource "google_service_account_iam_member" "deployer" {
-  count = var.deployer_service_account == null ? 0 : 1
+  # `deployer_present`, not the account itself: see that variable for why a
+  # count that reads an email cannot be resolved by a command with no plan
+  # behind it. The account is still what gets granted; it is only the
+  # question "is there one" that is answered from a variable.
+  count = var.deployer_present ? 1 : 0
 
   service_account_id = google_service_account.workload.name
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${var.deployer_service_account}"
+
+  lifecycle {
+    # An environment that declares a reconciler and names no account would
+    # otherwise grant `serviceAccountUser` to the literal string
+    # `serviceAccount:` — or, before this, create nothing at all and leave a
+    # service nothing can move with no sign that anything was skipped. Both
+    # are worse than stopping, and this stops at apply, when the email is
+    # known.
+    precondition {
+      condition     = var.deployer_service_account != null && var.deployer_service_account != ""
+      error_message = "deployer_present is true and deployer_service_account is empty, so this grant would name `serviceAccount:` with no account after it. Pass the reconciler's account, or set deployer_present = false."
+    }
+  }
 }
 
 # The minimum every workload needs beyond its own secrets, and no more.
