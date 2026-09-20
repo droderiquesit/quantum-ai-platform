@@ -1180,6 +1180,17 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         // the slot's freshness and not its values, so nothing a caller of the
         // API sends can widen what a cell may do with it.
         "issue_belief_priors",
+        // `issue_causal_digest` — the same class as `issue_belief_priors`
+        // and admitted on the same terms. `pending_policy` asks the platform
+        // for the causal slot once per cycle as it builds the payloads, and
+        // the API supplies nothing to it but the instant: the digest is over
+        // the UNDERSTAND stage's own causal graph, the slot it returns is
+        // stamped with the graph's newest absorption and never with the
+        // issue instant, it ships unproduced for a graph that has absorbed
+        // nothing, and `&mut` is for the journal append alone. A cell reads
+        // the slot's freshness and not its edge list, so nothing a caller of
+        // the API sends can widen what a cell may do with it.
+        "issue_causal_digest",
         // `issue_region_shares` — the same class as `issue_cycle_whitelist`
         // and admitted on the same terms. `pending_policy` asks the platform
         // for slot 7's manifests once per cycle as it builds the payloads,
@@ -1374,7 +1385,8 @@ fn every_function_the_api_hands_a_mutable_platform_to_is_named_here() {
     // * `pending_policy` — the shipping seam, which asks the platform for the
     //   slots as it builds each cell's payload; `&mut` is for the journal
     //   append, and the mutators it reaches (`issue_cycle_whitelist`,
-    //   `issue_episodic_digest`) are reviewed above.
+    //   `issue_episodic_digest`, `issue_belief_priors`, `issue_causal_digest`)
+    //   are reviewed above.
     // * `load_wallet_statement`, `load_fabric_declaration` — the root's own
     //   two loaders, which exist to call the first and second entries here.
     // * `readmit_connector` — the approval route's re-admission of the
