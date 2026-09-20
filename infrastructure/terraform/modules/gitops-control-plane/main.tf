@@ -194,20 +194,18 @@ resource "google_container_cluster" "control_plane" {
   # `a_cloud_run_service_cannot_be_deleted_by_a_plan_nobody_read` refuses in
   # `modules/cloudrun`.
   #
-  # **Flipped to `false` on 2026-09-20 for one apply, and restored by the
-  # commit that follows the destroy.** ADR 0093 suspends this cluster in dev
-  # while no published Argo CD image passes `vendor.yml`'s CRITICAL gate, and
-  # the two-apply sequence the paragraph above describes is exactly what that
-  # takes: this value has to reach *state* before `gitops_enabled = false`
-  # can destroy anything. The cluster is not tainted — run 52's apply was
-  # `0 added, 1 changed, 0 destroyed` — so it is planned as an in-place
-  # update, which is the case the paragraph above says carries `false`
-  # through first. It does not become an input on the way past, for the
-  # reason the paragraph above gives.
+  # It was flipped to `false` on 2026-09-20 for one apply and is restored
+  # here. The round trip is worth a note, because the two-apply rule above
+  # was exercised for real: run 53's `up` carried `false` into state as an
+  # in-place update (`~ deletion_protection = true -> false`, `0 added, 1
+  # changed, 0 destroyed`), and run 55's targeted destroy then took the
+  # cluster, which it could not have done from the file alone.
   #
-  # If you are reading this literal as `false` and no destroy is in flight,
-  # the restore commit was lost. Put it back.
-  deletion_protection = false
+  # The cluster is being rebuilt, and this literal is restored *before* that
+  # rebuild rather than after it, which is the ordering that matters: a
+  # cluster created while this reads `false` is unprotected from its first
+  # minute, and nothing would say so.
+  deletion_protection = true
 
   # Private in both directions. The endpoint has no public address at all,
   # rather than one behind an allowlist, and the only range that may reach
