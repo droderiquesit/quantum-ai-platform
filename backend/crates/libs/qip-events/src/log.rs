@@ -763,8 +763,8 @@ impl EventLog {
             let Some((index, replaceable)) = victim else {
                 self.appends_refused = self.appends_refused.saturating_add(1);
                 return Err(Error::guard(format!(
-                    "event log is full at {} records and every retained record's retention class \
-                     is permanent, so none may be dropped to admit a {} record (class {}); \
+                    "event log is full at {} records and every retained record's class requires \
+                     permanent retention, so none may be dropped to admit a {} record (class {}); \
                      archive the log and start a new one, or open it with a larger capacity — \
                      this log will not discard an audit record to keep running",
                     self.capacity,

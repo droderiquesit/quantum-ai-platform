@@ -2303,3 +2303,248 @@ fn a_snapshot_window_that_retains_nothing_is_refused_rather_than_read_as_a_polic
         .unwrap();
     assert_eq!(widened.snapshot_window(), Some(Duration::from_days(365)));
 }
+// --- the declared retention class (ADR 0089) ---------------------------------
+//
+// Blueprint §56.4 rule 33: every retained byte belongs to a declared
+// retention class. Until ADR 0089 the log retained by topic *group* with two
+// topics named by exception; now every topic declares a §22.1 row and the
+// log's two retention seams read that row and nothing else. These tests hold
+// three things: the declaration itself (the reviewer's copy of the table,
+// so a swapped row fails here and not only in a roll), the property that
+// the class and not the group decides what the roll takes, and the one tier
+// the group-derived rule got backwards.
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Story {
+    headline: String,
+}
+
+impl EventBody for Story {
+    const TOPIC: Topic = Topic::NewsReceived;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Release {
+    by: String,
+}
+
+impl EventBody for Release {
+    const TOPIC: Topic = Topic::KillSwitchReleased;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+#[test]
+fn every_topic_declares_the_retention_class_its_record_carries() {
+    use qip_events::retention::RetentionClass;
+    // Premise: the closed set is the size the registry says, so a topic
+    // added to `ALL` without a row below is a failure here and not a silent
+    // default.
+    assert_eq!(Topic::ALL.len(), 79, "the topic registry changed size");
+
+    let expected = |topic: Topic| match topic {
+        Topic::MarketTick | Topic::MarketQuote | Topic::MarketOrderBook => {
+            RetentionClass::Transient
+        }
+        Topic::MarketBar => RetentionClass::FallbackSeries,
+        Topic::MarketTrade
+        | Topic::MarketCorporateAction
+        | Topic::FundamentalUpdated
+        | Topic::MacroUpdated
+        | Topic::NewsReceived
+        | Topic::AlternativeDataReceived
+        | Topic::ReferenceDataUpdated
+        | Topic::DataReferenceRecorded => RetentionClass::Referenced,
+        Topic::DataQualityFailed => RetentionClass::CompactDerived,
+        Topic::EntityUpdated
+        | Topic::EntityResolved
+        | Topic::RelationshipUpdated
+        | Topic::WorldModelUpdated
+        | Topic::FeatureComputed => RetentionClass::DerivedState,
+        Topic::SignalGenerated
+        | Topic::AnomalyDetected
+        | Topic::RegimeChanged
+        | Topic::OpportunityDetected
+        | Topic::OpportunityRanked => RetentionClass::Episodic,
+        Topic::InvestigationStarted
+        | Topic::HypothesisCreated
+        | Topic::EvidenceAttached
+        | Topic::HypothesisChallenged
+        | Topic::HypothesisApproved
+        | Topic::HypothesisRejected
+        | Topic::ThesisInvalidated
+        | Topic::AgentRunCompleted => RetentionClass::Semantic,
+        Topic::SimulationStarted
+        | Topic::SimulationCompleted
+        | Topic::ScenarioEvaluated
+        | Topic::StrategyCreated => RetentionClass::CompactDerived,
+        Topic::OptimizationRequested
+        | Topic::OptimizationCompleted
+        | Topic::SolverBenchmarked
+        | Topic::PortfolioProposed
+        | Topic::RiskEvaluated
+        | Topic::RiskApproved
+        | Topic::PolicyDistributed
+        | Topic::RiskRejected
+        | Topic::ComplianceEvaluated
+        | Topic::RiskRuleRecalibration
+        | Topic::VenueWithdrawn
+        | Topic::VenueReinstated
+        | Topic::OrderProposed
+        | Topic::OrderApproved
+        | Topic::OrderSubmitted
+        | Topic::OrderAmended
+        | Topic::OrderCancelled
+        | Topic::OrderRejected
+        | Topic::OrderFilled
+        | Topic::PositionUpdated
+        | Topic::PnlUpdated
+        | Topic::ReconciliationCompleted
+        | Topic::RegionDark
+        | Topic::RegionLit
+        | Topic::ServiceStarted
+        | Topic::ServiceStopped
+        | Topic::KillSwitchEngaged
+        | Topic::KillSwitchReleased
+        | Topic::AutonomyLevelChanged
+        | Topic::BudgetExhausted
+        | Topic::SystemAlert => RetentionClass::Irreplaceable,
+        Topic::OutcomeObserved
+        | Topic::AttributionCompleted
+        | Topic::HypothesisScored
+        | Topic::ModelEvaluated
+        | Topic::LearningCompleted
+        | Topic::LessonRecorded
+        | Topic::SourceRevisionDetected
+        | Topic::ResearchCampaignClosed
+        | Topic::ResearchCampaignFlagged
+        | Topic::RiskRuleDefended
+        | Topic::RiskRuleDormant
+        | Topic::SizingReviewed
+        | Topic::FamilyAllocationReviewed => RetentionClass::Episodic,
+    };
+    for topic in Topic::ALL {
+        assert_eq!(
+            topic.retention_class(),
+            expected(topic),
+            "{topic} is filed under a different §22.1 row than this table says"
+        );
+        // And the two predicates the router, the mesh and the older tests
+        // ask are the class's own answer, not a second list.
+        assert_eq!(
+            topic.is_lossy_tolerable(),
+            topic.retention_class().is_replaceable(),
+            "{topic}: lossy-tolerable disagrees with its class"
+        );
+        assert_eq!(
+            topic.requires_permanent_retention(),
+            topic.retention_class().is_permanent(),
+            "{topic}: permanence disagrees with its class"
+        );
+    }
+}
+
+#[test]
+fn a_topics_declared_retention_class_and_not_its_group_decides_whether_the_log_rolls_it() {
+    use qip_events::retention::{Retention, RetentionClass};
+    // Premise, stated about the *classes* and not about the topics: the
+    // transient row is the replaceable one and the referenced row is not,
+    // so the property below can only pass if each topic reaches the roll
+    // through its declared row. A tick and a story are both Sense-group
+    // topics — under the group-derived rule they were told apart by a list
+    // written beside the group, and a topic missing from that list was an
+    // observation by default.
+    assert!(RetentionClass::Transient.is_replaceable());
+    assert!(!RetentionClass::Referenced.is_replaceable());
+    assert_eq!(
+        RetentionClass::Referenced.retention(),
+        Retention::ManifestOnly
+    );
+    assert_eq!(Topic::MarketTick.group(), Topic::NewsReceived.group());
+
+    let (ctx, start) = context();
+    let mut log = EventLog::in_memory()
+        .with_snapshot_window(Duration::from_days(90))
+        .unwrap();
+    log.append(&erased(&ctx, start, tick("OLD-TICK"))).unwrap();
+    log.append(&erased(
+        &ctx,
+        start,
+        Story {
+            headline: "OLD-STORY".into(),
+        },
+    ))
+    .unwrap();
+    log.append(&erased(
+        &ctx,
+        start,
+        Fill {
+            order: "OLD-FILL".into(),
+        },
+    ))
+    .unwrap();
+    assert_eq!(log.len(), 3, "premise: all three records are retained");
+
+    // Day 200: everything above is well past the window.
+    log.append(&erased(
+        &ctx,
+        start.saturating_add(Duration::from_days(200)),
+        tick("NEW-TICK"),
+    ))
+    .unwrap();
+
+    assert_eq!(
+        log.by_topic(Topic::MarketTick).len(),
+        1,
+        "the old tick's class is {}, which is replaceable, so the roll takes it",
+        Topic::MarketTick.retention_class().as_str()
+    );
+    assert_eq!(
+        log.by_topic(Topic::NewsReceived).len(),
+        1,
+        "the story shares the tick's group and is filed under {}, which is a manifest the \
+         log only indexes; a roll that took it was reading the group",
+        Topic::NewsReceived.retention_class().as_str()
+    );
+    assert_eq!(
+        log.by_topic(Topic::OrderFilled).len(),
+        1,
+        "a fill is {}, which is permanent, and no retention path may take it",
+        Topic::OrderFilled.retention_class().as_str()
+    );
+    assert_eq!(log.rolled_by_age(), 1);
+}
+
+#[test]
+fn the_kill_switchs_release_is_as_permanent_as_its_engagement() {
+    // Under the group-derived rule `KillSwitchEngaged` was named as a
+    // permanent exception in the System group and `KillSwitchReleased` was
+    // not, so a full log would evict the record that says trading resumed
+    // and keep the one that says it stopped. Both are the platform's own
+    // control record and only this platform has them; the declared class
+    // makes them one tier.
+    assert_eq!(
+        Topic::KillSwitchReleased.retention_class(),
+        Topic::KillSwitchEngaged.retention_class()
+    );
+    let (ctx, now) = context();
+    let mut log = EventLog::in_memory().with_capacity(2).unwrap();
+    for by in ["A", "B"] {
+        log.append(&erased(&ctx, now, Release { by: by.into() }))
+            .unwrap();
+    }
+    assert_eq!(log.len(), 2, "premise: the log is full of releases");
+    let refused = log
+        .append(&erased(&ctx, now, tick("T")))
+        .expect_err("a full log of kill-switch releases evicted one to admit a tick");
+    assert!(
+        refused.message().contains("(class transient)"),
+        "the refusal must name the incoming record's class: {refused}"
+    );
+    assert_eq!(
+        log.by_topic(Topic::KillSwitchReleased).len(),
+        2,
+        "a release was dropped to make room"
+    );
+    assert_eq!(log.evicted_observations(), 0);
+}
