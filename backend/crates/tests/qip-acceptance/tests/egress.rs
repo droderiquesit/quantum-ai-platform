@@ -2035,6 +2035,56 @@ fn one_image_the_critical_gate_refuses_fails_the_run_and_starves_no_other_line()
 }
 
 #[test]
+fn only_an_attestation_conflict_is_absorbed_and_every_other_signing_failure_is_fatal() {
+    // An occurrence id is a deterministic function of the attestor and the
+    // artifact, so `sign-and-create` returning "subject of a conflict" means
+    // an attestation for these exact bytes by this exact attestor already
+    // exists — which the step's own idempotency comment already calls
+    // success. Run 19 hit it: the `attestations list` lookup returned
+    // nothing for a cert-manager-cainjector child and the create then
+    // collided, because the two are separate Container Analysis paths to one
+    // fact and are eventually consistent with each other.
+    //
+    // The danger is in how wide the absorption is. A denied key, a missing
+    // attestor or a refused artifact each mean *nothing was signed*, and
+    // swallowing those would mirror an unattested image and report success —
+    // Binary Authorization would then deny it at apply, hours later, with
+    // the pipeline claiming the image was signed. So the narrowness is the
+    // property, not the absorption.
+    let vendor = read(".github/workflows/vendor.yml");
+    let commands = without_comments(&vendor);
+
+    // Premise: the step still signs, and still looks before it signs.
+    assert!(
+        commands.contains("binauthz attestations sign-and-create")
+            && commands.contains("binauthz attestations list"),
+        "vendor.yml no longer looks up an existing attestation before signing, so there is no \
+         conflict path left for this test to be about"
+    );
+
+    // Absorbed by matching the message, and only these two spellings.
+    assert!(
+        commands.contains("*\"subject of a conflict\"*|*\"ALREADY_EXISTS\"*"),
+        "vendor.yml no longer absorbs exactly an attestation conflict; either it fails a run \
+         for bytes that are already signed, or it has widened to swallow failures that mean \
+         nothing was signed"
+    );
+
+    // And the other arm must exit. A `case` whose default arm falls through
+    // is the same bug with a different shape.
+    let absorbed = commands
+        .split_once("*\"subject of a conflict\"*|*\"ALREADY_EXISTS\"*")
+        .expect("the conflict arm exists")
+        .1;
+    let esac = absorbed.find("esac").unwrap_or(absorbed.len());
+    assert!(
+        absorbed[..esac].contains("exit 1"),
+        "vendor.yml absorbs an attestation conflict and does not fail on any other signing \
+         error; a denied key would then be reported as a signed image"
+    );
+}
+
+#[test]
 fn the_health_listener_is_the_only_wide_bind_and_it_forwards_nowhere() {
     // The trade this file makes, held in one place. `health` binds 0.0.0.0
     // because Cloud Run probes it from outside the container's namespace, and

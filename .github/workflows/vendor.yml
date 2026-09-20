@@ -287,13 +287,41 @@ jobs:
                 --format='value(name)')
               if [ -n "${existing}" ]; then
                 echo "${artifact} is already attested."
-              else
-                gcloud beta container binauthz attestations sign-and-create \
+              elif ! signing="$(gcloud beta container binauthz attestations sign-and-create \
                   --project "${GCP_PROJECT}" \
                   --artifact-url "${artifact}" \
                   --attestor "${BINAUTHZ_ATTESTOR}" \
                   --attestor-project "${GCP_PROJECT}" \
-                  --keyversion "${BINAUTHZ_KEY_VERSION}"
+                  --keyversion "${BINAUTHZ_KEY_VERSION}" 2>&1)"; then
+                # The lookup above is not sufficient on its own, and run 19
+                # is the proof: it returned nothing for a
+                # cert-manager-cainjector child and the create then came back
+                # `Resource in projects [algorik-dev] is the subject of a
+                # conflict: Could not create occurrence ID ...`.
+                #
+                # An occurrence id is a deterministic function of the attestor
+                # and the artifact, so a conflict means an attestation for
+                # *these exact bytes by this exact attestor* is already
+                # there — which the comment above already calls success. The
+                # list is a Container Analysis query and is eventually
+                # consistent with the create; two paths to the same fact will
+                # disagree for a moment, and the loser must not be a failed
+                # deployment.
+                #
+                # Narrow on purpose. Only a conflict is absorbed: a denied
+                # key, a missing attestor or a refused artifact still fails
+                # the run, because each of those means nothing was signed.
+                case "${signing}" in
+                  *"subject of a conflict"*|*"ALREADY_EXISTS"*)
+                    echo "${artifact} was attested concurrently; the existing attestation is these bytes signed by this attestor."
+                    ;;
+                  *)
+                    echo "${signing}" >&2
+                    exit 1
+                    ;;
+                esac
+              else
+                echo "${signing}"
               fi
             done
             mirrored=$((mirrored + 1))

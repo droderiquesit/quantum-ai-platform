@@ -733,6 +733,7 @@ jobs:
       # statement the seeding step makes: it holds secretmanager.admin from
       # modules/cicd and could read any secret; this step reads two.
       - name: bootstrap the GitOps controllers
+        id: bootstrap
         if: inputs.action == 'up'
         env:
           GCP_PROJECT: ${{ steps.identity.outputs.project }}
@@ -762,6 +763,48 @@ jobs:
           gcloud container fleet memberships get-credentials "$cluster" \
             --project "${GCP_PROJECT}" --location "$region"
 
+          # Read the cluster on the way out, once, when it has just failed.
+          #
+          # Every bootstrap failure so far was diagnosed hours later from a
+          # message naming the wrong component: `cert-manager-webhook
+          # exceeded its progress deadline` was an Argo CD scan result three
+          # steps upstream, and it cost a day. A pod stuck on
+          # ImagePullBackOff and a pod refused by Binary Authorization read
+          # identically in a rollout timeout, and the difference is in the
+          # events below.
+          #
+          # An ERR trap rather than a step of its own, deliberately: it runs
+          # with the kubeconfig already fetched above, needs no second
+          # credential call, and cannot drift away from the step it explains.
+          # It is armed only after `get-credentials`, because before that
+          # there is no cluster to read and the reason is in this log already.
+          #
+          # Nothing here prints a Secret or a container log. `get pods`,
+          # `describe pod` and `get events` carry object state; a log could
+          # carry a token the process was handed. Every command is `|| true`
+          # and the trap re-raises the original status, so a diagnostic can
+          # never convert a failure into a different one — or into a pass.
+          diagnose() {
+            status=$?
+            set +e
+            echo "::error title=bootstrap failed::reading ${cluster} before giving up."
+            for ns in cert-manager argocd kargo configconnector-operator-system cnrm-system qip-run qip; do
+              echo "::group::${ns}"
+              kubectl -n "$ns" get pods -o wide 2>&1 | head -40
+              kubectl -n "$ns" get events --sort-by=.lastTimestamp 2>&1 | tail -25
+              echo "::endgroup::"
+            done
+            echo "::group::applications"
+            kubectl -n argocd get applications -o wide 2>&1 | head -20
+            kubectl -n argocd get "application/qip-${ENVIRONMENT}" \
+              -o jsonpath='{.status.sync.status}{"  "}{.status.health.status}{"\n"}{range .status.conditions[*]}{.type}{": "}{.message}{"\n"}{end}' 2>&1 | head -30
+            echo "::endgroup::"
+            echo "ImagePullBackOff means the registry holds no such digest: re-run vendor.yml." >&2
+            echo "A Binary Authorization denial means the digest is mirrored and NOT attested, which is what the CRITICAL gate does to an image with an open finding. That is the gate working. Remove the vulnerable bytes; never exempt the image." >&2
+            exit "$status"
+          }
+          trap diagnose ERR
+
           gitops="infrastructure/gitops"
           apply() {
             kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap -k "$1"
@@ -770,7 +813,14 @@ jobs:
           # 1. cert-manager, and wait for its webhook: Kargo's render names a
           #    Certificate the webhook must admit.
           apply "${gitops}/bootstrap/cert-manager/overlays/${ENVIRONMENT}"
+          # All three, not just the webhook. The webhook is what admits the
+          # Certificate Kargo declares; the *controller* is what issues it
+          # and the cainjector is what puts the CA where the API server
+          # reads it. Waiting on one of the three and depending on all
+          # three is a wait that passes and then fails somebody else.
           kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=300s
+          kubectl -n cert-manager rollout status deployment/cert-manager --timeout=300s
+          kubectl -n cert-manager rollout status deployment/cert-manager-cainjector --timeout=300s
           # 2. Argo CD.
           apply "${gitops}/bootstrap/argocd/overlays/${ENVIRONMENT}"
           kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
@@ -779,6 +829,14 @@ jobs:
           apply "${gitops}/bootstrap/kargo/overlays/${ENVIRONMENT}"
           kubectl -n kargo rollout status deployment/kargo-api --timeout=300s
           kubectl -n kargo rollout status deployment/kargo-controller --timeout=300s
+          # The webhooks server admits the Project applied in phase 6 and the
+          # management controller is what reconciles it into a namespace.
+          # Neither was waited for, and both are depended on two phases
+          # later by `kubectl wait --for=condition=Ready project/qip`, which
+          # would then wait out its own timeout on a resource nothing was
+          # running to reconcile.
+          kubectl -n kargo rollout status deployment/kargo-webhooks-server --timeout=300s
+          kubectl -n kargo rollout status deployment/kargo-management-controller --timeout=300s
           # 4. The Config Connector operator, vendored, and its CRDs. Run 34
           #    found the addon refused on Autopilot (`addons
           #    {"config-connector"} are not supported for Autopilot
@@ -796,8 +854,18 @@ jobs:
           #    where an admission policy that does not admit them says so —
           #    bootstrap/config-connector-operator/SOURCE.md.
           apply "${gitops}/bootstrap/config-connector/overlays/${ENVIRONMENT}"
-          kubectl -n cnrm-system wait --for=condition=Ready pod \
-            -l cnrm.cloud.google.com/component=cnrm-controller-manager --timeout=300s
+          # The ConfigConnector object's own condition first, and only then
+          # the pods it causes to exist.
+          #
+          # `kubectl wait` on a *label selector* returns immediately with
+          # "no matching resources found" when nothing matches yet, and the
+          # operator has not created the controller pods at the instant this
+          # line is reached. So the wait below was a wait that could succeed
+          # by finding nothing — the exact shape of control this repository
+          # calls a defect rather than a spare part, and it would have handed
+          # the next command a controller that was not running.
+          kubectl wait --for=condition=Healthy configconnector/configconnector.core.cnrm.cloud.google.com --timeout=300s
+          kubectl -n cnrm-system rollout status statefulset/cnrm-controller-manager --timeout=300s
 
           # 6. The two credentials, from Secret Manager, as Kubernetes
           #    Secrets. Kargo's lands in the project's namespace, so the
@@ -853,7 +921,39 @@ jobs:
           apply "${gitops}/argocd/overlays/${ENVIRONMENT}"
           # 8. The Kargo chain, into the namespace the project created.
           apply "${gitops}/kargo/overlays/${ENVIRONMENT}"
-          echo "bootstrapped ${cluster}; Argo CD reconciles ${gitops}/envs/${ENVIRONMENT} from here on."
+
+          # 9. Prove the sync rather than announcing it.
+          #
+          # This step used to end by printing "Argo CD reconciles ... from
+          # here on" and exiting zero, without one check that the Application
+          # had been admitted, that the repository credential worked, or that
+          # a single manifest had synced. A step whose last line is a claim
+          # about the future is the thing `.claude/rules/00-enterprise-governance.md`
+          # exists to refuse: "never report that a check passed unless you ran
+          # it and read its output". This job was reporting a successful
+          # bootstrap on the strength of the last `kubectl apply` returning
+          # zero, which says only that the API server accepted the document.
+          #
+          # `wait --for=jsonpath` is used rather than a poll loop because a
+          # loop that gives up has to decide what to do next, and there is
+          # only one right answer: fail, and say which half is wrong.
+          echo "waiting for the ${ENVIRONMENT} Application to sync and report healthy..."
+          if ! kubectl -n argocd wait --for=jsonpath='{.status.sync.status}'=Synced \
+              "application/qip-${ENVIRONMENT}" --timeout=600s; then
+            echo "::error title=Application never synced::qip-${ENVIRONMENT} did not reach Synced." >&2
+            kubectl -n argocd get "application/qip-${ENVIRONMENT}" \
+              -o jsonpath='{.status.sync.status}{"\n"}{.status.conditions}{"\n"}' >&2 || true
+            exit 1
+          fi
+          if ! kubectl -n argocd wait --for=jsonpath='{.status.health.status}'=Healthy \
+              "application/qip-${ENVIRONMENT}" --timeout=600s; then
+            echo "::error title=Application synced but is not healthy::qip-${ENVIRONMENT} reached Synced and not Healthy." >&2
+            echo "Synced means Argo CD applied what the manifests say; Healthy means the objects it applied came up. A sync that is not healthy is a reconciler that did its job over manifests that cannot run." >&2
+            kubectl -n argocd get "application/qip-${ENVIRONMENT}" \
+              -o jsonpath='{.status.health.status}{"\n"}{.status.conditions}{"\n"}' >&2 || true
+            exit 1
+          fi
+          echo "bootstrapped ${cluster}; qip-${ENVIRONMENT} is Synced and Healthy, and Argo CD reconciles ${gitops}/envs/${ENVIRONMENT} from here on."
 
       - name: suspend
         if: inputs.action == 'suspend'
