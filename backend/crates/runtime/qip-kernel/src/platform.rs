@@ -65,8 +65,8 @@ use qip_agents::{Budget, RunStatus};
 use qip_ai::language::{DeterministicModel, LanguageModel};
 use qip_ai::memory::{
     AnalystStance, CausalContextEdge, ClaimRecord, DecisionTaken, Episode, EpisodeOutcome,
-    EpisodeQuery, EpisodicMemory, FindingsSummary, MarketState, PrecedentDigest, Recall,
-    RegimeLabel, StanceDirection,
+    EpisodeQuery, EpisodicMemory, ExperienceReport, FindingsSummary, MarketState, PrecedentDigest,
+    Recall, RegimeLabel, StanceDirection,
 };
 use qip_ai::retrieval::SearchIndex;
 use qip_capital::ledger::{
@@ -584,6 +584,15 @@ pub struct Platform {
     /// find it is an audit trail worse than an empty one, because it looks
     /// complete.
     cycle_second_order: Option<SecondOrderJournal>,
+    /// Blueprint §13.1's regime-experience and blind-spot rows as the LEARN
+    /// stage read them, held only until the cycle's journal entry is sealed,
+    /// which takes it.
+    ///
+    /// Cleared at the top of every LEARN and assigned on every path through
+    /// the read, including `None` on a refusal, for `cycle_second_order`'s
+    /// reason: experience attributed to a cycle that did not measure it is
+    /// an audit trail worse than an empty one.
+    cycle_experience: Option<ExperienceReport>,
     /// The durable, hash-chained mirror of the cycle journal.
     journal: DurableLogTransport,
     /// Everything the platform decided, and what came of it — refusals
@@ -2282,6 +2291,11 @@ pub struct CycleJournalEntry {
     /// field existed replays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub second_order: Option<SecondOrderJournal>,
+    /// Blueprint §13.1's regime-experience and blind-spot rows as LEARN read
+    /// them this cycle, or absent where the read refused. Absent and not a
+    /// zero, so "no experience" and "nothing was asked" never render alike.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub experience: Option<ExperienceReport>,
 }
 
 /// One entity the book depends on and does not hold, as the journal keeps it.
@@ -3938,6 +3952,7 @@ impl Platform {
             cycle_horizon_arming: None,
             cycle_solver_routing: None,
             cycle_second_order: None,
+            cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
             outcomes: OutcomeCapture::new(),
             counterfactuals,
@@ -7558,6 +7573,33 @@ impl Platform {
 
     /// What the platform has measured of its own components, for the API and
     /// the tests. Empty until a thesis has resolved informatively.
+    /// Blueprint §13.1's regime-experience and blind-spot rows over
+    /// everything the episodic store holds knowable at `now`.
+    ///
+    /// The state space is the product of `MarketRegime::ALL` and
+    /// `VolatilityRegime::ALL` — the same closed sets `regime_label` stamps
+    /// an episode from, so a label the store holds that this product does
+    /// not name is a drift between the two and the report says so rather
+    /// than folding it in. Derived at every read and stored nowhere: the
+    /// store is the record, and a second copy would be a second claim about
+    /// it.
+    ///
+    /// Read by the LEARN stage every cycle, which puts the line on the stage
+    /// detail and the report in the cycle's journal entry. Nothing sizes on
+    /// it.
+    pub fn experience(&self, now: Timestamp) -> Result<ExperienceReport> {
+        let known: Vec<RegimeLabel> = MarketRegime::ALL
+            .iter()
+            .flat_map(|market| {
+                VolatilityRegime::ALL.iter().map(|volatility| RegimeLabel {
+                    market: market.as_str().to_string(),
+                    volatility: volatility.as_str().to_string(),
+                })
+            })
+            .collect();
+        self.episodes.experience(known.iter(), now)
+    }
+
     pub fn self_model(&self) -> &SelfModel {
         &self.self_model
     }
@@ -8436,6 +8478,9 @@ impl Platform {
             // stage, so a cycle that reaches journalling has already
             // overwritten whatever the last cycle left.
             second_order: self.cycle_second_order.take(),
+            // Taken for the same reason: LEARN assigns this on every path
+            // through the stage.
+            experience: self.cycle_experience.take(),
         };
 
         let facts = EventFacts::derived(
@@ -12562,6 +12607,7 @@ impl Platform {
 
     fn stage_learn(&mut self, now: Timestamp) -> StageOutcome {
         self.cycle_calibration = None;
+        self.cycle_experience = None;
         self.cycle_counterfactuals = None;
         self.cycle_rule_review = None;
         self.cycle_family_structure = None;
@@ -12638,6 +12684,32 @@ impl Platform {
             Err(error) => {
                 outcome = outcome.with_problem(format!(
                     "resolved theses could not be calibrated: {}",
+                    error.message()
+                ));
+            }
+        }
+        // Blueprint §13.1's regime-experience and blind-spot rows, read over
+        // the memory `calibrate_resolved` has just added to. Until this call
+        // the self-model answered two of the section's seven questions and
+        // the other five were absent; these two are answered from the
+        // episodic store rather than from a counter kept beside it, because
+        // the store is bounded and evicts and a counter does not, and the day
+        // they differed an operator would be told the platform had experience
+        // it had forgotten. The state space is the product of the two regime
+        // enums, so a blind spot is a regime the platform *could* label and
+        // has never reasoned in. A read and a record: nothing below sizes or
+        // gates on it, and making regime experience narrow anything is a
+        // behavioural change that wants an ADR, not a wire. A refusal is a
+        // stage problem for the reason every LEARN step gives.
+        match self.experience(now) {
+            Ok(report) => {
+                let detail = format!("{}; {}", outcome.detail, report.describe());
+                outcome = StageOutcome { detail, ..outcome };
+                self.cycle_experience = Some(report);
+            }
+            Err(error) => {
+                outcome = outcome.with_problem(format!(
+                    "regime experience could not be read this cycle: {}",
                     error.message()
                 ));
             }

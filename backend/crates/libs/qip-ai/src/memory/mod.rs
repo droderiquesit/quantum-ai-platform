@@ -58,6 +58,7 @@
 //! after review.
 
 pub mod episode;
+pub mod experience;
 pub mod store;
 
 pub use episode::{
@@ -65,4 +66,5 @@ pub use episode::{
     EPISODE_ENCODING, Episode, EpisodeOutcome, EpisodeQuery, FindingsSummary, MarketState,
     RegimeLabel, StanceDirection,
 };
+pub use experience::{ExperienceReport, RegimeExperience, regime_key};
 pub use store::{EpisodicMemory, PrecedentDigest, Recall, Recalled};
