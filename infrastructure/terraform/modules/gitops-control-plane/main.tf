@@ -58,6 +58,16 @@ locals {
   # different names carry them, and a zone's records belong beside the zone.
   restricted_vip = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
 
+  # The two private registry zones, as a DNS suffix keyed by the name its zone
+  # takes. A local rather than a literal inline on the zone resource, because
+  # the two record sets below have to iterate the same keys and the only
+  # source of keys that survives every command `infra.yml` runs is the
+  # configuration itself. See the record sets for what that cost.
+  registry_zones = {
+    "pkg-dev" = "pkg.dev."
+    "gcr-io"  = "gcr.io."
+  }
+
   # The Kubernetes service accounts that act as each Google identity, as
   # Workload Identity members. Each is `namespace/name` of a controller the
   # bootstrap installs; a binding for a KSA that does not exist grants
@@ -398,10 +408,7 @@ resource "google_compute_firewall" "nodes_reach_each_other" {
 # registry names to the same four addresses, on the same rule the zone
 # already has for Google APIs.
 resource "google_dns_managed_zone" "registry" {
-  for_each = {
-    "pkg-dev" = "pkg.dev."
-    "gcr-io"  = "gcr.io."
-  }
+  for_each = local.registry_zones
 
   project     = var.project_id
   name        = "${local.prefix}-${each.key}"
@@ -418,23 +425,46 @@ resource "google_dns_managed_zone" "registry" {
   labels = var.labels
 }
 
+# The records, iterating the same static keys as the zones and reading the
+# zone's own attributes for the values.
+#
+# Both read `for_each = google_dns_managed_zone.registry` until 2026-09-20.
+# A resource collection is a map, so it looks like the map Terraform asks for
+# here — and it is one *while a plan is being made*, because the plan knows
+# the zones' keys. It is not one during `terraform import`, which evaluates
+# the whole configuration with no plan behind it: a resource that is not yet
+# in state then has no attributes at all, the collection is unknown, keys
+# included, and any `for_each` reading it is refused.
+#
+# That is not a hypothetical command. `infra.yml`'s `up` begins by reclaiming
+# what the teardown could not delete — plan, ask which creates would collide
+# with objects still in the project, then `terraform import` each one that is
+# really there — and run 35519136534 saved a plan reading `Plan: 185 to add`
+# and then failed on its first import, here and in five other places, before
+# an apply could start. Iterating `local.registry_zones` fixes the keys in the
+# configuration, where every command can read them.
+#
+# The zone reference stays in the arguments, which is what keeps the
+# dependency edge that makes a record set wait for its zone. `each.value`
+# would serve for `name`; the zone's own attribute is read instead so that a
+# record can never name a zone this configuration did not create.
 resource "google_dns_record_set" "registry_apex" {
-  for_each = google_dns_managed_zone.registry
+  for_each = local.registry_zones
 
   project      = var.project_id
-  managed_zone = each.value.name
-  name         = each.value.dns_name
+  managed_zone = google_dns_managed_zone.registry[each.key].name
+  name         = google_dns_managed_zone.registry[each.key].dns_name
   type         = "A"
   ttl          = 300
   rrdatas      = local.restricted_vip
 }
 
 resource "google_dns_record_set" "registry_wildcard" {
-  for_each = google_dns_managed_zone.registry
+  for_each = local.registry_zones
 
   project      = var.project_id
-  managed_zone = each.value.name
-  name         = "*.${each.value.dns_name}"
+  managed_zone = google_dns_managed_zone.registry[each.key].name
+  name         = "*.${google_dns_managed_zone.registry[each.key].dns_name}"
   type         = "A"
   ttl          = 300
   rrdatas      = local.restricted_vip
