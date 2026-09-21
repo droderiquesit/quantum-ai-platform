@@ -21,5 +21,11 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 6.12"
     }
+    # For `google_project_service_identity` only, which is beta-only. The
+    # access list below stays on GA `google`.
+    google-beta = {
+      source  = "hashicorp/google-beta"
+      version = "~> 6.12"
+    }
   }
 }

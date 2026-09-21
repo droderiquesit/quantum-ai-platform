@@ -13,6 +13,13 @@
 
 mock_provider "google" {}
 
+# `google-beta` too, for the one resource here that is beta-only:
+# `google_project_service_identity`, which asks Google to create IAP's
+# service agent. Without this block every run in this file fails at
+# provider configuration rather than on its own assertion, and a harness
+# that cannot reach its assertions proves nothing while still being run.
+mock_provider "google-beta" {}
+
 variables {
   project_id     = "iap-run-plan-harness"
   project_number = "95200532413"

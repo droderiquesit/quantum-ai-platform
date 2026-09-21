@@ -51,6 +51,35 @@
 #     --iap`, which then reads `iapEnabled` back and fails the job if it is
 #     not true, and this module's README says what closes the gap.
 #
+# ## IAP's own service agent, created here because nothing else does now
+#
+# The invoker grant in `gitops/envs/<env>/invokers.yaml` names
+# `service-<project-number>@gcp-sa-iap.iam.gserviceaccount.com`. A Google
+# service agent does not exist in a project until something asks for it, and
+# the thing that asked was `modules/gitops-gateway`'s own
+# `google_project_service_identity` — which ADR 0095 switches off.
+#
+# Caught by reading the plan rather than by a run: `plan` on dev
+# (run 73, 2026-09-21) showed
+# `module.gitops_gateway[0].google_project_service_identity.iap will be
+# destroyed` while this module created none. Dev survives it, because the
+# agent was created by an earlier apply and a service agent is not removed
+# when the resource managing it leaves state. **A clean project would not.**
+# There, `invokers.yaml` would grant `roles/run.invoker` to a principal that
+# does not exist, and the console would answer 403 to IAP itself — a door
+# that authenticates the caller correctly and then refuses them, which reads
+# as an access-list problem and is not one. `modules/gitops-gateway` says
+# that in its own comment about this resource; the argument survived the
+# module that carried it.
+#
+# `google-beta` because `google_project_service_identity` is beta-only. It
+# is the one resource here that is, and `versions.tf` says so.
+resource "google_project_service_identity" "iap" {
+  provider = google-beta
+  project  = var.project_id
+  service  = "iap.googleapis.com"
+}
+
 # ## Why the access list is here at all, when ADR 0094 refused to hold one
 #
 # ADR 0094 decision 3 refused a per-resource members list, and the reason was
