@@ -34,6 +34,7 @@
 pub mod broker;
 pub mod feasibility;
 pub mod multileg;
+pub mod observation;
 pub mod oms;
 pub mod order;
 pub mod origination;
@@ -44,6 +45,7 @@ pub use broker::{
 };
 pub use feasibility::{Infeasible, VenueFeasibility};
 pub use multileg::{GroupState, Leg, LegGroup, Verdict};
+pub use observation::{DeclaredVenueProfile, ObservedVenueFacts, VenueObservation};
 pub use oms::{OrderManager, RefusalReason, SubmissionResult, order_type_for};
 pub use order::{Fill, Order, OrderState, OrderType, Side};
 pub use origination::{

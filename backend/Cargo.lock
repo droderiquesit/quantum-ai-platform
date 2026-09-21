@@ -399,6 +399,7 @@ dependencies = [
 name = "qip-execution-engine"
 version = "0.1.0"
 dependencies = [
+ "qip-contracts",
  "qip-core",
  "qip-market",
  "qip-risk",

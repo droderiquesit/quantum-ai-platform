@@ -13,6 +13,7 @@
 //! live trading fails at start-up with a legible message rather than at the
 //! first order with a confusing one.
 
+use crate::observation::{DeclaredVenueProfile, ObservedVenueFacts, VenueObservation};
 use crate::order::{Fill, Order, OrderType, Side};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
@@ -61,6 +62,26 @@ pub trait Broker: Send + Sync + fmt::Debug {
     /// What a deployment would need to make this usable. Empty when available.
     fn requirement(&self) -> String {
         String::new()
+    }
+
+    /// What this venue declares about itself and what it has been seen doing.
+    ///
+    /// The seam blueprint §34.4's observed rung waits on. Before it existed
+    /// the port carried [`Self::capabilities`] — a venue's own description of
+    /// itself — and nothing at all about how long the venue took to answer or
+    /// which of those capabilities it honoured when one was exercised, so the
+    /// promotion ladder had a declaration to check and nothing to check it
+    /// against.
+    ///
+    /// **The default is [`None`], and that is the load-bearing part of this
+    /// signature.** An adapter that keeps no tally reports that it keeps
+    /// none. A default returning a zeroed [`VenueObservation`] would present
+    /// every adapter that never overrode it as a venue answering instantly,
+    /// charging nothing and accepting everything — three claims nobody made,
+    /// each of which a gate would read as evidence in the venue's favour. An
+    /// unmeasured venue is not a fast venue.
+    fn observation(&self) -> Option<VenueObservation> {
+        None
     }
 }
 
@@ -266,6 +287,23 @@ pub struct SimulatedBroker {
     sequence: u64,
     submitted: usize,
     rejected: usize,
+    /// Order types this venue has answered by filling or by resting.
+    ///
+    /// The measured half of §34.4's order-type check. Bounded by
+    /// [`OrderType::as_str`], which is a closed set of five literals, so this
+    /// set cannot grow with traffic.
+    accepted_order_types: std::collections::BTreeSet<String>,
+    /// Commission actually charged, and the notional it was charged on.
+    ///
+    /// Two figures rather than a rate, because the rate is a quotient and the
+    /// denominator is the half that can be zero. A venue that has filled
+    /// nothing reports no rate rather than a free one.
+    /// `None` once an accumulation has overflowed: a venue that can no
+    /// longer itemise says so rather than reporting a figure it knows is
+    /// short. Overflow does not refuse the fill, because a diagnostic tally
+    /// must never decide whether an order trades.
+    fees_charged: Option<Decimal>,
+    notional_filled: Option<Decimal>,
 }
 
 impl SimulatedBroker {
@@ -279,6 +317,9 @@ impl SimulatedBroker {
             sequence: 0,
             submitted: 0,
             rejected: 0,
+            accepted_order_types: std::collections::BTreeSet::new(),
+            fees_charged: Some(Decimal::ZERO),
+            notional_filled: Some(Decimal::ZERO),
         }
     }
 
@@ -424,11 +465,22 @@ impl Broker for SimulatedBroker {
 
         if self.rng.next_f64() < self.settings.rejection_probability {
             self.rejected += 1;
+            // Deliberately *not* recorded against the order's type. This
+            // refusal is the seeded coin flip and carries no reason, so it
+            // says nothing about whether the venue supports `market`; filing
+            // it under the type would let one unlucky order teach the
+            // promotion ladder that the venue refuses a type it accepts.
             return Err(Error::unavailable(format!(
                 "the venue rejected order {}",
                 order.order_id.as_str()
             )));
         }
+        // The venue has taken the instruction. Recorded here rather than
+        // after the fill, because a limit order the market never reaches was
+        // still accepted, and acceptance is what §34.4's order-type check is
+        // about.
+        self.accepted_order_types
+            .insert(order.order_type.as_str().to_string());
 
         let remaining = order.remaining_quantity();
         if remaining <= Decimal::ZERO {
@@ -481,6 +533,20 @@ impl Broker for SimulatedBroker {
             )));
         };
 
+        // The measured half of §34.4's fee check: what was actually billed,
+        // and the notional it was billed on. Accumulated rather than derived
+        // from the settings, so the figure the ladder reads comes from the
+        // fills that happened. On overflow the tally becomes `None` — the
+        // venue stops claiming to itemise — rather than saturating, because a
+        // fee total short by an unknown amount reads as a cheap venue. It
+        // never refuses the fill: a diagnostic must not decide whether an
+        // order trades.
+        let notional = quantity.checked_mul(price);
+        self.fees_charged = self.fees_charged.and_then(|total| total.checked_add(costs));
+        self.notional_filled = self
+            .notional_filled
+            .and_then(|total| notional.and_then(|n| total.checked_add(n)));
+
         self.sequence += 1;
         Ok(vec![Fill {
             fill_id: FillId::from_string(format!("fill-{}", self.sequence)),
@@ -498,6 +564,57 @@ impl Broker for SimulatedBroker {
 
     fn cancel(&mut self, _order: &Order, _at: Timestamp) -> Result<()> {
         Ok(())
+    }
+
+    /// What this venue declares, and the three facts it can honestly claim to
+    /// have observed.
+    ///
+    /// **`acknowledgement_latency` is [`None`], and that is the whole point of
+    /// this implementation.** This venue does not time its acknowledgements;
+    /// it stamps `at + settings.latency` on every fill, so a latency read back
+    /// out of it is the declaration with extra steps. §34.4's observed rung
+    /// exists to catch a venue that misdescribes itself, and a number checking
+    /// itself catches nothing — it would pass the gate every time and mean
+    /// nothing when it did. Reporting [`None`] costs this venue the rung; the
+    /// alternative costs the rung its meaning.
+    ///
+    /// `rejected_order_types` is empty for a related reason. This venue
+    /// refuses a small seeded fraction of orders *for no stated reason*, and
+    /// that refusal is not attributable to the order's type. An unattributed
+    /// refusal filed under a type is a finding nobody made.
+    fn observation(&self) -> Option<VenueObservation> {
+        let capabilities = self.capabilities();
+        // The declared rate is `Decimal` at source — `SimulationSettings`
+        // keeps commission as exact fixed point precisely because it
+        // multiplies a notional — so the crossing into basis points stays in
+        // `Decimal` and never travels through the `f64` copy on
+        // `VenueCapabilities`, which exists only because other adapters
+        // publish one.
+        let fee_bps = self
+            .settings
+            .commission_rate
+            .checked_mul(Decimal::from_int(10_000))?;
+        Some(VenueObservation {
+            venue: qip_contracts::venue::VenueId::new(self.name()),
+            declared: DeclaredVenueProfile {
+                // A book-sweeping venue with a central limit order book,
+                // which is what `fill_price` does when a book is supplied.
+                // Declared rather than inferred: the venue says what it is
+                // and the ladder checks what it does.
+                class: qip_contracts::venue::VenueClass::Exchange,
+                fee_bps,
+                acknowledgement_latency: self.settings.latency,
+                order_types: capabilities.supported_types.into_iter().collect(),
+            },
+            observed: ObservedVenueFacts {
+                acknowledgements: self.submitted,
+                acknowledgement_latency: None,
+                fees_charged: self.fees_charged,
+                notional_filled: self.notional_filled,
+                accepted_order_types: self.accepted_order_types.clone(),
+                rejected_order_types: std::collections::BTreeSet::new(),
+            },
+        })
     }
 }
 

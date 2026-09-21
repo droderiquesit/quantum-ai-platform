@@ -13991,15 +13991,44 @@ impl Platform {
         // ever admitted in the first place — and folding them would give the
         // ladder a path to withdrawal that ADR 0062 reserves for one seam.
         //
-        // The ladder is empty and the broker is unladdered, so today this
-        // reports exactly that. Saying so is the point: an unladdered venue
-        // that read as silence would be indistinguishable from a review
-        // nobody wired in, which is the failure three modules shipped in one
-        // day earlier in this wave.
-        let (reviewed, problems) = crate::venue_admission::review(
-            &self.venue_ladder,
-            &std::iter::once(self.broker.name().to_string()).collect(),
+        // Measured first, then reviewed, and in that order because the review
+        // reads what the measurement just wrote. `measure` is the production
+        // caller `attempt_promotion` did not have: it reads the desk broker's
+        // own report across the widened `Broker::observation` port, builds a
+        // declaration and a measurement out of it, seats the venue at §34.4's
+        // registered rung and asks the ladder for the rung above.
+        //
+        // **Nothing here supplies a figure the adapter did not.** The desk's
+        // simulated venue stamps a configured latency rather than timing one,
+        // so it reports none, so the observed rung refuses it — every cycle,
+        // permanently, and correctly. Defaulting that to zero would promote
+        // the venue *because* nobody had measured it, since zero is faster
+        // than any declaration a venue can make.
+        let reachable: std::collections::BTreeSet<String> =
+            std::iter::once(self.broker.name().to_string()).collect();
+        let observation = self.broker.observation();
+        let broker_name = self.broker.name().to_string();
+        let measured = crate::venue_measurement::measure(
+            &mut self.venue_ladder,
+            &broker_name,
+            observation,
+            qip_lifecycle::venue_ladder::VenuePromotionPolicy::default(),
+            now,
         );
+        if let Some(reviewed) = measured.summary {
+            let detail = format!("{}; {reviewed}", outcome.detail);
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in measured.problems {
+            outcome = outcome.with_problem(problem);
+        }
+        // Saying so is the point: a venue held below a rung that read as
+        // silence would be indistinguishable from a review nobody wired in,
+        // which is the failure three modules shipped in one day earlier in
+        // this wave. `measured.unmeasured` is what keeps the permanent gap
+        // out of the problems and in the summary.
+        let (reviewed, problems) =
+            crate::venue_admission::review(&self.venue_ladder, &reachable, &measured.unmeasured);
         if let Some(reviewed) = reviewed {
             let detail = format!("{}; {reviewed}", outcome.detail);
             outcome = StageOutcome { detail, ..outcome };
