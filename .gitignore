@@ -63,3 +63,9 @@ __pycache__/
 # branch itself is what gets pushed, so committing the worktree directory
 # would duplicate history that already exists on its branch.
 /.claude/worktrees/
+# Scratch for a session whose own temp filesystem has filled. Regenerable,
+# never work product: a build log or an unpacked CI archive lands here so it
+# does not land in the tree. Added 2026-09-21, when five parallel lanes took
+# the host to 100% and `$CLAUDE_CODE_TMPDIR` had to move onto a filesystem
+# with room — which happened to be this one.
+/.claude/tmp/
