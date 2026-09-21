@@ -41,3 +41,13 @@ variable "pull_service_accounts" {
   type    = map(string)
   default = {}
 }
+
+# The project number, for the Cloud Run service agent's own name.
+#
+# Not the project id: a service agent is named by number, and the two are
+# different strings for the same project. Passed in rather than looked up
+# here so this module makes no API call of its own.
+variable "project_number" {
+  description = "The numeric project id, used to name the Cloud Run service agent that pulls images."
+  type        = number
+}

@@ -58,6 +58,36 @@ resource "google_artifact_registry_repository_iam_member" "ci_push" {
 # the node service account is the one that needs this. The workload accounts
 # are listed as well because a workload reading its own image digest — for the
 # provenance an audit asks for — reads it through the same API.
+# Cloud Run's own service agent pulls, and nothing grants it here by accident.
+#
+# This binding did not exist and its absence is what stopped the first
+# deployment after ADR 0036. `infra.yml` run 70's Argo CD diagnostic printed
+# the same line for all four services:
+#
+#   Error 403: Permission 'artifactregistry.repositories.downloadArtifacts'
+#   denied on resource '.../repositories/qip-dev'
+#
+# The comment in the root module said "Cloud Run pulls as its own service
+# agent, which the project grants without a line here". That was true while
+# **Terraform** created the services: deploying through the ordinary path is
+# what causes Google to add the binding. ADR 0036 moved the services to
+# `RunService` manifests Config Connector reconciles, and the 2026-09-13
+# teardown destroyed this repository and left a new one behind — so there was
+# no automatic grant on it, and nothing in code supplied one. An assumption
+# that was true of the old delivery path outlived the path.
+#
+# Narrow deliberately, per `.claude/rules/domains/infrastructure.md`: one
+# role, on this one repository, to the one principal the refusal names.
+# `roles/artifactregistry.reader` is the role containing
+# `artifactregistry.repositories.downloadArtifacts` and nothing that writes.
+resource "google_artifact_registry_repository_iam_member" "cloud_run_agent" {
+  project    = var.project_id
+  location   = google_artifact_registry_repository.images.location
+  repository = google_artifact_registry_repository.images.name
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:service-${var.project_number}@serverless-robot-prod.iam.gserviceaccount.com"
+}
+
 resource "google_artifact_registry_repository_iam_member" "pull" {
   for_each = var.pull_service_accounts
 

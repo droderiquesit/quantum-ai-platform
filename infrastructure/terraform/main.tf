@@ -529,9 +529,9 @@ module "registry" {
   labels      = local.labels
 
   ci_service_account = module.cicd.service_account_email
+  project_number     = local.project_number
 
-  # Cloud Run pulls as its own service agent, which the project grants
-  # without a line here. The workloads are listed so a component can read the
+  # The workloads are listed so a component can read the
   # digest of the image it is running, which is what makes a provenance claim
   # checkable from inside the process. OpenObserve is not: it is a vendored
   # binary this platform does not build, and nothing inside it ever calls
