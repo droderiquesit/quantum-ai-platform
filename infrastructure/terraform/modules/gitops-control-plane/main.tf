@@ -748,6 +748,25 @@ resource "google_project_iam_custom_role" "bootstrap" {
     "container.thirdPartyObjects.update",
     "container.pods.get",
     "container.pods.list",
+    # Read a pod's output, and nothing else about it. `pods.get` and
+    # `pods.list` return a pod's *status* — that a container is not ready,
+    # and, for one that never started, the `waiting` reason. They return
+    # nothing at all about a container that started, ran and exited
+    # non-zero, which is the shape of every check that fails on its own
+    # terms rather than on a missing object.
+    #
+    # Run 83 is why this is here, and it failed twice over: the diagnostic
+    # reached the failed proving-hook pod and then could not read it —
+    # `pods "qip-prove-serving-r48tx" is forbidden: User "qip-infra-dev@..."
+    # cannot get resource "pods/log"`. So the deployment's last gate could
+    # report that it had refused and not why, across three runs.
+    #
+    # Still no exec and still no delete: `getLogs` reads what a container
+    # already wrote and cannot start a process, change an object, or reach
+    # a pod that is running normally in any way it could not before. It is
+    # the narrowest permission that makes a refusal explicable, which is
+    # this repository's whole argument about evidence.
+    "container.pods.getLogs",
   ]
 }
 
