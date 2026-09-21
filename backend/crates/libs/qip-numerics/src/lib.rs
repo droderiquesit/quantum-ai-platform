@@ -12,6 +12,7 @@ pub mod hmm;
 pub mod interpolate;
 pub mod lp;
 pub mod matrix;
+pub mod online;
 pub mod qp;
 pub mod search;
 pub mod sketch;
