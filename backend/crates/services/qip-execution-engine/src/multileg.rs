@@ -46,7 +46,7 @@ use crate::order::{Fill, Order, OrderType, Side};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, OrderId};
-use qip_core::time::Timestamp;
+use qip_core::time::{Duration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -75,6 +75,27 @@ pub struct Leg {
     /// change that added the check, not just after it.
     #[serde(default)]
     applied_fills: std::collections::BTreeSet<String>,
+    /// Quantity of this leg closed by a confirmed reversing fill.
+    ///
+    /// Held beside `filled` rather than subtracted from it, because the two
+    /// are different facts and the group needs both: `filled` is what the
+    /// venue did on the way in and is what a reversal must be sized to,
+    /// `reversed` is what has come back. Netting them into one number would
+    /// make a leg that filled a hundred and reversed a hundred
+    /// indistinguishable from one that never filled at all, and those end in
+    /// [`GroupState::Closed`] and [`GroupState::Abandoned`] respectively.
+    ///
+    /// Not a notional. A reversal is priced by the market it is sent to, so
+    /// the notional that comes back differs from the one that went out by the
+    /// loss, and a residual measured in money would read a *closed* position
+    /// whose price moved as an open one. See
+    /// [`LegGroup::unreversed_quantity`].
+    ///
+    /// `#[serde(default)]` for [`Self::applied_fills`]'s reason: a group
+    /// persisted before this field existed still deserializes as one with
+    /// nothing reversed, which is the fail-closed reading.
+    #[serde(default)]
+    reversed: Decimal,
 }
 
 impl Leg {
@@ -84,7 +105,18 @@ impl Leg {
             filled: Decimal::ZERO,
             filled_notional: Decimal::ZERO,
             applied_fills: std::collections::BTreeSet::new(),
+            reversed: Decimal::ZERO,
         }
+    }
+
+    /// Quantity this leg still holds open: what filled, less what a
+    /// confirmed reversing fill has closed.
+    ///
+    /// Never negative — [`LegGroup::confirm_unwind`] refuses a reversal
+    /// larger than the leg holds rather than clamping it, because a reversal
+    /// past flat is the mirror position opened by the recovery.
+    pub fn unreversed(&self) -> Decimal {
+        self.filled - self.reversed
     }
 
     /// Whether this leg has filled its full quantity.
@@ -127,8 +159,40 @@ pub enum GroupState {
     Complete { at: Timestamp },
     /// The group cannot complete and the filled legs are being reversed.
     Unwinding { at: Timestamp, reason: String },
-    /// Every filled leg has a reversing order.
+    /// Every filled leg has a reversing order **issued**.
+    ///
+    /// Not an end, and it used to be one. `is_terminal` named this state, so
+    /// a group reached it the instant the reversing orders went out and no
+    /// further verdict could be settled on it — which meant a group whose
+    /// reversals never filled reported a safe, finished unwind while the
+    /// position the group exists to close was still open. The fills come
+    /// back through [`LegGroup::confirm_unwind`], and the two ends after
+    /// them are [`Self::Closed`] and [`Self::Escalated`].
     Unwound { at: Timestamp },
+    /// Every reversing order came back and the group holds nothing open.
+    ///
+    /// The clean end of an unwind, and distinct from [`Self::Complete`]: this
+    /// group did not do what it set out to do, it paid two round trips to end
+    /// flat, and a report that merged the two could not say how often the
+    /// platform is reversing itself.
+    Closed { at: Timestamp },
+    /// The unwind did not close the exposure. Halt the cycle class, alert,
+    /// hold what is left hedged (blueprint §31.2).
+    ///
+    /// **Terminal, and the one terminal state that is not safe.** Every other
+    /// end means the group holds nothing; this one means it holds
+    /// `residual_quantity` that nobody decided to hold and that the recovery
+    /// path could not close. It is a state rather than an error return
+    /// because an operator has to be able to find it in the record — an
+    /// unwind that failed and left no trace is the failure the whole module
+    /// is about, one layer further on.
+    Escalated {
+        at: Timestamp,
+        reason: String,
+        /// Quantity still open across the legs, not money. See
+        /// [`LegGroup::unreversed_quantity`].
+        residual_quantity: Decimal,
+    },
     /// The group ended with nothing filled, so there was nothing to reverse.
     ///
     /// Distinct from `Unwound` on purpose. Both are safe ends and they mean
@@ -146,15 +210,40 @@ impl GroupState {
             Self::Complete { .. } => "complete",
             Self::Unwinding { .. } => "unwinding",
             Self::Unwound { .. } => "unwound",
+            Self::Closed { .. } => "closed",
+            Self::Escalated { .. } => "escalated",
             Self::Abandoned { .. } => "abandoned",
         }
     }
 
     /// Whether the group has reached an end it cannot leave.
+    ///
+    /// [`Self::Unwound`] is deliberately **not** one of them, and was until
+    /// the reversing fills had somewhere to be recorded: issuing a reversing
+    /// order is a decision, not an outcome, and a group that could not be
+    /// settled again after issuing one could never record that the reversal
+    /// failed.
     pub const fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Complete { .. } | Self::Unwound { .. } | Self::Abandoned { .. }
+            Self::Complete { .. }
+                | Self::Closed { .. }
+                | Self::Escalated { .. }
+                | Self::Abandoned { .. }
+        )
+    }
+
+    /// Whether the group ended holding nothing.
+    ///
+    /// Every terminal state but [`Self::Escalated`]. Read this rather than
+    /// [`Self::is_terminal`] wherever the question is "is there still a
+    /// position", because those are two different questions and answering the
+    /// second with the first is what [`Self::Unwound`]'s own doc records
+    /// going wrong.
+    pub const fn is_safe_end(&self) -> bool {
+        matches!(
+            self,
+            Self::Complete { .. } | Self::Closed { .. } | Self::Abandoned { .. }
         )
     }
 }
@@ -170,7 +259,51 @@ pub enum Verdict {
     Unwind { reason: String },
     /// Stop; nothing filled, so nothing to reverse.
     Abandon { reason: String },
+    /// Every reversal came back and nothing is open. End the group flat.
+    Close,
+    /// The unwind did not close the exposure inside [`UNWIND_WINDOW`].
+    /// Halt the cycle class and alert.
+    Escalate {
+        reason: String,
+        /// Quantity still open, not money.
+        residual_quantity: Decimal,
+    },
 }
+
+/// The id of the order that reverses `leg`.
+///
+/// Derived from the leg's own id in one place so that
+/// [`LegGroup::unwind_orders`], which produces the order, and
+/// [`LegGroup::settle`], which checks the caller issued it, cannot disagree
+/// about what a reversal of this leg is called — and so that
+/// [`LegGroup::confirm_unwind`] can follow a reversing fill back to the leg
+/// it closes. Deriving rather than allocating also makes it idempotent: two
+/// calls produce the same id rather than a second reversal that would double
+/// the close into a mirror position.
+fn unwind_order_id(leg: &Leg) -> OrderId {
+    OrderId::from_string(format!("{}-unwind", leg.order.order_id.as_str()))
+}
+
+/// How long a reversal has to come back before the group escalates.
+///
+/// **A stated policy, not a measured one**, written down as such so that a
+/// later measurement can replace it without anybody having to work out
+/// whether it was evidence.
+///
+/// It exists because the alternative is worse in a specific way. Without a
+/// window, a group waits for reversals that a venue may never report, and
+/// [`LegGroup::assess`] answers [`Verdict::Continue`] forever — the naked
+/// position with a plan to fix it later, which is the thing
+/// [`LegGroup::deadline`] is required for on the way in and which a recovery
+/// path has no more right to than the trade did.
+///
+/// Five minutes rather than the group's own deadline because the deadline has
+/// already passed by the time anything is unwinding, so it cannot bound what
+/// happens afterwards. The reversals are market orders
+/// ([`LegGroup::unwind_orders`]), so a venue that is answering at all answers
+/// far inside this; a venue that has not answered in five minutes is not
+/// slow, it is a venue an operator needs to hear about.
+pub const UNWIND_WINDOW: Duration = Duration::from_mins(5);
 
 /// A set of orders that express one decision and must end together.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -191,7 +324,13 @@ pub struct LegGroup {
     /// whole remaining window.
     pub max_leg_risk: Decimal,
     pub state: GroupState,
-    /// Reversing orders issued, by the order id of the leg they reverse.
+    /// Reversing orders issued, keyed on the order id of the leg they
+    /// reverse.
+    ///
+    /// The key used to be the reversing order's own id, which made the map a
+    /// set: nothing recorded which leg a reversal belonged to, so a
+    /// reversing fill arriving later had no leg to be credited against. That
+    /// is the link [`LegGroup::confirm_unwind`] follows.
     unwinds: BTreeMap<String, OrderId>,
 }
 
@@ -307,7 +446,33 @@ impl LegGroup {
     /// being unwound by a deadline it met. Leg risk is checked before the
     /// deadline, because an over-exposed group is already the failure and
     /// waiting for the clock holds the exposure for the rest of the window.
+    ///
+    /// A group that is already unwinding is judged on a different question
+    /// and so is answered first: not "should this trade go on" but "did the
+    /// reversal work". Asking the ordinary questions of it would answer
+    /// [`Verdict::Unwind`] on a group that is unwinding, or
+    /// [`Verdict::Complete`] on one whose reversals filled every leg back to
+    /// its ordered quantity.
     pub fn assess(&self, now: Timestamp) -> Verdict {
+        if let GroupState::Unwinding { at, .. } | GroupState::Unwound { at } = self.state {
+            let residual_quantity = self.unreversed_quantity();
+            if !residual_quantity.is_positive() {
+                return Verdict::Close;
+            }
+            let by = at.saturating_add(UNWIND_WINDOW);
+            if now >= by {
+                return Verdict::Escalate {
+                    reason: format!(
+                        "the unwind of group {} did not close {residual_quantity} of open                          quantity within {} seconds of beginning",
+                        self.group_id,
+                        UNWIND_WINDOW.as_nanos() / 1_000_000_000
+                    ),
+                    residual_quantity,
+                };
+            }
+            return Verdict::Continue;
+        }
+
         if self.is_filled() {
             return Verdict::Complete;
         }
@@ -374,7 +539,7 @@ impl LegGroup {
                     leg.order.arrival_price
                 };
                 Order::new(
-                    OrderId::from_string(format!("{}-unwind", leg.order.order_id.as_str())),
+                    unwind_order_id(leg),
                     ObjectId::from_string(leg.order.object_id.as_str()),
                     reversed,
                     leg.filled,
@@ -432,21 +597,58 @@ impl LegGroup {
                 Ok(())
             }
             Verdict::Unwind { reason } => {
-                let expected = self.unwind_orders(now).len();
-                if issued.len() != expected {
+                let wanted = self.unwind_orders(now);
+                if issued.len() != wanted.len() {
                     return Err(Error::denied(format!(
-                        "leg group {} has {expected} filled leg(s) to reverse and {} reversing \
+                        "leg group {} has {} filled leg(s) to reverse and {} reversing \
                          order(s) were issued; a group is not unwound until every filled leg has \
                          one",
                         self.group_id,
+                        wanted.len(),
                         issued.len()
                     )));
                 }
-                for order in issued {
-                    self.unwinds
-                        .insert(order.order_id.as_str().to_string(), order.order_id.clone());
+                // Matched one by one rather than counted. The count alone
+                // admitted any two orders at all as the reversal of a
+                // two-legged group — including the group's own legs re-sent,
+                // which would double the position instead of closing it —
+                // and it is the count that decided whether the group was
+                // marked unwound.
+                let mut recorded: BTreeMap<String, OrderId> = BTreeMap::new();
+                for leg in self.legs.iter().filter(|leg| leg.filled.is_positive()) {
+                    let want = unwind_order_id(leg);
+                    let found = issued
+                        .iter()
+                        .find(|order| order.order_id.as_str() == want.as_str())
+                        .ok_or_else(|| {
+                            Error::denied(format!(
+                                "leg group {} was issued no reversing order {} for leg {}; \
+                                 reverse each filled leg with the order unwind_orders names \
+                                 for it",
+                                self.group_id,
+                                want.as_str(),
+                                leg.order.order_id.as_str()
+                            ))
+                        })?;
+                    // A reversal is the leg's filled quantity on the other
+                    // side. Anything else is a different trade wearing the
+                    // reversal's identifier, and the group would record it as
+                    // having closed the position.
+                    if found.quantity != leg.filled || found.side == leg.order.side {
+                        return Err(Error::denied(format!(
+                            "reversing order {} is {:?} {} against a leg that filled {:?} {}; \
+                             a reversal is the filled quantity on the opposite side",
+                            want.as_str(),
+                            found.side,
+                            found.quantity,
+                            leg.order.side,
+                            leg.filled
+                        )));
+                    }
+                    recorded.insert(leg.order.order_id.as_str().to_string(), want);
                 }
-                self.state = if expected == 0 {
+                self.unwinds.extend(recorded);
+                self.state = if wanted.is_empty() {
                     GroupState::Abandoned {
                         at: now,
                         reason: reason.clone(),
@@ -456,12 +658,135 @@ impl LegGroup {
                 };
                 Ok(())
             }
+            Verdict::Close => {
+                let residual_quantity = self.unreversed_quantity();
+                if residual_quantity.is_positive() {
+                    return Err(Error::denied(format!(
+                        "leg group {} was told to close while holding {residual_quantity} of \
+                         open quantity; a group closes flat or it escalates",
+                        self.group_id
+                    )));
+                }
+                self.state = GroupState::Closed { at: now };
+                Ok(())
+            }
+            // The verdict's own `residual_quantity` is deliberately not read.
+            // A verdict travels, and the figure an operator reads when
+            // deciding how much is loose must be the group's own arithmetic
+            // at the instant it was recorded, not a caller's copy of it taken
+            // at some earlier one.
+            Verdict::Escalate { reason, .. } => {
+                let open = self.unreversed_quantity();
+                if !open.is_positive() {
+                    return Err(Error::denied(format!(
+                        "leg group {} was escalated while holding nothing open; an escalation \
+                         halts a cycle class and pages somebody, and a group that ended flat \
+                         closes",
+                        self.group_id
+                    )));
+                }
+                self.state = GroupState::Escalated {
+                    at: now,
+                    reason: reason.clone(),
+                    residual_quantity: open,
+                };
+                Ok(())
+            }
         }
     }
 
     /// The reversing orders this group has recorded as issued.
     pub fn unwinds(&self) -> Vec<&OrderId> {
         self.unwinds.values().collect()
+    }
+
+    /// Quantity the group still holds open, summed across its legs.
+    ///
+    /// **A quantity, not money, and that is the whole point.** A reversal is
+    /// a market order, so what comes back is priced by the market it was sent
+    /// to and differs from what went out by the loss. [`Self::leg_risk`],
+    /// which is a notional, therefore reads a position that closed at a worse
+    /// price as though it were still open — and escalating on it would raise
+    /// an alarm about exposure that does not exist while telling nobody what
+    /// the loss was. What is open is a quantity the venue reported, on both
+    /// sides, and nothing here needs a mark to state it.
+    ///
+    /// Summed rather than netted across legs. The legs are on opposite sides
+    /// by construction, so a net would report a group holding a hundred long
+    /// on one leg and a hundred short on another as flat — which it is in
+    /// notional and is not in fact: those are two open positions at two
+    /// venues, each of which has to be closed at its own.
+    pub fn unreversed_quantity(&self) -> Decimal {
+        self.legs
+            .iter()
+            .fold(Decimal::ZERO, |sum, leg| sum + leg.unreversed())
+    }
+
+    /// Record a fill on a reversing order this group issued.
+    ///
+    /// The other half of [`Self::record_fill`], and the half that was
+    /// missing: reversing orders are issued with derived ids that name no
+    /// leg, so their fills could not be recorded at all and the group's
+    /// residual could never fall. `settle` marked the group `Unwound` on
+    /// *issuance* and `is_terminal` named that state, so a reversal that
+    /// never filled left a finished-looking group with an open position.
+    ///
+    /// Refuses, each naming what the caller should do instead:
+    ///
+    /// * a fill on an order this group did not issue as a reversal — the
+    ///   same routing mistake [`Self::record_fill`] refuses, and crediting it
+    ///   to whichever leg happened to be first would close a position with
+    ///   somebody else's trade;
+    /// * a fill id already applied, because a redelivered report is not a
+    ///   second reversal and folding it twice would report the group flat
+    ///   while it was still half open;
+    /// * **a reversal larger than the leg holds**, refused rather than
+    ///   clamped. Reversing past flat opens the mirror of the position the
+    ///   recovery was closing, and a clamp would hide that the venue filled
+    ///   more than it was asked to.
+    pub fn confirm_unwind(&mut self, fill: &Fill) -> Result<()> {
+        let group_id = self.group_id.clone();
+        let leg_id = self
+            .unwinds
+            .iter()
+            .find(|(_, issued)| issued.as_str() == fill.order_id.as_str())
+            .map(|(leg_id, _)| leg_id.clone())
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "fill {} names order {}, which is no reversing order group {group_id}                      issued; record an ordinary leg fill through record_fill",
+                    fill.fill_id.as_str(),
+                    fill.order_id.as_str()
+                ))
+            })?;
+        let leg = self
+            .legs
+            .iter_mut()
+            .find(|leg| leg.order.order_id.as_str() == leg_id)
+            .ok_or_else(|| {
+                // Unreachable through `settle`, which derives both sides of
+                // the map from the legs. Written out rather than unwrapped
+                // because a proof one function away is a proof somebody can
+                // move.
+                Error::invalid(format!(
+                    "group {group_id} recorded a reversal for leg {leg_id}, which it does not                      hold; the group's unwind map and its legs disagree"
+                ))
+            })?;
+        if !leg.applied_fills.insert(fill.fill_id.as_str().to_string()) {
+            return Err(Error::invalid(format!(
+                "fill {} was already applied to leg {leg_id}; a redelivered report is not a                  second reversal",
+                fill.fill_id.as_str()
+            )));
+        }
+        if fill.quantity > leg.unreversed() {
+            return Err(Error::invalid(format!(
+                "fill {} reverses {} of leg {leg_id}, which holds {} open; reverse no more                  than the leg holds — a reversal past flat opens the mirror of the position                  it was closing",
+                fill.fill_id.as_str(),
+                fill.quantity,
+                leg.unreversed()
+            )));
+        }
+        leg.reversed += fill.quantity;
+        Ok(())
     }
 
     /// Mark the group as unwinding, before the reversing orders are placed.
@@ -900,6 +1225,247 @@ mod tests {
             .settle(&Verdict::Complete, &[], at(2))
             .expect_err("an unfilled group was completed");
         assert!(error.message().contains("unmatched notional"));
+    }
+
+    /// A group past its deadline with both legs filled unevenly, with its
+    /// reversing orders issued and none of them filled yet.
+    ///
+    /// The state the module could not previously represent: `Unwound` was
+    /// terminal, so this group read as a finished unwind while holding 140.
+    fn unwound_but_not_closed() -> LegGroup {
+        let mut group = pair();
+        group
+            .record_fill(&fill("ord-buy", "100", "10"))
+            .expect("buy");
+        group
+            .record_fill(&fill("ord-sell", "40", "10"))
+            .expect("partial sell");
+        let verdict = Verdict::Unwind {
+            reason: "deadline".to_string(),
+        };
+        let issued = group.unwind_orders(at(61));
+        group.settle(&verdict, &issued, at(61)).expect("settles");
+        group
+    }
+
+    #[test]
+    fn a_group_whose_reversals_never_fill_escalates_rather_than_reporting_itself_unwound() {
+        // The failure this closes, and it was live: `settle` marked the group
+        // `Unwound` the instant the reversing orders were *issued*, and
+        // `is_terminal` named that state, so a group whose reversals never
+        // filled was a finished-looking record over an open position that
+        // nothing could ever be settled onto.
+        let group = unwound_but_not_closed();
+
+        // Premise, both halves: the group says it is unwound, and it is still
+        // holding the whole of what filled. Without the second half this test
+        // would pass on a group that had nothing to escalate about.
+        assert!(matches!(group.state, GroupState::Unwound { .. }));
+        assert_eq!(
+            group.unreversed_quantity(),
+            d("140"),
+            "premise: 100 on the buy and 40 on the sell are still open"
+        );
+        assert!(
+            !group.state.is_terminal(),
+            "issuing a reversal is a decision, not an outcome"
+        );
+
+        // Inside the window there is nothing to say yet.
+        assert_eq!(
+            group.assess(at(61).saturating_add(Duration::from_mins(4))),
+            Verdict::Continue,
+            "a reversal still inside its window is not a failure"
+        );
+
+        let verdict = group.assess(at(61).saturating_add(UNWIND_WINDOW));
+        let Verdict::Escalate {
+            residual_quantity, ..
+        } = &verdict
+        else {
+            panic!("a reversal that never came back must escalate, got {verdict:?}");
+        };
+        assert_eq!(*residual_quantity, d("140"));
+
+        let mut group = group;
+        group
+            .settle(&verdict, &[], at(400))
+            .expect("an escalation settles");
+        match &group.state {
+            GroupState::Escalated {
+                residual_quantity, ..
+            } => assert_eq!(*residual_quantity, d("140")),
+            other => panic!("expected an escalated group, got {other:?}"),
+        }
+        assert!(group.state.is_terminal());
+        assert!(
+            !group.state.is_safe_end(),
+            "an escalated group is the one end that still holds a position"
+        );
+    }
+
+    #[test]
+    fn a_group_whose_reversals_all_fill_closes_flat_rather_than_escalating() {
+        // The half that separates a recovery from a new alarm. A module that
+        // escalated whenever it had unwound would satisfy the test above and
+        // would page somebody on every successful reversal.
+        let mut group = unwound_but_not_closed();
+
+        // Reversed at a worse price than they were bought at, deliberately:
+        // the residual is a quantity, and a group that closed flat at a loss
+        // must read as closed rather than as still holding the loss.
+        group
+            .confirm_unwind(&fill("ord-buy-unwind", "100", "9"))
+            .expect("the buy leg is reversed");
+        group
+            .confirm_unwind(&fill("ord-sell-unwind", "40", "11"))
+            .expect("the sell leg is reversed");
+        assert_eq!(group.unreversed_quantity(), Decimal::ZERO);
+
+        // Long past the window, so this is the residual deciding and not the
+        // clock.
+        let verdict = group.assess(at(61).saturating_add(Duration::from_hours(3)));
+        assert_eq!(verdict, Verdict::Close);
+
+        group.settle(&verdict, &[], at(500)).expect("closes");
+        assert!(matches!(group.state, GroupState::Closed { .. }));
+        assert!(group.state.is_safe_end());
+        assert!(
+            !matches!(group.state, GroupState::Complete { .. }),
+            "a group that paid two round trips to end flat did not complete"
+        );
+    }
+
+    #[test]
+    fn a_reversal_larger_than_the_leg_holds_is_refused_rather_than_clamped() {
+        // Reversing past flat opens the mirror of the position the recovery
+        // was closing, and a clamp would hide that the venue filled more than
+        // it was asked to.
+        let mut group = unwound_but_not_closed();
+        let error = group
+            .confirm_unwind(&fill("ord-buy-unwind", "101", "10"))
+            .expect_err("a reversal past flat must be refused");
+        assert!(
+            error.message().contains("reverses 101") && error.message().contains("holds 100"),
+            "the refusal must name both quantities, got: {}",
+            error.message()
+        );
+        assert_eq!(
+            group.unreversed_quantity(),
+            d("140"),
+            "a refused reversal must leave the leg exactly as it was"
+        );
+    }
+
+    #[test]
+    fn a_fill_on_an_order_this_group_never_issued_as_a_reversal_is_refused() {
+        let mut group = unwound_but_not_closed();
+        let error = group
+            .confirm_unwind(&fill("someone-elses-order", "10", "10"))
+            .expect_err("a stranger's fill must not close this group's position");
+        assert!(error.message().contains("no reversing order"));
+    }
+
+    #[test]
+    fn a_redelivered_reversing_fill_does_not_close_the_leg_twice() {
+        let mut group = unwound_but_not_closed();
+        let print = fill("ord-buy-unwind", "50", "10");
+        group.confirm_unwind(&print).expect("the first print");
+        let error = group
+            .confirm_unwind(&print)
+            .expect_err("a redelivered report is not a second reversal");
+        assert!(error.message().contains("already applied"));
+        assert_eq!(group.unreversed_quantity(), d("90"), "100 - 50, plus 40");
+    }
+
+    #[test]
+    fn a_reversing_order_that_is_not_the_reversal_of_its_leg_is_refused() {
+        // `settle` used to check the *count* of reversing orders, so any two
+        // orders at all settled a two-legged group — including the group's
+        // own legs re-sent, which would double the position rather than close
+        // it.
+        let mut group = pair();
+        group
+            .record_fill(&fill("ord-buy", "100", "10"))
+            .expect("buy");
+        group
+            .record_fill(&fill("ord-sell", "40", "10"))
+            .expect("partial sell");
+        let verdict = Verdict::Unwind {
+            reason: "deadline".to_string(),
+        };
+
+        // Premise: the honest set settles, so what follows is the substitution
+        // being refused and not the group refusing every unwind.
+        assert!(
+            group
+                .clone()
+                .settle(&verdict, &group.unwind_orders(at(61)), at(61))
+                .is_ok()
+        );
+
+        // Right identifier, wrong size: a different trade wearing the
+        // reversal's name.
+        let mut wrong = group.unwind_orders(at(61));
+        wrong[0].quantity = d("1");
+        let error = group
+            .settle(&verdict, &wrong, at(61))
+            .expect_err("a reversal at the wrong size must be refused");
+        assert!(
+            error.message().contains("opposite side"),
+            "unexpected refusal: {}",
+            error.message()
+        );
+
+        // Right count, entirely wrong orders.
+        let legs: Vec<Order> = group.legs.iter().map(|leg| leg.order.clone()).collect();
+        let error = group
+            .settle(&verdict, &legs, at(61))
+            .expect_err("re-sending the legs must not settle the unwind");
+        assert!(error.message().contains("was issued no reversing order"));
+    }
+
+    #[test]
+    fn closing_a_group_that_still_holds_something_open_is_refused() {
+        // The mirror of the escalation guard, and the more dangerous
+        // direction: `Closed` is a safe end, so a group that could reach it
+        // while holding a position would put the exposure beyond every
+        // report that reads `is_safe_end`.
+        let mut group = unwound_but_not_closed();
+        let error = group
+            .settle(&Verdict::Close, &[], at(500))
+            .expect_err("a group holding 140 must not close");
+        assert!(
+            error.message().contains("closes flat or it escalates"),
+            "unexpected refusal: {}",
+            error.message()
+        );
+        assert!(matches!(group.state, GroupState::Unwound { .. }));
+    }
+
+    #[test]
+    fn escalating_a_group_that_holds_nothing_open_is_refused() {
+        // An escalation halts a cycle class and pages somebody. A group that
+        // ended flat closes, and a path that could escalate one would make the
+        // alarm mean nothing.
+        let mut group = unwound_but_not_closed();
+        group
+            .confirm_unwind(&fill("ord-buy-unwind", "100", "10"))
+            .expect("buy reversed");
+        group
+            .confirm_unwind(&fill("ord-sell-unwind", "40", "10"))
+            .expect("sell reversed");
+        let error = group
+            .settle(
+                &Verdict::Escalate {
+                    reason: "invented".to_string(),
+                    residual_quantity: d("140"),
+                },
+                &[],
+                at(500),
+            )
+            .expect_err("a flat group must not escalate");
+        assert!(error.message().contains("holding nothing open"));
     }
 
     #[test]
