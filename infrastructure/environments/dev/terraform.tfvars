@@ -571,3 +571,56 @@ gitops_portal_hostname = "portal.algorik.ai"
 # and IAP refuses every caller. That is the correct state for a control
 # plane whose operators have not been named yet.
 gitops_iap_members = []
+
+# --- The domain, owned in code ------------------------------------------------
+#
+# All three names above were applied and none of them resolved. The addresses
+# were reserved, the certificates were ordered, and each front door's `address`
+# output carried a sentence explaining that somebody had to go and type an A
+# record into a registrar's web form — because `algorik.ai` answers from
+# `dns1.registrar-servers.com`. A Google-managed certificate stays in
+# PROVISIONING until its name resolves to the load balancer, so all three doors
+# sat there complete and serving nothing.
+#
+# Setting this creates the zone and every A record under it, each pointing at
+# the address of the module that reserved it. Not a copy of that address — the
+# output itself. The two would agree the day they were written and disagree the
+# first time an address was released and re-reserved, and the disagreement is
+# silent: the name keeps resolving, to whatever Google handed the next tenant.
+#
+# **Dev is the only environment that may set this, and that is a property of
+# domains rather than a policy.** A domain has one authoritative zone. Two
+# environments creating one each would both apply cleanly and serve two
+# different sets of records from two different sets of nameservers, and only
+# whichever set the registrar names would be the one anybody sees; the other
+# would be a state file full of records nobody resolves. No plan can catch
+# that, because each environment has its own state and none can see another's.
+# So `dns_zone_domain` is empty by default, `module.dns_zone`'s `count` is on
+# it, test/stage/prod say so in a comment at the foot of their own files, and
+# `a_single_environment_owns_the_dns_zone_for_the_domain` in the infrastructure
+# acceptance suite fails if a second one ever declares a domain.
+#
+# **One manual step remains and it is taken once, not per record.** After the
+# apply, `terraform output dns_zone` prints four Cloud DNS nameservers.
+# Replace the nameservers at Namecheap with those four. Nothing else there
+# changes. From then on a new front door is an A record in a commit, and the
+# owner never hand-creates another one.
+#
+# DNSSEC is on in Cloud DNS and the DS record is deliberately *not* part of
+# that step. Signing is free and invisible to resolvers until the registrar
+# publishes a DS; publishing the DS makes the whole domain's resolution depend
+# on this zone continuing to exist with these keys, and `infra.yml down`
+# destroys this zone. `terraform output dns_zone` carries the DS for the day
+# that trade is worth making — which is not while dev is still a thing that
+# gets torn down.
+dns_zone_domain = "algorik.ai"
+
+# Five minutes, chosen rather than inherited. A TTL is a promise about how long
+# a mistake lasts, and these names have never resolved, so the first thing that
+# happens to each is somebody getting it wrong. It also bounds the wait on the
+# only feedback there is: a certificate leaves PROVISIONING once its name
+# resolves, and a record cached for a day is a certificate that does not issue
+# for a day. What a low TTL costs is query volume on three names three people
+# type, which is not a reason. Raise it when the addresses have been stable for
+# a while.
+dns_record_ttl_seconds = 300

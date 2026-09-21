@@ -8656,3 +8656,387 @@ fn the_bootstrap_reads_kargos_webhook_secret_name_from_its_certificate() {
         );
     }
 }
+
+/// The body of a top-level `module "<name>" { … }` block, comments stripped.
+///
+/// Comments stripped because both the block and this file argue at length
+/// about pasted addresses, and a scan for a dotted quad over the raw text
+/// would fail on the paragraph explaining why there is none — a test that
+/// punishes the documentation it depends on, which this suite has already been
+/// caught doing twice.
+fn root_module_block(name: &str) -> String {
+    let text = without_comments(&read("infrastructure/terraform/main.tf"));
+    let start = text
+        .find(&format!("module \"{name}\" {{"))
+        .unwrap_or_else(|| panic!("infrastructure/terraform/main.tf declares no module `{name}`"));
+    let body: String = text[start..]
+        .lines()
+        .take_while(|line| !line.starts_with('}'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        body.lines().count() > 1,
+        "the `{name}` module block read as a single line; the block scan is reading the wrong \
+         shape and every assertion over it would pass vacuously"
+    );
+    body
+}
+
+/// Whether any line of `text`, with its whitespace collapsed, is exactly
+/// `statement`.
+///
+/// `terraform fmt` aligns equals signs to the widest key in a block, so the
+/// spacing around `=` changes whenever a neighbouring argument is renamed. A
+/// check written against today's alignment fails on somebody else's rename,
+/// and a check people learn to edit rather than read has stopped being a
+/// check.
+fn declares(text: &str, statement: &str) -> bool {
+    text.lines().any(|line| collapsed(line) == statement)
+}
+
+/// Whether a line contains a bare IPv4 literal — four dot-separated runs of
+/// digits.
+///
+/// Hand-rolled because this workspace permits `serde` and `serde_json` and
+/// nothing else, and a regex crate is an ADR rather than a convenience. It
+/// deliberately splits on the characters an HCL expression puts around a
+/// value, so `"203.0.113.10"` and `["203.0.113.10"]` are both found while
+/// `module.portal_edge[0].address` is not.
+fn contains_an_ipv4_literal(line: &str) -> bool {
+    line.split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .any(|token| {
+            let parts: Vec<&str> = token.split('.').collect();
+            parts.len() == 4
+                && parts
+                    .iter()
+                    .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        })
+}
+
+#[test]
+fn the_dns_records_take_their_addresses_from_the_modules_that_reserved_them() {
+    // The whole argument for `modules/dns-zone`, as something a scan can hold.
+    //
+    // Three front doors were applied before that module existed and none of
+    // them resolved: `argocd.algorik.ai` and `kargo.algorik.ai` on
+    // `modules/gitops-gateway`'s reserved global address, `portal.algorik.ai`
+    // on `modules/iap-edge`'s (ADR 0094). Each waited on an A record typed
+    // into a registrar's web form, and each module's `address` output still
+    // says so.
+    //
+    // The failure this prevents is not the typing. A hand-made record — or a
+    // literal pasted into the wiring here — is a **second claim about an
+    // address this repository already knows**. Two claims about one fact agree
+    // on the day they are written and disagree the first time an address is
+    // released and re-reserved; the disagreement is silent, because the name
+    // keeps resolving, to whatever Google handed the next tenant. A record
+    // that can disagree with the address it names is the defect, and it is
+    // invisible in a plan for exactly as long as the literal happens to be
+    // right.
+    //
+    // `modules/dns-zone/tests/dns-zone.tftest.hcl` cannot see this: literals
+    // are what its own harness must pass, because a mocked provider leaves a
+    // real `google_compute_global_address.address` unknown and a validation
+    // handed an unknown is skipped rather than run. So the derivation is
+    // asserted here, over the text, and the module's behaviour is asserted
+    // there, over a plan.
+    let block = root_module_block("dns_zone");
+
+    // Premise first: this is the DNS module, gated on the domain, or the
+    // assertions below are about some other block that happens to be named
+    // `dns_zone`.
+    assert!(
+        declares(&block, "source = \"./modules/dns-zone\""),
+        "the `dns_zone` module block does not source ./modules/dns-zone; the assertions below \
+         would be about some other module"
+    );
+    assert!(
+        declares(&block, "count = var.dns_zone_domain != \"\" ? 1 : 0"),
+        "module.dns_zone is no longer gated on dns_zone_domain. A domain has one authoritative \
+         zone and no plan can see another environment's state, so the `count` on an empty \
+         default is the only structural guard against a second environment creating a second \
+         zone for the same domain"
+    );
+    assert!(
+        block.contains("a_records"),
+        "the `dns_zone` module block passes no a_records; the zone would be authoritative for \
+         the domain and answer for none of the front doors under it, which is worse than the \
+         registrar was — the names would resolve to NXDOMAIN rather than to nothing"
+    );
+
+    // The derivation itself. Both front-door modules, by their `address`
+    // output, addressed through the `count` index the root gates them with.
+    for reservation in [
+        "module.gitops_gateway[0].address",
+        "module.portal_edge[0].address",
+    ] {
+        assert!(
+            block.contains(reservation),
+            "the `dns_zone` module block does not read {reservation}. Every address in this \
+             zone must be the output of the module that reserved it: a copy agrees on the day \
+             it is written and disagrees the first time the address is released, and the name \
+             then resolves to whatever Google handed the next tenant"
+        );
+    }
+
+    // And nothing in the block is an address. The scan is over the executed
+    // lines with comments stripped, so the paragraph above this block may say
+    // `203.0.113.10` while the wiring may not.
+    for line in block.lines() {
+        assert!(
+            !contains_an_ipv4_literal(line),
+            "the `dns_zone` module block writes an IPv4 literal in `{}`. A record that can \
+             disagree with the address it names is the defect this module exists to prevent; \
+             read the reserving module's `address` output instead",
+            line.trim()
+        );
+    }
+
+    // The premise of that scan, because a scan that finds nothing passes
+    // identically whether the rule holds or the scanner is broken. A literal
+    // in the block would be found.
+    assert!(
+        contains_an_ipv4_literal("        address = \"203.0.113.10\""),
+        "the IPv4 scan does not recognise a pasted address, so the loop above proves nothing"
+    );
+    assert!(
+        !contains_an_ipv4_literal("        address     = module.portal_edge[0].address"),
+        "the IPv4 scan reads a module reference as an address, so it would fail on the correct \
+         wiring and be deleted rather than fixed"
+    );
+
+    // The module's own side of the same fact: the rrdata is the address it was
+    // given, not something assembled in the module.
+    let module = without_comments(&read("infrastructure/terraform/modules/dns-zone/main.tf"));
+    assert!(
+        declares(&module, "rrdatas = [each.value.address]"),
+        "modules/dns-zone no longer sets a record's rrdatas from the address it was passed; a \
+         zone that computes an address is a third claim about it"
+    );
+    for line in module.lines() {
+        assert!(
+            !contains_an_ipv4_literal(line),
+            "modules/dns-zone writes an IPv4 literal in `{}`; every address reaching this zone \
+             comes from its caller, which reads it from the module that reserved it",
+            line.trim()
+        );
+    }
+}
+
+#[test]
+fn a_single_environment_owns_the_dns_zone_for_the_domain() {
+    // A domain has exactly one authoritative zone. Two environments creating
+    // one each would both apply cleanly — different projects, different state
+    // files, no error anywhere — and then serve two different sets of records
+    // from two different sets of nameservers. Only whichever set the registrar
+    // names would be the one anybody sees; the other would be a state file
+    // full of records nobody resolves, which reads in a console as a domain
+    // being managed.
+    //
+    // **Terraform cannot catch this**, and that is why the check is here. Each
+    // environment has its own state and no plan can see another's, so there is
+    // no precondition, no validation and no `count` that can observe a second
+    // declaration. What can observe it is this: the second declaration has to
+    // be committed to one of these four files to exist at all.
+    let mut declaring: Vec<(String, String)> = Vec::new();
+    let mut examined = 0usize;
+    for environment in ["dev", "test", "stage", "prod"] {
+        let path = format!("infrastructure/environments/{environment}/terraform.tfvars");
+        let tfvars = without_comments(&read(&path));
+        examined += 1;
+        if let Some(domain) = tfvars_value(&tfvars, "dns_zone_domain") {
+            let domain = domain.trim().trim_matches('"').to_string();
+            if !domain.is_empty() {
+                declaring.push((environment.to_string(), domain));
+            }
+        }
+    }
+    assert_eq!(
+        examined, 4,
+        "only {examined} environment tfvars were read, so a second domain declaration in one \
+         of the others would not have been seen"
+    );
+
+    // Premise: one environment does declare it. Without this the equality
+    // below is satisfied by a repository that owns no domain at all, and the
+    // whole of `modules/dns-zone` would be a module nothing calls while this
+    // test went on passing.
+    assert_eq!(
+        declaring.len(),
+        1,
+        "{} environments declare dns_zone_domain: {declaring:?}. Exactly one may — a domain \
+         has one authoritative zone, and a second one applies cleanly and then serves records \
+         nobody resolves. If another environment genuinely needs a name, it takes a subdomain \
+         delegated from the owning zone rather than a zone of its own for the same domain",
+        declaring.len()
+    );
+    assert_eq!(
+        declaring[0].0, "dev",
+        "the environment owning the DNS zone is {}, not dev. Moving it is a decision about \
+         which state file the domain's resolution lives in, and it is not made by editing a \
+         tfvars",
+        declaring[0].0
+    );
+    assert_eq!(
+        declaring[0].1, "algorik.ai",
+        "dev's dns_zone_domain is {}, not algorik.ai — which is the domain the three front \
+         doors' hostnames are under, and a zone for anything else leaves them exactly as dark \
+         as they were",
+        declaring[0].1
+    );
+
+    // Every front door dev declares is inside that zone. A hostname under a
+    // domain nothing here is authoritative for is a name that still needs a
+    // hand-made record — the state this whole change exists to end — and the
+    // module's own precondition would refuse the record at plan.
+    let dev = without_comments(&read("infrastructure/environments/dev/terraform.tfvars"));
+    let suffix = format!(".{}", declaring[0].1);
+    let mut doors = 0usize;
+    for key in [
+        "gitops_argocd_hostname",
+        "gitops_kargo_hostname",
+        "gitops_portal_hostname",
+    ] {
+        let Some(hostname) = tfvars_value(&dev, key) else {
+            continue;
+        };
+        let hostname = hostname.trim().trim_matches('"').to_string();
+        if hostname.is_empty() {
+            continue;
+        }
+        doors += 1;
+        assert!(
+            hostname.ends_with(&suffix),
+            "{key} is {hostname}, which is not inside {}. Its A record would have to be made by \
+             hand at whatever registrar does serve it, which is the state this zone exists to \
+             end",
+            declaring[0].1
+        );
+    }
+    assert_eq!(
+        doors, 3,
+        "dev declares {doors} front-door hostnames, not the three the zone was built to serve. \
+         If a door was removed, this count is the place to record that; if one was added, it \
+         needs a record"
+    );
+
+    // And the closed state is the default, so the absence in the other three
+    // is absence rather than a value inherited from the root.
+    let variables = without_comments(&read("infrastructure/terraform/variables.tf"));
+    let declaration = variables
+        .split("variable \"dns_zone_domain\"")
+        .nth(1)
+        .expect("the root declares dns_zone_domain")
+        .split("\nvariable ")
+        .next()
+        .unwrap_or_default();
+    assert!(
+        declaration.contains("default     = \"\"") || declaration.contains("default = \"\""),
+        "dns_zone_domain's default is not the empty string; a zone created because a variable \
+         had a default is a second authority for a domain nobody decided to move"
+    );
+}
+
+#[test]
+fn the_domains_zone_is_public_and_signed_and_says_where_to_point_the_registrar() {
+    // Three properties, and the first is the one that would be easiest to lose
+    // and hardest to see.
+    //
+    // `visibility = "public"` is written rather than defaulted because the
+    // wrong value here is invisible: a private zone applies cleanly, appears
+    // in `terraform show` as a managed zone for the domain, answers correctly
+    // from inside the VPC, and leaves every name on the internet exactly as
+    // dark as it was. `modules/network` creates the private zone this project
+    // also has, so both kinds genuinely exist here.
+    let module = without_comments(&read("infrastructure/terraform/modules/dns-zone/main.tf"));
+    assert!(
+        declares(&module, "visibility = \"public\""),
+        "modules/dns-zone does not declare its zone public. A private zone applies cleanly, \
+         reads in a plan exactly like a working one, and answers nothing on the internet"
+    );
+    assert!(
+        !module.contains("private_visibility_config"),
+        "modules/dns-zone configures private visibility; that is modules/network's zone, and \
+         this one has to answer the internet"
+    );
+
+    // Signed. The DS at the registrar is deliberately a separate, later,
+    // owner's decision — publishing it couples the whole domain's resolution
+    // to this zone surviving, and `infra.yml down` destroys this zone — but
+    // the signing itself is on from the first apply, because turning it on
+    // afterwards is a key rollover against a live delegation.
+    assert!(
+        module.contains("dnssec_config"),
+        "modules/dns-zone declares no dnssec_config. Signing is free, invisible to resolvers \
+         until a DS exists at the registrar, and awkward to enable later against a live \
+         delegation, so it is on from the start"
+    );
+    let outputs = without_comments(&read(
+        "infrastructure/terraform/modules/dns-zone/outputs.tf",
+    ));
+    assert!(
+        outputs.contains("output \"ds_record\""),
+        "modules/dns-zone publishes no ds_record. An owner who decides to turn validation on \
+         would have to read it out of the console, and the DS and the zone would be two facts \
+         nobody reconciles"
+    );
+
+    // The nameservers, which are the one manual step left in this domain's
+    // life and the only thing standing between three applied front doors and
+    // three that serve.
+    assert!(
+        declares(
+            &outputs,
+            "value = google_dns_managed_zone.zone.name_servers"
+        ),
+        "modules/dns-zone does not publish the zone's nameservers. Replacing them at the \
+         registrar is the single remaining manual act, it is performed once rather than once \
+         per record, and an owner who cannot read them from `terraform output` reads them out \
+         of a console page instead"
+    );
+
+    // And the root surfaces them, because `terraform output` in the root is
+    // where an operator actually looks. A module output nothing re-exports is
+    // a value only somebody running `terraform console` can see.
+    let root_outputs = without_comments(&read("infrastructure/terraform/outputs.tf"));
+    assert!(
+        root_outputs.contains("output \"dns_zone\""),
+        "the root declares no dns_zone output; the nameservers would be readable only from \
+         inside the module"
+    );
+    assert!(
+        declares(
+            &root_outputs,
+            "nameservers = module.dns_zone[0].nameservers"
+        ),
+        "the root's dns_zone output does not carry the module's nameservers, which is the one \
+         value the owner has to act on"
+    );
+
+    // The description has to tell the owner what to do with them. A list of
+    // four hostnames with no instruction is a puzzle, and the instruction is
+    // the deliverable: this is the last hand-operation in the domain's life
+    // and it is easy to mistake a correct, not-yet-propagated apply for a
+    // broken one.
+    //
+    // Read out of the raw file rather than the comment-stripped copy: a
+    // description is content, and `without_comments` would cut a `#` inside
+    // one. Matched on `registrar` and on the verb, because a description
+    // mentioning neither is one that names the nameservers and not the act.
+    let described = read("infrastructure/terraform/outputs.tf");
+    let block = described
+        .split("output \"dns_zone\"")
+        .nth(1)
+        .expect("outputs.tf declares dns_zone")
+        .split("\n  value")
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    assert!(
+        block.contains("registrar") && block.contains("replace"),
+        "the dns_zone output's description does not tell the owner to replace the nameservers \
+         at the registrar. That is the one remaining manual step, it is performed once, and an \
+         apply that has reported success while the domain still answers from the old \
+         nameservers reads exactly like a failure"
+    );
+}
