@@ -242,3 +242,221 @@ run "a_front_door_without_a_console_identity_stops_the_plan" {
 
   expect_failures = [terraform_data.portal_edge_has_a_console]
 }
+
+# --- the door that needs no domain, which is the one every environment has ----
+#
+# ADR 0095. The runs above are about `module.portal_edge`, which no environment
+# turns on any more. These are about what an environment gets instead, and the
+# first of them is the claim the whole change rests on: **an environment that
+# names no hostname still brings up a working, IAP-protected console.**
+
+run "an_environment_naming_no_hostname_still_gets_an_iap_protected_console" {
+  command = plan
+
+  override_module {
+    target = module.ai
+    outputs = {
+      training_bucket         = "harness-training"
+      metadata_store_id       = "projects/portal-door-plan-harness/locations/us-east4/metadataStores/harness"
+      serving_endpoint_id     = null
+      reachable_by_this_build = false
+    }
+  }
+  override_module {
+    target = module.evidence
+    outputs = {
+      bucket_name       = "harness-evidence"
+      bucket_url        = "gs://harness-evidence"
+      encryption_key_id = "projects/portal-door-plan-harness/locations/us-east4/keyRings/harness/cryptoKeys/evidence"
+    }
+  }
+  override_module {
+    target = module.registry
+    outputs = {
+      repository_id   = "projects/portal-door-plan-harness/locations/us-east4/repositories/harness"
+      repository_name = "harness"
+      image_prefix    = "us-east4-docker.pkg.dev/portal-door-plan-harness/harness"
+    }
+  }
+
+  variables {
+    # Dev's committed state: no portal hostname, no domain, no GitOps gateway,
+    # and a console that exists.
+    gitops_portal_hostname = ""
+    dns_zone_domain        = ""
+    gitops_gateway_enabled = false
+    console_egress_cidr    = "10.0.16.0/26"
+    # Named rather than left to the root's default, because the region is
+    # half of the Google-issued hostname and the assertion below is written
+    # as the exact string. The default is a different region, and a URL
+    # assertion loose enough to survive that is loose enough to survive a
+    # service deployed somewhere nobody meant.
+    region = "us-east4"
+  }
+
+  # The door exists and it is the Cloud Run one. Asserted on `mode` rather
+  # than on the URL alone because the two doors both produce a URL, and a
+  # reader — or a later edit — could satisfy a URL assertion with the
+  # load-balancer door and never notice.
+  assert {
+    condition     = output.console_front_door.mode == "cloud-run-iap"
+    error_message = "an environment naming no hostname has no Cloud Run IAP door; the console it was promised is not there"
+  }
+
+  # The URL is Google's, and the assertion is written as two facts rather than
+  # one pattern: it ends in the region's run.app suffix, and it begins with
+  # the service this environment deploys. A `strcontains(".run.app")` alone
+  # would pass on `https://portal.algorik.ai.run.app`, a name nobody owns.
+  assert {
+    condition     = endswith(output.console_front_door.url, ".us-east4.run.app") && startswith(output.console_front_door.url, "https://qip-dev-portal-")
+    error_message = "the console's URL is not the Google-issued run.app name; an environment that owns no domain has nothing else to be reached at"
+  }
+
+  # Nothing that needs a registrar, a quota or a certificate was planned.
+  # `portal_front_door` is null exactly when `module.portal_edge`'s count is
+  # zero, and that module is the address, the managed certificate, the URL
+  # map, the listener **and** the Cloud Armor security policy that
+  # `infra.yml` run 71 failed to create with
+  # `Quota 'SECURITY_POLICY_RULES' exceeded. Limit: 0.0 globally`. This
+  # assertion is what says the rest of the environment plans without it.
+  assert {
+    condition     = output.portal_front_door == null
+    error_message = "a load-balancer door was planned beside the Cloud Run one; Google refuses IAP on both, and this project has no Cloud Armor quota for the security policy that door needs"
+  }
+
+  # No zone either, which is the registrar step this change exists to remove.
+  assert {
+    condition     = output.dns_zone == null
+    error_message = "a DNS zone was planned for an environment that names no domain; the nameserver delegation is the manual step this door was chosen to avoid"
+  }
+
+  # The access list is empty and the command to change that is published, so
+  # the one step this repository deliberately does not take is not also a step
+  # somebody has to reconstruct.
+  assert {
+    condition     = strcontains(output.console_front_door.grant, "--resource-type=cloud-run") && strcontains(output.console_front_door.grant, "roles/iap.httpsResourceAccessor")
+    error_message = "the published grant command does not name the Cloud Run IAP resource and the accessor role; without --resource-type=cloud-run the same subcommand edits the project's IAP policy, which is the wide grant ADR 0095 narrowed away from"
+  }
+}
+
+# The closed state is still closed. An environment with no console at all —
+# no `console_egress_cidr`, so no identity, no subnet, no session-secret grant
+# — gets neither door, and the output says so rather than naming a URL for a
+# service nothing will ever create.
+run "an_environment_with_no_console_identity_gets_neither_door" {
+  command = plan
+
+  override_module {
+    target = module.ai
+    outputs = {
+      training_bucket         = "harness-training"
+      metadata_store_id       = "projects/portal-door-plan-harness/locations/us-east4/metadataStores/harness"
+      serving_endpoint_id     = null
+      reachable_by_this_build = false
+    }
+  }
+  override_module {
+    target = module.evidence
+    outputs = {
+      bucket_name       = "harness-evidence"
+      bucket_url        = "gs://harness-evidence"
+      encryption_key_id = "projects/portal-door-plan-harness/locations/us-east4/keyRings/harness/cryptoKeys/evidence"
+    }
+  }
+  override_module {
+    target = module.registry
+    outputs = {
+      repository_id   = "projects/portal-door-plan-harness/locations/us-east4/repositories/harness"
+      repository_name = "harness"
+      image_prefix    = "us-east4-docker.pkg.dev/portal-door-plan-harness/harness"
+    }
+  }
+
+  variables {
+    gitops_portal_hostname = ""
+  }
+
+  assert {
+    condition     = output.console_front_door == null
+    error_message = "a console door was planned for an environment that creates no console identity; the door would guard a service with nothing to run as"
+  }
+}
+
+# --- the GitOps gateway's own half-configuration ------------------------------
+#
+# Argo CD and Kargo have no Google-issued hostname — Google publishes none for
+# a GKE Gateway — so the flag and the names have to move together. The refusal
+# is a precondition rather than the module's hostname regex, because the regex
+# says "that is not a DNS name" about a value nobody typed.
+
+run "a_gitops_gateway_with_no_hostname_stops_the_plan" {
+  command = plan
+
+  variables {
+    gitops_gateway_enabled = true
+    gitops_argocd_hostname = ""
+    gitops_kargo_hostname  = ""
+  }
+
+  expect_failures = [terraform_data.gitops_gateway_has_hostnames]
+}
+
+run "a_gitops_gateway_with_only_one_hostname_stops_the_plan" {
+  command = plan
+
+  # The half nobody writes deliberately and everybody writes by accident: one
+  # name renamed, the other left behind. Without this case the precondition
+  # would pass on an `||` where an `&&` was meant, and Kargo would get an
+  # address and a certificate for the empty string.
+  variables {
+    gitops_gateway_enabled = true
+    gitops_argocd_hostname = "argocd.algorik.ai"
+    gitops_kargo_hostname  = ""
+  }
+
+  expect_failures = [terraform_data.gitops_gateway_has_hostnames]
+}
+
+run "the_gateway_flag_left_off_is_not_a_half_configuration" {
+  command = plan
+
+  override_module {
+    target = module.ai
+    outputs = {
+      training_bucket         = "harness-training"
+      metadata_store_id       = "projects/portal-door-plan-harness/locations/us-east4/metadataStores/harness"
+      serving_endpoint_id     = null
+      reachable_by_this_build = false
+    }
+  }
+  override_module {
+    target = module.evidence
+    outputs = {
+      bucket_name       = "harness-evidence"
+      bucket_url        = "gs://harness-evidence"
+      encryption_key_id = "projects/portal-door-plan-harness/locations/us-east4/keyRings/harness/cryptoKeys/evidence"
+    }
+  }
+  override_module {
+    target = module.registry
+    outputs = {
+      repository_id   = "projects/portal-door-plan-harness/locations/us-east4/repositories/harness"
+      repository_name = "harness"
+      image_prefix    = "us-east4-docker.pkg.dev/portal-door-plan-harness/harness"
+    }
+  }
+
+  # The admitting half, and the state dev is committed in. A precondition
+  # proven only to refuse is one that might refuse the configuration every
+  # environment actually carries, and this run is what tells the two apart.
+  variables {
+    gitops_gateway_enabled = false
+    gitops_argocd_hostname = ""
+    gitops_kargo_hostname  = ""
+  }
+
+  assert {
+    condition     = length(terraform_data.gitops_gateway_has_hostnames) == 0
+    error_message = "the gateway precondition was instantiated for an environment that opens no gateway; a refusal that fires on the closed state is a refusal nobody can satisfy"
+  }
+}

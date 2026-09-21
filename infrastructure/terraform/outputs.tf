@@ -419,11 +419,57 @@ output "deploy_attribute_condition" {
   value = module.cicd.deploy_attribute_condition
 }
 
+output "console_front_door" {
+  description = <<-EOT
+    **Where the console actually is, and the command that admits one person to
+    it.** ADR 0095.
+
+    This is the output to read. `portal_front_door` below describes the
+    custom-domain door, which no environment turns on; this one describes
+    whichever door the environment actually has, and in every environment
+    today that is the Google-issued one:
+
+        url  = https://qip-dev-portal-<project-number>.us-east4.run.app
+
+    No A record, no zone, no registrar, no nameserver delegation, and no
+    certificate to watch leave PROVISIONING. The name exists as soon as Cloud
+    Run has a service, on a certificate Google manages.
+
+    `mode` says which door answered, because the two have different failure
+    modes and an operator reading a URL cannot tell them apart:
+    `cloud-run-iap` is IAP on the service itself, `load-balancer-iap` is
+    ADR 0094's edge. Null only in an environment with no console at all —
+    `console_egress_cidr` unset, so there is no identity for the portal to run
+    as.
+
+    **`grant` is the one step this repository deliberately does not take.**
+    The access list is empty in every environment because an IAM member is an
+    account identifier and `.claude/rules/00-enterprise-governance.md` refuses
+    one in a committed file, so the door comes up admitting nobody. Run the
+    printed command to admit yourself. `--resource-type=cloud-run` is the part
+    that is easy to lose: the same subcommand without it edits the project's
+    IAP policy, which is the wide grant ADR 0095 narrowed away from.
+  EOT
+
+  value = length(module.portal_iap_run) > 0 ? {
+    mode  = "cloud-run-iap"
+    url   = module.portal_iap_run[0].url
+    grant = module.portal_iap_run[0].grant_command
+    } : length(module.portal_edge) > 0 ? {
+    mode  = "load-balancer-iap"
+    url   = module.portal_edge[0].url
+    grant = "gcloud projects add-iam-policy-binding ${var.project_id} --role=roles/iap.httpsResourceAccessor --member='user:YOU@example.com'"
+  } : null
+}
+
 output "portal_front_door" {
   description = <<-EOT
-    The portal's IAP front door (ADR 0094): the hostname, the URL, and the
-    reserved global address its A record must point at. Null in an environment
-    that sets no `gitops_portal_hostname`, which is every environment but dev.
+    The portal's **custom-domain** IAP front door (ADR 0094, narrowed by ADR
+    0095): the hostname, the URL, and the reserved global address its A record
+    must point at. Null in an environment that sets no
+    `gitops_portal_hostname` — which is now every environment, because the
+    console is reached at its Google-issued `run.app` URL instead. Read
+    `console_front_door` above for where the console actually is.
 
     **The A record is the one step this repository cannot perform.**
     `algorik.ai` answers from nameservers outside this project, so somebody

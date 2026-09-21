@@ -46,11 +46,18 @@ metadata:
   annotations:
     cnrm.cloud.google.com/deletion-policy: abandon
     qip.algorik.ai/why: Identity-Aware Proxy forwards as its own service agent, so the portal
-      requires authentication and IAP is the one identity that may invoke it (ADR 0094). Without
-      this the load balancer authenticates the caller correctly and the backend answers 403, which
+      requires authentication and IAP is the one identity that may invoke it (ADR 0094, and
+      unchanged by ADR 0095 — IAP forwards as its agent whether it sits on a load balancer or on
+      the service itself, and Google's own Cloud Run IAP instructions ask for exactly this grant).
+      Without this, IAP authenticates the caller correctly and the service answers 403, which
       reads as an access-list problem and is not one. The alternative — an anonymous invoker, as
-      ADR 0030 grants OpenObserve above — would let the portal's own run.app URL answer the
-      internet and make IAP a front door with an open side entrance. The principal is written out
+      ADR 0030 grants OpenObserve above — is what makes ingress INGRESS_TRAFFIC_ALL safe here by
+      its absence: with no anonymous grant a browser cannot reach this service without passing
+      IAP, and an unenabled gate is a console nobody can reach rather than one anybody can. (The
+      anonymous principal is deliberately not named in this sentence. `gitops.rs` counts the
+      manifests under this directory whose serialised text contains that identifier and admits
+      exactly one, so writing it here would fail the test by documenting it — the same trap
+      `infrastructure.rs` names about the accessor role.) The principal below is written out
       rather than derived because a manifest has no variables; it is the agent Google creates for
       this project number, and `console_route.rs` rebuilds it from the tfvars and compares.
 spec:

@@ -911,6 +911,32 @@ resource "terraform_data" "gitops_is_placed" {
 # be able to hold. `gitops_gateway_enabled = false` leaves the cluster
 # reachable exactly as ADR 0036 built it — through the Connect gateway and
 # nowhere else.
+# The plan refuses a GitOps front door that has no name to answer on.
+#
+# Argo CD and Kargo are in the cluster, so neither has a Google-issued
+# hostname the way a Cloud Run service does, and a Google-managed certificate
+# needs a domain somebody owns and delegates. An environment that turns the
+# gateway on and names no host would reserve an address and order a
+# certificate for `""` — which the module's own regex rejects, with a message
+# about DNS syntax that tells the reader nothing about the decision they got
+# wrong. This says the decision instead, and names the path that needs no
+# hostname at all.
+#
+# A precondition rather than a validation, because the fact it reads is a
+# relationship between three variables and a validation that reads a second
+# variable is skipped silently.
+resource "terraform_data" "gitops_gateway_has_hostnames" {
+  count = var.gitops_gateway_enabled ? 1 : 0
+  input = var.environment
+
+  lifecycle {
+    precondition {
+      condition     = var.gitops_argocd_hostname != "" && var.gitops_kargo_hostname != ""
+      error_message = "gitops_gateway_enabled is true and gitops_argocd_hostname or gitops_kargo_hostname is empty. A GKE Gateway has no Google-issued hostname — Google publishes none for one — so this door cannot be opened without a domain you own and delegate. Either name both hosts, or leave gitops_gateway_enabled false and reach Argo CD and Kargo through the fleet's Connect gateway and a port-forward, which publishes nothing and is how infra.yml already reaches this cluster. infrastructure/gitops/README.md has the commands."
+    }
+  }
+}
+
 module "gitops_gateway" {
   source = "./modules/gitops-gateway"
   count  = var.gitops_enabled && var.gitops_gateway_enabled ? 1 : 0
@@ -1057,6 +1083,20 @@ module "public_edge" {
 # because neither can do this and the reasons are facts rather than taste. A
 # GKE Gateway routes to in-cluster Services — an `HTTPRoute`'s `backendRef` is
 # a `Service` and a `GCPBackendPolicy`'s `targetRef` is a `Service` — so the
+# The console's *custom-domain* door, and since ADR 0095 that is all it is.
+#
+# It is created only where an environment names a hostname, and no environment
+# names one today — the portal is reached at its Google-issued `run.app` URL
+# behind Cloud Run's own IAP (`module.portal_iap_run`, below), which needs no
+# domain, no registrar and no DNS delegation. Everything from here down is the
+# path back to a vanity name, kept rather than deleted because the day somebody
+# wants `portal.algorik.ai` this is what they turn on, and the argument below
+# about why a GKE Gateway cannot front Cloud Run is still true.
+#
+# **Do not turn both on.** Google refuses it: "You cannot configure IAP on both
+# the load balancer and the Cloud Run service." The two `count` expressions are
+# exact negations of one another for that reason.
+#
 # GitOps front door cannot reach a Cloud Run service at all. The public edge
 # can, through a serverless network endpoint group, but it is the *anonymous*
 # customer edge: a CDN bucket as its default backend and `hostnames = []` in
@@ -1123,6 +1163,65 @@ resource "terraform_data" "portal_edge_has_a_console" {
       error_message = "gitops_portal_hostname is set and console_egress_cidr is not, so this environment creates no console identity, no console subnet and no session-secret grant — and the portal would have nothing to run as. Set console_egress_cidr, or leave the portal hostname empty and keep the door closed."
     }
   }
+}
+
+# --- The console's other door: IAP on the service, no load balancer at all ----
+#
+# ADR 0095, which narrows ADR 0094 rather than replacing it.
+#
+# **Cloud Run enforces IAP on the service, across every ingress path,
+# including the Google-issued `run.app` URL.** Google's page says it in one
+# sentence — "By enabling IAP on Cloud Run directly, you can secure traffic
+# with a single click from all ingress paths, including default run.app URLs
+# and load balancers" (cloud.google.com/run/docs/securing/
+# identity-aware-proxy-cloud-run, read 2026-09-21). So a console door needs no
+# address, no certificate, no Cloud Armor policy, no zone, no registrar and no
+# delegated nameserver, and an environment that owns no domain still gets a
+# front door a browser can reach and IAP guards.
+#
+# **The two doors are alternatives and never layers.** The same page: "You
+# cannot configure IAP on both the load balancer and the Cloud Run service."
+# That is why this `count` is the exact negation of `module.portal_edge`'s and
+# not a flag of its own — a flag could be set to a combination Google refuses,
+# and the failure would arrive at apply as an IAP error naming neither door.
+#
+# The load-balancer door is kept for the day a vanity hostname is wanted, and
+# is switched off in dev for a second, harder reason than preference: `infra.yml`
+# run 71 failed applying `module.portal_edge`'s Cloud Armor policy with
+# `Quota 'SECURITY_POLICY_RULES' exceeded. Limit: 0.0 globally`. Zero, not
+# exceeded-by-one — the project has no Cloud Armor allowance at all, raising
+# it is a quota request that may not be granted, and a backend service is the
+# only thing Cloud Armor can attach to. With this door the policy, the backend,
+# the load balancer, the address and the certificate all go away together, and
+# the rest of the environment applies.
+module "portal_iap_run" {
+  source = "./modules/iap-run"
+  count  = var.gitops_portal_hostname == "" && var.console_egress_cidr != null ? 1 : 0
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
+
+  project_id     = var.project_id
+  project_number = local.project_number
+  environment    = var.environment
+  region         = var.region
+
+  # The service the manifest under gitops/envs/<env>/ creates, by the name
+  # Config Connector gives it. Derived from the environment rather than
+  # restated, so the door and the service cannot come to name two things —
+  # the same derivation `module.portal_edge` makes, for the same reason.
+  service_name = "qip-${var.environment}-portal"
+
+  # The zone the portal belongs to, and the one the module checks against
+  # §46.1's client-reachable pair.
+  trust_zone = "application-identity"
+
+  # Empty, and it stays empty. An IAM member is an account identifier and this
+  # repository carries none; the door comes up admitting nobody and an
+  # operator is granted out of band. Unlike ADR 0094's project-level list,
+  # this one is per service, so an empty list here really is empty: nothing is
+  # inherited from the project onto a Cloud Run IAP resource.
+  iap_members = []
 }
 
 # --- The domain, so that a front door resolves without anybody typing ---------

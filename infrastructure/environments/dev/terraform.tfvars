@@ -518,39 +518,99 @@ console_egress_cidr = "10.0.16.0/26"
 # A misconfigured IAP policy still meets a credential; a leaked credential
 # still meets IAP. One gate in front of a controller that can reconcile
 # arbitrary manifests into this cluster is one gate too few.
-gitops_gateway_enabled = true
-gitops_argocd_hostname = "argocd.algorik.ai"
-gitops_kargo_hostname  = "kargo.algorik.ai"
+gitops_gateway_enabled = false
+gitops_argocd_hostname = ""
+gitops_kargo_hostname  = ""
 
-# --- The console's front door, behind the same IAP -----------------------------
+# **Off, and the reason is that there is no Google-provided hostname for a
+# GKE Gateway and the owner is not buying a domain.**
 #
-# ADR 0094. The portal gets a name of its own and a load balancer of its own,
-# and the second half of that sentence is the finding rather than a choice: a
-# GKE Gateway routes to in-cluster Services, so the two hostnames above and
-# this one cannot share a load balancer however much one would like them to.
-# `modules/iap-edge` is the serverless-NEG twin of the door above it.
+# Everything above stays true about what this door *would* be; what changed is
+# that it cannot be opened without a name somebody owns and delegates. Argo CD
+# and Kargo run in the cluster. A Cloud Run service gets a `run.app` hostname
+# and a Google-managed certificate for free; a GKE Gateway gets an IP address
+# and nothing else — Google publishes no DNS name for one, and a managed
+# certificate is issued for a domain or not at all. There is no third option,
+# and the two commonly reached for are worse than the gap: a third-party
+# wildcard resolver puts a control plane's hostname in somebody else's DNS,
+# and a self-signed certificate trains an operator to click through a warning
+# in front of the one console that can reconcile arbitrary manifests into this
+# cluster.
 #
-# What they *do* share is the access list, and this is the sentence to read
-# before granting anybody anything. `roles/iap.httpsResourceAccessor` is held
-# at the **project** level — it has to be, because the backend service the
-# Gateway creates is named by its controller and has no Terraform address —
-# and project-level IAM is inherited by every IAP-protected backend in the
-# project. So one grant admits a person to Argo CD, to Kargo **and** to the
-# console. There is deliberately no second list on the portal: a per-resource
-# binding is inherited-on-top-of rather than instead-of, so it could only
-# widen the set while reading in the console as the portal's own access list.
+# So these two are reached the way the private cluster was already designed to
+# be reached, and the way `infra.yml` itself reaches it — the fleet's Connect
+# gateway, then a port-forward:
 #
-# The portal is the one surface here a person signs into, and what stands
-# behind IAP is its own session check (`ALGORIK_AUTH_REQUIRED=true`), for the
-# same reason Argo CD keeps its password: IAP decides who may reach the
-# service, the service decides who may act on it, and one gate in front of a
-# console that reads the platform's book is one gate too few.
+#   gcloud container fleet memberships get-credentials qip-dev-gitops \
+#     --project algorik-dev
+#   kubectl -n argocd port-forward svc/argocd-server 8080:443
+#   kubectl -n kargo  port-forward svc/kargo-api     8081:443
 #
-# The A record for this name is created at the registrar by hand, like the
-# other two, and `terraform output portal_front_door` says what to point it
-# at. Until it resolves, the managed certificate stays in PROVISIONING and the
-# name does not serve.
-gitops_portal_hostname = "portal.algorik.ai"
+# That publishes nothing at all: no address, no certificate, no listener, and
+# no surface on the internet for anybody to find. For a controller with this
+# much authority that is the better answer rather than the cheaper one, and
+# `infrastructure/gitops/README.md` is where it is written down for an
+# operator who is not reading tfvars.
+#
+# Turning it back on is two hostnames and this flag, and needs a domain first.
+# The root refuses the half-configuration — the flag true with either name
+# empty — rather than letting the module fail on a DNS regex that says nothing
+# about the decision that was got wrong.
+
+# --- The console's front door: the URL Google already issued it ----------------
+#
+# ADR 0095, narrowing ADR 0094. **Empty is not "no console door" — it is the
+# door Cloud Run gives every service for nothing.**
+#
+# Cloud Run enforces Identity-Aware Proxy on the service itself, across every
+# ingress path, including the default `run.app` URL. Google's page says it in
+# one sentence: "By enabling IAP on Cloud Run directly, you can secure traffic
+# with a single click from all ingress paths, including default run.app URLs
+# and load balancers." So the console is reachable at
+#
+#   https://qip-dev-portal-95200532413.us-east4.run.app
+#
+# on a Google-managed certificate, behind IAP, with no address reserved, no
+# certificate ordered, no Cloud Armor policy, no zone, no registrar and no
+# nameserver to delegate. `terraform output console_front_door` prints it,
+# along with the one command that admits a person to it.
+#
+# **Two doors, never both.** Setting this name selects `module.portal_edge`
+# instead — the load balancer of ADR 0094 — and Google refuses the pair
+# outright: "You cannot configure IAP on both the load balancer and the Cloud
+# Run service." The two modules' `count` expressions are exact negations.
+#
+# Two things settle it for dev rather than merely favouring it. The managed
+# certificate on the other door stays in PROVISIONING until somebody creates
+# an A record at a registrar, which is the requirement this change exists to
+# remove. And `infra.yml` run 71 failed applying that door's Cloud Armor
+# policy with `Quota 'SECURITY_POLICY_RULES' exceeded. Limit: 0.0 globally` —
+# **zero**, not exceeded-by-one: the project has no Cloud Armor allowance at
+# all, a backend service is the only thing Cloud Armor attaches to, and
+# raising it is a quota request that may not be granted. With this door the
+# policy, the backend, the load balancer, the address and the certificate go
+# away together, and the rest of the environment applies.
+#
+# **What is lost, named rather than dropped quietly.** The other door carried
+# a Cloud Armor rate limit that banned an admitted session behaving like a
+# script. This door has none: IAP still decides who may pass, and nothing
+# bounds how fast an admitted caller may go. That control was never applied —
+# the quota refused it on the one run that tried — so nothing is being turned
+# off, but it is a refusal this environment does not have and should not be
+# assumed to.
+#
+# Who may pass is a **per-service** list now, which ADR 0094 could not have:
+# a Gateway's backend service has no Terraform address, so its grant had to be
+# project-level and admitted a person to Argo CD, Kargo and the console at
+# once. IAP on Cloud Run is addressable per service, so the console's list is
+# the people who may read the console. It is empty and stays empty; see below.
+#
+# What stands behind IAP is the portal's own session check
+# (`ALGORIK_AUTH_REQUIRED=true`), for the same reason Argo CD keeps its
+# password: IAP decides who may reach the service, the service decides who may
+# act on it, and one gate in front of a console that reads the platform's book
+# is one gate too few.
+gitops_portal_hostname = ""
 
 # **Empty, and seeded out of band — like every credential in this tree.**
 #
@@ -560,60 +620,65 @@ gitops_portal_hostname = "portal.algorik.ai"
 # exactly that. It would also be the one line of this configuration that has
 # to change whenever a person joins or leaves, in a file reviewed by commit.
 #
-# So the front door is applied admitting nobody, which is a posture rather
-# than a failure, and an operator is granted by name afterwards:
+# So a front door is applied admitting nobody, which is a posture rather
+# than a failure, and an operator is granted by name afterwards.
 #
-#   gcloud projects add-iam-policy-binding algorik-dev \
-#     --member='user:YOU@example.com' \
-#     --role='roles/iap.httpsResourceAccessor'
+# **This list is read only by `module.gitops_gateway`, which is off, so today
+# it grants nothing anywhere.** It is kept at `[]` rather than deleted because
+# the variable is what the gateway's access list would be on the day somebody
+# buys a domain and turns that door back on.
 #
-# Until somebody runs that, the hostnames resolve, the certificate serves,
-# and IAP refuses every caller. That is the correct state for a control
-# plane whose operators have not been named yet.
+# The console's list is not this one and is not project-level. IAP on Cloud
+# Run is addressable per service, so the command that admits a person to the
+# portal names the portal:
+#
+#   gcloud iap web add-iam-policy-binding \
+#     --project=algorik-dev --resource-type=cloud-run \
+#     --region=us-east4 --service=qip-dev-portal \
+#     --role=roles/iap.httpsResourceAccessor \
+#     --member='user:YOU@example.com'
+#
+# `terraform output console_front_door` prints that command filled in.
+# `--resource-type=cloud-run` is the part that is easy to lose: the same
+# subcommand without it edits the **project's** IAP policy, which is the wide
+# grant ADR 0095 narrowed away from.
+#
+# Until somebody runs it, the URL resolves and IAP refuses every caller. That
+# is the correct state for a console whose readers have not been named yet.
 gitops_iap_members = []
 
-# --- The domain, owned in code ------------------------------------------------
+# --- The domain: not owned, and no longer needed -------------------------------
 #
-# All three names above were applied and none of them resolved. The addresses
-# were reserved, the certificates were ordered, and each front door's `address`
-# output carried a sentence explaining that somebody had to go and type an A
-# record into a registrar's web form — because `algorik.ai` answers from
-# `dns1.registrar-servers.com`. A Google-managed certificate stays in
-# PROVISIONING until its name resolves to the load balancer, so all three doors
-# sat there complete and serving nothing.
+# **Empty, because nothing in this environment has a name to resolve any
+# more.** `module.dns_zone`'s `count` is on this value, so an empty string
+# creates no zone, no records and nothing for a registrar to point at.
 #
-# Setting this creates the zone and every A record under it, each pointing at
-# the address of the module that reserved it. Not a copy of that address — the
-# output itself. The two would agree the day they were written and disagree the
-# first time an address was released and re-reserved, and the disagreement is
-# silent: the name keeps resolving, to whatever Google handed the next tenant.
+# The zone existed to answer three names — `argocd`, `kargo` and `portal` —
+# and each of those is gone or reached another way. The portal is at its
+# Google-issued `run.app` URL behind Cloud Run's own IAP; Argo CD and Kargo
+# are reached through the fleet's Connect gateway and a port-forward. A zone
+# with no records in it is a billed resource and a nameserver delegation
+# somebody still has to perform, in exchange for nothing.
 #
-# **Dev is the only environment that may set this, and that is a property of
-# domains rather than a policy.** A domain has one authoritative zone. Two
-# environments creating one each would both apply cleanly and serve two
-# different sets of records from two different sets of nameservers, and only
-# whichever set the registrar names would be the one anybody sees; the other
-# would be a state file full of records nobody resolves. No plan can catch
-# that, because each environment has its own state and none can see another's.
-# So `dns_zone_domain` is empty by default, `module.dns_zone`'s `count` is on
-# it, test/stage/prod say so in a comment at the foot of their own files, and
-# `a_single_environment_owns_the_dns_zone_for_the_domain` in the infrastructure
-# acceptance suite fails if a second one ever declares a domain.
+# **What this removes is the whole reason the delegation existed.** Setting
+# `dns_zone_domain` created the zone but did *not* make the domain resolve
+# from it: the registrar still named its own nameservers until somebody
+# replaced them with `terraform output dns_zone`'s four, by hand, in a web
+# form. Every front door in this tree sat complete and serving nothing while
+# that step was outstanding, because a Google-managed certificate stays in
+# PROVISIONING until its name resolves. No door here now waits on it.
 #
-# **One manual step remains and it is taken once, not per record.** After the
-# apply, `terraform output dns_zone` prints four Cloud DNS nameservers.
-# Replace the nameservers at Namecheap with those four. Nothing else there
-# changes. From then on a new front door is an A record in a commit, and the
-# owner never hand-creates another one.
-#
-# DNSSEC is on in Cloud DNS and the DS record is deliberately *not* part of
-# that step. Signing is free and invisible to resolvers until the registrar
-# publishes a DS; publishing the DS makes the whole domain's resolution depend
-# on this zone continuing to exist with these keys, and `infra.yml down`
-# destroys this zone. `terraform output dns_zone` carries the DS for the day
-# that trade is worth making — which is not while dev is still a thing that
-# gets torn down.
-dns_zone_domain = "algorik.ai"
+# The module is kept and so is the variable. The day a vanity hostname is
+# wanted, this is the file that turns it on, and the constraint below still
+# holds when it does: **exactly one environment may set this**, because a
+# domain has one authoritative zone, two environments creating one each would
+# both apply cleanly and serve two different sets of records from two
+# different sets of nameservers, and no plan can catch it — each environment
+# has its own state and none can see another's.
+# `a_single_environment_owns_the_dns_zone_for_the_domain` in the
+# infrastructure acceptance suite is what catches it, by reading all four
+# tfvars.
+dns_zone_domain = ""
 
 # Five minutes, chosen rather than inherited. A TTL is a promise about how long
 # a mistake lasts, and these names have never resolved, so the first thing that

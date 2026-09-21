@@ -643,20 +643,41 @@ fn the_api_is_reachable_only_from_inside_the_vpc_and_its_address_is_a_terraform_
                 continue;
             }
             if service.name == portal {
-                // ADR 0094's one exception, and the narrow one. The console
-                // is behind a load balancer that authenticates before it
-                // forwards, so it needs the posture that admits that load
-                // balancer — and only that one. `{ALL_TRAFFIC}` here would be
-                // the same console with its run.app URL answering the
-                // internet anonymously, which is the shape most documentation
-                // shows and the shape this platform refuses.
+                // The console's exception, and since ADR 0095 it is a
+                // **pairing** rather than one value: there are two IAP doors,
+                // Google refuses both at once, and which one an environment
+                // has is decided by whether its tfvars name a hostname.
+                //
+                //   * A hostname named — ADR 0094's load balancer, which only
+                //     `{LOAD_BALANCER_ONLY}` admits. `{ALL_TRAFFIC}` there
+                //     would leave the run.app URL answering past IAP.
+                //   * No hostname — ADR 0095's IAP on the service itself,
+                //     which needs `{ALL_TRAFFIC}`, because the run.app URL
+                //     has to be reachable for IAP to gate it.
+                //     `{LOAD_BALANCER_ONLY}` there is a console nobody can
+                //     reach at all, since no load balancer exists to admit.
+                //
+                // `{INTERNAL_ONLY}` is wrong under either door and is not a
+                // third case.
+                //
+                // The safety of `{ALL_TRAFFIC}` rests on the portal having no
+                // `allUsers` invoker, which the block below this loop asserts
+                // and `gitops.rs` asserts again beside the manifest.
+                let hostname =
+                    tfvar(&tfvars_of(environment), "gitops_portal_hostname").unwrap_or_default();
+                let expected = if hostname.is_empty() {
+                    ALL_TRAFFIC
+                } else {
+                    LOAD_BALANCER_ONLY
+                };
                 assert_eq!(
                     ingress.as_deref(),
-                    Some(LOAD_BALANCER_ONLY),
-                    "{} is the console behind the IAP edge and carries ingress {ingress:?} \
-                     rather than {LOAD_BALANCER_ONLY}; {ALL_TRAFFIC} would leave its own \
-                     run.app URL answering the internet past IAP, and {INTERNAL_ONLY} refuses \
-                     the load balancer so the hostname answers 404 for everyone",
+                    Some(expected),
+                    "{} is the console and carries ingress {ingress:?}; {environment}'s tfvars \
+                     set gitops_portal_hostname to {hostname:?}, which selects {expected}. The \
+                     hostname and the posture move together — a named hostname is the load \
+                     balancer and no hostname is IAP on the service — and {INTERNAL_ONLY} is \
+                     wrong under either",
                     service.describe()
                 );
                 continue;

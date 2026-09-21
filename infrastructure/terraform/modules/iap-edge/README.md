@@ -3,6 +3,42 @@
 One Identity-Aware Proxy front door, in front of one Cloud Run service.
 ADR 0094.
 
+## Read this first: no environment turns this on, and two reasons say so
+
+**This is the custom-domain path, and it is switched off everywhere.** ADR
+0095 narrowed ADR 0094: the console is reached at its Google-issued `run.app`
+URL behind IAP on the Cloud Run service itself (`modules/iap-run`), which
+needs no address, no certificate, no Cloud Armor policy, no zone and no
+registrar. `gitops_portal_hostname` is empty in every environment, so this
+module's `count` is zero and it creates nothing.
+
+Two facts keep it that way, and the second is harder than a preference.
+
+1. **Google refuses both doors at once.** "You cannot configure IAP on both
+   the load balancer and the Cloud Run service"
+   (`cloud.google.com/run/docs/securing/identity-aware-proxy-cloud-run`, read
+   2026-09-21). `module.portal_iap_run`'s `count` is the exact negation of
+   this module's for that reason — a flag of its own could be set to a
+   combination Google rejects, and the failure would arrive at apply naming
+   neither door.
+
+2. **This project has no Cloud Armor quota.** `infra.yml` run 71 failed
+   applying the security policy below:
+
+       Error: Error waiting for Creating SecurityPolicy "qip-dev-portal-iap":
+       Quota 'SECURITY_POLICY_RULES' exceeded.  Limit: 0.0 globally.
+
+   **Limit 0.0**, not exceeded-by-one: there is no allowance at all, raising
+   it is a quota request that may not be granted, and a security policy
+   attaches to a backend service, which exists only because there is a load
+   balancer. So turning this module on today fails the apply — and takes the
+   rest of the environment's apply with it.
+
+The module is kept rather than deleted because a vanity hostname is a real
+future, and because the argument below about why a GKE Gateway cannot front
+Cloud Run is the record of an expensive finding. Turning it back on is a
+domain, a hostname in the tfvars, and a granted quota request — in that order.
+
 ## Why this is not one of the other two modules
 
 `modules/gitops-gateway` reserves the address and orders the certificate for a

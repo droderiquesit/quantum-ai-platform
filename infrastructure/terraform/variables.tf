@@ -1352,34 +1352,89 @@ variable "gitops_gateway_enabled" {
 
 variable "gitops_argocd_hostname" {
   type        = string
-  description = "The public name Argo CD answers on. Only read when gitops_gateway_enabled."
+  description = <<-EOT
+    The public name Argo CD answers on, or the empty string — which is what
+    every environment carries and is a posture rather than a gap.
+
+    **Empty means the Connect gateway, not "unreachable".** Argo CD and Kargo
+    run in the cluster, so neither has a Google-issued hostname the way a
+    Cloud Run service does, and a Google-managed certificate needs a domain
+    somebody owns and delegates. There is no third option that Google
+    provides: a GKE Gateway is reachable at an IP address, and Google issues
+    no DNS name for one. So the documented way to reach these two is the way
+    the cluster was already designed to be reached — `gcloud container fleet
+    memberships get-credentials` through the fleet's Connect gateway, then
+    `kubectl port-forward`, which is what `infra.yml` itself uses because the
+    endpoint is private. `infrastructure/gitops/README.md` has the commands.
+
+    That path publishes nothing at all, which for a controller that can
+    reconcile arbitrary manifests into the cluster is the better answer and
+    not merely the cheaper one.
+
+    Only read when `gitops_gateway_enabled`, and the root refuses the
+    combination of that flag with an empty name rather than letting the module
+    fail on a hostname regex that says nothing about what went wrong.
+  EOT
   default     = ""
+
+  validation {
+    # The empty string is admitted as the closed state and nothing else is.
+    # The same expression `modules/gitops-gateway` validates with, here as
+    # well as there because this is the value a person types into a tfvars: a
+    # name with a scheme, a port or a path reaches a certificate's SAN list
+    # and an OAuth redirect, and Google's refusal arrives at apply, after the
+    # address has been reserved.
+    condition     = var.gitops_argocd_hostname == "" || can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.gitops_argocd_hostname))
+    error_message = "gitops_argocd_hostname must be a dotted lowercase DNS name with no scheme, port or path — argocd.algorik.ai — or the empty string, which means Argo CD is reached through the Connect gateway and no front door is published."
+  }
 }
 
 variable "gitops_kargo_hostname" {
   type        = string
-  description = "The public name Kargo answers on. Only read when gitops_gateway_enabled."
+  description = "The public name Kargo answers on, or the empty string. Same contract as gitops_argocd_hostname, including what empty means: the Connect gateway and a port-forward, which is how a private cluster's controller is reached and how `infra.yml` already reaches this one."
   default     = ""
+
+  validation {
+    condition     = var.gitops_kargo_hostname == "" || can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.gitops_kargo_hostname))
+    error_message = "gitops_kargo_hostname must be a dotted lowercase DNS name with no scheme, port or path — kargo.algorik.ai — or the empty string, which means Kargo is reached through the Connect gateway and no front door is published."
+  }
 }
 
 variable "gitops_portal_hostname" {
   type        = string
   description = <<-EOT
-    The public name the portal answers on, behind Identity-Aware Proxy, or the
-    empty string for an environment with no console front door (ADR 0094).
+    A **custom** name for the portal, or the empty string — and since ADR 0095
+    the empty string is the ordinary case rather than the closed one.
 
-    Empty by default, and empty means **nothing is created at all** — no
-    address, no certificate, no Cloud Armor policy, no backend, no listener.
-    That is the correct state for an environment whose console nobody has
-    decided to publish, and it is the state of every environment but dev.
+    **Empty does not mean no console door. It means the console's door is the
+    one Google issued.** Cloud Run enforces IAP on the service across every
+    ingress path, including its own `run.app` URL, so an empty value here
+    selects `module.portal_iap_run`: the portal is reachable at
+    `https://qip-<env>-portal-<project-number>-<region>.run.app` behind IAP,
+    on a Google-managed certificate, with no address reserved, no certificate
+    ordered, no Cloud Armor policy, no zone and nothing for anybody to type
+    into a registrar. `terraform output console_front_door` prints the URL.
 
-    Who may pass IAP is **not** set here. It is the one project-level
-    `roles/iap.httpsResourceAccessor` grant `gitops_iap_members` describes,
-    which covers every IAP-protected backend in the project — the GitOps
-    Gateway's and this one alike. There is deliberately no second list: a
-    per-resource binding is inherited-on-top-of, never instead-of, so it could
-    only widen the set while reading in the console as this door's own access
-    list. A control that cannot narrow anything is not a control.
+    Setting it selects `module.portal_edge` instead — a global load balancer,
+    a reserved address, a managed certificate and an A record somebody creates
+    by hand. **Never both**, and that is Google's rule rather than this
+    repository's: "You cannot configure IAP on both the load balancer and the
+    Cloud Run service." The two modules' `count` expressions are exact
+    negations for that reason.
+
+    Two further facts before setting it. The managed certificate stays in
+    PROVISIONING until the name resolves, so the door serves nothing until the
+    DNS exists. And `infra.yml` run 71 failed applying that door's Cloud Armor
+    policy with `Quota 'SECURITY_POLICY_RULES' exceeded. Limit: 0.0 globally`
+    — the project has no Cloud Armor allowance at all, and raising it is a
+    quota request that may not be granted.
+
+    Who may pass IAP is **not** set here either way. On the `run.app` door it
+    is `modules/iap-run`'s per-service list, empty in every environment and
+    granted out of band; on the load-balancer door it is the project-level
+    grant `gitops_iap_members` describes, which ADR 0094 decision 3 argues had
+    to be project-level because a Gateway's backend service has no Terraform
+    address.
   EOT
   default     = ""
 
@@ -1391,7 +1446,7 @@ variable "gitops_portal_hostname" {
     # apply, after the address has been reserved. The empty string is admitted
     # as the closed state and nothing else is.
     condition     = var.gitops_portal_hostname == "" || can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.gitops_portal_hostname))
-    error_message = "gitops_portal_hostname must be a dotted lowercase DNS name with no scheme, port or path — portal.algorik.ai — or the empty string for no portal front door at all."
+    error_message = "gitops_portal_hostname must be a dotted lowercase DNS name with no scheme, port or path — portal.algorik.ai — or the empty string, which is not 'no front door' but the Google-issued run.app URL behind Cloud Run's own IAP (ADR 0095)."
   }
 }
 

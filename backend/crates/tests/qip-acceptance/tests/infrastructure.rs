@@ -6353,21 +6353,79 @@ fn the_portals_front_door_is_an_iap_edge_and_the_public_edge_is_still_shut() {
          edge was checked against anything"
     );
 
-    // The dev half: the hostname is set, and it is a name rather than a URL.
-    let dev = without_comments(&read("infrastructure/environments/dev/terraform.tfvars"));
-    let hostname = tfvars_value(&dev, "gitops_portal_hostname")
-        .expect("dev's tfvars must set gitops_portal_hostname; ADR 0094 is what created it");
-    let hostname = hostname.trim().trim_matches('"');
+    // The dev half, and since ADR 0095 it is the *other* door that dev has.
+    //
+    // `gitops_portal_hostname` is empty, so `module.portal_edge` creates
+    // nothing and `module.portal_iap_run` is what the console is reached
+    // through: IAP on the Cloud Run service itself, at the Google-issued
+    // `run.app` URL. This block asserts the door dev actually has rather than
+    // the one it used to; the hostname's *syntax* is proven by the root's
+    // plan harness, which refuses a scheme, a path, an upper-case name and a
+    // wildcard and admits a reviewed one, which is a stronger check than the
+    // character test that used to live here.
+    //
+    // **The two modules' `count` expressions are exact negations, and that is
+    // the property asserted.** Google refuses IAP on both a load balancer and
+    // a Cloud Run service at once, so a flag of their own could be set to a
+    // combination that fails at apply naming neither door.
     assert!(
-        !hostname.is_empty()
-            && !hostname.contains("://")
-            && !hostname.contains('/')
-            && !hostname.contains(':')
-            && hostname.contains('.')
-            && hostname == hostname.to_lowercase(),
-        "dev's gitops_portal_hostname is {hostname:?}; a hostname reaches a certificate's SAN \
-         list, and a value with a scheme, a path, a port or an upper-case letter is one Google \
-         refuses at apply — after the address has been reserved"
+        root.contains("source = \"./modules/iap-run\""),
+        "the root no longer instantiates modules/iap-run; the console would have no door at \
+         all in an environment that names no hostname, which is every environment"
+    );
+    assert!(
+        root.contains(
+            "count  = var.gitops_portal_hostname == \"\" && var.console_egress_cidr != null ? 1 : 0"
+        ),
+        "module.portal_iap_run is not gated on the exact negation of module.portal_edge's \
+         hostname test plus a console that exists. Google refuses IAP on both the load \
+         balancer and the service, so the two doors cannot be switched independently, and a \
+         door in front of an environment with no console identity guards a service with \
+         nothing to run as"
+    );
+
+    // The narrowing ADR 0094 decision 3 could not make. IAP on Cloud Run is
+    // addressable per service, so this module holds a real access list — one
+    // that can exclude somebody, which the inherited project-level grant
+    // never could.
+    let run_module = without_comments(&read("infrastructure/terraform/modules/iap-run/main.tf"));
+    let run_variables = without_comments(&read(
+        "infrastructure/terraform/modules/iap-run/variables.tf",
+    ));
+    assert!(
+        run_module.contains("google_iap_web_cloud_run_service_iam_member"),
+        "modules/iap-run makes no per-service IAP grant; the access list would be the \
+         project-level one again, which admits a person to Argo CD, Kargo and the console at \
+         once"
+    );
+    assert!(
+        run_variables.contains("variable \"iap_members\""),
+        "modules/iap-run declares no iap_members input; the whole reason it can hold a list is \
+         that a Cloud Run IAP resource is addressable per service"
+    );
+    // And it is empty everywhere. Read from the root's wiring rather than
+    // from a tfvars, because the root passes the literal — there is no
+    // variable for a person to fill in by accident.
+    assert!(
+        root.contains("iap_members = []"),
+        "the root passes a non-empty iap_members to modules/iap-run; an IAM member is an \
+         account identifier and this repository carries none — the grant is made out of band \
+         by name"
+    );
+
+    let dev = without_comments(&read("infrastructure/environments/dev/terraform.tfvars"));
+    let hostname = tfvars_value(&dev, "gitops_portal_hostname").expect(
+        "dev's tfvars must state gitops_portal_hostname, empty or not, so that which \
+                 door the console has is a decision in the file rather than a default",
+    );
+    assert_eq!(
+        hostname.trim().trim_matches('"'),
+        "",
+        "dev's gitops_portal_hostname is {hostname:?}, which selects ADR 0094's load-balancer \
+         door. That door needs an A record somebody creates at a registrar — the requirement \
+         ADR 0095 removed — and infra.yml run 71 proved it cannot apply here at all: `Quota \
+         'SECURITY_POLICY_RULES' exceeded. Limit: 0.0 globally` on its Cloud Armor policy, \
+         which is a zero allowance rather than a full one"
     );
 }
 
@@ -8857,67 +8915,95 @@ fn a_single_environment_owns_the_dns_zone_for_the_domain() {
          of the others would not have been seen"
     );
 
-    // Premise: one environment does declare it. Without this the equality
-    // below is satisfied by a repository that owns no domain at all, and the
-    // whole of `modules/dns-zone` would be a module nothing calls while this
-    // test went on passing.
-    assert_eq!(
-        declaring.len(),
-        1,
-        "{} environments declare dns_zone_domain: {declaring:?}. Exactly one may — a domain \
+    // **At most one, and since ADR 0095 that number is zero.** The invariant
+    // is the singleton, not the presence: a second zone for one domain is the
+    // defect, and no zone at all is a posture. The owner will not buy or
+    // delegate a domain, so every front door has a Google-provided hostname —
+    // the console at its `run.app` URL behind Cloud Run's own IAP, Argo CD and
+    // Kargo through the Connect gateway — and a zone would hold no records
+    // while still requiring the nameserver delegation it could never perform.
+    //
+    // This assertion said `== 1` until 2026-09-21, and the difference is not
+    // cosmetic: `== 1` makes owning a domain compulsory, which is the
+    // requirement this change removed. What it was protecting is kept below
+    // in a stronger form — every hostname any environment declares must be
+    // inside the declared zone, whatever the count is.
+    assert!(
+        declaring.len() <= 1,
+        "{} environments declare dns_zone_domain: {declaring:?}. At most one may — a domain \
          has one authoritative zone, and a second one applies cleanly and then serves records \
          nobody resolves. If another environment genuinely needs a name, it takes a subdomain \
          delegated from the owning zone rather than a zone of its own for the same domain",
         declaring.len()
     );
-    assert_eq!(
-        declaring[0].0, "dev",
-        "the environment owning the DNS zone is {}, not dev. Moving it is a decision about \
-         which state file the domain's resolution lives in, and it is not made by editing a \
-         tfvars",
-        declaring[0].0
-    );
-    assert_eq!(
-        declaring[0].1, "algorik.ai",
-        "dev's dns_zone_domain is {}, not algorik.ai — which is the domain the three front \
-         doors' hostnames are under, and a zone for anything else leaves them exactly as dark \
-         as they were",
-        declaring[0].1
-    );
-
-    // Every front door dev declares is inside that zone. A hostname under a
-    // domain nothing here is authoritative for is a name that still needs a
-    // hand-made record — the state this whole change exists to end — and the
-    // module's own precondition would refuse the record at plan.
-    let dev = without_comments(&read("infrastructure/environments/dev/terraform.tfvars"));
-    let suffix = format!(".{}", declaring[0].1);
-    let mut doors = 0usize;
-    for key in [
-        "gitops_argocd_hostname",
-        "gitops_kargo_hostname",
-        "gitops_portal_hostname",
-    ] {
-        let Some(hostname) = tfvars_value(&dev, key) else {
-            continue;
-        };
-        let hostname = hostname.trim().trim_matches('"').to_string();
-        if hostname.is_empty() {
-            continue;
-        }
-        doors += 1;
-        assert!(
-            hostname.ends_with(&suffix),
-            "{key} is {hostname}, which is not inside {}. Its A record would have to be made by \
-             hand at whatever registrar does serve it, which is the state this zone exists to \
-             end",
-            declaring[0].1
+    if let Some((owner, _)) = declaring.first() {
+        assert_eq!(
+            owner, "dev",
+            "the environment owning the DNS zone is {owner}, not dev. Moving it is a decision \
+             about which state file the domain's resolution lives in, and it is not made by \
+             editing a tfvars"
         );
     }
+
+    // **Every front-door hostname, in every environment, is inside a zone
+    // this repository is authoritative for — and where there is no zone there
+    // are no hostnames.** One rule covering both states, rather than a count
+    // of doors, because the count was the thing that broke when a door was
+    // closed and the property was never about how many there are.
+    //
+    // A hostname under a domain nothing here answers for is a name that still
+    // needs a hand-made record at somebody else's registrar, which is the
+    // state this whole lane exists to end. A hostname with no zone at all is
+    // the same failure with nothing even to point at: the module's `count` is
+    // zero, no record is planned, and the managed certificate sits in
+    // PROVISIONING for ever.
+    let owned = declaring.first().map(|(_, domain)| format!(".{domain}"));
+    let mut hostnames = 0usize;
+    for environment in ["dev", "test", "stage", "prod"] {
+        let path = format!("infrastructure/environments/{environment}/terraform.tfvars");
+        let tfvars = without_comments(&read(&path));
+        for key in [
+            "gitops_argocd_hostname",
+            "gitops_kargo_hostname",
+            "gitops_portal_hostname",
+        ] {
+            let Some(hostname) = tfvars_value(&tfvars, key) else {
+                continue;
+            };
+            let hostname = hostname.trim().trim_matches('"').to_string();
+            if hostname.is_empty() {
+                continue;
+            }
+            hostnames += 1;
+            let Some(suffix) = owned.as_deref() else {
+                panic!(
+                    "{path} names {key} = {hostname}, and no environment declares a \
+                     dns_zone_domain. That name resolves from nowhere: no zone is created, no \
+                     record is planned, and the Google-managed certificate ordered for it \
+                     stays in PROVISIONING for ever. Either declare the zone that answers it, \
+                     or leave the hostname empty and take the Google-provided path"
+                );
+            };
+            assert!(
+                hostname.ends_with(suffix),
+                "{path} names {key} = {hostname}, which is not inside {suffix}. Its A record \
+                 would have to be made by hand at whatever registrar does serve it, which is \
+                 the state the zone exists to end"
+            );
+        }
+    }
+
+    // The premise for the loop above, stated as the *pairing* rather than as
+    // a count of either side. A repository with a zone and no hostnames is a
+    // billed zone holding nothing; one with hostnames and no zone is caught
+    // by the panic above. Both zero is the committed state and is coherent.
     assert_eq!(
-        doors, 3,
-        "dev declares {doors} front-door hostnames, not the three the zone was built to serve. \
-         If a door was removed, this count is the place to record that; if one was added, it \
-         needs a record"
+        declaring.is_empty(),
+        hostnames == 0,
+        "{} environments declare a domain and {hostnames} front-door hostnames are declared. \
+         Those two move together: a zone with no name under it is a resource that bills and \
+         answers nothing, and a name with no zone resolves from nowhere",
+        declaring.len()
     );
 
     // And the closed state is the default, so the absence in the other three
