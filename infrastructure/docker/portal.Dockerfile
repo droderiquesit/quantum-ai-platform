@@ -89,13 +89,28 @@ RUN set -eu; \
 # everything, reviewed by nobody, to fix two named packages; the digest
 # above stays the reviewed one and the two packages are named here where a
 # reader can see them.
+# `>=` rather than `=`: the constraint is the fix, not one build of it.
+# `apk` refuses the install outright if it cannot satisfy the bound, so the
+# floor is enforced by the package manager and a pin to one exact release
+# would instead break the build on the day Alpine ships the next one — a
+# failure that says nothing about this image's security.
+#
+# No pipe anywhere in this stage. `apk info -v … | head -1` reads the
+# version through a pipe, and the default `/bin/sh` reports only the right
+# side's status, so an `apk info` that failed would be hidden by a `head`
+# that succeeded and the case below would fall through to success on an
+# empty string. That is hadolint DL4006, and it is the same defect this
+# session opened with in `argocd-patched.Dockerfile`; the word-splitting
+# below takes the first field with no second process involved.
 RUN set -eu; \
-    apk add --no-cache --upgrade libcrypto3 libssl3; \
-    installed="$(apk info -v libcrypto3 | head -1)"; \
+    apk add --no-cache "libcrypto3>=3.5.8-r0" "libssl3>=3.5.8-r0"; \
+    installed="$(apk info -v libcrypto3)"; \
+    set -- ${installed}; \
+    installed="$1"; \
     echo "libcrypto3 is now ${installed}"; \
     case "${installed}" in \
-      libcrypto3-3.5.[0-7]-*) \
-        echo "libcrypto3 is still ${installed}; the upgrade did not take and the image would ship the finding" >&2; \
+      libcrypto3-3.5.[0-7]-*|"") \
+        echo "libcrypto3 reads '${installed}'; the upgrade did not take and the image would ship the finding" >&2; \
         exit 1 ;; \
     esac
 USER node
