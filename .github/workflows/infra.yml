@@ -1492,18 +1492,44 @@ jobs:
             # refusal seven times. A Secret's presence is the same fact the
             # mount event would carry, asked of something readable. Its
             # presence only — `-o name` prints a name and never a value.
-            if ! kubectl -n kargo get secret kargo-webhooks-server -o name >/dev/null 2>&1; then
-              echo "::error title=Kargo's webhook Secret is absent::certificate/kargo-webhooks-server reports Ready and no Secret of that name exists, so cert-manager and the chart disagree about where the keypair goes." >&2
+            #
+            # **The name is read from the Certificate, never assumed.** The
+            # first version of this check asked for a Secret called
+            # `kargo-webhooks-server`, because that is the Certificate's
+            # name, and failed run 68 against a control plane that was
+            # working: the chart's `secretName` is
+            # `kargo-webhooks-server-cert`. The Certificate reported Ready,
+            # the pod was 1/1 Running, and the only broken thing in that run
+            # was this line — written in the same commit whose message
+            # argued for reading objects rather than guessing at them. So it
+            # asks the Certificate where it puts the keypair, which cannot
+            # drift from the vendored manifest the way a second copy of the
+            # name can.
+            secret_name="$(kubectl -n kargo get certificate/kargo-webhooks-server \
+              -o jsonpath='{.spec.secretName}')"
+            if [ -z "${secret_name}" ]; then
+              echo "::error title=Kargo's Certificate names no Secret::certificate/kargo-webhooks-server has an empty spec.secretName, so nothing can say where its keypair lands." >&2
               exit 1
             fi
-            # The Secret exists now. A pod created before it did is still
-            # waiting on a mount, and no amount of further waiting fixes
-            # that — the pod has to be replaced. On a first install this
-            # restarts a deployment that has not finished starting and costs
-            # one pod cycle; over a stranded pod it is the whole difference.
-            # Same argument as the cainjector restart two phases up, and the
-            # same shape of bug.
-            kubectl -n kargo rollout restart deployment/kargo-webhooks-server
+            if ! kubectl -n kargo get "secret/${secret_name}" -o name >/dev/null 2>&1; then
+              echo "::error title=Kargo's webhook Secret is absent::certificate/kargo-webhooks-server reports Ready and names ${secret_name}, and no such Secret exists — so cert-manager reported an issue it did not complete." >&2
+              exit 1
+            fi
+            # Replace the pod only if it has not come up by itself.
+            #
+            # Once the Secret exists the kubelet's own retry is usually
+            # enough: run 68 found the pod that had been ContainerCreating
+            # for 3h43m in run 67 now 1/1 Running and four hours old. A
+            # restart is for the case where that has not happened, and
+            # restarting a healthy admission webhook on every `up` takes it
+            # out of service for no reason — this step runs on every apply.
+            # The probe is the same question the wait below asks, given
+            # fifteen seconds instead of five minutes.
+            if ! kubectl -n kargo rollout status deployment/kargo-webhooks-server \
+                --timeout=15s >/dev/null 2>&1; then
+              echo "kargo-webhooks-server is not available; replacing its pod, which is what a pod created before ${secret_name} existed needs and what waiting longer cannot give it."
+              kubectl -n kargo rollout restart deployment/kargo-webhooks-server
+            fi
             # The webhooks server admits the Project applied in the apps
             # stage and the management controller is what reconciles it into
             # a namespace. Neither was waited for, and both are depended on

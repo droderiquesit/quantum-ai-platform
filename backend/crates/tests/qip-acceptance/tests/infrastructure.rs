@@ -8293,3 +8293,70 @@ fn the_control_plane_and_the_applications_are_two_dispatches_of_one_step() {
          apply and a controller reinstall to retry"
     );
 }
+
+/// The bootstrap must ask Kargo's Certificate where its keypair lands, not
+/// carry a second copy of the name.
+///
+/// This is a bug that happened, in the commit whose message argued against
+/// it. The step gained a check that a Secret called `kargo-webhooks-server`
+/// existed — the Certificate's name — and infra run 68 failed on it against
+/// a control plane that was working: the Certificate reported Ready, the
+/// webhooks-server pod was `1/1 Running`, and the chart's `secretName` is
+/// `kargo-webhooks-server-cert`. The only broken thing in that run was the
+/// check.
+///
+/// A name written twice is a name that can disagree with itself, and the
+/// vendored chart is the half that moves. So the property pinned here is
+/// not "use this string" — it is that the bootstrap derives the name from
+/// `spec.secretName`, and that no literal it does carry contradicts the
+/// manifest.
+#[test]
+fn the_bootstrap_reads_kargos_webhook_secret_name_from_its_certificate() {
+    let manifest = read("infrastructure/gitops/bootstrap/kargo/upstream/install.yaml");
+
+    // The premise first: the vendored chart really does declare a Certificate
+    // whose Secret is named something other than the Certificate itself. If
+    // upstream ever makes them equal, this test proves nothing and should
+    // say so rather than pass quietly.
+    let secret_name = manifest
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("secretName: kargo-webhooks-server"))
+        .map(|rest| format!("kargo-webhooks-server{rest}"))
+        .expect("the vendored Kargo chart declares no kargo-webhooks-server secretName");
+    assert_ne!(
+        secret_name, "kargo-webhooks-server",
+        "upstream now names the Secret after the Certificate, so the confusion this \
+         test pins is no longer possible and the test needs rewriting rather than keeping"
+    );
+
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+    let step = steps
+        .iter()
+        .find(|step| step.contains("name: bootstrap the GitOps controllers"))
+        .expect("infra.yml has no bootstrap step");
+
+    assert!(
+        step.contains("{.spec.secretName}"),
+        "the bootstrap no longer reads Kargo's Secret name from its Certificate's \
+         spec.secretName, so it is carrying a second copy of a name the vendored \
+         chart owns"
+    );
+
+    // And no executed line may name a Kargo secret literally. Comments may —
+    // the ones above that read explain the bug by naming both strings, and a
+    // scan that counted those would be reading its own documentation, which
+    // this suite has already been caught doing twice.
+    for line in step.lines().map(str::trim) {
+        if line.starts_with('#') || line.starts_with("echo ") {
+            continue;
+        }
+        assert!(
+            !line.contains("secret/kargo-webhooks-server")
+                && !line.contains("secret kargo-webhooks-server"),
+            "the bootstrap names a Kargo Secret literally in `{line}`. The chart owns \
+             that name and changed it once already; read spec.secretName instead"
+        );
+    }
+}
