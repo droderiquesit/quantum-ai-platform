@@ -94,6 +94,43 @@ interface RequestOptions {
   readonly query?: Readonly<Record<string, string>>;
 }
 
+/** Longest a body that is not the platform's JSON may be quoted at. */
+const MAX_QUOTED_DETAIL = 200;
+
+const LOOKS_LIKE_MARKUP = /^\s*(?:<!doctype\b|<\?xml\b|<html\b)/i;
+const DOCUMENT_TITLE = /<title[^>]*>([^<]{1,160})<\/title>/i;
+
+/**
+ * Describe a body that did not parse as JSON, instead of pasting it.
+ *
+ * `QIP_API_BASE_URL` is the API's own Cloud Run URL
+ * (`infrastructure/terraform/outputs.tf`, `api_internal_base_url`), so when
+ * `qip-api` has no healthy revision the thing that answers the gateway is
+ * Cloud Run's front end, with a status and roughly a kilobyte and a half of
+ * HTML. This function used to return any non-empty string verbatim, which
+ * meant every panel on the dashboard rendered that page's source as its
+ * reason — six panels, re-fetched every five to thirty seconds. Markup filling
+ * the screen reads as a console that is broken; the truth was a backend that
+ * had not started, and the two send an operator to different problems.
+ *
+ * Nothing is invented and nothing is concealed. A document is described by its
+ * own `<title>` where it has one, and any other text is truncated rather than
+ * replaced. The status code, which is the fact that actually distinguishes the
+ * causes, is added by the caller and is untouched by this.
+ */
+function summariseOpaqueBody(text: string, fallback: string): string {
+  if (LOOKS_LIKE_MARKUP.test(text)) {
+    const title = DOCUMENT_TITLE.exec(text)?.[1]?.trim();
+    const head = "the answer was an HTML page, not the platform's JSON";
+    return title ? `${head}: "${title}"` : head;
+  }
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) return fallback;
+  return collapsed.length > MAX_QUOTED_DETAIL
+    ? `${collapsed.slice(0, MAX_QUOTED_DETAIL)}…`
+    : collapsed;
+}
+
 function detailFrom(body: unknown, fallback: string): string {
   if (typeof body === "object" && body !== null) {
     const record = body as Record<string, unknown>;
@@ -102,7 +139,7 @@ function detailFrom(body: unknown, fallback: string): string {
       if (typeof value === "string" && value.length > 0) return value;
     }
   }
-  if (typeof body === "string" && body.length > 0) return body;
+  if (typeof body === "string" && body.length > 0) return summariseOpaqueBody(body, fallback);
   return fallback;
 }
 
