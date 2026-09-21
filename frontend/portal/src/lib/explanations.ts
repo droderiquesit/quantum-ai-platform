@@ -39,10 +39,20 @@ export const QUESTIONS: readonly Question[] = [
     id: "position",
     asks: "Why did you take this position?",
     answeredBy: "The belief that supported it, its confidence, and the evidence that formed it",
-    coverage: "absent",
+    // Half. `GET /proposals` now carries, per leg, the hypotheses that leg
+    // expresses — by id — beside the proposal's rationale. That is the
+    // belief the position rests on, named. Its *confidence* and the evidence
+    // that formed it are still on no wire: a hypothesis id is a handle, not
+    // an argument, and no route resolves one.
+    coverage: "partial",
+    // Empty on purpose. `reads` is what *this* page fetches for its live
+    // panel, and it fetches no proposals; the route that carries the answer
+    // is named through `page`, which is what that field is for. Declaring a
+    // route here that the page never requests would be a claim nobody could
+    // check from the network tab.
     reads: [],
-    page: null,
-    missing: NOT_YET_SERVED["explanationPosition"] ?? null,
+    page: { href: "/intelligence/decisions", label: "Decision record" },
+    missing: null,
   },
   {
     id: "belief",
@@ -57,18 +67,42 @@ export const QUESTIONS: readonly Question[] = [
     id: "size",
     asks: "Why this size?",
     answeredBy: "Edge, volatility, grant, and the confidence multiplier, shown separately",
-    coverage: "absent",
+    // Half, and the half is named rather than rounded up. `GET /proposals`
+    // now projects the sizing the DECIDE stage recorded: the weight each leg
+    // moved from and to, the reference price it was sized at, the cost in
+    // basis points, and the optimiser's own sentences about what the result
+    // gave up — which name the caps that bound it and the evidence a bound
+    // was narrowed on. That is the sizing *as it happened*.
+    //
+    // It is not the blueprint's four terms shown separately. Edge,
+    // volatility, the grant and the confidence multiplier are inputs to the
+    // optimiser and are not projected apart by any route. A page could not
+    // honestly derive them from a weight, and would be a second sizing model
+    // in a browser if it tried.
+    coverage: "partial",
+    // Empty on purpose. `reads` is what *this* page fetches for its live
+    // panel, and it fetches no proposals; the route that carries the answer
+    // is named through `page`, which is what that field is for. Declaring a
+    // route here that the page never requests would be a claim nobody could
+    // check from the network tab.
     reads: [],
-    page: null,
-    missing: NOT_YET_SERVED["explanationSizing"] ?? null,
+    page: { href: "/intelligence/decisions", label: "Decision record" },
+    missing: null,
   },
   {
     id: "declined",
     asks: "Why not the obvious trade?",
     answeredBy: "The gate that declined it and the counterfactual score of declining it",
+    // Still half, and for a different reason than before. The *gate* half is
+    // now answered per decision rather than only per rule: a vetoed proposal
+    // on `GET /proposals` names the control that vetoed it and the reason it
+    // gave, which the route previously dropped — a console could report
+    // `vetoed` and not say by what. The counterfactual score of declining is
+    // still aggregated per rule over a window on `/risk/recalibrations`, not
+    // attached to the decision, so half a question remains half.
     coverage: "partial",
     reads: ["/risk/recalibrations", "/orders"],
-    page: { href: "/risk/recalibrations", label: "Rule recalibrations" },
+    page: { href: "/intelligence/decisions", label: "Decision record" },
     missing: null,
   },
   {

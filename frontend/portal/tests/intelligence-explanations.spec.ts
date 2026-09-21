@@ -102,10 +102,18 @@ test("the seven questions are the blueprint's, in its order, with coverage decla
     "unknowns",
     "cost",
   ]);
+  // 1 answered, 5 half, 1 absent. This read 1/3/3 until `GET /proposals`
+  // began projecting the decision record the DECIDE stage had always
+  // written: the hypotheses each leg expresses, the weights it was sized
+  // between, and the control that vetoed it with its reason. That moved
+  // *position* and *size* from absent to partial — neither to answered,
+  // because a hypothesis id is not a confidence and a weight movement is not
+  // the blueprint's four sizing terms shown apart. Only *selection* is still
+  // absent. The premise above still holds: this is not a table of sevens.
   const coverage = QUESTIONS.map((question) => question.coverage);
   expect(coverage.filter((value) => value === "answered").length).toBe(1);
-  expect(coverage.filter((value) => value === "partial").length).toBe(3);
-  expect(coverage.filter((value) => value === "absent").length).toBe(3);
+  expect(coverage.filter((value) => value === "partial").length).toBe(5);
+  expect(coverage.filter((value) => value === "absent").length).toBe(1);
 
   const writes: string[] = [];
   page.on("request", (request) => {
@@ -133,8 +141,8 @@ test("the seven questions are the blueprint's, in its order, with coverage decla
   // answered, and the split is unchanged, because coverage is a statement
   // about what the routes carry and not about this request.
   await expect(page.getByTestId("explanations-answered")).toHaveText("1");
-  await expect(page.getByTestId("explanations-partial")).toHaveText("3");
-  await expect(page.getByTestId("explanations-absent")).toHaveText("3");
+  await expect(page.getByTestId("explanations-partial")).toHaveText("5");
+  await expect(page.getByTestId("explanations-absent")).toHaveText("1");
 
   // The blueprint's "what answers it" cell, verbatim, on every question.
   const answeredBy = await page
@@ -168,12 +176,22 @@ test("the seven questions are the blueprint's, in its order, with coverage decla
   await expect(page.getByTestId("explanations-return")).toContainText(PNL_REASON);
   await expect(page.getByTestId("explanations-cost-missing")).toContainText("half a ratio is not a ratio");
 
-  // 1, 3, 5: named absences, each with the path such a route would have.
+  // 5: the one named absence left, with the path such a route would have.
+  // Questions 1 and 3 were here too until `GET /proposals` began projecting
+  // the decision record; they are asserted as halves above rather than
+  // deleted from this test, so the crossing is visible in the diff rather
+  // than being a count that quietly shrank.
   const absent = page.locator('[data-testid="explanations-question"][data-coverage="absent"]');
-  await expect(absent).toHaveCount(3);
-  await expect(absent.nth(0)).toContainText("GET /api/v1/explanations/positions/{position} is missing");
-  await expect(absent.nth(1)).toContainText("GET /api/v1/explanations/sizing/{proposal} is missing");
-  await expect(absent.nth(2)).toContainText("GET /api/v1/explanations/selection/{strategy} is missing");
+  await expect(absent).toHaveCount(1);
+  await expect(absent.nth(0)).toContainText("GET /api/v1/explanations/selection/{strategy} is missing");
+
+  // 1 and 3, now halves: each names the decision record it reads and what it
+  // still cannot say. Asserted so that a future edit which quietly upgraded
+  // either to "answered" fails here.
+  const position = page.locator('[data-testid="explanations-question"][data-question="position"]');
+  await expect(position).toHaveAttribute("data-coverage", "partial");
+  const size = page.locator('[data-testid="explanations-question"][data-question="size"]');
+  await expect(size).toHaveAttribute("data-coverage", "partial");
 
   // Nothing acts. The chrome's one form is the kill-switch dialog, outside
   // the page.
@@ -194,8 +212,8 @@ test("a platform that answers nothing leaves coverage as declared and shows no f
 
   await expect(page.getByTestId("explanations-question")).toHaveCount(7);
   await expect(page.getByTestId("explanations-answered")).toHaveText("1");
-  await expect(page.getByTestId("explanations-partial")).toHaveText("3");
-  await expect(page.getByTestId("explanations-absent")).toHaveText("3");
+  await expect(page.getByTestId("explanations-partial")).toHaveText("5");
+  await expect(page.getByTestId("explanations-absent")).toHaveText("1");
   await expect(page.getByTestId("explanations-self-model-count")).toHaveCount(0);
   await expect(page.getByTestId("explanations-regret")).toHaveCount(0);
   await expect(page.getByTestId("explanations-cost")).toHaveCount(0);

@@ -156,7 +156,10 @@ pub const ROUTES: &[Route] = &[
         method: Method::Get,
         pattern: "/proposals",
         required_role: Role::Viewer,
-        summary: "proposals and their status",
+        summary: "each proposal's decision record: the status and who decided it, the \
+                  weights and reference price each leg was sized between, the hypotheses \
+                  it expresses, what the construction compromised on and which controls \
+                  passed",
         success: 200,
     },
     Route {
@@ -2733,23 +2736,121 @@ fn opportunities(platform: &Platform) -> String {
     format!(r#"{{"opportunities":[{}]}}"#, rendered.join(","))
 }
 
+/// The decision record behind each proposal, as the platform recorded it.
+///
+/// This route served six fields — id, status word, leg count, gross, turnover
+/// and rationale — while the `qip_portfolio_engine::proposal::Proposal` behind
+/// it carried the reason it was
+/// vetoed, the control that vetoed it, the hypotheses each leg expresses and
+/// the weights the sizing moved between. A console reading the old body could
+/// say that a proposal was `vetoed` and could not say by what or why, so the
+/// one question an operator asks of a refusal had no answer on any wire, and
+/// blueprint §40.2's "why not the obvious trade?" was scored absent against a
+/// platform that had already written the answer down.
+///
+/// Nothing here is computed. Every field is read off the proposal the DECIDE
+/// stage produced; the browser is forbidden trading and risk logic
+/// (`.claude/rules/domains/frontend.md`), so a term it must display apart has
+/// to be projected apart here rather than divided out there.
+///
+/// **Where the exact and the statistical meet.** `equity`, `quantity` and
+/// `reference_price` are [`qip_core::Decimal`] and are written as strings, so
+/// no consumer can parse money into a float and lose a cent. The weights,
+/// turnover, exposures and basis-point costs are `f64` on the proposal itself
+/// — they are statistics about the book, not money — and are written as JSON
+/// numbers. That is the crossing point, and it is here rather than in a
+/// caller.
 fn proposals(platform: &Platform) -> String {
     let rendered: Vec<String> = platform
         .proposals()
         .iter()
         .map(|proposal| {
+            let legs: Vec<String> = proposal
+                .legs
+                .iter()
+                .map(|leg| {
+                    format!(
+                        r#"{{"instrument":{},"side":{},"quantity":{},"reference_price":{},"notional":{},"current_weight":{},"target_weight":{},"weight_change":{},"estimated_cost_bps":{},"hypotheses":[{}]}}"#,
+                        json::string(leg.object_id.as_str()),
+                        json::string(leg.side.as_str()),
+                        json::string(&leg.quantity.to_string()),
+                        json::string(&leg.reference_price.to_string()),
+                        json::string(&leg.notional().to_string()),
+                        json::number(leg.current_weight),
+                        json::number(leg.target_weight),
+                        json::number(leg.weight_change()),
+                        json::number(leg.estimated_cost_bps),
+                        leg.hypotheses
+                            .iter()
+                            .map(|hypothesis| json::string(hypothesis))
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )
+                })
+                .collect();
             format!(
-                r#"{{"id":{},"status":{},"legs":{},"gross":{},"turnover":{},"rationale":{}}}"#,
+                r#"{{"id":{},"status":{},"decision":{},"created_at":{},"as_of":{},"equity":{},"gross":{},"target_net":{},"turnover":{},"estimated_cost_bps":{},"rationale":{},"compromises":[{}],"checks_passed":[{}],"legs":{},"leg_detail":[{}]}}"#,
                 json::string(proposal.proposal_id.as_str()),
                 json::string(proposal.status().as_str()),
-                proposal.len(),
+                proposal_decision(proposal.status()),
+                json::string(&proposal.created_at.to_rfc3339()),
+                json::string(&proposal.as_of.to_rfc3339()),
+                json::string(&proposal.equity.to_string()),
                 json::number(proposal.target_gross),
+                json::number(proposal.target_net),
                 json::number(proposal.turnover),
-                json::string(&proposal.rationale)
+                json::number(proposal.estimated_cost_bps),
+                json::string(&proposal.rationale),
+                proposal
+                    .compromises
+                    .iter()
+                    .map(|compromise| json::string(compromise))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                proposal
+                    .checks_passed
+                    .iter()
+                    .map(|check| json::string(check))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                proposal.len(),
+                legs.join(",")
             )
         })
         .collect();
     format!(r#"{{"proposals":[{}]}}"#, rendered.join(","))
+}
+
+/// The status's own detail: when it was decided, by which control, and why.
+///
+/// `qip_portfolio_engine::proposal::ProposalStatus` is an internally-tagged enum
+/// whose every payload is a
+/// string, a list of strings or a [`Timestamp`] that serialises as RFC 3339,
+/// so it is written through `serde` rather than re-matched here. Re-matching
+/// would put a second statement of the same shape in this file, and the two
+/// would drift the first time a status gained a field — the wire would keep
+/// reporting the old shape and nothing would fail.
+///
+/// The object carries its own `status` discriminant, equal to the sibling
+/// `status` field above it. That repetition is deliberate: the flat field is
+/// what every existing reader of this route already parses, and removing it
+/// to tidy the body would break them to save eleven bytes.
+///
+/// The error arm cannot be reached by any value of this type — there is no
+/// map with non-string keys and no float in it — but it is written as a
+/// stated refusal rather than as `null`, because a `null` here would read to
+/// a console as "this proposal was never decided", which is a claim about the
+/// platform rather than about the encoder.
+fn proposal_decision(status: &impl serde::Serialize) -> String {
+    match serde_json::to_string(status) {
+        Ok(encoded) => encoded,
+        Err(error) => format!(
+            r#"{{"unavailable":true,"reason":{}}}"#,
+            json::string(&format!(
+                "this proposal's decision could not be encoded: {error}"
+            ))
+        ),
+    }
 }
 
 fn orders(platform: &Platform) -> String {

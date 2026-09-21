@@ -36,24 +36,36 @@ import { useRecalibrations } from "@/lib/hooks/useSelfCorrection";
  *
  * The seven, with the honesty each one needs:
  *
- * 1. *Why did you take this position?* — no route. `GET /proposals` carries
- *    a rationale sentence; a belief with a confidence and the evidence that
- *    formed it is not on any wire. Rendered as the named absence.
+ * 1. *Why did you take this position?* — half, and it was `absent` until
+ *    `GET /proposals` began carrying the hypotheses each leg expresses
+ *    beside the rationale sentence. The belief the position rests on is now
+ *    named. Its confidence and the evidence that formed it are still on no
+ *    wire: a hypothesis id is a handle and no route resolves one.
  * 2. *Why do you believe that?* — half. `GET /cognition/precedents` is the
  *    episodes that resemble now; the causal path through the graph reaches
  *    no route. The register counted the episodes half as the whole question
  *    until this page was written; it is `partial` here.
- * 3. *Why this size?* — no route. The four terms are computed in DECIDE and
- *    projected nowhere; a page that showed them apart would have to compute
- *    them, and a second sizing model in a browser is the failure the
- *    console's rules exist to prevent.
- * 4. *Why not the obvious trade?* — half, and the half is deliberately not
- *    oversold. `GET /risk/recalibrations` carries the gate that refused and
- *    the counterfactual score of refusing, which is exactly the material the
- *    question asks for — aggregated per rule over a window, not per declined
- *    order. A desk reading it learns which limit has been costing the
- *    platform, not why one trade was declined. `GET /orders` adds a count of
- *    refusals and no reason per order.
+ * 3. *Why this size?* — half, and the half is named rather than rounded up.
+ *    `GET /proposals` now projects the sizing the DECIDE stage recorded: the
+ *    weight each leg moved from and to, the reference price it was sized at,
+ *    the cost in basis points, and the optimiser's own sentences about what
+ *    the result gave up — which name the cap that bound it and the evidence
+ *    a bound was narrowed on. That is the sizing as it happened, read off
+ *    the record rather than derived. It is still **not** the blueprint's
+ *    four terms shown separately: edge, volatility, the grant and the
+ *    confidence multiplier are inputs to the optimiser and no route projects
+ *    them apart. A page that derived them from a weight would be the second
+ *    sizing model in a browser that this note used to say was the reason
+ *    nothing could be shown at all.
+ * 4. *Why not the obvious trade?* — still half, now for a different reason.
+ *    The *gate* half is answered per decision: a vetoed proposal on
+ *    `GET /proposals` names the control that vetoed it and the reason it
+ *    gave. The route dropped both until this was written, so a console could
+ *    report `vetoed` and could not say by what — the one question an
+ *    operator asks of a refusal. The counterfactual score of declining is
+ *    still aggregated per rule over a window on `GET /risk/recalibrations`
+ *    rather than attached to the decision, and `GET /orders` still adds a
+ *    count of refusals with no reason per order.
  * 5. *Why this strategy and not that one?* — no route.
  * 6. *What do you not know here?* — answered. `GET /cognition/self-model`
  *    is the platform's stated coverage gaps and the estimates it refuses.

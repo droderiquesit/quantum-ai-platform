@@ -160,6 +160,49 @@ export interface Opportunities {
   readonly opportunities: readonly Opportunity[];
 }
 
+/**
+ * One leg's sizing, as the DECIDE stage recorded it.
+ *
+ * The weights and basis-point costs are numbers because they are statistics
+ * about the book; the quantity, reference price and notional are strings
+ * because they are money and a float would lose a cent. The crossing point is
+ * decided upstream, in `routes.rs`, and is restated here only so that nobody
+ * reading this file parses one of the strings.
+ */
+export interface ProposalLeg {
+  readonly instrument: string;
+  readonly side: string;
+  /** Exact decimals rendered as strings upstream; never parsed into floats. */
+  readonly quantity: string;
+  readonly reference_price: string;
+  readonly notional: string;
+  /** Fractions of equity, before and after, and the move between them. */
+  readonly current_weight: number;
+  readonly target_weight: number;
+  readonly weight_change: number;
+  readonly estimated_cost_bps: number;
+  /** The hypotheses this leg expresses, by id. */
+  readonly hypotheses: readonly string[];
+}
+
+/**
+ * The status's own detail: when a proposal was decided, by which control and
+ * why.
+ *
+ * An internally-tagged union upstream, so `status` repeats the proposal's own
+ * status field. A draft carries nothing else — it has not been reviewed, and
+ * the absence of an approver is the honest report of that rather than an
+ * empty name.
+ */
+export interface ProposalDecision {
+  readonly status: string;
+  readonly at?: string;
+  /** The controls that approved it, or the single control that vetoed it. */
+  readonly by?: string | readonly string[];
+  /** Present on a veto and on a withdrawal: the reason the platform gave. */
+  readonly reason?: string;
+}
+
 export interface Proposal {
   readonly id: string;
   readonly status: string;
@@ -167,6 +210,19 @@ export interface Proposal {
   readonly gross: number;
   readonly turnover: number;
   readonly rationale: string;
+  readonly decision?: ProposalDecision;
+  readonly created_at?: string;
+  /** The instant the sizing reasoned as of. */
+  readonly as_of?: string;
+  /** Money, as a string. The denominator every weight above is a fraction of. */
+  readonly equity?: string;
+  readonly target_net?: number;
+  readonly estimated_cost_bps?: number;
+  /** What the construction had to give up, in the platform's own words. */
+  readonly compromises?: readonly string[];
+  /** The controls that have passed, by name. */
+  readonly checks_passed?: readonly string[];
+  readonly leg_detail?: readonly ProposalLeg[];
 }
 
 export interface Proposals {
