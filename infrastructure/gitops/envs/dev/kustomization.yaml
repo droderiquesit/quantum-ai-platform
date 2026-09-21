@@ -22,13 +22,13 @@ resources:
 images:
 - name: qip-api
   newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-api
-  digest: sha256:72b4e9ab4338812c5b4607042f3798c754196182496dbf93ea24f9626151aa08
+  digest: sha256:14fd83be4ed0357212723e9248edec0a4e7d105623ccece040014e454ae39175
 - name: qip-fastbrain
   newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-fastbrain
-  digest: sha256:23aeaec31cb33ec5ad1bb89e1c8d55a8f3ecfedbe92695ed60c2ad069cad739b
+  digest: sha256:c9f2cb45c72165beb6ada19f88ac7fefcdb9dfe4c50420557e3328142e2dd25c
 - name: qip-deepbrain
   newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-deepbrain
-  digest: sha256:2b02f398c9bee1e0e19e0c7e573589539580d86087932e13497a089159511228
+  digest: sha256:ab01314a2b2ff156df2663622beab6984cfeb7fd4eb4cc24b46710f3af6edd19
 # The console (ADR 0094). `TO-PIN` rather than a digest, and it is the honest
 # value rather than a placeholder somebody forgot: `deploy.yml` gained the
 # portal's build in the same commit as this line, and no run of it has
