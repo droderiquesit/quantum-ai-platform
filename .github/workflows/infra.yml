@@ -1443,6 +1443,29 @@ jobs:
                 gcloud run revisions describe "${latest}" --project "${GCP_PROJECT}" --region "${region}" \
                   --format='value[separator="; "](status.conditions.map().format("revision {0}={1} {2}", type, status, message).list())' 2>&1 \
                   | sed "s/^/    ${latest}: /" >&2 || true
+                # And what the container printed, for a revision that is not
+                # Ready. "The user-provided container failed the configured
+                # startup probe checks" is Cloud Run saying the process did
+                # not answer; only the process says why, and these composition
+                # roots refuse by design — an unwritable journal, a trust root
+                # it will not run on, a ceiling it will not accept — each with
+                # a message written to stdout before it exits.
+                #
+                # Only for a failing revision, and only the last twenty lines:
+                # a healthy service's log is noise here, and a workflow log is
+                # not a place to mirror an application's output.
+                ready="$(gcloud run revisions describe "${latest}" --project "${GCP_PROJECT}" \
+                  --region "${region}" \
+                  --format='value(status.conditions.filter("type:Ready").extract(status))' 2>/dev/null || true)"
+                case "${ready}" in
+                  *True*) continue ;;
+                esac
+                echo "    what ${latest} printed before it stopped:" >&2
+                gcloud logging read \
+                  "resource.type=cloud_run_revision AND resource.labels.revision_name=${latest}" \
+                  --project "${GCP_PROJECT}" --limit 20 --order desc \
+                  --format='value(textPayload,jsonPayload.message)' 2>&1 \
+                  | sed 's/^/      /' >&2 || true
               done
             }
 

@@ -121,6 +121,33 @@ resource "google_project_iam_member" "read_deployment_logs" {
   member  = "serviceAccount:${google_service_account.ci.email}"
 }
 
+# The same role, the same reason, for the identity that runs `infra.yml`.
+#
+# The grant above was written for `deploy.yml`, which moved services with
+# `gcloud run services update`. ADR 0036 moved that to Config Connector, so
+# the sentence it was written about — "the user-provided container failed the
+# configured startup probe checks" — is now printed by `infra.yml`'s `apps`
+# stage instead, and by the identity below, which did not hold the role.
+#
+# `qip-dev-fastbrain-00002-n4c` and `qip-dev-deepbrain-00002-hlh` report
+# exactly that condition today. Five runs established what is *not* wrong —
+# not the image, not the pull grant, not the digests, not the secrets for
+# these two, not the probe path, not the egress sidecar — by asking every
+# controller in the path. The one thing none of them holds is what the
+# process printed before it stopped, and these composition roots refuse by
+# design: an unwritable journal, a trust root they will not run on, a ceiling
+# they will not accept, each with its reason on stdout.
+#
+# Everything the comment above argues about scope applies unchanged:
+# `logging.viewer` writes nothing, excludes the data-access logs that are
+# `logging.privateLogViewer`, and this platform already refuses to log a
+# token, key or account identifier.
+resource "google_project_iam_member" "infra_reads_deployment_logs" {
+  project = var.project_id
+  role    = "roles/logging.viewer"
+  member  = "serviceAccount:${google_service_account.infra.email}"
+}
+
 # The execution node's rolling replacement, and nothing else about compute.
 #
 # `deploy.yml` asks each node's managed instance group to replace its
