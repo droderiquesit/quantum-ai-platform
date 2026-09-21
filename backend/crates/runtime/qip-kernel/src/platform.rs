@@ -688,6 +688,21 @@ pub struct Platform {
     /// is indistinguishable downstream from an observed one and would support
     /// leverage on its own authority.
     illiquid_unmarkable: BTreeMap<String, String>,
+    /// Each private holding's own cash-flow schedule, by object id, where its
+    /// record dates one.
+    ///
+    /// Read in `construct_from` for the instant capital comes back, which
+    /// raises the liquidity ladder's stated exit time, and by the
+    /// private-positions surface for the flows themselves. Held rather than
+    /// re-derived per reader: `forecast_private_asset` is the one derivation,
+    /// and a second one beside it would eventually disagree with the first
+    /// while the risk read used whichever it happened to be given.
+    ///
+    /// Every flow in here is the administrator's own reported residual dated
+    /// at the record's own lockup end. Nothing is forecast by this platform,
+    /// which is why a surface may render it: it is a report being repeated,
+    /// not a projection being asserted.
+    private_forecasts: BTreeMap<String, qip_financial::cashflow::CashflowForecast>,
     /// The credit half of the valuation plane: one profile per obligor the
     /// universe holds a claim on, and the sovereign curve per currency those
     /// claims discount against.
@@ -1755,18 +1770,27 @@ fn private_asset_origin(
 ///   may be sized into, and it joins `not_decision_grade` for the same reason
 ///   a research-only instrument does — the platform can say what it is and
 ///   cannot say what it is worth.
-/// * The instant each private holding's own cash-flow forecast returns
-///   capital, where its record dates one. This is the third fact and the
-///   newest, and it is here rather than beside the mark because it is the
-///   same schedule: `IlliquidValuator::forecast_private_asset` derives it
-///   once, the mark discounts it, and the liquidity ladder reads the date off
-///   it. Until this was carried out of the sweep the date existed for the
-///   length of one discounting and was then dropped, so the only thing the
-///   risk read knew about how fast a private fund becomes cash was the
-///   catalogue's estimate — and a catalogue cannot know a lockup.
+/// * Each private holding's own cash-flow forecast, where its record dates
+///   one. This is the third fact and the newest, and it is here rather than
+///   beside the mark because it is the same schedule:
+///   `IlliquidValuator::forecast_private_asset` derives it once, the mark
+///   discounts it, and the liquidity ladder reads the date off it. Until this
+///   was carried out of the sweep the date existed for the length of one
+///   discounting and was then dropped, so the only thing the risk read knew
+///   about how fast a private fund becomes cash was the catalogue's estimate
+///   — and a catalogue cannot know a lockup.
+///
+///   The **schedule** is what is carried out, and that is a correction of the
+///   same shape as the one above. This used to return
+///   `BTreeMap<String, Timestamp>` — `first_return_at` applied here, at the
+///   sweep — so the forecast itself was still discarded and the flows it
+///   holds, which are the expected distributions blueprint §40.1's
+///   private-positions surface asks for, existed nowhere a reader could
+///   reach. The date is now derived where it is used, off the one schedule,
+///   so there is no second map that could disagree with it.
 ///
 /// A universe of listed equities produces an empty book, no marks and no
-/// dated returns, so nothing about an ordinary assembly changes.
+/// schedules, so nothing about an ordinary assembly changes.
 #[allow(clippy::type_complexity)]
 fn private_holdings_of(
     universe: &Universe,
@@ -1775,12 +1799,12 @@ fn private_holdings_of(
     qip_financial::cashflow::CommitmentBook,
     BTreeMap<String, qip_financial::valuation::AssetValuation>,
     Vec<(String, String)>,
-    BTreeMap<String, Timestamp>,
+    BTreeMap<String, qip_financial::cashflow::CashflowForecast>,
 )> {
     let mut book = qip_financial::cashflow::CommitmentBook::new();
     let mut marks = BTreeMap::new();
     let mut unmarkable = Vec::new();
-    let mut capital_returns = BTreeMap::new();
+    let mut forecasts = BTreeMap::new();
     for object in universe.iter() {
         let qip_financial::extensions::Extension::PrivateAsset(details) = &object.extension else {
             continue;
@@ -1813,18 +1837,22 @@ fn private_holdings_of(
         // `provenance.event_time` is the instant the schedule became true —
         // the administrator's reporting date — and is the one
         // `mark_private_asset` discounts from, so the two readers of this
-        // forecast read the same one. `first_return_at` then refuses to be
-        // read as of an instant before that, which is the point-in-time guard
-        // and not a formality: a lockup restated in March must not date a
-        // January liquidity read.
+        // forecast read the same one. `first_return_at`, applied by each
+        // reader at the instant it is reading as of, then refuses to be read
+        // before that, which is the point-in-time guard and not a formality:
+        // a lockup restated in March must not date a January liquidity read.
+        //
+        // The whole schedule is kept rather than the one date off it. Both
+        // readers — the ladder here and the private-positions surface — ask
+        // it their own question at their own instant, and a map holding the
+        // answer to one of those questions cannot answer the other.
         if let Some(forecast) = qip_financial::valuation::IlliquidValuator::forecast_private_asset(
             id.clone(),
             details,
             origin,
             object.provenance.event_time,
-        )? && let Some(returns_at) = forecast.first_return_at(now)?
-        {
-            capital_returns.insert(id.clone(), returns_at);
+        )? {
+            forecasts.insert(id.clone(), forecast);
         }
         match qip_financial::valuation::IlliquidValuator::mark_object(object, origin, now) {
             Ok(Some(mark)) => {
@@ -1838,7 +1866,7 @@ fn private_holdings_of(
             Err(refusal) => unmarkable.push((id, refusal.message().to_string())),
         }
     }
-    Ok((book, marks, unmarkable, capital_returns))
+    Ok((book, marks, unmarkable, forecasts))
 }
 
 /// Raise a holding's stated exit time to the lockup its own cash-flow forecast
@@ -3933,7 +3961,7 @@ impl Platform {
         // catches an instrument with no positive price, but a private asset
         // can carry a stale price and still be unmarkable, and an unmarkable
         // instrument is exactly one no capital may be sized into.
-        let (commitments, illiquid_marks, unmarkable, capital_returns) =
+        let (commitments, illiquid_marks, unmarkable, private_forecasts) =
             private_holdings_of(&universe, now)?;
         // The forecasting half of blueprint §16.4 reaching the decision it
         // belongs to. Every private holding whose own cash-flow forecast dates
@@ -3945,10 +3973,17 @@ impl Platform {
         // reference map is impossible — both maps are built from the same
         // universe — and is left alone rather than inserted, because an entry
         // with no rung and no spread is not a ladder placement.
-        for (id, returns_at) in &capital_returns {
+        for (id, forecast) in &private_forecasts {
+            // A schedule whose capital has already come back by `now` dates
+            // no return, and the ladder is left with the catalogue's figure
+            // — the same outcome the sweep used to produce by omitting the
+            // holding from the map entirely.
+            let Some(returns_at) = forecast.first_return_at(now)? else {
+                continue;
+            };
             if let Some(reference) = liquidity_reference.get_mut(id) {
                 reference.days_to_liquidate =
-                    exit_days_with_forecast(reference.days_to_liquidate, *returns_at, now);
+                    exit_days_with_forecast(reference.days_to_liquidate, returns_at, now);
             }
         }
         let illiquid_unmarkable: BTreeMap<String, String> = unmarkable.into_iter().collect();
@@ -4253,6 +4288,7 @@ impl Platform {
             commitments,
             illiquid_marks,
             illiquid_unmarkable,
+            private_forecasts,
             credit,
             universe_assembled,
             inherited_through,
@@ -11217,9 +11253,37 @@ impl Platform {
         self.illiquid_marks.get(object_id)
     }
 
+    /// Every private asset the valuation plane marked, by object id.
+    ///
+    /// The enumeration beside [`Self::illiquid_mark`]'s lookup. A reader that
+    /// wants the desk's private positions cannot ask for them one id at a
+    /// time — it does not know the ids — and deriving the list from the
+    /// commitment book would omit every fully-called holding, which has a
+    /// mark and no unfunded balance. `BTreeMap` because the order of the
+    /// positions reaches a rendered surface.
+    pub const fn illiquid_marks(
+        &self,
+    ) -> &BTreeMap<String, qip_financial::valuation::AssetValuation> {
+        &self.illiquid_marks
+    }
+
     /// Private assets the valuation plane refused to mark, with the refusal.
     pub fn illiquid_unmarkable(&self) -> &BTreeMap<String, String> {
         &self.illiquid_unmarkable
+    }
+
+    /// The cash-flow schedule the universe's record for `object_id` dates, or
+    /// `None` where it dates none.
+    ///
+    /// `None` is the record saying nothing — no residual reported, or a lockup
+    /// already run out — and never a schedule this platform failed to build.
+    /// A reader must render it as "the record states none" rather than as an
+    /// empty schedule, because the two are different claims.
+    pub fn private_forecast(
+        &self,
+        object_id: &str,
+    ) -> Option<&qip_financial::cashflow::CashflowForecast> {
+        self.private_forecasts.get(object_id)
     }
 
     /// The theses a construction can size, how far their marks narrow it, and

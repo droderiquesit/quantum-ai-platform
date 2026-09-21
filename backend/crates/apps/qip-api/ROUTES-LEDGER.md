@@ -38,6 +38,14 @@ with its `DELETE` by reference file and withdraw a fund's drawdown notice at
 `operator`. A notice can only ever *raise* what the reserve holds back; no
 route settles one, and each section below says why.
 
+Beside it, `GET /ledger/private-positions` at `viewer` is blueprint §40.1's
+private-positions surface: the same commitments and notices, the mark the
+valuation plane struck and the method it used, and the distributions the
+administrator's record dates. It is the wider of the two — a holding wholly
+called has a mark and no commitment — and it declares no write, because
+§40.1's act on that row is to commit and to decline a call, and this platform
+has no channel to say either thing to a fund.
+
 Every body is read off the kernel at request time. The wallet, the corridors,
 the destinations and the gate assessment come from the kernel's fabric
 journal, whose every decision is also a record in the platform's event log;
@@ -348,6 +356,84 @@ figure here; one past it adds exactly its `penalty`.
 | `commitments[].known_at` | RFC 3339 | When the platform last updated the record the commitment derives from. |
 | `capital_calls[].consequence` | object | `{"kind": "interest", "annual_rate_bps": N}`, `{"kind": "forfeiture", "fraction_bps": N}` or `{"kind": "acceleration"}` — what failing the call costs, as the notice stated it. |
 | `capital_calls[].overdue`, `days_late`, `penalty` | bool, integer, money string | Whether the money was due and the notice knowable by `served_at`; whole days past due, floored; and what missing it has cost so far. Zero and `false` ahead of the due instant. |
+
+## `GET /api/v1/ledger/private-positions`
+
+**Role: `viewer`.** Blueprint §40.1's private-positions surface: every private
+holding the universe holds a record for, with the mark the valuation plane
+struck and the method it used, the refusal where it would not mark one, the
+commitment and its notices where the holding still has an unfunded balance,
+and the distributions the administrator's own record dates. Carries no
+per-user datum, for the reason `/ledger/commitments` does not: a private
+position is the desk's holding.
+
+**It is walked from the marks and not from the commitment book**, and a page
+built against this file should not re-derive it the other way. A holding that
+has been wholly called has no commitment — the book records one only where
+capital is still unfunded — and is not thereby less of a position. A surface
+built off `/ledger/commitments` would omit every fully-drawn fund silently.
+
+Every figure here is one the platform already acts on rather than one
+computed for display: `Platform::sizing_confidence` narrows a thesis by the
+same `confidence_now`, refuses outright on the same `unmarkable` reason and on
+`stale`, and the liquidity ladder dates a holding's exit from the same
+schedule.
+
+**Nothing here is this platform's forecast.** A flow under `distributions` is
+the administrator's own reported residual dated at the record's own lockup
+end. The platform derives no return, no rate and no probability of its own.
+
+```json
+{
+  "posture": "PAPER TRADING",
+  "served_at": "2025-10-09T08:53:20.000Z",
+  "call_settlement": "no filed capital call is ever settled by this build: …",
+  "positions": [
+    {
+      "subject": "obj-FUND",
+      "mark": {
+        "available": true,
+        "value": "160000",
+        "method": "last_round",
+        "struck_confidence": 0.4,
+        "confidence_now": 0.2,
+        "as_of": "2025-04-12T08:53:20.000Z",
+        "next_review": "2026-04-12T08:53:20.000Z",
+        "stale": false
+      },
+      "commitment": { "subject": "obj-FUND", "unfunded": "250000", "…": "…" },
+      "distributions": {
+        "stated": true,
+        "flows": [
+          {
+            "kind": "distribution",
+            "due_at": "2030-12-30T00:00:00.000Z",
+            "amount": "160000",
+            "probability": 1.0
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+| Key | Type | Meaning |
+|---|---|---|
+| `positions[].subject` | string | The private asset's object id. Positions are listed in that order, so a replay renders the same page. |
+| `mark` | object or absent | Absent exactly when `unmarkable` is present. The two are one fact and never both. |
+| `mark.value` | money string | What the plane marked the holding at. |
+| `mark.method` | string | `quoted`, `matrix`, `comparables`, `discounted_cashflow`, `model`, `last_round` or `cost` — how the mark was arrived at. Render it beside the value: the same number on a last round and on a quoted market are different claims. |
+| `mark.struck_confidence` | number | What the method carried on the day the mark was struck. A statistic, never money. |
+| `mark.confidence_now` | number | That confidence decayed to `served_at` at the method's own half-life. This is the number the platform sizes against, and it is why the struck figure is beside it rather than instead of it. |
+| `mark.as_of`, `next_review` | RFC 3339 | When the evidence was true, and when the mark falls due for refresh. |
+| `mark.stale` | bool | The mark's own `is_stale` at `served_at`. A stale mark is one nothing may be sized into; the platform refuses rather than sizing at a reduced fraction of it. |
+| `unmarkable` | object or absent | `{"available": false, "reason": "…"}` — the valuation plane's own refusal, word for word. A record with no residual, no net cost and no schedule cannot be marked, and the reason names which. |
+| `commitment` | object or absent | The holding's row exactly as `/ledger/commitments` renders it, including `capital_calls`. Absent where nothing is unfunded. |
+| `distributions.stated` | bool | Whether the record dates a schedule at all. `false` is the record saying nothing — no residual reported, or a lockup already run out — and is **not** the same claim as a schedule with no flows. Do not render the two alike. |
+| `distributions.flows[].kind` | string | `capital_call`, `fee`, `distribution`, `coupon` or `principal`. The direction is the kind's; `amount` is a magnitude and is never signed. |
+| `distributions.flows[].amount` | money string | The flow's magnitude as the record states it. |
+| `distributions.flows[].probability` | number | The likelihood the flow occurs at all, as the record states it. A statistic. |
 
 ## `POST /api/v1/ledger/commitments/{commitment}/capital-calls`
 

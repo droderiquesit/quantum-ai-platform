@@ -458,6 +458,28 @@ pub const ROUTES: &[Route] = &[
                   anything is sized; nothing here is settled by this build",
         success: 200,
     },
+    // Blueprint §40.1's private-positions surface, at viewer for the reason
+    // the commitments route above is: a private position is the desk's own
+    // holding, derived from the universe's private-asset records, and carries
+    // no per-user datum. It shows what §40.1's row asks for — the
+    // commitment, the calls standing against it, the distributions the
+    // administrator's record dates, and the mark with the method it was
+    // struck by — and it declares no write. The act on that row is "commit;
+    // decline a call at stated consequence", and a commitment is a term of
+    // the universe the deployment was assembled from while declining a call
+    // is a statement to a fund that this platform has no channel to make.
+    // Both stay absent by construction rather than by omission.
+    Route {
+        method: Method::Get,
+        pattern: "/ledger/private-positions",
+        required_role: Role::Viewer,
+        summary: "every private position the universe holds a record for, with the mark the \
+                  valuation plane struck and the method it used, the refusal where it would not \
+                  mark one, the unfunded commitment and its notices where the holding still has \
+                  one, and the distributions the record itself dates — the same figures the \
+                  DECIDE stage sizes against",
+        success: 200,
+    },
     // The one route on this surface that changes anything, and an operator's.
     // Until it existed, an eligibility could be decided only from the
     // deployment's committed configuration or from a test, so the gate the
@@ -1630,6 +1652,12 @@ impl Api {
             (Method::Get, "/ledger/commitments") => {
                 let (status, body) = crate::ledger_views::render_fallible(
                     crate::ledger_views::commitments(&platform, now),
+                );
+                Response::json(status, body)
+            }
+            (Method::Get, "/ledger/private-positions") => {
+                let (status, body) = crate::ledger_views::render_fallible(
+                    crate::ledger_views::private_positions(&platform, now),
                 );
                 Response::json(status, body)
             }
