@@ -14,9 +14,17 @@ terraform test                           # the gates, planned; from each directo
 **`terraform test` is the fourth gate and `make infra` does not run it.** Say
 so out loud because the gap is the kind that gets missed: `ci.yml`'s
 infrastructure job discovers every `*.tftest.hcl` under `infrastructure/` and
-runs it, and the Makefile's `infra` target does not. Four directories hold one
-today — `terraform/`, `terraform/modules/{network,public-edge,trust-zones}` —
-and each needs its own `terraform init -backend=false` first.
+runs it, and the Makefile's `infra` target does not. Each directory holding
+one needs its own `terraform init -backend=false` first.
+
+**No count is given here and no list, because both have already gone stale.**
+This sentence said "four directories — `terraform/`,
+`terraform/modules/{network,public-edge,trust-zones}`" while the tree held
+more than twice that, and an agent reading it would have believed the two
+modules holding the front-door gates had no harness at all. Run the command:
+`find infrastructure -name '*.tftest.hcl' | sed 's|/tests/.*||' | sort -u`,
+which printed nine on 2026-09-21 in this worktree. A list here goes stale
+silently and every reader believes it; a command goes stale loudly.
 
 What it buys is the thing the other three cannot give. `validate` checks that
 the configuration parses and that its references resolve; it evaluates no
@@ -63,6 +71,9 @@ Rules: `.claude/rules/domains/infrastructure.md`.
 | `terraform/modules/egress-proxy` | The TLS-terminating proxy, rendered from `egress/envoy.yaml` as a loopback sidecar and as the node's unit |
 | `terraform/modules/trust-zones` | The thirteen zones, default deny in both directions; the management zone may reach GitHub and nothing else outside the VPC |
 | `terraform/modules/public-edge` | Cloud Armor, the global HTTPS load balancer, Cloud CDN (§40.5, §40.14). Creates nothing in any environment — `hostnames` is empty in all four. Its content is refusals: a backend may front only `public-edge` or `application-identity`, and there is no listener on port 80. `README.md` beside it says what it does not hold |
+| `terraform/modules/iap-run` | The console's front door: Identity-Aware Proxy on the Cloud Run service itself, at the Google-issued `run.app` URL — no load balancer, no address, no certificate, no DNS (ADR 0095). Holds the per-service access list, empty everywhere; the enable bit is `infra.yml`'s `apps` stage, because Config Connector's `RunService` has no `iapEnabled` field |
+| `terraform/modules/iap-edge` | The console's *custom-domain* door (ADR 0094), narrowed by ADR 0095 and off in every environment: `gitops_portal_hostname` is empty, Google refuses IAP on both a load balancer and a service, and run 71 proved the project has no Cloud Armor quota (`Limit: 0.0 globally`) |
+| `terraform/modules/dns-zone` | The `algorik.ai` zone and its A records. `dns_zone_domain` is empty everywhere since ADR 0095, so it creates nothing; no front door waits on a nameserver delegation any more |
 | `environments/<env>/terraform.tfvars` | dev, test, stage, prod — the only per-environment inputs. There is no `images.tfvars` any more: what an environment serves is `gitops/envs/<env>/kustomization.yaml` |
 | `gitops/` | ADR 0036's delivery path: vendored controller manifests under `bootstrap/`, one `RunService` per catalogue workload under `envs/<env>/`, the Argo CD project and Applications, the Kargo chain — `gitops/README.md` |
 | `egress/` | The one Envoy bootstrap and the vendored-images list the pipeline mirrors and attests — ten images now, eight of them the control plane's |

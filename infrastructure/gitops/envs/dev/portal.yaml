@@ -4,21 +4,45 @@
 # every concrete value the running service must carry.
 #
 # The console (ADR 0018), deployed the way everything else here is (ADR 0036)
-# and reachable only behind Identity-Aware Proxy (ADR 0094). It is not a
-# `local.cloud_run_catalogue` entry — it runs no Rust binary, reads no
-# autonomy ceiling and mounts no instrument universe — so its Terraform side
-# is the `--- The portal ---` section of catalogue.tf and the source of truth
-# for the values below is that section, `module.portal_edge` in main.tf, and
-# `modules/secrets`' console identity.
+# and reachable only behind Identity-Aware Proxy (ADR 0094, narrowed by ADR
+# 0095). It is not a `local.cloud_run_catalogue` entry — it runs no Rust
+# binary, reads no autonomy ceiling and mounts no instrument universe — so its
+# Terraform side is the `--- The portal ---` section of catalogue.tf and the
+# source of truth for the values below is that section, `module.portal_iap_run`
+# in main.tf, and `modules/secrets`' console identity.
 #
-# **What makes this safe is the ingress, and it is the one line here that is
-# not like the others.** `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` admits the
-# global external load balancer `module.portal_edge` creates and nothing else
-# from the internet: the service's own `run.app` URL below stays unreachable,
-# so IAP cannot be walked around by dialling the origin. The alternative most
-# documentation shows — `INGRESS_TRAFFIC_ALL` with an `allUsers` invoker — is
-# IAP guarding a front door with an open side entrance, and `console_route.rs`
-# refuses it by naming this service and this value.
+# **The ingress is the one line here that is not like the others, and ADR 0095
+# changed which value it carries.** It is `INGRESS_TRAFFIC_ALL`, which reads
+# alarming and is not, because of the two lines that are *absent*: there is no
+# `allUsers` invoker anywhere near this service, and `invokers.yaml` grants
+# `roles/run.invoker` to exactly one principal — IAP's service agent.
+#
+# Cloud Run enforces IAP on the service across every ingress path, the
+# `run.app` URL included ("By enabling IAP on Cloud Run directly, you can
+# secure traffic with a single click from all ingress paths, including default
+# run.app URLs and load balancers"), so the console is reached at
+# `https://qip-dev-portal-<project-number>.us-east4.run.app` behind IAP, with
+# no load balancer, no reserved address, no certificate anybody orders and no
+# DNS record anybody creates.
+#
+# **The failure direction is the point.** If IAP were somehow not enabled on
+# this service, the URL would resolve, Google's front end would accept the
+# connection, and Cloud Run's own IAM check would refuse every request — a
+# browser cannot mint a Google ID token and no `allUsers` grant exists. So the
+# unprotected state of this configuration is a console nobody can reach, never
+# a console anybody can reach. `console_route.rs` holds the pairing: this
+# value is admitted only in an environment whose tfvars name no
+# `gitops_portal_hostname`, and an environment that names one goes back to
+# `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`, because the two doors are
+# alternatives and Google refuses both at once.
+#
+# **The one field this manifest cannot carry is `iapEnabled`, and that is
+# upstream rather than an omission.** Config Connector's `RunService` CRD has
+# no such field in v1.156.0 or on master, because that CRD is generated from
+# the GA `google` Terraform provider and `iap_enabled` exists only in
+# `google-beta`. So `infra.yml`'s `apps` stage sets it with
+# `gcloud run services update --iap` and then reads it back, failing the job
+# if it is not true. `modules/iap-run/README.md` says what closes the gap.
 apiVersion: run.cnrm.cloud.google.com/v1beta1
 kind: RunService
 metadata:
@@ -39,7 +63,7 @@ spec:
   projectRef:
     external: projects/algorik-dev
   location: us-east4
-  ingress: INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER
+  ingress: INGRESS_TRAFFIC_ALL
   binaryAuthorization:
     useDefault: true
   template:

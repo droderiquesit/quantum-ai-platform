@@ -3,6 +3,28 @@
 One public `google_dns_managed_zone`, and one A record per front door that
 exists, each pointing at the address of the module that reserved it.
 
+## Read this first: no environment sets a domain any more
+
+`dns_zone_domain` is `""` everywhere, including dev, so this module's `count`
+is zero and it creates nothing. ADR 0095.
+
+**The reason is that the three names it answered are gone or reached another
+way.** The portal is at its Google-issued `run.app` URL behind IAP on the
+Cloud Run service itself — no address, no certificate, no record. Argo CD and
+Kargo are reached through the fleet's Connect gateway and a port-forward,
+publishing nothing at all, because there is no Google-provided hostname for a
+GKE Gateway and the owner will not buy or delegate a domain.
+
+So the zone would hold no records, and it would still require the one thing
+this module could never do for anybody: **a person replacing the nameservers
+at a registrar**. The module removed the per-record hand-typing and could not
+remove the delegation. ADR 0095 removed the need for the delegation, which is
+the part that was actually blocking.
+
+Everything below remains true and is kept for the day a vanity hostname is
+wanted — particularly the singleton argument, which is a property of domains
+rather than a policy and does not expire.
+
 ## The failure it prevents
 
 Three front doors were applied before this module existed and none of them

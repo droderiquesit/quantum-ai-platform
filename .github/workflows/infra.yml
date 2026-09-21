@@ -1577,6 +1577,93 @@ jobs:
             echo "bootstrapped Kargo; its chain promotes into ${gitops}/envs/${ENVIRONMENT} from here on."
           fi
 
+      - name: the console's IAP gate
+        if: inputs.action == 'apps'
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          # Turn on Identity-Aware Proxy on the portal's Cloud Run service, and
+          # then read it back.
+          #
+          # **Why a gcloud command is doing a manifest's job, said plainly so
+          # that nobody "tidies" it away.** Cloud Run enforces IAP on the
+          # service itself, across every ingress path including its
+          # Google-issued run.app URL, and the field that says so is
+          # `iapEnabled`. Config Connector's `RunService` CRD has no such
+          # field — checked in v1.156.0, the version
+          # `bootstrap/config-connector-operator` pins, and on that project's
+          # master — because that CRD is generated from the **GA** `google`
+          # Terraform provider, and `iap_enabled` exists only in `google-beta`.
+          # So the manifest cannot carry it and Terraform does not own the
+          # service. Writing `iapEnabled: true` into the manifest anyway would
+          # be refused by the sync (`Validate=true`) rather than silently
+          # dropped, which is the right failure and still not a working door.
+          #
+          # When `iap_enabled` graduates to the GA provider, Config Connector
+          # gets the field, `portal.yaml` carries it, and this step is deleted.
+          #
+          # **It reads the flag back and fails if it is not true.** A step that
+          # enables a gate and does not check is a step that reports a
+          # protected console either way, which is the one thing
+          # `.claude/rules/00-enterprise-governance.md` exists to refuse.
+          tfvars="infrastructure/environments/${ENVIRONMENT}/terraform.tfvars"
+          if ! grep -Eq '^gitops_enabled[[:space:]]*=[[:space:]]*true' "$tfvars"; then
+            echo "gitops_enabled is not true in ${tfvars}; this environment reconciles no services and has no console."
+            exit 0
+          fi
+          if ! grep -Eq '^console_egress_cidr[[:space:]]*=' "$tfvars"; then
+            echo "${tfvars} sets no console_egress_cidr, so this environment creates no console identity and deploys no portal. Nothing to gate."
+            exit 0
+          fi
+          # The two doors are alternatives, and it is Google that says so:
+          # "You cannot configure IAP on both the load balancer and the Cloud
+          # Run service." An environment that names a portal hostname has
+          # chosen ADR 0094's load-balancer door, where IAP is on the backend
+          # service and Terraform already enabled it; enabling it here as well
+          # would be the combination Google refuses.
+          hostname="$(sed -n 's/^gitops_portal_hostname[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          if [ -n "$hostname" ]; then
+            echo "${ENVIRONMENT} names gitops_portal_hostname=${hostname}, so the console is behind the load-balancer door and IAP is enabled on its backend service by Terraform."
+            echo "Google refuses IAP on both the load balancer and the service, so this step does nothing."
+            exit 0
+          fi
+          region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          [ -n "$region" ] || { echo "the tfvars name no region" >&2; exit 1; }
+          service="qip-${ENVIRONMENT}-portal"
+          # A service that is not there yet is not a failure of this step. The
+          # portal's image is `TO-PIN` until a deploy.yml run has built,
+          # scanned and attested it, and Argo CD will not reconcile a service
+          # whose image is that string — which is the correct behaviour.
+          # Saying so is better than a gcloud 404 that reads as a permission
+          # problem.
+          if ! gcloud run services describe "$service" \
+                 --project "${GCP_PROJECT}" --region "$region" \
+                 --format='value(metadata.name)' >/dev/null 2>&1; then
+            echo "::warning title=no console to gate::${service} does not exist in ${GCP_PROJECT}/${region}, so IAP was not enabled on it."
+            echo "Config Connector creates it from infrastructure/gitops/envs/${ENVIRONMENT}/portal.yaml once that manifest names a digest rather than TO-PIN. Re-run this action after a deploy.yml run has built and attested qip-portal."
+            exit 0
+          fi
+          gcloud run services update "$service" \
+            --project "${GCP_PROJECT}" --region "$region" --iap --quiet
+          enabled="$(gcloud run services describe "$service" \
+            --project "${GCP_PROJECT}" --region "$region" \
+            --format='value(iapEnabled)')"
+          case "$enabled" in
+            True|true)
+              echo "IAP is enabled on ${service}; it is read back as iapEnabled=${enabled} rather than assumed from the update returning zero."
+              ;;
+            *)
+              echo "::error title=the console is not gated::${service} reports iapEnabled='${enabled}' after --iap was applied." >&2
+              echo "Do not treat this as cosmetic. The service is INGRESS_TRAFFIC_ALL and has no allUsers invoker, so right now it answers 403 to everyone, which is the safe direction — but it is not the protected console this step claims to have produced." >&2
+              echo "If this is the first time IAP has been enabled in a project with no organisation, Google cannot create the OAuth client programmatically: enable IAP once on this service in the Cloud console, or configure a custom OAuth client, then re-run this action." >&2
+              exit 1
+              ;;
+          esac
+          echo "Nobody is admitted yet. The access list is empty on purpose; grant a person with:"
+          echo "  gcloud iap web add-iam-policy-binding --project=${GCP_PROJECT} --resource-type=cloud-run --region=${region} --service=${service} --role=roles/iap.httpsResourceAccessor --member='user:YOU@example.com'"
+
       - name: suspend
         if: inputs.action == 'suspend'
         env:

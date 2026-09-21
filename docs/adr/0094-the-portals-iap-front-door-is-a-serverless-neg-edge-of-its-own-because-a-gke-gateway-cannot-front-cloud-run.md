@@ -7,6 +7,31 @@ Supersedes nothing. Amends `modules/gitops-gateway`'s stated caveat about a
 second IAP backend, and names a third Cloud Run ingress posture that
 `console_route.rs` previously admitted for exactly one service.
 
+> **Narrowed by ADR 0095, 2026-09-21, and the parts that changed are named
+> here so that a reader of this record alone is not misled.**
+>
+> Cloud Run enforces IAP on the *service*, across every ingress path including
+> its Google-issued `run.app` URL, so the console's ordinary door needs no load
+> balancer, no address, no certificate and no DNS. This module is kept as the
+> custom-domain path and is switched off in every environment;
+> `gitops_portal_hostname` is empty, and Google refuses IAP on both a load
+> balancer and a service at once, so the two are alternatives rather than
+> layers.
+>
+> Two of this record's decisions are reversed on its own stated terms.
+> **Decision 3** — no access list here, because the Gateway's backend service
+> has no Terraform address and the grant had to be project-level — is reversed
+> by IAP on Cloud Run being addressable per service, which is the reversal
+> condition this record named. **The ingress posture** is `INGRESS_TRAFFIC_ALL`
+> under the new door, which this record refuses; it is safe only because the
+> portal has no anonymous invoker, and ADR 0095 makes both halves a single
+> asserted pairing.
+>
+> Beside that, a fact from a real apply: `infra.yml` run 71 failed creating
+> this module's Cloud Armor policy with `Quota 'SECURITY_POLICY_RULES'
+> exceeded. Limit: 0.0 globally`. The project has no allowance at all, so this
+> door cannot apply here until a quota request is granted.
+
 ## The ask
 
 The owner wants a working URL for `frontend/portal`, in dev only, reachable

@@ -4779,14 +4779,32 @@ metadata:
     );
 }
 
-// --- the console (ADR 0094) ---------------------------------------------------
+// --- the console (ADR 0094, narrowed by ADR 0095) -----------------------------
 
-/// The one ingress a service fronted by an IAP edge may carry.
+/// The one ingress a service fronted by an IAP **load balancer** may carry.
 ///
-/// Not `INGRESS_TRAFFIC_ALL`. The difference is the whole security argument:
-/// with `ALL` the service's own `run.app` URL answers the internet, and IAP
-/// becomes a locked front door on a building with an open side entrance.
+/// It admits the global external Application Load Balancer `modules/iap-edge`
+/// creates and nothing else from the internet, so the service's own `run.app`
+/// URL stays unreachable and IAP cannot be walked around by dialling the
+/// origin. Required of an environment that names a `gitops_portal_hostname`,
+/// and of no other.
 const INTERNAL_LOAD_BALANCER: &str = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER";
+
+/// The one ingress a service fronted by **Cloud Run's own IAP** may carry.
+///
+/// ADR 0095. Cloud Run enforces IAP on the service across every ingress path,
+/// the `run.app` URL included, so that URL has to be reachable for the gate
+/// to have anything to gate. Required of an environment that names no
+/// `gitops_portal_hostname`, which is every environment today.
+///
+/// **This value is safe here and nowhere else in this tree, and what makes it
+/// safe is a second fact rather than a judgement**: the portal has exactly one
+/// invoker and it is IAP's service agent. With no `allUsers` grant, a service
+/// whose IAP was somehow not enabled answers 403 to everybody — a console
+/// nobody can reach, never one anybody can reach. The test below asserts both
+/// halves, because either alone is the shape most documentation shows and this
+/// platform refuses.
+const ALL_TRAFFIC: &str = "INGRESS_TRAFFIC_ALL";
 
 /// The secrets the portal may hold, the variable naming each, and the path
 /// each must appear at.
@@ -4816,14 +4834,33 @@ fn the_portal_is_reachable_only_behind_its_iap_edge_and_holds_only_what_it_needs
     // catalogue workload, so the parity walk above compares it to nothing.
     // This is what it is compared to instead.
     //
-    // The first property is the one the whole design rests on.
-    // `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` admits the global external
-    // load balancer `modules/iap-edge` creates and nothing else from the
-    // internet. Asserted as equality with that exact value, never as the
-    // absence of `INGRESS_TRAFFIC_ALL`: a `RunService` with no `ingress`
-    // field at all is one Cloud Run defaults to all traffic, so a deleted
-    // line is a public console rather than a safe omission — the same trap
+    // The first property is the one the whole design rests on, and since ADR
+    // 0095 it is a **pairing** rather than a single value, because there are
+    // two doors and Google refuses both at once ("You cannot configure IAP on
+    // both the load balancer and the Cloud Run service").
+    //
+    //   * An environment naming `gitops_portal_hostname` has ADR 0094's load
+    //     balancer, and must carry `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` —
+    //     which admits that balancer and nothing else from the internet.
+    //   * An environment naming none is reached at its Google-issued run.app
+    //     URL behind IAP on the service itself, and must carry
+    //     `INGRESS_TRAFFIC_ALL` — the URL has to be reachable for IAP to
+    //     gate it.
+    //
+    // Either value is checked as equality with the exact string, never as the
+    // absence of the other: a `RunService` with no `ingress` field at all is
+    // one Cloud Run defaults to all traffic, so a deleted line reads as the
+    // permissive value rather than as a safe omission — the same trap
     // `console_route.rs` names for the API.
+    //
+    // **`INGRESS_TRAFFIC_ALL` is only safe because of what is absent, so this
+    // test asserts the absence too.** There is no `allUsers` invoker for the
+    // portal: `invokers.yaml` grants `roles/run.invoker` to exactly one
+    // principal, IAP's service agent. Without that half, flipping the ingress
+    // would be the shape most documentation shows and this platform refuses —
+    // a console answering the internet anonymously. With it, a service whose
+    // IAP was somehow not enabled answers 403 to everybody, which is the
+    // direction a safety default has to fail in.
     let mut checked = 0usize;
     for environment in environment_directories() {
         let project = tfvars_value(&environment, "project_id")
@@ -4837,12 +4874,68 @@ fn the_portal_is_reachable_only_behind_its_iap_edge_and_holds_only_what_it_needs
         let describe = service.describe();
 
         let ingress = text_at(&service.value, &["spec", "ingress"]).unwrap_or_default();
+        // `Some("")` is what the helper returns for `gitops_portal_hostname = ""`,
+        // and it means the Cloud Run door. `None` — the key absent entirely —
+        // means the same thing, because the variable defaults to the empty
+        // string.
+        let hostname = tfvars_value(&environment, "gitops_portal_hostname").unwrap_or_default();
+        let expected = if hostname.is_empty() {
+            ALL_TRAFFIC
+        } else {
+            INTERNAL_LOAD_BALANCER
+        };
         assert_eq!(
-            ingress, INTERNAL_LOAD_BALANCER,
-            "{describe} carries ingress `{ingress}`; anything but {INTERNAL_LOAD_BALANCER} — \
-             including no `ingress` line, which Cloud Run reads as all traffic — lets the \
-             service's own run.app URL answer the internet, and IAP is then a door with an \
-             open side entrance"
+            ingress, expected,
+            "{describe} carries ingress `{ingress}` and {environment}'s tfvars set \
+             gitops_portal_hostname to {hostname:?}, which selects `{expected}`. The two move \
+             together: a named hostname is ADR 0094's load balancer, which only \
+             {INTERNAL_LOAD_BALANCER} admits, and no hostname is ADR 0095's IAP on the service \
+             itself, which needs {ALL_TRAFFIC} for the run.app URL to be reachable at all. \
+             Neither is asserted as the absence of the other, because a `RunService` with no \
+             `ingress` line is one Cloud Run reads as all traffic"
+        );
+
+        // What makes `INGRESS_TRAFFIC_ALL` safe, checked here rather than
+        // assumed by the sentence above it: the portal has exactly one
+        // invoker and it is IAP's service agent.
+        //
+        // This is the assertion that would fail if somebody "fixed" a 403 by
+        // adding `allUsers` — which is the shape most documentation shows and
+        // the shape that turns an IAP-gated console into a public one. The
+        // whole-file walk matters: an `allUsers` binding for the portal in
+        // any manifest under this directory is the hole, not only one in the
+        // file a reader happens to open.
+        let number = tfvars_value(&environment, "project_number")
+            .unwrap_or_else(|| panic!("{environment}'s tfvars name no project_number"));
+        let agent = format!("serviceAccount:service-{number}@gcp-sa-iap.iam.gserviceaccount.com");
+        let invokers: Vec<(String, String)> = siblings
+            .iter()
+            .filter(|manifest| manifest.kind() == "IAMPolicyMember")
+            .filter(|manifest| {
+                text_at(&manifest.value, &["spec", "resourceRef", "name"]).as_deref()
+                    == Some(service.name().as_str())
+                    && text_at(&manifest.value, &["spec", "resourceRef", "kind"]).as_deref()
+                        == Some("RunService")
+            })
+            .map(|manifest| {
+                (
+                    text_at(&manifest.value, &["spec", "role"]).unwrap_or_default(),
+                    text_at(&manifest.value, &["spec", "member"]).unwrap_or_default(),
+                )
+            })
+            .collect();
+        // The premise first. A filter that found nothing would satisfy every
+        // "no allUsers" assertion below for ever, and the portal would have
+        // no invoker at all — which IAP itself needs, because it forwards as
+        // its own agent.
+        assert_eq!(
+            invokers,
+            vec![("roles/run.invoker".to_string(), agent.clone())],
+            "{describe}'s invoker bindings under {ENVS}/{environment} are {invokers:?}; the \
+             console has exactly one, `roles/run.invoker` for IAP's service agent {agent}. \
+             None at all means IAP authenticates the caller correctly and the service answers \
+             403; `allUsers` means the run.app URL answers the internet anonymously and IAP \
+             guards a door with the side entrance open"
         );
 
         // It runs as the console identity ADR 0018 created, not an account of
