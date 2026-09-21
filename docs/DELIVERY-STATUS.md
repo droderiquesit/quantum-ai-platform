@@ -3201,11 +3201,15 @@ and `a_group_whose_reversals_all_fill_closes_flat_rather_than_escalating` — ar
 there because an ordering that refused the expensive holding, and a recovery
 that escalated on every unwind, would both satisfy the other tests.
 
-Gate on this tree: `cargo fmt --all --check` clean; `cargo clippy --workspace
---all-targets` **0** lines matching `^(warning|error)`; `cargo test --workspace
---no-fail-fast` **6263 passed, 1 failed** over **446** `test result:` lines;
-dependency policy **11 third-party packages, all permitted**; secret scan
-nothing found. **The one failure is named rather than summarised away, and it
+Gate on the merged tree, not on the lane's own: `cargo fmt --all --check`
+clean; `cargo clippy --workspace --all-targets` **0** lines matching
+`^(warning|error)`; `cargo test --workspace --no-fail-fast` **6264 passed, 1
+failed** over **446** `test result:` lines; dependency policy **11 third-party
+packages, all permitted**; secret scan nothing found. The figure is the merged
+tree's because the lane's own run said **6263** and `origin/main` moved three
+commits under it while this lane worked — a count is a fact about a tree at an
+hour, and the tree that matters is the one being pushed. The shape table was
+recounted on the merged tree too, with the same result. **The one failure is named rather than summarised away, and it
 is not this lane's**: `qip-acceptance`'s `documentation::every_internal_link_resolves`
 fails because `docs/adr/README.md` links to
 `0096-an-optional-vendor-credential-is-mounted-only-where-the-environment-declares-it-seeded.md`,
