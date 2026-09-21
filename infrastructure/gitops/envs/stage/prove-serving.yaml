@@ -95,6 +95,35 @@ spec:
           {name}: {revision} serves {serving}; the manifest names {wanted}\")\n        else:\n       \
           \     print(f\"{name} serves {wanted} from {revision}\")\nif failed:\n    sys.exit(\"\\n\".join(failed))\n\
           PY"
+        # gcloud writes a configuration directory before it will run a
+        # single command, and it derives the path from $HOME. This pod runs
+        # `runAsNonRoot: true, runAsUser: 65532` with no HOME set, so HOME
+        # is `/`, and the hook died on
+        #
+        #   ERROR: (gcloud.run.services.describe) Could not create
+        #   directory [/.config/gcloud]: Permission denied.
+        #
+        # — nothing to do with Cloud Run, the digests, or any Google
+        # permission, which is what the failure had been read as for three
+        # runs. The Job reported only "reached the specified backoff limit",
+        # because `backoffLimit: 0` plus `hook-delete-policy:
+        # BeforeHookCreation` deletes the pod that failed before the next
+        # attempt.
+        #
+        # CLOUDSDK_CONFIG names the directory directly rather than relying
+        # on HOME, and HOME is set beside it because the SDK is not the only
+        # thing here that may want one. Both point at the emptyDir below
+        # rather than at a path in the image: the volume is writable by any
+        # uid, so this does not depend on the vendored image's ownership,
+        # and it survives that image being re-mirrored.
+        env:
+        - name: CLOUDSDK_CONFIG
+          value: /tmp/gcloud
+        - name: HOME
+          value: /tmp
+        volumeMounts:
+        - name: scratch
+          mountPath: /tmp
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -107,3 +136,9 @@ spec:
           requests:
             cpu: 250m
             memory: 256Mi
+      volumes:
+      # Writable scratch for the SDK's configuration directory, and nothing
+      # else. `emptyDir` rather than a path in the image because the pod is
+      # non-root and the image's directories are not its to write.
+      - name: scratch
+        emptyDir: {}

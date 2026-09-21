@@ -5108,3 +5108,124 @@ fn the_portal_is_reachable_only_behind_its_iap_edge_and_holds_only_what_it_needs
          above was checked against anything"
     );
 }
+
+/// The proving hook can write the configuration directory `gcloud` insists on
+/// before it will run at all.
+///
+/// ADR 0036 decision 7's PostSync hook runs `gcloud run services describe` as
+/// a non-root user, `runAsUser: 65532`. `gcloud` creates a configuration
+/// directory derived from `$HOME` before executing any command, and with no
+/// `HOME` set that path is `/.config/gcloud` — the filesystem root, which a
+/// non-root user cannot write. The hook therefore failed on every deployment
+/// with
+///
+///   ERROR: (gcloud.run.services.describe) Could not create directory
+///   [/.config/gcloud]: Permission denied.
+///
+/// and nothing about that is visible from outside: `backoffLimit: 0` plus
+/// `hook-delete-policy: BeforeHookCreation` deletes the failed pod before the
+/// next attempt, so Argo CD reported only "Job has reached the specified
+/// backoff limit" and the deployment's last gate refused for three runs
+/// without being able to say why. It was read as a Cloud Run problem, a
+/// digest problem and a permission problem in turn, and it was none of them.
+///
+/// This test is cheap and the failure it prevents cost more than the whole
+/// suite. It is written over all four environments rather than dev alone,
+/// because the manifests are copies and a copy is exactly what goes stale.
+#[test]
+fn the_proving_hook_has_a_writable_configuration_directory_in_every_environment() {
+    let jobs: Vec<Manifest> = manifests_under(ENVS)
+        .into_iter()
+        .filter(|manifest| manifest.kind() == "Job" && manifest.name() == "qip-prove-serving")
+        .collect();
+
+    // Premise: there are four, one per environment. A test that iterates an
+    // empty list asserts nothing while reporting success, and this one is a
+    // conjunction of per-environment checks.
+    assert_eq!(
+        jobs.len(),
+        4,
+        "expected one qip-prove-serving Job per environment and found {}: {:?}",
+        jobs.len(),
+        jobs.iter().map(|job| &job.path).collect::<Vec<_>>()
+    );
+
+    for job in &jobs {
+        let pod = at(&job.value, &["spec", "template", "spec"])
+            .unwrap_or_else(|| panic!("{} has no pod template", job.describe()));
+        let container = pod
+            .get("containers")
+            .and_then(|containers| containers.as_array())
+            .and_then(|containers| containers.first())
+            .unwrap_or_else(|| panic!("{} declares no container", job.describe()));
+
+        // The variable `gcloud` actually reads for its configuration
+        // directory. `HOME` alone would work today and is set beside it, but
+        // naming the directory directly is what stops this depending on how
+        // the vendored image happens to set `HOME`.
+        let config_dir = container
+            .get("env")
+            .and_then(|env| env.as_array())
+            .and_then(|env| {
+                env.iter().find(|entry| {
+                    entry.get("name").and_then(|n| n.as_str()) == Some("CLOUDSDK_CONFIG")
+                })
+            })
+            .and_then(|entry| entry.get("value"))
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} sets no CLOUDSDK_CONFIG, so gcloud derives its configuration directory \
+                     from HOME and a non-root pod cannot create it. The hook fails before it \
+                     checks anything, and reports only that it reached its backoff limit.",
+                    job.describe()
+                )
+            });
+
+        // Naming a directory is not being able to write it. The path must sit
+        // under a mount, and that mount must be a volume the pod supplies
+        // rather than a directory in the image, which is not the pod's to
+        // write.
+        let mount = container
+            .get("volumeMounts")
+            .and_then(|mounts| mounts.as_array())
+            .and_then(|mounts| {
+                mounts.iter().find(|mount| {
+                    mount
+                        .get("mountPath")
+                        .and_then(|path| path.as_str())
+                        .is_some_and(|path| {
+                            config_dir == path || config_dir.starts_with(&format!("{path}/"))
+                        })
+                })
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} points CLOUDSDK_CONFIG at {config_dir} and mounts nothing that contains \
+                     it, so the directory is in the image's filesystem and uid 65532 cannot \
+                     create it — the same failure with a different path.",
+                    job.describe()
+                )
+            });
+
+        let mount_name = mount
+            .get("name")
+            .and_then(|name| name.as_str())
+            .unwrap_or_default();
+        let supplied = pod
+            .get("volumes")
+            .and_then(|volumes| volumes.as_array())
+            .is_some_and(|volumes| {
+                volumes.iter().any(|volume| {
+                    volume.get("name").and_then(|name| name.as_str()) == Some(mount_name)
+                        && volume.get("emptyDir").is_some()
+                })
+            });
+        assert!(
+            supplied,
+            "{} mounts `{mount_name}` at the configuration directory and the pod declares no \
+             emptyDir by that name, so the mount resolves to nothing writable",
+            job.describe()
+        );
+    }
+}
