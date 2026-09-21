@@ -997,6 +997,186 @@ pub fn commitments(platform: &Platform, now: Timestamp) -> Result<CommitmentsVie
     })
 }
 
+/// Why a private position carries no mark.
+///
+/// The refusal the valuation plane returned, word for word, rather than a
+/// null. A record with no residual, no net cost and no schedule cannot be
+/// marked, and the plane says which of the three is missing; a surface that
+/// rendered an absence instead would tell an operator the platform had not
+/// looked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct MarkRefusalView {
+    pub available: bool,
+    pub reason: String,
+}
+
+/// The mark on one private position, as the plane struck it.
+///
+/// `confidence_now` is the struck confidence decayed to the instant served
+/// and is the number the platform actually sizes against; `struck_confidence`
+/// is what the method carried on the day. Both are here because a position
+/// marked at 0.9 eighteen months ago and one marked at 0.55 this morning are
+/// different facts that a single figure would flatten. `stale` is the mark's
+/// own `is_stale`, not a comparison this layer makes — a mark past its review
+/// date is one nothing may be sized into, and the surface says so rather than
+/// leaving a reader to compare two instants.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MarkView {
+    pub available: bool,
+    pub value: String,
+    pub method: &'static str,
+    pub struck_confidence: f64,
+    pub confidence_now: f64,
+    pub as_of: String,
+    pub next_review: String,
+    pub stale: bool,
+}
+
+/// One forecast flow, as the administrator's record dates it.
+///
+/// `amount` is a magnitude and `kind` carries the direction, exactly as
+/// `ForecastCashflow` holds them. Nothing is signed or summed here.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ForecastFlowView {
+    pub kind: &'static str,
+    pub due_at: String,
+    pub amount: String,
+    pub probability: f64,
+}
+
+/// The distribution schedule a private record states, or its statement that
+/// it states none.
+///
+/// `stated: false` is the record saying nothing — no residual reported, or a
+/// lockup already run out — and is deliberately not an empty `flows` array
+/// with `stated: true` beside it. "No distribution is scheduled" and "this
+/// record schedules nothing" are different claims, and the surface that
+/// conflates them tells an operator a fund will never distribute when the
+/// truth is that nobody said.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DistributionsView {
+    pub stated: bool,
+    pub flows: Vec<ForecastFlowView>,
+}
+
+/// One of the desk's private positions: what it is marked at and by what
+/// method, what it is still on the hook for, and what its record says will
+/// come back.
+///
+/// `commitment` is absent where the holding has been fully called — a
+/// position with nothing unfunded has no commitment in the book and is not
+/// thereby less of a position, which is why this surface is walked from the
+/// marks rather than from the commitment book.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PrivatePositionView {
+    pub subject: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mark: Option<MarkView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unmarkable: Option<MarkRefusalView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commitment: Option<CommitmentView>,
+    pub distributions: DistributionsView,
+}
+
+/// The body of `GET /ledger/private-positions`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PrivatePositionsView {
+    pub posture: &'static str,
+    pub served_at: String,
+    /// [`CALL_SETTLEMENT`]: a notice on a position below stands until it is
+    /// withdrawn, and is never met here.
+    pub call_settlement: &'static str,
+    pub positions: Vec<PrivatePositionView>,
+}
+
+/// Build `/ledger/private-positions` from the platform at `now`.
+///
+/// Blueprint §40.1's private-positions surface: commitments, the call
+/// schedule, expected distributions, and the mark with its method. Every
+/// figure is one the valuation plane struck at assembly and the DECIDE stage
+/// already sizes against — `Platform::sizing_confidence` reads the same mark,
+/// and `deployable_capital` the same obligation. Until this route existed the
+/// marks and the schedules were computed on every assembly and reachable by
+/// nothing outside the cycle, which is the shape
+/// `.claude/rules/domains/risk-and-execution.md` calls a control nobody can
+/// see rather than a spare part.
+///
+/// Walked over the union of the marked and the unmarkable, in the kernel's
+/// own `BTreeMap` order, so a replay renders the same list in the same order.
+/// Every private asset in the universe is in exactly one of the two: the
+/// sweep marks it or records why it could not.
+pub fn private_positions(
+    platform: &Platform,
+    now: Timestamp,
+) -> Result<PrivatePositionsView, String> {
+    let marks = platform.illiquid_marks();
+    let unmarkable = platform.illiquid_unmarkable();
+    let book = platform.commitments();
+    let subjects: std::collections::BTreeSet<&str> = marks
+        .keys()
+        .chain(unmarkable.keys())
+        .map(String::as_str)
+        .collect();
+    let mut positions = Vec::with_capacity(subjects.len());
+    for subject in subjects {
+        let mark = match marks.get(subject) {
+            Some(mark) => Some(MarkView {
+                available: true,
+                value: mark.value().to_string(),
+                method: mark.method().label(),
+                struck_confidence: mark.struck_confidence(),
+                confidence_now: mark
+                    .confidence_at(now)
+                    .map_err(|error| error.message().to_string())?,
+                as_of: mark.as_of().to_rfc3339(),
+                next_review: mark.next_review().to_rfc3339(),
+                stale: mark.is_stale(now),
+            }),
+            None => None,
+        };
+        let unmarked = unmarkable.get(subject).map(|reason| MarkRefusalView {
+            available: false,
+            reason: reason.clone(),
+        });
+        let commitment = match book.get(subject) {
+            Some(commitment) => Some(commitment_view(commitment, now)?),
+            None => None,
+        };
+        let distributions = match platform.private_forecast(subject) {
+            Some(forecast) => DistributionsView {
+                stated: true,
+                flows: forecast
+                    .flows()
+                    .map(|flow| ForecastFlowView {
+                        kind: flow.kind().label(),
+                        due_at: flow.due_at().to_rfc3339(),
+                        amount: flow.amount().to_string(),
+                        probability: flow.probability(),
+                    })
+                    .collect(),
+            },
+            None => DistributionsView {
+                stated: false,
+                flows: Vec::new(),
+            },
+        };
+        positions.push(PrivatePositionView {
+            subject: subject.to_string(),
+            mark,
+            unmarkable: unmarked,
+            commitment,
+            distributions,
+        });
+    }
+    Ok(PrivatePositionsView {
+        posture: POSTURE,
+        served_at: now.to_rfc3339(),
+        call_settlement: CALL_SETTLEMENT,
+        positions,
+    })
+}
+
 /// Build the answer to a filing or a withdrawal against `subject`.
 pub fn commitment_row(
     platform: &Platform,

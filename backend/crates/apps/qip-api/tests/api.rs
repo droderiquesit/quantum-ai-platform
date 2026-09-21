@@ -930,16 +930,15 @@ fn assemble() -> Result<Assembled> {
 /// a route that refuses before it reaches its gate unless the platform holds
 /// something first.
 fn assemble_with(config: qip_kernel::PlatformConfig) -> Result<Assembled> {
+    assemble_over(config, listed_universe()?)
+}
+
+/// The universe every assembly starts from: one listed name and nothing else.
+fn listed_universe() -> Result<qip_financial::universe::Universe> {
     use qip_financial::asset_class::{InstrumentType, Sector};
     use qip_financial::object::FinancialObject;
     use qip_financial::quality::Provenance;
     use qip_financial::universe::Universe;
-    use qip_kernel::Platform;
-    use qip_observability::Telemetry;
-    use qip_risk::limits::LimitSet;
-
-    let clock = Arc::new(ManualClock::new(now()));
-    let context = Context::new(clock.clone(), config.seed);
 
     let mut universe = Universe::new();
     universe.insert(
@@ -958,6 +957,22 @@ fn assemble_with(config: qip_kernel::PlatformConfig) -> Result<Assembled> {
         .provenance(Provenance::synthetic("test", now()))
         .build(now())?,
     )?;
+    Ok(universe)
+}
+
+/// The same assembly over a stated universe, for a test whose subject is a
+/// route projecting something the universe's own records produce — a private
+/// position's mark and schedule exist only where a private-asset record does.
+fn assemble_over(
+    config: qip_kernel::PlatformConfig,
+    universe: qip_financial::universe::Universe,
+) -> Result<Assembled> {
+    use qip_kernel::Platform;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+
+    let clock = Arc::new(ManualClock::new(now()));
+    let context = Context::new(clock.clone(), config.seed);
 
     let platform = Platform::new(
         config,
@@ -2595,5 +2610,311 @@ fn the_exploration_surface_keeps_what_is_held_committed_and_spent_as_three_numbe
             "an unprobed kind reports a measured gain: {body}"
         );
     }
+    Ok(())
+}
+
+// --- §40.1's private-positions surface ---------------------------------------
+
+/// A private fund the administrator reported on 180 days ago: 400,000
+/// promised against 150,000 drawn, a residual of 160,000 and years of lockup
+/// left to run.
+///
+/// The report is dated 180 days back on purpose. That is one `LastRound`
+/// half-life, so the mark's confidence at the instant served is half what the
+/// method struck it at — which is what makes "the surface reports the decayed
+/// confidence" a different assertion from "the surface reports the struck
+/// one". A record dated today would make the two numbers equal and the test
+/// vacuous.
+fn reported_fund() -> Result<qip_financial::object::FinancialObject> {
+    use qip_financial::asset_class::InstrumentType;
+    use qip_financial::extensions::{Extension, PrivateAssetDetails};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+
+    let reported_at = now().saturating_sub(qip_core::time::Duration::from_days(180));
+    FinancialObject::builder(
+        qip_core::ObjectId::from_string("obj-FUND"),
+        "FUND",
+        InstrumentType::PrivateEquityFund,
+        qip_financial::costs::LiquidityProfile::illiquid(90.0, 250.0),
+    )
+    .venue("OTC")
+    .price(qip_core::Decimal::from_int(100))
+    .extension(Extension::PrivateAsset(PrivateAssetDetails {
+        vintage_year: 2024,
+        committed_capital: qip_core::Decimal::from_int(400_000),
+        called_capital: qip_core::Decimal::from_int(150_000),
+        distributed_capital: qip_core::Decimal::ZERO,
+        residual_value: qip_core::Decimal::from_int(160_000),
+        stage: "buyout".to_string(),
+        lockup_years: 7.0,
+        capital_call_notice_days: 10,
+    }))
+    .provenance(Provenance::synthetic("administrator", reported_at))
+    .build(reported_at)
+}
+
+/// A private fund wholly drawn and reporting no residual: 300,000 promised,
+/// 300,000 called, nothing left to call and nothing its record dates a return
+/// of.
+///
+/// Two facts at once, and both are the point. It has no commitment — the book
+/// records one only where something is still unfunded — so a surface walked
+/// from the commitment book would not list it at all. And its record states
+/// no schedule, which is a different claim from a schedule with no flows in
+/// it.
+fn drawn_fund() -> Result<qip_financial::object::FinancialObject> {
+    use qip_financial::asset_class::InstrumentType;
+    use qip_financial::extensions::{Extension, PrivateAssetDetails};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+
+    let reported_at = now().saturating_sub(qip_core::time::Duration::from_days(30));
+    FinancialObject::builder(
+        qip_core::ObjectId::from_string("obj-DRAWN"),
+        "DRAWN",
+        InstrumentType::PrivateEquityFund,
+        qip_financial::costs::LiquidityProfile::illiquid(90.0, 250.0),
+    )
+    .venue("OTC")
+    .price(qip_core::Decimal::from_int(100))
+    .extension(Extension::PrivateAsset(PrivateAssetDetails {
+        vintage_year: 2024,
+        committed_capital: qip_core::Decimal::from_int(300_000),
+        called_capital: qip_core::Decimal::from_int(300_000),
+        distributed_capital: qip_core::Decimal::ZERO,
+        residual_value: qip_core::Decimal::ZERO,
+        stage: "buyout".to_string(),
+        lockup_years: 7.0,
+        capital_call_notice_days: 10,
+    }))
+    .provenance(Provenance::synthetic("administrator", reported_at))
+    .build(reported_at)
+}
+
+/// The listed name, the reporting fund and the wholly drawn one.
+fn private_universe() -> Result<qip_financial::universe::Universe> {
+    let mut universe = listed_universe()?;
+    universe.insert(reported_fund()?)?;
+    universe.insert(drawn_fund()?)?;
+    Ok(universe)
+}
+
+fn private_positions_body(assembled: &Assembled) -> serde_json::Value {
+    body_of(get(
+        &assembled.api,
+        "/api/v1/ledger/private-positions",
+        Some("viewer-token"),
+    ))
+}
+
+fn position_of<'a>(body: &'a serde_json::Value, subject: &str) -> &'a serde_json::Value {
+    body["positions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`positions` is not an array: {body}"))
+        .iter()
+        .find(|position| position["subject"] == serde_json::json!(subject))
+        .unwrap_or_else(|| panic!("no position for {subject}: {body}"))
+}
+
+#[test]
+fn the_private_positions_surface_reports_the_mark_struck_and_the_confidence_it_carries_now()
+-> Result<()> {
+    // The failure this prevents: a surface that renders a private holding at
+    // its face value with no method beside it. §40.1's row asks for "mark and
+    // method", and the two are one fact — 160,000 on a last round and 160,000
+    // on a quoted market are not the same claim about the same number. The
+    // platform has struck this mark on every assembly since the valuation
+    // plane landed, and until this route existed nothing outside the cycle
+    // could read it.
+    let assembled = assemble_over(qip_kernel::PlatformConfig::default(), private_universe()?)?;
+    // Premise, read off the kernel rather than assumed: the platform holds a
+    // mark for this fund, and the confidence it carries now is not the one it
+    // was struck at. Without the second half the assertions below would pass
+    // against a surface that reported either number for both fields.
+    let (value, method, struck, decayed, next_review) = {
+        let platform = assembled
+            .platform
+            .lock()
+            .expect("the fixture's platform mutex");
+        let mark = platform
+            .illiquid_mark("obj-FUND")
+            .expect("the valuation plane marks a fund reporting a residual");
+        (
+            mark.value().to_string(),
+            mark.method().label().to_string(),
+            mark.struck_confidence(),
+            mark.confidence_at(now())
+                .expect("a mark struck in the past"),
+            mark.next_review().to_rfc3339(),
+        )
+    };
+    assert!(
+        (struck - decayed).abs() > 0.01,
+        "the fixture's mark has not decayed ({struck} against {decayed}); the two confidence \
+         fields would hold the same number and the test would prove nothing"
+    );
+
+    let body = private_positions_body(&assembled);
+    let position = position_of(&body, "obj-FUND");
+    let mark = &position["mark"];
+    assert_eq!(mark["available"], serde_json::json!(true), "{body}");
+    // Money as the platform's own decimal text, compared whole: "16000" is a
+    // substring of "160000", and a mark wrong by a factor of ten would
+    // survive a `contains`.
+    assert_eq!(
+        mark["value"],
+        serde_json::Value::String(value),
+        "the surface does not report the value the plane marked: {body}"
+    );
+    // The method as a whole token in the enum's own spelling, not a
+    // substring — `model` is a substring of plenty of prose a summary might
+    // carry.
+    assert_eq!(
+        mark["method"],
+        serde_json::Value::String(method),
+        "the surface does not name the method the mark was struck by: {body}"
+    );
+    assert_eq!(
+        mark["struck_confidence"],
+        serde_json::json!(struck),
+        "{body}"
+    );
+    assert_eq!(
+        mark["confidence_now"],
+        serde_json::json!(decayed),
+        "the surface reports the struck confidence where the sized-against one belongs; an \
+         operator would read a half-year-old appraisal as a fresh one: {body}"
+    );
+    assert_eq!(
+        mark["next_review"],
+        serde_json::Value::String(next_review),
+        "{body}"
+    );
+    assert_eq!(
+        body["posture"],
+        serde_json::json!("PAPER TRADING"),
+        "{body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_private_position_with_nothing_left_to_call_is_still_a_position_on_the_surface() -> Result<()> {
+    // The failure this prevents, and it is why this surface is walked from
+    // the marks rather than from the commitment book: a wholly drawn holding
+    // has no commitment, because the book records one only where capital is
+    // still unfunded. A private-positions page built off `/ledger/commitments`
+    // would show the desk one fund where it holds two, and would do it
+    // silently.
+    let assembled = assemble_over(qip_kernel::PlatformConfig::default(), private_universe()?)?;
+    // Premise in two parts, both off the kernel: the drawn fund really is
+    // absent from the commitment book, and the book is not simply empty —
+    // without the second, "the book omits it" would be true of a fixture
+    // where nothing was ever committed.
+    {
+        let platform = assembled
+            .platform
+            .lock()
+            .expect("the fixture's platform mutex");
+        let book = platform.commitments();
+        assert!(
+            book.get("obj-DRAWN").is_none(),
+            "the fixture's drawn fund still carries a commitment; it cannot show that this \
+             surface reads something the book does not"
+        );
+        assert!(
+            book.get("obj-FUND").is_some(),
+            "the fixture's commitment book holds nothing at all"
+        );
+    }
+
+    let body = private_positions_body(&assembled);
+    let drawn = position_of(&body, "obj-DRAWN");
+    assert_eq!(
+        drawn["mark"]["available"],
+        serde_json::json!(true),
+        "{body}"
+    );
+    assert!(
+        drawn.get("commitment").is_none(),
+        "the surface invents a commitment for a wholly drawn holding: {body}"
+    );
+    // And the fund that does have one carries it, so the absence above is the
+    // book's answer and not a field this route never renders.
+    let held = position_of(&body, "obj-FUND");
+    assert_eq!(
+        held["commitment"]["unfunded"],
+        serde_json::json!("250000"),
+        "the surface does not carry the unfunded balance the book holds: {body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_private_record_that_dates_no_distribution_says_so_rather_than_sending_an_empty_schedule()
+-> Result<()> {
+    // The failure this prevents: "this fund will distribute nothing" and
+    // "nobody has said what this fund will distribute" rendered as the same
+    // empty table. The first is a forecast and the second is a silence, and a
+    // desk that reads one as the other will either write off a return
+    // somebody promised or plan around one nobody did.
+    let assembled = assemble_over(qip_kernel::PlatformConfig::default(), private_universe()?)?;
+    // Premise: the platform really does hold a schedule for one of the two
+    // funds, so the `stated: false` below is the drawn record's own answer
+    // and not this route failing to build any schedule at all.
+    {
+        let platform = assembled
+            .platform
+            .lock()
+            .expect("the fixture's platform mutex");
+        assert!(
+            platform.private_forecast("obj-FUND").is_some(),
+            "the fixture holds no schedule for the reporting fund; a `stated: false` elsewhere \
+             would prove nothing"
+        );
+        assert!(
+            platform.private_forecast("obj-DRAWN").is_none(),
+            "the fixture's drawn fund dates a return after all"
+        );
+    }
+
+    let body = private_positions_body(&assembled);
+    let drawn = position_of(&body, "obj-DRAWN");
+    assert_eq!(
+        drawn["distributions"]["stated"],
+        serde_json::json!(false),
+        "a record that dates no distribution is rendered as a schedule: {body}"
+    );
+    assert_eq!(
+        drawn["distributions"]["flows"],
+        serde_json::json!([]),
+        "{body}"
+    );
+
+    let held = position_of(&body, "obj-FUND");
+    assert_eq!(
+        held["distributions"]["stated"],
+        serde_json::json!(true),
+        "{body}"
+    );
+    let flows = held["distributions"]["flows"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`flows` is not an array: {body}"));
+    assert_eq!(
+        flows.len(),
+        1,
+        "the record states one distribution — the administrator's own residual at the end of \
+         the lockup — and the surface reports a different number of them: {body}"
+    );
+    assert_eq!(
+        flows[0]["kind"],
+        serde_json::json!("distribution"),
+        "{body}"
+    );
+    // The administrator's reported residual, whole rather than by substring,
+    // and unsigned: `ForecastCashflow` holds a magnitude and the direction is
+    // the kind's.
+    assert_eq!(flows[0]["amount"], serde_json::json!("160000"), "{body}");
     Ok(())
 }

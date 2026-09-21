@@ -89,10 +89,11 @@ const STALE_OPERATOR_TOKEN: &str = "stale-operator-token";
 const CELL: &str = "cell-lon-1";
 const INSTRUMENT: &str = "obj-AAA";
 
-/// The five paths under test, as the route table spells them.
-const TREASURY_PATHS: [&str; 5] = [
+/// The paths under test, as the route table spells them.
+const TREASURY_PATHS: [&str; 6] = [
     "/ledger/users",
     "/ledger/commitments",
+    "/ledger/private-positions",
     "/wallet",
     "/corridors",
     "/transfer-gate",
@@ -103,12 +104,17 @@ const TREASURY_PATHS: [&str; 5] = [
 /// `/ledger/users` is the one that carries a per-user datum — every user's
 /// mandate, balances and inflow references — and the portal hands the
 /// viewer role to anyone who completes self-registration, so it is the one
-/// held above viewer. The other four describe the process, not a user: the
-/// commitments are the desk's obligations to funds, not any user's.
+/// held above viewer. The others describe the process, not a user: the
+/// commitments are the desk's obligations to funds and a private position is
+/// the desk's own holding, neither of them any user's.
 fn required_role_of(path: &str) -> Role {
     match path {
         "/ledger/users" => Role::Analyst,
-        "/ledger/commitments" | "/wallet" | "/corridors" | "/transfer-gate" => Role::Viewer,
+        "/ledger/commitments"
+        | "/ledger/private-positions"
+        | "/wallet"
+        | "/corridors"
+        | "/transfer-gate" => Role::Viewer,
         other => panic!("{other} is not a treasury path"),
     }
 }
@@ -417,6 +423,7 @@ fn documented_keys(path: &str) -> &'static [&'static str] {
             "accrued_default_penalty",
             "commitments",
         ],
+        "/ledger/private-positions" => &["posture", "served_at", "call_settlement", "positions"],
         "/wallet" => &[
             "posture",
             "served_at",
