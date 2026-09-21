@@ -21,13 +21,13 @@ resources:
 images:
 - name: qip-api
   newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-api
-  digest: sha256:1f09b5c3e9205e6723f72a9de57c4aca04e80a24cb76eb0a2f9153699a18daf6
+  digest: sha256:e648888dfaf156e1843fea6acc9462853d075fb29250c2749b45627a05dc089a
 - name: qip-fastbrain
   newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-fastbrain
-  digest: sha256:458a25afc17a3eaefdc0c8ff35542fa6abd57260725ad14aa6f4f9973a618c51
+  digest: sha256:209e9f2cd98672d9f61dd47e9a160593e0e17cbbbd7f7787d14688d1a75ece01
 - name: qip-deepbrain
   newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-deepbrain
-  digest: sha256:09138ad3b9738587315d28f8a9a19435ff35942c39edde3931dad7c324c081bc
+  digest: sha256:23d11234ef9a068e727ad5ab85534220f7e4a9dfcb95931e313806d361a8797c
 - name: openobserve
   newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/openobserve
   digest: sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b
