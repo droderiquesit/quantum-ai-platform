@@ -612,12 +612,20 @@ jobs:
             missing="${missing} ${name}"
           done
           if [ -n "${missing}" ]; then
-            echo "::warning title=Owner-supplied credentials have no version::\
-          These slots hold no enabled version and this step will not invent one, \
-          because a generated value would be a false credential rather than a weak \
-          one. Any Cloud Run service mounting one cannot start until a person runs \
-          'gcloud secrets versions add <name> --project ${project} --data-file=-'. \
-          Empty:${missing}"
+            # Built up in one variable and emitted on one physical line. A
+            # workflow command is terminated by the newline, so a message
+            # written across continuation lines is delivered truncated at the
+            # first one — which is how the first version of this warning
+            # reached run 81 naming no secret at all, having been written
+            # precisely to name them. The annotation carried the advice and
+            # dropped the list, so it read as a general caution rather than as
+            # a statement about seven specific slots.
+            note="These slots hold no enabled version and this step will not invent one,"
+            note="${note} because a generated value would be a false credential rather than a"
+            note="${note} weak one. Any Cloud Run service mounting one cannot start until a"
+            note="${note} person runs 'gcloud secrets versions add <name> --project ${project}"
+            note="${note} --data-file=-'. Empty:${missing}"
+            echo "::warning title=Owner-supplied credentials have no version::${note}"
           fi
 
           for secret in ${generated}; do

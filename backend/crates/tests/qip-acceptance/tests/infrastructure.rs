@@ -9335,4 +9335,23 @@ fn the_seeding_step_never_writes_a_value_for_a_credential_that_names_another_acc
         "the step skips an empty owner-supplied slot without reporting it, so the \
          next failure names a Cloud Run revision instead of the missing credential"
     );
+
+    // And the warning must carry the names. This assertion exists because the
+    // first version of that step failed it in production while passing the
+    // one above: the message was written across shell continuation lines, a
+    // workflow command ends at the first newline, and run 81 emitted the
+    // advice with the list of empty slots cut off. A warning that says
+    // "some credentials are missing" and cannot say which is a warning an
+    // operator cannot act on, and it is indistinguishable from a working one
+    // unless the assertion reaches past the title.
+    let warning_line = step
+        .lines()
+        .find(|line| line.contains("::warning title=Owner-supplied credentials have no version::"))
+        .expect("the warning line was found above");
+    assert!(
+        warning_line.contains("${missing}") || warning_line.contains("${note}"),
+        "the warning is emitted without the list of empty slots on the same line, so \
+         GitHub delivers it truncated at the newline and it names no secret: \
+         {warning_line}"
+    );
 }
