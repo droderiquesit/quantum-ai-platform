@@ -49,6 +49,25 @@ impl qip_events::EventBody for WorldModelUpdated {
 /// evidence — the subset a re-estimation inside any horizon would prefer.
 pub const CAUSAL_SUPPORT_RETAINED: usize = 512;
 
+/// The surprise against consensus at which a reported fundamental is
+/// journalled as a change in the world rather than only recorded as a
+/// feature — a fraction of the expectation, so five per cent.
+///
+/// The figure is not new; it was the bare `0.05` inside `absorb_fundamental`,
+/// compared with a hand-written `surprise.abs() > 0.05` while
+/// [`FundamentalUpdate::is_significant_surprise`] sat in `qip-financial`
+/// saying the same thing and reaching nobody. Two independent statements of
+/// one rule disagree eventually and the louder one is wrong; this names the
+/// figure and hands it to the predicate that owns the comparison.
+///
+/// One behavioural difference came with that, and it is stated rather than
+/// buried: the predicate is `>=` and the open-coded test was `>`, so a
+/// fundamental landing at exactly five per cent from consensus is now
+/// material where it was not. At the boundary the inclusive reading is the
+/// one the rest of the platform already uses, and a rule whose two copies
+/// disagreed on one point was the defect being removed.
+pub const MATERIAL_FUNDAMENTAL_SURPRISE: f64 = 0.05;
+
 /// The platform's model of the world.
 #[derive(Debug)]
 pub struct WorldModel {
@@ -631,7 +650,9 @@ impl WorldModel {
                     imputed: update.quality.is_imputed,
                 },
             );
-            if surprise.abs() > 0.05 {
+            // The predicate that owns this comparison, rather than a second
+            // copy of it written here. See [`MATERIAL_FUNDAMENTAL_SURPRISE`].
+            if update.is_significant_surprise(MATERIAL_FUNDAMENTAL_SURPRISE) {
                 self.journal.push(Change::new(
                     ChangeKind::FeatureMoved,
                     update.entity_id.clone(),

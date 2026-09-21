@@ -29,6 +29,7 @@
 //! situation — when the cycle can least afford it.
 
 use super::episode::{Episode, EpisodeQuery};
+use super::sampler::{EpisodeGrade, EpisodeSampler};
 use crate::embedding::Embedding;
 use qip_core::error::{Error, Result};
 use qip_core::time::Timestamp;
@@ -53,7 +54,12 @@ pub const PROBES: usize = TABLES * (1 + BITS);
 /// bucket assignment, so it is a constant here and not a parameter.
 pub const LSH_SEED: u64 = 0x5149_505F_4550_4953;
 
-/// Default capacity: oldest-first eviction beyond this many episodes.
+/// Default capacity: beyond this many episodes, one is given up per insert
+/// and [`EpisodeSampler`] names which.
+///
+/// This doc said "oldest-first eviction" until the sampler landed, and
+/// oldest-first is now only what happens *within* a grade. §54.2's reasoning
+/// — most information is in the tails — is what decides between the grades.
 pub const DEFAULT_CAPACITY: usize = 4_096;
 
 /// Default bound on candidates examined per query.
@@ -185,6 +191,14 @@ pub struct EpisodicMemory {
     buckets: BTreeMap<(usize, u32), BTreeSet<Slot>>,
     ids: BTreeMap<String, Slot>,
     next_sequence: u64,
+    /// §54.2's episode sampling: which grade the store gives up when the
+    /// capacity binds.
+    sampler: EpisodeSampler,
+    /// The slots at each grade, in the same order `stored` is, so "the oldest
+    /// calm episode" is `first()` and not a scan — and, more importantly, is
+    /// a total order rather than an iteration accident. A hashed set here
+    /// would make two memories fed the same episodes retain different ones.
+    graded: BTreeMap<EpisodeGrade, BTreeSet<Slot>>,
 }
 
 impl Default for EpisodicMemory {
@@ -226,7 +240,35 @@ impl EpisodicMemory {
             buckets: BTreeMap::new(),
             ids: BTreeMap::new(),
             next_sequence: 0,
+            sampler: EpisodeSampler::default(),
+            graded: BTreeMap::new(),
         }
+    }
+
+    /// Sample on a stated policy rather than [`EpisodeSampler::default`].
+    ///
+    /// Only usefully called on an empty memory: the grades already held were
+    /// decided by the sampler in force when each episode arrived, and this
+    /// does not re-grade them. A caller wanting a different policy over
+    /// episodes it already holds builds a memory and replays them, which is
+    /// what a replay does anyway.
+    pub fn with_sampler(mut self, sampler: EpisodeSampler) -> Self {
+        self.sampler = sampler;
+        self
+    }
+
+    /// The sampling policy in force — §54.2's episode sampling.
+    pub fn sampler(&self) -> &EpisodeSampler {
+        &self.sampler
+    }
+
+    /// How many held episodes carry `grade`.
+    ///
+    /// Exposed so a test — and an operator reading a snapshot — can see the
+    /// shape of the sample rather than only its size. A memory whose tail
+    /// count sits at its reserve is a memory that has been busy.
+    pub fn held_at(&self, grade: EpisodeGrade) -> usize {
+        self.graded.get(&grade).map_or(0, BTreeSet::len)
     }
 
     pub fn capacity(&self) -> usize {
@@ -293,7 +335,14 @@ impl EpisodicMemory {
             .collect()
     }
 
-    /// Keep an episode, evicting the oldest-known beyond capacity.
+    /// Keep an episode, giving one up beyond capacity — §54.2's sampling
+    /// decides which, and [`EpisodeSampler`]'s documentation argues where.
+    ///
+    /// The loop is unconditional: however the sampler grades what is held,
+    /// the store is back at or under capacity when this returns, because
+    /// [`EpisodeSampler::victim`] names one for any non-empty memory. A
+    /// sampler that could decline to evict would be an episodic memory that
+    /// grows with the stream, which is the defect the bound exists for.
     ///
     /// Refuses an invalid episode and a duplicate id: the second record
     /// under an id is a replay bug or a double resolution, and overwriting
@@ -320,6 +369,11 @@ impl EpisodicMemory {
                 .or_default()
                 .insert(slot);
         }
+        // Graded once, on arrival, from the record's own fields. Re-grading
+        // later would make the retained set depend on when the question was
+        // asked, and a replay would not reproduce it.
+        let grade = self.sampler.grade(&episode);
+        self.graded.entry(grade).or_default().insert(slot);
         self.stored.insert(
             slot,
             Stored {
@@ -329,16 +383,33 @@ impl EpisodicMemory {
             },
         );
         while self.stored.len() > self.capacity {
-            self.evict_oldest();
+            self.evict_sampled();
         }
         Ok(())
     }
 
-    fn evict_oldest(&mut self) {
-        let Some((slot, stored)) = self.stored.pop_first() else {
+    /// Give up the episode §54.2's sampling names, or nothing if empty.
+    fn evict_sampled(&mut self) {
+        let victim = self.sampler.victim(
+            self.capacity,
+            self.graded
+                .get(&EpisodeGrade::Calm)
+                .and_then(|slots| slots.first().copied()),
+            self.graded
+                .get(&EpisodeGrade::Tail)
+                .and_then(|slots| slots.first().copied()),
+            self.held_at(EpisodeGrade::Tail),
+        );
+        let Some(slot) = victim else {
+            return;
+        };
+        let Some(stored) = self.stored.remove(&slot) else {
             return;
         };
         self.ids.remove(&stored.episode.episode_id);
+        for slots in self.graded.values_mut() {
+            slots.remove(&slot);
+        }
         for (table, bucket) in stored.buckets.iter().enumerate() {
             let key = (table, *bucket);
             if let Some(members) = self.buckets.get_mut(&key) {

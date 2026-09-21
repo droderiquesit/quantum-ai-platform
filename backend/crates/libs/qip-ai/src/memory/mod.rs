@@ -33,8 +33,13 @@
 //!   the plain iterator once did, and was the one exception to this
 //!   sentence until it was made to take `now` too.
 //! * **Bounded and deterministic.** Capacity is fixed at construction and
-//!   eviction is oldest-first by `known_at`; the index examines at most a
-//!   fixed number of candidates per query; and the locality-sensitive hash
+//!   a memory over it gives up exactly one episode per insert — which one is
+//!   blueprint §54.2's episode sampling, in [`sampler`]: dense at high
+//!   surprise, sparse in calm, with the tail bounded to half the store so
+//!   the sample cannot become a catalogue of bad days. Oldest-first by
+//!   `known_at` is now what happens *within* a grade, and this bullet said
+//!   it was the whole rule until the sampler landed. The index examines at
+//!   most a fixed number of candidates per query; and the locality-sensitive hash
 //!   is seeded from a stated constant, so two processes built from the same
 //!   episodes recall the same neighbours in the same order. A replay that
 //!   reorders is not a replay.
@@ -59,6 +64,7 @@
 
 pub mod episode;
 pub mod experience;
+pub mod sampler;
 pub mod store;
 
 pub use episode::{
@@ -67,4 +73,5 @@ pub use episode::{
     RegimeLabel, StanceDirection,
 };
 pub use experience::{ExperienceReport, RegimeExperience, regime_key};
+pub use sampler::{EpisodeGrade, EpisodeSampler, HIGH_SURPRISE_BPS, TAIL_RESERVE_DIVISOR};
 pub use store::{EpisodicMemory, PrecedentDigest, Recall, Recalled};
