@@ -52,6 +52,7 @@ fn details(residual: Decimal, called: Decimal, distributed: Decimal) -> PrivateA
         stage: "buyout".to_string(),
         lockup_years: 7.0,
         capital_call_notice_days: 10,
+        call_schedule: None,
     }
 }
 
@@ -1070,5 +1071,100 @@ fn a_private_record_whose_lockup_has_run_out_dates_no_return_of_capital() -> Res
         .is_none(),
         "a record reporting no residual value schedules no distribution to date"
     );
+    Ok(())
+}
+
+#[test]
+fn a_published_call_schedule_reaches_the_forecast_and_never_the_mark() -> Result<()> {
+    // The double count this platform is one call site away from, stated as a
+    // test. A private holding's unfunded balance is already subtracted from
+    // free capital by the commitment book before anything is sized;
+    // discounting the same fund's published draws into its *mark* as well
+    // would take the balance off the book twice, and the louder of the two
+    // claims would be wrong. So the schedule reaches the forecast — where
+    // the J-curve and the funding read need it — and `mark_private_asset`
+    // discounts `returns_only`.
+    let unscheduled = details(dec!("800"), dec!("200"), Decimal::ZERO);
+    let mut scheduled = unscheduled.clone();
+    scheduled.call_schedule = Some(qip_financial::cashflow::CallSchedule::published(vec![
+        qip_financial::cashflow::ScheduledCall {
+            due: day(90),
+            amount: dec!("400"),
+        },
+        qip_financial::cashflow::ScheduledCall {
+            due: day(180),
+            amount: dec!("400"),
+        },
+    ])?);
+
+    // Premise: the schedule is on the record, it is admissible against the
+    // balance, and the forecast really does carry it. Without this the
+    // equality below would pass on a record that published nothing.
+    scheduled.clone().checked()?;
+    let forecast =
+        IlliquidValuator::forecast_private_asset("obj-fund", &scheduled, origin(), origin())?
+            .expect("a record with a residual and a schedule dates something");
+    assert_eq!(
+        forecast.flows().filter(|f| f.kind().is_outflow()).count(),
+        2,
+        "the premise failed: the published draws did not reach the forecast"
+    );
+
+    let bare = IlliquidValuator::mark_private_asset(
+        "obj-fund",
+        &unscheduled,
+        origin(),
+        origin(),
+        origin(),
+        Some(0.12),
+        day(1),
+    )?;
+    let with_schedule = IlliquidValuator::mark_private_asset(
+        "obj-fund",
+        &scheduled,
+        origin(),
+        origin(),
+        origin(),
+        Some(0.12),
+        day(1),
+    )?;
+    assert_eq!(
+        bare.method(),
+        ValuationMethod::DiscountedCashflow,
+        "the premise failed: this record is not marked by discounting at all"
+    );
+    assert_eq!(
+        with_schedule.method(),
+        bare.method(),
+        "publishing a drawdown schedule changed how the asset is marked"
+    );
+    assert_eq!(
+        with_schedule.value(),
+        bare.value(),
+        "the published draws were discounted into the mark, which charges the same obligation \
+         the commitment book already reserves"
+    );
+
+    // And a record that dates draws and no return is still marked the way it
+    // was before schedules existed — at cost — rather than refused because
+    // its returns project to nothing.
+    let mut draws_only = details(Decimal::ZERO, dec!("400"), dec!("100"));
+    draws_only.call_schedule = Some(qip_financial::cashflow::CallSchedule::published(vec![
+        qip_financial::cashflow::ScheduledCall {
+            due: day(90),
+            amount: dec!("100"),
+        },
+    ])?);
+    let at_cost = IlliquidValuator::mark_private_asset(
+        "obj-venture",
+        &draws_only,
+        origin(),
+        origin(),
+        origin(),
+        Some(0.12),
+        day(1),
+    )?;
+    assert_eq!(at_cost.method(), ValuationMethod::Cost);
+    assert_eq!(at_cost.value(), dec!("300"));
     Ok(())
 }

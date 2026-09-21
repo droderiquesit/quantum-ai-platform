@@ -460,6 +460,7 @@ fn every_asset_class_can_be_represented() {
                 stage: "buyout".into(),
                 lockup_years: 10.0,
                 capital_call_notice_days: 10,
+                call_schedule: None,
             }),
             None,
         ),
@@ -889,6 +890,7 @@ fn private_asset_multiples_are_computed_correctly() {
         stage: "buyout".into(),
         lockup_years: 10.0,
         capital_call_notice_days: 10,
+        call_schedule: None,
     };
     // (12 + 34) / 30
     assert!(approx_eq(details.tvpi().unwrap(), 46.0 / 30.0, 1e-12));

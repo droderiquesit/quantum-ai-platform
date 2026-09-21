@@ -14,8 +14,8 @@
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, Timestamp, dec};
 use qip_financial::cashflow::{
-    CallConsequence, CapitalCall, CashflowForecast, CashflowKind, Commitment, CommitmentBook,
-    ForecastCashflow,
+    CallConsequence, CallSchedule, CapitalCall, CashflowForecast, CashflowKind, Commitment,
+    CommitmentBook, ForecastCashflow, MAX_SCHEDULED_CALLS, ScheduledCall,
 };
 use qip_financial::extensions::PrivateAssetDetails;
 
@@ -37,6 +37,7 @@ fn private_asset(committed: Decimal, called: Decimal) -> PrivateAssetDetails {
         stage: "buyout".to_string(),
         lockup_years: 7.0,
         capital_call_notice_days: 10,
+        call_schedule: None,
     }
 }
 
@@ -1213,6 +1214,403 @@ fn a_forecast_that_schedules_no_call_cannot_be_attached_to_a_commitment_that_is_
         refusal.message().contains("schedules no capital call"),
         "the refusal must name what the schedule is missing, said: {}",
         refusal.message()
+    );
+    Ok(())
+}
+
+// --- published drawdown schedules (blueprint §16.4) --------------------------
+
+/// Four draws of 100, quarterly from the fund's first year.
+fn quarterly_schedule() -> Result<CallSchedule> {
+    CallSchedule::published(vec![
+        ScheduledCall {
+            due: day(90),
+            amount: dec!("100"),
+        },
+        ScheduledCall {
+            due: day(180),
+            amount: dec!("100"),
+        },
+        ScheduledCall {
+            due: day(270),
+            amount: dec!("100"),
+        },
+        ScheduledCall {
+            due: day(360),
+            amount: dec!("100"),
+        },
+    ])
+}
+
+#[test]
+fn a_published_call_schedule_refuses_the_records_an_aggregate_could_hide() -> Result<()> {
+    // Premise: a well-formed schedule is admitted, so each refusal below is
+    // about the thing it names and not about the constructor refusing
+    // everything.
+    let good = quarterly_schedule()?;
+    assert_eq!(good.len(), 4);
+    assert_eq!(good.total()?, dec!("400"));
+
+    // 1. Empty. The refusal that matters most: `None` is how a record says
+    // nobody has paced this fund, and an empty schedule would say the fund
+    // will never draw again — which would take the demand inside any horizon
+    // to zero on a wholly unfunded commitment.
+    let empty = CallSchedule::published(Vec::new()).expect_err("an empty schedule is not one");
+    assert!(
+        empty.message().contains("leave the schedule absent"),
+        "the refusal must name the representation to use instead, said: {}",
+        empty.message()
+    );
+
+    // 2. Two draws on one date, refused rather than summed.
+    let collision = CallSchedule::published(vec![
+        ScheduledCall {
+            due: day(90),
+            amount: dec!("100"),
+        },
+        ScheduledCall {
+            due: day(90),
+            amount: dec!("150"),
+        },
+    ])
+    .expect_err("two draws on one date disagree");
+    assert!(
+        collision.message().contains("two draws on"),
+        "said: {}",
+        collision.message()
+    );
+
+    // 3. A draw of nothing, refused rather than dropped.
+    let zero = CallSchedule::published(vec![ScheduledCall {
+        due: day(90),
+        amount: Decimal::ZERO,
+    }])
+    .expect_err("a draw of zero is not a draw");
+    assert!(
+        zero.message().contains("is not a draw"),
+        "said: {}",
+        zero.message()
+    );
+
+    // 4. Longer than the platform will read, refused rather than truncated.
+    // The premise is the boundary: exactly the maximum is admitted, so the
+    // refusal is about the one entry past it.
+    let at_bound: Vec<ScheduledCall> = (0..MAX_SCHEDULED_CALLS)
+        .map(|n| ScheduledCall {
+            due: day(n as i64),
+            amount: dec!("1"),
+        })
+        .collect();
+    let mut past_bound = at_bound.clone();
+    past_bound.push(ScheduledCall {
+        due: day(MAX_SCHEDULED_CALLS as i64),
+        amount: dec!("1"),
+    });
+    assert_eq!(
+        CallSchedule::published(at_bound)?.len(),
+        MAX_SCHEDULED_CALLS
+    );
+    let too_long = CallSchedule::published(past_bound).expect_err("one past the bound");
+    assert!(
+        too_long.message().contains("this platform will read"),
+        "said: {}",
+        too_long.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_published_schedule_is_held_in_date_order_however_the_record_listed_it() -> Result<()> {
+    // A replay that reorders is not a replay, and the J-curve is a running
+    // sum: read out of order it reports a trough at the wrong date and,
+    // where distributions are interleaved, the wrong depth.
+    let scrambled = CallSchedule::published(vec![
+        ScheduledCall {
+            due: day(270),
+            amount: dec!("3"),
+        },
+        ScheduledCall {
+            due: day(90),
+            amount: dec!("1"),
+        },
+        ScheduledCall {
+            due: day(180),
+            amount: dec!("2"),
+        },
+    ])?;
+    let dates: Vec<Timestamp> = scrambled.calls().map(|call| call.due).collect();
+    assert_eq!(
+        dates,
+        vec![day(90), day(180), day(270)],
+        "the record was listed out of order and must be held in date order"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_private_asset_record_is_refused_when_its_published_draws_cannot_be_true() -> Result<()> {
+    // The record-level checks, which only the record can make: a draw
+    // predating the vintage, and draws totalling more than remains unfunded.
+    // Both run on the deserialisation path, where the refusal can name the
+    // record rather than aborting a universe assembly three crates away.
+
+    // Premise: the same record with a schedule that fits is admitted.
+    let mut sound = private_asset(dec!("1000"), dec!("250"));
+    sound.call_schedule = Some(quarterly_schedule()?);
+    let document = serde_json::to_string(&sound).map_err(qip_core::error::Error::from)?;
+    let round_tripped: PrivateAssetDetails =
+        serde_json::from_str(&document).map_err(qip_core::error::Error::from)?;
+    assert_eq!(
+        round_tripped
+            .call_schedule
+            .as_ref()
+            .map(qip_financial::cashflow::CallSchedule::len),
+        Some(4),
+        "the premise failed: a sound schedule does not survive the wire"
+    );
+
+    // 1. More than remains unfunded: 750 is undrawn and the schedule draws
+    // 800. The same claim `Commitment::unscheduled` refuses about a called
+    // balance past the commitment, arriving by a different door.
+    let mut greedy = private_asset(dec!("1000"), dec!("250"));
+    greedy.call_schedule = Some(CallSchedule::published(vec![ScheduledCall {
+        due: day(90),
+        amount: dec!("800"),
+    }])?);
+    let refusal = greedy
+        .checked()
+        .expect_err("800 of draws against 750 undrawn");
+    assert!(
+        refusal
+            .message()
+            .contains("against an unfunded balance of 750"),
+        "the refusal must name both figures, said: {}",
+        refusal.message()
+    );
+    assert!(
+        refusal.message().contains("will not be capped here"),
+        "the refusal must say the excess is not corrected, said: {}",
+        refusal.message()
+    );
+
+    // 2. A draw dated before the fund existed.
+    let mut premature = private_asset(dec!("1000"), dec!("250"));
+    premature.call_schedule = Some(CallSchedule::published(vec![ScheduledCall {
+        due: day(-1),
+        amount: dec!("100"),
+    }])?);
+    let early = premature
+        .checked()
+        .expect_err("a draw the day before the vintage began");
+    assert!(
+        early.message().contains("before the fund existed"),
+        "said: {}",
+        early.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_document_carrying_a_schedule_the_type_refuses_does_not_load() -> Result<()> {
+    // `serde(try_from)` on both types, proved rather than asserted: the
+    // constructor's invariants are useless if a catalogue file can walk past
+    // them. Premise first — the same document with a sound schedule loads.
+    let sound = r#"{"vintage_year":2020,"committed_capital":"1000","called_capital":"250",
+        "distributed_capital":"0","residual_value":"0","stage":"buyout","lockup_years":7.0,
+        "capital_call_notice_days":10,
+        "call_schedule":{"calls":[{"due":"2021-03-01T00:00:00Z","amount":"10"}]}}"#;
+    let loaded: PrivateAssetDetails =
+        serde_json::from_str(sound).map_err(qip_core::error::Error::from)?;
+    assert!(
+        loaded.call_schedule.is_some(),
+        "the premise failed: a sound document does not load"
+    );
+
+    let empty = r#"{"vintage_year":2020,"committed_capital":"1000","called_capital":"250",
+        "distributed_capital":"0","residual_value":"0","stage":"buyout","lockup_years":7.0,
+        "capital_call_notice_days":10,"call_schedule":{"calls":[]}}"#;
+    assert!(
+        serde_json::from_str::<PrivateAssetDetails>(empty).is_err(),
+        "a document publishing an empty schedule loaded, and an empty schedule says a wholly \
+         unfunded fund will never draw again"
+    );
+
+    // And the absence, which must stay loadable and must mean `None`: every
+    // catalogue document written before this field existed says exactly this.
+    let absent = r#"{"vintage_year":2020,"committed_capital":"1000","called_capital":"250",
+        "distributed_capital":"0","residual_value":"0","stage":"buyout","lockup_years":7.0,
+        "capital_call_notice_days":10}"#;
+    let without: PrivateAssetDetails =
+        serde_json::from_str(absent).map_err(qip_core::error::Error::from)?;
+    assert!(
+        without.call_schedule.is_none(),
+        "an absent key must read as the record publishing no schedule"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_j_curve_trough_of_a_published_schedule_is_the_deepest_draw_still_ahead() -> Result<()> {
+    // The arithmetic §16.4 has always had and could never answer with: the
+    // only forecast this platform built held one distribution, so the
+    // cumulative sum never went negative and the trough was always `None`.
+    // A dated schedule is what makes it answer.
+    let mut record = private_asset(dec!("1000"), dec!("250"));
+    record.residual_value = dec!("900");
+    record.call_schedule = Some(quarterly_schedule()?);
+    let forecast = qip_financial::valuation::IlliquidValuator::forecast_private_asset(
+        "fund-1",
+        &record,
+        origin(),
+        origin(),
+    )?
+    .expect("a record with a residual and a schedule dates something");
+
+    // Premise: this is the same derivation that used to answer `None`, and
+    // it now holds four draws and one return.
+    assert_eq!(forecast.len(), 5, "four draws and the residual");
+    assert_eq!(
+        forecast.flows().filter(|f| f.kind().is_outflow()).count(),
+        4
+    );
+
+    let (deepest_at, depth) = forecast
+        .j_curve_trough(origin())?
+        .expect("a schedule of four draws before any return has a trough");
+    assert_eq!(
+        deepest_at,
+        day(360),
+        "the trough is the last draw before capital comes back, not the first"
+    );
+    assert_eq!(depth, dec!("-400"), "all four draws, cumulative");
+
+    // And "still ahead" is a different question from "deepest ever". Halfway
+    // through the schedule two draws have been met and the desk owes the
+    // rest.
+    let (ahead_at, ahead) = forecast
+        .remaining_at(day(200))?
+        .j_curve_trough(day(200))?
+        .expect("two draws remain ahead of day 200");
+    assert_eq!(ahead_at, day(360));
+    assert_eq!(
+        ahead,
+        dec!("-200"),
+        "a fund part-way through its drawdown owes what is left, not what it has already met"
+    );
+    Ok(())
+}
+
+#[test]
+fn returns_only_drops_the_draws_and_keeps_what_comes_back() -> Result<()> {
+    // What keeps a published drawdown out of the mark. The obligation is
+    // charged once, by the commitment book, and discounting the same draws
+    // into the asset's value would take the balance off the book twice.
+    let mut record = private_asset(dec!("1000"), dec!("250"));
+    record.residual_value = dec!("900");
+    record.call_schedule = Some(quarterly_schedule()?);
+    let forecast = qip_financial::valuation::IlliquidValuator::forecast_private_asset(
+        "fund-1",
+        &record,
+        origin(),
+        origin(),
+    )?
+    .expect("a record with a residual and a schedule dates something");
+    // Premise: the projection is dropping something. A filter over a list
+    // that was already empty passes forever.
+    assert_eq!(
+        forecast.flows().filter(|f| f.kind().is_outflow()).count(),
+        4,
+        "the premise failed: there is nothing to drop"
+    );
+
+    let returns = forecast.returns_only();
+    assert_eq!(returns.len(), 1, "the residual alone");
+    assert!(
+        returns.flows().all(|flow| !flow.kind().is_outflow()),
+        "a draw survived the projection and would be discounted into the mark"
+    );
+    assert_eq!(
+        returns.subject(),
+        forecast.subject(),
+        "the projection is the same record read for less, not a second record"
+    );
+    assert_eq!(returns.known_at(), forecast.known_at());
+    assert_eq!(returns.origin(), forecast.origin());
+
+    // A record that dates draws and no return projects to nothing, and that
+    // is refused rather than discounted to zero — a zero mark reads exactly
+    // like an observed one.
+    let mut draws_only = private_asset(dec!("1000"), dec!("250"));
+    draws_only.call_schedule = Some(quarterly_schedule()?);
+    let calls = qip_financial::valuation::IlliquidValuator::forecast_private_asset(
+        "fund-2",
+        &draws_only,
+        origin(),
+        origin(),
+    )?
+    .expect("a record with a schedule and no residual still dates the draws");
+    assert!(calls.returns_only().is_empty());
+    assert!(
+        calls.returns_only().present_value(origin(), 0.1).is_err(),
+        "a projection with no flows must refuse rather than answer zero"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_published_call_schedule_can_only_lower_what_a_commitment_demands_within_a_horizon()
+-> Result<()> {
+    // **A finding pinned as a test, not a feature.** The reserve
+    // `Platform::deployable_capital` subtracts is the whole unfunded
+    // balance. Every route by which a schedule reaches a commitment is
+    // bounded by that balance, so the demand inside any horizon is at most
+    // it, and inside a short horizon strictly less. Wiring `demand_within`
+    // into the reserve could therefore only ever *relax* it — the
+    // `MaxExpectedShortfall` failure inverted, a control rewired to fire
+    // less. Anyone who does it has to delete this test first.
+    let bare = Commitment::unscheduled("fund-1", dec!("1000"), Decimal::ZERO, origin(), origin())?;
+    let month = Duration::from_days(30);
+    let decade = Duration::from_days(3650);
+    // Premise: with no schedule the commitment demands its whole balance
+    // inside a month, which is the conservative fallback the reserve rests
+    // on.
+    assert_eq!(bare.unfunded(), dec!("1000"));
+    assert_eq!(
+        bare.demand_within(origin(), month)?,
+        dec!("1000"),
+        "the premise failed: an unscheduled commitment already demands less than its balance"
+    );
+
+    let schedule = CashflowForecast::new("fund-1", origin(), origin())?
+        .with_flow(ForecastCashflow::new(
+            CashflowKind::CapitalCall,
+            day(400),
+            dec!("600"),
+            1.0,
+        )?)?
+        .with_flow(ForecastCashflow::new(
+            CashflowKind::CapitalCall,
+            day(800),
+            dec!("400"),
+            1.0,
+        )?)?;
+    let paced = bare.clone().with_forecast(schedule)?;
+
+    assert_eq!(
+        paced.demand_within(origin(), month)?,
+        Decimal::ZERO,
+        "a fund that draws nothing for a year demands nothing inside a month — which is true, \
+         and is why this figure may not be the reserve"
+    );
+    assert!(
+        paced.demand_within(origin(), month)? < bare.demand_within(origin(), month)?,
+        "the schedule did not lower the near demand, and the finding this test records rests on \
+         its doing so"
+    );
+    assert!(
+        paced.demand_within(origin(), decade)? <= bare.unfunded(),
+        "no horizon can take a paced demand above the unfunded balance, so no horizon can make \
+         this figure a safe reserve"
     );
     Ok(())
 }

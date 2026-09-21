@@ -6,7 +6,7 @@
 //! exists: an unfunded commitment is a liability, and capital that might be
 //! called next quarter is not capital that may be deployed this quarter.
 //!
-//! Three refusals carry the weight, and each one names a way the platform has
+//! Four refusals carry the weight, and each one names a way the platform has
 //! been able to lie to itself about capital:
 //!
 //! * **A flow dated before its origin is refused.** A fund cannot call capital
@@ -21,6 +21,13 @@
 //! * **A scheduled call larger than the unfunded balance is refused.** You
 //!   cannot be called for more than you committed. Silently capping it would
 //!   turn a corrupt record into a plausible one.
+//! * **An empty published call schedule is refused.** A fund that has
+//!   published no drawdown schedule and a fund that has published one saying
+//!   it will never draw again are different claims, and the second is one no
+//!   administrator makes about a commitment that is still unfunded.
+//!   [`CallSchedule::published`] refuses the empty case so that `None` is the
+//!   only way to say "nobody has paced this", and the reserve against a fund
+//!   nobody has paced stays the whole unfunded balance.
 //!
 //! Money is [`Decimal`] throughout. Probabilities and discount rates are
 //! `f64`, because they are statistics rather than amounts; every point where
@@ -319,6 +326,33 @@ impl CashflowForecast {
     /// Probability-weighted capital demanded within `horizon` of `as_of`, as a
     /// positive figure. Distributions do not offset it: capital returning next
     /// year cannot pay a call due next month.
+    ///
+    /// # This may not become the reserve, and a dated schedule does not change
+    /// that
+    ///
+    /// Re-established 2026-09-21, against a real data model rather than
+    /// against the absence of one. The earlier finding was that nothing could
+    /// date a capital call, so this figure was untestable in production;
+    /// [`CallSchedule`] now dates one, and the finding holds anyway for a
+    /// reason that is arithmetic rather than circumstantial.
+    ///
+    /// Every route by which a schedule reaches a commitment is bounded by the
+    /// unfunded balance — [`Commitment::with_forecast`] refuses a schedule
+    /// whose outflows exceed it, and
+    /// [`crate::extensions::PrivateAssetDetails::checked`] refuses a record
+    /// whose published calls exceed it — so the demand inside *any* horizon
+    /// is at most the unfunded balance, and inside a short one it is strictly
+    /// less. `Platform::deployable_capital` already charges the whole
+    /// unfunded balance at every instant. Wiring this in its place could
+    /// therefore only *lower* the reserve: not a control that cannot fire,
+    /// but a control rewired to fire less, which is the
+    /// `MaxExpectedShortfall` failure inverted.
+    ///
+    /// So this is a cash-planning figure and not a sizing one, and
+    /// `qip-financial/tests/cashflow.rs`'s
+    /// `a_published_call_schedule_can_only_lower_what_a_commitment_demands_within_a_horizon`
+    /// pins the direction, so that anyone who wires it has to delete a test
+    /// that says why.
     pub fn expected_demand_within(&self, as_of: Timestamp, horizon: Duration) -> Result<Decimal> {
         self.guard_knowable(as_of)?;
         if horizon.as_nanos() < 0 {
@@ -391,6 +425,42 @@ impl CashflowForecast {
             known_at: self.known_at,
             flows,
         })
+    }
+
+    /// A forecast holding only the flows that return capital.
+    ///
+    /// **The obligation is charged once, and this is what keeps it once.** A
+    /// private holding's unfunded balance is already subtracted from free
+    /// capital by [`CommitmentBook::unfunded_total`], before anything is
+    /// sized. Discounting the same fund's published calls into its *mark*
+    /// would take the balance off the book a second time — two claims on one
+    /// obligation, and the louder of the two would be wrong. So the mark
+    /// discounts this projection and the pacing readers read the whole
+    /// schedule, from one derivation, each asking its own question.
+    ///
+    /// Not a refusal, because there is nothing wrong with the input: a
+    /// schedule holding calls is exactly what a private record with a
+    /// published drawdown states, and the caller that wants the value half
+    /// of it says so here rather than being handed a number that quietly
+    /// omits them. The projection can be empty — a record publishing calls
+    /// and no residual — and [`Self::present_value`] refuses an empty
+    /// forecast, so a caller must decide what an empty one means rather than
+    /// receiving a zero nobody computed.
+    ///
+    /// `known_at` and `origin` are carried across untouched: the projection
+    /// is the same record read for less, not a second record.
+    pub fn returns_only(&self) -> Self {
+        Self {
+            subject: self.subject.clone(),
+            origin: self.origin,
+            known_at: self.known_at,
+            flows: self
+                .flows
+                .iter()
+                .filter(|((_, kind), _)| !kind.is_outflow())
+                .map(|(k, v)| (*k, *v))
+                .collect(),
+        }
     }
 
     /// Present value at `as_of`, discounting each flow at `annual_rate`.
@@ -469,6 +539,22 @@ impl CashflowForecast {
     /// come first and value accrues later, so an early mark read without the
     /// trough in front of it looks like a loss rather than a schedule. Returns
     /// `None` for a forecast that never goes negative.
+    ///
+    /// **`None` was the only answer this arithmetic could give until
+    /// [`CallSchedule`] existed**, and that is worth stating because it is the
+    /// shape of a control that cannot fire. The only forecast the platform
+    /// built outside tests held one flow — a distribution of the manager's
+    /// reported residual at the end of the lockup — so the cumulative sum
+    /// never went negative and the trough was always absent. The function was
+    /// right and useless. A record that dates its own draws is what makes it
+    /// answer, and the answer has a reader: `Platform::call_funding_demand`
+    /// takes the deepest remaining draw as the figure a capital call's
+    /// funding read is served against, where it is deeper than the notice.
+    ///
+    /// Read it on [`Self::remaining_at`] where the question is "from here
+    /// on". This walks the whole schedule from its beginning, so a trough
+    /// already passed is still the answer — correct for "how deep did this
+    /// fund go", wrong for "what must the desk still find".
     pub fn j_curve_trough(&self, as_of: Timestamp) -> Result<Option<(Timestamp, Decimal)>> {
         self.guard_knowable(as_of)?;
         let mut running = Decimal::ZERO;
@@ -600,6 +686,201 @@ impl CallConsequence {
                 }),
             Self::Acceleration => Ok(Decimal::ZERO),
         }
+    }
+}
+
+/// One dated draw an administrator has published: a date and an amount, and
+/// nothing else.
+///
+/// Deliberately not a [`ForecastCashflow`] and deliberately not a
+/// [`CapitalCall`]. A forecast flow carries a probability, which is this
+/// platform's opinion; a notice carries a reference and a consequence,
+/// because it has been served. A published schedule is neither — it is what
+/// the fund said it intends to draw and when, and the two fields are the
+/// whole of what the administrator asserted. Giving it a probability here
+/// would put a weight nobody computed onto somebody else's statement, and
+/// giving it a consequence would make a plan look like a demand.
+///
+/// The fields are public because this is reference data assembled field by
+/// field from a catalogue record, exactly as
+/// [`crate::extensions::PrivateAssetDetails`]'s are. What holds the
+/// invariants is [`CallSchedule`], which is the only way a group of these
+/// enters the platform.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScheduledCall {
+    /// When the fund says it will draw.
+    pub due: Timestamp,
+    /// How much, as a magnitude. Direction is not a field: every entry in a
+    /// call schedule takes capital out, which is what makes it a call
+    /// schedule.
+    pub amount: Decimal,
+}
+
+/// The longest published schedule this platform will read.
+///
+/// Not a view on fund terms and not a clamp:
+/// [`crate::extensions::MAX_LOCKUP_YEARS`] is a hundred years and a
+/// quarterly drawdown over that term is four hundred dates, so a record
+/// stating more is not a pacing schedule — it is a corrupt file, or a series
+/// somebody generated. Refused by name rather than truncated, because a
+/// schedule silently cut off at four hundred entries reports a smaller
+/// obligation than the record it came from, and the two disagree with
+/// nothing to say which is right.
+pub const MAX_SCHEDULED_CALLS: usize = 400;
+
+/// A fund's own published drawdown schedule: the dates it intends to call
+/// capital, and how much on each.
+///
+/// Blueprint §16.4's missing data model, and the reason
+/// [`CashflowForecast::j_curve_trough`] could never return anything on this
+/// platform's own records. A private-asset record held a vintage year, a
+/// lockup in years, four capital aggregates and a notice period, and not one
+/// of those dates a call: the trough of a schedule with no outflow in it is
+/// always `None`, so the J-curve arithmetic was correct and could not fire.
+/// Aggregates cannot be the input, and that is the whole point — "250,000
+/// unfunded" and "50,000 on each of five dates" are the same total and
+/// different liquidity, and the second is the one a desk has to fund.
+///
+/// **A record, never an instruction.** Nothing here converts to an order,
+/// and nothing may: the type carries no venue, no side, no size in an
+/// instrument, and no reference an execution path could quote. Its readers
+/// are [`crate::valuation::IlliquidValuator::forecast_private_asset`], which
+/// dates the flows, and the kernel's funding read, which measures the book
+/// against them and decides nothing.
+///
+/// **Invariants, held here so no reader has to re-check them.** The schedule
+/// is non-empty, every amount is strictly positive, every date is distinct,
+/// the entries are in date order, and there are at most
+/// [`MAX_SCHEDULED_CALLS`] of them. The container is private and
+/// [`Self::published`] is the only constructor, including on the
+/// deserialisation path — a document is routed through it by
+/// `serde(try_from)`, so a catalogue file cannot carry a schedule the type
+/// would refuse.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "CallScheduleWire")]
+pub struct CallSchedule {
+    /// In date order, which is the order the J-curve is walked in and the
+    /// order a reader sees. A `Vec` rather than a [`BTreeMap`] keyed on the
+    /// instant because this is serialised: a map keyed on a timestamp is a
+    /// JSON object keyed on whatever that timestamp's representation happens
+    /// to be, and a sorted array says the same thing without depending on
+    /// it. Sortedness and uniqueness are established by [`Self::published`]
+    /// and cannot be undone, the field being private.
+    calls: Vec<ScheduledCall>,
+}
+
+/// The on-disk shape, routed through [`CallSchedule::published`] so a
+/// document cannot carry a schedule the constructor refuses.
+#[derive(Deserialize)]
+struct CallScheduleWire {
+    calls: Vec<ScheduledCall>,
+}
+
+impl TryFrom<CallScheduleWire> for CallSchedule {
+    type Error = Error;
+
+    fn try_from(wire: CallScheduleWire) -> Result<Self> {
+        Self::published(wire.calls)
+    }
+}
+
+impl CallSchedule {
+    /// The schedule an administrator published, or a refusal naming what is
+    /// wrong with it.
+    ///
+    /// **An empty schedule is refused rather than accepted as a schedule of
+    /// nothing**, and that refusal is the one that matters. A record that
+    /// publishes no schedule and a record that publishes an empty one are
+    /// different claims: the first says nobody has paced this fund, and the
+    /// conservative reserve — the whole unfunded balance — is the honest
+    /// answer to it; the second would say the fund will never call again,
+    /// which is a statement about a wholly undrawn commitment no
+    /// administrator has ever made. `Option<CallSchedule>` is how the first
+    /// is expressed, so the second never needs a representation. This is
+    /// [`Commitment::with_forecast`]'s fourth refusal one layer earlier: it
+    /// refuses a forecast silent about calls for exactly the same reason,
+    /// and a schedule that could be empty would walk a silence past it
+    /// wearing a schedule's clothes.
+    ///
+    /// Two entries on one date are refused rather than summed, for the
+    /// reason [`CashflowForecast::with_flow`] refuses a collision: two
+    /// records claiming different draws on one day disagree, and adding them
+    /// produces a third figure neither source asserted.
+    pub fn published(calls: Vec<ScheduledCall>) -> Result<Self> {
+        if calls.is_empty() {
+            return Err(Error::invalid(
+                "a published call schedule holds no dates; leave the schedule absent rather than \
+                 publishing an empty one — a record with no schedule reserves its whole unfunded \
+                 balance, and an empty schedule would say the fund will never call again",
+            ));
+        }
+        if calls.len() > MAX_SCHEDULED_CALLS {
+            return Err(Error::invalid(format!(
+                "a published call schedule holds {} dates, more than the {MAX_SCHEDULED_CALLS} \
+                 this platform will read; correct the record rather than expecting it to be cut \
+                 short, because a truncated schedule states a smaller demand than the record it \
+                 came from",
+                calls.len()
+            )));
+        }
+        let mut calls = calls;
+        calls.sort_by_key(|call| call.due);
+        let mut previous: Option<Timestamp> = None;
+        for call in &calls {
+            if !call.amount.is_positive() {
+                return Err(Error::invalid(format!(
+                    "a published call schedule draws {} on {}, which is not a draw; state a \
+                     strictly positive amount, and omit the date rather than scheduling a zero \
+                     on it",
+                    call.amount,
+                    call.due.to_date_string()
+                )));
+            }
+            if previous == Some(call.due) {
+                return Err(Error::invalid(format!(
+                    "a published call schedule states two draws on {}; combine them into one \
+                     entry rather than scheduling a second, because summing them asserts a total \
+                     neither source claimed",
+                    call.due.to_date_string()
+                )));
+            }
+            previous = Some(call.due);
+        }
+        Ok(Self { calls })
+    }
+
+    /// The draws in date order.
+    pub fn calls(&self) -> impl Iterator<Item = &ScheduledCall> {
+        self.calls.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.calls.len()
+    }
+
+    /// Always false. Present because a length accessor without one reads as
+    /// an oversight, and it answers honestly: [`Self::published`] refuses an
+    /// empty schedule, so no value of this type is ever empty.
+    pub fn is_empty(&self) -> bool {
+        self.calls.is_empty()
+    }
+
+    /// Everything the schedule says will be drawn, over its whole length.
+    ///
+    /// Fallible on overflow alone, and never clamped: a schedule whose total
+    /// cannot be represented is one nothing may be reserved against.
+    pub fn total(&self) -> Result<Decimal> {
+        let mut total = Decimal::ZERO;
+        for call in &self.calls {
+            total = total.checked_add(call.amount).ok_or_else(|| {
+                Error::numeric(
+                    "a published call schedule totals more than can be represented; nothing is \
+                     reserved against a demand that cannot be stated"
+                        .to_string(),
+                )
+            })?;
+        }
+        Ok(total)
     }
 }
 

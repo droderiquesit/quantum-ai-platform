@@ -698,10 +698,15 @@ pub struct Platform {
     /// and a second one beside it would eventually disagree with the first
     /// while the risk read used whichever it happened to be given.
     ///
-    /// Every flow in here is the administrator's own reported residual dated
-    /// at the record's own lockup end. Nothing is forecast by this platform,
-    /// which is why a surface may render it: it is a report being repeated,
-    /// not a projection being asserted.
+    /// Every flow in here is the administrator's own: the reported residual
+    /// dated at the record's own lockup end, and — since the record can date
+    /// a drawdown — the calls its own published `call_schedule` states, at
+    /// the dates and amounts it states them. Nothing is forecast by this
+    /// platform, which is why a surface may render it: it is a report being
+    /// repeated, not a projection being asserted. A surface rendering the
+    /// flows must read each one's `kind`, because a schedule that used to
+    /// hold distributions alone can now hold draws beside them, and the two
+    /// point opposite ways.
     private_forecasts: BTreeMap<String, qip_financial::cashflow::CashflowForecast>,
     /// The credit half of the valuation plane: one profile per obligor the
     /// universe holds a claim on, and the sovereign curve per currency those
@@ -1820,14 +1825,12 @@ fn private_holdings_of(
         // error, and the repair booked it as a real obligation dated from a
         // year nobody entered. The engine refuses it now, and the refusal
         // names the record.
-        if let Some(commitment) = qip_financial::cashflow::Commitment::from_private_asset(
+        let commitment = qip_financial::cashflow::Commitment::from_private_asset(
             id.clone(),
             details,
             origin,
             object.updated_at,
-        )? {
-            book.record(commitment)?;
-        }
+        )?;
         // The schedule, before the mark, and refused rather than skipped on
         // the way out. A record whose lockup cannot be read is one the mark
         // below would refuse too; taking it as "no dated return" would let a
@@ -1846,12 +1849,46 @@ fn private_holdings_of(
         // readers — the ladder here and the private-positions surface — ask
         // it their own question at their own instant, and a map holding the
         // answer to one of those questions cannot answer the other.
-        if let Some(forecast) = qip_financial::valuation::IlliquidValuator::forecast_private_asset(
+        let forecast = qip_financial::valuation::IlliquidValuator::forecast_private_asset(
             id.clone(),
             details,
             origin,
             object.provenance.event_time,
-        )? {
+        )?;
+        // The schedule reaches the commitment only where the record actually
+        // published one. `Commitment::with_forecast` refuses a forecast
+        // silent about calls, and the forecast above is silent about them for
+        // every record without a `call_schedule` — so this is not a
+        // convenience condition, it is the one case the type admits. A
+        // commitment left unscheduled reserves its whole unfunded balance,
+        // which is the conservative answer and the right one for a fund
+        // nobody has paced.
+        //
+        // **Attaching it changes no figure the platform sizes against**, and
+        // that is deliberate rather than incidental.
+        // `Platform::deployable_capital` reads `unfunded_total`, which is the
+        // obligation whole; `Commitment::demand_within` — the only reader a
+        // forecast changes — has no production caller, and
+        // `a_dated_call_schedule_does_not_lower_the_capital_the_platform_will_deploy`
+        // in `tests/capital_calls.rs` is what keeps it that way. The schedule
+        // is attached because it is the commitment's own record and belongs
+        // on it, not because the reserve is about to read it: the demand
+        // inside any horizon is bounded above by the unfunded balance, so a
+        // reserve that read it could only ever fall.
+        //
+        // A schedule drawing more than remains unfunded stops assembly here
+        // rather than being capped, by `with_forecast`'s own refusal, and
+        // names the record — the same fail-closed direction
+        // `Commitment::unscheduled` already takes on a called balance past
+        // the commitment.
+        if let Some(commitment) = commitment {
+            let commitment = match (&details.call_schedule, &forecast) {
+                (Some(_), Some(schedule)) => commitment.with_forecast(schedule.clone())?,
+                _ => commitment,
+            };
+            book.record(commitment)?;
+        }
+        if let Some(forecast) = forecast {
             forecasts.insert(id.clone(), forecast);
         }
         match qip_financial::valuation::IlliquidValuator::mark_object(object, origin, now) {
@@ -3159,6 +3196,56 @@ pub enum CapitalCallFunding {
     Unread { why: String },
 }
 
+/// Why the funding read was served against the figure it was served
+/// against.
+///
+/// Carried rather than inferred, because the amount alone cannot be read
+/// back. A read that reached private credit means one thing if the notice
+/// demanded that much and another if the commitment's own published schedule
+/// draws deeper before it returns anything, and an operator who cannot tell
+/// them apart reads a schedule's peak as this notice's shortfall.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "basis", rename_all = "snake_case")]
+pub enum FundingBasis {
+    /// The notice's own amount. Either the commitment publishes no drawdown
+    /// schedule, or the deepest draw still ahead of it is no larger than
+    /// this notice.
+    Notice,
+    /// The commitment's published schedule draws deeper, before it returns
+    /// anything, than this notice demands — [`CashflowForecast`]'s J-curve
+    /// trough over the flows still ahead, at `deepest_at`.
+    ScheduleTrough { deepest_at: Timestamp },
+    /// A schedule is held for this commitment and could not be read at this
+    /// instant; the notice's own amount stands and the reason is on the
+    /// record.
+    ///
+    /// Its own arm for the reason [`CapitalCallFunding::Unread`] is: "the
+    /// schedule said nothing deeper" and "nobody could read the schedule"
+    /// are different facts, and recording the second as the first would put
+    /// a `Notice` basis on a record where a schedule was silently skipped.
+    ScheduleUnread { why: String },
+}
+
+/// The figure a capital call's funding read was served against, and why.
+///
+/// **The greater of the notice and the schedule, and never a sum of them.**
+/// The same discipline [`qip_financial::cashflow::Commitment::demand_within`]
+/// states for a notice against a pacing model: a notice that has arrived is
+/// very often one of the draws the schedule projected, and adding them would
+/// report a demand the desk does not have. The same discipline, in the other
+/// direction, as `exit_days_with_forecast` — max and never a replacement —
+/// and it buys the property that matters here: **a schedule can only make
+/// this read deeper, never shallower.** A commitment that publishes a
+/// schedule is read against at least what it would have been read against
+/// without one, so adding a schedule to a record can never quietly report a
+/// book as better able to fund a call than it was before.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CallFundingDemand {
+    /// What the ladder was asked for. Money.
+    pub amount: Decimal,
+    pub basis: FundingBasis,
+}
+
 /// The journalled record of a capital-call notice filed or withdrawn, and
 /// the only place a filed notice lives between one process and the next.
 ///
@@ -3189,6 +3276,14 @@ pub enum CapitalCallEntry {
         due_at: Timestamp,
         consequence: qip_financial::cashflow::CallConsequence,
         filed_by: String,
+        /// What the funding read below was served against, and why that
+        /// figure rather than the notice's own.
+        ///
+        /// Beside `funding` rather than inside it because it is a fact about
+        /// the *question*, and the three arms of [`CapitalCallFunding`] are
+        /// three answers to it: a reader needs the question on every one of
+        /// them, including the arm where no read could be taken at all.
+        demand: CallFundingDemand,
         /// Where the book would have found the money, read at `issued_at`
         /// and carried on the notice rather than filed beside it.
         ///
@@ -3230,15 +3325,34 @@ impl EventBody for CapitalCallEntry {
     /// read with and told apart from them by producer. See
     /// [`CAPITAL_CALL_ORIGIN`].
     const TOPIC: Topic = Topic::ComplianceEvaluated;
-    /// Two since `Noticed` carried [`CapitalCallFunding`]. The field is
-    /// required rather than defaulted: a default would put a funding read
-    /// nobody took onto a record whose whole purpose is to say what was
-    /// read, and there is no version-one log to migrate — nothing is
-    /// deployed, and `Platform::record_capital_call` has never run outside a
-    /// test. A log that did hold one refuses assembly at
-    /// [`Platform::resume_capital_calls`] and names the remedy, which is the
-    /// direction this seam already fails in.
-    const SCHEMA_VERSION: u32 = 2;
+    /// Two since `Noticed` carried [`CapitalCallFunding`]; **three since it
+    /// carried [`CallFundingDemand`]** beside it, on 2026-09-21. Both fields
+    /// are required rather than defaulted, for one reason: a default would
+    /// put a figure nobody computed onto a record whose whole purpose is to
+    /// say what was read, and `serde(default)` here would make a notice read
+    /// against its own amount indistinguishable from one read against a
+    /// schedule the platform could not see.
+    ///
+    /// **No log holds a version-one or version-two record, and the argument
+    /// is structural rather than "nothing is deployed".** The single
+    /// production writer is `POST /ledger/commitments/:commitment/capital-calls`,
+    /// which reaches [`Platform::record_capital_call`] only past
+    /// `Principal::authentication_instant`; `Presence` has one variant,
+    /// `Unattested`, and `attested_at` answers `None` for every credential
+    /// the API accepts, so the route refuses before the kernel is called. No
+    /// deployed process can have written one of these records at any
+    /// version, whatever has been deployed. Re-verified 2026-09-21 rather
+    /// than inherited: `grep -n 'enum Presence' -A 20
+    /// backend/crates/apps/qip-api/src/auth.rs`.
+    ///
+    /// A log that did hold an older record is refused rather than defaulted:
+    /// `Envelope::decode` admits a body at or below this version and
+    /// `serde_json` then refuses one missing a required field, so
+    /// [`Platform::resume_capital_calls`] stops assembly. That is the
+    /// direction this seam already fails in, and the remedy its refusal
+    /// names — archive the log — is the right one for a record whose funding
+    /// read was taken against a question this build can no longer state.
+    const SCHEMA_VERSION: u32 = 3;
 }
 
 impl EventBody for UniverseAssembled {
@@ -6346,8 +6460,11 @@ impl Platform {
         // Read after the book's gates have admitted the notice and before
         // anything is written, so the log never carries a funding read for a
         // demand that was refused. Blueprint §25.4's descent, against the
-        // only cash demand this platform has.
-        let funding = self.call_funding(amount);
+        // only cash demand this platform has, and served against the deeper
+        // of this notice and the commitment's own published schedule — see
+        // `Platform::call_funding_demand`.
+        let demand = self.call_funding_demand(commitment, amount, now);
+        let funding = self.call_funding(demand.amount);
         self.journal_record(
             CapitalCallEntry::Noticed {
                 commitment: commitment.to_string(),
@@ -6357,12 +6474,99 @@ impl Platform {
                 due_at: due,
                 consequence,
                 filed_by: operator.subject().to_string(),
+                demand,
                 funding,
             },
             CAPITAL_CALL_ORIGIN,
             now,
         )?;
         self.commitments.record_call(call)
+    }
+
+    /// The figure this notice's funding read is served against: the deeper
+    /// of the notice's own amount and the commitment's published drawdown
+    /// schedule, with the reason on the record.
+    ///
+    /// Blueprint §16.4's J-curve reaching the one cash demand this platform
+    /// has. A notice for 50,000 against a fund whose own schedule says it
+    /// will draw another 200,000 before it returns a penny is not a 50,000
+    /// funding question, and until a record could *date* a call there was no
+    /// way to know that: `CashflowForecast::j_curve_trough` was complete,
+    /// tested, and structurally incapable of returning anything, because the
+    /// only forecast this platform built held a single distribution.
+    ///
+    /// The trough is read over [`CashflowForecast::remaining_at`], so it is
+    /// the deepest draw still *ahead* — a fund three years into its life has
+    /// already met the draws behind it, and reserving a read against them
+    /// would describe a squeeze that is over.
+    ///
+    /// **Never lower than the notice**, which is the property that makes
+    /// this safe to wire at all: `max` and never a replacement, so a
+    /// schedule added to a catalogue record can only make the recorded read
+    /// deeper. A schedule that shortened the question would let a published
+    /// pacing model report a book as better able to fund a call than the
+    /// same book was before anybody published anything, which is the
+    /// protection running backwards.
+    ///
+    /// **Infallible by return type, for [`Self::call_funding`]'s reason.**
+    /// Every way the schedule can fail to be read is an arm of
+    /// [`FundingBasis`] rather than an `Err`, because this may not refuse the
+    /// notice: the notice is the fund's fact, and a measurement wired to
+    /// suppress the thing it measures is the `MaxExpectedShortfall` failure
+    /// one step further on.
+    ///
+    /// **Nothing here instructs.** The schedule is a record — dates and
+    /// amounts an administrator published — and what comes out is a number
+    /// the ladder is asked for. No venue, no side, no order, and
+    /// `reading_the_ladder_for_a_capital_call_places_nothing_and_moves_no_capital`
+    /// holds that against a scheduled commitment as well as an unscheduled
+    /// one.
+    fn call_funding_demand(
+        &self,
+        commitment: &str,
+        noticed: Decimal,
+        now: Timestamp,
+    ) -> CallFundingDemand {
+        let notice_only = CallFundingDemand {
+            amount: noticed,
+            basis: FundingBasis::Notice,
+        };
+        let Some(forecast) = self.private_forecasts.get(commitment) else {
+            return notice_only;
+        };
+        let unread = |why: qip_core::error::Error| CallFundingDemand {
+            amount: noticed,
+            basis: FundingBasis::ScheduleUnread {
+                why: why.message().to_string(),
+            },
+        };
+        let ahead = match forecast.remaining_at(now) {
+            Ok(ahead) => ahead,
+            Err(why) => return unread(why),
+        };
+        let trough = match ahead.j_curve_trough(now) {
+            Ok(trough) => trough,
+            Err(why) => return unread(why),
+        };
+        // A schedule that never goes cumulatively negative demands nothing
+        // ahead of this notice — a fund past its drawdown period — and the
+        // notice stands as the question. Not an `Unread`: the schedule was
+        // read and answered.
+        let Some((deepest_at, running)) = trough else {
+            return notice_only;
+        };
+        // The trough is signed by direction, so the magnitude of the demand
+        // is its negation. Money throughout; the probabilities inside the
+        // forecast are one on every flow a published schedule produces, and
+        // `expected_signed` has already done the crossing.
+        let deepest = Decimal::ZERO - running;
+        if deepest <= noticed {
+            return notice_only;
+        }
+        CallFundingDemand {
+            amount: deepest,
+            basis: FundingBasis::ScheduleTrough { deepest_at },
+        }
     }
 
     /// Where `amount` of cash would come from if this book had to find it
@@ -18620,6 +18824,7 @@ mod decide_tests {
             stage: "buyout".to_string(),
             lockup_years: 7.0,
             capital_call_notice_days: 10,
+            call_schedule: None,
         }))
         .provenance(Provenance::synthetic("administrator", now))
         .build(now)
@@ -22686,6 +22891,7 @@ mod unsizeable_thesis_tests {
             stage: "buyout".to_string(),
             lockup_years: 7.0,
             capital_call_notice_days: 10,
+            call_schedule: None,
         }))
         .provenance(Provenance::synthetic("administrator", observed))
         .build(start())
@@ -24733,6 +24939,7 @@ mod backwards_cycle_tests {
             stage: "buyout".to_string(),
             lockup_years: 7.0,
             capital_call_notice_days: 10,
+            call_schedule: None,
         }))
         .provenance(Provenance::synthetic("administrator", reported_at()))
         .build(assembled_at())
