@@ -1044,24 +1044,40 @@ pub struct ForecastFlowView {
     pub probability: f64,
 }
 
-/// The distribution schedule a private record states, or its statement that
-/// it states none.
+/// The forecast cash-flow schedule a private record states, or its statement
+/// that it states none.
 ///
-/// `stated: false` is the record saying nothing — no residual reported, or a
-/// lockup already run out — and is deliberately not an empty `flows` array
-/// with `stated: true` beside it. "No distribution is scheduled" and "this
-/// record schedules nothing" are different claims, and the surface that
-/// conflates them tells an operator a fund will never distribute when the
-/// truth is that nobody said.
+/// **This was `DistributionsView`, and the name was a lie about the
+/// contents.** It carries whatever `Platform::private_forecast` holds, and
+/// since the record's published call schedule began reaching that forecast
+/// (`IlliquidValuator::forecast_private_asset` emits a
+/// [`qip_financial::cashflow::CashflowKind::CapitalCall`] per scheduled draw
+/// beside the residual `Distribution`) a fund that paces its drawdowns
+/// rendered its **draws** under a field called `distributions`. The rendering
+/// was never wrong — [`ForecastFlowView::kind`] carries the direction per
+/// flow, which is exactly why the defect survived: every value in the payload
+/// was correct and only the container's name said otherwise. A name that
+/// contradicts its contents is the more dangerous half of that, because a
+/// reader who trusts the field name never reads the values, and reads a
+/// capital call as money coming back.
+///
+/// `stated: false` is the record saying nothing — no residual reported, no
+/// call schedule published, or a lockup already run out — and is deliberately
+/// not an empty `flows` array with `stated: true` beside it. "Nothing is
+/// scheduled" and "this record schedules nothing" are different claims, and
+/// the surface that conflates them tells an operator a fund will never
+/// distribute when the truth is that nobody said.
 #[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct DistributionsView {
+pub struct ForecastScheduleView {
     pub stated: bool,
     pub flows: Vec<ForecastFlowView>,
 }
 
 /// One of the desk's private positions: what it is marked at and by what
-/// method, what it is still on the hook for, and what its record says will
-/// come back.
+/// method, what it is still on the hook for, and every flow its record dates
+/// — the draws it has paced as well as the capital it says will come back.
+/// This sentence said only "what its record says will come back" while the
+/// field beside it already carried scheduled capital calls.
 ///
 /// `commitment` is absent where the holding has been fully called — a
 /// position with nothing unfunded has no commitment in the book and is not
@@ -1076,7 +1092,9 @@ pub struct PrivatePositionView {
     pub unmarkable: Option<MarkRefusalView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commitment: Option<CommitmentView>,
-    pub distributions: DistributionsView,
+    /// Every flow the record schedules, in both directions — see
+    /// [`ForecastScheduleView`] on why this is not called `distributions`.
+    pub forecast_schedule: ForecastScheduleView,
 }
 
 /// The body of `GET /ledger/private-positions`.
@@ -1143,8 +1161,8 @@ pub fn private_positions(
             Some(commitment) => Some(commitment_view(commitment, now)?),
             None => None,
         };
-        let distributions = match platform.private_forecast(subject) {
-            Some(forecast) => DistributionsView {
+        let forecast_schedule = match platform.private_forecast(subject) {
+            Some(forecast) => ForecastScheduleView {
                 stated: true,
                 flows: forecast
                     .flows()
@@ -1156,7 +1174,7 @@ pub fn private_positions(
                     })
                     .collect(),
             },
-            None => DistributionsView {
+            None => ForecastScheduleView {
                 stated: false,
                 flows: Vec::new(),
             },
@@ -1166,7 +1184,7 @@ pub fn private_positions(
             mark,
             unmarkable: unmarked,
             commitment,
-            distributions,
+            forecast_schedule,
         });
     }
     Ok(PrivatePositionsView {

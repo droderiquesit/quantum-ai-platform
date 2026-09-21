@@ -54,4 +54,4 @@ pub use relationship::{Relationship, RelationshipKind};
 pub use resolution_source::{RESOLUTION_SOURCE_PREFIX, ResolutionSourceClaim};
 pub use state::{Change, ChangeKind, WorldDiff, WorldState};
 pub use vocabulary::{AltMetric, FeatureRead, MacroSeries, SubjectKind, UNWRITTEN, Unwritten};
-pub use world::WorldModel;
+pub use world::{MATERIAL_FUNDAMENTAL_SURPRISE, WorldModel};

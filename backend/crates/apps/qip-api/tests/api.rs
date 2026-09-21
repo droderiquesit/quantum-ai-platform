@@ -2884,23 +2884,23 @@ fn a_private_record_that_dates_no_distribution_says_so_rather_than_sending_an_em
     let body = private_positions_body(&assembled);
     let drawn = position_of(&body, "obj-DRAWN");
     assert_eq!(
-        drawn["distributions"]["stated"],
+        drawn["forecast_schedule"]["stated"],
         serde_json::json!(false),
         "a record that dates no distribution is rendered as a schedule: {body}"
     );
     assert_eq!(
-        drawn["distributions"]["flows"],
+        drawn["forecast_schedule"]["flows"],
         serde_json::json!([]),
         "{body}"
     );
 
     let held = position_of(&body, "obj-FUND");
     assert_eq!(
-        held["distributions"]["stated"],
+        held["forecast_schedule"]["stated"],
         serde_json::json!(true),
         "{body}"
     );
-    let flows = held["distributions"]["flows"]
+    let flows = held["forecast_schedule"]["flows"]
         .as_array()
         .unwrap_or_else(|| panic!("`flows` is not an array: {body}"));
     assert_eq!(
@@ -2918,5 +2918,128 @@ fn a_private_record_that_dates_no_distribution_says_so_rather_than_sending_an_em
     // and unsigned: `ForecastCashflow` holds a magnitude and the direction is
     // the kind's.
     assert_eq!(flows[0]["amount"], serde_json::json!("160000"), "{body}");
+    Ok(())
+}
+/// A private fund that has published a drawdown pacing schedule as well as a
+/// residual: 500,000 promised, 100,000 called, and two dated draws ahead.
+///
+/// The fixture the rename needed. Every other private fixture here leaves
+/// `call_schedule` at `None`, so the forecast they produce holds nothing but
+/// a `distribution` and a container called `distributions` looked honest
+/// against all of them.
+fn pacing_fund() -> Result<qip_financial::object::FinancialObject> {
+    use qip_financial::asset_class::InstrumentType;
+    use qip_financial::cashflow::{CallSchedule, ScheduledCall};
+    use qip_financial::extensions::{Extension, PrivateAssetDetails};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+
+    let reported_at = now().saturating_sub(qip_core::time::Duration::from_days(60));
+    let call_schedule = CallSchedule::published(vec![
+        ScheduledCall {
+            due: now().saturating_add(qip_core::time::Duration::from_days(90)),
+            amount: qip_core::Decimal::from_int(120_000),
+        },
+        ScheduledCall {
+            due: now().saturating_add(qip_core::time::Duration::from_days(270)),
+            amount: qip_core::Decimal::from_int(80_000),
+        },
+    ])?;
+    FinancialObject::builder(
+        qip_core::ObjectId::from_string("obj-PACED"),
+        "PACED",
+        InstrumentType::PrivateEquityFund,
+        qip_financial::costs::LiquidityProfile::illiquid(90.0, 250.0),
+    )
+    .venue("OTC")
+    .price(qip_core::Decimal::from_int(100))
+    .extension(Extension::PrivateAsset(PrivateAssetDetails {
+        vintage_year: 2024,
+        committed_capital: qip_core::Decimal::from_int(500_000),
+        called_capital: qip_core::Decimal::from_int(100_000),
+        distributed_capital: qip_core::Decimal::ZERO,
+        residual_value: qip_core::Decimal::from_int(110_000),
+        stage: "buyout".to_string(),
+        lockup_years: 7.0,
+        capital_call_notice_days: 10,
+        call_schedule: Some(call_schedule),
+    }))
+    .provenance(Provenance::synthetic("administrator", reported_at))
+    .build(reported_at)
+}
+
+#[test]
+fn the_private_positions_surface_renders_a_paced_draw_under_a_field_that_does_not_call_it_a_distribution()
+-> Result<()> {
+    // The failure this prevents, and it had already shipped: the container
+    // was called `distributions` while `Platform::private_forecast` carries
+    // the record's published **call** schedule too, so a fund pacing its
+    // drawdowns rendered money going *out* under a field named for money
+    // coming *in*. Nothing in the payload was wrong — `kind` carries the
+    // direction per flow — which is precisely why it survived review: a
+    // reader who trusts the field name never reaches the values, and books a
+    // capital call as a return.
+    //
+    // This test is the guard on the name and on the contents together. It
+    // asserts a draw is present, and it reads it from `forecast_schedule`, so
+    // a rename back to `distributions` fails to compile the lookup's
+    // expectation and a forecast that stopped carrying draws fails the kind
+    // assertion.
+    let mut universe = private_universe()?;
+    universe.insert(pacing_fund()?)?;
+    let assembled = assemble_over(qip_kernel::PlatformConfig::default(), universe)?;
+
+    // Premise, off the kernel rather than off the payload: the platform holds
+    // a forecast for this fund and that forecast really does carry an
+    // outflow. Without this the assertions below would pass against a surface
+    // that rendered an empty schedule under any name at all.
+    {
+        let platform = assembled
+            .platform
+            .lock()
+            .expect("the fixture's platform mutex");
+        let forecast = platform
+            .private_forecast("obj-PACED")
+            .expect("the fixture publishes a call schedule, so a forecast exists");
+        assert!(
+            forecast.flows().any(|flow| flow.kind().is_outflow()),
+            "the fixture's forecast carries no outflow, so this test cannot \
+             show a draw being rendered under any field name"
+        );
+    }
+
+    let body = private_positions_body(&assembled);
+    let paced = position_of(&body, "obj-PACED");
+    assert_eq!(
+        paced["forecast_schedule"]["stated"],
+        serde_json::json!(true),
+        "the surface reports no schedule for a fund that published one: {body}"
+    );
+    let flows = paced["forecast_schedule"]["flows"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`flows` is not an array: {body}"));
+    // The whole token, in the enum's own spelling. `call` is a substring of
+    // plenty; `capital_call` compared whole is the fact.
+    let draws: Vec<&serde_json::Value> = flows
+        .iter()
+        .filter(|flow| flow["kind"] == serde_json::json!("capital_call"))
+        .collect();
+    assert_eq!(
+        draws.len(),
+        2,
+        "the record paces two draws and the surface renders a different \
+         number of them: {body}"
+    );
+    // Money as the platform's own decimal text, compared whole: "12000" is a
+    // substring of "120000".
+    assert_eq!(draws[0]["amount"], serde_json::json!("120000"), "{body}");
+    assert_eq!(draws[1]["amount"], serde_json::json!("80000"), "{body}");
+    // And the field is not called `distributions` any more, which is the
+    // half of this that a correct payload under a wrong name would pass.
+    assert!(
+        paced.get("distributions").is_none(),
+        "the surface still renders a container called `distributions` while \
+         carrying capital calls in it: {body}"
+    );
     Ok(())
 }

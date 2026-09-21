@@ -14,7 +14,7 @@ use qip_world_model::features::{Feature, FeatureStore, FeatureValue};
 use qip_world_model::graph::{Fact, KnowledgeGraph, Node, NodeKind};
 use qip_world_model::relationship::{Relationship, RelationshipKind};
 use qip_world_model::state::ChangeKind;
-use qip_world_model::world::{WorldModel, seed_demo_world};
+use qip_world_model::world::{MATERIAL_FUNDAMENTAL_SURPRISE, WorldModel, seed_demo_world};
 
 fn now() -> Timestamp {
     Timestamp::from_civil(2026, 8, 24)
@@ -2473,5 +2473,106 @@ fn an_edge_that_went_round_the_constructors_is_still_refused_where_it_is_claimed
             .count(),
         1,
         "a refused causal claim was journalled as added"
+    );
+}
+#[test]
+fn a_fundamental_is_journalled_as_material_on_the_one_predicate_that_owns_the_comparison() {
+    // The failure: one rule written down twice. `absorb_fundamental` tested
+    // `surprise.abs() > 0.05` by hand while
+    // `FundamentalUpdate::is_significant_surprise` sat in `qip-financial`
+    // saying the same thing and reaching no caller at all - two independent
+    // claims about one fact, which disagree eventually and already did, at
+    // the boundary: the open-coded form was strict and the predicate is
+    // inclusive.
+    //
+    // This drives the absorption arm at three points against the one
+    // published constant, so a copy of the rule reappearing inside
+    // `absorb_fundamental` would have to agree with the predicate at its own
+    // threshold to pass.
+    let period_end = days_ago(45);
+    let published = days_ago(5);
+    let consensus = 4_000i64;
+
+    // The reported value is derived from the fraction rather than written as
+    // a number and hoped over, so the boundary case lands exactly on the
+    // threshold instead of near it.
+    let absorb = |fraction: f64| -> (bool, FundamentalUpdate) {
+        let (mut model, _) = seeded_model();
+        let mut provenance = Provenance::synthetic("fundamentals", period_end);
+        provenance.ingestion_time = published;
+        let reported = consensus + (consensus as f64 * fraction).round() as i64;
+        let update = FundamentalUpdate {
+            entity_id: "ent-northwind".into(),
+            metric: "revenue".into(),
+            value: Decimal::from_int(reported),
+            unit: "USD_millions".into(),
+            period_end,
+            period: FiscalPeriod::Quarter,
+            consensus: Some(Decimal::from_int(consensus)),
+            prior_value: Some(Decimal::from_int(consensus)),
+            is_restatement: false,
+            provenance,
+            quality: DataQuality::clean(),
+        };
+        let before = model.changes().len();
+        model.absorb_fundamental(&update);
+        let journalled = model.changes()[before..]
+            .iter()
+            .any(|change| change.description.contains("surprised consensus"));
+        (journalled, update)
+    };
+
+    // Premise first: the threshold must be the one the module publishes, or
+    // the three cases below are measured against a number this test invented.
+    assert!(
+        approx_eq(MATERIAL_FUNDAMENTAL_SURPRISE, 0.05, 1e-12),
+        "the fixtures below are built around a five per cent expectation"
+    );
+
+    // Well clear of the threshold: journalled, and the predicate agrees.
+    let (journalled, update) = absorb(0.10);
+    assert!(
+        update.is_significant_surprise(MATERIAL_FUNDAMENTAL_SURPRISE),
+        "premise: a ten per cent miss must be significant to the predicate"
+    );
+    assert!(
+        journalled,
+        "a ten per cent miss against consensus was recorded as a feature and \
+         never journalled as a change in the world"
+    );
+
+    // Well under it: not journalled, and the predicate agrees.
+    let (journalled, update) = absorb(0.01);
+    assert!(
+        !update.is_significant_surprise(MATERIAL_FUNDAMENTAL_SURPRISE),
+        "premise: a one per cent miss must not be significant to the predicate"
+    );
+    assert!(
+        !journalled,
+        "an immaterial one per cent miss was journalled as a change in the \
+         world; every quarter would raise one"
+    );
+
+    // Exactly at it - the point the two copies of the rule disagreed on. The
+    // predicate is inclusive, so the journal must be too, and a re-introduced
+    // `>` fails on this case alone.
+    let (journalled, update) = absorb(MATERIAL_FUNDAMENTAL_SURPRISE);
+    let surprise = update
+        .surprise()
+        .expect("premise: a consensus was supplied, so a surprise exists");
+    assert!(
+        approx_eq(surprise, MATERIAL_FUNDAMENTAL_SURPRISE, 1e-12),
+        "premise: the fixture must land exactly on the threshold to test the \
+         boundary, and it landed at {surprise}"
+    );
+    assert!(
+        update.is_significant_surprise(MATERIAL_FUNDAMENTAL_SURPRISE),
+        "premise: the predicate is inclusive at its own threshold"
+    );
+    assert!(
+        journalled,
+        "a fundamental exactly at the materiality threshold was not \
+         journalled, so the absorption arm is testing the surprise against a \
+         rule of its own rather than against the predicate"
     );
 }

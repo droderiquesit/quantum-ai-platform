@@ -12,8 +12,9 @@
 
 use qip_ai::memory::{
     AnalystStance, CausalContextEdge, ClaimRecord, DecisionTaken, EPISODE_DIMENSIONS,
-    EPISODE_ENCODING, Episode, EpisodeOutcome, EpisodeQuery, EpisodicMemory, FindingsSummary,
-    MarketState, PrecedentDigest, RegimeLabel, StanceDirection,
+    EPISODE_ENCODING, Episode, EpisodeGrade, EpisodeOutcome, EpisodeQuery, EpisodeSampler,
+    EpisodicMemory, FindingsSummary, HIGH_SURPRISE_BPS, MarketState, PrecedentDigest, RegimeLabel,
+    StanceDirection, TAIL_RESERVE_DIVISOR,
 };
 use qip_core::time::{Duration, Timestamp};
 
@@ -774,5 +775,373 @@ fn the_precedent_digest_reports_the_worst_surprise_among_the_neighbours_and_none
     assert_eq!(
         nothing.worst_surprise_bps, None,
         "no precedent is not a surprise of zero"
+    );
+}
+// ---------------------------------------------------------------------------
+// Blueprint §54.2's episode sampling: dense at high surprise, sparse in calm,
+// and bounded in both directions.
+//
+// These tests drive `EpisodicMemory` rather than `EpisodeSampler` directly
+// wherever the property is about what the store retains, because the sampler
+// answering correctly and the store spending the episode it named are two
+// different facts and only the second one protects a recall.
+// ---------------------------------------------------------------------------
+
+/// An episode whose claim was written down in a gradeable form, so
+/// `surprise_bps` is `realised - expected` and the sampler can grade it.
+///
+/// The fixture above deliberately leaves `expected_move_bps` at `None` —
+/// every episode it builds is ungradeable and so grades `Calm`, which is why
+/// the older capacity test still reads as pure oldest-first.
+fn graded(
+    id: &str,
+    instrument: &str,
+    at: Timestamp,
+    realised_bps: f64,
+    expected_bps: f64,
+) -> Episode {
+    let mut episode = episode(id, instrument, "quiet", at, realised_bps);
+    episode.outcome = Some(EpisodeOutcome {
+        resolved_at: at.saturating_add(Duration::from_days(1)),
+        realised_move_bps: realised_bps,
+        realised_pnl: 0.0,
+        expected_move_bps: Some(expected_bps),
+    });
+    episode
+}
+
+#[test]
+fn a_high_surprise_episode_outlives_a_full_capacity_of_calm_ones_that_arrive_after_it() {
+    // The failure this prevents, and it is the whole point of §54.2: a memory
+    // that evicts oldest-first spends the rare episode to make room for the
+    // ordinary one, purely for being older. "Most information is in the
+    // tails" is exactly the claim that trade is backwards.
+    //
+    // Capacity four, reserve two. The surprising episode is inserted first
+    // and is therefore the oldest-known, so under the policy this replaced it
+    // would be the very first thing evicted. Then a full capacity of calm
+    // episodes arrives after it.
+    let mut memory = EpisodicMemory::new(4, 16).expect("non-zero bounds");
+    let day = Duration::from_days(1);
+    let tail = graded("ep-tail", "obj-AAA", start(), 900.0, 40.0);
+    let tail_surprise = tail.surprise_bps().expect("the fixture is gradeable");
+    assert!(
+        tail_surprise.abs() >= HIGH_SURPRISE_BPS,
+        "premise: the fixture must actually be a tail episode, not merely \
+         intended as one - it surprised by {tail_surprise} bps against a \
+         threshold of {HIGH_SURPRISE_BPS}"
+    );
+    let tail_known_at = tail.known_at;
+    memory.remember(tail).expect("valid");
+
+    for n in 1..=8u32 {
+        let at = start().saturating_add(day * i64::from(n));
+        let calm = graded(&format!("ep-calm-{n}"), "obj-AAA", at, 45.0, 40.0);
+        assert!(
+            calm.known_at > tail_known_at,
+            "premise: every calm episode must be newer than the tail one, or \
+             oldest-first would have kept the tail one anyway and this test \
+             would prove nothing"
+        );
+        assert!(
+            calm.surprise_bps()
+                .is_some_and(|s| s.abs() < HIGH_SURPRISE_BPS),
+            "premise: the calm fixture must grade calm"
+        );
+        memory.remember(calm).expect("valid");
+    }
+
+    assert_eq!(memory.len(), 4, "the capacity bound must still hold");
+    assert!(
+        memory.contains("ep-tail"),
+        "the surprising episode was evicted by eight ordinary ones that \
+         arrived after it; oldest-first is exactly what §54.2 refuses"
+    );
+    // Sparse in calm: what was given up is the ordinary history, oldest
+    // first, and the most recent calm episodes are what remain.
+    for spent in [
+        "ep-calm-1",
+        "ep-calm-2",
+        "ep-calm-3",
+        "ep-calm-4",
+        "ep-calm-5",
+    ] {
+        assert!(
+            !memory.contains(spent),
+            "{spent} survived though five newer calm episodes exist"
+        );
+    }
+    for kept in ["ep-calm-6", "ep-calm-7", "ep-calm-8"] {
+        assert!(
+            memory.contains(kept),
+            "{kept} was spent before an older one"
+        );
+    }
+    assert_eq!(
+        memory.held_at(EpisodeGrade::Tail),
+        1,
+        "one tail episode was remembered and one must be held"
+    );
+    // And the index agrees with the store: a dangling bucket entry would
+    // recall an episode the store no longer has.
+    let recall = memory.recall(
+        &graded("q", "obj-AAA", start(), 0.0, 0.0).as_query(),
+        Timestamp::MAX,
+        10,
+    );
+    assert_eq!(recall.nearest.len(), 4);
+    assert!(
+        recall
+            .nearest
+            .iter()
+            .any(|r| r.episode.episode_id == "ep-tail"),
+        "the tail episode is in the store but unreachable through the index"
+    );
+}
+
+#[test]
+fn a_stream_of_nothing_but_surprises_never_grows_the_memory_past_its_capacity() {
+    // The failure: "protect the tail" written without a second bound. Every
+    // episode is eventually a tail episode of something, so a rule that
+    // declines to evict a surprising episode is an episodic memory that grows
+    // with the stream - the defect the whole capacity exists to prevent, and
+    // one that would read as the sampler working.
+    let mut memory = EpisodicMemory::new(4, 16).expect("non-zero bounds");
+    let day = Duration::from_days(1);
+    for n in 1..=32u32 {
+        let at = start().saturating_add(day * i64::from(n));
+        let episode = graded(&format!("ep-{n}"), "obj-AAA", at, 900.0, 40.0);
+        assert!(
+            episode
+                .surprise_bps()
+                .is_some_and(|s| s.abs() >= HIGH_SURPRISE_BPS),
+            "premise: every episode in this stream must grade tail, or the \
+             test is not exercising the tail bound at all"
+        );
+        memory.remember(episode).expect("valid");
+        assert!(
+            memory.len() <= memory.capacity(),
+            "the memory held {} episodes against a capacity of {} after {n} \
+             inserts",
+            memory.len(),
+            memory.capacity()
+        );
+    }
+    assert_eq!(memory.len(), 4, "the bound must bind, not merely not break");
+    for kept in ["ep-29", "ep-30", "ep-31", "ep-32"] {
+        assert!(
+            memory.contains(kept),
+            "{kept} was spent though older tail episodes exist; over its \
+             reserve the tail is ordinary and goes oldest-first"
+        );
+    }
+    assert!(
+        !memory.contains("ep-1"),
+        "the oldest tail episode survived thirty-one newer ones"
+    );
+}
+
+#[test]
+fn a_stream_carrying_both_grades_settles_at_exactly_the_reserved_number_of_surprises() {
+    // The failure on the other side: a reserve that is a share of the store
+    // rather than a seat count would let the tail crowd out the calm until a
+    // recall on an ordinary morning returned only disasters. The steady state
+    // is the assertion - `reserve` tail seats, the rest calm - and it is
+    // reached from a stream that offers far more tail episodes than seats.
+    let mut memory = EpisodicMemory::new(8, 16).expect("non-zero bounds");
+    let reserve = memory.sampler().reserve(memory.capacity());
+    assert_eq!(reserve, 4, "premise: capacity eight over a divisor of two");
+    let day = Duration::from_days(1);
+    for n in 1..=40u32 {
+        let at = start().saturating_add(day * i64::from(n));
+        // Alternating, so twenty of each are offered to eight seats.
+        let episode = if n % 2 == 0 {
+            graded(&format!("ep-tail-{n}"), "obj-AAA", at, 900.0, 40.0)
+        } else {
+            graded(&format!("ep-calm-{n}"), "obj-AAA", at, 45.0, 40.0)
+        };
+        memory.remember(episode).expect("valid");
+    }
+    assert_eq!(memory.len(), 8, "the capacity bound must hold");
+    assert_eq!(
+        memory.held_at(EpisodeGrade::Tail),
+        reserve,
+        "the tail took more than its reserved seats from a stream that \
+         offered twenty surprises to four seats"
+    );
+    assert_eq!(
+        memory.held_at(EpisodeGrade::Calm),
+        memory.capacity() - reserve,
+        "the calm half of the memory is not what is left over by accident; \
+         it is the other side of the same bound"
+    );
+}
+
+#[test]
+fn two_memories_fed_the_same_episodes_retain_the_same_set() {
+    // The failure: a sample whose contents depend on something the event log
+    // does not hold. A memory retaining a different set on a replay makes
+    // every recall irreproducible, and nothing downstream could tell that
+    // from a genuine difference in the episodes. The sampler reads only
+    // `realised_move_bps` and `expected_move_bps` and makes no random choice,
+    // so the only way this can fail is an unordered index inside the store -
+    // which is why the grades are held in `BTreeSet`s.
+    let day = Duration::from_days(1);
+    let feed = |memory: &mut EpisodicMemory| {
+        for n in 1..=40u32 {
+            let at = start().saturating_add(day * i64::from(n));
+            let next = match n % 3 {
+                0 => graded(&format!("ep-{n}"), "obj-AAA", at, 900.0, 40.0),
+                1 => graded(&format!("ep-{n}"), "obj-BBB", at, 45.0, 40.0),
+                _ => episode(&format!("ep-{n}"), "obj-CCC", "quiet", at, 50.0),
+            };
+            memory.remember(next).expect("valid");
+        }
+    };
+    let mut first = EpisodicMemory::new(9, 16).expect("non-zero bounds");
+    let mut second = EpisodicMemory::new(9, 16).expect("non-zero bounds");
+    feed(&mut first);
+    feed(&mut second);
+
+    let ids = |memory: &EpisodicMemory| -> Vec<String> {
+        memory
+            .episodes(Timestamp::MAX)
+            .map(|episode| episode.episode_id.clone())
+            .collect()
+    };
+    let retained = ids(&first);
+    assert_eq!(
+        retained.len(),
+        9,
+        "premise: the bound must have bound, or two empty memories would \
+         agree and prove nothing"
+    );
+    assert!(
+        retained.iter().any(|id| id != &retained[0]),
+        "premise: the retained set must hold more than one episode"
+    );
+    assert_eq!(
+        retained,
+        ids(&second),
+        "two memories fed identical episodes retained different sets, in the \
+         same order - the sample depends on something outside the record"
+    );
+    assert_eq!(
+        first.held_at(EpisodeGrade::Tail),
+        second.held_at(EpisodeGrade::Tail),
+        "the two memories disagree on how much of the sample is tail"
+    );
+}
+
+#[test]
+fn an_episode_whose_claim_named_no_expectation_is_calm_rather_than_surprising() {
+    // The failure: treating an ungradeable outcome as a large surprise. A
+    // `RegimeShift` names no direction and so carries no `expected_move_bps`;
+    // an absence is not a magnitude, and reserving a seat for one would fill
+    // the tail with records that hold no tail - a reserve that reads as
+    // protecting the rare and is full of the unmeasurable.
+    let sampler = EpisodeSampler::default();
+    let ungradeable = episode("ep-none", "obj-AAA", "quiet", start(), 5_000.0);
+    assert!(
+        ungradeable.surprise_bps().is_none(),
+        "premise: the fixture must carry no expectation to be surprised \
+         against, despite a realised move far past the threshold"
+    );
+    assert_eq!(
+        sampler.grade(&ungradeable),
+        EpisodeGrade::Calm,
+        "an outcome nobody could grade for surprise took a reserved seat"
+    );
+
+    let unresolved = {
+        let mut open = episode("ep-open", "obj-AAA", "quiet", start(), 0.0);
+        open.outcome = None;
+        open
+    };
+    assert_eq!(
+        sampler.grade(&unresolved),
+        EpisodeGrade::Calm,
+        "an episode with no outcome at all took a reserved seat"
+    );
+
+    // And the boundary is inclusive on the threshold itself, which is the
+    // arm the `>=` in `grade` is there for.
+    assert_eq!(
+        sampler.grade(&graded("ep-at", "obj-AAA", start(), 140.0, 40.0)),
+        EpisodeGrade::Tail,
+        "an episode exactly at the threshold graded calm"
+    );
+    assert_eq!(
+        sampler.grade(&graded("ep-under", "obj-AAA", start(), 139.9, 40.0)),
+        EpisodeGrade::Calm,
+        "an episode below the threshold graded tail"
+    );
+    // Signed on the record, compared on magnitude: falling a per cent short
+    // of a claim is as informative as overshooting it by the same.
+    assert_eq!(
+        sampler.grade(&graded("ep-short", "obj-AAA", start(), -60.0, 40.0)),
+        EpisodeGrade::Tail,
+        "a surprise to the downside was not graded on its magnitude"
+    );
+}
+
+#[test]
+fn a_sampler_given_a_threshold_or_a_reserve_that_means_nothing_refuses_rather_than_corrects() {
+    // The failure: a silently corrected sampling policy. A platform running
+    // every cycle on a policy nobody chose, with no complaint, is the clamping
+    // this workspace refuses - and here it would quietly change what the
+    // memory remembers for the life of the process.
+    for bad in [f64::NAN, f64::INFINITY, -1.0] {
+        let refused = EpisodeSampler::new(bad, TAIL_RESERVE_DIVISOR);
+        assert!(
+            refused.is_err(),
+            "a high-surprise threshold of {bad} was accepted"
+        );
+    }
+    let refused = EpisodeSampler::new(HIGH_SURPRISE_BPS, 0)
+        .expect_err("a reserve divisor of zero must be refused");
+    assert!(
+        refused.message().contains("divisor of zero"),
+        "the refusal must name what is wrong: {}",
+        refused.message()
+    );
+    // And a good value is admitted - a gate that refuses everything is not a
+    // gate.
+    let admitted = EpisodeSampler::new(250.0, 4).expect("a stated policy is admitted");
+    assert_eq!(admitted.high_surprise_bps(), 250.0);
+    assert_eq!(admitted.reserve(4_096), 1_024);
+}
+
+#[test]
+fn a_memory_given_a_stated_sampler_uses_it_and_not_the_default() {
+    // The failure: a policy parameter nothing reads. `with_sampler` that set
+    // a field the store never consulted would read as configurable sampling
+    // and behave as the default forever.
+    let mut memory = EpisodicMemory::new(4, 16)
+        .expect("non-zero bounds")
+        // Reserve zero: no episode is ever held past the point recency would
+        // have spent it, which is precisely the oldest-first policy the
+        // sampler replaced.
+        .with_sampler(EpisodeSampler::new(HIGH_SURPRISE_BPS, 8).expect("a stated policy"));
+    assert_eq!(
+        memory.sampler().reserve(memory.capacity()),
+        0,
+        "premise: four over eight is no reserved seat at all"
+    );
+    let day = Duration::from_days(1);
+    memory
+        .remember(graded("ep-tail", "obj-AAA", start(), 900.0, 40.0))
+        .expect("valid");
+    for n in 1..=8u32 {
+        let at = start().saturating_add(day * i64::from(n));
+        memory
+            .remember(graded(&format!("ep-calm-{n}"), "obj-AAA", at, 45.0, 40.0))
+            .expect("valid");
+    }
+    assert_eq!(memory.len(), 4);
+    assert!(
+        !memory.contains("ep-tail"),
+        "the stated sampler reserved no seat, so the oldest episode must have \
+         been spent first - the default's reserve was used instead"
     );
 }

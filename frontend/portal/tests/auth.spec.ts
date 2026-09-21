@@ -5,18 +5,47 @@
  * Runs only against the auth-required instance (port 3314), whose identity
  * store is wiped at server start. The store starts empty, so the journey test
  * creates the very user it signs in — the premise is established by the test
- * itself rather than assumed of the environment.
+ * itself rather than assumed of the environment. It is wiped at server start
+ * and not between attempts, which is why the address is per-attempt; see
+ * `emailForAttempt`.
  *
  * The negative tests matter more than the happy path. A sign-in that works is
  * table stakes; a forged cookie that reads the book anyway is the incident.
  */
-import { expect, test } from "@playwright/test";
+import { expect, test, type TestInfo } from "@playwright/test";
 
-const EMAIL = "journey@algorik.test";
 const PASSWORD = "a-long-development-passphrase";
 
 /** The one mutable thing shared across serial tests: the account exists. */
 test.describe.configure({ mode: "serial" });
+
+/**
+ * The account this attempt enrols, keyed on the attempt number.
+ *
+ * **Why this is not a constant, which it was.** The group is serial and CI
+ * retries once, so a failure anywhere re-runs every test here from the top —
+ * but the identity store is wiped at *server* start, not per attempt, so the
+ * account the first attempt created is still there. A fixed address therefore
+ * made the retry submit a sign-up for an account that already existed: a
+ * different scenario from the one it meant to repeat, testing the duplicate
+ * enrolment path while reporting the journey's name. Either outcome was
+ * wrong to read — a green retry said the journey works when the journey had
+ * not been run, and a red one blamed sign-up for a collision the harness
+ * caused.
+ *
+ * Keying on `testInfo.retry` keeps the premise the file's header claims:
+ * every attempt enrols an address no attempt has used, so the journey test
+ * still creates the very account it signs in and still proves it against an
+ * empty-for-this-address store. Playwright retries a serial group as a unit
+ * and gives every test in it the same `retry`, which is what lets the tests
+ * below share the address the journey test enrolled.
+ *
+ * Nothing here is a real address or a real credential: `algorik.test` is a
+ * reserved test domain and the passphrase is the development provider's.
+ */
+function emailForAttempt(testInfo: TestInfo): string {
+  return `journey-attempt-${testInfo.retry}@algorik.test`;
+}
 
 test("a signed-out visitor at the root lands on the front door, not a login wall", async ({
   page,
@@ -27,7 +56,10 @@ test("a signed-out visitor at the root lands on the front door, not a login wall
   await expect(page.locator("body")).toContainText(/paper[- ]trading/i);
 });
 
-test("the whole journey: sign up, verify, sign in, use the portal, sign out", async ({ page }) => {
+test("the whole journey: sign up, verify, sign in, use the portal, sign out", async ({
+  page,
+}, testInfo) => {
+  const EMAIL = emailForAttempt(testInfo);
   // Sign up.
   await page.goto("/sign-up");
   await page.getByTestId("auth-accounttype").selectOption("individual");
@@ -79,7 +111,8 @@ test("the gateway refuses a browser with no session at all", async ({ page }) =>
   expect(response.status()).toBe(401);
 });
 
-test("a tampered session cookie reads nothing", async ({ page, context }) => {
+test("a tampered session cookie reads nothing", async ({ page, context }, testInfo) => {
+  const EMAIL = emailForAttempt(testInfo);
   // Sign in for real first, so the premise — a working cookie — is proven
   // before one byte of it is changed.
   await page.goto("/sign-in");
@@ -105,7 +138,8 @@ test("a tampered session cookie reads nothing", async ({ page, context }) => {
 
 test("a wrong password is refused with words, and account existence is not revealed", async ({
   page,
-}) => {
+}, testInfo) => {
+  const EMAIL = emailForAttempt(testInfo);
   await page.goto("/sign-in");
   await page.getByTestId("auth-email").fill(EMAIL);
   await page.getByTestId("auth-password").fill("not-the-password-at-all");
@@ -118,7 +152,8 @@ test("a wrong password is refused with words, and account existence is not revea
   expect(text).not.toContain("found");
 });
 
-test("a mutating call without the CSRF header is refused", async ({ page }) => {
+test("a mutating call without the CSRF header is refused", async ({ page }, testInfo) => {
+  const EMAIL = emailForAttempt(testInfo);
   // The cookie half of the pair is present (page load set it); the header
   // half is deliberately absent — which is exactly what a cross-site form
   // submission looks like.
@@ -129,7 +164,8 @@ test("a mutating call without the CSRF header is refused", async ({ page }) => {
   expect(response.status()).toBe(403);
 });
 
-test("the next parameter cannot send a signed-in user off-origin", async ({ page }) => {
+test("the next parameter cannot send a signed-in user off-origin", async ({ page }, testInfo) => {
+  const EMAIL = emailForAttempt(testInfo);
   await page.goto("/sign-in?next=https%3A%2F%2Fevil.example%2Fphish");
   await page.getByTestId("auth-email").fill(EMAIL);
   await page.getByTestId("auth-password").fill(PASSWORD);
