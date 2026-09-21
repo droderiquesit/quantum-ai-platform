@@ -100,13 +100,16 @@ RUN set -eu; \
 # side's status, so an `apk info` that failed would be hidden by a `head`
 # that succeeded and the case below would fall through to success on an
 # empty string. That is hadolint DL4006, and it is the same defect this
-# session opened with in `argocd-patched.Dockerfile`; the word-splitting
-# below takes the first field with no second process involved.
+# session opened with in `argocd-patched.Dockerfile`.
+#
+# `apk info -v` on an installed package prints one line, so there is
+# nothing to trim: the substitution is quoted and used as it comes. An
+# earlier draft split it into fields to take the first, which needed an
+# unquoted expansion (SC2086) to do the splitting — a lint finding taken
+# on to solve a problem that was not there.
 RUN set -eu; \
     apk add --no-cache "libcrypto3>=3.5.8-r0" "libssl3>=3.5.8-r0"; \
     installed="$(apk info -v libcrypto3)"; \
-    set -- ${installed}; \
-    installed="$1"; \
     echo "libcrypto3 is now ${installed}"; \
     case "${installed}" in \
       libcrypto3-3.5.[0-7]-*|"") \
