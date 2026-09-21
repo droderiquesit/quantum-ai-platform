@@ -72,12 +72,8 @@ spec:
           # Ready, and does the revision traffic actually routes to run, in the
           # workload's own container, the digest the manifest names? Read by name,
           # never by position: every service may carry the egress sidecar.
-          token="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
-          ns="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)"
-          curl -sSf --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
-            -H "Authorization: Bearer ${token}" \
-            "https://kubernetes.default.svc/apis/run.cnrm.cloud.google.com/v1beta1/namespaces/${ns}/runservices" \
-            > /tmp/runservices.json
+          # The read itself is in python, below, because it happens more than
+          # once: a shell curl into a file can only be the first look.
           python3 - <<'PY'
           import json, subprocess, sys, time
           
@@ -92,6 +88,34 @@ spec:
           # reconcile into a failed deployment.
           DEADLINE = 300
           INTERVAL = 10
+          
+          SERVICE_ACCOUNT = "/var/run/secrets/kubernetes.io/serviceaccount"
+          RUNSERVICES = ("https://kubernetes.default.svc/apis/run.cnrm.cloud.google.com"
+                         "/v1beta1/namespaces/{}/runservices")
+          
+          def read_runservices():
+              """Ask the API server, every time, rather than re-reading one stale file.
+          
+              The bottom of the wait loop used to re-open /tmp/runservices.json under
+              a comment saying it re-read the RunServices "so a Config Connector
+              condition that changes while this loop runs is seen rather than held
+              from the first read". A shell curl wrote that file once, before python
+              started, so every pass re-tested the conditions from second zero: a
+              service that became Ready at second 11 was still reported unready at
+              second 300, and the hook failed the sync it was watching succeed.
+          
+              Observing a change is the entire purpose of waiting, and that loop
+              could observe none. The token is re-read with it because a projected
+              service-account token is rotated, and re-reading costs nothing.
+              """
+              with open(SERVICE_ACCOUNT + "/namespace") as handle:
+                  namespace = handle.read().strip()
+              with open(SERVICE_ACCOUNT + "/token") as handle:
+                  token = handle.read().strip()
+              return json.loads(subprocess.check_output([
+                  "curl", "-sSf", "--cacert", SERVICE_ACCOUNT + "/ca.crt",
+                  "-H", "Authorization: Bearer " + token,
+                  RUNSERVICES.format(namespace)])).get("items", [])
           
           def run_json(argv):
               """The argv is written out at each call site rather than assembled here.
@@ -144,7 +168,10 @@ spec:
                   detail.append("could not read the service back: {}".format(error))
               return detail or ["Cloud Run reports no failing condition, so nothing has asked it to serve"]
           
-          items = json.load(open("/tmp/runservices.json")).get("items", [])
+          try:
+              items = read_runservices()
+          except (OSError, ValueError, subprocess.CalledProcessError) as error:
+              sys.exit("could not read the RunServices from the API server: {}".format(error))
           if not items:
               sys.exit("no RunService exists in this namespace; the sync applied nothing this hook can prove")
           
@@ -211,13 +238,18 @@ spec:
               print("still converging after {:.0f}s: {}".format(time.time() - started, ", ".join(sorted(pending))))
               sys.stdout.flush()
               time.sleep(INTERVAL)
-              # Re-read the RunServices, so a Config Connector condition that changes
-              # while this loop runs is seen rather than held from the first read.
+              # Ask the API server again. This is the one read whose answer can differ
+              # from the last, so holding it still is what made the wait pointless.
+              # A failed re-read is reported and the loop continues on what it holds:
+              # one refused request inside the deadline is not a failed deployment,
+              # and the deadline still ends the wait.
               try:
-                  refreshed = json.load(open("/tmp/runservices.json"))
-              except (OSError, ValueError):
-                  refreshed = {"items": []}
-              for item in refreshed.get("items", []):
+                  refreshed = read_runservices()
+              except (OSError, ValueError, subprocess.CalledProcessError) as error:
+                  print("could not re-read the RunServices: {}".format(error))
+                  sys.stdout.flush()
+                  refreshed = []
+              for item in refreshed:
                   if item["metadata"]["name"] in pending:
                       pending[item["metadata"]["name"]]["item"] = item
           
