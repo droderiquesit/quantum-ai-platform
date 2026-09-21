@@ -5229,3 +5229,72 @@ fn the_proving_hook_has_a_writable_configuration_directory_in_every_environment(
         );
     }
 }
+
+/// The proving hook waits for the controller it checks, and says why when it
+/// refuses.
+///
+/// Two properties, both bought at the cost of a run each.
+///
+/// It runs `PostSync` — immediately after Argo CD applies the manifests, and
+/// seconds before Config Connector has finished asking Cloud Run for
+/// anything. With `backoffLimit: 0` a single instantaneous look is the whole
+/// decision, so a slow reconcile and a broken one produce the same verdict.
+///
+/// And when no revision serves traffic, "routes traffic to no revision" names
+/// the symptom while withholding the cause: a revision that failed to start,
+/// a revision never created, and a service nobody asked to serve all read
+/// identically. Runs 87 and 88 reported exactly that string and three
+/// different causes were proposed for it, none of which could be checked.
+/// Cloud Run's own conditions say which, and they are one call away.
+#[test]
+fn the_proving_hook_waits_for_convergence_and_reports_what_cloud_run_says() {
+    let jobs: Vec<Manifest> = manifests_under(ENVS)
+        .into_iter()
+        .filter(|manifest| manifest.kind() == "Job" && manifest.name() == "qip-prove-serving")
+        .collect();
+    assert_eq!(jobs.len(), 4, "expected one proving Job per environment");
+
+    for job in &jobs {
+        let command = at(&job.value, &["spec", "template", "spec", "containers"])
+            .and_then(|containers| containers.as_array())
+            .and_then(|containers| containers.first())
+            .and_then(|container| container.get("command"))
+            .and_then(|command| command.as_array())
+            .and_then(|command| command.last())
+            .and_then(|script| script.as_str())
+            .unwrap_or_else(|| panic!("{} declares no container command", job.describe()));
+
+        // Premise: this is the script under discussion and not some other
+        // container's, so the two absences below mean something.
+        assert!(
+            command.contains("runservices"),
+            "{} runs a command that never reads the RunServices; this test is pinned to the \
+             wrong container",
+            job.describe()
+        );
+
+        // Three parts, because any one alone is satisfied by a script that
+        // does not wait: a clock reading proves nothing without a loop, and a
+        // loop proves nothing without something that yields between passes.
+        // The first spelling of this assertion checked for a constant name
+        // and a clock call, and a mutation renaming the constant left both in
+        // place at the use site — it passed a script it should have refused.
+        for token in ["time.sleep(", "while True:", "time.time()"] {
+            assert!(
+                command.contains(token),
+                "{} has no `{token}`, so it decides on a single look. It runs PostSync, before \
+                 Config Connector has finished reconciling, so a slow reconcile is reported as \
+                 a failed deployment and `backoffLimit: 0` means there is no second attempt.",
+                job.describe()
+            );
+        }
+
+        assert!(
+            command.contains("latestCreatedRevisionName"),
+            "{} reports that no revision serves traffic without asking Cloud Run why. That \
+             string is true of a revision that failed to start, a revision never created, and \
+             a service nobody asked to serve, and the deployment cannot be diagnosed from it.",
+            job.describe()
+        );
+    }
+}

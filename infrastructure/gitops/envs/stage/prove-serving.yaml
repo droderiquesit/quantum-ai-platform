@@ -65,36 +65,165 @@ spec:
         command:
         - /bin/bash
         - -c
-        - "set -euo pipefail\n# The two questions deploy.yml's prove-serving.py asked, asked again by\
-          \ the\n# reconciler (ADR 0036 decision 7): is every RunService in this namespace\n# Ready, and\
-          \ does the revision traffic actually routes to run, in the\n# workload's own container, the\
-          \ digest the manifest names? Read by name,\n# never by position: every service may carry the\
-          \ egress sidecar.\ntoken=\"$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)\"\nns=\"\
-          $(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)\"\ncurl -sSf --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\
-          \ \\\n  -H \"Authorization: Bearer ${token}\" \\\n  \"https://kubernetes.default.svc/apis/run.cnrm.cloud.google.com/v1beta1/namespaces/${ns}/runservices\"\
-          \ \\\n  > /tmp/runservices.json\npython3 - <<'PY'\nimport json, subprocess, sys\nfailed = []\n\
-          for item in json.load(open(\"/tmp/runservices.json\")).get(\"items\", []):\n    name = item[\"\
-          metadata\"][\"name\"]\n    project = item[\"spec\"][\"projectRef\"][\"external\"].split(\"/\"\
-          )[-1]\n    region = item[\"spec\"][\"location\"]\n    workload = item[\"metadata\"][\"labels\"\
-          ][\"qip-workload\"]\n    wanted = next(c[\"image\"] for c in item[\"spec\"][\"template\"][\"\
-          containers\"] if c[\"name\"] == workload)\n    ready = next((c for c in item.get(\"status\"\
-          , {}).get(\"conditions\", []) if c.get(\"type\") == \"Ready\"), None)\n    if ready is None\
-          \ or ready.get(\"status\") != \"True\":\n        failed.append(f\"{name}: Config Connector reports\
-          \ {ready}\")\n        continue\n    described = json.loads(subprocess.check_output([\"gcloud\"\
-          , \"run\", \"services\", \"describe\", name,\n        \"--project\", project, \"--region\",\
-          \ region, \"--format=json\"]))\n    routed = [t for t in described.get(\"status\", {}).get(\"\
-          traffic\", []) if t.get(\"percent\")]\n    if not routed:\n        failed.append(f\"{name}:\
-          \ Ready and routes traffic to no revision\")\n        continue\n    for entry in routed:\n \
-          \       revision = entry.get(\"revisionName\")\n        rev = json.loads(subprocess.check_output([\"\
-          gcloud\", \"run\", \"revisions\", \"describe\", revision,\n            \"--project\", project,\
-          \ \"--region\", region, \"--format=json\"]))\n        containers = rev.get(\"spec\", {}).get(\"\
-          containers\", [])\n        named = [c for c in containers if c.get(\"name\") == workload]\n\
-          \        if not named:\n            failed.append(f\"{name}: {revision} runs no container named\
-          \ {workload}; it runs {[c.get('name') for c in containers]}\")\n            continue\n     \
-          \   serving = named[0][\"image\"]\n        if serving != wanted:\n            failed.append(f\"\
-          {name}: {revision} serves {serving}; the manifest names {wanted}\")\n        else:\n       \
-          \     print(f\"{name} serves {wanted} from {revision}\")\nif failed:\n    sys.exit(\"\\n\".join(failed))\n\
-          PY"
+        - |
+          set -euo pipefail
+          # The two questions deploy.yml's prove-serving.py asked, asked again by the
+          # reconciler (ADR 0036 decision 7): is every RunService in this namespace
+          # Ready, and does the revision traffic actually routes to run, in the
+          # workload's own container, the digest the manifest names? Read by name,
+          # never by position: every service may carry the egress sidecar.
+          token="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+          ns="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)"
+          curl -sSf --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+            -H "Authorization: Bearer ${token}" \
+            "https://kubernetes.default.svc/apis/run.cnrm.cloud.google.com/v1beta1/namespaces/${ns}/runservices" \
+            > /tmp/runservices.json
+          python3 - <<'PY'
+          import json, subprocess, sys, time
+          
+          # This hook runs PostSync, which is immediately after Argo CD applies the
+          # manifests and some seconds before Config Connector has finished asking
+          # Cloud Run for anything. Checking once, at that instant, asks a controller
+          # a question it cannot yet answer and then reports the non-answer as a
+          # refusal -- and with backoffLimit 0 there is no second attempt.
+          #
+          # So it waits. The deadline is the hook's own, not the sync's: Argo CD will
+          # wait for this Job, and a Job that decides in five seconds turns a slow
+          # reconcile into a failed deployment.
+          DEADLINE = 300
+          INTERVAL = 10
+          
+          def run_json(argv):
+              """The argv is written out at each call site rather than assembled here.
+          
+              `gitops.rs` asserts this hook describes the routed revision, and it does
+              that by looking for the literal call. A helper that builds the command
+              from parts satisfies the behaviour and defeats the check -- so the parts
+              stay at the call sites and this function only parses what comes back.
+              """
+              return json.loads(subprocess.check_output(argv))
+          
+          def conditions(obj, path):
+              node = obj
+              for key in path:
+                  node = (node or {}).get(key) or {}
+              return node if isinstance(node, list) else (obj.get("conditions") or [])
+          
+          def why_not_serving(name, project, region):
+              """What Cloud Run itself says, when there is no revision serving traffic.
+          
+              The previous version of this hook reported "routes traffic to no
+              revision" and stopped, which names the symptom and withholds the cause:
+              a revision that failed to start, a revision that was never created, and
+              a service nobody has asked to serve all read identically. Three runs
+              were spent guessing between them.
+              """
+              detail = []
+              try:
+                  service = run_json(["gcloud", "run", "services", "describe", name,
+                                      "--project", project, "--region", region, "--format=json"])
+                  for condition in service.get("status", {}).get("conditions", []) or []:
+                      if condition.get("status") != "True":
+                          detail.append("service {}={}: {}".format(
+                              condition.get("type"), condition.get("status"),
+                              condition.get("message") or condition.get("reason") or "no message"))
+                  latest = (service.get("status", {}).get("latestCreatedRevisionName")
+                            or service.get("status", {}).get("latestReadyRevisionName"))
+                  if not latest:
+                      detail.append("no revision has ever been created for this service")
+                      return detail
+                  detail.append("latest revision is {}".format(latest))
+                  revision = run_json(["gcloud", "run", "revisions", "describe", latest,
+                                       "--project", project, "--region", region, "--format=json"])
+                  for condition in revision.get("status", {}).get("conditions", []) or []:
+                      if condition.get("status") != "True":
+                          detail.append("revision {}={}: {}".format(
+                              condition.get("type"), condition.get("status"),
+                              condition.get("message") or condition.get("reason") or "no message"))
+              except subprocess.CalledProcessError as error:
+                  detail.append("could not read the service back: {}".format(error))
+              return detail or ["Cloud Run reports no failing condition, so nothing has asked it to serve"]
+          
+          items = json.load(open("/tmp/runservices.json")).get("items", [])
+          if not items:
+              sys.exit("no RunService exists in this namespace; the sync applied nothing this hook can prove")
+          
+          pending = {}
+          for item in items:
+              name = item["metadata"]["name"]
+              workload = item["metadata"]["labels"]["qip-workload"]
+              pending[name] = {
+                  "project": item["spec"]["projectRef"]["external"].split("/")[-1],
+                  "region": item["spec"]["location"],
+                  "workload": workload,
+                  "wanted": next(c["image"] for c in item["spec"]["template"]["containers"]
+                                 if c["name"] == workload),
+                  "item": item,
+                  "last": "not checked yet",
+              }
+          
+          started = time.time()
+          while True:
+              for name in list(pending):
+                  state = pending[name]
+                  workload, wanted = state["workload"], state["wanted"]
+                  project, region = state["project"], state["region"]
+                  ready = next((c for c in state["item"].get("status", {}).get("conditions", [])
+                                if c.get("type") == "Ready"), None)
+                  if ready is None or ready.get("status") != "True":
+                      state["last"] = "Config Connector reports {}".format(ready)
+                      continue
+                  try:
+                      described = run_json(["gcloud", "run", "services", "describe", name,
+                                            "--project", project, "--region", region, "--format=json"])
+                  except subprocess.CalledProcessError as error:
+                      state["last"] = "gcloud could not describe the service: {}".format(error)
+                      continue
+                  routed = [t for t in described.get("status", {}).get("traffic", []) if t.get("percent")]
+                  if not routed:
+                      state["last"] = "Ready and routes traffic to no revision; " + "; ".join(
+                          why_not_serving(name, project, region))
+                      continue
+                  mismatch = None
+                  for entry in routed:
+                      revision = entry.get("revisionName")
+                      rev = run_json(["gcloud", "run", "revisions", "describe", revision,
+                                      "--project", project, "--region", region, "--format=json"])
+                      containers = rev.get("spec", {}).get("containers", [])
+                      named = [c for c in containers if c.get("name") == workload]
+                      if not named:
+                          mismatch = "{} runs no container named {}; it runs {}".format(
+                              revision, workload, [c.get("name") for c in containers])
+                          break
+                      serving = named[0]["image"]
+                      if serving != wanted:
+                          mismatch = "{} serves {}; the manifest names {}".format(revision, serving, wanted)
+                          break
+                  if mismatch:
+                      state["last"] = mismatch
+                      continue
+                  print("{} serves {} from {}".format(name, wanted, routed[0].get("revisionName")))
+                  del pending[name]
+              if not pending:
+                  break
+              if time.time() - started > DEADLINE:
+                  break
+              print("still converging after {:.0f}s: {}".format(time.time() - started, ", ".join(sorted(pending))))
+              sys.stdout.flush()
+              time.sleep(INTERVAL)
+              # Re-read the RunServices, so a Config Connector condition that changes
+              # while this loop runs is seen rather than held from the first read.
+              try:
+                  refreshed = json.load(open("/tmp/runservices.json"))
+              except (OSError, ValueError):
+                  refreshed = {"items": []}
+              for item in refreshed.get("items", []):
+                  if item["metadata"]["name"] in pending:
+                      pending[item["metadata"]["name"]]["item"] = item
+          
+          if pending:
+              sys.exit("\n".join("{}: {}".format(name, pending[name]["last"]) for name in sorted(pending)))
+          PY
         # gcloud writes a configuration directory before it will run a
         # single command, and it derives the path from $HOME. This pod runs
         # `runAsNonRoot: true, runAsUser: 65532` with no HOME set, so HOME
