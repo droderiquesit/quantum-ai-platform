@@ -978,8 +978,18 @@ jobs:
               # interesting output is in the instance that exited. Both
               # arms are `|| true`: a pod with no prior instance is the
               # normal case and must not fail the diagnostic.
-              kubectl -n "$ns" get pods \
-                -o jsonpath='{range .items[?(@.status.phase!="Running")]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+              # Not-Running, plus anything a Job owns whatever its phase. The
+              # first arm alone missed the one pod that mattered: run 89's
+              # proving hook was four and a half minutes into its own poll and
+              # therefore `Running`, so the filter skipped it and the
+              # diagnostic printed nothing about the check the deployment was
+              # waiting on. A Job's pod is interesting while it runs precisely
+              # because a Job is a thing that decides.
+              { kubectl -n "$ns" get pods \
+                  -o jsonpath='{range .items[?(@.status.phase!="Running")]}{.metadata.name}{"\n"}{end}' 2>/dev/null
+                kubectl -n "$ns" get pods \
+                  -o jsonpath='{range .items[?(@.metadata.ownerReferences[0].kind=="Job")]}{.metadata.name}{"\n"}{end}' 2>/dev/null
+              } | sort -u \
                 | grep -v '^$' | head -6 | while read -r pod; do
                   [ -z "${pod}" ] && continue
                   echo "  --- ${ns}/${pod} last output ---"
@@ -1431,8 +1441,14 @@ jobs:
             esac
 
             echo "waiting for the ${ENVIRONMENT} Application to sync and report healthy..."
+            # Longer than one full cycle of the PostSync hook, which polls
+            # Cloud Run for up to five minutes before it decides. At 600s the
+            # wait expired while run 89's hook was still at 4m32s, so the
+            # deployment was reported as never synced by a check that had not
+            # finished asking — the workflow timing out on its own gate rather
+            # than on an answer.
             if ! kubectl -n argocd wait --for=jsonpath='{.status.sync.status}'=Synced \
-                "application/qip-${ENVIRONMENT}" --timeout=600s; then
+                "application/qip-${ENVIRONMENT}" --timeout=900s; then
               echo "::error title=Application never synced::qip-${ENVIRONMENT} did not reach Synced." >&2
               why
               exit 1
