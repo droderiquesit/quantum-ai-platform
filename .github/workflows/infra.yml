@@ -956,6 +956,36 @@ jobs:
               echo "::group::${ns}"
               kubectl -n "$ns" get pods -o wide 2>&1 | head -40
               kubectl -n "$ns" get pods -o jsonpath='{range .items[*]}{range .status.containerStatuses[?(@.ready==false)]}{"  not ready: "}{.name}{"  "}{.state.waiting.reason}{": "}{.state.waiting.message}{"\n"}{end}{end}' 2>&1 | head -20
+              # And what a failed pod said before it died. The loop above
+              # reports that a container is not ready and, for a container
+              # that never started, why; it says nothing at all about one
+              # that started, ran, and exited non-zero — which is the shape
+              # of every check that fails on its own terms rather than on a
+              # missing object.
+              #
+              # Run 82 is why this is here. The PostSync proving hook
+              # (ADR 0036 decision 7) reported "Job has reached the
+              # specified backoff limit" and nothing more, because its
+              # `backoffLimit` is 0 and its `hook-delete-policy` is
+              # `BeforeHookCreation` — so the pod that failed is deleted
+              # before the next attempt and takes its output with it. The
+              # diagnostic could say the deployment's last gate had refused
+              # and not why, which is the same defect as an alert policy
+              # naming a metric nothing emits: a signal that reports a
+              # problem it cannot describe.
+              #
+              # `--previous` too, because a restarted container's
+              # interesting output is in the instance that exited. Both
+              # arms are `|| true`: a pod with no prior instance is the
+              # normal case and must not fail the diagnostic.
+              kubectl -n "$ns" get pods \
+                -o jsonpath='{range .items[?(@.status.phase!="Running")]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+                | grep -v '^$' | head -6 | while read -r pod; do
+                  [ -z "${pod}" ] && continue
+                  echo "  --- ${ns}/${pod} last output ---"
+                  kubectl -n "$ns" logs "${pod}" --all-containers --tail=40 2>&1 | sed 's/^/    /' | head -45 || true
+                  kubectl -n "$ns" logs "${pod}" --all-containers --previous --tail=20 2>/dev/null | sed 's/^/    (previous) /' | head -25 || true
+                done
               echo "::endgroup::"
             done
             echo "::group::applications"
