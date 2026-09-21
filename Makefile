@@ -124,7 +124,7 @@ sbom:
 # network at all.
 # ---------------------------------------------------------------------------
 
-infra: tf-fmt tf-tfvars tf-validate
+infra: tf-fmt tf-tfvars tf-manifests tf-validate
 
 tf-fmt:
 	terraform -chdir=$(TERRAFORM_DIR) fmt -check -recursive
@@ -149,6 +149,17 @@ tf-fmt:
 # workflow runs over what its own `sed` pulled out.
 tf-tfvars:
 	terraform fmt -check -recursive $(ENVIRONMENTS_DIR)
+
+# The manifests Argo CD renders, which none of the three targets around this
+# one opens. `terraform fmt` recurses over HCL and stops at the directory
+# boundary; `validate` checks the configuration. The Rust suites do read these
+# files, and read them as *text* — `gitops.rs` counts the ones whose bytes
+# contain a principal — which cannot tell a well-formed document from a
+# broken one. So a malformed `invokers.yaml` passed `make check`, passed CI,
+# and was found by Argo CD ten minutes into an `apps` dispatch, reported as a
+# sync timeout rather than as a file that would not parse.
+tf-manifests:
+	./scripts/check-manifests.py
 
 tf-validate:
 	terraform -chdir=$(TERRAFORM_DIR) init -backend=false

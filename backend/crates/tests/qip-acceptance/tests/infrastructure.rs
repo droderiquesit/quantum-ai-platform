@@ -9126,3 +9126,125 @@ fn the_domains_zone_is_public_and_signed_and_says_where_to_point_the_registrar()
          nameservers reads exactly like a failure"
     );
 }
+
+fn parses_the_gitops_manifests(step: &str) -> bool {
+    step.lines().any(|line| {
+        let line = line.trim_start();
+        !line.starts_with('#') && line.contains("scripts/check-manifests.py")
+    })
+}
+
+/// CI parses the manifests Argo CD renders, and it is the only thing that does.
+///
+/// The gap this closes is not hypothetical and cost a deployment. Every gate
+/// in this repository read these files as *text*: `gitops.rs` counts the
+/// manifests whose serialised bytes contain a principal, `console_route.rs`
+/// scans for a `member:` line, and `terraform fmt` recurses over HCL and never
+/// opens a `.yaml` at all. Text matching cannot tell a well-formed document
+/// from a broken one. So a `qip.algorik.ai/why` annotation carrying an
+/// unquoted `: ` — a colon in an English sentence explaining why a grant
+/// exists — passed `make check`, passed CI, and reached `main`.
+///
+/// Argo CD found it instead, ten minutes into an `infra.yml` `apps` dispatch,
+/// and the shape of that failure is the argument for this test: the
+/// Application reported `sync=Unknown`, every object reported an empty health,
+/// and the diagnostic's per-object results were frozen at an *earlier*
+/// attempt's Artifact Registry 403. The run therefore read as a permission
+/// problem that had already been fixed. A parse error found in under a second
+/// here is the same fact, in the place where it names the file.
+///
+/// Asserted as a count over every workflow rather than as the presence of one
+/// step, because "something checks this" is the property and a step moved to
+/// another job would keep it. Deleting the step takes the count to zero and
+/// this test says which files stop being parsed.
+#[test]
+fn one_step_and_only_one_parses_the_manifests_argo_cd_renders() {
+    // Premise: there are manifests to parse, so this test is not passing over
+    // an empty directory. A count rather than a list, because the tree grows.
+    let manifests: Vec<std::path::PathBuf> = files_with_extension("infrastructure/gitops", "yaml");
+    assert!(
+        manifests.len() >= 20,
+        "infrastructure/gitops holds {} yaml file(s); the gate below is scoped to a directory \
+         whose contents have changed, and a gate over nothing passes forever",
+        manifests.len()
+    );
+
+    const WORKFLOWS: [&str; 5] = [
+        ".github/workflows/ci.yml",
+        ".github/workflows/deploy.yml",
+        ".github/workflows/image.yml",
+        ".github/workflows/infra.yml",
+        ".github/workflows/vendor.yml",
+    ];
+    let mut parsing: Vec<(String, String, String)> = Vec::new();
+    let mut jobs_read = 0usize;
+    for workflow_file in WORKFLOWS {
+        let workflow = read(workflow_file);
+        let jobs = workflow_jobs(&workflow);
+        assert!(
+            !jobs.is_empty(),
+            "{workflow_file} parsed to no jobs at all; this check stopped checking"
+        );
+        jobs_read += jobs.len();
+        for (job_name, body) in jobs {
+            for step in job_steps(&body) {
+                if parses_the_gitops_manifests(&step) {
+                    parsing.push((workflow_file.to_string(), job_name.clone(), step));
+                }
+            }
+        }
+    }
+    assert!(
+        jobs_read >= 5,
+        "only {jobs_read} job(s) were read out of five workflows; the walk found nothing to \
+         check and would pass over a deleted step"
+    );
+
+    assert_eq!(
+        parsing.len(),
+        1,
+        "{} step(s) run scripts/check-manifests.py, and exactly one must ({:?}). At zero, \
+         nothing in this repository parses the manifests Argo CD renders: every other gate \
+         reads them as text, so a malformed document passes CI and is found by a sync that \
+         times out ten minutes later naming the wrong cause. At two, two jobs disagree about \
+         which files are checked.",
+        parsing.len(),
+        parsing
+            .iter()
+            .map(|(file, job, _)| format!("{file} job `{job}`"))
+            .collect::<Vec<_>>()
+    );
+    let (workflow_file, job_name, step) = &parsing[0];
+    assert_eq!(
+        (workflow_file.as_str(), job_name.as_str()),
+        (".github/workflows/ci.yml", "infrastructure"),
+        "the GitOps manifests are parsed by {workflow_file} job `{job_name}`; the gate belongs \
+         in ci.yml's infrastructure job, which every pull request runs, rather than in a \
+         workflow somebody dispatches"
+    );
+    // A check whose failure does not fail the job is a check nobody runs.
+    assert!(
+        step.contains("set -euo pipefail"),
+        "the step does not stop on error, so a failed parse is a passing step:\n{step}"
+    );
+
+    // The local gate and CI must agree. `make all` green while CI is red is
+    // worse than no local gate, because it teaches people the local gate is
+    // the one that counts.
+    let makefile = read("Makefile");
+    let infra_target = makefile
+        .lines()
+        .find(|line| line.starts_with("infra:"))
+        .expect("the Makefile has an `infra` target");
+    assert!(
+        infra_target
+            .split_whitespace()
+            .any(|word| word == "tf-manifests"),
+        "`make infra` does not run the manifest parse ({infra_target}), so the local gate is \
+         weaker than CI and a contributor learns the failure from a dispatched deployment"
+    );
+    assert!(
+        makefile.contains("scripts/check-manifests.py"),
+        "the Makefile names a tf-manifests prerequisite that runs nothing"
+    );
+}

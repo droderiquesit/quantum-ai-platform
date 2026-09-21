@@ -52,7 +52,7 @@ metadata:
       Without this, IAP authenticates the caller correctly and the service answers 403, which
       reads as an access-list problem and is not one. The alternative — an anonymous invoker, as
       ADR 0030 grants OpenObserve above — is what makes ingress INGRESS_TRAFFIC_ALL safe here by
-      its absence: with no anonymous grant a browser cannot reach this service without passing
+      its absence — with no anonymous grant a browser cannot reach this service without passing
       IAP, and an unenabled gate is a console nobody can reach rather than one anybody can. (The
       anonymous principal is deliberately not named in this sentence. `gitops.rs` counts the
       manifests under this directory whose serialised text contains that identifier and admits

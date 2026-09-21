@@ -318,6 +318,19 @@ jobs:
             exit 1
           fi
           echo "every environment's terraform.tfvars parses as HCL and is in canonical format"
+      # The same argument one directory across, for the files Argo CD renders.
+      # Every other gate reads these as text — `gitops.rs` counts the files
+      # whose bytes contain a principal, `console_route.rs` scans for a
+      # `member:` line — and text matching cannot tell a well-formed document
+      # from a broken one. A malformed `invokers.yaml` therefore passed every
+      # check here and was caught by Argo CD instead, ten minutes into an
+      # `apps` dispatch, reported as a sync timeout rather than as a file
+      # that would not parse.
+      - name: the GitOps manifests parse
+        run: |
+          set -euo pipefail
+          python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
+          ./scripts/check-manifests.py
       - name: validate
         run: |
           terraform -chdir=infrastructure/terraform init -backend=false
