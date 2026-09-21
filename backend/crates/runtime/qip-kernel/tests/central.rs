@@ -6939,6 +6939,114 @@ fn a_first_signature_older_than_the_credential_window_is_discarded_rather_than_c
     );
     Ok(())
 }
+/// Blueprint §36.3's cloud-region row, on the path a deployment has.
+///
+/// `a_grant_into_a_dark_region_is_refused_naming_the_reading_and_admitted_
+/// once_the_region_speaks` above drives `CentralPlane::issue` directly, which
+/// no binary can do. This one drives `Platform::issue_capital` — the typed
+/// intent `POST /strategies/:strategy/capital-grants` raises — so the
+/// refusal is shown to survive the whole operator route rather than only the
+/// plane's own function. The failure it prevents is specific and has a shape
+/// this repository has shipped before: a control proven at the layer below
+/// and swallowed at the layer that is actually called. `issue_capital`
+/// journals the pair's decision *before* asking the plane, so an implementation
+/// that logged "countersigned" and then dropped the plane's `Err` would read
+/// in the log exactly like a grant that issued.
+#[test]
+fn a_capital_grant_into_a_region_the_centre_has_derived_dark_is_refused_through_the_operators_intent()
+-> Result<()> {
+    let id = strategy();
+    let mut config = PlatformConfig::default();
+    config.central.region_dark_after = Some(DARK_WINDOW);
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    register(platform.central_mut(), &id, CELL)?;
+    walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+    // The centre learns where the cell is the only way it ever does: from a
+    // report the cell sent. Without this the region is unknown, `darkness_of`
+    // answers `None`, and the test below would pass on a grant nothing
+    // refused.
+    platform.ingest_cell_report(heard(CELL, LON_REGION, start()), start())?;
+    assert!(
+        platform.central().dark_regions(start()).is_empty(),
+        "premise: the region is lit at the instant it reported"
+    );
+
+    let dark_at = past_window();
+    let first = platform.issue_capital(
+        &id,
+        &operator("alice.chen", dark_at),
+        dark_at,
+        "the pilot gate passed and the allocator sized it inside the budget",
+        dark_at,
+    )?;
+    assert_eq!(
+        first.outcome, "awaiting_countersignature",
+        "the first signature did not stand: {first:?}"
+    );
+    let error = platform
+        .issue_capital(
+            &id,
+            &operator("bram.oduya", dark_at),
+            dark_at,
+            "reviewed the allocation and the pilot evidence independently",
+            dark_at,
+        )
+        .expect_err("capital was granted into a region the centre reads dark");
+    // Matched on the region and the cell by name rather than on the sentence,
+    // because what an operator needs from this refusal is which region went
+    // quiet and which cell was about to be funded.
+    for expected in [LON_REGION, CELL, "is dark", "window"] {
+        assert!(
+            error.message().contains(expected),
+            "the refusal does not carry `{expected}`: {}",
+            error.message()
+        );
+    }
+    assert!(
+        platform.central().envelope(CELL, &id).is_none(),
+        "a refused grant left an envelope behind"
+    );
+    let records = grant_records(&platform)?;
+    let outcomes: Vec<&str> = records.iter().map(|entry| entry.outcome.as_str()).collect();
+    assert_eq!(
+        outcomes,
+        vec!["awaiting_countersignature", "countersigned", "refused"],
+        "the pair's decision and the plane's refusal are two records, in that order"
+    );
+    assert!(
+        records[2]
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains(LON_REGION)),
+        "the refused record does not name the region: {:?}",
+        records[2].detail
+    );
+
+    // The other half, without which this test would pass on a route that
+    // refuses everything: the same pair issues once the region speaks again.
+    platform.ingest_cell_report(heard(CELL, LON_REGION, dark_at), dark_at)?;
+    platform.issue_capital(
+        &id,
+        &operator("alice.chen", dark_at),
+        dark_at,
+        "the pilot gate passed and the allocator sized it inside the budget",
+        dark_at,
+    )?;
+    let issued = platform.issue_capital(
+        &id,
+        &operator("bram.oduya", dark_at),
+        dark_at,
+        "reviewed the allocation and the pilot evidence independently",
+        dark_at,
+    )?;
+    assert_eq!(issued.outcome, "issued", "{issued:?}");
+    assert!(
+        platform.central().envelope(CELL, &id).is_some(),
+        "the region reported and the pair still could not fund the cell"
+    );
+    Ok(())
+}
 
 /// Blueprint §23.1 LEVEL 1 on a corpus the *operator route* granted.
 ///
