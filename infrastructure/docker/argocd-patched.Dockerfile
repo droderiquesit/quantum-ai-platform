@@ -78,6 +78,12 @@ ARG ARGOCD_BASE
 ARG KUSTOMIZE_VERSION=v5.8.1
 
 FROM docker.io/library/golang@sha256:564e366a28ad1d70f460a2b97d1d299a562f08707eb0ecb24b659e5bd6c108e1 AS build
+# `go version -m … | head -3` below is a pipe, and the default `/bin/sh -c`
+# reports the exit status of the right-hand side only: a `go version` that
+# failed would be hidden by a `head` that succeeded, and the stage would go
+# on to ship a binary nobody proved anything about. That is the same defect
+# this stage exists to catch, one level down. hadolint DL4006.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG KUSTOMIZE_VERSION
 # GOTOOLCHAIN=local refuses a toolchain switch: kustomize's go.mod declares
 # `go 1.24.0`, and without this Go would be free to download and use a

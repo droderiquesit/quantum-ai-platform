@@ -8153,3 +8153,143 @@ fn the_bootstrap_script_refuses_a_malformed_project_and_the_marker_and_admits_wh
 
     let _ = std::fs::remove_dir_all(&workspace);
 }
+
+/// The bootstrap's diagnostic must be reachable from every failure it was
+/// written for, and exactly one EXIT handler is what makes it so.
+///
+/// This is not hypothetical and it is not one mistake. Runs 58 through 66
+/// each failed inside `bootstrap the GitOps controllers`, and not one of
+/// them printed the seven-namespace cluster report the step carries — the
+/// report that exists because "a pod stuck on ImagePullBackOff and a pod
+/// refused by Binary Authorization read identically in a rollout timeout".
+/// Two independent defects kept it dark:
+///
+///   1. It was armed on `ERR`, and `trap ... ERR` does not fire on an
+///      explicit `exit`. Every phase that detects its own failure ends in
+///      `exit 1`, so the trap covered only the unguarded commands — the
+///      failures that already explain themselves.
+///   2. A second `trap 'rm -rf "$scratch"' EXIT` in the credential phase
+///      *replaced* the handler rather than joining it. A second EXIT trap
+///      is not additive in any shell, and nothing about the syntax says so.
+///
+/// The first is pinned by the signal, the second by the count. The count
+/// is the load-bearing half: the next phase that needs a cleanup will
+/// reach for `trap ... EXIT` exactly as that one did, and the step will go
+/// on passing every other check while reporting nothing again.
+#[test]
+fn the_bootstrap_has_exactly_one_exit_handler_so_its_diagnostic_can_never_be_replaced() {
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+    let step = steps
+        .iter()
+        .find(|step| step.contains("name: bootstrap the GitOps controllers"))
+        .expect("infra.yml has no bootstrap step");
+
+    // Traps that are armed, not traps that are discussed. The step's
+    // comments quote `trap ... ERR` and `trap 'rm -rf "$scratch"' EXIT` to
+    // explain why neither is there any more, and a scan that counted those
+    // would read its own documentation — the failure mode this suite has
+    // already hit twice.
+    let armed: Vec<&str> = step
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .filter(|line| line.starts_with("trap "))
+        .collect();
+
+    assert_eq!(
+        armed.len(),
+        1,
+        "the bootstrap arms {} traps: {armed:?}. A second `trap ... EXIT` replaces the \
+         first rather than running beside it, so whichever is armed later is the only \
+         handler that runs — and the earlier one fails silently, which is how the \
+         cluster diagnostic was dark for nine runs",
+        armed.len()
+    );
+    assert!(
+        armed[0].ends_with(" EXIT"),
+        "the bootstrap arms `{}`. It must be EXIT: `trap ... ERR` does not fire on the \
+         `exit 1` that every phase's own failure path ends in, which is every failure \
+         the diagnostic exists for",
+        armed[0]
+    );
+}
+
+/// `up` builds the control plane and `apps` puts the Application on it, and
+/// both are the same step so the two cannot drift apart.
+///
+/// Run 66 is why. Terraform applied 246 resources, Argo CD rolled out,
+/// Config Connector reported healthy and the front door published — and the
+/// job failed because `qip-dev` sat OutOfSync. Retrying that under one
+/// action meant re-dispatching the whole apply and a complete controller
+/// reinstall to redo seconds of work, leaving the cluster half-configured
+/// on every attempt.
+///
+/// What this pins is the property, not the phase numbers: the step runs for
+/// both actions, the dispatch offers both, and the Application is applied
+/// only in the stage that is not the one installing controllers. A phase
+/// that moves between the stages is a judgement; a phase that runs in both,
+/// or in neither, is the bug.
+#[test]
+fn the_control_plane_and_the_applications_are_two_dispatches_of_one_step() {
+    let infra = read(".github/workflows/infra.yml");
+
+    // Anchored on the `action:` input, not on the first `options:` in the
+    // file — that one belongs to `environment:`, and the first draft of
+    // this test read it and asserted the action list did not offer `plan`.
+    // The premise is asserted before the property, per
+    // `.claude/rules/architecture/01-testing-strategy.md`.
+    let action_block = infra
+        .split("\n      action:\n")
+        .nth(1)
+        .expect("infra.yml's dispatch has no action input");
+    let choices = action_block
+        .split("options:")
+        .nth(1)
+        .and_then(|rest| rest.split("lock_id:").next())
+        .expect("infra.yml's action input offers no choices");
+    assert!(
+        !choices.lines().any(|line| line.trim() == "- dev"),
+        "the block read as the action choices lists environments, so this test is          reading the wrong input: {choices}"
+    );
+    for action in ["- plan", "- up", "- apps", "- teardown"] {
+        assert!(
+            choices.lines().any(|line| line.trim() == action),
+            "infra.yml's action choices do not offer `{action}`: {choices}"
+        );
+    }
+
+    let steps = job_steps(&infra);
+    let step = steps
+        .iter()
+        .find(|step| step.contains("name: bootstrap the GitOps controllers"))
+        .expect("infra.yml has no bootstrap step");
+
+    assert!(
+        step.contains("inputs.action == 'up' || inputs.action == 'apps'"),
+        "the bootstrap step no longer runs for both up and apps, so one of the two \
+         stages can never execute"
+    );
+
+    // The Application is the split, so it belongs to exactly one stage.
+    // Located by the manifest path it applies rather than by a phase
+    // number, because a phase number is a comment and this is the act.
+    let application = "apply \"${gitops}/argocd/overlays/${ENVIRONMENT}\"";
+    let at = step
+        .find(application)
+        .expect("the bootstrap no longer applies the environment's Argo CD Application");
+    let stage_opens: Vec<&str> = step[..at]
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("if [ \"$STAGE\" ="))
+        .collect();
+    let opening = stage_opens
+        .last()
+        .expect("the Application is applied outside any stage guard, so it runs in both");
+    assert!(
+        opening.contains("apps"),
+        "the Application is applied under `{opening}`. It belongs to the apps stage: \
+         applying it during `up` is what made a sync failure cost a full Terraform \
+         apply and a controller reinstall to retry"
+    );
+}
