@@ -33,7 +33,7 @@ use qip_capital_fabric::journal::{
     WalletCommand, WalletOutcome,
 };
 use qip_capital_fabric::location::{CapitalLocation, Region};
-use qip_capital_fabric::replay::{Replayed, chain_hash, replay};
+use qip_capital_fabric::replay::{Replayed, chain_hash, replay, replay_from};
 use qip_capital_fabric::tolerance::{ToleranceBasis, ToleranceClass, ToleranceSchedule};
 use qip_capital_fabric::wallet::{
     self, Divergence, HoldingObservation, LedgerView, Provenance, ReconciliationOutcome, VenueAsset,
@@ -42,7 +42,7 @@ use qip_contracts::venue::VenueId;
 use qip_core::error::Result;
 use qip_core::{CorrelationId, Currency, Duration, EventId, Lineage, Timestamp, dec, sha256_hex};
 use qip_events::envelope::canonical_json;
-use qip_events::log::{GENESIS_HASH, LogRecord};
+use qip_events::log::{GENESIS_HASH, LogRecord, SNAPSHOT_WINDOW};
 use qip_events::{Envelope, EventBody, EventLog, Topic};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -476,9 +476,15 @@ fn a_state_rebuilt_from_the_journal_equals_the_live_state_after_a_mixed_sequence
         state,
         applied,
         passed_over,
+        re_anchored,
     } = replay(journal.records())?;
     assert_eq!(applied, records.len());
     assert_eq!(passed_over, 0);
+    assert_eq!(
+        re_anchored, 0,
+        "an unrolled log has no gap to cross, and a replay claiming one crossed a sequence \
+         nothing accounts for"
+    );
     assert_eq!(&state, live);
     Ok(())
 }
@@ -1525,6 +1531,410 @@ fn a_recorded_schedule_naming_one_venue_asset_twice_is_refused_on_the_way_back_i
         refused.is_err(),
         "two bases for one venue-asset were admitted: {:?}",
         refused.map(|schedule| schedule.len())
+    );
+    Ok(())
+}
+
+// --- §54.2's snapshot roll: a span this log shortened, and one something
+// --- else did ---------------------------------------------------------------
+//
+// The event log bounds its index by age as well as by count, and the roll
+// lifts replaceable records — ticks, quotes, book snapshots — out of the
+// interior without re-chaining what is left. Until 2026-09-21 this replay
+// demanded sequences contiguous from one, so the age bound could not be
+// switched on at all: three `qip-cli replay` runs refused a one-cycle
+// journal on 2026-09-19 the moment a platform assembled on it appended one
+// record under the real clock. These four tests hold the two halves apart —
+// a span this log shortened is replayed, a span anything else shortened is
+// refused — because being wrong in the permissive direction rebuilds a
+// ledger missing history and says nothing about it, which is worse than
+// refusing to start.
+
+/// A book snapshot. `Topic::MarketOrderBook` is §22.1's transient row, so it
+/// is exactly what the roll is allowed to take, and the fabric's own topic is
+/// exactly what it is not.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct BookSnapshot {
+    venue: String,
+}
+
+impl EventBody for BookSnapshot {
+    const TOPIC: Topic = Topic::MarketOrderBook;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+fn book_snapshot(nth: usize, at: Timestamp) -> Result<qip_events::AnyEvent> {
+    Envelope::new(
+        EventId::from_string(format!("EVT00000000000000BOOK{nth:05}")),
+        at,
+        at,
+        Lineage::root(correlation(), "market-feed"),
+        BookSnapshot {
+            venue: "simulated".to_string(),
+        },
+    )
+    .erase()
+}
+
+/// A log the roll has run over, and what the same fabric records build when
+/// nothing rolled.
+struct Rolled {
+    log: EventLog,
+    /// The state the mixed sequence reaches with no record missing. What a
+    /// replay across the roll must arrive at, exactly.
+    unrolled_state: FabricState,
+    /// Book snapshots written before the one that triggered the roll, and so
+    /// both the number of records the roll must take and the number of
+    /// sequences a replay may legitimately cross.
+    snapshots: usize,
+    /// Every record as the log wrote it, captured before the roll ran.
+    as_written: Vec<LogRecord>,
+    /// The same records in a log nobody gave a window, so the rolled log and
+    /// its unrolled twin can be held against each other.
+    unrolled_log: EventLog,
+}
+
+/// A log holding the mixed sequence's fabric records with a book snapshot
+/// between each, and then one snapshot two hundred days later so that every
+/// earlier snapshot is past the ninety-day window.
+fn rolled_log() -> Result<Rolled> {
+    let journal = journal_of(7, mixed_sequence()?)?;
+    let unrolled_state = journal.state().clone();
+    let mut log = EventLog::in_memory().with_snapshot_window(SNAPSHOT_WINDOW)?;
+    let mut unrolled_log = EventLog::in_memory();
+    let mut snapshots = 0usize;
+    let mut newest = proposed_at();
+    for record in journal.records() {
+        let snapshot = book_snapshot(snapshots, record.event.recorded_at)?;
+        log.append(&snapshot)?;
+        unrolled_log.append(&snapshot)?;
+        snapshots += 1;
+        log.append(&record.event)?;
+        unrolled_log.append(&record.event)?;
+        newest = newest.max(record.event.recorded_at);
+    }
+    let as_written = log.records().to_vec();
+    // Two hundred days on. Everything above is past the window, and the
+    // snapshots are the only records in it the roll may take.
+    let trigger = book_snapshot(snapshots, newest.saturating_add(Duration::from_days(200)))?;
+    log.append(&trigger)?;
+    unrolled_log.append(&trigger)?;
+    Ok(Rolled {
+        log,
+        unrolled_state,
+        snapshots,
+        as_written,
+        unrolled_log,
+    })
+}
+
+#[test]
+fn a_journal_resumes_across_a_roll_and_rebuilds_the_ledger_the_unrolled_log_holds() -> Result<()> {
+    // The failure this prevents: the roll switched on with the replay left
+    // demanding contiguous sequences, so a platform holding one fabric
+    // record stops restarting the day its first book snapshot turns ninety
+    // — or, worse, the contiguity rule relaxed and the ledger rebuilt from
+    // whatever happened to survive.
+    let rolled = rolled_log()?;
+
+    // Premise: the roll ran, took only what it may, and left the fabric's
+    // own records where they were.
+    assert_eq!(
+        rolled.log.rolled_by_age() as usize,
+        rolled.snapshots,
+        "premise: every stale book snapshot rolled"
+    );
+    assert_eq!(
+        rolled.log.evicted_replaceable() + rolled.log.evicted_observations(),
+        0,
+        "premise: this is the age bound working, not pressure"
+    );
+    let retained_fabric = rolled
+        .log
+        .records()
+        .iter()
+        .filter(|record| record.event.topic == FabricRecord::TOPIC)
+        .count();
+    assert_eq!(
+        retained_fabric, 18,
+        "premise: a permanent record is never a candidate for the roll, so every fabric record \
+         survived it"
+    );
+    let sequences: Vec<u64> = rolled.log.records().iter().map(|r| r.sequence).collect();
+    assert!(
+        sequences.first().is_some_and(|first| *first > 1),
+        "premise: the span no longer begins at genesis: {sequences:?}"
+    );
+    assert!(
+        sequences.windows(2).any(|pair| pair[1] != pair[0] + 1),
+        "premise: the span has interior gaps as well as a rolled head: {sequences:?}"
+    );
+    // And the genesis question still refuses this span, so the anchored one
+    // below is doing work rather than restating it.
+    assert!(
+        replay(rolled.log.records()).is_err(),
+        "premise: a bare slice of this span is refused, which is why the anchor exists"
+    );
+
+    let replayed = replay_from(rolled.log.records(), &rolled.log.retained_anchor())?;
+    assert_eq!(replayed.applied, 18);
+    assert_eq!(
+        replayed.re_anchored as usize, rolled.snapshots,
+        "every sequence crossed must be one the log accounts for having rolled"
+    );
+    assert_eq!(
+        replayed.state, rolled.unrolled_state,
+        "the ledger rebuilt across the roll must be the ledger the unrolled log holds; a \
+         shorter one is history quietly missing"
+    );
+
+    let resumed = FabricJournal::resume(rolled.log, 7, correlation())?;
+    assert_eq!(
+        resumed.state(),
+        &rolled.unrolled_state,
+        "the journal resumed across the roll onto a state the commands do not build"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_rolled_log_and_its_unrolled_twin_resume_into_journals_that_mint_the_same_next_id() -> Result<()>
+{
+    // The failure this prevents: a journal resuming a rolled log advances
+    // its id stream past the records it can still *see*, which after a roll
+    // is fewer than the chain has minted. The stream is seeded from the
+    // configured seed alone, so a shorter advance puts the resumed run back
+    // on entropy an earlier run already spent — and it would re-mint an id
+    // the *file* holds while the index no longer does, so the log's
+    // duplicate-id refusal could not see it. The roll must change what the
+    // log retains and nothing about what the next record is called.
+    let rolled = rolled_log()?;
+
+    // Premise: the two logs really are a rolled one and its unrolled twin —
+    // same chain length, different retained spans.
+    assert_eq!(
+        rolled.log.last_sequence(),
+        rolled.unrolled_log.last_sequence()
+    );
+    assert!(
+        rolled.log.len() < rolled.unrolled_log.len(),
+        "premise: the roll shortened the span: {} against {}",
+        rolled.log.len(),
+        rolled.unrolled_log.len()
+    );
+    assert_eq!(
+        rolled.unrolled_log.dropped(),
+        0,
+        "premise: the twin rolled nothing"
+    );
+
+    let next = step(
+        &corridor_id()?,
+        CorridorStep::Revoke {
+            by: alice()?,
+            reason: "closing the corridor".to_string(),
+            at: now().saturating_add(Duration::from_hours(1)),
+        },
+    );
+    let mut from_rolled = FabricJournal::resume(rolled.log, 7, correlation())?;
+    let mut from_twin = FabricJournal::resume(rolled.unrolled_log, 7, correlation())?;
+    from_rolled.decide(next.clone())?;
+    from_twin.decide(next)?;
+
+    let minted = |journal: &FabricJournal| -> Option<String> {
+        journal
+            .records()
+            .last()
+            .map(|record| record.event.event_id.as_str().to_string())
+    };
+    assert_eq!(
+        minted(&from_rolled),
+        minted(&from_twin),
+        "the roll changed what the next record is called, so the id stream was advanced past \
+         what the log retains rather than past what its chain minted"
+    );
+    assert!(
+        minted(&from_rolled).is_some(),
+        "premise: both journals wrote the record whose id is being compared"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_fabric_record_missing_from_a_rolled_span_is_refused_rather_than_replayed_as_a_shorter_ledger()
+-> Result<()> {
+    // The failure this whole change exists to prevent. A span that has
+    // legitimately rolled looks exactly like a span somebody shortened: both
+    // have gaps, and every surviving record still hashes to what it claimed.
+    // A replay that re-anchored on whatever the next record named would
+    // rebuild a ledger missing however many decisions were taken out and
+    // report it complete. The log's own count of what it spent is the only
+    // thing separating the two, and the roll spends that budget exactly — so
+    // one record more than the roll took is one sequence more than retention
+    // can account for.
+    let rolled = rolled_log()?;
+    let anchor = rolled.log.retained_anchor();
+    assert_eq!(
+        anchor.dropped() as usize,
+        rolled.snapshots,
+        "premise: the log accounts for exactly the snapshots it rolled"
+    );
+    assert!(
+        replay_from(rolled.log.records(), &anchor).is_ok(),
+        "premise: the span as the log holds it replays, so the refusal below is about the \
+         record removed and nothing else"
+    );
+
+    // The *last* fabric record, deliberately. Take an early one and the
+    // replay refuses it on a stronger ground — the next record's recorded
+    // outcome stops reproducing against the state a missing predecessor
+    // left — and the test would then prove nothing about the arithmetic it
+    // was written for. The last one leaves every recorded outcome
+    // reproducible, so the only thing standing between a shortened ledger
+    // and a clean rebuild is the log's own account of what it spent.
+    let position = rolled
+        .log
+        .records()
+        .iter()
+        .rposition(|record| record.event.topic == FabricRecord::TOPIC)
+        .ok_or_else(|| qip_core::error::Error::not_found("no fabric record survived the roll"))?;
+    let mut shortened = rolled.log.records().to_vec();
+    let removed = shortened.remove(position);
+    assert_eq!(
+        removed.event.topic,
+        FabricRecord::TOPIC,
+        "premise: the record taken out is one of the fabric's own"
+    );
+
+    let err = replay_from(&shortened, &anchor)
+        .expect_err("a span shortened past what the log spent must be refused, not re-anchored");
+    let message = err.message();
+    assert!(
+        message.contains(&format!(
+            "accounts for dropping only {} record(s)",
+            rolled.snapshots
+        )),
+        "the refusal must name the log's own budget: {message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "{} sequence(s) missing",
+            rolled.snapshots.saturating_add(1)
+        )),
+        "the refusal must name the arithmetic that fails: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_roll_is_an_anchor_and_never_a_rewrite_of_what_it_left_behind() -> Result<()> {
+    // The failure this prevents: a roll that tidied up after itself by
+    // re-chaining the records it left, so that the span verified from
+    // genesis again. That is the log editing sealed history to make itself
+    // look intact, which is the one thing a hash chain exists to make
+    // impossible. The roll may only remove: every surviving record must be
+    // byte for byte the record that was written, and the gap it leaves must
+    // still read as a gap.
+    let rolled = rolled_log()?;
+    assert_eq!(
+        rolled.log.rolled_by_age() as usize,
+        rolled.snapshots,
+        "premise: the roll ran"
+    );
+    let written_through = rolled
+        .as_written
+        .last()
+        .map(|record| record.sequence)
+        .ok_or_else(|| qip_core::error::Error::not_found("nothing was written before the roll"))?;
+
+    let mut compared = 0usize;
+    for record in rolled
+        .log
+        .records()
+        .iter()
+        .filter(|record| record.sequence <= written_through)
+    {
+        let written = rolled
+            .as_written
+            .iter()
+            .find(|candidate| candidate.sequence == record.sequence)
+            .ok_or_else(|| {
+                qip_core::error::Error::not_found(format!(
+                    "sequence {} was never written",
+                    record.sequence
+                ))
+            })?;
+        assert_eq!(
+            record, written,
+            "the roll edited sequence {}; a roll removes and never rewrites",
+            record.sequence
+        );
+        compared += 1;
+    }
+    assert_eq!(
+        compared, 18,
+        "premise: eighteen records written before the roll survived it and were compared"
+    );
+
+    assert_eq!(
+        rolled.log.verify_retained_chain(),
+        Ok(()),
+        "every retained record must still hash to what it claimed, gaps and all"
+    );
+    assert!(
+        rolled.log.verify_chain().is_err(),
+        "the walk from genesis must still report the gap: a roll that closed it would have \
+         re-chained history, and the chain would then prove what the roll wrote rather than \
+         what the platform decided"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_record_that_does_not_chain_to_its_retained_predecessor_is_refused_even_across_a_roll()
+-> Result<()> {
+    // The failure this prevents: re-anchoring turned on for gaps and left on
+    // everywhere. A replay that took every record's claimed predecessor on
+    // trust would accept a spliced record as readily as a rolled gap, and
+    // the chain would then be checking nothing at all. Two records whose
+    // sequences are consecutive must still hold to each other.
+    let rolled = rolled_log()?;
+    let anchor = rolled.log.retained_anchor();
+    let mut records = rolled.log.records().to_vec();
+    assert!(
+        replay_from(&records, &anchor).is_ok(),
+        "premise: the span replays before the splice"
+    );
+
+    let after = records
+        .windows(2)
+        .position(|pair| pair[1].sequence == pair[0].sequence + 1)
+        .map(|index| index + 1)
+        .ok_or_else(|| {
+            qip_core::error::Error::not_found(
+                "premise: the span holds no two consecutive sequences to break the link between",
+            )
+        })?;
+    // Break only the link, and re-hash the record so its own content still
+    // hashes to what it claims. The altered-record refusal must not be what
+    // catches this, or the test would prove nothing about the chain.
+    records[after].previous_hash = GENESIS_HASH.to_string();
+    records[after].record_hash = chain_hash(
+        records[after].sequence,
+        &records[after].previous_hash,
+        &records[after].event,
+    )?;
+
+    let err = replay_from(&records, &anchor)
+        .expect_err("a spliced link between two consecutive sequences must refuse the replay");
+    let message = err.message();
+    assert!(
+        message.contains("does not chain to its predecessor"),
+        "the refusal must be the chain's and not the hash's: {message}"
+    );
+    assert!(
+        message.contains(&format!("sequence {}", records[after].sequence)),
+        "the refusal must name where the chain broke: {message}"
     );
     Ok(())
 }

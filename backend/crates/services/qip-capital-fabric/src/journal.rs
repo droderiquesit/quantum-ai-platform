@@ -888,15 +888,43 @@ impl FabricJournal {
     /// A journal resuming an existing log — the composition root's
     /// file-backed one, or one another topic already writes to.
     ///
-    /// The state is rebuilt by [`crate::replay::replay`] over everything the
-    /// log holds, so a log with a broken chain or a lying record refuses to
-    /// be resumed rather than being written after. The id generator is
+    /// The state is rebuilt by [`crate::replay::replay_from`] over everything
+    /// the log holds, so a log with a broken chain or a lying record refuses
+    /// to be resumed rather than being written after. The id generator is
     /// advanced past the records already present, for the reason
     /// [`IdGenerator::advance`] gives.
+    ///
+    /// # The log's own anchor, not genesis
+    ///
+    /// Until 2026-09-21 this replayed `log.records()` from genesis and
+    /// refused any span whose sequences were not contiguous from one. That
+    /// made the event log's snapshot window unusable: the roll lifts
+    /// replaceable records out of the retained index, so a log holding any
+    /// fabric record could not be resumed once one book snapshot had aged
+    /// past ninety days, and the window shipped with no production caller
+    /// because of it.
+    ///
+    /// The fix is not to relax the contiguity rule but to give it something
+    /// to stand on. [`EventLog::retained_anchor`] is the log's own account of
+    /// where its span begins and how many records it spent, and the replay
+    /// re-anchors across a gap only while the sequences missing stay inside
+    /// that count. Taking the head's word instead would have resumed a
+    /// truncated ledger without a murmur, and a ledger quietly missing
+    /// history is worse than a process that refuses to start: the second
+    /// stops, the first trades.
     pub fn resume(log: EventLog, seed: u64, correlation: CorrelationId) -> Result<Self> {
-        let replayed = crate::replay::replay(log.records())?;
+        let replayed = crate::replay::replay_from(log.records(), &log.retained_anchor())?;
         let ids = IdGenerator::new(seed);
-        ids.advance(log.records().len() as u64);
+        // Past every record ever written, not past every record still
+        // retained. The two were the same number while nothing rolled; a
+        // rolled log holds fewer records than its chain has minted, and
+        // advancing by the shorter figure would put the resumed run's
+        // entropy back where a run over the unrolled log already stood —
+        // re-minting an id the *file* holds and the index no longer does, so
+        // the log's duplicate-id refusal could not see it. `last_sequence`
+        // is the log's own monotonic count and is what
+        // [`IdGenerator::advance`]'s argument was always meant to be.
+        ids.advance(log.last_sequence());
         Ok(Self {
             log,
             ids,

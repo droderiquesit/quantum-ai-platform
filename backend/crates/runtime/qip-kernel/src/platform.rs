@@ -7230,10 +7230,24 @@ impl Platform {
     /// outcome the control does not produce — the log the platform kept
     /// would stop being one it could read.
     ///
-    /// Refused, naming the alternative, when fabric records exist but the
-    /// in-memory log no longer starts at genesis: the log evicts replaceable
-    /// records at capacity, and a replay that stepped over the gap would
-    /// produce a state that reads as rebuilt from the log and is not.
+    /// # A rolled span is resumed; a shortened one is refused
+    ///
+    /// Until 2026-09-21 this refused outright any log holding fabric records
+    /// whose retained span no longer began at sequence one. That was the
+    /// right posture with the wrong reach: it could not tell a log that had
+    /// rolled its own replaceable records from a log somebody had shortened,
+    /// so it refused both, and the event log's snapshot window could
+    /// therefore never be switched on — a platform holding one fabric record
+    /// would stop restarting the day its first book snapshot turned ninety.
+    ///
+    /// [`qip_capital_fabric::replay::replay_from`] now takes the log's own
+    /// anchor ([`EventLog::retained_anchor`]) and crosses a gap only while
+    /// the sequences missing stay inside what that log counts having spent.
+    /// No path the log counts can spend a permanent record and a fabric
+    /// record's retention class is irreplaceable, so a gap it admits held no
+    /// fabric record. Beyond the count it refuses, because a state rebuilt
+    /// across sequences nothing accounts for reads as rebuilt from the log
+    /// and is not.
     fn resume_fabric(log: &EventLog, seed: u64) -> Result<FabricJournal> {
         let correlation = CorrelationId::from_string(FABRIC_CORRELATION);
         let mut fabric = FabricJournal::new(seed, correlation);
@@ -7246,19 +7260,8 @@ impl Platform {
         if fabric_records.is_empty() {
             return Ok(fabric);
         }
-        if log
-            .records()
-            .first()
-            .is_some_and(|first| first.sequence != 1)
-        {
-            return Err(Error::invalid(format!(
-                "the event log holds {} fabric record(s) but no longer starts at genesis, so \
-                 the fabric journal cannot be resumed from it; archive the log and start a \
-                 new one, or open it with a capacity that keeps every record",
-                fabric_records.len()
-            )));
-        }
-        let replayed = qip_capital_fabric::replay::replay(log.records())?;
+        let replayed =
+            qip_capital_fabric::replay::replay_from(log.records(), &log.retained_anchor())?;
         for record in fabric_records {
             fabric.decide(record.command)?;
         }

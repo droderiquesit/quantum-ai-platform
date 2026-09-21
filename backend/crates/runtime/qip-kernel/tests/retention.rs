@@ -8,9 +8,11 @@
 use qip_core::error::Result;
 use qip_core::{Context, Decimal, Duration, ObjectId, Timestamp};
 use qip_data_finder::retention::{FALLBACK_BARS_PER_INSTRUMENT, FALLBACK_RETENTION};
+use qip_events::log::{Durability, SNAPSHOT_WINDOW};
+use qip_events::retention::{Retention, RetentionClass};
 use qip_financial::quality::DataQuality;
 use qip_financial::universe::Universe;
-use qip_kernel::config::PlatformConfig;
+use qip_kernel::config::{EventLogDestination, PlatformConfig};
 use qip_kernel::platform::Platform;
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
@@ -192,6 +194,68 @@ fn an_instrument_past_the_fallback_bound_is_reported_once_and_not_per_bar_per_cy
         fallback_problems(&second).is_empty(),
         "the refusal was reported again for the same instrument: {:?}",
         fallback_problems(&second)
+    );
+    Ok(())
+}
+
+/// The platform's event log is bounded by age as well as by count, and the
+/// age is §22.1's own figure rather than a number a caller picked.
+///
+/// The failure this prevents: §54.2's snapshot roll built, tested and
+/// reached by nothing. A bound with no production caller is a bound that is
+/// not in force, and this one had none until 2026-09-21 — deliberately,
+/// because `FabricJournal::resume` and `Platform::resume_fabric` replayed
+/// the retained span from genesis and refused any span the roll had
+/// shortened. With a count ceiling alone, what a quiet deployment kept was a
+/// fact about how busy it had been: a desk running one cycle an hour would
+/// still hold the book snapshot it recorded eighteen months ago, because it
+/// never reached a ceiling sized for a busy day.
+///
+/// Both destinations are held to it, because the deployed shape is the file
+/// and the default is memory, and a window set on only one would bound the
+/// log nobody runs.
+#[test]
+fn the_platforms_event_log_is_bounded_by_the_blueprints_ninety_day_window_at_every_destination()
+-> Result<()> {
+    // Premise: the figure is one figure. The window the log rolls on and the
+    // §22.1 row for event-anchored book state must be the same ninety days,
+    // or the log's bound and the table's row are two claims that can drift.
+    assert_eq!(
+        RetentionClass::EventAnchored.retention(),
+        Retention::Rolling(SNAPSHOT_WINDOW),
+        "the roll's window and the retention table's row have come apart"
+    );
+    assert_eq!(SNAPSHOT_WINDOW, Duration::from_days(90));
+
+    let in_memory = EventLogDestination::InMemory.open()?;
+    assert_eq!(
+        in_memory.snapshot_window(),
+        Some(SNAPSHOT_WINDOW),
+        "the in-memory destination builds a log nothing ever rolls"
+    );
+
+    let dir = std::env::temp_dir().join(format!("qip-kernel-window-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let on_disk = EventLogDestination::File {
+        path: dir.join("events.jsonl"),
+        durability: Durability::Synchronous,
+    }
+    .open()?;
+    assert_eq!(
+        on_disk.snapshot_window(),
+        Some(SNAPSHOT_WINDOW),
+        "the file destination — the deployed one — builds a log nothing ever rolls"
+    );
+    drop(on_disk);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // And the log an assembled platform actually holds, so this is the
+    // platform's bound and not only the constructor's.
+    let platform = platform()?;
+    assert_eq!(
+        platform.event_log().snapshot_window(),
+        Some(SNAPSHOT_WINDOW),
+        "the platform assembled a log with no age bound"
     );
     Ok(())
 }

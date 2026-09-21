@@ -377,11 +377,22 @@ fn registrations(platform: &Platform) -> String {
 /// different claims: a state that matches while the counts do not means the
 /// log holds fabric records the journal did not decide, which is a state
 /// reached by a route the control does not own.
-/// [`qip_capital_fabric::replay::replay`] re-executes every command and
+/// [`qip_capital_fabric::replay::replay_from`] re-executes every command and
 /// checks the recorded outcome against the recomputed one, so its refusal
 /// already names the position and is passed through as written.
+///
+/// Asked against the log's own anchor rather than against genesis, because
+/// the platform's log rolls replaceable records off its index by age and the
+/// genesis form budgets no gap at all. Until 2026-09-21 this asked the
+/// genesis question; the moment the roll was switched on, a journal written
+/// under one clock and read under another reported `REFUSED — record at
+/// position 2 carries sequence 3` on a log nobody had touched. The anchored
+/// question is the one that distinguishes a span this log shortened from a
+/// span something else did, which is the distinction this command exists to
+/// report.
 fn fabric(platform: &Platform) -> String {
-    match qip_capital_fabric::replay::replay(platform.event_log().records()) {
+    let log = platform.event_log();
+    match qip_capital_fabric::replay::replay_from(log.records(), &log.retained_anchor()) {
         Err(refused) => refused_by_the_log(&refused),
         Ok(replayed)
             if &replayed.state == platform.fabric_state()

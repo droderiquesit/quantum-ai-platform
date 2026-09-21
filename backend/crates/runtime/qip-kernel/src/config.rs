@@ -13,7 +13,7 @@ use qip_core::Decimal;
 use qip_core::error::Result;
 use qip_core::time::Duration;
 use qip_data_finder::registration::{RegistrationRecord, RegistrationRegistry};
-use qip_events::log::{Durability, EventLog};
+use qip_events::log::{Durability, EventLog, SNAPSHOT_WINDOW};
 use qip_optimization_engine::router::RoutingPolicy;
 use qip_portfolio_engine::construction::Mandate;
 use qip_reasoning_engine::redteam::ReviewPolicy;
@@ -120,12 +120,46 @@ impl EventLogDestination {
     /// because an unwritable directory or a corrupt line in an existing log is
     /// a deployment fault: discovering it at the first append means the
     /// process is already running and already believed.
+    ///
+    /// # Why the snapshot window is set here, and why at ninety days
+    ///
+    /// This is the one place the platform's event log is constructed, so it
+    /// is the one place that can state the log's age bound. Without it the
+    /// log's retention is bounded by record count alone, and a count ceiling
+    /// makes what a quiet deployment keeps a fact about how busy it has been
+    /// rather than about any stated policy: a desk running one cycle an hour
+    /// would still be holding the book snapshot it recorded eighteen months
+    /// ago, because it never reached a ceiling sized for a busy day.
+    ///
+    /// Ninety days is [`SNAPSHOT_WINDOW`], and it is not a number picked
+    /// here. It is the blueprint's stated retention for event-anchored book
+    /// state (§54.2, §22.1), and the same ninety days
+    /// `RetentionClass::EventAnchored` already declares as
+    /// `Retention::Rolling`, so the log's bound and the table's row are one
+    /// figure rather than two that can drift. Widening it is the blueprint's
+    /// own revisit condition — a model class that demonstrably needs longer —
+    /// and belongs here, said out loud, rather than in a caller's argument.
+    ///
+    /// Only replaceable records roll: ticks, quotes, book deltas, features,
+    /// the world model's change stream. No order, fill, verdict, lesson or
+    /// lifecycle record is a candidate at any age, and when nothing
+    /// evictable remains the log refuses the append rather than spending
+    /// one.
+    ///
+    /// This window had no production caller until 2026-09-21, deliberately
+    /// and for a stated reason: `FabricJournal::resume` and
+    /// `Platform::resume_fabric` replayed the retained span from genesis and
+    /// refused a gap, so switching the roll on would have made a platform
+    /// holding fabric records unable to restart — `qip-cli replay` refused a
+    /// one-cycle journal on 2026-09-19 for exactly that. Both now re-anchor
+    /// against the log's own `retained_anchor`, which is what makes turning
+    /// it on a bound gained rather than a ledger lost.
     pub fn open(&self) -> Result<EventLog> {
         match self {
-            Self::InMemory => Ok(EventLog::in_memory()),
-            Self::File { path, durability } => {
-                Ok(EventLog::open(path)?.with_durability(*durability))
-            }
+            Self::InMemory => EventLog::in_memory().with_snapshot_window(SNAPSHOT_WINDOW),
+            Self::File { path, durability } => EventLog::open(path)?
+                .with_durability(*durability)
+                .with_snapshot_window(SNAPSHOT_WINDOW),
         }
     }
 
