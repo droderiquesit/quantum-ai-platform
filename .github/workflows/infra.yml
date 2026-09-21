@@ -562,7 +562,65 @@ jobs:
           umask 077
           scratch="$(mktemp -d)"
           trap 'rm -rf "$scratch"' EXIT
-          for secret in qip-openobserve-root-email qip-openobserve-root-password; do
+          # Two lists, and which list a secret is on is a security decision
+          # rather than a convenience.
+          #
+          # GENERATED: a platform-internal key whose *correct* value is random
+          # bytes nobody chose. There is no "real" capital-envelope key to go
+          # and fetch — the centre signs grants with it and every node
+          # verifies against the same one, so any sufficiently random value is
+          # right and a human-chosen one is worse. Same for the four role
+          # tokens the API authenticates its own callers with.
+          #
+          # OWNER: a credential that names an account at somebody else. A
+          # generated value would not be a weaker credential, it would be a
+          # *false* one — the service would start, the connector would fail to
+          # authenticate, and the platform would be asserting it holds a
+          # venue credential it does not. catalogue.tf says so on the Alpaca
+          # mounts in as many words: "No value is created here, ever."
+          #
+          # What this step exists to prevent is the failure that produced it.
+          # `infra.yml` run 80 (`apps`, dev) got all the way past the image
+          # pull and then died on
+          #
+          #   Revision 'qip-dev-fastbrain-00001-7jl' is not ready and cannot
+          #   serve traffic. Secret .../qip-capital-envelope-key-dev/
+          #   versions/latest was not found
+          #
+          # A Cloud Run revision cannot start on a secret container with no
+          # enabled version, and Terraform creates containers, not versions.
+          # Every generated slot was therefore an empty container waiting for
+          # a person who had no reason to know they were needed.
+          generated="qip-openobserve-root-email qip-openobserve-root-password \
+            qip-capital-envelope-key qip-token-analyst qip-token-viewer \
+            qip-token-monitor qip-token-operator"
+          owner_supplied="qip-alpaca-api-key-id qip-alpaca-api-secret-key \
+            qip-market-data-key qip-quantum-token qip-venue-credential \
+            qip-github-app-argocd qip-github-app-kargo"
+
+          # Report, never write. An empty owner slot is not an error here —
+          # the infrastructure applied correctly — but it is the reason a
+          # later `apps` will refuse, and naming it now is cheaper than
+          # reading it out of a revision that would not start.
+          missing=""
+          for secret in ${owner_supplied}; do
+            name="$secret-$suffix"
+            gcloud secrets describe "$name" --project "$project" >/dev/null 2>&1 || continue
+            existing="$(gcloud secrets versions list "$name" --project "$project" \
+              --filter="state:ENABLED" --format="value(name)" --limit=1)"
+            [ -n "$existing" ] && continue
+            missing="${missing} ${name}"
+          done
+          if [ -n "${missing}" ]; then
+            echo "::warning title=Owner-supplied credentials have no version::\
+          These slots hold no enabled version and this step will not invent one, \
+          because a generated value would be a false credential rather than a weak \
+          one. Any Cloud Run service mounting one cannot start until a person runs \
+          'gcloud secrets versions add <name> --project ${project} --data-file=-'. \
+          Empty:${missing}"
+          fi
+
+          for secret in ${generated}; do
             name="$secret-$suffix"
             if ! gcloud secrets describe "$name" --project "$project" >/dev/null 2>&1; then
               echo "$name does not exist yet; the apply below creates it and the next up seeds it"
@@ -583,6 +641,13 @@ jobs:
                 value="admin@algorik.internal" ;;
               *-password)
                 value="$(openssl rand -base64 30)" ;;
+              # Everything else on the generated list is key material the
+              # platform verifies against itself: the envelope-signing key and
+              # the four role tokens. 48 bytes rather than 30 because these are
+              # signing and bearer material rather than a console login, and
+              # the cost of the larger value is nothing.
+              *)
+                value="$(openssl rand -base64 48)" ;;
             esac
             printf '%s' "$value" > "$scratch/payload"
             gcloud secrets versions add "$name" --project "$project" \
@@ -592,8 +657,8 @@ jobs:
             seeded=1
           done
           if [ "$seeded" = 1 ]; then
-            echo "A generated credential was written. This step did not log it; read it with:"
-            echo "  gcloud secrets versions access latest --secret qip-openobserve-root-password-$suffix --project $project"
+            echo "A generated credential was written. This step did not log any value; read one with:"
+            echo "  gcloud secrets versions access latest --secret <name>-$suffix --project $project"
           fi
 
       # Put back into state what the teardown deliberately left in the

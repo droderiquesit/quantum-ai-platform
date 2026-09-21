@@ -9248,3 +9248,91 @@ fn one_step_and_only_one_parses_the_manifests_argo_cd_renders() {
         "the Makefile names a tf-manifests prerequisite that runs nothing"
     );
 }
+
+/// The credential seeding step never invents a credential that names an
+/// account somebody else holds.
+///
+/// `infra.yml`'s `up` seeds a secret container that has no enabled version,
+/// because Terraform creates containers and a Cloud Run revision cannot start
+/// on a container with no version — `infra.yml` run 80 died on exactly that,
+/// after the image pull had finally been permitted: "Secret
+/// .../qip-capital-envelope-key-dev/versions/latest was not found".
+///
+/// Seeding is correct for a platform-internal key. There is no "real"
+/// capital-envelope key to fetch: the centre signs grants with it and every
+/// node verifies against the same one, so random bytes are the right value and
+/// a human-chosen one is worse. It is **not** correct for a vendor
+/// credential. A generated Alpaca key would not be a weak credential, it would
+/// be a false one — the revision would start, the connector would fail to
+/// authenticate, and the platform would be asserting it holds a venue
+/// credential it does not. `catalogue.tf` says so on those mounts in as many
+/// words: "No value is created here, ever."
+///
+/// This test is the structural form of that sentence, because the failure it
+/// prevents is silent: a vendor secret moved onto the generated list would
+/// make the deployment go green while the thing it deployed was misconfigured
+/// in the one direction nobody would check.
+#[test]
+fn the_seeding_step_never_writes_a_value_for_a_credential_that_names_another_account() {
+    let workflow = read(".github/workflows/infra.yml");
+    let step = workflow
+        .split("- name: seed any credential that has no version")
+        .nth(1)
+        .expect("infra.yml has the credential seeding step");
+    // Bound the slice to this step, so a later step's text cannot satisfy it.
+    let step = step
+        .split("\n      - name:")
+        .next()
+        .expect("the step is followed by another step or the end of the job");
+
+    let generated = step
+        .split("generated=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("the step declares a `generated` list");
+    let owner = step
+        .split("owner_supplied=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("the step declares an `owner_supplied` list");
+
+    // Premise first. A test that asserts an absence passes trivially over an
+    // empty list, and both halves of this one are absences.
+    assert!(
+        generated.contains("qip-capital-envelope-key"),
+        "the generated list does not name the envelope key, so this test is \
+         checking a list that no longer seeds what run 80 died on: {generated}"
+    );
+    assert!(
+        owner.contains("qip-alpaca-api-key-id"),
+        "the owner-supplied list does not name the Alpaca credential, so the \
+         assertion below has nothing to exclude: {owner}"
+    );
+
+    // The property. Delimited tokens, never `contains`: `qip-token-analyst` is
+    // not a substring trap today, but `qip-alpaca-api-key-id` is a prefix of
+    // nothing and `qip-alpaca-api-secret-key` shares one, and this file's own
+    // rules say to match the token rather than the sentence.
+    let seeded: Vec<&str> = generated
+        .split_whitespace()
+        .filter(|w| *w != "\\")
+        .collect();
+    for credential in owner.split_whitespace().filter(|w| *w != "\\") {
+        assert!(
+            !seeded.contains(&credential),
+            "{credential} is on both lists, so `up` would write a generated value \
+             into a slot that names an account at somebody else. The revision \
+             would start and the credential would be false, which is the one \
+             failure direction nobody re-checks once a deployment is green."
+        );
+    }
+
+    // And the step must say what it left empty. An owner slot skipped in
+    // silence is the reason a later `apps` refuses, and naming it during the
+    // apply is cheaper than reading it out of a revision that would not start.
+    assert!(
+        step.contains("::warning title=Owner-supplied credentials have no version::"),
+        "the step skips an empty owner-supplied slot without reporting it, so the \
+         next failure names a Cloud Run revision instead of the missing credential"
+    );
+}
