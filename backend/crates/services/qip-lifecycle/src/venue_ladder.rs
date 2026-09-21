@@ -199,12 +199,37 @@ impl VenueDeclaration {
 /// Built by whatever observed the venue — an adapter's own acknowledgement
 /// statistics, a recorded session replayed — and never by this crate, which
 /// judges but does not measure.
+///
+/// # Why two of these fields are options
+///
+/// A venue that does not report a fact has to be distinguishable from one
+/// reporting zero, and these two are the fields where the difference decides
+/// a promotion. A latency of `Some(Duration::ZERO)` says the venue answered
+/// instantly; `None` says nobody timed it. Read as a figure, the second
+/// clears the latency check against any declaration whatsoever — a venue
+/// nobody measured would be promoted for being faster than it claimed. The
+/// same holds for a fee of zero, which makes a venue the cheapest one
+/// available.
+///
+/// So neither has a default and neither is filled in by this crate. A
+/// measurement that is absent fails its check by name, which is
+/// [`CHECK_LATENCY_NOT_UNDERSTATED`] and [`CHECK_FEES_NOT_UNDERSTATED`]
+/// reporting what they could not evaluate rather than evaluating nothing and
+/// passing. A ladder fed a fabricated measurement is worse than an empty one,
+/// because an empty ladder is visibly empty.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VenueMeasurement {
     /// The fee actually charged, in basis points, over `observations`.
-    pub fee_bps: Decimal,
+    ///
+    /// [`None`] from a venue that itemises no fees, and from one that has
+    /// filled no notional to divide by.
+    pub fee_bps: Option<Decimal>,
     /// The acknowledgement latency actually seen.
-    pub latency: Duration,
+    ///
+    /// [`None`] from a venue that does not time its acknowledgements —
+    /// including every venue that applies a configured latency rather than
+    /// measuring one, because a setting read back is not an observation.
+    pub latency: Option<Duration>,
     /// Order types the venue accepted when one was sent.
     pub accepted_order_types: BTreeSet<String>,
     /// Order types the venue rejected when one was sent. Kept separately from
@@ -423,21 +448,38 @@ impl VenueGate for ObservedGate {
         // Understatement only. A fee lower than declared is a pleasant
         // surprise and a latency faster than declared is a faster venue;
         // neither is what §34.4 guards against.
+        //
+        // An *unmeasured* fee or latency is a third case and it fails, which
+        // is the whole reason `VenueMeasurement` carries options here. Read as
+        // a figure, a missing latency is zero, zero is faster than anything a
+        // venue could declare, and a venue nobody has ever timed would clear
+        // the latency check on every cycle for ever. That is not a gate with
+        // a gap in it; it is a gate whose easiest subjects are the venues
+        // nothing is known about.
         let fee_ceiling = declaration
             .fee_bps()
             .checked_add(self.policy.fee_tolerance_bps);
-        let outcome = match fee_ceiling {
-            Some(ceiling) => outcome.record(
+        let outcome = match (measured.fee_bps, fee_ceiling) {
+            (Some(measured_fee), Some(ceiling)) => outcome.record(
                 CHECK_FEES_NOT_UNDERSTATED,
-                measured.fee_bps <= ceiling,
+                measured_fee <= ceiling,
                 format!(
                     "declared {} basis points, measured {}, tolerated up to {}",
                     declaration.fee_bps(),
-                    measured.fee_bps,
+                    measured_fee,
                     ceiling
                 ),
             ),
-            None => outcome.record(
+            (None, _) => outcome.record(
+                CHECK_FEES_NOT_UNDERSTATED,
+                false,
+                format!(
+                    "{} declares {} basis points and nothing has measured what it charged; the                      observed rung compares a declaration against measurement and there is no                      measurement, which is not the same as a fee of zero",
+                    declaration.venue(),
+                    declaration.fee_bps()
+                ),
+            ),
+            (Some(_), None) => outcome.record(
                 CHECK_FEES_NOT_UNDERSTATED,
                 false,
                 format!(
@@ -451,18 +493,27 @@ impl VenueGate for ObservedGate {
             .latency()
             .as_nanos()
             .checked_add(self.policy.latency_tolerance.as_nanos());
-        let outcome = match latency_ceiling {
-            Some(ceiling) => outcome.record(
+        let outcome = match (measured.latency, latency_ceiling) {
+            (Some(measured_latency), Some(ceiling)) => outcome.record(
                 CHECK_LATENCY_NOT_UNDERSTATED,
-                measured.latency.as_nanos() <= ceiling,
+                measured_latency.as_nanos() <= ceiling,
                 format!(
                     "declared {} ns, measured {} ns, tolerated up to {} ns",
                     declaration.latency().as_nanos(),
-                    measured.latency.as_nanos(),
+                    measured_latency.as_nanos(),
                     ceiling
                 ),
             ),
-            None => outcome.record(
+            (None, _) => outcome.record(
+                CHECK_LATENCY_NOT_UNDERSTATED,
+                false,
+                format!(
+                    "{} declares {} ns and does not time its acknowledgements; an unmeasured                      venue is not a fast venue, so the observed rung is refused rather than                      cleared on a figure nobody took",
+                    declaration.venue(),
+                    declaration.latency().as_nanos()
+                ),
+            ),
+            (Some(_), None) => outcome.record(
                 CHECK_LATENCY_NOT_UNDERSTATED,
                 false,
                 format!(
@@ -735,6 +786,52 @@ impl VenueLadder {
         &self.history
     }
 
+    /// Put a declared venue on the ladder at §34.4's first rung.
+    ///
+    /// The Registered rung is earned by having a declaration at all — a
+    /// class, a non-negative fee, a non-negative latency and at least one
+    /// order type — which is exactly what [`VenueDeclaration::new`] refuses a
+    /// venue for lacking. There is no `RegisteredGate` and this is not one:
+    /// it admits nothing, it moves no venue above [`GateStage::Candidate`],
+    /// and a venue it seats still faces every gate above.
+    ///
+    /// It exists because [`Self::knows`] was documented to tell a venue
+    /// working its way up from a venue nobody registered, and until this
+    /// method there was no way to make the first true without also making the
+    /// venue clear a measured rung. A reviewer reading "no record of it"
+    /// could not tell a venue whose adapter had never been wired from one
+    /// whose evidence fell short.
+    ///
+    /// Idempotent, and that is load-bearing rather than tidy: this is called
+    /// once per cycle from the LEARN stage, and a version that pushed a
+    /// history entry each time would grow the record without bound for a
+    /// venue that never moved. Returns whether the venue was newly seated.
+    pub fn register(&mut self, declaration: &VenueDeclaration, now: Timestamp) -> bool {
+        let venue = declaration.venue().as_str().to_string();
+        if self.stages.contains_key(&venue) {
+            return false;
+        }
+        self.stages.insert(venue.clone(), GateStage::Candidate);
+        self.history.push(VenueMove {
+            venue,
+            promotion: Promotion {
+                from: GateStage::Candidate,
+                to: GateStage::Candidate,
+                at: now,
+                approver: None,
+                rationale: format!(
+                    "{} declares a class, a fee of {} basis points, a latency of {} ns and {}                      order type(s); §34.4's registered rung is having a declaration to check",
+                    declaration.venue(),
+                    declaration.fee_bps(),
+                    declaration.latency().as_nanos(),
+                    declaration.order_types().len()
+                ),
+                evidence: Vec::new(),
+            },
+        });
+        true
+    }
+
     /// Push a venue back down, with no approver and no evidence.
     ///
     /// The same asymmetry the strategy ladder rests on: a false demotion
@@ -894,8 +991,8 @@ mod tests {
     /// A measurement that agrees with [`declaration`] on every axis.
     fn honest_measurement() -> VenueMeasurement {
         VenueMeasurement {
-            fee_bps: dec!("10"),
-            latency: Duration::from_millis(50),
+            fee_bps: Some(dec!("10")),
+            latency: Some(Duration::from_millis(50)),
             accepted_order_types: order_types(),
             rejected_order_types: BTreeSet::new(),
             observations: 40,
@@ -1064,7 +1161,7 @@ mod tests {
         let declaration = declaration(VenueClass::CryptoExchange);
         let mut measured = honest_measurement();
         // Eleven and a half against a declared ten, tolerating one.
-        measured.fee_bps = dec!("11.5");
+        measured.fee_bps = Some(dec!("11.5"));
         let outcome = ObservedGate::default().evaluate(
             &declaration,
             &VenueEvidence::new().with_measurement(measured.clone()),
@@ -1080,7 +1177,7 @@ mod tests {
 
         // The other direction is admitted: a venue charging less than it said
         // is not a surprise the platform has to survive.
-        measured.fee_bps = dec!("1");
+        measured.fee_bps = Some(dec!("1"));
         let generous = ObservedGate::default().evaluate(
             &declaration,
             &VenueEvidence::new().with_measurement(measured),
@@ -1090,11 +1187,192 @@ mod tests {
     }
 
     #[test]
+    fn a_venue_that_does_not_time_its_acknowledgements_is_refused_rather_than_read_as_instant() {
+        // The refusal this whole seam exists for. A venue whose adapter
+        // reports no acknowledgement latency must not clear the latency
+        // check: read as a figure, an absent latency is zero, zero beats
+        // every declaration there is, and the venues nothing is known about
+        // would be the easiest ones to promote.
+        let declaration = declaration(VenueClass::CryptoExchange);
+        let mut unmeasured = honest_measurement();
+        unmeasured.latency = None;
+        let outcome = ObservedGate::default().evaluate(
+            &declaration,
+            &VenueEvidence::new().with_measurement(unmeasured),
+            now(),
+        );
+        assert!(
+            !outcome.passed,
+            "an untimed venue cleared the observed rung"
+        );
+        let failed: Vec<&str> = outcome
+            .failures()
+            .into_iter()
+            .map(|(name, _, _)| name.as_str())
+            .collect();
+        assert_eq!(
+            failed,
+            vec![CHECK_LATENCY_NOT_UNDERSTATED],
+            "the refusal came from a check other than the latency one"
+        );
+        // Asserted on the reason and not merely on the failure, because the
+        // one wrong implementation this test guards against — treating a
+        // missing latency as zero — would still refuse a venue that was also
+        // short on its sample, and a bare `!passed` would have passed it.
+        let detail = outcome
+            .failures()
+            .into_iter()
+            .find(|(name, _, _)| name == CHECK_LATENCY_NOT_UNDERSTATED)
+            .map(|(_, _, detail)| detail.clone())
+            .unwrap_or_default();
+        assert!(
+            detail.contains("does not time its acknowledgements"),
+            "the refusal does not name the missing measurement: {detail}"
+        );
+
+        // The premise, and the distinction the option carries: a venue that
+        // *did* time its acknowledgements and found them instant is admitted.
+        // `None` and `Some(ZERO)` are two different claims and only one of
+        // them is evidence.
+        let mut instant = honest_measurement();
+        instant.latency = Some(Duration::ZERO);
+        assert!(
+            ObservedGate::default()
+                .evaluate(
+                    &declaration,
+                    &VenueEvidence::new().with_measurement(instant),
+                    now()
+                )
+                .passed,
+            "a venue measured at zero was refused, so the refusal above is not about measurement"
+        );
+    }
+
+    #[test]
+    fn a_venue_that_itemises_no_fee_is_refused_rather_than_read_as_free() {
+        // The same failure on the money axis: an absent fee read as zero
+        // makes an unmeasured venue the cheapest venue there is, which is
+        // exactly the direction §34.4 guards.
+        let declaration = declaration(VenueClass::CryptoExchange);
+        let mut unmeasured = honest_measurement();
+        unmeasured.fee_bps = None;
+        let outcome = ObservedGate::default().evaluate(
+            &declaration,
+            &VenueEvidence::new().with_measurement(unmeasured),
+            now(),
+        );
+        assert!(
+            !outcome.passed,
+            "an unbilled venue cleared the observed rung"
+        );
+        let failed: Vec<&str> = outcome
+            .failures()
+            .into_iter()
+            .map(|(name, _, _)| name.as_str())
+            .collect();
+        assert_eq!(failed, vec![CHECK_FEES_NOT_UNDERSTATED]);
+        let detail = outcome
+            .failures()
+            .into_iter()
+            .find(|(name, _, _)| name == CHECK_FEES_NOT_UNDERSTATED)
+            .map(|(_, _, detail)| detail.clone())
+            .unwrap_or_default();
+        assert!(
+            detail.contains("nothing has measured what it charged"),
+            "the refusal does not name the missing measurement: {detail}"
+        );
+
+        // And the premise: a venue measured at zero basis points clears it.
+        let mut free = honest_measurement();
+        free.fee_bps = Some(Decimal::ZERO);
+        assert!(
+            ObservedGate::default()
+                .evaluate(
+                    &declaration,
+                    &VenueEvidence::new().with_measurement(free),
+                    now()
+                )
+                .passed
+        );
+    }
+
+    #[test]
+    fn a_venue_the_ladder_has_registered_cannot_be_promoted_past_the_simulator_however_measured() {
+        // The ceiling, exercised from the seat a production caller leaves a
+        // venue in rather than from a bare ladder: register, walk it to the
+        // ceiling on perfect evidence, and then ask for one more rung.
+        let mut ladder = VenueLadder::new();
+        let declaration = declaration(VenueClass::CryptoExchange);
+        assert!(
+            ladder.register(&declaration, now()),
+            "the premise: registration seats the venue"
+        );
+        assert!(ladder.knows(declaration.venue().as_str()));
+        assert_eq!(
+            ladder.stage_of(declaration.venue().as_str()),
+            GateStage::Candidate,
+            "registration moved a venue above the first rung"
+        );
+        assert!(
+            !ladder.register(&declaration, now()),
+            "registration is not idempotent, so the history grows for a venue that never moved"
+        );
+        assert_eq!(ladder.history().len(), 1);
+
+        let evidence = VenueEvidence::new()
+            .with_measurement(honest_measurement())
+            .with_simulation(clean_simulation());
+        for _ in 0..2 {
+            attempt_promotion(
+                &mut ladder,
+                &declaration,
+                &evidence,
+                VenuePromotionPolicy::default(),
+                None,
+                "measured, replayed and reconciled",
+                now(),
+            )
+            .expect("an honest venue walks from registered to the simulator");
+        }
+        assert_eq!(
+            ladder.stage_of(declaration.venue().as_str()),
+            VENUE_PROMOTION_CEILING
+        );
+
+        // The rung above, asked for with an approver and on evidence that
+        // cleared every gate. There is no input that makes this succeed, and
+        // the refusal is asserted by its reason rather than by `is_err`:
+        // with the ceiling check deleted this still fails, because no gate
+        // admits to the shadow rung, and a bare `is_err` would pass a build
+        // whose ceiling had been removed.
+        let message = attempt_promotion(
+            &mut ladder,
+            &declaration,
+            &evidence,
+            VenuePromotionPolicy::default(),
+            Some("an operator".to_string()),
+            "an operator asked for it",
+            now(),
+        )
+        .err()
+        .map(|error| error.message().to_string())
+        .unwrap_or_default();
+        assert!(
+            message.contains("ADR 0003"),
+            "refused by something other than the paper-trading ceiling: {message}"
+        );
+        assert_eq!(
+            ladder.stage_of(declaration.venue().as_str()),
+            VENUE_PROMOTION_CEILING
+        );
+    }
+
+    #[test]
     fn a_venue_slower_than_it_declares_is_refused_and_a_faster_one_is_admitted() {
         let declaration = declaration(VenueClass::CryptoExchange);
         let mut measured = honest_measurement();
         // Declared 50ms, tolerating 10, measured 61.
-        measured.latency = Duration::from_millis(61);
+        measured.latency = Some(Duration::from_millis(61));
         let outcome = ObservedGate::default().evaluate(
             &declaration,
             &VenueEvidence::new().with_measurement(measured.clone()),
@@ -1108,7 +1386,7 @@ mod tests {
             .collect();
         assert_eq!(failed, vec![CHECK_LATENCY_NOT_UNDERSTATED]);
 
-        measured.latency = Duration::from_millis(5);
+        measured.latency = Some(Duration::from_millis(5));
         assert!(
             ObservedGate::default()
                 .evaluate(

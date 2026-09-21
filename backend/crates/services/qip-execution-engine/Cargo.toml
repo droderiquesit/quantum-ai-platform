@@ -11,6 +11,14 @@ repository.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
+# The shared venue vocabulary. `observation::DeclaredVenueProfile` carries a
+# `VenueClass` because blueprint §34.4's registered rung is "venue type
+# identified" and the adapter is the only layer that knows which type a venue
+# is; the promotion ladder that reads it already speaks this crate's enum, and
+# a second venue taxonomy here would be exactly the drift that crate exists to
+# stop. A lib edge in the permitted direction, and it adds no external
+# dependency: qip-contracts takes serde, serde_json and qip-core only.
+qip-contracts.workspace = true
 qip-market.workspace = true
 qip-risk.workspace = true
 qip-risk-engine.workspace = true

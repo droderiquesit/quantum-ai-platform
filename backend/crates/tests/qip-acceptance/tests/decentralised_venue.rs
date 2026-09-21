@@ -31,8 +31,11 @@
 // See the note in `acceptance.rs`: in a test the assertion is the deliverable.
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_brokers::adapter::AdapterClass;
+use qip_brokers::VenueCredential;
+use qip_brokers::adapter::{AdapterClass, VenueAdapter};
+use qip_brokers::credential::{RequirementKind, requirements_of_kind, standard_requirements};
 use qip_brokers::dex::DexVenue;
+use qip_brokers::exchange::{ExchangeSettings, SimulatedExchange};
 use qip_contracts::gate::GateStage;
 use qip_contracts::venue::{VenueClass, VenueId};
 use qip_core::error::Result;
@@ -45,9 +48,13 @@ use qip_execution_engine::broker::{
 use qip_execution_engine::feasibility::GATE_MINIMUM_NOTIONAL;
 use qip_execution_engine::oms::{OrderManager, RefusalReason};
 use qip_execution_engine::order::{Order, OrderType, Side};
+use qip_financial::asset_class::InstrumentType;
+use qip_financial::costs::LiquidityProfile;
+use qip_financial::object::FinancialObject;
 use qip_financial::pool::{
     BlockExecution, CONTRACT_RISK_AXIS, ContractRisk, DexModel, PoolCurve, PoolState,
 };
+use qip_financial::quality::Provenance;
 use qip_lifecycle::venue_ladder::{
     SimulationEvidence, VENUE_PROMOTION_CEILING, VenueDeclaration, VenueEvidence, VenueLadder,
     VenueMeasurement, VenuePromotionPolicy, attempt_promotion,
@@ -253,8 +260,8 @@ fn a_venue_promoted_to_the_simulator_still_cannot_receive_an_order_at_a_live_cla
     )?;
     let evidence = VenueEvidence::new()
         .with_measurement(VenueMeasurement {
-            fee_bps: dec!("10"),
-            latency: Duration::from_millis(50),
+            fee_bps: Some(dec!("10")),
+            latency: Some(Duration::from_millis(50)),
             accepted_order_types: ["limit".to_string()].into_iter().collect(),
             rejected_order_types: BTreeSet::new(),
             observations: 40,
@@ -489,8 +496,8 @@ fn the_kernels_venue_admission_review_names_a_reachable_venue_that_never_earned_
     )?;
     let evidence = VenueEvidence::new()
         .with_measurement(VenueMeasurement {
-            fee_bps: dec!("10"),
-            latency: Duration::from_millis(50),
+            fee_bps: Some(dec!("10")),
+            latency: Some(Duration::from_millis(50)),
             accepted_order_types: ["limit".to_string()].into_iter().collect(),
             rejected_order_types: BTreeSet::new(),
             observations: 40,
@@ -517,7 +524,8 @@ fn the_kernels_venue_admission_review_names_a_reachable_venue_that_never_earned_
         "the premise: one of the two venues earned the rung"
     );
 
-    let (summary, problems) = qip_kernel::venue_admission::review(&ladder, &reachable);
+    let (summary, problems) =
+        qip_kernel::venue_admission::review(&ladder, &reachable, &BTreeSet::new());
     assert_eq!(
         summary.as_deref(),
         Some("1 of 2 reachable venue(s) have cleared the simulated rung")
@@ -553,7 +561,7 @@ fn the_kernels_venue_admission_review_names_a_reachable_venue_that_never_earned_
     // empty ladder raises no problem and is still said out loud. A review that
     // fell silent here would be indistinguishable from one nobody wired in.
     let (empty_summary, empty_problems) =
-        qip_kernel::venue_admission::review(&VenueLadder::new(), &reachable);
+        qip_kernel::venue_admission::review(&VenueLadder::new(), &reachable, &BTreeSet::new());
     assert!(
         empty_problems.is_empty(),
         "an unconfigured ladder raised a problem on a cycle nobody can act on: {empty_problems:?}"
@@ -567,5 +575,218 @@ fn the_kernels_venue_admission_review_names_a_reachable_venue_that_never_earned_
         empty_summary.contains('2'),
         "the summary does not say how many venues stand against it: {empty_summary}"
     );
+    Ok(())
+}
+
+// --- §34.4's measurement seam, across the three crates it spans -------------
+
+const MEASURED_VENUE: &str = "XMEAS";
+const MEASURED_ACCOUNT: &str = "book-under-measurement";
+
+fn measured_object() -> ObjectId {
+    ObjectId::from_string("OBJ00000000000000000000MEA")
+}
+
+/// A listed name for the measured venue. `LiquidityProfile` has no `Default`
+/// on purpose: the controls that veto trading read exactly these two figures.
+fn measured_instrument() -> FinancialObject {
+    FinancialObject::builder(
+        measured_object(),
+        "MEA",
+        InstrumentType::CommonStock,
+        LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+    )
+    .name("Measured instrument")
+    .venue(MEASURED_VENUE)
+    .price(dec!("100"))
+    .lot_size(Decimal::ONE)
+    .tick_size(dec!("0.01"))
+    .provenance(Provenance::synthetic("qip-acceptance §34.4 seam", start()))
+    .build(start())
+    .expect("a structurally valid instrument")
+}
+
+fn measured_credential() -> VenueCredential {
+    let enforced = requirements_of_kind(
+        &standard_requirements(&VenueId::new(MEASURED_VENUE)),
+        &[RequirementKind::Account, RequirementKind::SessionCredential],
+    );
+    VenueCredential::satisfying(MEASURED_VENUE, MEASURED_ACCOUNT, &enforced)
+        .expect("a named venue and account")
+}
+
+fn measured_order(label: &str, order_type: OrderType) -> Order {
+    Order::new(
+        OrderId::from_string(label),
+        measured_object(),
+        Side::Buy,
+        Decimal::from_int(10),
+        order_type,
+        dec!("100"),
+        "proposal-under-test",
+        vec!["hypothesis-under-test".to_string()],
+        "scope-under-test",
+        start(),
+    )
+}
+
+#[test]
+fn a_venue_that_times_itself_crosses_the_broker_port_and_earns_the_observed_rung_on_measurement()
+-> Result<()> {
+    // The seam §34.4 and §34.1 both waited on, end to end and across three
+    // crates no one of which can see it: `qip-brokers` holds the facts,
+    // `qip_execution_engine::broker::Broker::observation` is the port they
+    // cross, `qip-kernel` composes them into a measurement and
+    // `qip-lifecycle` judges it. Before this port existed the ladder had a
+    // declaration to check and nothing to check it against, and
+    // `attempt_promotion` had no caller in a binary at all.
+    //
+    // The venue here is one that genuinely measures: its round trip carries a
+    // jitter drawn from the seed, so the figure it reports is one no reader
+    // of its settings could have produced. That is what makes the comparison
+    // a check rather than a number checking itself.
+    let settings = ExchangeSettings {
+        // The seeded coin-flip refusal carries no reason and would make this
+        // test about luck rather than about measurement. The jitter stays,
+        // because the jitter is the thing being measured.
+        rejection_probability: 0.0,
+        ..ExchangeSettings::default()
+    };
+    let declared_latency = settings.latency;
+    let jitter = settings.latency_jitter;
+    assert!(
+        jitter.as_nanos() > 0,
+        "the premise: this venue's round trip carries a jitter, so a measured latency is not \
+         the declared one read back"
+    );
+    let mut exchange = SimulatedExchange::new(VenueId::new(MEASURED_VENUE), settings, 11, start());
+    exchange.list(measured_instrument());
+    exchange.seed_liquidity(
+        &measured_object(),
+        Side::Sell,
+        dec!("100.00"),
+        Decimal::from_int(400),
+        start(),
+    )?;
+    exchange.bring_up(&measured_credential(), start())?;
+
+    // A market order and a limit order, so both declared types are exercised
+    // and something actually fills — a fee rate is a quotient and a venue
+    // that has filled nothing has no denominator.
+    let ticket = exchange.ready(start())?;
+    exchange.submit_order(&ticket, &measured_order("mkt", OrderType::Market), start())?;
+    let ticket = exchange.ready(start())?;
+    exchange.submit_order(
+        &ticket,
+        &measured_order("lmt", OrderType::Limit { price: dec!("101") }),
+        start(),
+    )?;
+
+    // And one order type the venue refuses *for being that type*. This is the
+    // second fact the widened port carries and the one no capability message
+    // can establish: the venue said it accepts market and limit, and this is
+    // what it did when something else arrived.
+    let ticket = exchange.ready(start())?;
+    let refused = exchange.submit_order(
+        &ticket,
+        &measured_order("algo", OrderType::TimeWeighted { minutes: 30 }),
+        start(),
+    );
+    assert!(
+        refused.is_err(),
+        "the premise: this venue refuses an execution algorithm"
+    );
+
+    // Enough answers that a latency figure has a shape. Heartbeats are
+    // acknowledgements like any other instruction, and counting them is
+    // honest: the round trip is the round trip.
+    for _ in 0..40 {
+        exchange.heartbeat(start())?;
+    }
+
+    let observation = exchange
+        .observation()
+        .expect("a venue that has answered reports what it saw");
+    assert_eq!(observation.venue.as_str(), MEASURED_VENUE);
+    let measured_latency = observation
+        .observed
+        .acknowledgement_latency
+        .expect("this venue times its acknowledgements");
+    // The assertion that distinguishes a measurement from a setting read
+    // back. A venue reporting exactly its declared latency has told us
+    // nothing; this one reports the jitter it actually applied.
+    assert!(
+        measured_latency.as_nanos() > declared_latency.as_nanos(),
+        "the measured latency equals the declared one, so nothing independent crossed the port: \
+         declared {} ns, measured {} ns",
+        declared_latency.as_nanos(),
+        measured_latency.as_nanos()
+    );
+    assert!(
+        observation.observed.rejected_order_types.contains("twap"),
+        "the type the venue refused did not cross the port: {:?}",
+        observation.observed.rejected_order_types
+    );
+    assert!(
+        observation.observed.accepted_order_types.contains("market")
+            && observation.observed.accepted_order_types.contains("limit"),
+        "the types the venue accepted did not cross the port: {:?}",
+        observation.observed.accepted_order_types
+    );
+    assert!(
+        observation.observed.fee_bps().is_some(),
+        "the venue filled and still reports no rate, so the fee half of the port is inert"
+    );
+
+    // Now the judgement, through the production seam rather than through a
+    // fixture. One rung per pass, and the rung is earned on the measurement
+    // above and nothing else.
+    let mut ladder = VenueLadder::new();
+    let outcome = qip_kernel::venue_measurement::measure(
+        &mut ladder,
+        MEASURED_VENUE,
+        Some(observation),
+        VenuePromotionPolicy::default(),
+        start(),
+    );
+    assert!(outcome.problems.is_empty(), "{:?}", outcome.problems);
+    assert!(
+        outcome.unmeasured.is_empty(),
+        "a venue that reported every fact was excused as unmeasurable"
+    );
+    assert_eq!(
+        ladder.stage_of(MEASURED_VENUE),
+        GateStage::Holdout,
+        "a venue that measured as it declared did not earn the observed rung"
+    );
+
+    // And the ceiling, from the same seam: a hundred further passes of the
+    // same perfect evidence never reach a rung that holds capital. There is
+    // no simulation evidence here because nothing in this process replays a
+    // recorded session, and above that there is no rung at all.
+    for _ in 0..100 {
+        let again = exchange.observation();
+        qip_kernel::venue_measurement::measure(
+            &mut ladder,
+            MEASURED_VENUE,
+            again,
+            VenuePromotionPolicy::default(),
+            start(),
+        );
+    }
+    let reached = ladder.stage_of(MEASURED_VENUE);
+    assert!(
+        reached <= VENUE_PROMOTION_CEILING,
+        "the measurement seam walked a venue past the simulator"
+    );
+    assert!(
+        !reached.holds_capital(),
+        "the rung the measurement seam reached holds capital"
+    );
+    assert!(
+        !reached.may_reach_a_venue(),
+        "the rung the measurement seam reached may reach a venue"
+    );
+    assert_eq!(reached, GateStage::Holdout);
     Ok(())
 }

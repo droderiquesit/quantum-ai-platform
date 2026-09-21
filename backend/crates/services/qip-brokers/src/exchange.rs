@@ -35,13 +35,16 @@ use crate::credential::{
 };
 use crate::ledger::{AccountLedger, MarginPolicy};
 use crate::matching::{MatchingEngine, Participant};
-use qip_contracts::venue::VenueId;
+use qip_contracts::venue::{VenueClass, VenueId};
 use qip_core::error::{Error, Result};
 use qip_core::ids::{FillId, ObjectId, OrderId};
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Currency, Decimal};
 use qip_execution_engine::broker::{Broker, VenueCapabilities};
+use qip_execution_engine::observation::{
+    DeclaredVenueProfile, ObservedVenueFacts, VenueObservation,
+};
 use qip_execution_engine::order::{Fill, Order, OrderType, Side};
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::costs::LiquidityProfile;
@@ -53,7 +56,7 @@ use qip_market::quote::Quote;
 use qip_routing::ratelimit::{RateLedger, RateLimits};
 use qip_routing::venue::{FeeSchedule, Liquidity};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One listed instrument's depth, as the simulated venue publishes it.
 ///
@@ -240,6 +243,65 @@ pub struct SimulatedExchange {
     /// Cumulative for the life of this venue object, which is the honest
     /// window for a venue that reads no clock but the caller's.
     traded_notional: Decimal,
+    /// What answering instructions has shown about this venue, for blueprint
+    /// §34.4's observed rung. See [`ObservationTally`] for why it is boxed.
+    tally: Box<ObservationTally>,
+}
+
+/// What this venue has observed about itself, as distinct from what it
+/// publishes.
+///
+/// **Boxed on the venue rather than inlined, and that is not a
+/// micro-optimisation.** `SimulatedExchange` is the large arm of
+/// `qip-edge-node`'s gateway enum, and a hundred bytes of diagnostic tally
+/// inlined here widens the gap between that enum's two arms past the point
+/// clippy refuses — so a reporting concern would be deciding the layout of a
+/// type on the order path, and the compiler would say so on every build. The
+/// tally is allocated once per venue and read once per cycle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ObservationTally {
+    /// Instructions this venue has answered, and the total round trip across
+    /// them. The observed rung reads the mean of the two.
+    ///
+    /// **A measurement rather than a setting read back.** The round trip this
+    /// venue applies is `settings.latency` plus a jitter drawn from the seed,
+    /// so the mean is a figure the caller cannot obtain from the declaration
+    /// — which is the only kind of figure the observed rung can honestly
+    /// judge a declaration against.
+    ///
+    /// `None` once the sum overflows: a venue that can no longer total its
+    /// round trips reports no latency rather than a short one, because a
+    /// short latency is the flattering answer.
+    acknowledgements: usize,
+    acknowledgement_nanos: Option<i64>,
+    /// Commission actually charged here, the numerator to
+    /// [`SimulatedExchange::traded_notional`]'s denominator. `None` on
+    /// overflow, for the reason [`Self::acknowledgement_nanos`] gives.
+    fees_charged: Option<Decimal>,
+    /// Order types this venue took, and order types it refused **for being
+    /// that type**. The second set is fed only from the order-type refusal in
+    /// [`SimulatedExchange::limit_of`]; a rate-limit refusal or an unlisted
+    /// instrument says nothing about the type and is deliberately absent
+    /// from it.
+    accepted_order_types: BTreeSet<String>,
+    rejected_order_types: BTreeSet<String>,
+}
+
+impl ObservationTally {
+    /// A venue that has answered nothing and can still total what it does.
+    ///
+    /// Not `Default`, because the derived one would start the two sums at
+    /// `None` — which this type uses to mean "can no longer total", the
+    /// opposite of a fresh venue.
+    fn new() -> Self {
+        Self {
+            acknowledgements: 0,
+            acknowledgement_nanos: Some(0),
+            fees_charged: Some(Decimal::ZERO),
+            accepted_order_types: BTreeSet::new(),
+            rejected_order_types: BTreeSet::new(),
+        }
+    }
 }
 
 impl SimulatedExchange {
@@ -274,6 +336,7 @@ impl SimulatedExchange {
             rejected: 0,
             rates: RateLedger::new(),
             traded_notional: Decimal::ZERO,
+            tally: Box::new(ObservationTally::new()),
         }
     }
 
@@ -549,13 +612,25 @@ impl SimulatedExchange {
     }
 
     /// The round trip for this instruction, jitter included.
+    ///
+    /// Every answer this venue gives passes through here, so this is the seam
+    /// at which the acknowledgement latency becomes known and the one place
+    /// it is recorded. Recording it at the call sites instead would have left
+    /// whichever site was added next silently uncounted.
     fn round_trip(&mut self) -> Duration {
         let jitter = self.settings.latency_jitter.as_nanos();
-        if jitter <= 0 {
-            return self.settings.latency;
-        }
-        let drawn = self.rng.below(jitter.unsigned_abs()) as i64;
-        self.settings.latency + Duration::from_nanos(drawn)
+        let trip = if jitter <= 0 {
+            self.settings.latency
+        } else {
+            let drawn = self.rng.below(jitter.unsigned_abs()) as i64;
+            self.settings.latency + Duration::from_nanos(drawn)
+        };
+        self.tally.acknowledgements = self.tally.acknowledgements.saturating_add(1);
+        self.tally.acknowledgement_nanos = self
+            .tally
+            .acknowledgement_nanos
+            .and_then(|total| total.checked_add(trip.as_nanos()));
+        trip
     }
 
     /// The limit an order type implies, and whether the venue accepts it.
@@ -656,6 +731,13 @@ impl SimulatedExchange {
             .settings
             .fees
             .fee(notional, liquidity, self.traded_notional)?;
+        // The numerator of the measured fee rate §34.4's observed rung reads,
+        // kept beside the volume ladder's own denominator so the two describe
+        // exactly the same fills.
+        self.tally.fees_charged = self
+            .tally
+            .fees_charged
+            .and_then(|total| total.checked_add(costs));
         let traded = self.traded_notional;
         self.traded_notional = traded.checked_add(notional.abs()).ok_or_else(|| {
             Error::numeric(format!(
@@ -864,13 +946,26 @@ impl VenueAdapter for SimulatedExchange {
             return Err(error);
         }
 
+        let kind = order.order_type.as_str().to_string();
+        // The one refusal on this path attributable to the order's *type*:
+        // `limit_of` refuses an execution algorithm because it is one.
+        // Everything else here — an unlisted instrument, an off-lot size, a
+        // spent rate window — refuses a particular order and says nothing
+        // about its kind, so none of them feeds the rejected set. A refusal
+        // filed under a type nobody refused would teach the promotion ladder
+        // that the venue rejects `market`.
         let limit = self.limit_of(order).inspect_err(|_| {
             self.rejected = self.rejected.saturating_add(1);
+            self.tally.rejected_order_types.insert(kind.clone());
         })?;
         if let Err(error) = self.admit(order, limit) {
             self.rejected = self.rejected.saturating_add(1);
             return Err(error);
         }
+        // The venue has taken it. Recorded on acceptance rather than on a
+        // fill, because a limit order that rests unfilled was still accepted
+        // and that is what the order-type check asks.
+        self.tally.accepted_order_types.insert(kind);
 
         let round_trip = self.round_trip();
         let landed = at.saturating_add(round_trip);
@@ -1215,5 +1310,72 @@ impl Broker for SimulatedExchange {
 
     fn requirement(&self) -> String {
         self.requirement_summary()
+    }
+
+    /// What this venue publishes about itself, and what answering real
+    /// instructions has shown.
+    ///
+    /// This is the adapter blueprint §34.4's observed rung can actually be
+    /// run against, because every fact it reports is one the caller could not
+    /// have obtained from the declaration:
+    ///
+    /// * the acknowledgement latency is the *mean round trip actually
+    ///   applied*, which includes a jitter drawn from the seed and so exceeds
+    ///   the published base latency by an amount no reader of the settings
+    ///   could predict;
+    /// * the rejected order types come from the venue refusing an execution
+    ///   algorithm for being one, not from the seeded coin flip, which
+    ///   carries no reason and is deliberately filed under no type;
+    /// * the fee rate is what [`FeeSchedule::fee`] actually charged over the
+    ///   notional actually traded, read through the ladder rung each fill
+    ///   reached rather than through the headline rate.
+    ///
+    /// [`None`] when the venue has answered nothing — there is no mean over
+    /// zero acknowledgements, and zero milliseconds is the flattering wrong
+    /// answer — or when a tally has overflowed, or when the published rate is
+    /// not representable as an exact figure. An absent observation costs the
+    /// venue a rung; a fabricated one costs the rung its meaning.
+    fn observation(&self) -> Option<VenueObservation> {
+        // The venue publishes its rates in `f64` basis points, which is how a
+        // real venue publishes them, and the ladder compares in `Decimal`.
+        // This is the one crossing, it is a *declaration* rather than booked
+        // money — every charge against cash goes through `FeeSchedule::fee`,
+        // which is exact — and a rate that will not convert produces no
+        // observation rather than a zero.
+        let declared_fee_bps = Decimal::from_f64(
+            self.settings
+                .fees
+                .rate_bps_f64(Liquidity::Taker, Decimal::ZERO),
+        )?;
+        // A mean over no acknowledgements is not zero, it is no answer.
+        let latency = match (
+            self.tally.acknowledgements,
+            self.tally.acknowledgement_nanos,
+        ) {
+            (0, _) | (_, None) => None,
+            (count, Some(total)) => i64::try_from(count)
+                .ok()
+                .and_then(|count| total.checked_div(count))
+                .map(Duration::from_nanos),
+        };
+        Some(VenueObservation {
+            venue: self.venue.clone(),
+            declared: DeclaredVenueProfile {
+                // A central limit order book: this venue queues orders behind
+                // each other at a price and walks the levels.
+                class: VenueClass::Exchange,
+                fee_bps: declared_fee_bps,
+                acknowledgement_latency: self.settings.latency,
+                order_types: self.capabilities().supported_types.into_iter().collect(),
+            },
+            observed: ObservedVenueFacts {
+                acknowledgements: self.tally.acknowledgements,
+                acknowledgement_latency: latency,
+                fees_charged: self.tally.fees_charged,
+                notional_filled: Some(self.traded_notional),
+                accepted_order_types: self.tally.accepted_order_types.clone(),
+                rejected_order_types: self.tally.rejected_order_types.clone(),
+            },
+        })
     }
 }

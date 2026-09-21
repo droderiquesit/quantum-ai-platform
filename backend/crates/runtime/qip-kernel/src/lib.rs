@@ -61,6 +61,7 @@ pub mod shared_cause;
 pub mod sizing_review;
 pub mod valuation;
 pub mod venue_admission;
+pub mod venue_measurement;
 pub mod venue_review;
 
 pub use asset_class_registry::{AssetClassRecord, AssetClassRegistry, ValuationEngine};
