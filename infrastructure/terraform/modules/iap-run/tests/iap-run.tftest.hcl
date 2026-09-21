@@ -66,6 +66,32 @@ run "an_empty_access_list_plans_cleanly_and_grants_nobody" {
     condition     = output.grant_command != "" && !strcontains(output.url, "algorik.ai")
     error_message = "the door's URL names a domain this repository would have to own; the point of ADR 0095 is a hostname Google issues"
   }
+
+  # The grant command, as the exact string, for the same reason the URL is.
+  #
+  # `!= ""` above guards almost nothing: every wrong command is also
+  # non-empty, and the two ways this one goes wrong are both silent. Drop
+  # `--resource-type=cloud-run` and the same subcommand edits the **project's**
+  # IAP policy — it succeeds, it prints nothing alarming, and it makes the
+  # wide grant ADR 0095 narrowed away from. Drop or mistype `--region` and the
+  # binding is made in a region the service is not in, which also applies
+  # cleanly and admits nobody to the console anybody is trying to reach.
+  #
+  # This is the one step the repository deliberately cannot take on the
+  # owner's behalf, so it is the one string a person will paste without
+  # reading. Asserting it whole is what makes it safe to paste.
+  assert {
+    condition = output.grant_command == join(" ", [
+      "gcloud iap web add-iam-policy-binding",
+      "--project=iap-run-plan-harness",
+      "--resource-type=cloud-run",
+      "--region=us-east4",
+      "--service=qip-dev-portal",
+      "--role=roles/iap.httpsResourceAccessor",
+      "--member='user:YOU@example.com'",
+    ])
+    error_message = "the printed grant command is not the invocation that admits a person to this one Cloud Run service; without --resource-type=cloud-run it edits the project's IAP policy instead, and with the wrong --region it binds in a region the service is not in — both succeed and neither opens the console"
+  }
 }
 
 # --- the access list, when there is one ----------------------------------------

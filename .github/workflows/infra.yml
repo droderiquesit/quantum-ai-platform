@@ -1856,22 +1856,59 @@ jobs:
             echo "Config Connector creates it from infrastructure/gitops/envs/${ENVIRONMENT}/portal.yaml once that manifest names a digest rather than TO-PIN. Re-run this action after a deploy.yml run has built and attested qip-portal."
             exit 0
           fi
-          gcloud run services update "$service" \
-            --project "${GCP_PROJECT}" --region "$region" --iap --quiet
+          # GA first, then `gcloud beta`, and the fallback is not
+          # belt-and-braces. `iap_enabled` is a Cloud Run **v2** field that
+          # exists only on the `google-beta` Terraform provider — the whole
+          # reason this step exists at all rather than a line in
+          # `portal.yaml` — and gcloud's GA `run` surface tracks the v1
+          # shape, so the release track that carries `--iap` and the one that
+          # projects `iapEnabled` back can differ on any given gcloud build.
+          # Whichever answers, the read-back below is unconditional: a
+          # fallback that made the gate easier to enable and the check easier
+          # to skip would be the step reporting a protected console either
+          # way, which is the failure this step was written against.
+          if ! gcloud run services update "$service" \
+                 --project "${GCP_PROJECT}" --region "$region" --iap --quiet 2>/tmp/iap-update.err; then
+            sed 's/^/  ga: /' /tmp/iap-update.err >&2
+            if ! gcloud beta run services update "$service" \
+                   --project "${GCP_PROJECT}" --region "$region" --iap --quiet 2>/tmp/iap-update-beta.err; then
+              sed 's/^/  beta: /' /tmp/iap-update-beta.err >&2
+              echo "::error title=IAP could not be enabled::neither gcloud run nor gcloud beta run could set --iap on ${service}; both messages are above." >&2
+              exit 1
+            fi
+            echo "the GA surface refused --iap and gcloud beta accepted it; the read-back below is what decides whether the gate is on."
+          fi
           enabled="$(gcloud run services describe "$service" \
             --project "${GCP_PROJECT}" --region "$region" \
-            --format='value(iapEnabled)')"
+            --format='value(iapEnabled)' 2>/dev/null || true)"
+          if [ -z "$enabled" ]; then
+            # Empty is not false. The GA projection may simply not carry a v2
+            # field; ask the track that does before concluding anything.
+            enabled="$(gcloud beta run services describe "$service" \
+              --project "${GCP_PROJECT}" --region "$region" \
+              --format='value(iapEnabled)' 2>/dev/null || true)"
+          fi
           case "$enabled" in
             True|true)
               echo "IAP is enabled on ${service}; it is read back as iapEnabled=${enabled} rather than assumed from the update returning zero."
               ;;
             *)
-              echo "::error title=the console is not gated::${service} reports iapEnabled='${enabled}' after --iap was applied." >&2
+              echo "::error title=the console is not gated::${service} reports iapEnabled='${enabled}' after --iap was applied, on the GA surface and on gcloud beta." >&2
+              echo "An empty value means neither release track answered, not that the gate reads false; both readings fail this step, because neither is the proof it is required to produce." >&2
               echo "Do not treat this as cosmetic. The service is INGRESS_TRAFFIC_ALL and has no allUsers invoker, so right now it answers 403 to everyone, which is the safe direction — but it is not the protected console this step claims to have produced." >&2
               echo "If this is the first time IAP has been enabled in a project with no organisation, Google cannot create the OAuth client programmatically: enable IAP once on this service in the Cloud console, or configure a custom OAuth client, then re-run this action." >&2
               exit 1
               ;;
           esac
+          # Where to go, read from the service rather than derived, for the
+          # same reason the diagnose action reads it: `modules/iap-run`
+          # computes this address from a Cloud Run naming convention, and a
+          # convention is not a reading. If the two ever disagree, this line
+          # is the one to believe.
+          url="$(gcloud run services describe "$service" \
+            --project "${GCP_PROJECT}" --region "$region" \
+            --format='value(status.url)' 2>/dev/null || true)"
+          echo "the console answers at: ${url:-unread; terraform output console_front_door derives it}"
           echo "Nobody is admitted yet. The access list is empty on purpose; grant a person with:"
           echo "  gcloud iap web add-iam-policy-binding --project=${GCP_PROJECT} --resource-type=cloud-run --region=${region} --service=${service} --role=roles/iap.httpsResourceAccessor --member='user:YOU@example.com'"
 
@@ -2094,6 +2131,40 @@ jobs:
           fi
           for service in ${services}; do
             echo "  ${service}:"
+            # The address a browser would open, and whether Identity-Aware
+            # Proxy is in front of it. Both are read rather than derived, and
+            # they are here because the question this action exists to answer
+            # cheaply is now "where is the console and is it gated" as often
+            # as it is "why is the revision unhealthy".
+            #
+            # `modules/iap-run` derives the same URL from the service name,
+            # the project number and the region, and `terraform output
+            # console_front_door` prints that derivation. This line is the
+            # authority when the two disagree: the derivation is a documented
+            # Cloud Run convention, and a convention is not a reading.
+            url="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" \
+              --region "${region}" --format='value(status.url)' 2>/dev/null || true)"
+            echo "    url: ${url:-none; no revision has served yet}"
+            # `iapEnabled` is a Cloud Run **v2** field and `gcloud run
+            # services describe` projects the v1 shape, so the GA surface can
+            # answer empty for a service on which IAP is genuinely enabled.
+            # An empty answer is therefore reported as unread rather than as
+            # false: "IAP is off" and "this gcloud did not say" are different
+            # facts, and printing the second as the first is how a diagnosis
+            # sends somebody to re-enable a gate that was never off.
+            iap="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" \
+              --region "${region}" --format='value(iapEnabled)' 2>/dev/null || true)"
+            surface="run services describe"
+            if [ -z "${iap}" ]; then
+              iap="$(gcloud beta run services describe "${service}" --project "${GCP_PROJECT}" \
+                --region "${region}" --format='value(iapEnabled)' 2>/dev/null || true)"
+              surface="beta run services describe"
+            fi
+            if [ -z "${iap}" ]; then
+              echo "    iapEnabled: not reported by either gcloud surface; this is not a reading of false"
+            else
+              echo "    iapEnabled: ${iap} (read with gcloud ${surface})"
+            fi
             gcloud run services describe "${service}" --project "${GCP_PROJECT}" --region "${region}" \
               --format='value[separator="; "](status.conditions.map().format("service {0}={1} {2}", type, status, message).list())' 2>&1 \
               | sed 's/^/    /'
