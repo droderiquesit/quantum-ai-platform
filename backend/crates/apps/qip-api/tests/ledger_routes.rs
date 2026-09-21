@@ -2273,6 +2273,7 @@ fn private_fund() -> Result<FinancialObject> {
         stage: "buyout".to_string(),
         lockup_years: 7.0,
         capital_call_notice_days: 10,
+        call_schedule: None,
     }))
     .provenance(Provenance::synthetic("administrator", start()))
     .build(start())

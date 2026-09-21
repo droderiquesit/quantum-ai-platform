@@ -28,7 +28,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ObjectId, dec};
 use qip_events::Topic;
 use qip_financial::asset_class::{InstrumentType, Sector};
-use qip_financial::cashflow::CallConsequence;
+use qip_financial::cashflow::{CallConsequence, CallSchedule, ScheduledCall};
 use qip_financial::costs::LiquidityProfile;
 use qip_financial::extensions::{Extension, PrivateAssetDetails};
 use qip_financial::ladder::Rung;
@@ -37,7 +37,10 @@ use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
 use qip_kernel::central::CellReport;
 use qip_kernel::config::PlatformConfig;
-use qip_kernel::platform::{CapitalCallEntry, CapitalCallFunding, CapitalCallNotice, Platform};
+use qip_kernel::platform::{
+    CallFundingDemand, CapitalCallEntry, CapitalCallFunding, CapitalCallNotice, FundingBasis,
+    Platform,
+};
 use qip_mesh::delta::DeltaOrder;
 use qip_observability::Telemetry;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
@@ -94,6 +97,7 @@ fn private_fund() -> Result<FinancialObject> {
         stage: "buyout".to_string(),
         lockup_years: 7.0,
         capital_call_notice_days: 10,
+        call_schedule: None,
     }))
     .provenance(Provenance::synthetic("administrator", start()))
     .build(start())
@@ -307,10 +311,11 @@ fn a_capital_call_is_refused_before_anything_is_journalled_and_an_admitted_one_i
         due_at,
         consequence,
         filed_by,
-        // The funding read has its own tests below; this one is about the
-        // notice, and binding it here keeps the pattern exhaustive so a
-        // field added to the record cannot go unnoticed by every test at
-        // once.
+        // The funding read and the figure it was served against have their
+        // own tests below; this one is about the notice, and binding them
+        // here keeps the pattern exhaustive so a field added to the record
+        // cannot go unnoticed by every test at once.
+        demand: _,
         funding: _,
     } = &records[0]
     else {
@@ -669,6 +674,24 @@ fn absorb_a_long(platform: &mut Platform, notional: Decimal) -> Result<()> {
     Ok(())
 }
 
+/// The figure the ladder was asked for, and why, as the log holds it for one
+/// reference.
+fn demand_of(platform: &Platform, reference: &str) -> Result<CallFundingDemand> {
+    call_records(platform)?
+        .into_iter()
+        .find_map(|entry| match entry {
+            CapitalCallEntry::Noticed {
+                reference: filed,
+                demand,
+                ..
+            } if filed == reference => Some(demand),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            qip_core::error::Error::not_found(format!("no notice under {reference} is on the log"))
+        })
+}
+
 /// The funding read the log holds for one reference.
 fn funding_of(platform: &Platform, reference: &str) -> Result<CapitalCallFunding> {
     let read = call_records(platform)?
@@ -888,6 +911,381 @@ fn reading_the_ladder_for_a_capital_call_places_nothing_and_moves_no_capital() -
         platform.event_log().records().len(),
         records_before + 1,
         "filing a notice wrote something besides the notice"
+    );
+    Ok(())
+}
+
+// --- the published drawdown schedule (blueprint §16.4) -----------------------
+
+fn days_on(n: i64) -> Timestamp {
+    start().saturating_add(Duration::from_days(n))
+}
+
+/// The same fund, publishing 100,000 of draws on each of two dates inside
+/// the next quarter — 200,000 against the 250,000 it may still call.
+fn scheduled_fund() -> Result<FinancialObject> {
+    FinancialObject::builder(
+        object("FUND"),
+        "FUND",
+        InstrumentType::PrivateEquityFund,
+        LiquidityProfile::illiquid(90.0, 250.0),
+    )
+    .venue("OTC")
+    .geography("US")
+    .price(dec!("100"))
+    .extension(Extension::PrivateAsset(PrivateAssetDetails {
+        vintage_year: 2024,
+        committed_capital: dec!("400000"),
+        called_capital: dec!("150000"),
+        distributed_capital: Decimal::ZERO,
+        residual_value: dec!("160000"),
+        stage: "buyout".to_string(),
+        lockup_years: 7.0,
+        capital_call_notice_days: 10,
+        call_schedule: Some(CallSchedule::published(vec![
+            ScheduledCall {
+                due: days_on(30),
+                amount: dec!("100000"),
+            },
+            ScheduledCall {
+                due: days_on(60),
+                amount: dec!("100000"),
+            },
+        ])?),
+    }))
+    .provenance(Provenance::synthetic("administrator", start()))
+    .build(start())
+}
+
+fn scheduled_universe() -> Result<Universe> {
+    let mut universe = Universe::new();
+    universe.insert(listed("AAA")?)?;
+    universe.insert(scheduled_fund()?)?;
+    Ok(universe)
+}
+
+/// A desk holding `cash` over a universe whose fund publishes its draws.
+fn scheduled_desk(cash: Decimal) -> Result<Platform> {
+    let config = PlatformConfig {
+        initial_equity: cash,
+        ..PlatformConfig::default()
+    };
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        scheduled_universe()?,
+        limits(),
+    )
+}
+
+#[test]
+fn a_notice_on_a_fund_that_will_draw_deeper_is_read_against_the_schedule_and_not_the_notice_alone()
+-> Result<()> {
+    // Blueprint §16.4's J-curve reaching the one cash demand this platform
+    // has. `CashflowForecast::j_curve_trough` was complete, tested and
+    // structurally incapable of answering: the only forecast this platform
+    // built held a single distribution, so the cumulative sum never went
+    // negative and the trough was always `None`. A record that dates its own
+    // draws is what makes it answer, and this is the answer having a
+    // consequence.
+    let mut platform = scheduled_desk(dec!("100000"))?;
+    absorb_a_long(&mut platform, dec!("150000"))?;
+    let called = dec!("50000");
+
+    // Premises, each of which alone would make the assertion pass for the
+    // wrong reason. The schedule reached the commitment; the desk holds cash
+    // and a position under it; and the notice on its own fits inside the
+    // cash, so a read served against the notice alone would never leave the
+    // top rung.
+    assert!(
+        platform
+            .commitments()
+            .get(FUND)
+            .and_then(qip_financial::cashflow::Commitment::forecast)
+            .is_some(),
+        "the premise failed: the published schedule did not reach the commitment"
+    );
+    assert_eq!(
+        qip_risk::aggregate::AggregateFigures::cash(platform.risk_figures()),
+        dec!("100000")
+    );
+    assert!(
+        called < dec!("100000"),
+        "the premise failed: the notice alone already leaves the cash rung"
+    );
+
+    platform.record_capital_call(
+        FUND,
+        notice("call-1", called, ten_days_on()),
+        &operator(),
+        start(),
+    )?;
+
+    // The question the ladder was asked, and why it was that question.
+    let demand = demand_of(&platform, "call-1")?;
+    assert_eq!(
+        demand.amount,
+        dec!("200000"),
+        "the deepest draw still ahead of this notice is both scheduled calls"
+    );
+    assert_eq!(
+        demand.basis,
+        FundingBasis::ScheduleTrough {
+            deepest_at: days_on(60)
+        },
+        "the record must say the figure came from the schedule, and when the trough falls — a \
+         reader who cannot tell reads a schedule's peak as this notice's shortfall"
+    );
+
+    // And the consequence: the read descends where the notice alone would
+    // not have. This is the whole value of the wire.
+    let CapitalCallFunding::Served { deepest_rung, .. } = funding_of(&platform, "call-1")? else {
+        panic!(
+            "200,000 against a 250,000 ladder was not served: {:?}",
+            funding_of(&platform, "call-1")
+        );
+    };
+    assert_eq!(deepest_rung, Rung::ListedEquityAndFutures);
+
+    // The same notice on the same book without the published schedule stays
+    // on the cash rung, which is what makes the line above a finding about
+    // the schedule rather than about the fixture.
+    let mut unscheduled = desk_holding(dec!("100000"))?;
+    absorb_a_long(&mut unscheduled, dec!("150000"))?;
+    unscheduled.record_capital_call(
+        FUND,
+        notice("call-1", called, ten_days_on()),
+        &operator(),
+        start(),
+    )?;
+    assert_eq!(
+        demand_of(&unscheduled, "call-1")?.basis,
+        FundingBasis::Notice
+    );
+    let CapitalCallFunding::Served { deepest_rung, .. } = funding_of(&unscheduled, "call-1")?
+    else {
+        panic!("50,000 out of 100,000 of cash was not served");
+    };
+    assert_eq!(
+        deepest_rung,
+        Rung::CashAtVenue,
+        "the premise failed: this book reaches a position without any schedule, and the descent \
+         above would not be the schedule's doing"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_schedule_shallower_than_the_notice_never_shortens_the_question() -> Result<()> {
+    // Max and never a replacement — `exit_days_with_forecast`'s discipline,
+    // and `Commitment::demand_within`'s "the greater of the two, never a sum
+    // of them". The property is that publishing a schedule can only ever
+    // make the recorded read deeper: a schedule that shortened the question
+    // would let a pacing model report a book as better able to fund a call
+    // than the same book was before anybody published anything.
+    let mut platform = scheduled_desk(dec!("100000"))?;
+    absorb_a_long(&mut platform, dec!("150000"))?;
+
+    // Premise: the schedule is there and its trough is 200,000, strictly
+    // less than the notice about to be filed.
+    let trough = dec!("200000");
+    let called = dec!("250000");
+    assert!(trough < called);
+    assert!(
+        platform
+            .commitments()
+            .get(FUND)
+            .and_then(qip_financial::cashflow::Commitment::forecast)
+            .is_some(),
+        "the premise failed: no schedule is attached and nothing could have been shortened"
+    );
+
+    platform.record_capital_call(
+        FUND,
+        notice("call-1", called, ten_days_on()),
+        &operator(),
+        start(),
+    )?;
+    let demand = demand_of(&platform, "call-1")?;
+    assert_eq!(
+        demand.amount, called,
+        "the schedule shortened the question, and a shallower read on a deeper book is the \
+         protection running backwards"
+    );
+    assert_eq!(demand.basis, FundingBasis::Notice);
+    Ok(())
+}
+
+#[test]
+fn a_dated_call_schedule_does_not_lower_the_capital_the_platform_will_deploy() -> Result<()> {
+    // **The refusal, pinned.** A published schedule says *when* capital will
+    // be drawn, and the demand inside any horizon is bounded above by the
+    // unfunded balance — `Commitment::with_forecast` and
+    // `PrivateAssetDetails::checked` both refuse a schedule that exceeds it.
+    // `Platform::deployable_capital` already reserves that balance whole, so
+    // a reserve that read the schedule could only ever *fall*: not a control
+    // that cannot fire, but a control rewired to fire less, which is the
+    // `MaxExpectedShortfall` failure inverted. Nothing reads it, and this is
+    // what keeps it that way.
+    let mut scheduled = scheduled_desk(dec!("1000000"))?;
+    let mut bare = desk_holding(dec!("1000000"))?;
+
+    // Premise: the two books differ in exactly one thing — the schedule —
+    // and the schedule really is attached, so the equality below is not
+    // between two identical platforms.
+    let commitment = scheduled
+        .commitments()
+        .get(FUND)
+        .expect("the premise failed: the fund reached no commitment");
+    let forecast = commitment
+        .forecast()
+        .expect("the premise failed: the published schedule did not reach the commitment");
+    assert_eq!(forecast.len(), 3, "two draws and the residual");
+    assert!(
+        bare.commitments()
+            .get(FUND)
+            .and_then(qip_financial::cashflow::Commitment::forecast)
+            .is_none(),
+        "the premise failed: the unscheduled fixture carries a schedule"
+    );
+
+    // Premise, and the tripwire: the horizon figure a reserve might be
+    // tempted to read is strictly *lower* than the obligation. If these two
+    // were equal the assertion below would pass whatever the reserve read.
+    let month = Duration::from_days(15);
+    let obligation = scheduled.commitments().unfunded_total(start())?;
+    let horizon_demand = scheduled.commitments().demand_within(start(), month)?;
+    assert_eq!(obligation, dec!("250000"));
+    assert!(
+        horizon_demand < obligation,
+        "the premise failed: the schedule's near demand is not lower than the obligation, so \
+         nothing here could detect a reserve rewired to read it"
+    );
+
+    assert_eq!(
+        scheduled.deployable_capital(start())?,
+        bare.deployable_capital(start())?,
+        "publishing a drawdown schedule moved the capital the platform will deploy; a schedule \
+         is a record of when, and the reserve is the balance whole"
+    );
+    assert_eq!(
+        scheduled.deployable_capital(start())?,
+        dec!("750000"),
+        "a million of equity less the whole 250,000 the fund may still call"
+    );
+    Ok(())
+}
+
+#[test]
+fn reading_a_published_schedule_for_a_capital_call_places_nothing_and_moves_no_capital()
+-> Result<()> {
+    // ADR 0021's boundary at the seam a dated schedule reaches. A schedule
+    // is a record — dates and amounts an administrator published — and the
+    // one thing it must never become is an instruction. `ScheduledCall`
+    // carries no venue, no side and no instrument; the `PlanLeg`s it leads
+    // to carry no side and no time in force; and nothing converts either.
+    let mut platform = scheduled_desk(dec!("100000"))?;
+    absorb_a_long(&mut platform, dec!("150000"))?;
+    let cash_before = qip_risk::aggregate::AggregateFigures::cash(platform.risk_figures());
+    let positions_before =
+        qip_risk::aggregate::AggregateFigures::position_notionals(platform.risk_figures()).clone();
+    let fills_before = platform.risk_figures().fills();
+    let records_before = platform.event_log().records().len();
+
+    platform.record_capital_call(
+        FUND,
+        notice("call-1", dec!("50000"), ten_days_on()),
+        &operator(),
+        start(),
+    )?;
+
+    // Premise: the read taken was the schedule's, and it reached a position.
+    // A read over cash alone could not have placed anything in any case.
+    assert!(matches!(
+        demand_of(&platform, "call-1")?.basis,
+        FundingBasis::ScheduleTrough { .. }
+    ));
+    assert!(!positions_before.is_empty());
+
+    assert_eq!(
+        qip_risk::aggregate::AggregateFigures::cash(platform.risk_figures()),
+        cash_before,
+        "the schedule spent the desk's cash"
+    );
+    assert_eq!(
+        qip_risk::aggregate::AggregateFigures::position_notionals(platform.risk_figures()),
+        &positions_before,
+        "the schedule sold a position it may only name"
+    );
+    assert_eq!(
+        platform.risk_figures().fills(),
+        fills_before,
+        "a fill was booked against a schedule nobody executed"
+    );
+    // Exactly one record, and it is the notice: a published drawdown that
+    // had become an order would have to leave one behind it, because every
+    // order this platform raises is journalled before it travels.
+    assert_eq!(
+        platform.event_log().records().len(),
+        records_before + 1,
+        "reading the schedule wrote something besides the notice"
+    );
+    assert_eq!(call_records(&platform)?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn a_record_publishing_more_draws_than_it_may_still_call_stops_assembly() -> Result<()> {
+    // Fail closed, and name the record. A schedule drawing more than remains
+    // unfunded is the claim `Commitment::unscheduled` already refuses about
+    // a called balance past the commitment, arriving by a different door —
+    // an administrator's file with nobody between it and the arithmetic. It
+    // is refused rather than capped because the capped version is a corrupt
+    // record made plausible.
+    let mut universe = Universe::new();
+    universe.insert(listed("AAA")?)?;
+    universe.insert(
+        FinancialObject::builder(
+            object("FUND"),
+            "FUND",
+            InstrumentType::PrivateEquityFund,
+            LiquidityProfile::illiquid(90.0, 250.0),
+        )
+        .venue("OTC")
+        .geography("US")
+        .price(dec!("100"))
+        .extension(Extension::PrivateAsset(PrivateAssetDetails {
+            vintage_year: 2024,
+            committed_capital: dec!("400000"),
+            called_capital: dec!("150000"),
+            distributed_capital: Decimal::ZERO,
+            residual_value: dec!("160000"),
+            stage: "buyout".to_string(),
+            lockup_years: 7.0,
+            capital_call_notice_days: 10,
+            call_schedule: Some(CallSchedule::published(vec![ScheduledCall {
+                due: days_on(30),
+                amount: dec!("250001"),
+            }])?),
+        }))
+        .provenance(Provenance::synthetic("administrator", start()))
+        .build(start())?,
+    )?;
+
+    // Premise: one unit less is admitted, so the refusal is about the excess
+    // and not about schedules.
+    assert!(
+        scheduled_desk(dec!("1000000")).is_ok(),
+        "the premise failed: a schedule inside the balance is refused too"
+    );
+
+    let refusal = platform(universe).expect_err("250,001 of draws against 250,000 undrawn");
+    assert!(
+        refusal.message().contains("against an unfunded balance of"),
+        "the refusal must name the balance it exceeds: {}",
+        refusal.message()
     );
     Ok(())
 }

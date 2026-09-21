@@ -524,7 +524,10 @@ impl RedemptionFrequency {
 /// therefore routed through [`Self::checked`] by `serde(try_from)`, so a file
 /// stating a vintage of 2300 or a lockup of `1e18` is refused where the
 /// refusal can name the record, rather than aborting `Platform::new` inside a
-/// multiplication.
+/// multiplication. `call_schedule` arrives already dated and is checked on
+/// the same path for the two things only this record can say about it: that
+/// no draw precedes the vintage, and that the published draws do not exceed
+/// what remains unfunded.
 ///
 /// The fields stay public: this is reference data assembled field by field in
 /// fixtures and adapters, and a private-field rewrite would buy nothing the
@@ -581,6 +584,42 @@ pub struct PrivateAssetDetails {
     /// `tests/valuation.rs` holds both halves, so this paragraph is checked
     /// rather than asserted.
     pub capital_call_notice_days: u32,
+    /// The drawdown schedule the administrator published, or `None` where it
+    /// published none.
+    ///
+    /// The field every other field on this record could not be: a *dated*
+    /// capital call. `committed_capital` less `called_capital` is an
+    /// aggregate, and an aggregate cannot say when — "250,000 unfunded" and
+    /// "50,000 on each of five dates" are the same total and a different
+    /// funding problem. Until this existed
+    /// [`crate::cashflow::CashflowForecast::j_curve_trough`] could not return
+    /// anything on any record this platform holds, because the only forecast
+    /// it built had no outflow in it.
+    ///
+    /// **`None` means the record publishes no schedule, and never an empty
+    /// one.** [`crate::cashflow::CallSchedule::published`] refuses an empty
+    /// schedule precisely so these two cannot be confused: a fund nobody has
+    /// paced reserves its whole unfunded balance, and a fund that has told
+    /// the desk it will never draw again is a claim no administrator makes
+    /// about an unfunded commitment.
+    ///
+    /// **`serde(default)` on the wire field, and the argument for it is
+    /// narrow.** Every other member here is required at load, and the doc
+    /// above argues that dropping one would widen what this type accepts.
+    /// Absence here is not a missing measurement: it is the record stating no
+    /// schedule, which is a fact the type has a representation for and which
+    /// every catalogue document written before this field existed asserts
+    /// truthfully. The alternative — requiring the key — would refuse every
+    /// such document at load to record the same thing `None` already says.
+    /// What would be dishonest is a default *schedule*, and there is no such
+    /// thing here: `Option::None` is not a value somebody computed, it is the
+    /// absence of one, and no reader treats it as a pacing model.
+    ///
+    /// Checked by [`Self::checked`] against the two facts the rest of this
+    /// record holds: no draw may be dated before the vintage the fund began
+    /// in, and the published draws may not total more than remains unfunded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_schedule: Option<crate::cashflow::CallSchedule>,
 }
 
 /// The on-disk shape. Deserialising goes through [`PrivateAssetDetails::checked`],
@@ -596,6 +635,11 @@ struct PrivateAssetDetailsWire {
     stage: String,
     lockup_years: f64,
     capital_call_notice_days: u32,
+    /// Absent where the record publishes no schedule. See the field's own
+    /// documentation on [`PrivateAssetDetails`] for why this one key carries
+    /// a default where none of its neighbours does.
+    #[serde(default)]
+    call_schedule: Option<crate::cashflow::CallSchedule>,
 }
 
 impl TryFrom<PrivateAssetDetailsWire> for PrivateAssetDetails {
@@ -611,6 +655,7 @@ impl TryFrom<PrivateAssetDetailsWire> for PrivateAssetDetails {
             stage: wire.stage,
             lockup_years: wire.lockup_years,
             capital_call_notice_days: wire.capital_call_notice_days,
+            call_schedule: wire.call_schedule,
         }
         .checked()
     }
@@ -632,9 +677,62 @@ impl PrivateAssetDetails {
     /// Consumed rather than borrowed so a caller cannot hold on to the
     /// unchecked value it handed in.
     pub fn checked(self) -> Result<Self> {
-        self.vintage_origin()?;
+        let origin = self.vintage_origin()?;
         self.lockup()?;
+        self.check_schedule(origin)?;
         Ok(self)
+    }
+
+    /// Check a published drawdown schedule against the rest of the record.
+    ///
+    /// [`CallSchedule`] holds what is true of a schedule on its own — dated,
+    /// positive, distinct, bounded. These two facts need the record around
+    /// it, and both are refusals rather than corrections.
+    ///
+    /// A draw dated before the vintage is a fund calling capital before it
+    /// existed. [`crate::cashflow::CashflowForecast::with_flow`] refuses that
+    /// flow too, so nothing would silently pass; what this buys is that the
+    /// refusal happens at load, where it can name the record, rather than
+    /// three crates away inside the sweep that assembles a universe.
+    ///
+    /// Published draws totalling more than remains unfunded is the same
+    /// claim [`crate::cashflow::Commitment::unscheduled`] refuses about the
+    /// called balance — a fund cannot draw more than was promised — and it
+    /// arrives the same way, from an administrator's file with nobody
+    /// between it and the arithmetic. It is refused here rather than capped
+    /// for the reason that one is: a cap turns a corrupt record into a
+    /// plausible one, and the plausible version would understate nothing but
+    /// would put a schedule the record does not state onto a reserve.
+    ///
+    /// [`CallSchedule`]: crate::cashflow::CallSchedule
+    fn check_schedule(&self, origin: Timestamp) -> Result<()> {
+        let Some(schedule) = &self.call_schedule else {
+            return Ok(());
+        };
+        for call in schedule.calls() {
+            if call.due < origin {
+                return Err(Error::invalid(format!(
+                    "a private-asset record of vintage {} publishes a capital call on {}, before \
+                     the fund existed; correct the schedule or the vintage — a fund cannot draw \
+                     capital before the vintage every call and every discounted mark is dated \
+                     from",
+                    self.vintage_year,
+                    call.due.to_date_string()
+                )));
+            }
+        }
+        let total = schedule.total()?;
+        let unfunded = self.unfunded_commitment();
+        if total > unfunded {
+            return Err(Error::invalid(format!(
+                "a private-asset record publishes {total} of capital calls against an unfunded \
+                 balance of {unfunded} ({} committed, {} called); correct the schedule or the \
+                 called balance — a fund cannot call more than remains promised, and the excess \
+                 will not be capped here",
+                self.committed_capital, self.called_capital
+            )));
+        }
+        Ok(())
     }
 
     /// The first instant of the vintage year — where the position's life

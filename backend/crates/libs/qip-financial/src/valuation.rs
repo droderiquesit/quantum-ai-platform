@@ -672,42 +672,84 @@ impl IlliquidValuator {
     /// than the gap: two schedules for one fund disagree eventually, and the
     /// one the risk read used would be the one nobody reviewed.
     ///
-    /// Nothing is invented. The amount is the manager's own reported residual
-    /// and the date is the record's own vintage origin plus its own lockup
-    /// term — the same two fields the mark has always discounted. There is no
-    /// capital call in here and there must not be: the unfunded balance is
-    /// already charged against free capital by the commitment book, and
-    /// charging it a second time inside a valuation would be two claims on one
-    /// obligation, the louder of which would be wrong.
+    /// Nothing is invented. The distribution's amount is the manager's own
+    /// reported residual and its date is the record's own vintage origin plus
+    /// its own lockup term — the same two fields the mark has always
+    /// discounted. The calls are the dates and amounts the administrator
+    /// published on the record itself, carried across unweighted.
     ///
-    /// `None` in two cases, both of them the record saying nothing rather than
-    /// the record being broken: no residual value reported, and a lockup that
-    /// has already run out at `observed_at`. Answering the second with a past
-    /// instant would assert a distribution the record does not state, and
-    /// [`CashflowForecast::present_value`] refuses a settled flow anyway.
+    /// # Why the calls are in here now, and why the mark still does not see
+    /// them
+    ///
+    /// This function used to say "there is no capital call in here and there
+    /// must not be", and the argument behind that sentence is still exactly
+    /// right: the unfunded balance is already charged against free capital by
+    /// the commitment book, and charging it a second time inside a valuation
+    /// would be two claims on one obligation, the louder of which would be
+    /// wrong. What has changed is that the record can now *date* a call —
+    /// [`crate::cashflow::CallSchedule`] — and a dated schedule is the one
+    /// thing [`CashflowForecast::j_curve_trough`] needs to be able to answer
+    /// at all. Keeping the calls out would have meant either a second
+    /// derivation of the same fund's schedule beside this one, which is the
+    /// failure this function was extracted to prevent, or leaving the
+    /// J-curve permanently absent.
+    ///
+    /// The double count is prevented where it happens instead of by omission
+    /// here: [`Self::mark_private_asset`] discounts
+    /// [`CashflowForecast::returns_only`], so no call reaches a mark, and
+    /// `qip-financial/tests/valuation.rs`'s
+    /// `a_published_call_schedule_reaches_the_forecast_and_never_the_mark`
+    /// holds the two halves apart by test rather than by this paragraph.
+    ///
+    /// `None` only where the record dates nothing at all: no residual (or a
+    /// lockup already run out at `observed_at`) *and* no published schedule.
+    /// A record that publishes calls and reports no residual answers with the
+    /// calls, which is the record saying what it knows.
     pub fn forecast_private_asset(
         asset: impl Into<String>,
         details: &PrivateAssetDetails,
         origin: Timestamp,
         observed_at: Timestamp,
     ) -> Result<Option<CashflowForecast>> {
-        if !details.residual_value.is_positive() {
+        // The lockup is read only where a residual is reported, which is what
+        // the inline construction this replaced did: a record stating a
+        // lockup nobody could have written is refused on the path that would
+        // have used it, and a record with no residual is not refused for a
+        // term nothing reads.
+        let distribution_at = if details.residual_value.is_positive() {
+            let lockup_end = origin.saturating_add(details.lockup()?);
+            (lockup_end > observed_at).then_some(lockup_end)
+        } else {
+            None
+        };
+        if distribution_at.is_none() && details.call_schedule.is_none() {
             return Ok(None);
         }
-        let lockup_end = origin.saturating_add(details.lockup()?);
-        if lockup_end <= observed_at {
-            return Ok(None);
-        }
-        Ok(Some(
-            CashflowForecast::new(asset, origin, observed_at)?.with_flow(
-                crate::cashflow::ForecastCashflow::new(
-                    crate::cashflow::CashflowKind::Distribution,
-                    lockup_end,
-                    details.residual_value,
+        let mut forecast = CashflowForecast::new(asset, origin, observed_at)?;
+        if let Some(schedule) = &details.call_schedule {
+            for call in schedule.calls() {
+                // Probability one, and it is the record's claim rather than
+                // this platform's. The administrator published these dates
+                // and amounts; weighting them by a number nobody computed
+                // would put an opinion into a J-curve and call it a report.
+                // One is also the direction that cannot under-state a demand.
+                forecast = forecast.with_flow(crate::cashflow::ForecastCashflow::new(
+                    crate::cashflow::CashflowKind::CapitalCall,
+                    call.due,
+                    call.amount,
                     1.0,
-                )?,
-            )?,
-        ))
+                )?)?;
+            }
+        }
+        if let Some(lockup_end) = distribution_at {
+            forecast = forecast.with_flow(crate::cashflow::ForecastCashflow::new(
+                crate::cashflow::CashflowKind::Distribution,
+                lockup_end,
+                details.residual_value,
+                1.0,
+            )?)?;
+        }
+        Ok(Some(forecast))
     }
 
     /// Mark a private-asset record from what the object model already carries,
@@ -788,10 +830,24 @@ impl IlliquidValuator {
             // through to a last-round mark that never reads the term.
             let forecast =
                 Self::forecast_private_asset(asset.clone(), details, origin, observed_at)?;
+            // Only the flows that return capital are discounted. A published
+            // drawdown is an obligation the commitment book already charges
+            // against free capital, and discounting it into the mark as well
+            // would take the same balance off the book twice — see
+            // `CashflowForecast::returns_only`. The projection is filtered
+            // out where it is empty, which is a record that dates calls and
+            // no return: that is not a mark, and the ladder below answers it
+            // the way it answered a record with no schedule at all, rather
+            // than `present_value` refusing an empty forecast and taking the
+            // whole mark down with it.
+            let returns = forecast
+                .as_ref()
+                .map(CashflowForecast::returns_only)
+                .filter(|projection| !projection.is_empty());
             if let Some(rate) = required_yield.filter(|r| r.is_finite() && *r > -1.0)
-                && let Some(forecast) = &forecast
+                && let Some(returns) = &returns
             {
-                return Self::from_discounted_cashflow(asset, forecast, rate, observed_at);
+                return Self::from_discounted_cashflow(asset, returns, rate, observed_at);
             }
             return Self::from_last_round(asset, details.residual_value, observed_at, observed_at);
         }
