@@ -53,6 +53,14 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 6.12"
     }
+    # `google_project_service_identity` is beta-only. A module that uses a
+    # provider it does not declare inherits nothing and fails at *plan*,
+    # after `validate` has already passed — which is why
+    # `scripts/check-terraform-providers.sh` exists and why it caught this
+    # rather than apply day catching it.
+    google-beta = {
+      source = "hashicorp/google-beta"
+    }
   }
 }
 
