@@ -1725,3 +1725,88 @@ fn a_pass_instant_earlier_than_the_last_is_refused_by_the_gateway() -> Result<()
     assert_eq!(error.code(), "invalid", "{}", error.message());
     Ok(())
 }
+
+#[test]
+fn an_order_naming_a_venue_this_gateway_does_not_reach_is_refused_on_the_send_path_as_it_is_on_the_cancel_path()
+-> Result<()> {
+    // `cancel` has refused a foreign venue since it was written and `place`
+    // did not, which is an asymmetry an audit found rather than a failure:
+    // the two read as a pair and were not one. Had it been reachable, an
+    // order the cell decided for one venue would have been submitted to
+    // another's exchange and then reported back under both names — two
+    // records of one order, and the louder one wrong.
+    let mut gateway = SimulatedGateway::new(venue("XLON"), 7, start())?;
+    gateway.seed_touch(
+        &object("ACME"),
+        Side::Sell,
+        dec!("100"),
+        dec!("100"),
+        start(),
+    )?;
+
+    // The premise first: this gateway does send an order that names its own
+    // venue. Without this half the refusal below would also pass on a
+    // gateway that refused everything.
+    gateway.place(
+        "order-home",
+        &object("ACME"),
+        &venue("XLON"),
+        BookSide::Bid,
+        dec!("10"),
+        dec!("100"),
+        start(),
+    )?;
+    assert_eq!(
+        gateway.submitted_count(),
+        1,
+        "the premise failed: an order naming this gateway's own venue was not sent"
+    );
+
+    let error = gateway
+        .place(
+            "order-foreign",
+            &object("ACME"),
+            &venue("XNAS"),
+            BookSide::Bid,
+            dec!("10"),
+            dec!("100"),
+            start(),
+        )
+        .expect_err("an order naming a venue this gateway does not reach was sent");
+    assert_eq!(error.code(), "denied", "{}", error.message());
+    // Both names, because a refusal that gives only one of them leaves the
+    // operator unable to tell which half of the pair is misconfigured.
+    assert!(
+        error.message().contains("XNAS") && error.message().contains("XLON"),
+        "the refusal does not name both venues: {}",
+        error.message()
+    );
+    assert!(
+        error.message().contains("order-foreign"),
+        "the refusal does not name the order it refused: {}",
+        error.message()
+    );
+    assert_eq!(
+        gateway.submitted_count(),
+        1,
+        "the refused order reached the venue anyway"
+    );
+    assert_eq!(
+        gateway.held_count(),
+        0,
+        "the refused order was held rather than refused"
+    );
+
+    // The other half of the pair, asserted here because the defect was the
+    // gap between them and a test of one alone cannot see a gap.
+    let refused_cancel = gateway
+        .cancel("order-home", &object("ACME"), &venue("XNAS"), t(1))
+        .expect_err("a cancel naming a venue this gateway does not reach was accepted");
+    assert_eq!(
+        refused_cancel.code(),
+        "denied",
+        "{}",
+        refused_cancel.message()
+    );
+    Ok(())
+}

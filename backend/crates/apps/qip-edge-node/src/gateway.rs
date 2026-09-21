@@ -605,6 +605,31 @@ impl Placer for SimulatedGateway {
         price: Decimal,
         at: Timestamp,
     ) -> Result<()> {
+        // The venue this order names must be the venue this gateway reaches.
+        //
+        // `cancel` below has refused exactly this since it was written, and
+        // the send path did not — an asymmetry found by a lane auditing
+        // `VenueProfile`'s readership, not by a failure. Without it an order
+        // the cell decided for venue B is submitted to venue A's exchange,
+        // and then reported back under B by `submit_now` while
+        // `execution_reports` reports it under `self.venue`: two records of
+        // one order naming two venues, and the louder one wrong.
+        //
+        // Unreachable in today's node, because only the gateway's own venue
+        // has a book and `Cell::venue_for` resolves against that. That is
+        // exactly why it is worth writing down: the guard costs one
+        // comparison, and the configuration that makes it reachable — a
+        // second venue in one process — is a change nobody would expect to
+        // need to re-check a send path for. A refusal present on the cancel
+        // path and absent on the send path is a guard that reads as a pair
+        // and is not one.
+        if venue != &self.venue {
+            return Err(Error::denied(format!(
+                "order {order_id} names {} and this gateway reaches {}; it was not sent",
+                venue.as_str(),
+                self.venue.as_str()
+            )));
+        }
         // Before the venue sees it: a refusal after acceptance would be an
         // order at the venue that nothing follows. Held orders count, because
         // each is one this gateway has promised to follow once released.
