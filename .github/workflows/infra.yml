@@ -849,8 +849,8 @@ jobs:
           # It is armed only after `get-credentials`, because before that
           # there is no cluster to read and the reason is in this log already.
           #
-          # Nothing here prints a Secret or a container log. `get pods`,
-          # `describe pod` and `get events` carry object state; a log could
+          # Nothing here prints a Secret or a container log. `get pods` and
+          # a container's `waiting` reason carry object state; a log could
           # carry a token the process was handed. Every command is `|| true`
           # and the handler re-raises the original status, so a diagnostic
           # can never convert a failure into a different one — or into a
@@ -863,10 +863,26 @@ jobs:
             status="$1"
             set +e
             echo "::error title=bootstrap failed::reading ${cluster} before giving up."
+            # No `get events`. This identity holds no `container.events.list`
+            # and never has: run 67 printed the same Forbidden seven times,
+            # once per namespace, in place of the diagnosis it was there to
+            # give. The cert-manager probe below already said so in a
+            # comment — "read objects, not logs and not events" — and this
+            # loop called it anyway, which is how prose and code drift apart
+            # when only one of the two is ever executed.
+            #
+            # What the events carried that an object carries too: the
+            # `waiting` reason and message of each container that has not
+            # started. `ImagePullBackOff` and `CreateContainerConfigError`
+            # both name themselves there, and those are the two this
+            # diagnostic exists to tell apart. `ContainerCreating` does not
+            # — a failed mount is only ever an event — so the phases above
+            # ask after the object whose absence causes it instead of
+            # hoping this loop will explain it.
             for ns in cert-manager argocd kargo configconnector-operator-system cnrm-system qip-run qip; do
               echo "::group::${ns}"
               kubectl -n "$ns" get pods -o wide 2>&1 | head -40
-              kubectl -n "$ns" get events --sort-by=.lastTimestamp 2>&1 | tail -25
+              kubectl -n "$ns" get pods -o jsonpath='{range .items[*]}{range .status.containerStatuses[?(@.ready==false)]}{"  not ready: "}{.name}{"  "}{.state.waiting.reason}{": "}{.state.waiting.message}{"\n"}{end}{end}' 2>&1 | head -20
               echo "::endgroup::"
             done
             echo "::group::applications"
@@ -1435,10 +1451,63 @@ jobs:
             apply "${gitops}/bootstrap/kargo/overlays/${ENVIRONMENT}"
             kubectl -n kargo rollout status deployment/kargo-api --timeout=300s
             kubectl -n kargo rollout status deployment/kargo-controller --timeout=300s
-            # The webhooks server admits the Project applied in phase 6 and the
-            # management controller is what reconciles it into a namespace.
-            # Neither was waited for, and both are depended on two phases
-            # later by `kubectl wait --for=condition=Ready project/qip`, which
+
+            # Wait for the Certificate before the pod that mounts it, and
+            # replace the pod that was created before it existed.
+            #
+            # Run 67 failed here with `deployment "kargo-webhooks-server"
+            # exceeded its progress deadline`, and the diagnostic — running
+            # for the first time — printed the fact that message hides:
+            #
+            #   kargo-webhooks-server-6c997dfc8c-4j9xx  0/1  ContainerCreating  0  3h43m
+            #
+            # Not crash-looping, not unschedulable, not refused by Binary
+            # Authorization: **ContainerCreating for three and three quarter
+            # hours**, which is a volume the kubelet cannot mount. That
+            # volume is the Secret cert-manager writes when it issues the
+            # Certificate the chart declares, and the pod was created during
+            # the runs when cert-manager could not elect a leader and so
+            # issued nothing. The cause was fixed in `ac2c95c`; the pod
+            # stranded by it was not, because nothing here ever looked past
+            # "the deployment is not ready yet".
+            #
+            # So: wait for the Certificate, which is what the pod actually
+            # needs, and name it when it does not come. That is the same
+            # correction already made twice in this step — for the label
+            # selector that matched nothing, and for the condition Config
+            # Connector never publishes. A rollout timeout is not a
+            # diagnosis; it is the absence of one.
+            if ! kubectl -n kargo wait --for=condition=Ready \
+                certificate/kargo-webhooks-server --timeout=300s; then
+              echo "::error title=Kargo's webhook certificate was never issued::cert-manager did not issue certificate/kargo-webhooks-server, so the Secret its webhooks server mounts does not exist and that pod stays in ContainerCreating for ever." >&2
+              kubectl -n kargo get certificate/kargo-webhooks-server \
+                -o jsonpath='{range .status.conditions[*]}{"  "}{.type}{"="}{.status}{"  "}{.reason}{": "}{.message}{"\n"}{end}' >&2 || true
+              kubectl -n kargo get issuer/kargo-selfsigned-cert-issuer \
+                -o jsonpath='{range .status.conditions[*]}{"  issuer "}{.type}{"="}{.status}{"  "}{.reason}{": "}{.message}{"\n"}{end}' >&2 || true
+              kubectl -n kargo get certificaterequest -o wide >&2 || true
+              exit 1
+            fi
+            # Objects, not events: this identity holds no
+            # `container.events.list`, which run 67 proved by printing the
+            # refusal seven times. A Secret's presence is the same fact the
+            # mount event would carry, asked of something readable. Its
+            # presence only — `-o name` prints a name and never a value.
+            if ! kubectl -n kargo get secret kargo-webhooks-server -o name >/dev/null 2>&1; then
+              echo "::error title=Kargo's webhook Secret is absent::certificate/kargo-webhooks-server reports Ready and no Secret of that name exists, so cert-manager and the chart disagree about where the keypair goes." >&2
+              exit 1
+            fi
+            # The Secret exists now. A pod created before it did is still
+            # waiting on a mount, and no amount of further waiting fixes
+            # that — the pod has to be replaced. On a first install this
+            # restarts a deployment that has not finished starting and costs
+            # one pod cycle; over a stranded pod it is the whole difference.
+            # Same argument as the cainjector restart two phases up, and the
+            # same shape of bug.
+            kubectl -n kargo rollout restart deployment/kargo-webhooks-server
+            # The webhooks server admits the Project applied in the apps
+            # stage and the management controller is what reconciles it into
+            # a namespace. Neither was waited for, and both are depended on
+            # by `kubectl wait --for=condition=Ready project/qip`, which
             # would then wait out its own timeout on a resource nothing was
             # running to reconcile.
             kubectl -n kargo rollout status deployment/kargo-webhooks-server --timeout=300s
