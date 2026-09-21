@@ -68,6 +68,49 @@ export async function servePlatformUnreachable(page: Page): Promise<void> {
 }
 
 /**
+ * The page Cloud Run's own front end serves when the service behind it has no
+ * healthy revision.
+ *
+ * Copied in shape from a real one rather than invented: `<!doctype html>`, a
+ * `<title>`, a block of inline `<style>`, and no JSON anywhere. This is what
+ * the gateway receives when `qip-api` fails to start — `QIP_API_BASE_URL` is
+ * the API's own Cloud Run URL — and it arrives with `x-qip-gateway: upstream`,
+ * because from the gateway's side the request crossed the socket and got an
+ * answer. It did; the answer was just not the platform's.
+ */
+const CLOUD_RUN_ERROR_PAGE = [
+  "<!doctype html>",
+  '<html lang="en"><head><meta charset="utf-8">',
+  "<title>Error: Server Error</title>",
+  "<style>body{font-family:Roboto,Arial,sans-serif;margin:0;padding:0}",
+  ".container{margin:48px auto;max-width:640px}.sorry{color:#757575}</style>",
+  '</head><body><div class="container"><h1>Error: Server Error</h1>',
+  '<p class="sorry">The server encountered an error and could not complete your request.</p>',
+  "<p>Please try again in 30 seconds.</p></div></body></html>",
+].join("");
+
+/**
+ * A platform fronted by something that answers in HTML.
+ *
+ * The failure it pins: `detailFrom` in `@/lib/api/client` returned any
+ * non-empty string body verbatim, so every panel rendered this page's source
+ * as its reason and the console looked broken when the backend was merely
+ * absent.
+ */
+export async function servePlatformAsHtmlErrorPage(page: Page): Promise<void> {
+  await page.route(GATEWAY, async (route: Route) => {
+    await route.fulfill({
+      status: 503,
+      headers: { [HEADER]: "upstream", "content-type": "text/html; charset=utf-8" },
+      body: CLOUD_RUN_ERROR_PAGE,
+    });
+  });
+}
+
+/** What the markup above says in its title, for a test to assert against. */
+export const CLOUD_RUN_ERROR_TITLE = "Error: Server Error";
+
+/**
  * The shapes the chrome reads on every route.
  *
  * Taken from a real `qip-api` process rather than invented: these are the

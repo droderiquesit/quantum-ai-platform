@@ -4,14 +4,35 @@ Identity-Aware Proxy on a Cloud Run service itself. No load balancer, no
 reserved address, no managed certificate, no Cloud Armor policy, no DNS zone,
 no registrar. ADR 0095.
 
-The console is reached at the URL Google issued it:
+The console is reached at the URL Google issued it. **Read that URL off the
+service; do not paste the derived one.**
 
 ```
-https://qip-dev-portal-95200532413.us-east4.run.app
+gh workflow run infra.yml -f environment=dev -f action=diagnose   # then read `url:`
 ```
 
-`terraform output console_front_door` prints it. Nobody types it into a
-registrar and nobody waits for it to provision.
+`terraform output console_front_door` prints a *derivation* —
+`https://qip-dev-portal-95200532413.us-east4.run.app`, the service name, the
+project number and the region, which is the form Google documents for Cloud
+Run services created since 2024. **In `algorik-dev` that form is not what
+Cloud Run hands out, and this is measured rather than feared.** `infra.yml`
+run 35636247990 (`diagnose`, dev, 2026-09-21) read `status.url` off
+`qip-dev-openobserve`, the one service in the project with `RoutesReady=True`,
+and got the **legacy** form: the service name, a project-and-region token no
+configuration can compute, a two-letter region code, and `.a.run.app`. A
+hostname of the wrong family does not resolve, and it fails looking exactly
+like a DNS problem.
+
+The derivation is kept rather than replaced by a `data` source read, because
+a data source on a service that does not exist yet fails the plan in every
+environment whose portal has not been deployed — which is all of them. What
+makes that safe is that the reading is a minute away and free: `diagnose`
+applies nothing, waits for nothing and prints `url:` and `iapEnabled:` for
+every service. The `apps` stage prints the same `status.url` after it enables
+the gate.
+
+Nobody types either form into a registrar and nobody waits for it to
+provision; that part is true of both families.
 
 ## The fact this rests on
 

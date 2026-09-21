@@ -48,10 +48,23 @@ run "an_empty_access_list_plans_cleanly_and_grants_nobody" {
     error_message = "an empty iap_members produced an IAM binding; the committed state of every environment grants somebody something"
   }
 
-  # The URL is the whole product of this module, so it is asserted as the
-  # exact string rather than as a pattern. A pattern would admit
-  # `https://qip-dev-portal-.us-east4.run.app` — the shape a null project
-  # number produces — which resolves to nothing and reads as a DNS fault.
+  # The URL is asserted as the exact string rather than as a pattern. A
+  # pattern would admit `https://qip-dev-portal-.us-east4.run.app` — the
+  # shape a null project number produces — which resolves to nothing and
+  # reads as a DNS fault.
+  #
+  # **What this pins is the documented convention, not this project's actual
+  # hostname, and the two are not the same thing today.** `infra.yml` run
+  # 35636247990 (`diagnose`, dev, 2026-09-21) read `status.url` off
+  # `qip-dev-openobserve` — the one service in `algorik-dev` with
+  # `RoutesReady=True` — and got the legacy
+  # `<service>-<token>-<region-code>.a.run.app` form. The token is not
+  # derivable from anything Terraform holds, so no assertion here can pin the
+  # real address, and this one is deliberately not rewritten to pretend
+  # otherwise: it guards the derivation against drift, and
+  # `modules/iap-run/outputs.tf` and `README.md` both say in their first
+  # paragraph that the derivation is not the address to open. Believe the
+  # `diagnose` reading over this string.
   assert {
     condition     = output.url == "https://qip-dev-portal-95200532413.us-east4.run.app"
     error_message = "the derived run.app URL is not the deterministic form Cloud Run assigns; a console nobody can find is a console that is not deployed"

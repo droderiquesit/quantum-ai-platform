@@ -9355,3 +9355,75 @@ fn the_seeding_step_never_writes_a_value_for_a_credential_that_names_another_acc
          {warning_line}"
     );
 }
+
+/// The `diagnose` action reaches no step that writes.
+///
+/// `infra.yml`'s job runs one list of steps for every action, and a step
+/// without an `if:` runs for all of them. The `diagnose` action was added as
+/// a fast read-only way to ask Cloud Run what it thinks, and its own comment
+/// claimed it "applies nothing, waits for nothing, and cannot change the
+/// environment". None of that was true: the two bucket-grant steps, the
+/// project-role loop and `terraform init` carried no action gate, so every
+/// dispatch granted IAM, slept sixty seconds per new binding, and opened
+/// remote state.
+///
+/// The danger is not the grants themselves — they are the same ones an apply
+/// needs. It is that a read-only action is the one an operator reaches for
+/// during an incident, precisely because it was documented as harmless.
+///
+/// So the property is asserted rather than described: no step reachable when
+/// `action == 'diagnose'` may contain a write verb.
+#[test]
+fn the_diagnose_action_reaches_no_step_that_writes() {
+    let workflow = read(".github/workflows/infra.yml");
+    let jobs = workflow_jobs(&workflow);
+    let (_, body) = jobs
+        .iter()
+        .find(|(name, _)| name == "terraform")
+        .expect("infra.yml has a `terraform` job");
+
+    // Anything that mutates a project, a bucket, a cluster or remote state.
+    const WRITES: [&str; 8] = [
+        "add-iam-policy-binding",
+        "terraform apply",
+        "terraform destroy",
+        "versions add",
+        "state rm",
+        "terraform init",
+        "state list",
+        "services update",
+    ];
+
+    let steps = job_steps(body);
+    // Premise: the walk found the step list, and `diagnose` is in it. An empty
+    // walk would satisfy every absence below while proving nothing.
+    assert!(
+        steps.len() > 10,
+        "the terraform job parsed to {} step(s); the walk is not reading the job",
+        steps.len()
+    );
+    assert!(
+        steps.iter().any(|step| step.contains("name: diagnose")),
+        "no `diagnose` step found, so this test is pinned to a workflow that no longer has one"
+    );
+
+    for step in &steps {
+        // A step is out of reach when it is gated off diagnose by name, or
+        // gated onto some other action. Everything else runs.
+        let gated_off = step.contains("!= 'diagnose'");
+        let other_action_only =
+            step.contains("inputs.action ==") && !step.contains("== 'diagnose'");
+        if gated_off || other_action_only {
+            continue;
+        }
+        for verb in WRITES {
+            assert!(
+                !step.contains(verb),
+                "a step reachable under `diagnose` runs `{verb}`. The action is documented as \
+                 read-only and is the one an operator reaches for during an incident; a write \
+                 there changes the environment somebody is trying to observe. Gate it with \
+                 `if: inputs.action != 'diagnose'`.\n{step}"
+            );
+        }
+    }
+}

@@ -324,6 +324,7 @@ jobs:
       # custom role carries storage.buckets.setIamPolicy. Idempotent, and the
       # bootstrap script makes the same grant.
       - name: the state bucket grant
+        if: inputs.action != 'diagnose'
         run: |
           gcloud storage buckets add-iam-policy-binding \
             "gs://${{ steps.identity.outputs.project }}-qip-tfstate" \
@@ -343,6 +344,7 @@ jobs:
       # second bucket with the same missing permission, not a wider deny that
       # one grant already closed. Idempotent, same shape as the grant above.
       - name: the egress bootstrap bucket grant
+        if: inputs.action != 'diagnose'
         env:
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
@@ -398,6 +400,7 @@ jobs:
       # belt-and-braces convenience and could be deleted, when for three
       # roles it is the sole grant and deleting it breaks the plan.
       - name: the permissions the plan needs before it can grant them
+        if: inputs.action != 'diagnose'
         run: |
           set -euo pipefail
           account="${{ steps.identity.outputs.account }}"
@@ -436,6 +439,7 @@ jobs:
           terraform_version: "1.9.8"
 
       - name: terraform init
+        if: inputs.action != 'diagnose'
         id: init
         run: |
           terraform -chdir=infrastructure/terraform init -input=false \
@@ -2101,6 +2105,18 @@ jobs:
       # the step with terraform's own message.
       # Read-only, and the fastest thing in this file.
       #
+      # "Read-only" is a property of the *job*, not of this step, and the
+      # first version of this comment asserted it without checking. The three
+      # IAM grant steps and `terraform init` carry no action gate of their
+      # own, so a `diagnose` dispatch ran `add-iam-policy-binding` against two
+      # buckets and up to seven project roles, waited `sleep 60` after each
+      # new binding, and reached remote state — while this comment said it
+      # "applies nothing, waits for nothing, and cannot change the
+      # environment". Every clause was false, and an operator told a thing is
+      # safe during an incident will run it during an incident. They are gated
+      # now, and `the_diagnose_action_reaches_no_step_that_writes` in
+      # `infrastructure.rs` is what keeps the sentence true.
+      #
       # Every question asked of this deployment so far has cost an `apps`
       # dispatch: eleven to fifteen minutes to reinstall controllers, apply an
       # Application and wait out a sync, in order to read three lines of
@@ -2195,7 +2211,7 @@ jobs:
           done
 
       - name: what exists now
-        if: always() && steps.init.outcome == 'success'
+        if: always() && inputs.action != 'diagnose' && steps.init.outcome == 'success'
         env:
           ENVIRONMENT: ${{ inputs.environment }}
         run: |

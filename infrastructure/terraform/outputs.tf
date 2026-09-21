@@ -424,16 +424,32 @@ output "console_front_door" {
     **Where the console actually is, and the command that admits one person to
     it.** ADR 0095.
 
-    This is the output to read. `portal_front_door` below describes the
-    custom-domain door, which no environment turns on; this one describes
-    whichever door the environment actually has, and in every environment
-    today that is the Google-issued one:
+    This is the output to read for the **grant**. `portal_front_door` below
+    describes the custom-domain door, which no environment turns on; this one
+    describes whichever door the environment actually has, and in every
+    environment today that is the Google-issued one:
 
         url  = https://qip-dev-portal-<project-number>.us-east4.run.app
 
+    **`url` is a derivation and in `algorik-dev` it is the wrong family of
+    hostname. Read the address off the service instead** — `infra.yml`'s
+    `diagnose` action prints `status.url` per service, applies nothing and
+    costs a minute. Run 35636247990 (`diagnose`, dev, 2026-09-21) read the
+    one service in that project with `RoutesReady=True` and got the legacy
+    `<service>-<token>-<region-code>.a.run.app` form, not the
+    `<service>-<project-number>.<region>.run.app` form this output builds.
+    `modules/iap-run`'s `url` output argues why the derivation is kept anyway
+    — a `data` source read fails the plan wherever the portal is not deployed,
+    which is everywhere — and the argument only holds because the reading is
+    cheap and named here.
+
+    `grant` is unaffected by any of that: it names a project, a region and a
+    service, never a hostname.
+
     No A record, no zone, no registrar, no nameserver delegation, and no
     certificate to watch leave PROVISIONING. The name exists as soon as Cloud
-    Run has a service, on a certificate Google manages.
+    Run has a service, on a certificate Google manages — whichever family it
+    belongs to.
 
     `mode` says which door answered, because the two have different failure
     modes and an operator reading a URL cannot tell them apart:

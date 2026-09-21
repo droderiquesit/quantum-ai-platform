@@ -1117,3 +1117,177 @@ fn a_rung_is_judged_by_its_widest_and_its_tightest_quote_and_not_by_one_record()
         "the same catalogue in a different order named a different pair"
     );
 }
+
+// --- ordering within a rung --------------------------------------------------
+//
+// The rung is a bucket. `prove_monotonic` proves cost rises between rung
+// totals and says nothing about two holdings sharing one rung, so until
+// `draw_order` existed a plan drew them in `object_id` order — which is to say
+// it drew by name. These four tests hold the four halves of the fix: that the
+// cheaper holding is taken first, that the more expensive one is still taken
+// when the request needs it, that a tie is broken the same way on every
+// replay, and that an incomparable pair is refused rather than silently
+// falling back to the alphabet.
+
+/// Two holdings on one rung, the cheap one named so that alphabetical order
+/// would draw the expensive one first.
+fn one_rung_two_holdings() -> LiquidityLadder {
+    LiquidityLadder::new(vec![
+        // 20bp on 400,000. Named "a-…" so it sorts first by identifier.
+        LadderEntry::new(
+            "obj-a-dear",
+            Rung::ListedEquityAndFutures,
+            dec!("400000"),
+            dec!("8000"),
+        ),
+        // 5bp on 400,000, and last by identifier.
+        LadderEntry::new(
+            "obj-z-cheap",
+            Rung::ListedEquityAndFutures,
+            dec!("400000"),
+            dec!("2000"),
+        ),
+    ])
+    .unwrap()
+}
+
+#[test]
+fn the_cheaper_of_two_holdings_on_one_rung_is_drawn_first_however_it_is_named() {
+    let ladder = one_rung_two_holdings();
+
+    // Premise, both halves. The two holdings share a rung, so the rung
+    // ordering cannot separate them and something else must; and the cheaper
+    // one sorts *last* by identifier, so an identifier order would draw the
+    // dearer one first. Without this premise the test would pass on a ladder
+    // where the alphabet happened to agree with the cost.
+    let placed: Vec<(&str, Rung)> = ladder
+        .entries()
+        .map(|e| (e.object_id.as_str(), e.rung))
+        .collect();
+    assert_eq!(
+        placed,
+        vec![
+            ("obj-a-dear", Rung::ListedEquityAndFutures),
+            ("obj-z-cheap", Rung::ListedEquityAndFutures),
+        ],
+        "premise: one rung, and the dearer holding sorts first by identifier"
+    );
+
+    let plan = ladder.plan(dec!("400000")).unwrap();
+    assert_eq!(plan.legs.len(), 1, "one holding covers the whole request");
+    assert_eq!(
+        plan.legs[0].object_id, "obj-z-cheap",
+        "blueprint 35.3 rule 3 is lowest cost to exit, and within a rung that \
+         is the rate — not the identifier"
+    );
+    // 5bp on 400,000, not the 8,000 the dearer holding would have charged.
+    assert_eq!(plan.cost, dec!("2000"));
+}
+
+#[test]
+fn a_request_that_needs_both_holdings_still_takes_the_dearer_one_and_charges_for_it() {
+    // The half that separates an ordering from a refusal. A `draw_order` that
+    // dropped, skipped or refused the expensive holding would satisfy the test
+    // above and would make the ladder unable to serve the book it holds.
+    let ladder = one_rung_two_holdings();
+
+    // Premise: the request is larger than the cheap holding alone.
+    assert_eq!(ladder.total_value().unwrap(), dec!("800000"));
+
+    let plan = ladder.plan(dec!("600000")).unwrap();
+    let drawn: Vec<(&str, Decimal)> = plan
+        .legs
+        .iter()
+        .map(|l| (l.object_id.as_str(), l.amount))
+        .collect();
+    assert_eq!(
+        drawn,
+        vec![
+            ("obj-z-cheap", dec!("400000")),
+            ("obj-a-dear", dec!("200000"))
+        ],
+        "cheapest first, then as far into the dearer holding as the request needs"
+    );
+    // 2,000 for all of the cheap one, plus half of the dear one's 8,000.
+    assert_eq!(plan.cost, dec!("6000"));
+    assert_eq!(
+        plan.deepest_rung,
+        Rung::ListedEquityAndFutures,
+        "ordering inside a rung cannot change which rung the plan reached"
+    );
+}
+
+#[test]
+fn two_holdings_at_the_same_rate_are_drawn_in_identifier_order_so_a_replay_draws_the_same_legs() {
+    // A rate ordering alone is a partial order: it says nothing about two
+    // holdings that cost the same. Leaving that to the sort would let a replay
+    // raise the same money from a different holding, and the plan names the
+    // holding.
+    let ladder = LiquidityLadder::new(vec![
+        LadderEntry::new(
+            "obj-zeta",
+            Rung::ListedEquityAndFutures,
+            dec!("100000"),
+            dec!("500"),
+        ),
+        // Same rate — 50bp — on a different size, so the tie is in the rate
+        // and not in the two numbers being equal.
+        LadderEntry::new(
+            "obj-alpha",
+            Rung::ListedEquityAndFutures,
+            dec!("200000"),
+            dec!("1000"),
+        ),
+    ])
+    .unwrap();
+
+    // Premise: the request needs both holdings, so both appear and their
+    // sequence is the thing under test.
+    assert_eq!(ladder.total_value().unwrap(), dec!("300000"));
+    let plan = ladder.plan(dec!("250000")).unwrap();
+    let drawn: Vec<&str> = plan.legs.iter().map(|l| l.object_id.as_str()).collect();
+    assert_eq!(
+        drawn,
+        vec!["obj-alpha", "obj-zeta"],
+        "equal rates break on the identifier, which is the same on every replay"
+    );
+}
+
+#[test]
+fn holdings_whose_exit_rates_cannot_be_compared_are_refused_rather_than_drawn_by_name() {
+    // The rates are compared by cross-multiplying, which can leave the
+    // decimal range. Answering that with a tie would put the book back in
+    // identifier order in exactly the case where the numbers are largest, and
+    // saturating would compare a number nobody computed.
+    let ladder = LiquidityLadder::new(vec![
+        LadderEntry::new(
+            "obj-huge-cheap",
+            Rung::ListedEquityAndFutures,
+            dec!("1000000000000000"),
+            dec!("900000000000000"),
+        ),
+        LadderEntry::new(
+            "obj-huge-dear",
+            Rung::ListedEquityAndFutures,
+            dec!("1000000000000000"),
+            dec!("950000000000000"),
+        ),
+    ])
+    .expect("premise: a ladder this large is constructible, so the refusal is plan's to make");
+
+    // Premise: the ladder answers the questions that do not need the product.
+    assert_eq!(ladder.total_value().unwrap(), dec!("2000000000000000"));
+
+    let err = ladder
+        .plan(dec!("1000000"))
+        .expect_err("a plan that cannot order the book must refuse");
+    let message = err.message();
+    assert!(
+        message.contains("obj-huge-cheap") && message.contains("obj-huge-dear"),
+        "the refusal must name the pair it could not order, got: {message}"
+    );
+    assert!(
+        message.contains("draw by identifier"),
+        "the refusal must say what it refused to do instead, got: {message}"
+    );
+}
