@@ -3203,13 +3203,16 @@ that escalated on every unwind, would both satisfy the other tests.
 
 Gate on the merged tree, not on the lane's own: `cargo fmt --all --check`
 clean; `cargo clippy --workspace --all-targets` **0** lines matching
-`^(warning|error)`; `cargo test --workspace --no-fail-fast` **6264 passed, 1
+`^(warning|error)`; `cargo test --workspace --no-fail-fast` **6265 passed, 1
 failed** over **446** `test result:` lines; dependency policy **11 third-party
-packages, all permitted**; secret scan nothing found. The figure is the merged
-tree's because the lane's own run said **6263** and `origin/main` moved three
-commits under it while this lane worked — a count is a fact about a tree at an
-hour, and the tree that matters is the one being pushed. The shape table was
-recounted on the merged tree too, with the same result. **The one failure is named rather than summarised away, and it
+packages, all permitted**; secret scan nothing found. **That figure moved
+twice while this note was being written, which is worth more than the figure.**
+The lane's own run said **6263**; `origin/main` moved three commits under it
+and the merged tree said **6264**; three more commits arrived before the push
+and the pushed tree says **6265**. No verdict and no shape-table cell moved
+across any of it, and the register's five counts were re-taken on the pushed
+tree. Read the command rather than the number: `cargo test --workspace
+--no-fail-fast` in the tree in front of you. **The one failure is named rather than summarised away, and it
 is not this lane's**: `qip-acceptance`'s `documentation::every_internal_link_resolves`
 fails because `docs/adr/README.md` links to
 `0096-an-optional-vendor-credential-is-mounted-only-where-the-environment-declares-it-seeded.md`,
@@ -3217,8 +3220,12 @@ which does not exist. Commit `9789bd9` on `main` claimed that number in the
 index in its own commit *before* writing the body, which is what
 `.claude/rules/architecture/00-boundaries.md` now requires of a lane allocating
 an ADR number under concurrency; the body is another lane's and is not in this
-diff. `git log --oneline -1 -- docs/adr/README.md` and `ls docs/adr/ | grep -c
-'^0096'` are the two commands that establish both halves. It was not fixed
+diff. By the time this lane pushed, `0cc7299` had claimed **0097** the same
+way, so two bodies are outstanding and the test names only the first it
+reaches: `ls docs/adr/ | grep -cE '^009[67]'` prints `0`, and `git log
+--oneline -1 -- docs/adr/README.md` names the claim. The rule is working as
+written — this failure is the cost it deliberately accepts, and a reader who
+sees it should look for the owing lane rather than for a broken link. It was not fixed
 here: writing a body for another lane's claimed number is the collision the
 rule exists to prevent, in a new form. Terraform and frontend gates did not run
 and are not claimed — no file under `infrastructure/` or `frontend/` is in this
