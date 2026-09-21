@@ -88,21 +88,30 @@
 //! has recorded is rolled off the index and counted in
 //! [`EventLog::rolled_by_age`]. Four things about its shape are deliberate.
 //!
-//! * **It is off unless a caller sets it, and that is a constraint rather
-//!   than a preference.** `Platform::resume_fabric` in `qip-kernel` and
-//!   `FabricJournal::resume` in `qip-capital-fabric` rebuild the fabric's
+//! * **It is off unless a caller sets it, and since 2026-09-21 the
+//!   platform's one caller sets it.** `EventLogDestination::open` in
+//!   `qip-kernel` — the single place the platform's log is constructed —
+//!   passes [`SNAPSHOT_WINDOW`], and says at that call site why ninety days
+//!   and not a number somebody chose. The default here stays off because
+//!   this is a library and a log built by something else has made no such
+//!   statement; a bound nobody declared is not retention policy.
+//!
+//!   That caller could not exist until 2026-09-21, and the reason is worth
+//!   keeping. `Platform::resume_fabric` in `qip-kernel` and
+//!   `FabricJournal::resume` in `qip-capital-fabric` rebuilt the fabric's
 //!   state by replaying the *retained* records from genesis, and each
-//!   refuses a log whose retained sequences have a gap — by design, because
-//!   a slice from the middle of a log cannot prove what came before it. A
-//!   roll leaves exactly such a gap. With the window on by default, a
-//!   platform holding fabric records could not restart once any snapshot in
-//!   its log was ninety days old, and `qip-cli replay` refused a one-cycle
-//!   journal the moment a platform assembled on it with the real clock
-//!   appended one record (three tests, 2026-09-19). Until those consumers
-//!   re-anchor across evictions the way [`EventLog::verify_retained_chain`]
-//!   does, only a caller that knows its log holds no fabric records may set
-//!   the window, and no composition root does today. Stated here so nobody
-//!   flips the default to make the bound "reached".
+//!   refused a log whose retained sequences had a gap — by design, because a
+//!   slice from the middle of a log cannot prove what came before it. A roll
+//!   leaves exactly such a gap. With the window on, a platform holding
+//!   fabric records could not restart once any snapshot in its log was
+//!   ninety days old, and `qip-cli replay` refused a one-cycle journal the
+//!   moment a platform assembled on it with the real clock appended one
+//!   record (three tests, 2026-09-19). Both consumers now re-anchor across
+//!   the gap the way [`EventLog::verify_retained_chain`] does, and do it
+//!   against [`EventLog::retained_anchor`] — the log's own account of what
+//!   it spent — rather than against the surviving records' word, because a
+//!   span shortened from outside reads identically to one this log rolled
+//!   and only one of them is retention working.
 //! * **Only the replaceable class rolls.** A trade, a bar or a filing is an
 //!   observation the fallback series keeps for three years, and the audit
 //!   trail is never touched by any retention path in this module — the roll
@@ -220,10 +229,10 @@ pub const DEFAULT_CAPACITY: usize = 1_000_000;
 /// The blueprint's ninety-day rolling snapshot window (§54.2), which its own
 /// arithmetic sizes at 4.5 million events for a busy day's order flow. Not a
 /// default: no log rolls until [`EventLog::with_snapshot_window`] is called,
-/// for the reason the module doc gives. Pass this where a log is known to
-/// hold no fabric records; widen it where a model class demonstrably needs
-/// longer — the blueprint's stated revisit condition — and say why at the
-/// call site.
+/// for the reason the module doc gives. `EventLogDestination::open` in
+/// `qip-kernel` passes it for the platform's own log; widen it where a model
+/// class demonstrably needs longer — the blueprint's stated revisit
+/// condition — and say why at the call site.
 pub const SNAPSHOT_WINDOW: Duration = Duration::from_days(90);
 
 /// How much recorded time passes between two scans for records past the
@@ -603,6 +612,60 @@ impl EventLog {
     /// stopped rather than acted without a record.
     pub const fn appends_refused(&self) -> u64 {
         self.appends_refused
+    }
+
+    /// Every record this log has taken out of its own index: replaceable
+    /// records spent under pressure, observations spent after them, and
+    /// replaceable records rolled off behind the snapshot window.
+    ///
+    /// The sum matters to a consumer rebuilding state from the retained
+    /// span, for one reason: **no path counted here can drop a permanent
+    /// record.** [`Self::make_room`] filters on the declared retention class,
+    /// [`Self::roll`] filters on the same predicate so the two bounds cannot
+    /// disagree, and when nothing evictable remains [`Self::append`] refuses
+    /// rather than spending an audit record. So this is the log's own
+    /// account of the sequences it no longer holds, and a span missing more
+    /// sequences than this number is a span something removed from outside
+    /// the log.
+    pub const fn dropped(&self) -> u64 {
+        self.evicted_replaceable
+            .saturating_add(self.evicted_observations)
+            .saturating_add(self.rolled_by_age)
+    }
+
+    /// What a replay over [`Self::records`] must join onto, and how much of
+    /// the sequence the log can account for having spent.
+    ///
+    /// A consumer cannot read either fact off the records themselves. A span
+    /// beginning at sequence 412 looks identical whether this log rolled the
+    /// first 411 records or somebody handed the consumer a slice of a file,
+    /// and those two are the difference between retention working as stated
+    /// and a ledger quietly missing its history — the worse outcome, because
+    /// it reads as complete. Only the log knows which happened, so the log
+    /// says so, and a replay that re-anchors across a gap does it against
+    /// this rather than against whatever the surviving records claim.
+    ///
+    /// The head is reported as the log holds it and is *not* special-cased
+    /// on whether anything was dropped, deliberately: a consumer that
+    /// compared the two would be writing the same rule twice. The budget
+    /// carries the whole of it. A log that dropped nothing and whose span
+    /// begins at sequence 412 hands out an anchor with a budget of zero and
+    /// 411 sequences to account for, and the consumer refuses it on the one
+    /// rule it already applies to every interior gap.
+    pub fn retained_anchor(&self) -> RetainedAnchor {
+        let dropped = self.dropped();
+        match self.records.first() {
+            Some(first) => RetainedAnchor {
+                first_sequence: first.sequence,
+                previous_hash: first.previous_hash.clone(),
+                dropped,
+            },
+            None => RetainedAnchor {
+                first_sequence: 1,
+                previous_hash: GENESIS_HASH.to_string(),
+                dropped,
+            },
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -1063,6 +1126,55 @@ enum GapPolicy {
     /// predecessor it claims, as the head is. What `verify_retained_chain`
     /// asks.
     Evicted,
+}
+
+/// Where a replay over a log's retained span begins, and how many sequences
+/// the log can account for having spent.
+///
+/// Built only by [`EventLog::retained_anchor`], because the two facts it
+/// carries are the log's and not the records': a record cannot say whether
+/// the one before it was rolled or removed. A consumer rebuilding state
+/// holds its first record to [`Self::first_sequence`] and
+/// [`Self::previous_hash`], and admits a gap — at the head or in the
+/// interior, on one rule for both — only while the sequences missing from
+/// the span stay inside [`Self::dropped`]. That is the same re-anchoring
+/// [`EventLog::verify_retained_chain`] does, bounded by the log's own
+/// account of what it spent instead of extended to any gap at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetainedAnchor {
+    first_sequence: u64,
+    previous_hash: String,
+    dropped: u64,
+}
+
+impl RetainedAnchor {
+    /// The anchor of a log that has dropped nothing: the span is the whole
+    /// history, its first record is sequence one, and its predecessor is
+    /// genesis. What a consumer given a bare slice of records must assume,
+    /// because a slice carries no account of what is missing.
+    pub fn genesis() -> Self {
+        Self {
+            first_sequence: 1,
+            previous_hash: GENESIS_HASH.to_string(),
+            dropped: 0,
+        }
+    }
+
+    /// The sequence the first record of the span must carry.
+    pub const fn first_sequence(&self) -> u64 {
+        self.first_sequence
+    }
+
+    /// The predecessor hash the first record of the span must name.
+    pub fn previous_hash(&self) -> &str {
+        &self.previous_hash
+    }
+
+    /// How many records the log spent: the ceiling on how many sequences may
+    /// legitimately be missing from the span.
+    pub const fn dropped(&self) -> u64 {
+        self.dropped
+    }
 }
 
 /// Hash committing to the record's position, its predecessor and its content.

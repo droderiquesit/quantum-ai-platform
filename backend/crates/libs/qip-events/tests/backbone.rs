@@ -4,6 +4,7 @@ use qip_core::error::Result;
 use qip_core::{Context, CorrelationId, Duration, Lineage, Timestamp};
 use qip_events::bus::{DispatchFailure, HandlerOutcome, Publisher};
 use qip_events::envelope::canonical_json;
+use qip_events::log::RetainedAnchor;
 use qip_events::topic::TopicGroup;
 use qip_events::{
     AnyEvent, Envelope, EventBody, EventBus, EventFilter, EventLog, SchemaRegistry, Topic,
@@ -2281,6 +2282,78 @@ fn a_log_nobody_gave_a_window_rolls_nothing_however_old_the_snapshot() {
     );
     assert_eq!(log.rolled_by_age(), 0);
     assert_eq!(log.snapshot_window(), None, "and it reports no window");
+}
+
+#[test]
+fn a_logs_anchor_carries_the_head_it_kept_and_the_budget_of_what_it_spent() {
+    // The failure this prevents: a consumer rebuilding state from the
+    // retained span reads its own first record to decide where history
+    // began. A span starting at sequence 12 reads identically whether this
+    // log rolled eleven records or somebody removed eleven lines from the
+    // file, and the second is a ledger missing history it reports as
+    // complete — the worse of the two outcomes, because it does not stop.
+    // Only the log can tell them apart, because only the log counted what it
+    // spent, and the count is what it hands out beside the head.
+    let (ctx, start) = context();
+    let mut log = EventLog::in_memory()
+        .with_snapshot_window(qip_events::log::SNAPSHOT_WINDOW)
+        .unwrap();
+    for day in (0..=80).step_by(10) {
+        a_day_of_records(
+            &ctx,
+            start.saturating_add(Duration::from_days(day)),
+            day,
+            &mut log,
+        );
+    }
+
+    // Premise: records were written, and none of them has been spent.
+    assert_eq!(log.len(), 27, "premise: the log holds the whole span");
+    assert_eq!(log.dropped(), 0, "premise: nothing has rolled or evicted");
+    assert_eq!(
+        log.retained_anchor(),
+        RetainedAnchor::genesis(),
+        "a log that spent nothing anchors where a bare slice does: at genesis"
+    );
+
+    // Day 200: the nine stale snapshots roll, the first of them is the
+    // log's own first record, and the span no longer begins at one.
+    log.append(&erased(
+        &ctx,
+        start.saturating_add(Duration::from_days(200)),
+        tick("SNAP200"),
+    ))
+    .unwrap();
+    assert_eq!(log.rolled_by_age(), 9, "premise: the roll ran");
+    assert_eq!(
+        log.dropped(),
+        9,
+        "the log's account of what it spent is the roll plus both evictions"
+    );
+    let head = log
+        .records()
+        .first()
+        .expect("premise: the rolled span is not empty");
+    assert!(
+        head.sequence > 1,
+        "premise: the roll took the first record, so the span starts past genesis: {}",
+        head.sequence
+    );
+
+    let anchor = log.retained_anchor();
+    assert_ne!(
+        anchor,
+        RetainedAnchor::genesis(),
+        "a log that rolled its own head must not answer genesis, or a consumer would refuse it"
+    );
+    assert_eq!(anchor.first_sequence(), head.sequence);
+    assert_eq!(anchor.previous_hash(), head.previous_hash);
+    assert_eq!(
+        anchor.dropped(),
+        9,
+        "the anchor carries the budget of sequences a replay may cross, and nine is what this \
+         log can account for"
+    );
 }
 
 #[test]

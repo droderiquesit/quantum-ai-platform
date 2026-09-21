@@ -34,6 +34,29 @@
 //! looks rebuilt from the log and is not, which is worse than no state at
 //! all because it reads as evidence.
 //!
+//! # A rolled log is replayed; a shortened one is refused
+//!
+//! The one thing a replay does cross is a gap the log itself made. The event
+//! log bounds its index by age as well as by count, and the roll lifts
+//! replaceable records out of the interior without re-chaining what is left
+//! — so a log that has rolled holds a retained span whose sequences are not
+//! contiguous, and every record in it is still exactly the record that was
+//! written. [`replay_from`] crosses such a gap by re-anchoring on the
+//! predecessor the next record names, the same move
+//! [`qip_events::log::EventLog::verify_retained_chain`] makes and at the same
+//! trust level.
+//!
+//! It crosses it **only** against the log's own account of what it spent
+//! ([`qip_events::log::EventLog::retained_anchor`]), never against the
+//! records' own word, and that distinction is the whole safety of the thing.
+//! Nothing in a surviving record says whether the sequence before it was
+//! rolled or removed, and the two are the difference between a bounded
+//! working set and a ledger silently missing its history. The log knows: it
+//! counts every eviction and every roll, and no path it counts can take a
+//! permanent record — a fabric record's retention class is irreplaceable, so
+//! the fabric's own history is never what a gap holds. When more sequences
+//! are missing than the log ever dropped, the replay refuses.
+//!
 //! # Why the outcome is recomputed rather than copied
 //!
 //! A hash chain proves that a record has not changed since it was written.
@@ -60,7 +83,7 @@ use crate::journal::{FabricRecord, FabricState, PRODUCER};
 use qip_core::error::{Error, Result};
 use qip_core::sha256_hex;
 use qip_events::envelope::canonical_json;
-use qip_events::log::{GENESIS_HASH, LogRecord};
+use qip_events::log::{LogRecord, RetainedAnchor};
 use qip_events::{AnyEvent, EventBody};
 
 /// What a replay produced.
@@ -74,6 +97,13 @@ pub struct Replayed {
     /// were chain-verified — a foreign record with a broken hash breaks the
     /// chain for every fabric record after it — and not decoded.
     pub passed_over: usize,
+    /// How many sequences were missing from the span and re-anchored across
+    /// rather than read as a break: the records the log rolled or evicted
+    /// from the interior. Reported rather than swallowed because a replay
+    /// that crossed a gap and a replay that crossed none are different
+    /// findings about the same log, and only one of them is standing on the
+    /// log's own account of what it spent.
+    pub re_anchored: u64,
 }
 
 /// The hash the log commits a record under: its sequence, its predecessor's
@@ -84,24 +114,90 @@ pub fn chain_hash(sequence: u64, previous_hash: &str, event: &AnyEvent) -> Resul
     Ok(sha256_hex(material.as_bytes()))
 }
 
-/// Rebuild the fabric's state from `records`, oldest first.
+/// Rebuild the fabric's state from `records`, oldest first, holding the first
+/// of them to genesis.
+///
+/// What a caller holding a bare slice must ask, because a slice carries no
+/// account of what is missing from it. A caller holding the log itself asks
+/// [`replay_from`] with [`qip_events::log::EventLog::retained_anchor`], and
+/// gets the same answer over a span the log has rolled.
+pub fn replay(records: &[LogRecord]) -> Result<Replayed> {
+    replay_from(records, &RetainedAnchor::genesis())
+}
+
+/// Rebuild the fabric's state from `records`, oldest first, against the
+/// anchor the log they came from gives for its retained span.
 ///
 /// Refuses on the first record that fails any check, naming its position
 /// (one-based, in the slice) and its sequence, and returns no state: a
 /// partial state from a refused log is the thing this function exists not to
-/// produce. The records must start at genesis — a slice taken from the
-/// middle of a log cannot prove what came before it.
-pub fn replay(records: &[LogRecord]) -> Result<Replayed> {
+/// produce.
+///
+/// # Why an anchor rather than genesis
+///
+/// The log bounds its index by age as well as by size — `qip-events`'
+/// snapshot window — and a roll takes replaceable records out of the
+/// interior without re-chaining what is left. Until 2026-09-21 this replay
+/// demanded sequences contiguous from one, so a log that had rolled a
+/// ninety-day-old book snapshot could not be resumed at all. That is why the
+/// window shipped with no production caller, and why turning it on without
+/// this change would have lost a ledger rather than bounded one: three
+/// `qip-cli replay` runs refused a one-cycle journal on 2026-09-19 for
+/// exactly this reason.
+///
+/// A gap is now crossed by re-anchoring the record after it on the
+/// predecessor *it* names, exactly as
+/// [`qip_events::log::EventLog::verify_retained_chain`] does and at the same
+/// trust level — no new assumption, because the record's own hash is
+/// recomputed either way.
+///
+/// What is **not** taken on the records' word is whether the gap belongs
+/// there. A span beginning at sequence 412 reads identically whether the log
+/// rolled 411 records or somebody removed them, and the second is a ledger
+/// missing history it reports as complete — the worst outcome available
+/// here, worse than refusing to start. So the anchor comes from the log,
+/// which counts what it spent and whose every spending path skips a
+/// permanent record, and the sequences missing from the span may never
+/// exceed that count. Past it this refuses and names the arithmetic, because
+/// retention cannot account for the difference and nothing else here can.
+pub fn replay_from(records: &[LogRecord], anchor: &RetainedAnchor) -> Result<Replayed> {
     let mut state = FabricState::new();
     let mut applied = 0usize;
     let mut passed_over = 0usize;
-    let mut expected_previous = GENESIS_HASH.to_string();
-    let mut last_sequence = 0u64;
+    let mut expected_previous = anchor.previous_hash().to_string();
+    let mut last_sequence = anchor.first_sequence().saturating_sub(1);
+    // Sequences the span does not hold, counted from the anchor's own start
+    // so that a head the log rolled past is charged against the same budget
+    // an interior gap is. A genesis anchor starts this at zero and has a
+    // budget of zero, which is what makes `replay` the strict question.
+    let mut missing = last_sequence;
 
     for (index, record) in records.iter().enumerate() {
         let position = index + 1;
         let expected_sequence = last_sequence + 1;
-        if record.sequence != expected_sequence {
+        if record.sequence > expected_sequence {
+            missing = missing.saturating_add(record.sequence - expected_sequence);
+            if missing > anchor.dropped() {
+                return Err(Error::invalid(format!(
+                    "record at position {position} carries sequence {} where {expected_sequence} \
+                     was expected, and the log these records came from accounts for dropping \
+                     only {} record(s) against the {missing} sequence(s) missing from the span; \
+                     retention did not take the difference, so a record was reordered or \
+                     removed rather than rolled or evicted, and a replay does not reorder or \
+                     skip. A ledger rebuilt across that gap would be missing history it reports \
+                     as complete, which is why this refuses instead. Replay the log itself \
+                     rather than a slice of it, or restore the file the chain was written over",
+                    record.sequence,
+                    anchor.dropped(),
+                )));
+            }
+            // The gap is inside what the log says it spent, and no retention
+            // path in that log can spend a permanent record — a fabric
+            // record's class is irreplaceable — so nothing the fabric needs
+            // was in it. Re-anchor on what this record claims, as the head is
+            // anchored.
+            expected_previous = record.previous_hash.clone();
+        } else if record.sequence != expected_sequence {
             return Err(Error::invalid(format!(
                 "record at position {position} carries sequence {} but {expected_sequence} was \
                  expected after sequence {last_sequence}; the records are out of order or one \
@@ -186,5 +282,6 @@ pub fn replay(records: &[LogRecord]) -> Result<Replayed> {
         state,
         applied,
         passed_over,
+        re_anchored: missing,
     })
 }
