@@ -1407,6 +1407,43 @@ jobs:
               kubectl get crd runservices.run.cnrm.cloud.google.com \
                 -o jsonpath='{"  runservices established="}{.status.conditions[?(@.type=="Established")].status}{"\n"}' >&2 \
                 || echo "  runservices.run.cnrm.cloud.google.com is absent" >&2
+
+              # What Cloud Run itself says, asked directly rather than through
+              # a controller or a hook.
+              #
+              # Everything above reports the *cluster's* opinion of the
+              # deployment: Argo CD's sync, Config Connector's conditions, the
+              # proving hook's verdict. None of them is Cloud Run. When a
+              # RunService reports Ready and no revision serves traffic, the
+              # reason is a revision-level condition in another system, and
+              # four runs were spent trying to read it second-hand — through a
+              # hook whose pod is deleted before the next attempt and whose
+              # replacement is seconds old by the time this runs.
+              #
+              # This job already holds the credentials. Asking the service and
+              # its latest revision costs two calls each, and it is the only
+              # source with no controller between the question and the answer.
+              echo "what Cloud Run says about each service:" >&2
+              services="$(gcloud run services list --project "${GCP_PROJECT}" --region "${region}" \
+                --format='value(metadata.name)' 2>/dev/null | grep "^qip-${ENVIRONMENT}-" || true)"
+              if [ -z "${services}" ]; then
+                echo "  no qip-${ENVIRONMENT}-* service exists in ${region}" >&2
+              fi
+              for service in ${services}; do
+                echo "  ${service}:" >&2
+                gcloud run services describe "${service}" --project "${GCP_PROJECT}" --region "${region}" \
+                  --format='value[separator="; "](status.conditions.map().format("service {0}={1} {2}", type, status, message).list())' 2>&1 \
+                  | sed 's/^/    /' >&2 || true
+                latest="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" --region "${region}" \
+                  --format='value(status.latestCreatedRevisionName)' 2>/dev/null || true)"
+                if [ -z "${latest}" ]; then
+                  echo "    no revision has ever been created for this service" >&2
+                  continue
+                fi
+                gcloud run revisions describe "${latest}" --project "${GCP_PROJECT}" --region "${region}" \
+                  --format='value[separator="; "](status.conditions.map().format("revision {0}={1} {2}", type, status, message).list())' 2>&1 \
+                  | sed "s/^/    ${latest}: /" >&2 || true
+              done
             }
 
             # Terminate a sync that is still running from an earlier attempt.
