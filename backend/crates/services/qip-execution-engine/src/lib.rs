@@ -39,6 +39,7 @@ pub mod oms;
 pub mod order;
 pub mod origination;
 pub mod quoting;
+pub mod session;
 
 pub use broker::{
     Broker, LiveBroker, LiveVenueConfig, SimulatedBroker, SimulationSettings, VenueCapabilities,
@@ -55,4 +56,8 @@ pub use origination::{
 pub use quoting::{
     QueuePosition, QuoteDecision, QuoteInputs, QuotePair, QuotePolicy, QuoteReference, SpreadTerms,
     Withheld, quote,
+};
+pub use session::{
+    RecordedInstruction, RecordedSession, SESSION_ENTRY_LIMIT, SESSION_WINDOW, SealOutcome,
+    SessionRecorder,
 };

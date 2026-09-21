@@ -13295,6 +13295,28 @@ impl Platform {
         for problem in problems {
             outcome = outcome.with_problem(problem);
         }
+        // §34.4's recorded session ends where the stage that issued the
+        // orders ends. The boundary is drawn here and nowhere else because a
+        // session has to be something a reader of the record can reproduce:
+        // "the traffic of one ACT stage" is, and "whatever had accumulated
+        // when somebody asked" is not. Sealed after the darkness review so a
+        // region that went dark mid-stage still seals what it sent first.
+        //
+        // A duplicate fingerprint is reported rather than swallowed. It means
+        // two passes produced byte-identical traffic at identical instants,
+        // which is a clock or a loop rather than a market, and the second is
+        // discarded either way so that a gate asking for five sessions cannot
+        // be satisfied by one of them five times.
+        for (venue, sealed) in self.orders.close_sessions(now) {
+            if sealed == qip_execution_engine::session::SealOutcome::AlreadyRecorded {
+                let detail = format!(
+                    "{}; the session recorded at {venue} repeats one already held and was not \
+                     counted again",
+                    outcome.detail
+                );
+                outcome = StageOutcome { detail, ..outcome };
+            }
+        }
         outcome
     }
 
@@ -14008,10 +14030,32 @@ impl Platform {
             std::iter::once(self.broker.name().to_string()).collect();
         let observation = self.broker.observation();
         let broker_name = self.broker.name().to_string();
+        // §34.4's simulated rung, which is the ladder's ceiling, is judged on
+        // a replay of the sessions ACT sealed — what the desk instructed at
+        // this venue against what the venue answered. Until this call no
+        // binary constructed a `SimulationEvidence` at all, so the ceiling
+        // rung could only ever refuse and was reachable only by a test
+        // handing the gate a literal.
+        //
+        // The replay runs on every cycle and is reported on every cycle,
+        // whichever rung the venue stands at. A venue held at the registered
+        // rung by its untimed latency will not be *asked* for this evidence
+        // for some time, and a figure computed and reported is a figure an
+        // operator can check against the day the question is asked; one
+        // computed and dropped is the defect this repository names most
+        // often.
+        let replayed =
+            crate::session_replay::replay(&self.orders.sessions(&broker_name), &broker_name);
+        let detail = format!("{}; {}", outcome.detail, replayed.summary);
+        outcome = StageOutcome { detail, ..outcome };
+        for problem in replayed.problems {
+            outcome = outcome.with_problem(problem);
+        }
         let measured = crate::venue_measurement::measure(
             &mut self.venue_ladder,
             &broker_name,
             observation,
+            replayed.evidence,
             qip_lifecycle::venue_ladder::VenuePromotionPolicy::default(),
             now,
         );

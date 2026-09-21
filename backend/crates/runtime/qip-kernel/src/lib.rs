@@ -57,6 +57,7 @@ pub mod references;
 pub mod regime_allocation;
 pub mod regime_transition;
 pub mod rule_review;
+pub mod session_replay;
 pub mod shared_cause;
 pub mod sizing_review;
 pub mod valuation;
