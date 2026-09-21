@@ -780,6 +780,9 @@ impl LiquidityLadder {
     /// and it is the conservative one for the rungs where it is wrong — impact
     /// on a listed name is sublinear in size, so a pro-rata charge on a
     /// partial exit overstates rather than understates the cost.
+    ///
+    /// **Within a rung, the cheapest holding is drawn first** — see
+    /// [`Self::draw_order`] for the failure that was live before it did.
     pub fn plan(&self, amount: Decimal) -> Result<LiquidationPlan> {
         if !amount.is_positive() {
             return Err(Error::invalid(format!(
@@ -809,7 +812,7 @@ impl LiquidityLadder {
         let mut cost = Decimal::ZERO;
         let mut deepest = Rung::CashAtVenue;
 
-        for entry in self.entries.values() {
+        for entry in self.draw_order()? {
             if !remaining.is_positive() {
                 break;
             }
@@ -856,4 +859,95 @@ impl LiquidityLadder {
             deepest_rung: deepest,
         })
     }
+
+    /// The order [`Self::plan`] draws in: down the rungs, and **within a rung,
+    /// the cheapest holding first**.
+    ///
+    /// # The failure this prevents
+    ///
+    /// The rung is a bucket, exactly as it is for
+    /// [`LadderEntry::days_to_exit`], and this is the same class of defect in
+    /// the cost dimension. [`Self::prove_monotonic`] proves that cost rises as
+    /// the ladder descends, but it proves it *between rung totals*: nothing
+    /// said anything about two holdings on one rung. `plan` iterated the map,
+    /// whose key is `(rung, object_id)`, so within a rung it drew in
+    /// **alphabetical** order — a mega-cap at twenty basis points and a thin
+    /// small-cap at three hundred sit on
+    /// [`Rung::ListedEquityAndFutures`] together, and which one funded a
+    /// request was decided by its identifier. Rename the holding and the cost
+    /// changes. That is not an ordering at all, and blueprint §35.3's rule 3
+    /// is "lowest cost to exit"; serving from the top of the ladder downward
+    /// only *is* serving from the cheapest downward once the rung's own
+    /// holdings are ordered too.
+    ///
+    /// It reaches a number somebody reads: `Platform::call_funding` reports
+    /// [`LiquidationPlan::cost`] as what meeting a capital call would cost,
+    /// and an alphabetical draw reports a figure higher than the book can
+    /// actually serve at while naming the cheaper holding as untouched.
+    ///
+    /// # Why this cannot reorder the rungs
+    ///
+    /// The rung is compared first and the rate only breaks ties within one,
+    /// so the descent and therefore [`LiquidationPlan::deepest_rung`] are
+    /// exactly what they were: the value on each rung is unchanged, so a
+    /// request still exhausts a rung before reaching the next.
+    ///
+    /// # Rates, and the tie
+    ///
+    /// Compared by cross-multiplication rather than by dividing, for
+    /// [`Self::prove_monotonic`]'s reason: `cost_a / value_a` against
+    /// `cost_b / value_b` becomes `cost_a * value_b` against
+    /// `cost_b * value_a`, which keeps money in [`Decimal`] and never rounds a
+    /// holding into or out of its place. `value` is positive by
+    /// [`Self::new`]'s refusal, so the sense of the inequality is preserved.
+    ///
+    /// Ties break on `object_id`, so the order is **total** and a replay draws
+    /// the same legs in the same sequence. Two holdings at the same rate are
+    /// interchangeable in cost and not in the report.
+    ///
+    /// Fallible because the product can leave the decimal range, and the two
+    /// infallible ways to write it both lie: treating an overflow as a tie
+    /// would order the book by identifier again in exactly the case where the
+    /// numbers are largest, and saturating would compare a number nobody
+    /// computed — the fabrication [`Self::value_and_cost_by_rung`] records
+    /// having made once already.
+    fn draw_order(&self) -> Result<Vec<&LadderEntry>> {
+        let mut order: Vec<&LadderEntry> = self.entries.values().collect();
+        // The first pair whose rates could not be compared. Captured rather
+        // than returned from inside the comparator because `sort_by` has no
+        // fallible form; the sort's result is discarded when this is set.
+        let mut unordered: Option<(String, String)> = None;
+        order.sort_by(|a, b| {
+            a.rung
+                .cmp(&b.rung)
+                .then_with(|| match exit_rate_cmp(a, b) {
+                    Some(ordering) => ordering,
+                    None => {
+                        if unordered.is_none() {
+                            unordered = Some((a.object_id.clone(), b.object_id.clone()));
+                        }
+                        Ordering::Equal
+                    }
+                })
+                .then_with(|| a.object_id.cmp(&b.object_id))
+        });
+        if let Some((first, second)) = unordered {
+            return Err(Error::numeric(format!(
+                "the exit costs of holdings {first} and {second} could not be compared; the \
+                 values on this ladder are implausibly large — split the book or correct the \
+                 marks, because a plan that could not order them would draw by identifier"
+            )));
+        }
+        Ok(order)
+    }
+}
+
+/// Which of two holdings is cheaper to exit, as a rate on what it realises.
+///
+/// `None` where the comparison leaves the decimal range. See
+/// [`LiquidityLadder::draw_order`] for why that is not answered with a tie.
+fn exit_rate_cmp(a: &LadderEntry, b: &LadderEntry) -> Option<Ordering> {
+    let left = a.cost_to_liquidate.checked_mul(b.value)?;
+    let right = b.cost_to_liquidate.checked_mul(a.value)?;
+    Some(left.cmp(&right))
 }
