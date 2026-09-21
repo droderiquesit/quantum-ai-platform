@@ -132,7 +132,7 @@ on:
           - test
           - stage
       action:
-        description: "plan (read-only), up (apply Terraform and install the control plane: Argo CD, Config Connector, the front door, cert-manager, Kargo), apps (apply the Argo CD Application and the Kargo chain onto a control plane up already built, and prove they sync — re-runnable on its own), suspend (destroy the control-plane cluster and nothing else — the one resource that bills while idle; a later up recreates it), down (destroy the execution nodes; no environment declares any, so it is a no-op today), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name), force-unlock (release a state lock a cancelled run left behind; requires its id)"
+        description: "plan (read-only), up (apply Terraform and install the control plane: Argo CD, Config Connector, the front door, cert-manager, Kargo), apps (apply the Argo CD Application and the Kargo chain onto a control plane up already built, and prove they sync — re-runnable on its own), suspend (destroy the control-plane cluster and nothing else — the one resource that bills while idle; a later up recreates it), down (destroy the execution nodes; no environment declares any, so it is a no-op today), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name), force-unlock (release a state lock a cancelled run left behind; requires its id), diagnose (read-only: what Cloud Run says about each service, the failing revisions' conditions and what their containers printed — applies nothing, waits for nothing, and exists because reading three lines should not cost an eleven-minute apps run)"
         required: true
         default: "plan"
         type: choice
@@ -144,6 +144,7 @@ on:
           - down
           - teardown
           - force-unlock
+          - diagnose
       lock_id:
         description: "Only for force-unlock: the lock ID Terraform printed. Required, and deliberately not defaulted — see the step."
         required: false
@@ -2061,6 +2062,63 @@ jobs:
       # installed — so the step could report a number nobody computed, or
       # bury the real failure under its own. Now a listing that fails stops
       # the step with terraform's own message.
+      # Read-only, and the fastest thing in this file.
+      #
+      # Every question asked of this deployment so far has cost an `apps`
+      # dispatch: eleven to fifteen minutes to reinstall controllers, apply an
+      # Application and wait out a sync, in order to read three lines of
+      # status at the end. Five runs went that way. The questions themselves
+      # are two API calls per service and need no cluster, no Terraform and no
+      # kubectl.
+      #
+      # So they get their own action. It applies nothing, waits for nothing,
+      # and cannot change the environment: `gcloud run services list`,
+      # `describe`, and `logging read` are the only calls it makes. It is safe
+      # to run at any time, including while something else is mid-sync, and it
+      # is the action to reach for before dispatching anything that writes.
+      - name: diagnose
+        if: inputs.action == 'diagnose'
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          tfvars="infrastructure/environments/${ENVIRONMENT}/terraform.tfvars"
+          region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          echo "what Cloud Run says about each service in ${region}:"
+          services="$(gcloud run services list --project "${GCP_PROJECT}" --region "${region}" \
+            --format='value(metadata.name)' | grep "^qip-${ENVIRONMENT}-" || true)"
+          if [ -z "${services}" ]; then
+            echo "  no qip-${ENVIRONMENT}-* service exists"
+            exit 0
+          fi
+          for service in ${services}; do
+            echo "  ${service}:"
+            gcloud run services describe "${service}" --project "${GCP_PROJECT}" --region "${region}" \
+              --format='value[separator="; "](status.conditions.map().format("service {0}={1} {2}", type, status, message).list())' 2>&1 \
+              | sed 's/^/    /'
+            latest="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" \
+              --region "${region}" --format='value(status.latestCreatedRevisionName)' 2>/dev/null || true)"
+            if [ -z "${latest}" ]; then
+              echo "    no revision has ever been created for this service"
+              continue
+            fi
+            gcloud run revisions describe "${latest}" --project "${GCP_PROJECT}" --region "${region}" \
+              --format='value[separator="; "](status.conditions.map().format("revision {0}={1} {2}", type, status, message).list())' 2>&1 \
+              | sed "s/^/    ${latest}: /"
+            ready="$(gcloud run revisions describe "${latest}" --project "${GCP_PROJECT}" \
+              --region "${region}" \
+              --format='value(status.conditions.filter("type:Ready").extract(status))' 2>/dev/null || true)"
+            case "${ready}" in
+              *True*) continue ;;
+            esac
+            echo "    what ${latest} printed:"
+            gcloud logging read \
+              "resource.type=cloud_run_revision AND resource.labels.revision_name=${latest}" \
+              --project "${GCP_PROJECT}" --limit 30 --order desc \
+              --format='value(textPayload,jsonPayload.message)' 2>&1 | sed 's/^/      /'
+          done
+
       - name: what exists now
         if: always() && steps.init.outcome == 'success'
         env:
