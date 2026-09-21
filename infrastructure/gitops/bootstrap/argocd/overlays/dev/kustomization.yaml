@@ -39,7 +39,89 @@ patches:
   # The account is the *second* gate. IAP decides who may reach the service;
   # this decides who may act on it. Read the tfvars section that enables the
   # front door for why one of those alone is not enough.
-  patch: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: argocd-cm\ndata:\n  url: https://argocd.algorik.ai\n  admin.enabled: \"true\"\n"
+  #
+  # `resource.customizations.health.*` teaches Argo CD to read a Config
+  # Connector resource, and without it a sync never concludes.
+  #
+  # Observed, not theorised. `infra.yml` run 72 found the dev Application at
+  # `phase=Running` with
+  #
+  #   message=waiting for healthy state of
+  #   iam.cnrm.cloud.google.com/IAMPolicyMember/... and 1 more resources
+  #
+  # and a `startedAt` four hours old — the same instant run 70 printed, so
+  # the operation had never re-attempted. **A sync that cannot conclude is
+  # worse than one that fails**: the per-object results freeze at the first
+  # attempt, so run 72 reported the very 403 that had been fixed an hour
+  # earlier by an Artifact Registry grant, and the report read as a fix that
+  # had not worked. A stale result is indistinguishable from a fresh one.
+  #
+  # Every Config Connector resource carries `status.conditions[]` with a
+  # `Ready` condition, so one script serves both kinds. Ready/True is
+  # Healthy; Ready/False is **Degraded, carrying the controller's own reason
+  # and message out** — a RunService that cannot pull its image should say so
+  # where an operator looks, not make somebody read a sync result to find
+  # out. Anything else is Progressing, which is what an unreconciled
+  # resource honestly is.
+  #
+  # Degraded rather than Suspended on a false Ready, deliberately: a resource
+  # Google refused is a failure, and reporting it as anything softer is the
+  # "reads as protection, cannot fire" shape this repository refuses.
+  #
+  # Written as a block scalar rather than the one-line escaped form the
+  # sibling patches use, because a Lua script inside `\n`-escaped quotes is
+  # unreadable and the first attempt at it produced a file that did not
+  # parse.
+  patch: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: argocd-cm
+    data:
+      url: https://argocd.algorik.ai
+      admin.enabled: "true"
+      resource.customizations.health.iam.cnrm.cloud.google.com_IAMPolicyMember: |
+        hs = {}
+        if obj.status ~= nil and obj.status.conditions ~= nil then
+          for i, c in ipairs(obj.status.conditions) do
+            if c.type == "Ready" then
+              if c.status == "True" then
+                hs.status = "Healthy"
+                hs.message = c.message or "ready"
+                return hs
+              end
+              if c.status == "False" then
+                hs.status = "Degraded"
+                hs.message = (c.reason or "NotReady") .. ": " .. (c.message or "")
+                return hs
+              end
+            end
+          end
+        end
+        hs.status = "Progressing"
+        hs.message = "Config Connector has not reported Ready yet"
+        return hs
+      resource.customizations.health.run.cnrm.cloud.google.com_RunService: |
+        hs = {}
+        if obj.status ~= nil and obj.status.conditions ~= nil then
+          for i, c in ipairs(obj.status.conditions) do
+            if c.type == "Ready" then
+              if c.status == "True" then
+                hs.status = "Healthy"
+                hs.message = c.message or "ready"
+                return hs
+              end
+              if c.status == "False" then
+                hs.status = "Degraded"
+                hs.message = (c.reason or "NotReady") .. ": " .. (c.message or "")
+                return hs
+              end
+            end
+          end
+        end
+        hs.status = "Progressing"
+        hs.message = "Config Connector has not reported Ready yet"
+        return hs
 - target:
     kind: ConfigMap
     name: argocd-cmd-params-cm

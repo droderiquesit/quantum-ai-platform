@@ -1296,6 +1296,37 @@ jobs:
                 || echo "  runservices.run.cnrm.cloud.google.com is absent" >&2
             }
 
+            # Terminate a sync that is still running from an earlier attempt.
+            #
+            # Run 72 waited ten minutes on an operation whose `startedAt` was
+            # four hours old — the same instant run 70 had printed. Argo CD
+            # runs one operation at a time, so a sync stuck in `Running`
+            # blocks every later one, and its per-object results stay frozen
+            # at whatever the first attempt found. That is how run 72 came to
+            # report an Artifact Registry 403 that had been fixed an hour
+            # earlier: the message was true when it was written and had not
+            # been retried since.
+            #
+            # A stale result is indistinguishable from a fresh one, which
+            # makes this worse than a failure. So an operation still running
+            # when this stage begins is terminated, and the auto-sync policy
+            # starts a new one against the cluster as it is now.
+            #
+            # Only when one is actually running: `|| true` on the read, and
+            # the terminate is skipped when the field is empty, so a first
+            # install does nothing here.
+            running_since="$(kubectl -n argocd get "application/qip-${ENVIRONMENT}" \
+              -o jsonpath='{.status.operationState.phase}{" "}{.status.operationState.startedAt}' 2>/dev/null || true)"
+            case "${running_since}" in
+              Running\ *)
+                echo "an earlier sync is still running (${running_since}); terminating it so this dispatch measures the cluster as it is now rather than inheriting a stale result."
+                kubectl -n argocd patch "application/qip-${ENVIRONMENT}" --type merge \
+                  -p '{"status":{"operationState":{"phase":"Terminating"}}}' --subresource=status >/dev/null 2>&1 \
+                  || kubectl -n argocd patch "application/qip-${ENVIRONMENT}" --type merge \
+                       -p '{"operation":null}' >/dev/null 2>&1 || true
+                ;;
+            esac
+
             echo "waiting for the ${ENVIRONMENT} Application to sync and report healthy..."
             if ! kubectl -n argocd wait --for=jsonpath='{.status.sync.status}'=Synced \
                 "application/qip-${ENVIRONMENT}" --timeout=600s; then
