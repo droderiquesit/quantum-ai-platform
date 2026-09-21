@@ -24,6 +24,7 @@
 
 const METADATA_HOST = "http://metadata.google.internal";
 const TOKEN_PATH = "/computeMetadata/v1/instance/service-accounts/default/token";
+const IDENTITY_PATH = "/computeMetadata/v1/instance/service-accounts/default/identity";
 
 /** Every call that leaves the process carries an explicit timeout. */
 const TIMEOUT_MS = 5_000;
@@ -46,9 +47,20 @@ interface CachedToken {
 
 let cached: CachedToken | null = null;
 
-/** Discard the cached token. Exists for tests; nothing in a request path calls it. */
+/**
+ * Identity tokens, one per audience.
+ *
+ * Keyed by audience because an identity token *is* its audience: one minted
+ * for `qip-api` proves nothing to anything else, and a single-slot cache
+ * shared between two audiences would hand each caller the other's token and
+ * produce a 401 that looks like a missing IAM grant.
+ */
+const identityCache = new Map<string, CachedToken>();
+
+/** Discard the cached tokens. Exists for tests; nothing in a request path calls it. */
 export function forgetAccessToken(): void {
   cached = null;
+  identityCache.clear();
 }
 
 /**
@@ -105,5 +117,79 @@ export async function accessToken(now: number = Date.now()): Promise<string> {
   const lifetimeSeconds =
     typeof payload.expires_in === "number" && payload.expires_in > 0 ? payload.expires_in : 60;
   cached = { token, expiresAtMs: now + lifetimeSeconds * 1000 };
+  return token;
+}
+
+/**
+ * How long an identity token is reused.
+ *
+ * The metadata server mints these with an hour's life and does not report the
+ * expiry alongside the token — the response is the bare JWT. Rather than
+ * decode a token this process is only carrying, it is held for a fixed
+ * interval well inside that hour. Fifty minutes would be cutting it fine on a
+ * request that then takes a while; forty-five is not.
+ */
+const IDENTITY_TTL_MS = 45 * 60 * 1000;
+
+/**
+ * A Google **identity** token for `audience`, from the metadata server.
+ *
+ * This is the credential Cloud Run's IAM check wants, and the console had none
+ * — which is the bug ADR 0094 names among its costs: "The portal's gateway
+ * still cannot authenticate to `qip-api`. It sends the platform bearer token
+ * and never a Google ID token... so the invoker grant ADR 0018 made is not yet
+ * exercised by anything." An *access* token, which `accessToken` above mints,
+ * is not a substitute: Cloud Run's front end validates an ID token whose `aud`
+ * is the service URL, and refuses an access token with a 401 that reads
+ * exactly like a missing grant — which is a long afternoon spent on the IAM
+ * console for a fault that is in this file.
+ *
+ * `format=full` is asked for because it includes the instance claims a Cloud
+ * Run front end expects; the default omits them.
+ *
+ * Throws rather than returning null, for the same reason `accessToken` does:
+ * the caller cannot do its job without this, and a caller that continued would
+ * send an unauthenticated request and report the platform unreachable when the
+ * fault is entirely its own.
+ *
+ * Nothing here logs the token, and no error message contains it.
+ */
+export async function identityToken(audience: string, now: number = Date.now()): Promise<string> {
+  const held = identityCache.get(audience);
+  if (held && held.expiresAtMs - REFRESH_MARGIN_MS > now) return held.token;
+
+  const url = `${METADATA_HOST}${IDENTITY_PATH}?audience=${encodeURIComponent(audience)}&format=full`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { "metadata-flavor": "Google" },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch (cause) {
+    throw new MetadataUnavailable(
+      "the instance metadata server did not answer, so this console cannot prove its " +
+        "identity to the platform. Off Cloud Run that is expected: leave " +
+        "QIP_API_AUDIENCE unset when the platform is not an authenticated Cloud Run " +
+        `service. (${cause instanceof Error ? cause.message : "unknown error"})`,
+    );
+  }
+
+  if (!response.ok) {
+    throw new MetadataUnavailable(
+      `the metadata server refused an identity token with HTTP ${response.status}. Check that ` +
+        "QIP_API_AUDIENCE is the platform's Cloud Run URL and nothing else.",
+    );
+  }
+
+  // The body is the bare JWT, not JSON. A response that is not one — an error
+  // page from something in the way, say — is refused here rather than carried
+  // upstream as though it were a credential.
+  const token = (await response.text()).trim();
+  if (token.split(".").length !== 3) {
+    throw new MetadataUnavailable(
+      "the metadata server answered with something that is not an identity token",
+    );
+  }
+  identityCache.set(audience, { token, expiresAtMs: now + IDENTITY_TTL_MS });
   return token;
 }

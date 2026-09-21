@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { declaresWrite, describeWrites } from "@/lib/api/endpoints";
 import { redactBody } from "@/lib/api/redaction";
 import { authRequired } from "@/lib/server/auth-gate";
-import { requireCsrf, sessionFrom } from "@/lib/server/auth-http";
+import { requireCsrf, sessionForRequest } from "@/lib/server/auth-http";
 import {
   API_VERSION_PREFIX,
   resolveUpstreamPath,
@@ -40,8 +40,10 @@ interface RouteContext {
  * The session boundary, when authentication is required.
  *
  * The middleware's redirect is comfort; this is the check that counts. The
- * cookie's signature is verified and its expiry enforced here, so a forged
- * cookie reads as no session — and mutating calls additionally need the CSRF
+ * cookie's signature is verified and its expiry enforced here — or, behind
+ * ADR 0094's IAP front door, the `x-goog-iap-jwt-assertion` header's ECDSA
+ * signature is verified against Google's published keys — so a forged cookie
+ * and a forged assertion alike read as no session. Mutating calls additionally need the CSRF
  * pair, because a browser can be made to *send* cookies cross-site but not to
  * read the token that must be echoed in a header.
  *
@@ -51,12 +53,12 @@ interface RouteContext {
  * per-instance in-memory filesystem — the lookup failing was how a signed-in
  * user became anonymous at a scale event, not how a revoked one was refused.
  */
-function refuseUnauthenticated(request: NextRequest): NextResponse | null {
+async function refuseUnauthenticated(request: NextRequest): Promise<NextResponse | null> {
   // The closed gate is the default; see `auth-gate.ts` for the deployment
   // that once forgot the variable and served the platform's credential to
   // everyone.
   if (!authRequired()) return null;
-  if (!sessionFrom(request)) {
+  if (!(await sessionForRequest(request))) {
     return NextResponse.json(
       { error: "sign in to use this console", gateway: "unauthenticated" },
       { status: 401, headers: { "x-qip-gateway": "upstream", "cache-control": "no-store" } },
@@ -70,11 +72,12 @@ function refuseUnauthenticated(request: NextRequest): NextResponse | null {
 }
 
 async function forward(request: NextRequest, context: RouteContext): Promise<Response> {
-  const refused = refuseUnauthenticated(request);
+  const refused = await refuseUnauthenticated(request);
   if (refused) return refused;
 
   let target: Upstream;
   let path: string;
+  let headers: Headers;
   try {
     const { path: segments } = await context.params;
     path = resolveUpstreamPath(segments);
@@ -112,6 +115,13 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
       );
     }
     target = upstream();
+    // Inside the same `try` as `upstream()` on purpose. Minting the Google
+    // identity token this console proves itself to Cloud Run with can fail,
+    // and when it does the fault is this process's configuration — the same
+    // class as a missing base URL, reported the same way. Sending the request
+    // without it instead would draw a 403 from Cloud Run's front end that says
+    // nothing about which side is wrong.
+    headers = await upstreamHeaders(target, { accept: "application/json" });
   } catch (cause) {
     const detail = cause instanceof Error ? cause.message : "the gateway is not configured";
     return NextResponse.json(
@@ -123,7 +133,6 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
   const incoming = new URL(request.url);
   const url = `${target.baseUrl}${path}${incoming.search}`;
 
-  const headers = upstreamHeaders(target, { accept: "application/json" });
   const contentType = request.headers.get("content-type");
   if (contentType) headers.set("content-type", contentType);
 

@@ -61,6 +61,18 @@ export function proxy(request: NextRequest): NextResponse {
   const hasSessionCookie = Boolean(request.cookies.get(sessionCookieName())?.value);
   if (hasSessionCookie) return NextResponse.next();
 
+  // Behind ADR 0094's IAP front door a person arrives already authenticated
+  // and with no cookie at all, so the cookie check above would bounce them to
+  // a sign-in page they have no business seeing and cannot usefully complete.
+  // Presence is all this file may check: the edge runtime has no `node:crypto`
+  // and could not fetch a key set synchronously if it did, and the signature
+  // is what the assertion is worth. That is not a hole, for the same reason
+  // the cookie check above is not one — this file decides redirect versus
+  // pass-through, and every Node handler behind it verifies the assertion
+  // before it returns anything. A request that sets this header without a
+  // valid signature gets past the redirect and then reads nothing.
+  if (request.headers.has("x-goog-iap-jwt-assertion")) return NextResponse.next();
+
   // The signed-out root goes to the front door, not to a login wall: a person
   // typing the bare domain has expressed no intent to sign in yet.
   if (pathname === "/") {

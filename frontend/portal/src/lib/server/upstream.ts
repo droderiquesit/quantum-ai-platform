@@ -8,12 +8,21 @@
  * This module is imported only by route handlers, which never run in the
  * browser: the credential it reads must not cross that line.
  */
+import { identityToken } from "./google-credentials";
 import { secretFromEnvironment } from "./secret";
 
 export interface Upstream {
   readonly baseUrl: string;
   readonly token: string | null;
   readonly timeoutMs: number;
+  /**
+   * The Cloud Run audience this console must prove an identity to, or null.
+   *
+   * See `AUDIENCE_VARIABLE` below. Null means the platform is not an
+   * IAM-protected Cloud Run service — a local `qip-api`, or the suites' stub
+   * — and no identity token is minted or sent.
+   */
+  readonly identityAudience: string | null;
 }
 
 /**
@@ -24,6 +33,40 @@ export interface Upstream {
  * same variable for the "both set" refusal to mean anything.
  */
 const TOKEN_VARIABLE = "QIP_API_TOKEN";
+
+/**
+ * The Cloud Run audience, when the platform is one.
+ *
+ * `qip-api` runs with `INGRESS_TRAFFIC_INTERNAL_ONLY` and requires
+ * authentication, so reaching it needs a Google **identity** token whose `aud`
+ * is the service's own URL. It is not a secret — it is a URL — so it is a
+ * plain environment value rather than a mounted file, and it is not committed
+ * because no value of it is right for two environments.
+ *
+ * **Absent means no identity token is sent, and that is deliberate rather than
+ * lax.** Two things are true at once: a local `qip-api` and the suites' stub
+ * have no IAM in front of them and would reject nothing, and a deployment that
+ * does need one gets a loud refusal rather than a quiet anonymous call,
+ * because minting throws when the metadata server is not there. The dangerous
+ * middle — set but unusable — is the case that now fails closed; the previous
+ * behaviour had no such variable at all, so *every* call was the quiet
+ * anonymous one.
+ */
+const AUDIENCE_VARIABLE = "QIP_API_AUDIENCE";
+
+/**
+ * Where the identity token rides.
+ *
+ * **Not `authorization`.** Cloud Run forwards `authorization` to the container
+ * untouched, so putting the Google token there would overwrite the platform's
+ * own bearer credential and `qip-api` would answer 401 — trading one
+ * authentication failure for another. `x-serverless-authorization` is the
+ * header Cloud Run's front end consumes for its IAM check and strips before
+ * the container sees it, which is exactly the separation needed here: Google
+ * decides whether this console may call the service, and the platform decides,
+ * from its own token, what this console may read.
+ */
+const IDENTITY_HEADER = "x-serverless-authorization";
 
 export class UpstreamNotConfigured extends Error {}
 
@@ -51,19 +94,37 @@ export function upstream(): Upstream {
   // unreachable when the fault is entirely its own.
   const token = secretFromEnvironment(TOKEN_VARIABLE);
   const timeout = Number(process.env.QIP_API_TIMEOUT_MS ?? 10_000);
+  const audience = process.env[AUDIENCE_VARIABLE]?.trim();
   return {
     baseUrl: parsed.origin + parsed.pathname.replace(/\/$/, ""),
     token,
     timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : 10_000,
+    identityAudience: audience ? audience : null,
   };
 }
 
 /** The platform's versioned prefix. Versioned as a whole, so it is one string. */
 export const API_VERSION_PREFIX = "/api/v1";
 
-export function upstreamHeaders(target: Upstream, extra?: HeadersInit): Headers {
+/**
+ * The headers a call to the platform carries.
+ *
+ * Two credentials, on two headers, answering two different questions — see
+ * `IDENTITY_HEADER` for why they cannot share one. Async because the identity
+ * token comes from the metadata server; the access-token cache in
+ * `google-credentials.ts` keeps that off the per-request path.
+ *
+ * A failure to mint propagates. The alternative — catching it and sending the
+ * request anyway — produces a 403 from Cloud Run's front end that says nothing
+ * about this console's own misconfiguration, and that is precisely the
+ * three-step diagnosis ADR 0094 asked to be made a one-step one.
+ */
+export async function upstreamHeaders(target: Upstream, extra?: HeadersInit): Promise<Headers> {
   const headers = new Headers(extra);
   if (target.token) headers.set("authorization", `Bearer ${target.token}`);
+  if (target.identityAudience) {
+    headers.set(IDENTITY_HEADER, `Bearer ${await identityToken(target.identityAudience)}`);
+  }
   return headers;
 }
 
