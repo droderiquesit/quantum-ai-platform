@@ -228,6 +228,30 @@ resource "google_secret_manager_secret_iam_member" "console_viewer_token" {
   member    = "serviceAccount:${google_service_account.console[0].email}"
 }
 
+# The key the console signs its own session cookies with (ADR 0019, ADR 0094).
+#
+# Not a platform credential and not a cloud one: it authenticates nobody
+# anywhere but this console, and what it protects is that a cookie the browser
+# holds cannot be forged. It is granted here, beside the account, because
+# `scripts/deploy-frontends.sh` used to make this binding itself — the script
+# created the container, so it granted the read — and under ADR 0036 the
+# service is reconciled by Config Connector from a manifest, which runs no
+# script. A grant that exists only inside a deploy path nothing runs is a
+# grant that is not there; the revision then fails to start, because Cloud Run
+# resolves a secret volume before the instance exists and the URL answers the
+# load balancer's own 500 rather than anything the container wrote.
+#
+# Terraform creates the container and never a version. The value is one
+# `openssl rand` an operator writes out of band, exactly as the Alpaca slots
+# are filled: a signing key in a plan is a signing key in state.
+resource "google_secret_manager_secret_iam_member" "console_session_secret" {
+  count     = var.console_enabled ? 1 : 0
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.platform["qip-session-secret"].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.console[0].email}"
+}
+
 # The console writes the agreements a user accepted onto their account
 # (ADR 0019), and reads them back at sign-in.
 #

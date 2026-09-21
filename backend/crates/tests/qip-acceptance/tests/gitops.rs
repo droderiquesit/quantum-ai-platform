@@ -122,6 +122,43 @@ fn awaiting_first_promotion(environment: &str) -> bool {
         .any(|(name, _)| *name == environment)
 }
 
+/// Images `deploy.yml` builds that no run of it has ever produced, each with
+/// why.
+///
+/// A different exemption from `NEVER_PROMOTED_TO` above, and the difference
+/// is the axis. That list is about an *environment* nothing has promoted
+/// into; this is about an *image* nothing has ever built, in any environment
+/// — including dev, which that list may never name. Both allow `TO-PIN` and
+/// neither is an exemption from the pin: the marker is the honest value while
+/// there are no bytes, and a manifest carrying it is one Argo CD refuses to
+/// reconcile, which is the correct behaviour for a service that would
+/// otherwise deploy from a name nobody attested.
+///
+/// An entry expires the moment a run pins the digest, and
+/// `every_image_deploy_yml_has_never_built_is_still_unbuilt_and_still_in_the_matrix`
+/// is what expires it.
+const NEVER_BUILT: &[(&str, &str)] = &[(
+    "qip-portal",
+    "ADR 0094 put the console's build into deploy.yml's matrix in the same commit as its \
+     manifest and its front door, so the first run that can produce these bytes is the first \
+     run after that commit. Until one has, this repository has never held an image for the \
+     portal and there is no digest to write down; inventing one would name bytes nobody \
+     scanned. The marker is replaced by whoever reviews the first attested digest, and the \
+     Kargo subscription that would keep it pinned afterwards is ADR 0094's named follow-on.",
+)];
+
+/// Whether an image reference names something `NEVER_BUILT` argues for, by
+/// the last component of its repository path.
+///
+/// Matched on the whole component rather than with `contains`, because
+/// `qip-portal` is a substring of nothing here today and this repository has
+/// already been bitten by a check that matched a neighbouring name.
+fn never_built(image: &str) -> bool {
+    let (repository, _) = split_reference(image);
+    let last = repository.rsplit('/').next().unwrap_or(&repository);
+    NEVER_BUILT.iter().any(|(name, _)| *name == last)
+}
+
 /// The root every secret volume is mounted under, `modules/cloudrun`'s
 /// `local.secret_root`.
 const SECRET_ROOT: &str = "/var/run/secrets/qip/";
@@ -2092,10 +2129,27 @@ fn prod_is_promoted_by_nobody_until_an_adr_says_otherwise() {
 
 // --- the RunService manifests against the catalogue -------------------------------
 
+/// Services under `envs/` that are deliberately not catalogue workloads,
+/// each with the record that says so.
+///
+/// Two, and each is a named exception rather than a category. OpenObserve is
+/// a vendored image with its own instantiation of `modules/cloudrun` (ADR
+/// 0028). The portal is `frontend/portal` — no Rust binary, no autonomy
+/// ceiling, no instrument universe, and the only service here a browser
+/// reaches — with no `modules/cloudrun` instantiation at all, because the
+/// account it runs as already existed (ADR 0018, ADR 0094).
+///
+/// A service named here is not exempt from anything; it is checked by the
+/// test written for it rather than by the parity walk, which compares a
+/// manifest against a catalogue entry that does not exist for either of
+/// these. `the_portal_is_reachable_only_behind_its_iap_edge_and_holds_only_what_it_needs`
+/// below is the portal's.
+const NOT_A_CATALOGUE_WORKLOAD: [&str; 2] = ["openobserve", "portal"];
+
 /// The RunServices under one environment, each matched to the catalogue key
 /// its name carries. Any RunService that is neither a catalogue workload
-/// nor OpenObserve fails here: a fourth service is a workload with no
-/// catalogue entry to be checked against.
+/// nor one of `NOT_A_CATALOGUE_WORKLOAD` fails here: an unlisted service is
+/// a workload with nothing to be checked against.
 fn run_services(environment: &str) -> Vec<(String, Option<String>, Manifest, Vec<Manifest>)> {
     let manifests = manifests_under(&format!("{ENVS}/{environment}"));
     let services: Vec<Manifest> = manifests
@@ -2125,7 +2179,7 @@ fn run_services(environment: &str) -> Vec<(String, Option<String>, Manifest, Vec
                 service.describe()
             );
         };
-        if key == "openobserve" {
+        if NOT_A_CATALOGUE_WORKLOAD.contains(&key) {
             matched.push((key.to_string(), None, service, manifests.clone()));
             continue;
         }
@@ -2220,10 +2274,13 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
             .unwrap_or_else(|| panic!("{environment}'s tfvars name no project_id"));
         for (key, entry, service, siblings) in run_services(&environment) {
             let Some(entry) = entry else {
-                // OpenObserve: ADR 0030's posture and ADR 0031's secret_env are
-                // the two named exceptions, and it is not a catalogue entry.
-                // It is checked by the secret test below for the one property
-                // that still applies: it is released, never destroyed.
+                // A `NOT_A_CATALOGUE_WORKLOAD` service. OpenObserve carries
+                // ADR 0030's posture and ADR 0031's secret_env; the portal
+                // carries ADR 0094's load-balancer ingress and runs as an
+                // account this module never created. Neither has a catalogue
+                // entry to be compared against, and each has a test of its
+                // own. The one property that still applies to both is
+                // asserted here: they are released, never destroyed.
                 assert_eq!(
                     service.annotation(DELETION_POLICY).as_deref(),
                     Some("abandon"),
@@ -2988,6 +3045,7 @@ fn every_image_under_gitops_is_pinned_by_digest_and_is_either_attested_by_the_pi
     let mut attested = 0usize;
     let mut mirrored = 0usize;
     let mut awaiting = 0usize;
+    let mut unbuilt = 0usize;
     let mut upstream_moved = 0usize;
 
     // The parsed manifests, each resolved through its own directory's
@@ -3035,10 +3093,24 @@ fn every_image_under_gitops_is_pinned_by_digest_and_is_either_attested_by_the_pi
         );
         if image.contains(TO_PIN) {
             let environment = dir.rsplit('/').next().unwrap_or_default();
+            // Two ways a marker is legitimate, on two different axes: an
+            // environment nothing has promoted into, or an image nothing has
+            // ever built. Each is a written decision, and anything else is a
+            // digest somebody forgot.
+            if never_built(&image) {
+                assert!(
+                    dir.starts_with(ENVS),
+                    "{place} runs `{image}`, and a NEVER_BUILT marker belongs to an \
+                     environment's own manifests rather than to the bootstrap"
+                );
+                unbuilt += 1;
+                continue;
+            }
             assert!(
                 dir.starts_with(ENVS) && awaiting_first_promotion(environment),
                 "{place} runs `{image}`, which still carries the {TO_PIN} marker, and \
-                 {environment} is not an environment NEVER_PROMOTED_TO argues for"
+                 {environment} is not an environment NEVER_PROMOTED_TO argues for, nor is the \
+                 image one NEVER_BUILT argues for"
             );
             assert!(
                 trading_binary_of(&image).is_some(),
@@ -3164,6 +3236,19 @@ fn every_image_under_gitops_is_pinned_by_digest_and_is_either_attested_by_the_pi
          environments NEVER_PROMOTED_TO argues for is the expected count",
         NEVER_PROMOTED_TO.len()
     );
+    // The other axis, counted separately so the two exemptions cannot cover
+    // for each other: an image nothing has ever built carries the marker
+    // wherever it is deployed, and the premise here is that at least one such
+    // manifest was actually read. Zero would mean the walk saw no NEVER_BUILT
+    // image at all, and the entry above would be excusing nothing while
+    // reading as an exemption in force.
+    assert!(
+        unbuilt >= NEVER_BUILT.len(),
+        "{unbuilt} image reference(s) carried the marker for an image NEVER_BUILT argues for, \
+         and there are {} such images; either they are pinned now — delete the entries — or \
+         this walk is no longer reading the manifests that run them",
+        NEVER_BUILT.len()
+    );
     assert!(
         mirrored >= 3 * 4,
         "only {mirrored} parsed images were matched to a vendored line; the sidecar, \
@@ -3211,26 +3296,89 @@ fn every_environment_awaiting_its_first_promotion_is_still_unpinned_and_dev_is_n
         );
         for entry in unpinned {
             assert!(
-                trading_binary_of(&entry.name).is_some(),
+                trading_binary_of(&entry.name).is_some() || never_built(&entry.name),
                 "{environment} leaves `{}` unpinned; only a catalogue binary awaits a \
-                 promotion, and a vendored image is pinned by its line",
+                 promotion, or an image NEVER_BUILT argues for, and a vendored image is \
+                 pinned by its line",
                 entry.name
             );
         }
     }
-    // The other direction: dev is pinned everywhere.
+    // The other direction: dev is pinned everywhere — except for an image no
+    // run of the pipeline has ever produced, which has no digest to be
+    // pinned to and says so.
     let dev = image_overrides(&manifests_under(&format!("{ENVS}/dev")));
     assert!(
         dev.len() >= 3,
         "dev's transformer names {} images; the three binaries at least",
         dev.len()
     );
+    let mut pinned = 0usize;
     for entry in &dev {
+        if never_built(&entry.name) {
+            continue;
+        }
         assert!(
             entry.digest.as_deref().is_some_and(is_digest_pinned_bare),
             "dev's transformer leaves `{}` at `{:?}`, not a sha256 digest",
             entry.name,
             entry.digest
+        );
+        pinned += 1;
+    }
+    // The premise, because the skip above is a hole and a hole nobody counts
+    // is a hole that grows: dev still pins the images it has. Adding every
+    // name in dev to NEVER_BUILT would otherwise leave this loop asserting
+    // nothing while reading as the check that dev is pinned.
+    assert!(
+        pinned >= 3,
+        "only {pinned} of dev's {} image(s) were checked for a digest; the rest were excused \
+         by NEVER_BUILT, and an environment excused from being pinned is not pinned",
+        dev.len()
+    );
+}
+
+#[test]
+fn every_image_deploy_yml_has_never_built_is_still_unbuilt_and_still_in_the_matrix() {
+    // What stops NEVER_BUILT becoming a place things are left. An entry has
+    // to argue its case; the pipeline has to actually build it, or it is an
+    // image that will never acquire a digest and the marker is permanent;
+    // and it has to still be unpinned somewhere, or a run has produced the
+    // bytes and the entry now silently excuses whatever next takes the name.
+    let deploy = read(DEPLOY_WORKFLOW);
+    let overrides: Vec<ImageOverride> = ENVIRONMENTS
+        .iter()
+        .flat_map(|environment| image_overrides(&manifests_under(&format!("{ENVS}/{environment}"))))
+        .collect();
+    assert!(
+        !overrides.is_empty(),
+        "no image transformer was read out of {ENVS}; this test would excuse every entry"
+    );
+    for (image, reason) in NEVER_BUILT {
+        assert!(
+            reason.len() > 120,
+            "the entry for {image} does not argue its case; an exception without a reason is \
+             an exception nobody can review"
+        );
+        // Matched as a whole matrix line rather than with `contains`: the
+        // workflow's prose names `qip-portal` too, and a test satisfied by a
+        // comment is a test satisfied by deleting the build.
+        assert!(
+            deploy
+                .lines()
+                .any(|line| line.trim() == format!("- {image}")),
+            "NEVER_BUILT says nothing has built {image}, and {DEPLOY_WORKFLOW}'s matrix does \
+             not name it either; an image no pipeline builds never acquires a digest, so the \
+             marker would be permanent rather than pending"
+        );
+        assert!(
+            overrides.iter().any(|entry| entry.name == *image
+                && entry
+                    .digest
+                    .as_deref()
+                    .is_some_and(|digest| digest.contains(TO_PIN))),
+            "NEVER_BUILT excuses {image} and no environment leaves it unpinned; a run has \
+             produced the bytes, so delete the entry and pin the reviewed digest"
         );
     }
 }
@@ -4628,5 +4776,242 @@ metadata:
     assert!(
         message.contains("inline:1") && message.contains("anchor, alias or tag"),
         "the refusal does not name the line and the construct: {message}"
+    );
+}
+
+// --- the console (ADR 0094) ---------------------------------------------------
+
+/// The one ingress a service fronted by an IAP edge may carry.
+///
+/// Not `INGRESS_TRAFFIC_ALL`. The difference is the whole security argument:
+/// with `ALL` the service's own `run.app` URL answers the internet, and IAP
+/// becomes a locked front door on a building with an open side entrance.
+const INTERNAL_LOAD_BALANCER: &str = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER";
+
+/// The secrets the portal may hold, the variable naming each, and the path
+/// each must appear at.
+///
+/// A list rather than a rule, because the rule — "what it needs" — is a
+/// judgement, and this is that judgement written down where a diff shows it
+/// changing. The browser receives nothing the public may not see and the
+/// server holds nothing it cannot spend: no venue credential, no
+/// capital-envelope key, no operator, analyst or monitor token, no
+/// market-data key.
+const PORTAL_SECRETS: [(&str, &str, &str); 2] = [
+    (
+        "qip-session-secret",
+        "ALGORIK_SESSION_SECRET_FILE",
+        "/var/run/secrets/algorik/session-secret/session-secret",
+    ),
+    (
+        "qip-token-viewer",
+        "QIP_API_TOKEN_FILE",
+        "/var/run/secrets/qip/token-viewer/token-viewer",
+    ),
+];
+
+#[test]
+fn the_portal_is_reachable_only_behind_its_iap_edge_and_holds_only_what_it_needs() {
+    // The console is the one service here a browser reaches, and it is not a
+    // catalogue workload, so the parity walk above compares it to nothing.
+    // This is what it is compared to instead.
+    //
+    // The first property is the one the whole design rests on.
+    // `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` admits the global external
+    // load balancer `modules/iap-edge` creates and nothing else from the
+    // internet. Asserted as equality with that exact value, never as the
+    // absence of `INGRESS_TRAFFIC_ALL`: a `RunService` with no `ingress`
+    // field at all is one Cloud Run defaults to all traffic, so a deleted
+    // line is a public console rather than a safe omission — the same trap
+    // `console_route.rs` names for the API.
+    let mut checked = 0usize;
+    for environment in environment_directories() {
+        let project = tfvars_value(&environment, "project_id")
+            .unwrap_or_else(|| panic!("{environment}'s tfvars name no project_id"));
+        let Some((_, _, service, siblings)) = run_services(&environment)
+            .into_iter()
+            .find(|(key, _, _, _)| key == "portal")
+        else {
+            continue;
+        };
+        let describe = service.describe();
+
+        let ingress = text_at(&service.value, &["spec", "ingress"]).unwrap_or_default();
+        assert_eq!(
+            ingress, INTERNAL_LOAD_BALANCER,
+            "{describe} carries ingress `{ingress}`; anything but {INTERNAL_LOAD_BALANCER} — \
+             including no `ingress` line, which Cloud Run reads as all traffic — lets the \
+             service's own run.app URL answer the internet, and IAP is then a door with an \
+             open side entrance"
+        );
+
+        // It runs as the console identity ADR 0018 created, not an account of
+        // its own. A second identity would have needed a second invoker on
+        // the API, which is widening who may call the platform to make a
+        // module fit.
+        let account = text_at(
+            &service.value,
+            &["spec", "template", "serviceAccountRef", "external"],
+        )
+        .unwrap_or_else(|| panic!("{describe} names no template.serviceAccountRef.external"));
+        assert_eq!(
+            account,
+            format!("qip-{environment}-console@{project}.iam.gserviceaccount.com"),
+            "{describe} runs as `{account}` rather than the console identity ADR 0018 created \
+             and ADR 0094 reuses"
+        );
+
+        // Admission, and release rather than destruction on a prune. Two
+        // properties `modules/cloudrun` held for every catalogue workload and
+        // nothing holds for a service with no catalogue entry.
+        assert_eq!(
+            at(
+                &service.value,
+                &["spec", "binaryAuthorization", "useDefault"]
+            ),
+            Some(&Value::Bool(true)),
+            "{describe} does not opt into the default Binary Authorization policy; a service \
+             that does not opt in is never evaluated against it, and this one faces the \
+             internet"
+        );
+        assert_eq!(
+            service.annotation(DELETION_POLICY).as_deref(),
+            Some("abandon"),
+            "{describe} lacks `{DELETION_POLICY}: abandon`"
+        );
+
+        let container = workload_container(&service, "portal");
+
+        // Exactly the two secrets, as files, with the `_FILE` variable of
+        // each carrying its path — and no secret anywhere in the
+        // environment. ADR 0031 permits an environment value for a vendored
+        // image that cannot read a file; this image can, and `secret.ts`
+        // resolves the same `_FILE` contract `qip_core::secret` does.
+        let env = container_env(container);
+        for (name, _, from_secret) in &env {
+            assert!(
+                !from_secret,
+                "{describe} takes `{name}` from a secret as an environment value; a secret in \
+                 the environment is a secret in /proc/<pid>/environ, in every child process \
+                 and in every crash dump"
+            );
+        }
+        let mounted: BTreeSet<String> = list_at(container, &["volumeMounts"])
+            .iter()
+            .filter_map(|mount| text_at(mount, &["mountPath"]))
+            .collect();
+        let volumes: BTreeSet<String> = list_at(&service.value, &["spec", "template", "volumes"])
+            .iter()
+            .filter_map(|volume| text_at(volume, &["secret", "secretRef", "external"]))
+            .collect();
+        let expected: BTreeSet<String> = PORTAL_SECRETS
+            .iter()
+            .map(|(secret, _, _)| format!("{secret}-{environment}"))
+            .collect();
+        assert_eq!(
+            volumes, expected,
+            "{describe} mounts the secrets {volumes:?}; the console needs exactly {expected:?} \
+             — the key it signs its own cookies with and the viewer credential its gateway \
+             proxies. Anything else is a credential in a container that faces the internet \
+             and has no way to spend it"
+        );
+        for (secret, variable, path) in PORTAL_SECRETS {
+            let directory = path
+                .rsplit_once('/')
+                .map(|(directory, _)| directory.to_string())
+                .unwrap_or_default();
+            assert!(
+                mounted.contains(&directory),
+                "{describe} names {secret}'s path as `{path}` in {variable} and mounts nothing \
+                 at `{directory}`; the process opens the path that variable holds and nothing \
+                 else"
+            );
+            let value = env
+                .iter()
+                .find(|(name, _, _)| name == variable)
+                .and_then(|(_, value, _)| value.clone());
+            assert_eq!(
+                value.as_deref(),
+                Some(path),
+                "{describe} sets {variable} to {value:?} rather than `{path}`"
+            );
+        }
+
+        // The session check that stands behind IAP. Matched as the exact
+        // value: `contains("ALGORIK_AUTH_REQUIRED")` is true of a manifest
+        // that sets it to `false`, which is the console answering anyone with
+        // the platform's data on a token nobody had to present — a state a
+        // deploy was once actually in.
+        let auth = env
+            .iter()
+            .find(|(name, _, _)| name == "ALGORIK_AUTH_REQUIRED")
+            .and_then(|(_, value, _)| value.clone());
+        assert_eq!(
+            auth.as_deref(),
+            Some("true"),
+            "{describe} sets ALGORIK_AUTH_REQUIRED to {auth:?}; IAP decides who may reach the \
+             console and this decides who may read the platform through it, and one gate in \
+             front of the platform's book is one gate too few"
+        );
+
+        // The posture the chrome renders. There is no deployment of this
+        // platform that is not paper (ADR 0003), so there is no value here
+        // but `paper`.
+        let posture = env
+            .iter()
+            .find(|(name, _, _)| name == "ALGORIK_POSTURE")
+            .and_then(|(_, value, _)| value.clone());
+        assert_eq!(
+            posture.as_deref(),
+            Some("paper"),
+            "{describe} sets ALGORIK_POSTURE to {posture:?}; a console that renders any other \
+             posture is a console implying a live path that does not exist"
+        );
+
+        // Where the platform is, in the deterministic form modules/cloudrun
+        // computes: the service name, the project number, the region. A
+        // literal that drifted from it is a console whose every gateway call
+        // fails with a name-resolution error nobody attributes to this file.
+        let number = tfvars_value(&environment, "project_number")
+            .unwrap_or_else(|| panic!("{environment}'s tfvars name no project_number"));
+        let region = tfvars_value(&environment, "region")
+            .unwrap_or_else(|| panic!("{environment}'s tfvars name no region"));
+        let upstream = env
+            .iter()
+            .find(|(name, _, _)| name == "QIP_API_BASE_URL")
+            .and_then(|(_, value, _)| value.clone());
+        assert_eq!(
+            upstream,
+            Some(format!(
+                "https://qip-{environment}-api-{number}.{region}.run.app"
+            )),
+            "{describe} dials {upstream:?}, which is not the API's own URL as \
+             modules/cloudrun computes it"
+        );
+
+        // The image is the portal's, from this environment's own registry,
+        // and it is pinned or is one nothing has built yet.
+        let declared = text_at(container, &["image"])
+            .unwrap_or_else(|| panic!("{describe}'s `portal` container has no image"));
+        let image = resolve_image(&declared, &image_overrides(&siblings));
+        assert!(
+            image.contains(&format!("/qip-{environment}/qip-portal")),
+            "{describe} runs `{image}`, which is not qip-portal from {environment}'s own \
+             registry"
+        );
+        assert!(
+            is_digest_pinned(&image) || never_built(&image),
+            "{describe} runs `{image}`, which is neither pinned by a digest nor an image \
+             NEVER_BUILT argues for"
+        );
+
+        checked += 1;
+    }
+    // The premise. Without it a renamed manifest would make every assertion
+    // above run zero times and the test would pass describing nothing.
+    assert!(
+        checked >= 1,
+        "no environment under {ENVS} declares a `portal` RunService, so none of the properties \
+         above was checked against anything"
     );
 }

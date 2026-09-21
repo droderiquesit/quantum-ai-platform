@@ -2834,7 +2834,18 @@ fn no_secret_this_repository_deploys_reaches_a_process_as_an_environment_value()
                 let (lhs, rhs) = entry.split_once('=').unwrap_or_else(|| {
                     panic!("{service}: the {flag} entry `{entry}` is not `target=secret:version`")
                 });
-                entries.push((service, resolve_shell(&script, lhs), rhs.to_string()));
+                // Both sides resolved, not only the left. The secret's own
+                // name became a `readonly` in the script when the container
+                // moved to Terraform (ADR 0094), and a parse that resolved
+                // only the mount path saw the right-hand side as the literal
+                // `${SESSION_SECRET}` — so the session-secret assertion
+                // below matched nothing and reported the mount missing when
+                // it was there.
+                entries.push((
+                    service,
+                    resolve_shell(&script, lhs),
+                    resolve_shell(&script, rhs),
+                ));
             }
         }
     }
@@ -2857,12 +2868,18 @@ fn no_secret_this_repository_deploys_reaches_a_process_as_an_environment_value()
     // resolves, so nothing has to guess the path.
     let session: Vec<&(&str, String, String)> = entries
         .iter()
-        .filter(|(_, _, secret)| secret.split(':').next() == Some("algorik-session-secret"))
+        // The container is Terraform's since ADR 0094 — `qip-session-secret`
+        // in `secret_names`, with the environment suffix `modules/secrets`
+        // appends — rather than one this script created for itself. The name
+        // moved because the portal is deployed from a manifest now and Config
+        // Connector runs no shell, so a container that existed only inside
+        // this file was a container the GitOps deployment did not have.
+        .filter(|(_, _, secret)| secret.split(':').next() == Some("qip-session-secret-dev"))
         .collect();
     assert_eq!(
         session.len(),
         1,
-        "algorik-session-secret is mounted {} times across the deploys; the portal needs it \
+        "qip-session-secret-dev is mounted {} times across the deploys; the portal needs it \
          once",
         session.len()
     );
@@ -5227,6 +5244,35 @@ const NOT_IN_THE_IMAGE_MATRIX: &[(&str, &str, &str)] = &[(
      scheduled in one",
 )];
 
+/// Images `deploy.yml` builds that are not workspace binaries: the crate
+/// each is *not*, the Dockerfile it is built from, and the record deciding
+/// it.
+///
+/// One, and it is the one part of this platform that is not Rust (ADR 0001).
+/// `qip-portal` is `frontend/portal` through Next's standalone tracer, so
+/// `workspace_binaries` cannot see it and ADR 0010 — which is about which
+/// *binaries* deploy — does not decide it. It is in the matrix because a
+/// surface on the internet has to go through the same Trivy gate, the same
+/// immutable tag and the same attestor as everything else, and a shell script
+/// an operator runs from a laptop is not that.
+///
+/// This is a list rather than a rule because every entry is a decision
+/// somebody has to have made: an image the pipeline builds that no crate
+/// accounts for is otherwise indistinguishable from a matrix entry added by
+/// mistake.
+const NOT_A_WORKSPACE_BINARY: &[(&str, &str, &str)] = &[(
+    "qip-portal",
+    "infrastructure/docker/portal.Dockerfile",
+    "docs/adr/0094-the-portals-iap-front-door-is-a-serverless-neg-edge-of-its-own-because-a-gke-gateway-cannot-front-cloud-run.md",
+)];
+
+/// Whether an image is one `NOT_A_WORKSPACE_BINARY` argues for.
+fn not_a_workspace_binary(image: &str) -> bool {
+    NOT_A_WORKSPACE_BINARY
+        .iter()
+        .any(|(name, _, _)| *name == image)
+}
+
 /// Workloads whose binary is not in the workspace yet.
 ///
 /// This list has to shrink to nothing, and
@@ -6136,11 +6182,232 @@ fn every_image_the_matrix_builds_has_a_workload_that_runs_it() {
     // Worse, it reads to a reviewer as a component that is deployed: the
     // pipeline visibly builds and pushes it, and nothing says it is never run.
     let deployed = deployed_binaries();
+    let manifests = manifest_images();
     for binary in image_matrix() {
+        if not_a_workspace_binary(&binary) {
+            // Not a catalogue workload, so `deployed_binaries` cannot see it
+            // — but the property is the same one and it is asserted, not
+            // waived: something under gitops/envs/ has to run the image, or
+            // the pipeline is building bytes nobody deploys while reading to
+            // a reviewer as a component that is.
+            assert!(
+                manifests.iter().any(|image| image == &binary),
+                "the pipeline builds and pushes {binary}, which is not a workspace binary, and \
+                 no manifest under infrastructure/gitops/envs runs it either. Either write the \
+                 manifest or take it out of the matrix."
+            );
+            continue;
+        }
         assert!(
             deployed.contains(&binary),
             "the pipeline builds and pushes {binary} and no workload runs it. \
              Either write the catalogue entry or take it out of the matrix."
+        );
+    }
+}
+
+/// The logical image names the environment manifests run, from each
+/// environment's kustomize transformer.
+///
+/// Read from the `images:` block rather than from the manifests' own `image:`
+/// lines, because those are logical names the transformer rewrites and this
+/// test is asking which *built* images an environment deploys.
+fn manifest_images() -> Vec<String> {
+    let mut found = Vec::new();
+    for path in files_with_extension("infrastructure/gitops/envs", "yaml") {
+        if path
+            .file_name()
+            .is_none_or(|name| name != "kustomization.yaml")
+        {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path).expect("readable");
+        for line in content.lines() {
+            if let Some(name) = line.trim().strip_prefix("- name: ") {
+                found.push(name.trim().to_string());
+            }
+        }
+    }
+    assert!(
+        !found.is_empty(),
+        "no `- name:` entry was read out of any kustomization under \
+         infrastructure/gitops/envs; the transformer has changed shape and every check \
+         reading it would pass vacuously"
+    );
+    found
+}
+
+#[test]
+fn the_portals_front_door_is_an_iap_edge_and_the_public_edge_is_still_shut() {
+    // ADR 0094. The routing decision, as something a plan can be checked
+    // against rather than something a record asserts about itself.
+    //
+    // Three properties, and the third is the one that would be easiest to
+    // lose. IAP is enabled on the backend; the access list is not duplicated
+    // here; and standing the console up did **not** switch on
+    // `modules/public-edge`, which is the anonymous customer edge and creates
+    // nothing in any environment. A portal that arrived by turning that
+    // module on would have brought a Cloud CDN bucket and a public address
+    // with it, and the module's own README would have stopped being true.
+    //
+    // Comments stripped from every configuration read here, and that is not
+    // tidiness. Both files argue at length about the grant they deliberately
+    // do not make, so a check for the absence of `roles/iap.httpsResourceAccessor`
+    // over the raw text fails on the paragraph explaining why it is absent —
+    // a test that punishes the documentation it depends on.
+    let module = without_comments(&read("infrastructure/terraform/modules/iap-edge/main.tf"));
+    let module_variables = without_comments(&read(
+        "infrastructure/terraform/modules/iap-edge/variables.tf",
+    ));
+    let root = without_comments(&read("infrastructure/terraform/main.tf"));
+
+    // The root instantiates it, from the module directory, gated on a
+    // hostname. Matched on the source rather than on the block's name,
+    // because the name is a label and the source is what is built.
+    assert!(
+        root.contains("source = \"./modules/iap-edge\""),
+        "the root no longer instantiates modules/iap-edge; the portal's front door would be a \
+         module nothing calls"
+    );
+    assert!(
+        root.contains("count  = var.gitops_portal_hostname != \"\" ? 1 : 0"),
+        "module.portal_edge is no longer gated on gitops_portal_hostname; an edge created \
+         because a module was instantiated is a public address nobody decided to open"
+    );
+
+    // The gate itself, as an assignment rather than as the word appearing
+    // somewhere: `contains(\"iap\")` is true of every paragraph in that file,
+    // and `enabled` is true of `enable_cdn`. Both halves of the line.
+    assert!(
+        module.contains("iap {") && module.contains("enabled = true"),
+        "modules/iap-edge's backend service no longer enables IAP; the module would be a plain \
+         load balancer publishing the console to the internet with its whole argument still \
+         written above it"
+    );
+    // Google-managed OAuth. A named client is a client secret this
+    // repository would then have to hold, rotate and keep out of state.
+    assert!(
+        !module.contains("oauth2_client_id") && !module.contains("oauth2_client_secret"),
+        "modules/iap-edge names an OAuth client; the Google-managed client is used when none \
+         is, and naming one introduces a secret with nowhere safe to live"
+    );
+    // 443 and nothing else. A redirect from port 80 is still an unencrypted
+    // listener, and the first request to it has already carried whatever
+    // cookie the browser held for the name.
+    assert!(
+        module.contains("port_range = \"443\"") && !module.contains("port_range = \"80\""),
+        "modules/iap-edge declares a listener on a port other than 443"
+    );
+
+    // One access list, and it is not here. A per-resource binding on this
+    // backend is inherited-on-top-of the project-level grant rather than
+    // instead-of it, so it could only widen the set while reading in the
+    // console as this door's own list — a control that cannot narrow
+    // anything is not a control.
+    assert!(
+        !module_variables.contains("variable \"iap_members\""),
+        "modules/iap-edge declares an iap_members input; project-level IAM is inherited by \
+         every IAP-protected backend in the project, so a list here could only widen the one \
+         modules/gitops-gateway holds"
+    );
+    assert!(
+        !module.contains("roles/iap.httpsResourceAccessor"),
+        "modules/iap-edge makes an IAP access grant of its own; the access list is the one \
+         project-level grant, because the Gateway's backend service has no Terraform address \
+         to narrow to"
+    );
+
+    // And nobody is named in a committed file. An IAM member is an account
+    // identifier, and a front door that comes up admitting nobody is a
+    // posture rather than a failure.
+    let mut environments = 0usize;
+    for environment in ["dev", "test", "stage", "prod"] {
+        let path = format!("infrastructure/environments/{environment}/terraform.tfvars");
+        if !repository_root().join(&path).is_file() {
+            continue;
+        }
+        let tfvars = without_comments(&read(&path));
+        if let Some(members) = tfvars_value(&tfvars, "gitops_iap_members") {
+            assert_eq!(
+                members.trim(),
+                "[]",
+                "{path} names {members} in gitops_iap_members; an IAM member is an account \
+                 identifier, and this repository carries none — the grant is made out of band \
+                 by name"
+            );
+        }
+        // The public edge stays shut. Read as the whole assignment, because
+        // `public_edge` is an object and a non-empty `hostnames` inside it is
+        // the switch for the entire module.
+        assert!(
+            !tfvars.contains("hostnames                      = [\""),
+            "{path} declares a public-edge hostname; the console is behind modules/iap-edge \
+             and switching the anonymous customer edge on to carry it would create a CDN \
+             bucket, a shell bucket and a second public address nobody asked for"
+        );
+        environments += 1;
+    }
+    assert!(
+        environments >= 1,
+        "no environment tfvars were read, so neither the empty access list nor the shut public \
+         edge was checked against anything"
+    );
+
+    // The dev half: the hostname is set, and it is a name rather than a URL.
+    let dev = without_comments(&read("infrastructure/environments/dev/terraform.tfvars"));
+    let hostname = tfvars_value(&dev, "gitops_portal_hostname")
+        .expect("dev's tfvars must set gitops_portal_hostname; ADR 0094 is what created it");
+    let hostname = hostname.trim().trim_matches('"');
+    assert!(
+        !hostname.is_empty()
+            && !hostname.contains("://")
+            && !hostname.contains('/')
+            && !hostname.contains(':')
+            && hostname.contains('.')
+            && hostname == hostname.to_lowercase(),
+        "dev's gitops_portal_hostname is {hostname:?}; a hostname reaches a certificate's SAN \
+         list, and a value with a scheme, a path, a port or an upper-case letter is one Google \
+         refuses at apply — after the address has been reserved"
+    );
+}
+
+#[test]
+fn every_image_that_is_not_a_workspace_binary_is_built_from_a_dockerfile_a_record_argues_for() {
+    // What stops NOT_A_WORKSPACE_BINARY becoming a place things are left.
+    // An entry has to be in the matrix — otherwise it excuses an image
+    // nothing builds — it has to name a Dockerfile that exists and that the
+    // matrix actually points at, and it has to name a decision record that
+    // exists. A list of exemptions nobody can follow back to a decision is a
+    // list that grows.
+    let matrix = image_matrix();
+    let deploy = read(".github/workflows/deploy.yml");
+    for (image, dockerfile, record) in NOT_A_WORKSPACE_BINARY {
+        assert!(
+            matrix.contains(&(*image).to_string()),
+            "{image} is listed as an image that is not a workspace binary and the matrix does \
+             not build it; the entry excuses nothing"
+        );
+        assert!(
+            !workspace_binaries().contains(&(*image).to_string()),
+            "{image} is a binary this workspace builds after all, so it belongs in the matrix \
+             on ADR 0010's terms rather than in NOT_A_WORKSPACE_BINARY"
+        );
+        assert!(
+            repository_root().join(dockerfile).is_file(),
+            "{image} is built from {dockerfile}, which does not exist"
+        );
+        // The matrix has to point at that file, or the entry documents a
+        // build nobody performs. Matched on the whole `dockerfile:` value.
+        assert!(
+            deploy
+                .lines()
+                .any(|line| line.trim() == format!("dockerfile: {dockerfile}")),
+            ".github/workflows/deploy.yml does not name {dockerfile} in the matrix, so {image} would be \
+             built from the cargo Dockerfile with a BINARY argument that matches no crate"
+        );
+        assert!(
+            repository_root().join(record).is_file(),
+            "{image}'s entry names the record {record}, which does not exist"
         );
     }
 }
@@ -6705,6 +6972,14 @@ fn image_matrix() -> Vec<String> {
         .expect("the matrix ends where the job's steps begin");
     let mut binaries: Vec<String> = block
         .lines()
+        // The list ends where `include:` begins. An `include:` entry adds
+        // fields to a combination already in the list — it is how an image
+        // says which Dockerfile and which context it is built from — and its
+        // own lines start with `- binary: …`, which this filter would
+        // otherwise read as an image literally called "binary: qip-portal".
+        // That is not hypothetical: it is what this parse did the first time
+        // the matrix gained one.
+        .take_while(|line| line.trim() != "include:")
         .filter_map(|line| line.trim().strip_prefix("- "))
         .map(str::to_string)
         .collect();
@@ -6715,6 +6990,18 @@ fn image_matrix() -> Vec<String> {
         "only {binaries:?} were parsed out of the image matrix; the workflow's \
          indentation has changed and this check has stopped checking"
     );
+    // And whatever was parsed is a name rather than a mapping. The
+    // `take_while` above depends on `include:` following the list; if it ever
+    // precedes it, this is what says so instead of every caller quietly
+    // comparing against a key-value pair.
+    for binary in &binaries {
+        assert!(
+            !binary.contains(':'),
+            "`{binary}` was read out of the image matrix as an image name and is a mapping; \
+             the matrix's `include:` block has moved above the list and this parse is reading \
+             its entries"
+        );
+    }
     binaries
 }
 
@@ -6885,7 +7172,16 @@ fn every_deployment_exclusion_is_recorded_as_a_decision() {
 
     // And the record lists what *is* deployed too. A record of only the
     // exceptions cannot be checked against the thing it describes.
+    //
+    // Except for an image that is not a binary at all: ADR 0010 decides which
+    // of this workspace's binaries deploy, and the console is not one of
+    // them. `every_image_that_is_not_a_workspace_binary_is_built_from_a_dockerfile_a_record_argues_for`
+    // holds each of those to its own record instead, so the exemption here is
+    // not a hole — it is the same question asked of a different document.
     for binary in image_matrix() {
+        if not_a_workspace_binary(&binary) {
+            continue;
+        }
         assert!(
             adr.contains(&binary),
             "the decision record does not name {binary}, which the pipeline \

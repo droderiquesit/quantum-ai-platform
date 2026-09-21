@@ -16,6 +16,7 @@ resources:
 - fastbrain.yaml
 - deepbrain.yaml
 - openobserve.yaml
+- portal.yaml
 - invokers.yaml
 - prove-serving.yaml
 images:
@@ -28,6 +29,20 @@ images:
 - name: qip-deepbrain
   newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-deepbrain
   digest: sha256:23d11234ef9a068e727ad5ab85534220f7e4a9dfcb95931e313806d361a8797c
+# The console (ADR 0094). `TO-PIN` rather than a digest, and it is the honest
+# value rather than a placeholder somebody forgot: `deploy.yml` gained the
+# portal's build in the same commit as this line, and no run of it has
+# happened, so this repository has never held bytes for `qip-portal` and there
+# is no digest to write. Argo CD will not reconcile a service whose image is
+# this string, which is the correct behaviour — a console that deploys from a
+# name nobody attested is exactly what Binary Authorization exists to stop.
+# It goes when a `deploy.yml` run has built, scanned and attested the image
+# and the digest is reviewed. Wiring `qip-portal` into Kargo's warehouse, so a
+# promotion keeps it pinned the way it keeps the three binaries pinned, is
+# named in ADR 0094 as the follow-on and is deliberately not done here.
+- name: qip-portal
+  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-portal
+  digest: TO-PIN
 - name: openobserve
   newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/openobserve
   digest: sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b

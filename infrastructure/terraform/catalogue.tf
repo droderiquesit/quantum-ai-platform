@@ -873,6 +873,88 @@ module "openobserve" {
   deployer_service_account = var.gitops_enabled ? module.gitops_control_plane[0].kcc_service_account_email : null
 }
 
+# --- The portal (ADR 0018, ADR 0036, ADR 0094) -------------------------------
+#
+# The console's Cloud Run service is `infrastructure/gitops/envs/<env>/portal.yaml`
+# and its front door is `module.portal_edge` in main.tf. What is here is the
+# third piece: the grants the identity it runs as needs in order to be
+# deployed from a manifest and to run once it is.
+#
+# **It is not a `local.cloud_run_catalogue` entry, and it is not a second
+# `modules/cloudrun` instantiation either.** Two separate reasons, both
+# load-bearing:
+#
+#   * Every entry in the catalogue above is a Rust binary under
+#     `backend/crates/apps/`, carrying an autonomy ceiling, the instrument
+#     universe and internal-only ingress; three acceptance walks assert the
+#     map holds exactly ADR 0010's three. The portal is a Next.js image from
+#     `infrastructure/docker/portal.Dockerfile`, it reads no ceiling and no
+#     universe, and it is the one surface that answers a browser. Making the
+#     catalogue admit it would weaken every check that reads the catalogue.
+#   * `modules/cloudrun` creates an account per workload, which is exactly
+#     right for a new workload and wrong for this one: the portal's account
+#     already exists. `modules/secrets` created `qip-<env>-console` under ADR
+#     0018 — its display name is "The portal, reading the platform as viewer"
+#     — and it already holds accessor on `qip-token-viewer`, the
+#     `console_profile_claims` custom role, and `roles/run.invoker` on
+#     `qip-<env>-api` through `gitops/envs/<env>/invokers.yaml`. A second
+#     identity would need every one of those made again, **including a second
+#     invoker on the API**, which is widening who may call the platform in
+#     order to make a module fit.
+#
+# So: one workload, one identity, and the identity that exists. What follows
+# is the difference between that account as ADR 0018 left it and that account
+# running a service Config Connector creates.
+
+# Who may create the portal's revisions as the console's identity.
+#
+# Cloud Run refuses to create a revision unless the caller may act as the
+# service's account. `modules/cloudrun` makes exactly this grant for each of
+# its own workloads; the console's account is not one of its workloads, so
+# without this the reconciler holds `serviceAccountUser` on three accounts and
+# not on the portal's, and the `RunService` sits `Degraded` naming a
+# permission rather than a mistake.
+#
+# On the one account, never project-wide: a project-wide `serviceAccountUser`
+# is the right to act as every identity in the project, the infra account
+# included.
+resource "google_service_account_iam_member" "portal_deployer" {
+  count = var.console_egress_cidr != null && var.gitops_enabled ? 1 : 0
+
+  service_account_id = module.secrets.console_service_account_id
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${module.gitops_control_plane[0].kcc_service_account_email}"
+}
+
+# The minimum the portal needs beyond its own secrets, and no more.
+#
+# The same two roles `modules/cloudrun` gives every workload it creates, for
+# the same reason: a workload that cannot write a log line or a metric is a
+# workload nobody can operate, and a console that signs a user in and then
+# fails silently is the worst possible version of that. Granted where the
+# console exists rather than where the front door does, because the identity
+# runs the service whether it is reached through IAP or not.
+#
+# Nothing wider. There is no `additional_roles` here for the same reason
+# `modules/cloudrun` takes none: a list of extra roles is where a wide grant
+# arrives quietly. The portal reads the platform as `viewer` and writes a
+# custom claim, and both of those are ADR 0018's grants in modules/secrets.
+resource "google_project_iam_member" "portal_logging" {
+  count = var.console_egress_cidr != null ? 1 : 0
+
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${module.secrets.console_service_account_email}"
+}
+
+resource "google_project_iam_member" "portal_telemetry" {
+  count = var.console_egress_cidr != null ? 1 : 0
+
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${module.secrets.console_service_account_email}"
+}
+
 # The hash of the universe every central workload was given, so a person can
 # say which committed catalogue a plan carries without reading the file out
 # of a bucket. Beside the catalogue rather than in outputs.tf because the

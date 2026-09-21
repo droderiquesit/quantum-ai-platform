@@ -1362,6 +1362,39 @@ variable "gitops_kargo_hostname" {
   default     = ""
 }
 
+variable "gitops_portal_hostname" {
+  type        = string
+  description = <<-EOT
+    The public name the portal answers on, behind Identity-Aware Proxy, or the
+    empty string for an environment with no console front door (ADR 0094).
+
+    Empty by default, and empty means **nothing is created at all** — no
+    address, no certificate, no Cloud Armor policy, no backend, no listener.
+    That is the correct state for an environment whose console nobody has
+    decided to publish, and it is the state of every environment but dev.
+
+    Who may pass IAP is **not** set here. It is the one project-level
+    `roles/iap.httpsResourceAccessor` grant `gitops_iap_members` describes,
+    which covers every IAP-protected backend in the project — the GitOps
+    Gateway's and this one alike. There is deliberately no second list: a
+    per-resource binding is inherited-on-top-of, never instead-of, so it could
+    only widen the set while reading in the console as this door's own access
+    list. A control that cannot narrow anything is not a control.
+  EOT
+  default     = ""
+
+  validation {
+    # The same expression `modules/iap-edge` and `modules/gitops-gateway`
+    # validate a hostname with, and here as well as there because this is the
+    # value a person types into a tfvars: a name with a scheme, a port or a
+    # path reaches a certificate's SAN list, and Google's refusal arrives at
+    # apply, after the address has been reserved. The empty string is admitted
+    # as the closed state and nothing else is.
+    condition     = var.gitops_portal_hostname == "" || can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.gitops_portal_hostname))
+    error_message = "gitops_portal_hostname must be a dotted lowercase DNS name with no scheme, port or path — portal.algorik.ai — or the empty string for no portal front door at all."
+  }
+}
+
 variable "gitops_iap_members" {
   type        = list(string)
   description = <<-EOT
