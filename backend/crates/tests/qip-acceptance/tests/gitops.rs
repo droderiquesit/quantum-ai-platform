@@ -5298,3 +5298,77 @@ fn the_proving_hook_waits_for_convergence_and_reports_what_cloud_run_says() {
         );
     }
 }
+
+#[test]
+fn the_proving_hook_refreshes_from_the_api_server_and_not_from_a_file_written_once() {
+    // The wait loop used to re-open /tmp/runservices.json at the bottom of
+    // every pass, under a comment saying it re-read the RunServices "so a
+    // Config Connector condition that changes while this loop runs is seen
+    // rather than held from the first read". A shell curl wrote that file
+    // once, before python started. So every pass re-tested second zero: a
+    // service that went Ready at second 11 was still reported unready at
+    // second 300, and the hook failed the sync it was watching succeed.
+    //
+    // This is not hypothetical and it is not a wording defect. Waiting
+    // exists to observe a change, and that loop could observe none -- which
+    // is the same shape as a limit that cannot fire: it read as proof while
+    // being structurally incapable of producing any.
+    //
+    // The comment is what went stale, so the property is pinned here where
+    // it gets re-derived instead.
+    let jobs: Vec<Manifest> = manifests_under(ENVS)
+        .into_iter()
+        .filter(|manifest| manifest.kind() == "Job" && manifest.name() == "qip-prove-serving")
+        .collect();
+    assert_eq!(jobs.len(), 4, "expected one proving Job per environment");
+
+    for job in &jobs {
+        let command = at(&job.value, &["spec", "template", "spec", "containers"])
+            .and_then(|containers| containers.as_array())
+            .and_then(|containers| containers.first())
+            .and_then(|container| container.get("command"))
+            .and_then(|command| command.as_array())
+            .and_then(|command| command.last())
+            .and_then(|script| script.as_str())
+            .unwrap_or_else(|| panic!("{} declares no container command", job.describe()));
+
+        // Premise: this is the waiting script and it does refresh something.
+        // Without both, every absence below is asserted of nothing.
+        assert!(
+            command.contains("while True:") && command.contains("refreshed"),
+            "{} has no refresh inside a loop; this test is pinned to the wrong container",
+            job.describe()
+        );
+
+        // The one read whose answer can differ between passes must reach the
+        // API server. Naming the function is not enough on its own -- a
+        // function so named could still open a file -- so its body is checked
+        // for the API host below.
+        assert!(
+            command.contains("refreshed = read_runservices()"),
+            "{} refreshes from something other than `read_runservices()`, so the loop may be \
+             re-testing a value that cannot change.",
+            job.describe()
+        );
+        assert!(
+            command.contains("def read_runservices():")
+                && command.contains("https://kubernetes.default.svc")
+                && command.contains("\"curl\""),
+            "{} has no `read_runservices` that asks the API server, so the refresh reaches no \
+             live state.",
+            job.describe()
+        );
+
+        // The defect itself, refused by name: nothing in this script may read
+        // its state from a file. A file inside this pod can only have been
+        // written before the loop started, and a value written before the
+        // wait cannot be the thing the wait is waiting for.
+        assert!(
+            !command.contains("json.load(open("),
+            "{} loads JSON from a file. Whatever it holds was written before the wait began \
+             and cannot change while the wait runs, so the loop would spin the full deadline \
+             on a snapshot of second zero and then fail a sync that had already converged.",
+            job.describe()
+        );
+    }
+}
