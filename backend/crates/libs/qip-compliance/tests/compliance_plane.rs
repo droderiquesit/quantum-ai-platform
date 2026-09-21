@@ -8,16 +8,73 @@
 
 #![allow(clippy::panic_in_result_fn)]
 
+use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry};
 use qip_compliance::incident::{Incident, ResponsePolicy};
+use qip_compliance::model_risk::{Contribution, Explanation};
 use qip_compliance::plane::CompliancePlane;
 use qip_compliance::signing::SigningKey;
 use qip_contracts::governance::{Control, Severity, Usage};
 use qip_contracts::time::Stamped;
 use qip_core::error::Result;
-use qip_core::{Duration, Timestamp, dec};
+use qip_core::{Duration, ModelId, Timestamp, dec};
 
 fn now() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
+}
+
+const MODEL: &str = "vol-forecast@2.1.0";
+
+/// A model `qip_ai` is satisfied with — staged, evaluated, undrifted — so that
+/// anything control 3 then refuses is refused on model *risk* grounds and not
+/// on model performance.
+fn eligible_model() -> Result<ModelRegistry> {
+    let mut registry = ModelRegistry::new();
+    registry.register(
+        ModelCard::new(
+            ModelId::from_string("m-vol-forecast"),
+            "vol-forecast",
+            "2.1.0",
+            "quant-research",
+            now().saturating_sub(Duration::from_days(200)),
+        )
+        .with_purpose("forecast realised volatility one day ahead"),
+    );
+    registry.record_evaluation(
+        MODEL,
+        EvaluationRecord {
+            evaluated_at: now().saturating_sub(Duration::from_days(10)),
+            dataset: "holdout.2024".to_string(),
+            metrics: Default::default(),
+            passed: true,
+        },
+    )?;
+    registry.promote(MODEL, now().saturating_sub(Duration::from_days(5)))?;
+    Ok(registry)
+}
+
+/// An explanation that reconciles: 0.10 baseline + 0.05 + 0.03 = 0.18. It has
+/// to, because `Explanation::reconciled` refuses a non-zero residual and there
+/// is no other constructor.
+fn honest_explanation() -> Result<Explanation> {
+    Explanation::reconciled(
+        MODEL,
+        dec!("0.18"),
+        dec!("0.10"),
+        vec![
+            Contribution {
+                input: "adv_participation".to_string(),
+                value: dec!("0.01"),
+                contribution: dec!("0.05"),
+            },
+            Contribution {
+                input: "realised_vol_5d".to_string(),
+                value: dec!("0.22"),
+                contribution: dec!("0.03"),
+            },
+        ],
+        now(),
+        None,
+    )
 }
 
 fn plane() -> Result<CompliancePlane> {
@@ -236,5 +293,118 @@ fn the_planes_controls_compose_across_one_realistic_decision() -> Result<()> {
     );
 
     plane.report(now()).require_fully_enforced()?;
+    Ok(())
+}
+
+#[test]
+fn an_unexercised_model_risk_control_says_so_rather_than_reading_as_a_quiet_plane() -> Result<()> {
+    // The failure this prevents is the `MaxExpectedShortfall` one from
+    // `.claude/rules/domains/risk-and-execution.md`, one level up: a control
+    // that reads as protection while having nothing to protect. Control 3's
+    // mechanism is structural and its `enforced` flag is therefore true on a
+    // plane that has never been handed a model — and the two evidence lines a
+    // reviewer reads next to it are a pair of zeroes, which say "nothing
+    // happened this period" and "no model output has ever been offered to
+    // this gate" in identical words. The report has to distinguish them.
+    let plane = plane()?;
+    let report = plane.report(now());
+    let status = report
+        .status(Control::ModelRiskAndExplainability)
+        .ok_or_else(|| qip_core::error::Error::not_found("model risk status"))?;
+
+    // The premise first: this is a control the report still calls enforced,
+    // which is what makes the caveats load-bearing rather than decorative. A
+    // test that only checked the caveats would keep passing if the arm
+    // started reporting the control unenforced, which is a different and far
+    // louder claim.
+    assert!(status.enforced);
+    assert!(
+        status
+            .evidence
+            .iter()
+            .any(|line| line == "0 risk files on record"),
+        "expected the empty-register evidence line, got {:?}",
+        status.evidence
+    );
+    assert!(
+        status
+            .evidence
+            .iter()
+            .any(|line| line == "0 admission decisions recorded"),
+        "expected the empty-admissions evidence line, got {:?}",
+        status.evidence
+    );
+
+    let caveats = status.caveats.join(" ");
+    assert!(
+        caveats.contains("no model risk file has been filed"),
+        "the report does not say the register is empty: {caveats}"
+    );
+    assert!(
+        caveats.contains("has been asked nothing"),
+        "the report does not say the gate has been asked nothing: {caveats}"
+    );
+
+    // A caveat is a statement, not a veto. `require_fully_enforced` gates
+    // proposal sign-off in `qip_kernel::Platform`, and a lane that turned
+    // this finding into an unenforced control would have stopped the platform
+    // signing anything at all — a far larger change than the one this test
+    // pins, and not the one that was argued for.
+    report.require_fully_enforced()?;
+    assert!(report.is_fully_enforced());
+    Ok(())
+}
+
+#[test]
+fn offering_one_output_to_the_model_risk_gate_retires_only_the_caveat_it_answers() -> Result<()> {
+    // The two caveats are computed from two different facts and a test that
+    // moved both at once could not tell a single flag from two. Here the
+    // register is still empty — no risk file has been filed — and the gate
+    // has been asked exactly one question, which it refused for that very
+    // reason. So the "asked nothing" caveat must go and the "no risk file"
+    // caveat must stay.
+    let mut plane = plane()?;
+    let models = eligible_model()?;
+
+    // Premise: before the offer, both caveats are present.
+    let before = plane.report(now());
+    let before_text = before
+        .status(Control::ModelRiskAndExplainability)
+        .ok_or_else(|| qip_core::error::Error::not_found("model risk status"))?
+        .caveats
+        .join(" ");
+    assert!(before_text.contains("no model risk file has been filed"));
+    assert!(before_text.contains("has been asked nothing"));
+
+    let refusal = plane
+        .model_risk_mut()
+        .admit(&models, honest_explanation()?, now());
+    assert!(
+        refusal.is_err(),
+        "a model with no risk file must not be admitted"
+    );
+
+    let after = plane.report(now());
+    let status = after
+        .status(Control::ModelRiskAndExplainability)
+        .ok_or_else(|| qip_core::error::Error::not_found("model risk status"))?;
+    assert!(
+        status
+            .evidence
+            .iter()
+            .any(|line| line == "1 admission decisions recorded"),
+        "a refusal is an admission decision and must be counted: {:?}",
+        status.evidence
+    );
+
+    let caveats = status.caveats.join(" ");
+    assert!(
+        !caveats.contains("has been asked nothing"),
+        "the gate was asked one question and still claims it was asked none: {caveats}"
+    );
+    assert!(
+        caveats.contains("no model risk file has been filed"),
+        "the register is still empty and the report has stopped saying so: {caveats}"
+    );
     Ok(())
 }

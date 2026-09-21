@@ -10,6 +10,16 @@
 //! shape of their types and are therefore unconditionally true; the artifact
 //! control is the exception, because a store whose contents no longer verify
 //! is a control that has stopped working, and the report says so.
+//!
+//! A control enforced by the shape of a type is enforced over whatever holds
+//! that type, and over nothing else. So `enforced: true` is the whole truth
+//! about the mechanism and only part of the truth about the platform, and the
+//! remainder belongs in a caveat rather than in the flag: a reader of a
+//! six-for-six report needs to be able to tell a gate that has refused things
+//! from one nobody has walked through. Where a control can say which — model
+//! risk counts every admission decision it makes, admitted or refused — it
+//! says so, computed from its own state at the instant the report was
+//! generated, beside the caveats it carries unconditionally.
 
 use crate::approval::ApprovalChain;
 use crate::artifacts::ArtifactStore;
@@ -326,6 +336,45 @@ impl CompliancePlane {
                         "risk files overdue for review and therefore blocking use: {}",
                         overdue.join(", ")
                     ));
+                }
+                // Two computed caveats, for the same reason the artifact
+                // control computes `enforced` rather than asserting it: this
+                // control's mechanism is the shape of a type, and a type
+                // nobody holds bounds nothing. The evidence lines below read
+                // "0 risk files on record" and "0 admission decisions
+                // recorded" on a plane that has never been asked anything,
+                // and a reviewer can read a pair of zeroes as a quiet period
+                // rather than as a gate nobody has walked through. The two
+                // are different claims about the platform and only one of
+                // them is safe, so the report says which it is.
+                //
+                // This is the `MaxExpectedShortfall` failure one level up —
+                // see `.claude/rules/domains/risk-and-execution.md`, where a
+                // limit shipped in every default set could never fire because
+                // the figure it read was never computed. `enforced` stays
+                // true because the structural claim is true: `AdmittedOutput`
+                // has no public constructor and nothing can forge one. What a
+                // caveat has to say is how far that reaches, which is exactly
+                // as far as the decisions written against `AdmittedOutput`.
+                if self.model_risk.is_empty() {
+                    caveats.push(
+                        "no model risk file has been filed, so ModelRiskRegister::admit would \
+                         refuse every output offered to it and no model number can reach a \
+                         decision through this control at all; file one before a model drives \
+                         anything"
+                            .to_string(),
+                    );
+                }
+                if self.model_risk.admissions().is_empty() {
+                    caveats.push(
+                        "this control has been asked nothing: no output has been offered to \
+                         ModelRiskRegister::admit, which records a decision whether it admits \
+                         or refuses, so it has done neither. The guarantee is that a decision \
+                         written against AdmittedOutput cannot be handed a raw model number, \
+                         and it bounds those decisions and no others — a caller that never \
+                         asks is outside it, and this count is the way to tell"
+                            .to_string(),
+                    );
                 }
                 ControlStatus {
                     control,
