@@ -137,13 +137,35 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   teardown's list of what to leave behind and the reclaim step's list of what
   to put back have to be the same list, and a second copy of a parse is how
   they stop being.
+- **`up` builds the control plane; `apps` puts the applications on it.**
+  Since 2026-09-21 these are two dispatches of one step, and the order is
+  `up` → CI green → `deploy.yml` → `apps`. `up` applies Terraform and
+  installs Argo CD, Config Connector, the front door, cert-manager and
+  Kargo, all from manifests vendored here, and stops without claiming
+  anything is synced. `apps` applies the environment's Argo CD Application
+  and the Kargo chain, and proves `qip-<env>` reaches Synced and Healthy.
+  It is re-runnable on its own, which is the point: run 66 failed because
+  `qip-dev` sat OutOfSync, and under the single action that cost a full
+  246-resource apply and a complete controller reinstall to retry seconds
+  of work — leaving the cluster half-configured on every attempt. The
+  split is at the Application because that is where the dependency is:
+  the first stage needs only this repository, the second needs Argo CD to
+  be able to read it and Config Connector's CRDs to be established.
 - **What `up` will still not give you today.** The teardown destroyed
   `module.registry`, so the six digests in `gitops/envs/dev/kustomization.yaml`
   and the eight controller digests in `gitops/bootstrap/*/overlays/dev/`
   name a repository that no longer holds them. The Terraform apply does not
   read a digest and is unaffected; the bootstrap step in the same job is not.
   Re-mirror with `vendor.yml` and rebuild with `deploy.yml` after the apply
-  has recreated the registry and the attestor, then dispatch `up` again.
+  has recreated the registry and the attestor, then dispatch `apps`.
+  **`deploy.yml` refuses while `ci` is red on the commit** — "ci concluded
+  'failure'; nothing is deployed" — so a red lint job three workflows away
+  is what stops `apps` reaching Healthy, and the failure it produces names
+  an image pull rather than a linter. `deploy.yml` also does not commit the
+  digests it attests: Kargo's warehouse discovers them and its promotion
+  writes them into `gitops/envs/<env>/kustomization.yaml`, which needs the
+  Kargo App credential seeded. Until it is, the pinned digests are whatever
+  was committed last.
 - `autonomy_ceiling` may not name a live level. `variables.tf` refuses all
   three at plan time; that validation is load-bearing and mutation-tested, and
   since 2026-09-14 it is also *planned*: `terraform/tests/paper-boundary.tftest.hcl`
