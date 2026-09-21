@@ -130,6 +130,10 @@ export const ITEM_ICON: Record<string, IconName> = {
   "/intelligence/news": "radio",
   "/intelligence/regimes": "pie-chart",
   "/intelligence/explanations": "brain",
+  // A record of what was decided, so the same glyph as the other two ledgers
+  // on this console — mandates and compliance. Shared by design: the icon map
+  // is read for what a screen holds, not as a unique key.
+  "/intelligence/decisions": "scroll-text",
   "/strategies": "line-chart",
   "/models": "sparkles",
   "/research/backtesting": "activity",

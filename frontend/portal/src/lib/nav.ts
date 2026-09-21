@@ -150,6 +150,20 @@ export const NAV: readonly NavGroup[] = [
           "The seven questions a person asks of a decision, which route answers each today, and which the platform does not yet answer",
         reads: ["/cognition/self-model", "/cognition/precedents", "/risk/recalibrations", "/orders", "/models", "/pnl"],
       },
+      {
+        // The decision record behind §40.2's first, third and fourth
+        // questions. `GET /proposals` served a status word and dropped the
+        // control that vetoed it, the weights each leg was sized between and
+        // what the construction gave up; the route now projects all of it and
+        // this screen renders it. Read-only for the same reason as
+        // Explanations above.
+        href: "/intelligence/decisions",
+        label: "Decisions",
+        mark: "DR",
+        description:
+          "Each proposal as the DECIDE stage recorded it: the weights it sized between, the control that decided it and why, and what the construction gave up",
+        reads: ["/proposals", "/system/status"],
+      },
     ],
   },
   {
