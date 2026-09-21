@@ -2106,12 +2106,16 @@ jobs:
             gcloud run revisions describe "${latest}" --project "${GCP_PROJECT}" --region "${region}" \
               --format='value[separator="; "](status.conditions.map().format("revision {0}={1} {2}", type, status, message).list())' 2>&1 \
               | sed "s/^/    ${latest}: /"
-            ready="$(gcloud run revisions describe "${latest}" --project "${GCP_PROJECT}" \
-              --region "${region}" \
-              --format='value(status.conditions.filter("type:Ready").extract(status))' 2>/dev/null || true)"
-            case "${ready}" in
-              *True*) continue ;;
-            esac
+            # No "only if it failed" condition here, and that is the point.
+            # The first version of this step asked
+            # `conditions.filter("type:Ready").extract(status)` and skipped the
+            # log read when the answer contained `True`. Run 94 skipped every
+            # service: the projection does not return the single status it
+            # reads as, so the guard matched on a `True` belonging to some
+            # other condition and suppressed exactly the output it was added
+            # to fetch. A read-only action buys nothing by being clever about
+            # what to read — thirty lines per service is cheap, and a healthy
+            # service's log is worth seeing beside a broken one's anyway.
             echo "    what ${latest} printed:"
             gcloud logging read \
               "resource.type=cloud_run_revision AND resource.labels.revision_name=${latest}" \
