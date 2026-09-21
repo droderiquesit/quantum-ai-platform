@@ -137,7 +137,7 @@ use qip_execution_engine::order::{Order, OrderType, Side};
 use qip_financial::asset_class::AssetClass;
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
 use qip_financial::intelligence::MacroObservation;
-use qip_financial::ladder::{LadderEntry, LiquidityLadder, Rung};
+use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{BookView, ComplianceView, Desk, MarketView, RiskView};
@@ -3086,6 +3086,79 @@ pub struct CapitalCallNotice {
     pub consequence: qip_financial::cashflow::CallConsequence,
 }
 
+/// The object id the desk's own cash balance sits under on a funding
+/// ladder, and the one entry there that is not a position.
+///
+/// Not an instrument, and it cannot silently become one: every object the
+/// universe carries reaches the ladder under its own `ObjectId`, and
+/// `LiquidityLadder::new` refuses the same id twice. So a universe that
+/// somehow held a record under this name makes the read *unavailable* —
+/// [`CapitalCallFunding::Unread`] — rather than double-counting the balance
+/// or quietly dropping one of the two.
+const CASH_LADDER_HOLDING: &str = "desk-cash-at-venue";
+
+/// What the book could have done about a capital call at the instant it was
+/// filed: where the cash would have come from, served from the top of the
+/// liquidity ladder downward.
+///
+/// Blueprint §25.4's second half, against the one cash demand this platform
+/// actually has. `LiquidityLadder::plan` was built, tested and reached by
+/// nothing outside `qip-financial`'s own tests, because the withdrawal it
+/// was written for does not exist and will not: `qip_capital`'s
+/// `WithdrawalEntitlement` has one variant, `Refused`, and ADR 0023 keeps it
+/// there. A capital call is the demand that *does* exist — a fund draws on a
+/// commitment the desk made, and the desk either finds the cash or forfeits
+/// the position ([`Platform::deployable_capital`]).
+///
+/// **Nothing is instructed, and no arm of this is a veto.** A [`PlanLeg`]
+/// carries no venue, no side and no time in force; no seam turns one into an
+/// order; and [`Platform::record_capital_call`] files the notice whatever
+/// this says. Both halves of that matter. A read that could refuse the
+/// notice would be a reserve declining to rise because the book looked
+/// illiquid, which is the protection running backwards. And a read that
+/// became an order would be the route by which capital leaves the platform,
+/// which ADR 0021 refuses.
+///
+/// What it buys is the sentence an operator needs afterwards — *that* call,
+/// filed *then*, would have reached private credit and cost this much —
+/// which is a fact about the shape of the book at one instant and is gone by
+/// the next cycle if nobody writes it down.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "funding", rename_all = "snake_case")]
+pub enum CapitalCallFunding {
+    /// The ladder could raise it, from these holdings in this order.
+    ///
+    /// `deepest_rung` is the figure to read first: a call served out of cash
+    /// says nothing, and the same call reaching
+    /// `Rung::PrivateCreditAndRealAssets` says the desk cannot meet its own
+    /// promises without selling the things it cannot sell.
+    Served {
+        /// What the exit would consume. Money.
+        cost: Decimal,
+        deepest_rung: Rung,
+        legs: Vec<PlanLeg>,
+    },
+    /// The whole ladder is worth less than the call.
+    ///
+    /// `why` is [`LiquidityLadder::plan`]'s own refusal, which names the
+    /// book, the amount and the shortfall between them. Quoted rather than
+    /// recomputed here, so the record and the arithmetic it reports cannot
+    /// disagree — a second subtraction of the same two figures is a second
+    /// source of truth for one fact.
+    Unserved { book: Decimal, why: String },
+    /// No read could be taken.
+    ///
+    /// The ladder itself was refused — a position in an instrument the
+    /// platform holds no liquidity record for, a non-monotonic ladder, a
+    /// book that does not add up inside the decimal range. Its own arm and
+    /// never folded into [`Self::Unserved`], for the reason
+    /// `RiskState::with_unevaluated` exists: "the book could not raise it"
+    /// and "nobody could tell" are different facts, and a record that
+    /// reported the second as the first would put a shortfall on the log
+    /// that nobody computed.
+    Unread { why: String },
+}
+
 /// The journalled record of a capital-call notice filed or withdrawn, and
 /// the only place a filed notice lives between one process and the next.
 ///
@@ -3116,6 +3189,21 @@ pub enum CapitalCallEntry {
         due_at: Timestamp,
         consequence: qip_financial::cashflow::CallConsequence,
         filed_by: String,
+        /// Where the book would have found the money, read at `issued_at`
+        /// and carried on the notice rather than filed beside it.
+        ///
+        /// One record and not two, because the read is only meaningful
+        /// against the book the notice arrived at: a read stored separately
+        /// can go missing and leave a notice nobody measured, and a reader
+        /// of this log cannot see a demand on the desk's capital without
+        /// seeing what the desk could have done about it.
+        ///
+        /// Never retaken on replay. [`Platform::resume_capital_calls`]
+        /// rebuilds the *notice* through the book's gates and carries this
+        /// forward untouched, because the next boot's book is a different
+        /// book and re-reading it here would file that answer under this
+        /// notice's instant.
+        funding: CapitalCallFunding,
     },
     /// [`Platform::withdraw_capital_call`]: the notice was retracted
     /// without being met — rescinded, or filed in error. Replayed in log
@@ -3142,7 +3230,15 @@ impl EventBody for CapitalCallEntry {
     /// read with and told apart from them by producer. See
     /// [`CAPITAL_CALL_ORIGIN`].
     const TOPIC: Topic = Topic::ComplianceEvaluated;
-    const SCHEMA_VERSION: u32 = 1;
+    /// Two since `Noticed` carried [`CapitalCallFunding`]. The field is
+    /// required rather than defaulted: a default would put a funding read
+    /// nobody took onto a record whose whole purpose is to say what was
+    /// read, and there is no version-one log to migrate — nothing is
+    /// deployed, and `Platform::record_capital_call` has never run outside a
+    /// test. A log that did hold one refuses assembly at
+    /// [`Platform::resume_capital_calls`] and names the remedy, which is the
+    /// direction this seam already fails in.
+    const SCHEMA_VERSION: u32 = 2;
 }
 
 impl EventBody for UniverseAssembled {
@@ -6199,6 +6295,16 @@ impl Platform {
     /// before the state moves, and never a record of a state that did not.
     /// What is journalled is what [`Platform::resume_capital_calls`]
     /// replays, so the notice survives a restart.
+    ///
+    /// **An admitted notice carries a funding read**, taken once, here, on
+    /// the book the notice arrived at: [`Platform::call_funding`] serves the
+    /// demanded amount down the liquidity ladder from the top and the record
+    /// says which rungs it reached. Blueprint §25.4's descent, which had no
+    /// caller outside `qip-financial`'s own tests because the withdrawal it
+    /// was written for is refused by construction. It cannot refuse the
+    /// notice — see [`CapitalCallFunding`] for why a reserve that declined
+    /// to rise on an illiquid book would be the protection running
+    /// backwards — and it instructs nothing.
     pub fn record_capital_call(
         &mut self,
         commitment: &str,
@@ -6237,6 +6343,11 @@ impl Platform {
         )?;
         let mut scratch = self.commitments.clone();
         scratch.record_call(call.clone())?;
+        // Read after the book's gates have admitted the notice and before
+        // anything is written, so the log never carries a funding read for a
+        // demand that was refused. Blueprint §25.4's descent, against the
+        // only cash demand this platform has.
+        let funding = self.call_funding(amount);
         self.journal_record(
             CapitalCallEntry::Noticed {
                 commitment: commitment.to_string(),
@@ -6246,11 +6357,104 @@ impl Platform {
                 due_at: due,
                 consequence,
                 filed_by: operator.subject().to_string(),
+                funding,
             },
             CAPITAL_CALL_ORIGIN,
             now,
         )?;
         self.commitments.record_call(call)
+    }
+
+    /// Where `amount` of cash would come from if this book had to find it
+    /// today, served from the top of the liquidity ladder downward.
+    ///
+    /// Blueprint §25.4's second half, reached from
+    /// [`Platform::record_capital_call`] and so from the desk's own
+    /// `POST /ledger/commitments/:commitment/capital-calls`. Until this
+    /// existed `LiquidityLadder::plan` was a complete, tested, monotonic
+    /// descent down seven rungs that no path outside `qip-financial`'s tests
+    /// ever took, because the withdrawal it was written for is refused by
+    /// construction.
+    ///
+    /// **Infallible by return type, on purpose.** Every way this can fail is
+    /// an arm of [`CapitalCallFunding`] rather than an `Err`, because the
+    /// caller must not be able to write the refusal through: the notice is
+    /// the fund's fact and the read is the platform's answer to it, and an
+    /// answer that could suppress the question is the
+    /// `MaxExpectedShortfall` shape one step further on — not a control that
+    /// cannot fire, but a measurement wired to stop the thing it measures.
+    fn call_funding(&self, amount: Decimal) -> CapitalCallFunding {
+        let ladder = match self.funding_ladder() {
+            Ok(ladder) => ladder,
+            Err(why) => {
+                return CapitalCallFunding::Unread {
+                    why: why.message().to_string(),
+                };
+            }
+        };
+        // `LiquidityLadder::new` has already proved this adds up, so the
+        // refusal arm is unreachable through the constructor. Written out
+        // rather than unwrapped because a proof one function away is a proof
+        // somebody can move, and `unwrap` here would turn that edit into an
+        // abort in the middle of filing a capital call.
+        let book = match ladder.total_value() {
+            Ok(book) => book,
+            Err(why) => {
+                return CapitalCallFunding::Unread {
+                    why: why.message().to_string(),
+                };
+            }
+        };
+        match ladder.plan(amount) {
+            Ok(plan) => CapitalCallFunding::Served {
+                cost: plan.cost,
+                deepest_rung: plan.deepest_rung,
+                legs: plan.legs,
+            },
+            Err(why) => CapitalCallFunding::Unserved {
+                book,
+                why: why.message().to_string(),
+            },
+        }
+    }
+
+    /// The ladder a funding read is served from: every position
+    /// [`Platform::liquidity_ladder`] places on a rung, plus the desk's own
+    /// cash on the top one.
+    ///
+    /// The difference from the risk read is deliberate and runs the other
+    /// way. `liquidity_ladder` leaves cash out because
+    /// `LimitKind::MinLiquidity` is a fraction of *the portfolio*, and
+    /// adding the balance would quietly restate a shipped limit as one every
+    /// book passes. A *funding* read that left cash out would say the desk
+    /// could not meet a call out of money it is holding — the same error
+    /// pointing the opposite way, and the worse one here, because it would
+    /// file a shortfall against every call on a book that has not yet
+    /// traded. Each read answers its own question over the rungs that
+    /// question is about.
+    ///
+    /// Cash is placed at zero cost, which is what `Rung::CashAtVenue`
+    /// already asserts ("immediate, zero cost") and cannot break the
+    /// monotonicity proof: the proof compares rung totals, and nothing is
+    /// cheaper to realise than the top rung at nothing.
+    fn funding_ladder(&self) -> Result<LiquidityLadder> {
+        let mut entries: Vec<LadderEntry> = self
+            .liquidity_ladder(&self.aggregates)?
+            .entries()
+            .cloned()
+            .collect();
+        let cash = self.aggregates.cash();
+        // A non-positive balance is not a rung of the ladder. `LadderEntry`
+        // refuses one, and this is not a correction of a bad input: a desk
+        // holding no cash has no cash rung, which is exactly what the plan
+        // should then have to descend past.
+        if cash.is_positive() {
+            entries.push(
+                LadderEntry::new(CASH_LADDER_HOLDING, Rung::CashAtVenue, cash, Decimal::ZERO)
+                    .exiting_over_days(0.0),
+            );
+        }
+        LiquidityLadder::new(entries)
     }
 
     /// Retract, as an authenticated operator, a notice that stood — the
@@ -14698,13 +14902,21 @@ impl Platform {
     ///   contradicts the rung assignment, and a liquidity floor computed over
     ///   rungs nobody can trust is a number with a control attached.
     ///
-    /// This is a risk read and nothing else. It hands no
-    /// `qip_financial::ladder::LiquidationPlan` to anything, and there is no
-    /// path from here to an order: ADR 0021 refuses the route by which capital
-    /// leaves the platform and `qip_capital`'s `WithdrawalEntitlement` has one
-    /// variant, `Refused`. The ladder answers "how much of this book becomes
-    /// cash inside a week", which is worth knowing whether or not anything is
-    /// ever withdrawn.
+    /// This is a risk read. It answers "how much of this book becomes cash
+    /// inside a week", which is worth knowing whether or not anything is ever
+    /// withdrawn, and **there is still no path from here to an order**: ADR
+    /// 0021 refuses the route by which capital leaves the platform and
+    /// `qip_capital`'s `WithdrawalEntitlement` has one variant, `Refused`.
+    ///
+    /// This paragraph said the ladder "hands no
+    /// `qip_financial::ladder::LiquidationPlan` to anything", and since the
+    /// §25.4 wire that is no longer true — corrected here rather than left to
+    /// be read as a guarantee. [`Platform::funding_ladder`] takes these
+    /// entries, adds the desk's cash as the top rung, and
+    /// [`Platform::call_funding`] plans a capital call against the result.
+    /// What has not changed is the sentence that mattered: a
+    /// `LiquidationPlan` is a record and never an instruction, its legs carry
+    /// no venue and no side, and nothing turns one into an order.
     pub fn liquidity_ladder(&self, figures: &impl AggregateFigures) -> Result<LiquidityLadder> {
         let mut entries = Vec::new();
         for (instrument, notional) in figures.position_notionals() {

@@ -18,6 +18,11 @@
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
 
+use qip_contracts::intent::Contributor;
+use qip_contracts::message::BookSide;
+use qip_contracts::signal::StrategyId;
+use qip_contracts::venue::VenueId;
+use qip_contracts::wire::{FillRecord, FillShare};
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ObjectId, dec};
@@ -26,11 +31,14 @@ use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::cashflow::CallConsequence;
 use qip_financial::costs::LiquidityProfile;
 use qip_financial::extensions::{Extension, PrivateAssetDetails};
+use qip_financial::ladder::Rung;
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
+use qip_kernel::central::CellReport;
 use qip_kernel::config::PlatformConfig;
-use qip_kernel::platform::{CapitalCallEntry, CapitalCallNotice, Platform};
+use qip_kernel::platform::{CapitalCallEntry, CapitalCallFunding, CapitalCallNotice, Platform};
+use qip_mesh::delta::DeltaOrder;
 use qip_observability::Telemetry;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_risk_engine::autonomy::OperatorIdentity;
@@ -299,6 +307,11 @@ fn a_capital_call_is_refused_before_anything_is_journalled_and_an_admitted_one_i
         due_at,
         consequence,
         filed_by,
+        // The funding read has its own tests below; this one is about the
+        // notice, and binding it here keeps the pattern exhaustive so a
+        // field added to the record cannot go unnoticed by every test at
+        // once.
+        funding: _,
     } = &records[0]
     else {
         panic!("the one record is not a notice: {:?}", records[0]);
@@ -583,5 +596,298 @@ fn a_log_filing_a_call_against_a_commitment_this_universe_no_longer_holds_stops_
         refused.message()
     );
     let _ = std::fs::remove_dir_all(path.parent().expect("the log has a directory"));
+    Ok(())
+}
+
+// --- the funding read (blueprint §25.4) -------------------------------------
+
+/// A desk holding `cash` and nothing else, over the same universe.
+///
+/// Smaller than [`config`]'s million on purpose: the fund may call at most
+/// 250,000, so on a million of cash every admissible notice is served out of
+/// the top rung and `deepest_rung` would read `cash_at_venue` forever. A
+/// figure that cannot move is not a finding, whatever it is recorded on.
+fn desk_holding(cash: Decimal) -> Result<Platform> {
+    let config = PlatformConfig {
+        initial_equity: cash,
+        ..PlatformConfig::default()
+    };
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        encumbered_universe()?,
+        limits(),
+    )
+}
+
+/// Put a long position of `notional` in the listed name on the desk's books,
+/// through the seam a cell's settled fill takes.
+///
+/// The only way a position reaches `RiskAggregates` without a market: the
+/// DECIDE stage proposes nothing over a universe with no prices moving, so a
+/// cycle-driven fixture would leave the ladder holding cash alone and the
+/// test would assert the descent against a ladder with one rung on it.
+fn absorb_a_long(platform: &mut Platform, notional: Decimal) -> Result<()> {
+    let quantity = notional / dec!("100");
+    let order = DeltaOrder {
+        order_id: "ord-1".to_string(),
+        strategy: StrategyId::new("alpha"),
+        object_id: object("AAA"),
+        venue: VenueId::new("XNYS"),
+        side: BookSide::Ask,
+        quantity,
+        price: dec!("100"),
+        simulated: true,
+        contributors: vec![Contributor {
+            strategy: StrategyId::new("alpha"),
+            signed_size: quantity,
+            inputs: vec![("alpha-feature".to_string(), 1)],
+        }],
+    };
+    let fill = FillRecord {
+        order_id: "ord-1".to_string(),
+        object_id: object("AAA"),
+        venue: VenueId::new("XNYS"),
+        side: BookSide::Ask,
+        quantity,
+        price: dec!("100"),
+        simulated: true,
+        at: start(),
+        shares: vec![FillShare {
+            strategy: StrategyId::new("alpha"),
+            quantity,
+        }],
+    };
+    platform.ingest_cell_report(
+        CellReport::new("cell-lon-1", start())
+            .with_orders(vec![order])
+            .with_fills(vec![fill]),
+        start(),
+    )?;
+    Ok(())
+}
+
+/// The funding read the log holds for one reference.
+fn funding_of(platform: &Platform, reference: &str) -> Result<CapitalCallFunding> {
+    let read = call_records(platform)?
+        .into_iter()
+        .find_map(|entry| match entry {
+            CapitalCallEntry::Noticed {
+                reference: filed,
+                funding,
+                ..
+            } if filed == reference => Some(funding),
+            _ => None,
+        });
+    read.ok_or_else(|| {
+        qip_core::error::Error::not_found(format!("no notice under {reference} is on the log"))
+    })
+}
+
+#[test]
+fn a_capital_call_is_served_down_the_ladder_from_the_top_and_the_record_names_where_it_reached()
+-> Result<()> {
+    // Blueprint §25.4's descent, against the one cash demand this platform
+    // has. `LiquidityLadder::plan` was complete, tested and reached by
+    // nothing outside `qip-financial`'s own tests, because the withdrawal it
+    // was written for is refused by construction (ADR 0023). A call is the
+    // demand that exists, and what it costs to meet is a fact about the
+    // shape of the book that is gone by the next cycle if nobody writes it
+    // down.
+    let mut platform = desk_holding(dec!("100000"))?;
+    absorb_a_long(&mut platform, dec!("150000"))?;
+
+    // Premises, all three, because each one alone makes the assertion below
+    // pass for the wrong reason. The book has cash; it has a position under
+    // that cash; and the call is larger than the cash, so the plan has to
+    // descend at all.
+    let positions =
+        qip_risk::aggregate::AggregateFigures::position_notionals(platform.risk_figures());
+    assert_eq!(
+        positions.get("obj-AAA"),
+        Some(&dec!("150000")),
+        "the premise failed: the cell's fill did not reach the risk aggregate"
+    );
+    assert_eq!(
+        qip_risk::aggregate::AggregateFigures::cash(platform.risk_figures()),
+        dec!("100000"),
+        "the premise failed: the desk is not holding the cash the fixture opened with"
+    );
+    let called = dec!("200000");
+    assert!(
+        called > dec!("100000"),
+        "the premise failed: the call fits inside cash and never leaves the top rung"
+    );
+
+    platform.record_capital_call(
+        FUND,
+        notice("call-1", called, ten_days_on()),
+        &operator(),
+        start(),
+    )?;
+
+    let CapitalCallFunding::Served {
+        cost,
+        deepest_rung,
+        legs,
+    } = funding_of(&platform, "call-1")?
+    else {
+        panic!(
+            "a call inside a ladder holding 250,000 was not served: {:?}",
+            funding_of(&platform, "call-1")
+        );
+    };
+    // Top rung first: the desk's own cash, which the risk read deliberately
+    // leaves out and a funding read may not — a book holding the money would
+    // otherwise be reported unable to pay out of it.
+    assert_eq!(legs.len(), 2, "cash then the position: {legs:?}");
+    assert_eq!(legs[0].object_id, "desk-cash-at-venue");
+    assert_eq!(legs[0].rung, Rung::CashAtVenue);
+    assert_eq!(legs[0].amount, dec!("100000"), "all of the cash");
+    assert_eq!(legs[0].cost, Decimal::ZERO, "cash costs nothing to realise");
+    assert_eq!(legs[1].object_id, "obj-AAA");
+    assert_eq!(
+        legs[1].amount,
+        dec!("100000"),
+        "the remainder, and not the whole position"
+    );
+    // The figure an operator reads first, and the one that can move: a call
+    // met out of cash reaches `CashAtVenue` and says nothing.
+    assert_eq!(deepest_rung, Rung::ListedEquityAndFutures);
+    assert_ne!(
+        deepest_rung,
+        Rung::CashAtVenue,
+        "the descent is the finding; a read that never leaves the top rung is a constant"
+    );
+    // Pro rata, as `LiquidityLadder::plan` charges a partial draw: three
+    // basis points on the 150,000 position is 45, and two thirds of it is
+    // 30. Exact, because a range would pass on a plan that took the whole
+    // position.
+    assert_eq!(
+        cost,
+        dec!("30"),
+        "two thirds of 45bp-priced exit on 150,000"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_capital_call_the_whole_ladder_cannot_raise_is_recorded_short_and_still_stands() -> Result<()> {
+    // The half that would be easy to get backwards. A notice is the fund's
+    // fact: it has been served on the desk whether or not the desk can meet
+    // it, and `Platform::deployable_capital` subtracts it before anything is
+    // sized. A funding read that refused the filing would be the reserve
+    // declining to rise precisely on the books that need it most — a
+    // measurement wired to suppress what it measures.
+    let mut platform = desk_holding(dec!("50000"))?;
+
+    // Premises: the desk's whole ladder is 50,000, and the call is
+    // admissible against the commitment regardless.
+    assert_eq!(
+        qip_risk::aggregate::AggregateFigures::cash(platform.risk_figures()),
+        dec!("50000")
+    );
+    assert!(
+        qip_risk::aggregate::AggregateFigures::position_notionals(platform.risk_figures())
+            .is_empty(),
+        "the premise failed: the fixture holds positions and the ladder is not cash alone"
+    );
+    assert_eq!(
+        platform.commitments().unfunded_total(start())?,
+        dec!("250000")
+    );
+    let reserve_before = platform.commitments().unfunded_total(start())?;
+
+    platform.record_capital_call(
+        FUND,
+        notice("call-1", dec!("200000"), ten_days_on()),
+        &operator(),
+        start(),
+    )?;
+
+    let CapitalCallFunding::Unserved { book, why } = funding_of(&platform, "call-1")? else {
+        panic!(
+            "a 200,000 call on a 50,000 ladder was not recorded short: {:?}",
+            funding_of(&platform, "call-1")
+        );
+    };
+    assert_eq!(book, dec!("50000"), "the ladder that could not raise it");
+    // The shortfall is named exactly and quoted from the plan's own refusal,
+    // so the record and the arithmetic cannot drift apart. Delimited, because
+    // "150000" is a substring of nothing here but the habit is what catches
+    // the case where it is.
+    assert!(
+        why.contains("150000 short"),
+        "the refusal does not name the shortfall: {why}"
+    );
+
+    // And the property: the notice stood anyway.
+    assert_eq!(
+        standing(&platform),
+        vec!["call-1".to_string()],
+        "the funding read vetoed a notice it may only describe"
+    );
+    assert_eq!(
+        platform.commitments().unfunded_total(start())?,
+        reserve_before,
+        "a notice moves no balance; only falling overdue does"
+    );
+    Ok(())
+}
+
+#[test]
+fn reading_the_ladder_for_a_capital_call_places_nothing_and_moves_no_capital() -> Result<()> {
+    // ADR 0021's boundary, at the one seam in this platform that now turns a
+    // demand for cash into a plan naming holdings. A `PlanLeg` carries no
+    // venue, no side and no time in force, and nothing converts one into an
+    // order — this test is what makes that a checked property rather than a
+    // sentence in a doc comment.
+    let mut platform = desk_holding(dec!("100000"))?;
+    absorb_a_long(&mut platform, dec!("150000"))?;
+    let cash_before = qip_risk::aggregate::AggregateFigures::cash(platform.risk_figures());
+    let positions_before =
+        qip_risk::aggregate::AggregateFigures::position_notionals(platform.risk_figures()).clone();
+    let fills_before = platform.risk_figures().fills();
+    let records_before = platform.event_log().records().len();
+    // Premise: the read about to be taken is one that reaches a position,
+    // which is the only kind that could conceivably want to sell something.
+    assert!(
+        !positions_before.is_empty(),
+        "the premise failed: a read over cash alone could not place an order in any case"
+    );
+
+    platform.record_capital_call(
+        FUND,
+        notice("call-1", dec!("200000"), ten_days_on()),
+        &operator(),
+        start(),
+    )?;
+    assert!(matches!(
+        funding_of(&platform, "call-1")?,
+        CapitalCallFunding::Served { .. }
+    ));
+
+    assert_eq!(
+        qip_risk::aggregate::AggregateFigures::cash(platform.risk_figures()),
+        cash_before,
+        "the plan spent the desk's cash"
+    );
+    assert_eq!(
+        qip_risk::aggregate::AggregateFigures::position_notionals(platform.risk_figures()),
+        &positions_before,
+        "the plan sold a position it may only name"
+    );
+    assert_eq!(
+        platform.risk_figures().fills(),
+        fills_before,
+        "a fill was booked against a plan nobody executed"
+    );
+    assert_eq!(
+        platform.event_log().records().len(),
+        records_before + 1,
+        "filing a notice wrote something besides the notice"
+    );
     Ok(())
 }
