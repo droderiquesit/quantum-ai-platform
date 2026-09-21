@@ -27,8 +27,9 @@
 //! promoted on defaults reads exactly like a ladder full of venues that
 //! earned it.
 //!
-//! Two facts this deployment cannot supply at all, named here rather than
-//! papered over:
+//! One fact this deployment cannot supply at all, named here rather than
+//! papered over. This paragraph said **two** until the session-replay lane,
+//! and the second is gone rather than reworded:
 //!
 //! * **Acknowledgement latency from the desk's own venue.**
 //!   `SimulatedBroker` stamps a configured latency on its fills rather than
@@ -38,10 +39,15 @@
 //!   the rung. `SimulatedExchange` in `qip-brokers` *does* measure one,
 //!   because its round trip carries a jitter drawn from the seed; that
 //!   adapter is not what the kernel composes today.
-//! * **A replayed session.** §34.4's simulated rung wants recorded sessions
-//!   traded through the simulator and reconciled, and nothing in this process
-//!   replays one. No [`SimulationEvidence`] is constructed here, so a venue
-//!   that clears the observed rung stops there.
+//!
+//! **A replayed session now exists, and used to be the second bullet.**
+//! §34.4's simulated rung wants recorded sessions traded through the
+//! simulator and reconciled; `crate::session_replay` produces the
+//! [`SimulationEvidence`] from the sessions `OrderManager` seals, and this
+//! module takes it as an argument rather than building one. It still fills in
+//! nothing: where the replay reports no evidence, [`None`] arrives here and
+//! the simulated rung refuses by name, exactly as an absent latency does at
+//! the rung below.
 //!
 //! [`SimulationEvidence`]: qip_lifecycle::venue_ladder::SimulationEvidence
 //!
@@ -62,8 +68,8 @@ use qip_contracts::gate::GateStage;
 use qip_core::Timestamp;
 use qip_execution_engine::observation::VenueObservation;
 use qip_lifecycle::venue_ladder::{
-    VenueDeclaration, VenueEvidence, VenueLadder, VenueMeasurement, VenuePromotionPolicy,
-    attempt_promotion, rung_name,
+    SimulationEvidence, VenueDeclaration, VenueEvidence, VenueLadder, VenueMeasurement,
+    VenuePromotionPolicy, attempt_promotion, rung_name,
 };
 use std::collections::BTreeSet;
 
@@ -95,6 +101,7 @@ pub fn measure(
     ladder: &mut VenueLadder,
     venue: &str,
     observation: Option<VenueObservation>,
+    simulation: Option<SimulationEvidence>,
     policy: VenuePromotionPolicy,
     now: Timestamp,
 ) -> VenueMeasurementOutcome {
@@ -168,18 +175,31 @@ pub fn measure(
 
     let standing = ladder.stage_of(&name);
     // The simulated rung wants recorded sessions replayed and reconciled.
-    // Nothing in this process replays one, so no `SimulationEvidence` is
-    // built: a venue standing at the observed rung is held there by a fact
-    // the deployment does not produce rather than by evidence that fell
-    // short, and that belongs in the summary rather than in the problems.
-    if standing == GateStage::Holdout {
-        missing.push("a replayed recorded session, which nothing in this process produces");
+    // A venue standing at the observed rung with no replay behind it is held
+    // there by a corpus the deployment has not produced *yet* rather than by
+    // evidence that fell short — a venue nobody has sent an order to, or one
+    // whose sessions all filled nothing — and that belongs in the summary
+    // rather than in the problems, which is why it is listed beside the two
+    // facts the adapter cannot take.
+    if standing == GateStage::Holdout && simulation.is_none() {
+        missing.push(
+            "a recorded session that can be replayed into promotion evidence, which needs \
+             sessions in which the venue actually filled something",
+        );
     }
     if !missing.is_empty() {
         unmeasured.insert(name.clone());
     }
 
     let evidence = VenueEvidence::new().with_measurement(measurement);
+    // Straight through again. Where the replay produced no evidence this
+    // stays absent and the gate refuses by name; nothing here substitutes a
+    // zeroed `SimulationEvidence`, which would present a venue nobody
+    // replayed as one whose replay found no break.
+    let evidence = match simulation {
+        Some(simulation) => evidence.with_simulation(simulation),
+        None => evidence,
+    };
     let outcome = attempt_promotion(
         ladder,
         &declaration,
@@ -246,6 +266,16 @@ mod tests {
             .collect()
     }
 
+    /// Evidence of the shape `crate::session_replay` produces from a window
+    /// of clean recorded sessions.
+    fn clean_simulation() -> qip_lifecycle::venue_ladder::SimulationEvidence {
+        qip_lifecycle::venue_ladder::SimulationEvidence {
+            replayed_sessions: 8,
+            reconciliation_breaks: 0,
+            reference_clip: Decimal::from_int(10),
+        }
+    }
+
     /// An adapter that reports everything §34.4's observed rung asks for.
     fn complete_observation() -> VenueObservation {
         VenueObservation {
@@ -279,6 +309,7 @@ mod tests {
             &mut ladder,
             "XVENUE",
             Some(observation),
+            None,
             VenuePromotionPolicy::default(),
             now(),
         );
@@ -310,6 +341,7 @@ mod tests {
             &mut moved,
             "XVENUE",
             Some(complete_observation()),
+            None,
             VenuePromotionPolicy::default(),
             now(),
         );
@@ -331,6 +363,7 @@ mod tests {
                 &mut ladder,
                 "XVENUE",
                 Some(complete_observation()),
+                Some(clean_simulation()),
                 VenuePromotionPolicy::default(),
                 now(),
             );
@@ -351,9 +384,58 @@ mod tests {
             "the rung this seam reached may reach a venue: {}",
             rung_name(reached)
         );
-        // And the premise: it did move, so the bound above is not satisfied
-        // by a seam that promotes nothing at all.
-        assert_eq!(reached, GateStage::Holdout);
+        // And the premise: it did move, and it moved all the way to the
+        // ceiling. Before the session replay existed this assertion read
+        // `Holdout`, because no `SimulationEvidence` was constructed
+        // anywhere and the rung below the ceiling was as far as any venue
+        // could go — which made the bound above true of a ceiling nothing
+        // could reach.
+        assert_eq!(reached, VENUE_PROMOTION_CEILING);
+    }
+
+    #[test]
+    fn a_venue_with_no_replayed_session_is_held_below_the_ceiling_and_is_not_a_problem() {
+        // The other side of the seam's classification. A venue that measured
+        // as it declared earns the observed rung and then stops, because the
+        // rung above turns on a corpus this deployment has not produced for
+        // it. That is reported and it is not raised: it would be raised on
+        // every cycle until the venue had traded, and a control that fires
+        // always teaches an operator to ignore it.
+        let mut ladder = VenueLadder::new();
+        for _ in 0..20 {
+            measure(
+                &mut ladder,
+                "XVENUE",
+                Some(complete_observation()),
+                None,
+                VenuePromotionPolicy::default(),
+                now(),
+            );
+        }
+        assert_eq!(
+            ladder.stage_of("XVENUE"),
+            GateStage::Holdout,
+            "a venue with no replayed session reached the simulated rung"
+        );
+        let outcome = measure(
+            &mut ladder,
+            "XVENUE",
+            Some(complete_observation()),
+            None,
+            VenuePromotionPolicy::default(),
+            now(),
+        );
+        assert!(
+            outcome.problems.is_empty(),
+            "a corpus the deployment has not gathered yet was raised as a problem: {:?}",
+            outcome.problems
+        );
+        assert!(outcome.unmeasured.contains("XVENUE"));
+        let summary = outcome.summary.expect("a pass that ran says so");
+        assert!(
+            summary.contains("recorded session"),
+            "the summary does not name the missing fact: {summary}"
+        );
     }
 
     #[test]
@@ -400,6 +482,7 @@ mod tests {
             &mut ladder,
             broker.name(),
             Some(observation),
+            None,
             VenuePromotionPolicy::default(),
             now(),
         );
@@ -418,6 +501,7 @@ mod tests {
         let outcome = measure(
             &mut ladder,
             "XSILENT",
+            None,
             None,
             VenuePromotionPolicy::default(),
             now(),
@@ -448,6 +532,7 @@ mod tests {
             &mut ladder,
             "XVENUE",
             Some(observation),
+            None,
             VenuePromotionPolicy::default(),
             now(),
         );

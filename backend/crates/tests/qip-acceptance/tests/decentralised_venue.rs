@@ -39,7 +39,7 @@ use qip_brokers::exchange::{ExchangeSettings, SimulatedExchange};
 use qip_contracts::gate::GateStage;
 use qip_contracts::venue::{VenueClass, VenueId};
 use qip_core::error::Result;
-use qip_core::ids::{ObjectId, OrderId};
+use qip_core::ids::{FillId, ObjectId, OrderId};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, dec};
 use qip_execution_engine::broker::{
@@ -47,7 +47,8 @@ use qip_execution_engine::broker::{
 };
 use qip_execution_engine::feasibility::GATE_MINIMUM_NOTIONAL;
 use qip_execution_engine::oms::{OrderManager, RefusalReason};
-use qip_execution_engine::order::{Order, OrderType, Side};
+use qip_execution_engine::order::{Fill, Order, OrderType, Side};
+use qip_execution_engine::session::{RecordedInstruction, SessionRecorder};
 use qip_financial::asset_class::InstrumentType;
 use qip_financial::costs::LiquidityProfile;
 use qip_financial::object::FinancialObject;
@@ -746,6 +747,10 @@ fn a_venue_that_times_itself_crosses_the_broker_port_and_earns_the_observed_rung
         &mut ladder,
         MEASURED_VENUE,
         Some(observation),
+        // No replayed session in *this* test: what it is about is the
+        // observed rung, and the rung above is exercised by
+        // `a_venue_whose_recorded_sessions_replay_clean_reaches_the_simulator_and_stops`.
+        None,
         VenuePromotionPolicy::default(),
         start(),
     );
@@ -761,15 +766,17 @@ fn a_venue_that_times_itself_crosses_the_broker_port_and_earns_the_observed_rung
     );
 
     // And the ceiling, from the same seam: a hundred further passes of the
-    // same perfect evidence never reach a rung that holds capital. There is
-    // no simulation evidence here because nothing in this process replays a
-    // recorded session, and above that there is no rung at all.
+    // same perfect evidence never reach a rung that holds capital. No
+    // simulation evidence is offered here, so the venue stops one rung below
+    // the ceiling — and above the ceiling there is no rung at all, which the
+    // next test proves with the evidence supplied.
     for _ in 0..100 {
         let again = exchange.observation();
         qip_kernel::venue_measurement::measure(
             &mut ladder,
             MEASURED_VENUE,
             again,
+            None,
             VenuePromotionPolicy::default(),
             start(),
         );
@@ -788,5 +795,293 @@ fn a_venue_that_times_itself_crosses_the_broker_port_and_earns_the_observed_rung
         "the rung the measurement seam reached may reach a venue"
     );
     assert_eq!(reached, GateStage::Holdout);
+    Ok(())
+}
+#[test]
+fn a_venue_whose_recorded_sessions_replay_clean_reaches_the_simulator_and_stops() -> Result<()> {
+    // The ceiling rung of §34.4's ladder, reached by evidence for the first
+    // time, and then refused for ever after. Until the session recorder and
+    // its replay existed, **nothing in any binary constructed a
+    // `SimulationEvidence`**: the simulated rung could only refuse, so the
+    // ladder's ceiling was unreachable and the suite's only proof that it was
+    // a ceiling came from handing `attempt_promotion` a literal. A rung no
+    // production path can reach is the same defect as a limit that cannot
+    // fire.
+    //
+    // Four crates are in view and no one of them can see this: `qip-brokers`
+    // answers the instructions, `qip-execution-engine`'s order manager issues
+    // them and seals the session, `qip-kernel` replays it and composes the
+    // judgement, `qip-lifecycle` judges.
+    let settings = ExchangeSettings {
+        // The seeded coin-flip refusal carries no reason, so an unlucky order
+        // would make this test about luck. The jitter stays: it is what makes
+        // the latency a measurement rather than the setting read back.
+        rejection_probability: 0.0,
+        ..ExchangeSettings::default()
+    };
+    let mut exchange = SimulatedExchange::new(VenueId::new(MEASURED_VENUE), settings, 11, start());
+    exchange.list(measured_instrument());
+    exchange.seed_liquidity(
+        &measured_object(),
+        Side::Sell,
+        dec!("100.00"),
+        Decimal::from_int(4_000),
+        start(),
+    )?;
+    exchange.bring_up(&measured_credential(), start())?;
+
+    let autonomy = AutonomyController::new();
+    assert!(
+        !autonomy.level().is_live(),
+        "the premise: the platform's autonomy level is not live, so nothing below is about a \
+         live path"
+    );
+    let mut manager = OrderManager::new(PreTradeChecker::new(limits()));
+
+    // Six passes, each issuing a market order and a limit order and each
+    // sealed at its own instant. Six because the simulated rung asks for
+    // five, and a test supplying exactly the minimum cannot tell a gate that
+    // counts from one that does not.
+    for pass in 0..6i64 {
+        let at = start().saturating_add(Duration::from_secs(pass + 1));
+        for (label, order_type) in [
+            (format!("mkt-{pass}"), OrderType::Market),
+            (
+                format!("lmt-{pass}"),
+                OrderType::Limit { price: dec!("101") },
+            ),
+        ] {
+            let result = manager.submit(
+                measured_order(&label, order_type),
+                &mut exchange,
+                &autonomy,
+                &funded(),
+                BTreeMap::new(),
+                Some(MEASURED_VENUE.to_string()),
+                at,
+            );
+            assert!(
+                result.accepted,
+                "the premise: the venue took order {label}; {:?}",
+                result.refusal.map(|reason| reason.describe())
+            );
+        }
+        manager.close_sessions(at);
+    }
+
+    // Enough answers that a latency figure has a shape — the observed rung's
+    // own minimum, and the rung below the one under test here.
+    for _ in 0..40 {
+        exchange.heartbeat(start())?;
+    }
+
+    // The recording, and what a replay of it found. Asserted before the
+    // ladder is touched, because a promotion on evidence nobody looked at is
+    // exactly what this row exists to stop.
+    let sessions = manager.sessions(MEASURED_VENUE);
+    assert_eq!(
+        sessions.len(),
+        6,
+        "the premise: six distinct sessions were sealed, not one repeated"
+    );
+    let replayed = qip_kernel::session_replay::replay(&sessions, MEASURED_VENUE);
+    assert!(
+        replayed.problems.is_empty(),
+        "the replay found something to raise: {:?}",
+        replayed.problems
+    );
+    let evidence = replayed
+        .evidence
+        .expect("six sessions in which a venue filled are evidence");
+    assert_eq!(evidence.replayed_sessions, 6);
+    assert_eq!(
+        evidence.reconciliation_breaks, 0,
+        "the desk's instructions and the venue's answers disagree"
+    );
+    assert!(
+        evidence.reference_clip > Decimal::ZERO,
+        "a crossing cost measured at a clip of zero is measured at a clip nobody sent"
+    );
+
+    // Now the ladder, through the production seam, one rung per pass.
+    let mut ladder = VenueLadder::new();
+    let first = qip_kernel::venue_measurement::measure(
+        &mut ladder,
+        MEASURED_VENUE,
+        exchange.observation(),
+        Some(evidence),
+        VenuePromotionPolicy::default(),
+        start(),
+    );
+    assert!(first.problems.is_empty(), "{:?}", first.problems);
+    assert_eq!(
+        ladder.stage_of(MEASURED_VENUE),
+        GateStage::Holdout,
+        "the venue did not earn the observed rung on its measurement"
+    );
+
+    let second = qip_kernel::venue_measurement::measure(
+        &mut ladder,
+        MEASURED_VENUE,
+        exchange.observation(),
+        Some(evidence),
+        VenuePromotionPolicy::default(),
+        start(),
+    );
+    assert!(second.problems.is_empty(), "{:?}", second.problems);
+    assert!(
+        second.unmeasured.is_empty(),
+        "a venue that supplied a replayed session was still excused as unmeasurable: {:?}",
+        second.unmeasured
+    );
+    assert_eq!(
+        ladder.stage_of(MEASURED_VENUE),
+        VENUE_PROMOTION_CEILING,
+        "the replayed session did not carry the venue to the simulated rung, so the rest of \
+         this test would prove a ceiling nothing can reach"
+    );
+
+    // And the ceiling. A thousand further passes of evidence a venue could
+    // only dream of — every session clean, the corpus enormous — and the rung
+    // does not move, because `attempt_promotion` computes its target from the
+    // rung below and refuses anything above `VENUE_PROMOTION_CEILING`. There
+    // is no argument to this seam that names a rung.
+    let abundant = SimulationEvidence {
+        replayed_sessions: 10_000,
+        reconciliation_breaks: 0,
+        reference_clip: dec!("1"),
+    };
+    for _ in 0..1_000 {
+        qip_kernel::venue_measurement::measure(
+            &mut ladder,
+            MEASURED_VENUE,
+            exchange.observation(),
+            Some(abundant),
+            VenuePromotionPolicy::default(),
+            start(),
+        );
+    }
+    let reached = ladder.stage_of(MEASURED_VENUE);
+    assert_eq!(
+        reached, VENUE_PROMOTION_CEILING,
+        "replayed evidence walked a venue off the ceiling"
+    );
+    assert!(
+        !reached.holds_capital(),
+        "the rung replayed evidence reached holds capital"
+    );
+    assert!(
+        !reached.may_reach_a_venue(),
+        "the rung replayed evidence reached may reach a venue"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_recorded_session_holding_a_fill_the_venue_did_not_call_simulated_promotes_nothing()
+-> Result<()> {
+    // Fail closed and fail whole. The refusal here is not a reconciliation
+    // break among reconciliation breaks — it is the alarm the three
+    // paper-trading layers exist to make impossible, and a ladder able to
+    // weigh a live fill against clean sessions would be a fourth way in that
+    // none of the three watches.
+    //
+    // The recording is built through the recorder rather than fabricated,
+    // because `RecordedSession` has no public constructor: a caller cannot
+    // hand the replay a session the platform never had.
+    let mut recorder = SessionRecorder::default();
+    for pass in 0..8i64 {
+        let at = start().saturating_add(Duration::from_secs(pass + 1));
+        let order = format!("ord-{pass}");
+        recorder.instruct(RecordedInstruction {
+            order_id: OrderId::from_string(&order),
+            object_id: measured_object(),
+            side: Side::Buy,
+            quantity: Decimal::from_int(10),
+            venue: MEASURED_VENUE.to_string(),
+            at,
+        });
+        recorder.answer(
+            MEASURED_VENUE,
+            Fill {
+                fill_id: FillId::from_string(format!("fill-{pass}")),
+                order_id: OrderId::from_string(&order),
+                at,
+                quantity: Decimal::from_int(10),
+                price: dec!("100"),
+                costs: dec!("0.1"),
+                venue: MEASURED_VENUE.to_string(),
+                // One of eight, and it is enough.
+                simulated: pass != 7,
+            },
+            at,
+        );
+        recorder.close(MEASURED_VENUE, at);
+    }
+    let sessions = recorder.sessions(MEASURED_VENUE);
+    assert_eq!(sessions.len(), 8, "the premise: eight sessions were sealed");
+    let replayed = qip_kernel::session_replay::replay(&sessions, MEASURED_VENUE);
+    assert!(
+        replayed.evidence.is_none(),
+        "a corpus holding a fill the venue did not report as simulated produced promotion \
+         evidence: {:?}",
+        replayed.evidence
+    );
+    assert!(
+        replayed
+            .problems
+            .iter()
+            .any(|problem| problem.contains("not simulated")),
+        "the live fill was discarded without being raised: {:?}",
+        replayed.problems
+    );
+
+    // And the consequence at the ladder: no evidence, no rung. The venue
+    // clears the rung below on measurement, so what stops it below the
+    // ceiling is the missing simulation evidence and nothing else.
+    let mut ladder = VenueLadder::new();
+    let declaration = VenueDeclaration::new(
+        VenueId::new(MEASURED_VENUE),
+        VenueClass::Exchange,
+        dec!("10"),
+        Duration::from_millis(50),
+        ["limit".to_string()].into_iter().collect(),
+    )?;
+    ladder.register(&declaration, start());
+    let measurement = VenueMeasurement {
+        fee_bps: Some(dec!("10")),
+        latency: Some(Duration::from_millis(50)),
+        accepted_order_types: ["limit".to_string()].into_iter().collect(),
+        rejected_order_types: BTreeSet::new(),
+        observations: 40,
+    };
+    attempt_promotion(
+        &mut ladder,
+        &declaration,
+        &VenueEvidence::new().with_measurement(measurement.clone()),
+        VenuePromotionPolicy::default(),
+        None,
+        "measured read-only",
+        start(),
+    )?;
+    assert_eq!(ladder.stage_of(MEASURED_VENUE), GateStage::Holdout);
+    let refused = attempt_promotion(
+        &mut ladder,
+        &declaration,
+        &VenueEvidence::new().with_measurement(measurement),
+        VenuePromotionPolicy::default(),
+        None,
+        "nothing replayed",
+        start(),
+    );
+    let message = refused
+        .err()
+        .map(|error| error.message().to_string())
+        .unwrap_or_default();
+    assert!(
+        message.contains("has not been traded in the simulator"),
+        "the simulated rung refused for some other reason: {message}"
+    );
+    assert_eq!(ladder.stage_of(MEASURED_VENUE), GateStage::Holdout);
     Ok(())
 }

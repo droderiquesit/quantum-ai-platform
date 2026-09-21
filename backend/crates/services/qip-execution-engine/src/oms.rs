@@ -52,6 +52,7 @@
 use crate::broker::Broker;
 use crate::feasibility::{self, VenueFeasibility};
 use crate::order::{Fill, Order, OrderState, OrderType};
+use crate::session::{RecordedInstruction, RecordedSession, SealOutcome, SessionRecorder};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::OrderId;
@@ -394,6 +395,12 @@ pub struct OrderManager {
     /// journaled the decision; the set is a cache of the event log, not a
     /// second source of truth.
     withdrawn_venues: BTreeSet<String>,
+    /// §34.4's recorded sessions: what the desk instructed at each venue and
+    /// what the venue answered, bounded and sealed a pass at a time. The
+    /// simulated rung of the venue promotion ladder is judged on a replay of
+    /// these, and before they existed nothing in any binary could construct
+    /// the evidence that rung asks for.
+    sessions: SessionRecorder,
     sequence: u64,
 }
 
@@ -407,8 +414,24 @@ impl OrderManager {
             feasibility: BTreeMap::new(),
             instrument_feasibility: BTreeMap::new(),
             withdrawn_venues: BTreeSet::new(),
+            sessions: SessionRecorder::default(),
             sequence: 0,
         }
+    }
+
+    /// Seal the recorded session at every venue this pass touched.
+    ///
+    /// Called by the composition at the end of the stage that issued the
+    /// orders, because that is what delimits a session: a session is the
+    /// traffic of one pass, and a boundary drawn anywhere else would be a
+    /// boundary nobody could reproduce from the record.
+    pub fn close_sessions(&mut self, at: Timestamp) -> Vec<(String, SealOutcome)> {
+        self.sessions.close_all(at)
+    }
+
+    /// The sealed sessions at one venue, oldest first.
+    pub fn sessions(&self, venue: &str) -> Vec<&RecordedSession> {
+        self.sessions.sessions(venue)
     }
 
     /// Refuse every further order bound for `venue`, until it is reinstated.
@@ -788,6 +811,20 @@ impl OrderManager {
             ));
         }
 
+        // The desk's half of §34.4's recorded session, written before the
+        // venue is asked and from the order rather than from any answer. The
+        // two halves are only evidence because they were recorded
+        // independently; a quantity read back out of a fill would make the
+        // reconciliation a tautology.
+        self.sessions.instruct(RecordedInstruction {
+            order_id: order.order_id.clone(),
+            object_id: order.object_id.clone(),
+            side: order.side,
+            quantity: order.quantity,
+            venue: broker.name().to_string(),
+            at,
+        });
+
         match broker.submit(&order, at) {
             Ok(fills) => {
                 for fill in &fills {
@@ -797,6 +834,13 @@ impl OrderManager {
                     let mut fill = fill.clone();
                     fill.simulated = broker.is_simulated();
                     let quantity = fill.quantity;
+                    // The venue's half, recorded *before* `apply_fill` has
+                    // had a chance to reject it. Recording the accepted set
+                    // instead would leave the replay unable to find an
+                    // overfill at all, so every session would reconcile
+                    // perfectly forever — zero breaks on the strength of the
+                    // breaks having been discarded first.
+                    self.sessions.answer(broker.name(), fill.clone(), at);
                     if let Err(error) = order.apply_fill(fill) {
                         breaks.push(format!(
                             "venue {} reported a fill of {} on order {} that the order refused: {}",
