@@ -53,6 +53,15 @@ const ENVS: &str = "infrastructure/gitops/envs";
 const INTERNAL_ONLY: &str = "INGRESS_TRAFFIC_INTERNAL_ONLY";
 /// The ingress ADR 0030 grants exactly one service, OpenObserve.
 const ALL_TRAFFIC: &str = "INGRESS_TRAFFIC_ALL";
+/// The ingress ADR 0094 grants exactly one service, the portal.
+///
+/// A third value, and the table below is by service name rather than by rule
+/// because three postures are no longer something a reader holds in mind.
+/// This one is *not* the public posture: it admits the global external load
+/// balancer `modules/iap-edge` creates and nothing else from the internet, so
+/// the service's own `run.app` URL stays unreachable and IAP cannot be walked
+/// around by dialling the origin.
+const LOAD_BALANCER_ONLY: &str = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER";
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -387,6 +396,7 @@ fn the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may() {
     // not on any service.
     let environments = environments_with_an_api();
     let mut grants_checked = 0usize;
+    let mut portal_grants_checked = 0usize;
     for environment in &environments {
         let tfvars = tfvars_of(environment);
         let project = tfvar(&tfvars, "project_id")
@@ -394,10 +404,20 @@ fn the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may() {
         let console_enabled = tfvar(&tfvars, "console_egress_cidr").is_some();
         let api = format!("qip-{environment}-api");
         let openobserve = format!("qip-{environment}-openobserve");
+        let portal = format!("qip-{environment}-portal");
         let expected_member =
             format!("serviceAccount:qip-{environment}-console@{project}.iam.gserviceaccount.com");
+        // IAP forwards as its own service agent, whose address Google derives
+        // from the project *number*. Built here from the tfvars rather than
+        // written out, because an account identifier is not a thing this test
+        // should be the second place for, and because a literal would be
+        // right for dev and silently wrong for every other environment.
+        let iap_agent = tfvar(&tfvars_of(environment), "project_number").map(|number| {
+            format!("serviceAccount:service-{number}@gcp-sa-iap.iam.gserviceaccount.com")
+        });
         let documents = documents_under(&format!("{ENVS}/{environment}"));
         let mut on_api = Vec::new();
+        let mut on_portal = Vec::new();
         for document in &documents {
             if !document.kind.starts_with("IAM") {
                 continue;
@@ -417,6 +437,8 @@ fn the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may() {
             });
             if target == api {
                 on_api.push(document);
+            } else if target == portal {
+                on_portal.push(document);
             } else if target == openobserve {
                 // ADR 0030's one anonymous grant. `gitops.rs`'s
                 // `openobserve_is_deployed_at_the_reviewed_digest_anonymous_as_adr_0030_records_and_on_ephemeral_storage`
@@ -461,6 +483,51 @@ fn the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may() {
                 grant.describe()
             );
             grants_checked += 1;
+
+            // The portal's own grant, where a portal is declared at all.
+            //
+            // Exactly one, `roles/run.invoker`, to Identity-Aware Proxy's
+            // service agent — because IAP forwards as itself and the service
+            // requires authentication. `allUsers` here is the failure this
+            // asserts against by name: it would make the console's `run.app`
+            // URL anonymously callable and turn IAP into a door with an open
+            // side entrance. The other direction matters too, and is why this
+            // is an equality rather than a "does not contain allUsers": with
+            // no grant at all, IAP authenticates the caller correctly and the
+            // backend answers 403, which reads as an access-list problem and
+            // is not one.
+            if !on_portal.is_empty() {
+                assert_eq!(
+                    on_portal.len(),
+                    1,
+                    "{environment}'s invokers.yaml carries {} grant(s) on {portal}; exactly \
+                     one, to IAP's service agent, is what a service behind IAP needs",
+                    on_portal.len()
+                );
+                let grant = on_portal[0];
+                assert_eq!(
+                    grant.field(2, "role").as_deref(),
+                    Some("roles/run.invoker"),
+                    "{} grants a role other than roles/run.invoker on the portal",
+                    grant.describe()
+                );
+                let agent = iap_agent.as_deref().unwrap_or_else(|| {
+                    panic!(
+                        "{environment}'s tfvars set no project_number, so IAP's service agent \
+                         cannot be derived and this grant cannot be checked against anything"
+                    )
+                });
+                assert_eq!(
+                    grant.field(2, "member").as_deref(),
+                    Some(agent),
+                    "{} names a principal other than Identity-Aware Proxy's own service \
+                     agent; the portal's one invoker is exactly `{agent}`, and `allUsers` \
+                     would publish the console's run.app URL past the front door that is \
+                     supposed to be the only way in",
+                    grant.describe()
+                );
+                portal_grants_checked += 1;
+            }
         } else {
             assert!(
                 on_api.is_empty(),
@@ -475,6 +542,12 @@ fn the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may() {
         grants_checked >= 1,
         "no environment under {ENVS} enables the console, so the positive half of this test \
          — the grant that exists is the console's — was never checked"
+    );
+    assert!(
+        portal_grants_checked >= 1,
+        "no environment under {ENVS} carries an invoker grant on its portal, so the assertion \
+         that the one principal is IAP's service agent — and not allUsers — was never checked \
+         against anything"
     );
 
     // `allAuthenticatedUsers` has no exception anywhere: it is every Google
@@ -555,6 +628,7 @@ fn the_api_is_reachable_only_from_inside_the_vpc_and_its_address_is_a_terraform_
         // answer the internet is OpenObserve (ADR 0030, revisited by ADR
         // 0033), it does so through exactly the one value, and no other
         // service carries any other posture.
+        let portal = format!("qip-{environment}-portal");
         for service in &services {
             let ingress = service.field(2, "ingress");
             if service.name == openobserve {
@@ -568,12 +642,31 @@ fn the_api_is_reachable_only_from_inside_the_vpc_and_its_address_is_a_terraform_
                 );
                 continue;
             }
+            if service.name == portal {
+                // ADR 0094's one exception, and the narrow one. The console
+                // is behind a load balancer that authenticates before it
+                // forwards, so it needs the posture that admits that load
+                // balancer — and only that one. `{ALL_TRAFFIC}` here would be
+                // the same console with its run.app URL answering the
+                // internet anonymously, which is the shape most documentation
+                // shows and the shape this platform refuses.
+                assert_eq!(
+                    ingress.as_deref(),
+                    Some(LOAD_BALANCER_ONLY),
+                    "{} is the console behind the IAP edge and carries ingress {ingress:?} \
+                     rather than {LOAD_BALANCER_ONLY}; {ALL_TRAFFIC} would leave its own \
+                     run.app URL answering the internet past IAP, and {INTERNAL_ONLY} refuses \
+                     the load balancer so the hostname answers 404 for everyone",
+                    service.describe()
+                );
+                continue;
+            }
             assert_eq!(
                 ingress.as_deref(),
                 Some(INTERNAL_ONLY),
                 "{} carries ingress {ingress:?}; only `{openobserve}` may answer the internet \
-                 (ADR 0030), and every other service under {ENVS}/{environment} is \
-                 {INTERNAL_ONLY}",
+                 (ADR 0030) and only `{portal}` may be reached through a load balancer (ADR \
+                 0094), and every other service under {ENVS}/{environment} is {INTERNAL_ONLY}",
                 service.describe()
             );
         }

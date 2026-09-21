@@ -61,12 +61,25 @@ if ! git -C "${REPO_ROOT}" merge-base --is-ancestor HEAD "origin/${DEFAULT_BRANC
 fi
 
 # --- session secret: exists once, rotated deliberately, never echoed -------
-if ! gcloud secrets describe algorik-session-secret --project "${PROJECT}" >/dev/null 2>&1; then
-  gcloud secrets create algorik-session-secret --project "${PROJECT}" --replication-policy=user-managed --locations="${REGION}"
+#
+# The container is Terraform's since ADR 0094 — `qip-session-secret` in
+# `secret_names`, and the accessor grant on it is in `modules/secrets` beside
+# the console's viewer-token grant. This script used to create both, and the
+# reason it no longer does is that the portal is deployed from a manifest now:
+# Config Connector runs no shell, so a container and a grant that existed only
+# inside this file were a container and a grant the GitOps deployment did not
+# have. One name, one owner.
+#
+# What is still this script's — and nobody else's — is the *version*. A value
+# in Terraform is a value in state.
+readonly SESSION_SECRET="qip-session-secret-dev"
+if ! gcloud secrets describe "${SESSION_SECRET}" --project "${PROJECT}" >/dev/null 2>&1; then
+  echo "${SESSION_SECRET} does not exist; it is created by Terraform (secret_names in infrastructure/terraform/main.tf). Apply the environment first — a container created here would be a second one Terraform would not manage and the manifest would not mount" >&2
+  exit 1
 fi
-if [[ -z "$(gcloud secrets versions list algorik-session-secret --project "${PROJECT}" --limit=1 --format='value(name)' 2>/dev/null)" ]]; then
-  openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add algorik-session-secret --project "${PROJECT}" --data-file=- >/dev/null
-  echo "seeded algorik-session-secret"
+if [[ -z "$(gcloud secrets versions list "${SESSION_SECRET}" --project "${PROJECT}" --limit=1 --format='value(name)' 2>/dev/null)" ]]; then
+  openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add "${SESSION_SECRET}" --data-file=- --project "${PROJECT}" >/dev/null
+  echo "seeded ${SESSION_SECRET}"
 fi
 
 # The Identity Platform browser key: public by design, restricted by the
@@ -213,12 +226,11 @@ prove_serving() {
   [[ "${routed}" -gt 0 ]] || { echo "${service} routes traffic to no revision, so nothing serves ${image}" >&2; exit 1; }
 }
 
-# The session secret is created by this script, so its grant belongs to this
-# script too — Terraform owns the account and the platform tokens, and neither
-# tool reaches into what the other created.
-gcloud secrets add-iam-policy-binding algorik-session-secret \
-  --project "${PROJECT}" --member "serviceAccount:${CONSOLE_SA}" \
-  --role roles/secretmanager.secretAccessor --quiet >/dev/null
+# There is deliberately no `add-iam-policy-binding` here any more. The
+# console's read on the session secret is `google_secret_manager_secret_iam_member.console_session_secret`
+# in `modules/secrets`, beside its read on the viewer token, because the
+# container is Terraform's now (ADR 0094). A grant made in two places is a
+# grant that disagrees with itself the first time one of them changes.
 
 # --- portal ----------------------------------------------------------------
 echo "building portal image ${AR}/algorik-portal:${SHA}…"
@@ -251,7 +263,7 @@ gcloud run deploy algorik-portal \
   --network-tags "${CONSOLE_EGRESS_TAG}" \
   --vpc-egress private-ranges-only \
   --set-env-vars "ALGORIK_ENV=development,ALGORIK_POSTURE=paper,ALGORIK_AUTH_REQUIRED=true,ALGORIK_IDENTITY_PROJECT_ID=${PROJECT},ALGORIK_IDENTITY_API_KEY=${IDENTITY_API_KEY},QIP_API_BASE_URL=${API_BASE_URL},QIP_API_TOKEN_FILE=${TOKEN_MOUNT},ALGORIK_SESSION_SECRET_FILE=${SESSION_SECRET_MOUNT}" \
-  --set-secrets "${SESSION_SECRET_MOUNT}=algorik-session-secret:latest,${TOKEN_MOUNT}=qip-token-viewer-dev:latest" \
+  --set-secrets "${SESSION_SECRET_MOUNT}=${SESSION_SECRET}:latest,${TOKEN_MOUNT}=qip-token-viewer-dev:latest" \
   --quiet
 prove_serving algorik-portal "${PORTAL_IMAGE}"
 PORTAL_URL="$(gcloud run services describe algorik-portal --project "${PROJECT}" --region "${REGION}" --format='value(status.url)')"

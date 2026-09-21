@@ -418,3 +418,28 @@ output "deploy_attribute_condition" {
 
   value = module.cicd.deploy_attribute_condition
 }
+
+output "portal_front_door" {
+  description = <<-EOT
+    The portal's IAP front door (ADR 0094): the hostname, the URL, and the
+    reserved global address its A record must point at. Null in an environment
+    that sets no `gitops_portal_hostname`, which is every environment but dev.
+
+    **The A record is the one step this repository cannot perform.**
+    `algorik.ai` answers from nameservers outside this project, so somebody
+    creates the record at the registrar by hand, and Google's managed
+    certificate stays in PROVISIONING until it resolves. That is the feedback
+    that the step was done; there is no plan or apply that can tell you.
+
+    Who may pass IAP is not here either. It is the project-level
+    `roles/iap.httpsResourceAccessor` grant the tfvars describe — one list for
+    this door and the GitOps Gateway both — and `gitops_iap_members` is empty
+    on purpose, so the door comes up admitting nobody.
+  EOT
+
+  value = length(module.portal_edge) == 0 ? null : {
+    hostname = module.portal_edge[0].hostname
+    url      = module.portal_edge[0].url
+    address  = module.portal_edge[0].address
+  }
+}

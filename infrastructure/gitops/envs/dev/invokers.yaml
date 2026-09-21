@@ -38,3 +38,25 @@ spec:
     apiVersion: run.cnrm.cloud.google.com/v1beta1
     kind: RunService
     name: qip-dev-openobserve
+---
+apiVersion: iam.cnrm.cloud.google.com/v1beta1
+kind: IAMPolicyMember
+metadata:
+  name: qip-dev-portal-invoker-iap
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    qip.algorik.ai/why: Identity-Aware Proxy forwards as its own service agent, so the portal
+      requires authentication and IAP is the one identity that may invoke it (ADR 0094). Without
+      this the load balancer authenticates the caller correctly and the backend answers 403, which
+      reads as an access-list problem and is not one. The alternative — an anonymous invoker, as
+      ADR 0030 grants OpenObserve above — would let the portal's own run.app URL answer the
+      internet and make IAP a front door with an open side entrance. The principal is written out
+      rather than derived because a manifest has no variables; it is the agent Google creates for
+      this project number, and `console_route.rs` rebuilds it from the tfvars and compares.
+spec:
+  member: serviceAccount:service-95200532413@gcp-sa-iap.iam.gserviceaccount.com
+  role: roles/run.invoker
+  resourceRef:
+    apiVersion: run.cnrm.cloud.google.com/v1beta1
+    kind: RunService
+    name: qip-dev-portal

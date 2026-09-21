@@ -255,6 +255,15 @@ module "secrets" {
     "qip-token-analyst",
     "qip-token-viewer",
     "qip-token-monitor",
+    # The key the console signs its own session cookies with (ADR 0019,
+    # ADR 0094). Not a platform credential: it authenticates nobody anywhere
+    # but the portal, and it is here because the portal is deployed from a
+    # manifest now, and a manifest cannot run the `gcloud secrets create` the
+    # old shell deploy did. A container in every environment for the reason
+    # the venue credential is in every environment — a uniform deployment —
+    # and empty until an operator writes one `openssl rand` version into it,
+    # out of band, the way every value in this list arrives.
+    "qip-session-secret",
     # The venue credential. Present in every environment so the deployment is
     # uniform; readable only where the autonomy ceiling permits live trading.
     "qip-venue-credential",
@@ -1039,4 +1048,79 @@ module "public_edge" {
   application_backend            = var.public_edge.application_backend
   rate_limit_requests_per_minute = var.public_edge.rate_limit_requests_per_minute
   permitted_regions              = var.public_edge.permitted_regions
+}
+
+# The portal's front door: one Cloud Run service, behind Identity-Aware Proxy
+# (ADR 0094).
+#
+# Separate from `module.public_edge` above, and from `module.gitops_gateway`,
+# because neither can do this and the reasons are facts rather than taste. A
+# GKE Gateway routes to in-cluster Services — an `HTTPRoute`'s `backendRef` is
+# a `Service` and a `GCPBackendPolicy`'s `targetRef` is a `Service` — so the
+# GitOps front door cannot reach a Cloud Run service at all. The public edge
+# can, through a serverless network endpoint group, but it is the *anonymous*
+# customer edge: a CDN bucket as its default backend and `hostnames = []` in
+# all four environments on purpose. `modules/iap-edge` is the serverless-NEG
+# twin of the GitOps door, and it creates nothing where no hostname is set.
+#
+# `count` on the hostname, so an environment that names none has no address,
+# no certificate and no listener — the same shape `execution_nodes` uses for
+# "no node configured yet" and `public_edge` uses for "no customer surface". A
+# front door created because a module was instantiated is a public address
+# nobody decided to open.
+#
+# The access list is deliberately not passed in. `modules/gitops-gateway`
+# grants `roles/iap.httpsResourceAccessor` at the project level because the
+# backend service its Gateway creates has no Terraform address; project-level
+# IAM is inherited, so that one grant is already the access list for this door
+# too, and a second list here could only widen it. ADR 0094 decision 3 argues
+# it at length. One list, named in the tfvars, for both doors.
+module "portal_edge" {
+  source = "./modules/iap-edge"
+  count  = var.gitops_portal_hostname != "" ? 1 : 0
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
+
+  project_id  = var.project_id
+  environment = var.environment
+  region      = var.region
+  labels      = local.labels
+
+  hostname = var.gitops_portal_hostname
+
+  # The service the manifest under gitops/envs/<env>/ creates, by the name
+  # Config Connector gives it. Derived from the environment rather than
+  # restated, so the door and the service cannot come to name two things.
+  service_name = "qip-${var.environment}-portal"
+
+  # The zone the portal belongs to, and the one the module checks against
+  # §46.1's client-reachable pair. Written here rather than looked up because
+  # the portal is not a `local.cloud_run_catalogue` entry — see the portal
+  # section of catalogue.tf for why — so there is no entry to read it from.
+  trust_zone = "application-identity"
+}
+
+# The plan refuses a portal front door in an environment whose console does
+# not exist.
+#
+# The portal runs as `modules/secrets`' console identity (ADR 0018, ADR 0094
+# decision 4), and that account exists only where `console_enabled` is true —
+# which the root derives from `console_egress_cidr` being set. Without it the
+# door would be an address, a certificate and a backend in front of a service
+# with no identity to run as, no subnet to egress through and no grant on the
+# session secret, and the first sign of it would be a `RunService` Config
+# Connector cannot reconcile. A precondition rather than a validation, because
+# the fact it reads is a relationship between two variables and a validation
+# that reads a second variable is skipped silently.
+resource "terraform_data" "portal_edge_has_a_console" {
+  count = var.gitops_portal_hostname != "" ? 1 : 0
+  input = var.gitops_portal_hostname
+
+  lifecycle {
+    precondition {
+      condition     = var.console_egress_cidr != null
+      error_message = "gitops_portal_hostname is set and console_egress_cidr is not, so this environment creates no console identity, no console subnet and no session-secret grant — and the portal would have nothing to run as. Set console_egress_cidr, or leave the portal hostname empty and keep the door closed."
+    }
+  }
 }

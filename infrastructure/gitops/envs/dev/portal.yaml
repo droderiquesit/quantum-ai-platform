@@ -1,0 +1,183 @@
+# Generated shape, reviewed content. One file per environment rather than a
+# kustomize base with replacements, so a reader — and the acceptance suite's
+# parity test, which reads these files without a kustomize binary — sees
+# every concrete value the running service must carry.
+#
+# The console (ADR 0018), deployed the way everything else here is (ADR 0036)
+# and reachable only behind Identity-Aware Proxy (ADR 0094). It is not a
+# `local.cloud_run_catalogue` entry — it runs no Rust binary, reads no
+# autonomy ceiling and mounts no instrument universe — so its Terraform side
+# is the `--- The portal ---` section of catalogue.tf and the source of truth
+# for the values below is that section, `module.portal_edge` in main.tf, and
+# `modules/secrets`' console identity.
+#
+# **What makes this safe is the ingress, and it is the one line here that is
+# not like the others.** `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` admits the
+# global external load balancer `module.portal_edge` creates and nothing else
+# from the internet: the service's own `run.app` URL below stays unreachable,
+# so IAP cannot be walked around by dialling the origin. The alternative most
+# documentation shows — `INGRESS_TRAFFIC_ALL` with an `allUsers` invoker — is
+# IAP guarding a front door with an open side entrance, and `console_route.rs`
+# refuses it by naming this service and this value.
+apiVersion: run.cnrm.cloud.google.com/v1beta1
+kind: RunService
+metadata:
+  name: qip-dev-portal
+  annotations:
+    cnrm.cloud.google.com/deletion-policy: abandon
+    cnrm.cloud.google.com/project-id: algorik-dev
+  labels:
+    platform: qip
+    environment: dev
+    managed_by: config-connector
+    live_capable: 'false'
+    qip-plane: experience-and-identity
+    qip-trust-zone: application-identity
+    qip-traffic-class: customer
+    qip-workload: portal
+spec:
+  projectRef:
+    external: projects/algorik-dev
+  location: us-east4
+  ingress: INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER
+  binaryAuthorization:
+    useDefault: true
+  template:
+    # ADR 0018's account, not a new one. It already reads qip-token-viewer,
+    # already holds the two-permission custom role that writes a profile
+    # claim, and is already the API's named invoker in invokers.yaml. A
+    # second identity for one workload would have needed all three again.
+    serviceAccountRef:
+      external: qip-dev-console@algorik-dev.iam.gserviceaccount.com
+    vpcAccess:
+      # PRIVATE_RANGES_ONLY, not ALL_TRAFFIC: the console's route into the VPC
+      # is to the API and nothing else, and `modules/network`'s deny-egress
+      # rule on the tag below is what holds that. A console sending all its
+      # traffic through the VPC would also be sending Identity Platform and
+      # every other Google call through it, which is a wider hole than the
+      # rule was written to cover.
+      egress: PRIVATE_RANGES_ONLY
+      networkInterfaces:
+      - networkRef:
+          external: projects/algorik-dev/global/networks/qip-dev
+        subnetworkRef:
+          external: projects/algorik-dev/regions/us-east4/subnetworks/qip-dev-console-egress
+        # The tag `modules/network`'s console-egress rules target. Without it
+        # both rules bind nothing, the implied allow-all at 65535 is what
+        # applies, and every tool reports the subnet as denied.
+        tags:
+        - qip-dev-console-egress
+    scaling:
+      minInstanceCount: 0
+      # One, and the reason is a limit rather than a preference. No Identity
+      # Platform key reaches this deployment — the portal reads
+      # ALGORIK_IDENTITY_API_KEY straight from its environment rather than
+      # through the `_FILE` contract, and a browser key in a committed file is
+      # a credential in a committed file — so `identity.ts` falls back to its
+      # own on-disk account store, which on Cloud Run is per-instance and
+      # in-memory. A second instance is a second account database, and a
+      # person who signed up on one is a stranger to the other. Sessions
+      # themselves are sealed cookies any instance can verify (ADR 0019), so
+      # it is accounts and not sessions that bind this to one. Raising it is
+      # the same change as wiring Identity Platform, and neither is done here.
+      maxInstanceCount: 1
+    maxInstanceRequestConcurrency: 80
+    timeout: 300s
+    executionEnvironment: EXECUTION_ENVIRONMENT_GEN2
+    containers:
+    - name: portal
+      image: qip-portal
+      ports:
+      - containerPort: 8080
+      resources:
+        limits:
+          cpu: '1'
+          memory: 512Mi
+        cpuIdle: true
+        startupCpuBoost: true
+      env:
+      # The session check that stands *behind* IAP. IAP decides who may reach
+      # the service; this decides who may read the platform through its
+      # gateway. It was left out of a deploy once and the gateway answered
+      # anyone with the platform's data on a token nobody had to present.
+      - name: ALGORIK_AUTH_REQUIRED
+        value: 'true'
+      - name: ALGORIK_ENV
+        value: development
+      # The posture the chrome renders. `paper`, in every environment, because
+      # there is no other kind of deployment here (ADR 0003) and a console
+      # that could render anything else is a console that implies a live path.
+      - name: ALGORIK_POSTURE
+        value: paper
+      # The key the session cookie is signed with, as a path. The process
+      # refuses to start without it under NODE_ENV=production rather than
+      # inventing one no other replica could verify, and `secret.ts` resolves
+      # the `_FILE` form exactly as `qip_core::secret` does.
+      - name: ALGORIK_SESSION_SECRET_FILE
+        value: /var/run/secrets/algorik/session-secret/session-secret
+      # Where the platform is, in the deterministic form `modules/cloudrun`
+      # computes: the service name, the project number, the region. Internal
+      # ingress, so this address answers nobody from the internet.
+      - name: QIP_API_BASE_URL
+        value: https://qip-dev-api-95200532413.us-east4.run.app
+      # The `viewer` credential the gateway proxies with, as a path. Viewer is
+      # the whole entitlement: POST /api/v1/cycle is analyst and both
+      # directions of the kill switch are operator, so a console compromise
+      # discloses what this deployment already shows a signed-in operator and
+      # controls nothing.
+      - name: QIP_API_TOKEN_FILE
+        value: /var/run/secrets/qip/token-viewer/token-viewer
+      volumeMounts:
+      - name: session-secret
+        mountPath: /var/run/secrets/algorik/session-secret
+      - name: token-viewer
+        mountPath: /var/run/secrets/qip/token-viewer
+      # A public route, so the probe is not answered 302 by the navigation
+      # gate above — and a rendered page rather than a static file, so what is
+      # proven ready is the Next server and not the disk it reads from. Cloud
+      # Run's probes originate inside the runtime and never pass through IAP.
+      startupProbe:
+        initialDelaySeconds: 2
+        periodSeconds: 3
+        timeoutSeconds: 5
+        failureThreshold: 20
+        httpGet:
+          path: /sign-in
+          port: 8080
+      livenessProbe:
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 3
+        httpGet:
+          path: /sign-in
+          port: 8080
+    # Two secrets and no more. The browser receives nothing the public may not
+    # see, and the server holds nothing it does not need: no venue credential,
+    # no capital-envelope key, no operator, analyst or monitor token, no
+    # market-data key. Both are files at 0400 — a secret in the environment is
+    # a secret in /proc/<pid>/environ, in every child process and in every
+    # crash dump.
+    volumes:
+    - name: session-secret
+      secret:
+        secretRef:
+          external: qip-session-secret-dev
+        defaultMode: 256
+        items:
+        - path: session-secret
+          mode: 256
+          versionRef:
+            external: latest
+    - name: token-viewer
+      secret:
+        secretRef:
+          external: qip-token-viewer-dev
+        defaultMode: 256
+        items:
+        - path: token-viewer
+          mode: 256
+          versionRef:
+            external: latest
+  traffic:
+  - type: TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST
+    percent: 100

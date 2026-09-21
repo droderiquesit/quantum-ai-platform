@@ -225,16 +225,26 @@ jobs:
           fi
           echo "ci succeeded for ${DEPLOY_SHA}"
 
-  # One image per deployable binary, built from the one Dockerfile so the four
-  # cannot drift apart.
+  # One image per deployed artefact. Four of the five are workspace binaries
+  # built from the one Dockerfile, so those four cannot drift apart.
   #
-  # The workspace builds five binaries and this matrix names four. Which ones
-  # deploy, and why the others do not, is decided in
+  # The workspace builds five binaries and this matrix names four of them.
+  # Which ones deploy, and why the others do not, is decided in
   # docs/adr/0010-what-gets-deployed.md rather than here — a reason living only
   # in a matrix comment is a reason only the person editing the matrix reads.
   # Three of the four become Cloud Run services through catalogue.tf; the
   # fourth, `qip-edge-node`, is the attested artefact the execution node's
   # boot image is contracted to be built from, and runs bare under systemd.
+  #
+  # The fifth entry is not a binary at all. `qip-portal` is `frontend/portal`
+  # — the console, the one part of this platform that is not Rust (ADR 0001)
+  # — built from its own Dockerfile against the npm workspace as context, and
+  # deployed by `gitops/envs/<env>/portal.yaml` behind the IAP front door
+  # `modules/iap-edge` creates (ADR 0094). It is here rather than in the
+  # out-of-band `scripts/deploy-frontends.sh` for one reason: a surface on the
+  # internet has to go through the same Trivy gate, the same immutable tag and
+  # the same attestor as everything else, and a shell script an operator runs
+  # from their laptop is not that.
   #
   #   * `qip`, from `qip-cli`, is absent on purpose: it is an operator's tool,
   #     run by a person against a cluster rather than scheduled in one.
@@ -266,6 +276,20 @@ jobs:
           - qip-fastbrain
           - qip-deepbrain
           - qip-edge-node
+          - qip-portal
+        # How each image is built, where it differs from the default.
+        #
+        # An `include:` entry whose `binary` matches one already in the list
+        # adds fields to that combination rather than creating a new one, so
+        # this block changes no image the matrix builds. It exists because
+        # `qip-portal` is not a cargo build: it is `frontend/portal` through
+        # Next's standalone tracer, and the tracer needs the npm workspace
+        # root as its context (see the Dockerfile's own first paragraph).
+        # Everything else takes the defaults the build step applies.
+        include:
+          - binary: qip-portal
+            dockerfile: infrastructure/docker/portal.Dockerfile
+            context: frontend
     steps:
       - uses: actions/checkout@v4
         with:
@@ -406,24 +430,47 @@ jobs:
       # rather than the name (ADR 0036 decision 6). An image built before
       # this line exists carries neither label, and that is visible rather
       # than assumed.
+      #
+      # Two shapes of build, and the default is the cargo one. A matrix entry
+      # that names no `dockerfile` is a workspace binary from the one
+      # Dockerfile with `BINARY=` and the repository root as context; an entry
+      # that names one brings its own file and its own context and takes no
+      # build argument, because `BINARY` means nothing to it and docker warns
+      # about an argument no stage consumes. The branch is on whether the
+      # matrix named a Dockerfile rather than on the image's name: a `case`
+      # on `qip-portal` would be a second place the list of images lives.
       - name: build
         if: steps.existing.outputs.digest == ''
         run: |
           set -euo pipefail
           prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
+          dockerfile="${{ matrix.dockerfile }}"
+          context="${{ matrix.context }}"
+          recipe=()
+          if [ -n "${dockerfile}" ]; then
+            recipe+=(--file "${dockerfile}")
+          else
+            recipe+=(--file infrastructure/docker/Dockerfile --build-arg "BINARY=${{ matrix.binary }}")
+          fi
           docker build \
-            --file infrastructure/docker/Dockerfile \
-            --build-arg "BINARY=${{ matrix.binary }}" \
+            "${recipe[@]}" \
             --label "org.opencontainers.image.revision=${DEPLOY_SHA}" \
             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --tag "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}" \
-            .
+            "${context:-.}"
 
-      # Scan the image before it is pushed, signed, or attested. The image is
-      # a static binary on scratch, so anything this finds is in the binary's
-      # own dependency graph — which is serde and serde_json — and a finding
-      # here is worth stopping the line for. After the push would be too
-      # late: a signed, attested, vulnerable image is admissible.
+      # Scan the image before it is pushed, signed, or attested. After the
+      # push would be too late: a signed, attested, vulnerable image is
+      # admissible.
+      #
+      # For the four binaries the image is a static binary on scratch, so
+      # anything this finds is in that binary's own dependency graph — which
+      # is serde and serde_json — and a finding is worth stopping the line
+      # for. `qip-portal` is the one image here with an operating system and
+      # an npm tree under it, so it is the one that can fail this gate on
+      # somebody else's advisory; that is the cost of putting a browser
+      # surface through the same gate as everything else, and it is the right
+      # cost. The gate is not relaxed for it.
       - name: scan image
         run: |
           set -euo pipefail

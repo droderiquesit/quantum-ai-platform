@@ -25,6 +25,11 @@ output "console_service_account_email" {
   value       = one(google_service_account.console[*].email)
 }
 
+output "console_service_account_id" {
+  description = "The same account by its resource id — `projects/<project>/serviceAccounts/<email>` — because an IAM binding *on* an account takes the id and a binding *to* one takes the email, and a caller that rebuilt the id from the email would be a second place the format is written down. Null where the console is off (ADR 0094)."
+  value       = one(google_service_account.console[*].name)
+}
+
 output "key_protection_level" {
   description = <<-EOT
     The protection level the secrets key is actually planned with.

@@ -522,6 +522,36 @@ gitops_gateway_enabled = true
 gitops_argocd_hostname = "argocd.algorik.ai"
 gitops_kargo_hostname  = "kargo.algorik.ai"
 
+# --- The console's front door, behind the same IAP -----------------------------
+#
+# ADR 0094. The portal gets a name of its own and a load balancer of its own,
+# and the second half of that sentence is the finding rather than a choice: a
+# GKE Gateway routes to in-cluster Services, so the two hostnames above and
+# this one cannot share a load balancer however much one would like them to.
+# `modules/iap-edge` is the serverless-NEG twin of the door above it.
+#
+# What they *do* share is the access list, and this is the sentence to read
+# before granting anybody anything. `roles/iap.httpsResourceAccessor` is held
+# at the **project** level — it has to be, because the backend service the
+# Gateway creates is named by its controller and has no Terraform address —
+# and project-level IAM is inherited by every IAP-protected backend in the
+# project. So one grant admits a person to Argo CD, to Kargo **and** to the
+# console. There is deliberately no second list on the portal: a per-resource
+# binding is inherited-on-top-of rather than instead-of, so it could only
+# widen the set while reading in the console as the portal's own access list.
+#
+# The portal is the one surface here a person signs into, and what stands
+# behind IAP is its own session check (`ALGORIK_AUTH_REQUIRED=true`), for the
+# same reason Argo CD keeps its password: IAP decides who may reach the
+# service, the service decides who may act on it, and one gate in front of a
+# console that reads the platform's book is one gate too few.
+#
+# The A record for this name is created at the registrar by hand, like the
+# other two, and `terraform output portal_front_door` says what to point it
+# at. Until it resolves, the managed certificate stays in PROVISIONING and the
+# name does not serve.
+gitops_portal_hostname = "portal.algorik.ai"
+
 # **Empty, and seeded out of band — like every credential in this tree.**
 #
 # An IAM member is an account identifier, and this repository does not carry
