@@ -9,7 +9,8 @@ import {
   sealClaims,
   unsealClaims,
 } from "./session";
-import type { SessionClaims } from "./identity";
+import { sessionFromIapIdentity, type SessionClaims } from "./identity";
+import { iapIdentityFrom } from "./iap";
 
 /**
  * The shared plumbing of the auth routes, so each route is only its own rule.
@@ -64,6 +65,33 @@ export function sessionFrom(request: NextRequest): SessionClaims | null {
   if (!claims) return null;
   if (typeof claims.expiresAt !== "number" || claims.expiresAt <= Date.now()) return null;
   return claims;
+}
+
+/**
+ * The session, from whichever of the two doors proved one.
+ *
+ * The cookie first, because it is a local check and the cheaper one, and
+ * because a person who signed in with a password behind IAP should keep the
+ * account they chose rather than be silently swapped onto the Google identity
+ * the proxy asserted.
+ *
+ * Then the IAP assertion, verified. This is what makes the console usable
+ * behind ADR 0094's front door with **no cookie having been set at all**: the
+ * evidence travels on the request, so any instance can evaluate it and none
+ * has to remember anything. That is the same property ADR 0019 bought for the
+ * cookie, extended to a person's first request — and it is what makes the
+ * portal manifest's `maxInstanceCount: 1` pin unnecessary for authentication,
+ * since the per-instance store is not consulted on this path.
+ *
+ * Async because verification may need a key set from the network. Callers are
+ * route handlers, which are async already; `sessionFrom` stays for the cookie
+ * alone, which is all the sign-out and CSRF paths need.
+ */
+export async function sessionForRequest(request: NextRequest): Promise<SessionClaims | null> {
+  const fromCookie = sessionFrom(request);
+  if (fromCookie) return fromCookie;
+  const identity = await iapIdentityFrom(request.headers);
+  return identity ? sessionFromIapIdentity(identity, deviceFrom(request)) : null;
 }
 
 export function attachSession(response: NextResponse, claims: SessionClaims): void {

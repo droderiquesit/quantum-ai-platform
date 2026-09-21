@@ -1,181 +1,99 @@
-"use client";
-
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
-import type { FormEvent } from "react";
+import { headers } from "next/headers";
 import { safeRedirect } from "@algorik/auth";
-import type { AuthFailure } from "@algorik/auth";
-import { email as emailRule, errorFor, required, validate } from "@algorik/validation";
-import type { Validated } from "@algorik/validation";
-import { postAuth, primeCsrf } from "../_lib/api";
-import { AuthHeading, Notice, SubmitButton, SummaryError, TextField } from "../_lib/forms";
+import { iapConfigured, iapIdentityFrom } from "@/lib/server/iap";
+import SignInCard from "./sign-in-form";
 
 /**
- * Sign in.
+ * Sign in — a server component, because the first question is one only the
+ * server can answer.
  *
- * Two exits are not the happy path and both are handled before the summary
- * error is: an unverified address goes to the verification page carrying the
- * address (finishing verification is the fix, not retyping the password), and
- * the post-success destination passes through `safeRedirect` because a `next`
- * parameter honoured verbatim is an open redirect wearing our sign-in page.
+ * **Google sign-in on this console is Identity-Aware Proxy's, and there is
+ * deliberately no second one.** ADR 0094 puts the portal behind IAP at
+ * `portal.algorik.ai`; a request that reaches this process has already been
+ * authenticated by Google against a Google account and refused if that account
+ * is not on the access list. Running an OAuth dance of our own here would send
+ * a person who has just proved a Google identity away to prove it again, and
+ * would need a browser-delivered client id that ADR 0094 decision 2 arranged
+ * for there not to be — it chose the Google-managed OAuth client precisely so
+ * the deployment "mints, stores and rotates nothing". So this page does not
+ * offer a button; it reports the identity already proved, and the person
+ * carries on.
  *
- * The password form is the working credential and is deprecated (ADR 0038,
- * proposed, not applied): passkeys become the only credential and this form
- * is retired once one can be enrolled here. The page says so beneath the
- * form, in the same register as the paper-trading footer, so a screenshot of
- * this page never reads as the platform's standing sign-in method.
+ * The assertion's ECDSA signature is verified before a single character of
+ * this page is chosen — see `lib/server/iap.ts` for why a header read without
+ * that check is a header an attacker sets.
+ *
+ * Three states, all real, none of them a lie about the deployment:
+ *
+ * 1. **A verified assertion** — the identity, and a way onward. No form.
+ * 2. **IAP configured, no valid assertion** — somebody reached the origin
+ *    without passing the proxy. The password form, and a caption that says so
+ *    rather than "Google is not configured", which would be false.
+ * 3. **No IAP at all** — local development and the Playwright suites. The
+ *    password form exactly as it was.
  */
-export default function SignInPage() {
-  return (
-    <Suspense fallback={<p className="text-[12px] text-[color:var(--color-ink-dim)]">Loading…</p>}>
-      <SignInForm />
-    </Suspense>
-  );
-}
+export const dynamic = "force-dynamic";
 
-function SignInForm() {
-  const router = useRouter();
-  const params = useSearchParams();
-  const [emailValue, setEmailValue] = useState("");
-  const [passwordValue, setPasswordValue] = useState("");
-  const [checked, setChecked] = useState<Validated<Record<string, unknown>> | null>(null);
-  const [failure, setFailure] = useState<AuthFailure | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+export default async function SignInPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const identity = await iapIdentityFrom(await headers());
+  if (!identity) return <SignInCard iapConfigured={iapConfigured()} />;
 
-  // Derived during render, not stored: verify-email and reset-password arrive
-  // here with a flag in the URL, and state would let the notice outlive it.
-  const notice =
-    params.get("verified") === "1"
-      ? "Email verified. Sign in to continue."
-      : params.get("reset") === "1"
-        ? "Password reset. Sign in with your new password."
-        : null;
-
-  useEffect(() => {
-    void primeCsrf();
-  }, []);
-
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const trimmedEmail = emailValue.trim();
-    const result = validate(
-      { email: trimmedEmail, password: passwordValue },
-      {
-        email: [required("Enter the email address on the account."), emailRule()],
-        password: [required("Enter your password.")],
-      },
-    );
-    setChecked(result);
-    setFailure(null);
-    if (!result.ok) return;
-
-    setSubmitting(true);
-    const response = await postAuth<{ next?: "verify-email" }>("/api/auth/sign-in", {
-      email: trimmedEmail,
-      password: passwordValue,
-    });
-
-    if (response.ok) {
-      if (response.next === "verify-email") {
-        router.push(`/verify-email?email=${encodeURIComponent(trimmedEmail)}`);
-        return;
-      }
-      // A full navigation, not a client transition: the session cookie was
-      // just set and every layout above this one must re-evaluate with it.
-      window.location.assign(safeRedirect(new URLSearchParams(location.search).get("next"), "/"));
-      return;
-    }
-
-    if (response.failure.code === "email_unverified" || response.failure.next === "verify-email") {
-      router.push(`/verify-email?email=${encodeURIComponent(trimmedEmail)}`);
-      return;
-    }
-
-    setSubmitting(false);
-    setFailure(response.failure);
-  }
-
-  const fieldError = (field: string) => (checked ? errorFor(checked, field) : undefined);
+  const nextParameter = (await searchParams).next;
+  // The same `safeRedirect` the password form uses. A `next` honoured
+  // verbatim is an open redirect wearing our sign-in page, and it is no less
+  // one for the person having arrived through IAP.
+  const destination = safeRedirect(typeof nextParameter === "string" ? nextParameter : null, "/");
 
   return (
-    <div className="flex flex-col gap-4">
-      <AuthHeading title="Sign in">Research console access. Paper trading only.</AuthHeading>
-
-      {notice ? <Notice>{notice}</Notice> : null}
-      {failure ? (
-        <SummaryError
-          message={failure.message}
-          hint={
-            failure.code === "account_locked" ? (
-              <Link href="/account-locked" className="underline">
-                Why accounts lock, and what to do
-              </Link>
-            ) : undefined
-          }
-        />
-      ) : checked && !checked.ok ? (
-        <SummaryError message="Nothing was sent. Fix the fields marked below." />
-      ) : null}
-
-      <form onSubmit={onSubmit} noValidate className="flex flex-col gap-3">
-        <TextField
-          id="email"
-          label="Email"
-          type="email"
-          value={emailValue}
-          onChange={setEmailValue}
-          autoComplete="email"
-          inputMode="email"
-          testid="auth-email"
-          error={fieldError("email")}
-        />
-        <TextField
-          id="password"
-          label="Password"
-          type="password"
-          value={passwordValue}
-          onChange={setPasswordValue}
-          autoComplete="current-password"
-          testid="auth-password"
-          error={fieldError("password")}
-        />
-        <SubmitButton busy={submitting} busyLabel="Signing in…">
-          Sign in
-        </SubmitButton>
-      </form>
-
-      {/* Not a feature announcement: the honest state of the credential, in
-          the footer's register. The form above works and is interim; the
-          record says where it goes, and that nothing of that is applied. */}
-      <p
-        data-testid="auth-credential-posture"
-        className="text-[11px] leading-snug text-[color:var(--color-ink-faint)]"
-      >
-        PASSKEYS ARE THE RECORDED DESTINATION — ADR 0038, proposed, not applied. Password sign-in
-        is the interim credential and is retired once a passkey can be enrolled here.
-      </p>
-
-      <div>
-        {/* Present but disabled: hiding it would make the deployment look
-            incapable of Google identity, faking it would be worse. The caption
-            says exactly which state this is. */}
-        <button type="button" className="btn w-full" disabled>
-          Continue with Google
-        </button>
-        <p className="mt-1 text-[11px] leading-snug text-[color:var(--color-ink-faint)]">
-          Available once Google identity is configured for this deployment.
+    <div className="flex flex-col gap-4" data-testid="iap-signed-in">
+      {/* The same markup `AuthHeading` renders, inlined rather than imported:
+          `_lib/forms.tsx` is a client module, and pulling it in from here
+          would ship the whole password form to a browser that is being told
+          it does not need one. */}
+      <header>
+        <h1 className="text-[15px] font-semibold text-[color:var(--color-ink)]">
+          Signed in with Google
+        </h1>
+        <p className="mt-1 text-[12px] leading-snug text-[color:var(--color-ink-dim)]">
+          Research console access. Paper trading only.
         </p>
+      </header>
+
+      <div className="border border-[color:var(--color-border)] p-3">
+        <p className="text-[11px] uppercase tracking-wide text-[color:var(--color-ink-faint)]">
+          Identity asserted by Identity-Aware Proxy
+        </p>
+        <p data-testid="iap-email" className="mt-1 text-[13px] text-[color:var(--color-ink)]">
+          {identity.email}
+        </p>
+        {identity.hostedDomain ? (
+          <p className="mt-1 text-[11px] text-[color:var(--color-ink-dim)]">
+            Workspace domain {identity.hostedDomain}
+          </p>
+        ) : null}
       </div>
 
-      <nav className="flex justify-between text-[12px] text-[color:var(--color-ink-dim)]">
-        <Link href="/sign-up" className="hover:text-[color:var(--color-ink)]">
-          Create account
-        </Link>
-        <Link href="/forgot-password" className="hover:text-[color:var(--color-ink)]">
-          Forgot password
-        </Link>
-      </nav>
+      {/* Not decoration. A person who can see this page can see it because
+          Google authenticated them and an operator put them on the IAP access
+          list; what they may *do* here is a separate decision this console
+          makes, and it grants the viewer role and nothing else. Saying so on
+          the page is cheaper than someone inferring that Google's sign-in
+          carried an entitlement with it. */}
+      <p className="text-[11px] leading-snug text-[color:var(--color-ink-faint)]">
+        Verified upstream by Google. This console did not ask for a second
+        credential and has none to ask for. Access is read-only — the viewer
+        role — regardless of the account; elevation is an operator decision
+        with a record.
+      </p>
+
+      <Link href={destination} className="btn w-full text-center" data-testid="iap-continue">
+        Continue to the console
+      </Link>
     </div>
   );
 }

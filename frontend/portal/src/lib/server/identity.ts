@@ -13,6 +13,7 @@ import {
   identityPlatformGap,
   type StoredProfileClaims,
 } from "./identity-platform";
+import type { IapIdentity } from "./iap";
 import {
   configuredSessionSecret,
   hashPassword,
@@ -86,7 +87,7 @@ export interface SessionClaims {
   readonly createdAt: number;
   readonly expiresAt: number;
   readonly authenticatedAt: number;
-  readonly method: "development" | "password" | "google";
+  readonly method: "development" | "password" | "google" | "iap";
   /** Coarse device note. Never a raw user-agent dump. */
   readonly device: string;
 }
@@ -524,6 +525,56 @@ export interface PublicSession {
     };
     readonly expiresAt: number;
     readonly authenticatedAt: number;
+  };
+}
+
+/**
+ * The session a verified IAP assertion proves, built from the assertion alone.
+ *
+ * **No store is read and no record is written.** This is the point of the
+ * shape rather than a saving: the console's development account store is one
+ * JSON file on a per-instance, in-memory filesystem, which is the whole reason
+ * the portal's manifest pins `maxInstanceCount: 1` — a second instance has a
+ * different store and does not know the user. An identity derived from a
+ * signature Google made, verified against a key set any instance can fetch, is
+ * the same identity on every instance, so a request behind IAP needs neither
+ * the pin nor a sticky session nor a cookie to have been set first.
+ *
+ * `roles` is `viewer` and is not negotiable from anything the assertion says.
+ * IAP's access list answers *whether* a person may reach this console; it does
+ * not, and must not, answer what they may do once inside. Reading an `hd` or
+ * an email domain and granting an operator role on the strength of it would be
+ * escalating a privilege from a value set outside this platform's audit trail,
+ * which `.claude/rules/domains/risk-and-execution.md` names as prohibited in
+ * so many words. Elevation stays an operator decision with a record.
+ *
+ * `emailVerified` is true because Google verified it upstream — that is what
+ * the `email` claim in an IAP assertion means — so the verification journey
+ * this console runs for password accounts has nothing to add.
+ *
+ * The session never outlives the assertion that proved it: `expiresAt` is the
+ * earlier of the usual twelve hours and the assertion's own `exp`. A session
+ * outliving its evidence is a session whose authority nobody can re-derive.
+ */
+export function sessionFromIapIdentity(identity: IapIdentity, device: string): SessionClaims {
+  const now = Date.now();
+  return {
+    id: newSessionId(),
+    // Namespaced by provider like the `gip:` ids above, so two accounts that
+    // happen to share a local id across providers are never one user.
+    userId: `iap:${identity.subject}`,
+    email: identity.email,
+    // The assertion carries no display name; inventing one from the local part
+    // of an address is a guess rendered as a fact.
+    displayName: null,
+    accountType: "individual",
+    emailVerified: true,
+    roles: SIGNUP_ROLES,
+    createdAt: now,
+    expiresAt: Math.min(now + SESSION_TTL_MS, identity.expiresAtMs),
+    authenticatedAt: now,
+    method: "iap",
+    device,
   };
 }
 

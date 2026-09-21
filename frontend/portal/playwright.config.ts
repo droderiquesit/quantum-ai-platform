@@ -72,6 +72,35 @@ const IDENTITY_PORT = Number(process.env.PLAYWRIGHT_IDENTITY_PORT ?? 3316);
 const IDENTITY_BASE_URL = `http://127.0.0.1:${IDENTITY_PORT}`;
 
 /**
+ * A seventh instance, in the posture ADR 0094 deploys: behind Identity-Aware
+ * Proxy, with an audience configured and a key set to verify assertions
+ * against.
+ *
+ * It cannot share the auth instance. That one has no audience, so
+ * `verifyIapAssertion` refuses before it reads a byte — which is the right
+ * behaviour there and makes it useless for proving anything about the
+ * verification. And this one must not lose the auth instance's coverage
+ * either: both require authentication, and the difference is only which door
+ * the evidence comes through.
+ *
+ * `ALGORIK_IDENTITY_STORE_DIR` names a directory deliberately: the point of
+ * deriving a session from the assertion is that no per-instance store is
+ * consulted, and a directory that is named and never created is the visible
+ * form of that.
+ */
+const IAP_PORT = Number(process.env.PLAYWRIGHT_IAP_PORT ?? 3317);
+const IAP_BASE_URL = `http://127.0.0.1:${IAP_PORT}`;
+const IAP_STUB_PORT = Number(process.env.PLAYWRIGHT_IAP_STUB_PORT ?? 3318);
+
+/**
+ * The audience the IAP instance is configured with, in the shape a real one
+ * takes. `tests/iap.spec.ts` repeats it and the two must match exactly — an
+ * audience is compared for equality, and a test whose token names a different
+ * one proves the refusal rather than the acceptance.
+ */
+const TEST_IAP_AUDIENCE = "/projects/000000000000/global/backendServices/1111111111111111111";
+
+/**
  * `next start` runs as NODE_ENV=production, where the session signer refuses
  * to invent a key (replicas could not verify each other's cookies). The test
  * key is set here, visibly a test value, and long enough to pass the length
@@ -105,7 +134,7 @@ export default defineConfig({
       // and gate.spec needs the one where nothing was said about it; running
       // any of them here would test the wrong server — this one is pointed at
       // a dead port on purpose.
-      testIgnore: /(worker|wire|auth|gate|identity-provider)\.spec\.ts/,
+      testIgnore: /(worker|wire|auth|gate|identity-provider|iap)\.spec\.ts/,
     },
     {
       name: "tablet-chromium",
@@ -140,6 +169,11 @@ export default defineConfig({
       name: "identity-chromium",
       use: { ...devices["Desktop Chrome"], baseURL: IDENTITY_BASE_URL, viewport: { width: 1280, height: 900 } },
       testMatch: /identity-provider\.spec\.ts/,
+    },
+    {
+      name: "iap-chromium",
+      use: { ...devices["Desktop Chrome"], baseURL: IAP_BASE_URL, viewport: { width: 1280, height: 900 } },
+      testMatch: /iap\.spec\.ts/,
     },
   ],
   webServer: [
@@ -234,6 +268,44 @@ export default defineConfig({
         ALGORIK_IDENTITY_STORE_DIR: ".algorik-test-identity-provider",
         ALGORIK_SESSION_SECRET: TEST_SESSION_SECRET,
         ALGORIK_COOKIE_SECURE: "false",
+      },
+    },
+    {
+      // The assertion minter and key set. Started before the IAP instance
+      // because that instance fetches the key set on its first assertion, and
+      // a failed fetch is cached as "no keys" for as long as the refetch floor
+      // lasts — which would refuse the first test and pass the rest, the
+      // worst shape a flake can have.
+      command: `node tests/support/iap-stub.mjs`,
+      url: `http://127.0.0.1:${IAP_STUB_PORT}/jwks`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+      stdout: "ignore",
+      stderr: "pipe",
+      env: { PORT: String(IAP_STUB_PORT) },
+    },
+    {
+      // The store directory is named and wiped so `iap.spec.ts` can rely on
+      // nothing from a previous run; what the suite proves is that it is never
+      // created, because an assertion-derived session reads no store.
+      command: `rm -rf .algorik-test-iap && npm run start -- --port ${IAP_PORT} --hostname 127.0.0.1`,
+      url: `${IAP_BASE_URL}/welcome`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "ignore",
+      stderr: "pipe",
+      env: {
+        QIP_API_BASE_URL: "http://127.0.0.1:9",
+        QIP_API_TIMEOUT_MS: "1500",
+        NEXT_PUBLIC_QIP_ENVIRONMENT: "test",
+        ALGORIK_AUTH_REQUIRED: "true",
+        ALGORIK_IDENTITY_STORE_DIR: ".algorik-test-iap",
+        ALGORIK_SESSION_SECRET: TEST_SESSION_SECRET,
+        ALGORIK_COOKIE_SECURE: "false",
+        ALGORIK_IAP_AUDIENCE: TEST_IAP_AUDIENCE,
+        // Loopback, which is the only host the override accepts. See
+        // `lib/server/iap.ts`.
+        ALGORIK_IAP_JWKS_URL: `http://127.0.0.1:${IAP_STUB_PORT}/jwks`,
       },
     },
     {

@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { STREAM_CHANNELS, type StreamChannel } from "@/lib/api/endpoints";
 import { authRequired } from "@/lib/server/auth-gate";
-import { sessionFrom } from "@/lib/server/auth-http";
+import { sessionForRequest } from "@/lib/server/auth-http";
 import { API_VERSION_PREFIX, upstream, upstreamHeaders, type Upstream } from "@/lib/server/upstream";
 
 /**
@@ -36,7 +36,7 @@ export async function GET(request: NextRequest, context: RouteContext): Promise<
   // anonymous caller while `/api/stream/orders` — the same data over time,
   // forwarded with the same bearer token — answered it in full. A stream is
   // read-only, so no CSRF pair is asked for; the session is.
-  if (authRequired() && !sessionFrom(request)) {
+  if (authRequired() && !(await sessionForRequest(request))) {
     return NextResponse.json(
       { error: "sign in to use this console", gateway: "unauthenticated" },
       { status: 401, headers: { "x-qip-gateway": "upstream", "cache-control": "no-store" } },
@@ -54,8 +54,16 @@ export async function GET(request: NextRequest, context: RouteContext): Promise<
   }
 
   let target: Upstream;
+  let headers: Headers;
   try {
     target = upstream();
+    // Inside the same `try` as `upstream()`; see the gateway route for why a
+    // failure to mint the Cloud Run identity token is a configuration fault
+    // reported here rather than a 403 collected from Google later.
+    headers = await upstreamHeaders(target, {
+      accept: "text/event-stream",
+      "cache-control": "no-store",
+    });
   } catch (cause) {
     const detail = cause instanceof Error ? cause.message : "the gateway is not configured";
     return NextResponse.json(
@@ -65,10 +73,6 @@ export async function GET(request: NextRequest, context: RouteContext): Promise<
   }
 
   const url = `${target.baseUrl}${API_VERSION_PREFIX}/stream/${channel}`;
-  const headers = upstreamHeaders(target, {
-    accept: "text/event-stream",
-    "cache-control": "no-store",
-  });
   const lastEventId = request.headers.get("last-event-id");
   if (lastEventId) headers.set("last-event-id", lastEventId);
 
