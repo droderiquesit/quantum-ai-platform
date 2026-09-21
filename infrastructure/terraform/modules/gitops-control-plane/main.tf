@@ -601,6 +601,48 @@ resource "google_artifact_registry_repository_iam_member" "kargo_reads_registry"
   member     = "serviceAccount:${google_service_account.kargo.email}"
 }
 
+# Config Connector is the principal that *asks Cloud Run to create a service*,
+# and Cloud Run resolves the image as its caller before it will accept the
+# request. So the reconciler needs to read the repository it is deploying out
+# of, exactly as the deploying principal does on a `gcloud run deploy`.
+#
+# This was missing, and the way it failed is the reason the comment is this
+# long. `infra.yml` run 77 (`apps`, dev) reported, on a sync that ran at
+# 09:49:22Z against 419ddbf:
+#
+#   RunService/qip-dev-{api,deepbrain,fastbrain}  UpdateFailed: Error
+#   creating Service: googleapi: Error 403: Permission
+#   'artifactregistry.repositories.downloadArtifacts' denied on resource
+#   '.../repositories/qip-dev' (or it may not exist).
+#
+# Every principal a reader would think of already held the role: the Cloud
+# Run service agent (`modules/registry`'s `cloud_run_agent`, which is what
+# *pulls* the image at container start) and each workload's own account
+# (`pull`). The identity making the *call* held `roles/run.admin` and
+# `roles/secretmanager.viewer` and nothing on any registry — so the denial
+# named the one principal nobody had thought of as needing to read an image,
+# because it never runs one.
+#
+# Two runs were spent reading that message as something else. The message is
+# the same whether the artifact is absent or the caller may not see it —
+# Artifact Registry says "(or it may not exist)" precisely because it will
+# not disclose which — so it was first read as digests the teardown had
+# stranded. Re-pinning them to bytes `deploy.yml` had just pushed did not
+# move it, which is what proved the cause was access and not absence.
+#
+# Repository-scoped and read-only, following `kargo_reads_registry` above and
+# `.claude/rules/domains/infrastructure.md`: one role, on this one
+# repository, to the one principal the refusal names. Not the project role,
+# and not a wider role that would also let the reconciler write what it
+# deploys.
+resource "google_artifact_registry_repository_iam_member" "kcc_reads_registry" {
+  project    = var.project_id
+  location   = var.region
+  repository = var.registry_repository_name
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${google_service_account.kcc.email}"
+}
+
 # --- what the bootstrap may do ------------------------------------------------
 #
 # `infra.yml`'s bootstrap step applies the vendored controller manifests
