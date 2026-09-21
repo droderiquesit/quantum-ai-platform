@@ -443,3 +443,37 @@ output "portal_front_door" {
     address  = module.portal_edge[0].address
   }
 }
+
+output "dns_zone" {
+  description = <<-EOT
+    The domain this environment is authoritative for, and **the four
+    nameservers that are the one remaining manual step in its life**. Null in
+    an environment that sets no `dns_zone_domain`, which is every environment
+    but dev.
+
+    Do this once, and never again per record: at the registrar that holds the
+    domain, replace every nameserver with the four in `nameservers`. Nothing
+    else there changes — not the ownership, not the contacts, not the renewal.
+    From the moment it propagates, every name under the domain is answered out
+    of this state file, and a new front door is an A record in a commit.
+
+    `dig +short NS <domain>` returning these four is how you know it took. The
+    Google-managed certificates on the front doors leave PROVISIONING within
+    about fifteen minutes of that, and the doors serve.
+
+    `ds_record` is **not** part of that step and must not be done alongside it.
+    Replacing nameservers is reversible in minutes; publishing a DS makes the
+    whole domain's resolution depend on this zone continuing to exist with
+    these keys, and `infra.yml down` destroys this zone. The module's output
+    description spells out what that costs.
+  EOT
+
+  value = length(module.dns_zone) == 0 ? null : {
+    domain         = module.dns_zone[0].domain
+    zone_name      = module.dns_zone[0].zone_name
+    nameservers    = module.dns_zone[0].nameservers
+    records        = module.dns_zone[0].records
+    dnssec_enabled = module.dns_zone[0].dnssec_enabled
+    ds_record      = module.dns_zone[0].ds_record
+  }
+}

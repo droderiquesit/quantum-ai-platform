@@ -122,3 +122,19 @@ github_repository = "droderiquesit/quantum-ai-platform"
 # policy, load balancer and CDN is a decision here rather than an omission:
 # there is no customer surface deployed to put behind one, and an edge in
 # front of nothing is a public address nobody opened on purpose.
+
+# No DNS zone. `dns_zone_domain` is deliberately unset here, and this is a
+# property of domains rather than a preference: `algorik.ai` has exactly one
+# authoritative zone, dev owns it, and a second zone declared here would apply
+# cleanly and then serve a second set of records from a second set of
+# nameservers. Only whichever set the registrar names would be the one anybody
+# sees; this one would be a state file full of records nobody resolves.
+#
+# No plan can catch that — each environment has its own state and none can see
+# another's — so the guard is this absence, the empty default on
+# `dns_zone_domain`, the `count` on `module.dns_zone`, and
+# `a_single_environment_owns_the_dns_zone_for_the_domain` in the infrastructure
+# acceptance suite, which reads all four of these files and fails on a second
+# declaration. If this environment ever genuinely needs a name, it takes a
+# subdomain delegated from dev's zone, not a zone of its own for the same
+# domain.

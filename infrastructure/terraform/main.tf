@@ -1124,3 +1124,63 @@ resource "terraform_data" "portal_edge_has_a_console" {
     }
   }
 }
+
+# --- The domain, so that a front door resolves without anybody typing ---------
+#
+# Three doors were applied before this module existed and none of them resolved.
+# `module.gitops_gateway` reserves one global address for `argocd` and `kargo`;
+# `module.portal_edge` reserves another for `portal`; and each one's `address`
+# output ends with a sentence saying a person has to create the A record at the
+# registrar, because `algorik.ai` answers from `dns1.registrar-servers.com`. The
+# Google-managed certificates stay in PROVISIONING until the names resolve, so
+# the state of all three was: applied, reserved, certificated, serving nothing.
+#
+# The map below is the whole argument for the module. Every address is read out
+# of the module that reserved it, so the record and the reservation are one fact
+# rather than two — a pasted literal agrees on the day it is written and
+# disagrees the first time an address is released, and the disagreement is
+# silent, because the name keeps resolving to whatever Google handed the next
+# tenant. `the_dns_records_take_their_addresses_from_the_modules_that_reserved_them`
+# in the infrastructure suite refuses a literal here.
+#
+# `count` on the domain, and the domain empty everywhere but dev, because a
+# domain has one authoritative zone and no plan can see another environment's
+# state. See `variable "dns_zone_domain"` for the half of that guard a plan
+# cannot hold.
+module "dns_zone" {
+  source = "./modules/dns-zone"
+  count  = var.dns_zone_domain != "" ? 1 : 0
+
+  # Nothing here can be created before its API is on. See module "services".
+  depends_on = [module.services]
+
+  project_id  = var.project_id
+  environment = var.environment
+  labels      = local.labels
+
+  domain = var.dns_zone_domain
+
+  # Whichever front doors exist. A door that is switched off contributes no
+  # record rather than a record pointing at nothing: a name that resolves to an
+  # address no forwarding rule answers on is a connection that hangs, which
+  # reads to whoever typed it as a network problem rather than as a door that
+  # was never opened.
+  a_records = merge(
+    length(module.gitops_gateway) == 0 ? {} : {
+      (var.gitops_argocd_hostname) = {
+        address     = module.gitops_gateway[0].address
+        ttl_seconds = var.dns_record_ttl_seconds
+      }
+      (var.gitops_kargo_hostname) = {
+        address     = module.gitops_gateway[0].address
+        ttl_seconds = var.dns_record_ttl_seconds
+      }
+    },
+    length(module.portal_edge) == 0 ? {} : {
+      (var.gitops_portal_hostname) = {
+        address     = module.portal_edge[0].address
+        ttl_seconds = var.dns_record_ttl_seconds
+      }
+    },
+  )
+}

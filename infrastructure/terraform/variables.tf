@@ -1407,3 +1407,79 @@ variable "gitops_iap_members" {
   EOT
   default     = []
 }
+
+# --- The domain ---------------------------------------------------------------
+
+variable "dns_zone_domain" {
+  type        = string
+  description = <<-EOT
+    The domain this environment is authoritative for, without a trailing dot —
+    `algorik.ai` — or the empty string, which means this environment creates no
+    zone at all.
+
+    **Exactly one environment may set this, and today that is dev.** A domain
+    has one authoritative zone; two environments creating one each would both
+    apply cleanly and then serve two different sets of records from two
+    different sets of nameservers, with only whichever set the registrar names
+    being the one anybody sees. The other would be a state file full of records
+    nobody resolves.
+
+    No plan can catch that, because each environment has its own state and none
+    can see another's. So the guard is the empty default plus the `count` on
+    `module.dns_zone`, which makes a silent second zone impossible to create by
+    accident, and `a_single_environment_owns_the_dns_zone_for_the_domain` in
+    the infrastructure acceptance suite, which reads all four tfvars and fails
+    on a second declaration. A second zone has to be committed to exist, and
+    that is where it is caught.
+
+    Setting this creates the zone. It does **not** change what the domain
+    resolves to: the registrar still names its own nameservers until somebody
+    replaces them with `terraform output dns_zone`'s four. That is the one
+    manual step in this domain's life and it is taken once.
+  EOT
+  default     = ""
+
+  validation {
+    # The same family of expression the three hostname variables use, and for
+    # a sharper reason: this value is concatenated with a trailing dot to make
+    # the zone's `dns_name`, and it is the suffix every record is checked
+    # against. A trailing dot supplied here produces `algorik.ai..`, which
+    # Cloud DNS accepts as a zone name and which nothing on the internet will
+    # ever be delegated to — an apply that reports success and cannot work.
+    condition     = var.dns_zone_domain == "" || can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.dns_zone_domain))
+    error_message = "dns_zone_domain must be a dotted lowercase DNS name with no scheme, port, path, wildcard or trailing dot — algorik.ai — or the empty string for an environment that owns no domain. The trailing dot is added by the module."
+  }
+}
+
+variable "dns_record_ttl_seconds" {
+  type        = number
+  description = <<-EOT
+    How long a resolver may cache an A record in this zone, in seconds.
+
+    **Five minutes, and it is a choice rather than a carried-over default.**
+    A TTL is a promise about how long a mistake lasts. These names have never
+    resolved, so the first thing that happens to each of them is somebody
+    getting it wrong; five minutes means a correction is visible over a coffee
+    rather than the next day. It also bounds the wait on the only feedback
+    there is — a Google-managed certificate leaves PROVISIONING once the name
+    resolves to the load balancer, and a stale record cached for a day is a
+    certificate that does not issue for a day, with no way to tell whether the
+    fix took.
+
+    What a low TTL costs is query volume, and the volume here is three
+    operator-facing names. That is not a reason.
+
+    Raise it once the addresses have been stable for a while and the names
+    matter to something other than three people typing them.
+  EOT
+  default     = 300
+
+  validation {
+    # The module refuses the same window, and this refuses it at the value a
+    # person actually types. Under a minute most resolvers floor it and the
+    # number stops describing what happens; over a day a wrong record is wrong
+    # for a day.
+    condition     = var.dns_record_ttl_seconds >= 60 && var.dns_record_ttl_seconds <= 86400
+    error_message = "dns_record_ttl_seconds must be between 60 and 86400. Under a minute most resolvers floor it, so the number describes nothing; over a day a wrong record — and a certificate waiting on it — stays wrong for a day."
+  }
+}
