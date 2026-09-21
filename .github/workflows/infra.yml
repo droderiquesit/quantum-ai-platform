@@ -949,52 +949,92 @@ jobs:
           umask 077
           scratch="$(mktemp -d)"
           trap 'rm -rf "$scratch"' EXIT
-          for controller in argocd kargo; do
+          # A credential nobody has seeded is a state this environment is
+          # allowed to be in, and the consequence differs per controller.
+          #
+          # These secrets are created empty by Terraform and seeded out of
+          # band by whoever holds the GitHub App — that is deliberate, and it
+          # means an environment can be applied before an App exists. Run 65
+          # died here on a raw `NOT_FOUND ... or has no versions` from gcloud,
+          # three phases after Argo CD was already running, which reported an
+          # unseeded secret as a broken bootstrap.
+          #
+          # **This repository is public**, so Argo CD clones it anonymously
+          # and its credential buys a higher rate limit rather than access.
+          # Missing, it warns and carries on. Kargo's is different: Kargo
+          # *pushes* promotion commits, which anonymous access cannot do, so a
+          # missing Kargo credential fails — at phase 11, where Kargo is,
+          # rather than here.
+          have_argocd_credential=0
+          if gcloud secrets versions list "qip-github-app-argocd-${ENVIRONMENT}" \
+               --project "${GCP_PROJECT}" --filter='state:ENABLED' --format='value(name)' 2>/dev/null | grep -q .; then
             gcloud secrets versions access latest \
-              --secret "qip-github-app-${controller}-${ENVIRONMENT}" \
-              --project "${GCP_PROJECT}" --out-file "${scratch}/${controller}.json"
-          done
-          python3 - "$scratch" "https://github.com/${repository}.git" <<'PY'
+              --secret "qip-github-app-argocd-${ENVIRONMENT}" \
+              --project "${GCP_PROJECT}" --out-file "${scratch}/argocd.json"
+            have_argocd_credential=1
+          else
+            echo "::warning title=no Argo CD App credential::qip-github-app-argocd-${ENVIRONMENT} holds no enabled version. Argo CD will clone this repository anonymously, which works because it is public, and is subject to GitHub's unauthenticated rate limit. Seed the App payload to remove that limit and to support a private repository."
+          fi
+          have_kargo_credential=0
+          if gcloud secrets versions list "qip-github-app-kargo-${ENVIRONMENT}" \
+               --project "${GCP_PROJECT}" --filter='state:ENABLED' --format='value(name)' 2>/dev/null | grep -q .; then
+            gcloud secrets versions access latest \
+              --secret "qip-github-app-kargo-${ENVIRONMENT}" \
+              --project "${GCP_PROJECT}" --out-file "${scratch}/kargo.json"
+            have_kargo_credential=1
+          else
+            echo "::warning title=no Kargo App credential::qip-github-app-kargo-${ENVIRONMENT} holds no enabled version. Kargo pushes promotion commits and cannot do that anonymously, so phase 11 will refuse."
+          fi
+          python3 - "$scratch" "https://github.com/${repository}.git" "${have_argocd_credential}" "${have_kargo_credential}" <<'PY'
           import json, sys
           scratch, repo_url = sys.argv[1], sys.argv[2]
+          have = {"argocd": sys.argv[3] == "1", "kargo": sys.argv[4] == "1"}
           def read(controller):
+              # A seeded payload is still validated. Skipping a credential
+              # nobody provided is a posture; accepting a malformed one is a
+              # controller that fails later with a worse message.
               with open(f"{scratch}/{controller}.json", encoding="utf-8") as handle:
                   payload = json.load(handle)
               for key in ("app_id", "installation_id", "private_key"):
                   if not payload.get(key):
                       sys.exit(f"the {controller} App payload carries no {key}; seed it as bootstrap/README.md describes")
               return payload
-          argocd = read("argocd")
-          kargo = read("kargo")
-          secrets = [
-              {"apiVersion": "v1", "kind": "Secret",
-               "metadata": {"name": "qip-repository", "namespace": "argocd",
-                            "labels": {"argocd.argoproj.io/secret-type": "repository"}},
-               "stringData": {"type": "git", "url": repo_url,
-                              "githubAppID": str(argocd["app_id"]),
-                              "githubAppInstallationID": str(argocd["installation_id"]),
-                              "githubAppPrivateKey": argocd["private_key"]}},
-              {"apiVersion": "v1", "kind": "Secret",
-               "metadata": {"name": "qip-repository", "namespace": "qip",
-                            "labels": {"kargo.akuity.io/cred-type": "git"}},
-               "stringData": {"repoURL": repo_url,
-                              "githubAppID": str(kargo["app_id"]),
-                              "githubAppInstallationID": str(kargo["installation_id"]),
-                              "githubAppPrivateKey": kargo["private_key"]}},
-          ]
-          # Two files, not one, because the two land at different times.
-          # Argo CD's goes into `argocd`, which exists now. Kargo's goes into
-          # `qip`, which does not exist until Kargo's own Project controller
-          # creates it — and that is now after Argo CD is proven, so applying
-          # both here would fail on a namespace nobody had made yet.
-          for name, item in (("argocd", secrets[0]), ("kargo", secrets[1])):
-              with open(f"{scratch}/secret-{name}.json", "w", encoding="utf-8") as handle:
+          # Each file is written only if its credential was read. A missing
+          # one leaves no file, and the shell below applies only what exists.
+          if have["argocd"]:
+              argocd = read("argocd")
+              item = {"apiVersion": "v1", "kind": "Secret",
+                      "metadata": {"name": "qip-repository", "namespace": "argocd",
+                                   "labels": {"argocd.argoproj.io/secret-type": "repository"}},
+                      "stringData": {"type": "git", "url": repo_url,
+                                     "githubAppID": str(argocd["app_id"]),
+                                     "githubAppInstallationID": str(argocd["installation_id"]),
+                                     "githubAppPrivateKey": argocd["private_key"]}}
+              with open(f"{scratch}/secret-argocd.json", "w", encoding="utf-8") as handle:
+                  json.dump(item, handle)
+          if have["kargo"]:
+              kargo = read("kargo")
+              # Kargo's lands in `qip`, which does not exist until Kargo's own
+              # Project controller creates it — so this file is written now
+              # and applied at phase 11.
+              item = {"apiVersion": "v1", "kind": "Secret",
+                      "metadata": {"name": "qip-repository", "namespace": "qip",
+                                   "labels": {"kargo.akuity.io/cred-type": "git"}},
+                      "stringData": {"repoURL": repo_url,
+                                     "githubAppID": str(kargo["app_id"]),
+                                     "githubAppInstallationID": str(kargo["installation_id"]),
+                                     "githubAppPrivateKey": kargo["private_key"]}}
+              with open(f"{scratch}/secret-kargo.json", "w", encoding="utf-8") as handle:
                   json.dump(item, handle)
           PY
-          kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap \
-            -f "${scratch}/secret-argocd.json" >/dev/null
+          if [ -f "${scratch}/secret-argocd.json" ]; then
+            kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap \
+              -f "${scratch}/secret-argocd.json" >/dev/null
+            echo "projected the Argo CD App credential into argocd/qip-repository; the value was not printed."
+          else
+            echo "no Argo CD App credential to project; Argo CD clones this public repository anonymously."
+          fi
           rm -f "${scratch}/argocd.json" "${scratch}/kargo.json" "${scratch}/secret-argocd.json"
-          echo "projected the Argo CD App credential into argocd/qip-repository; the value was not printed."
 
           # 5. Argo CD's admin credential, if this environment publishes a
           #     front door and somebody has seeded one.
@@ -1244,6 +1284,20 @@ jobs:
 
           # Kargo's own App credential, now that the namespace its Project
           # controller creates actually exists.
+          #
+          # Unlike Argo CD's, this one is required rather than an optimisation.
+          # Kargo *pushes* promotion commits, and anonymous access to a public
+          # repository can read but never write, so a Kargo with no credential
+          # is a Kargo that will fail at its first promotion with a 403 rather
+          # than here. Refusing now names the missing secret; refusing then
+          # names a git error.
+          if [ ! -f "${scratch}/secret-kargo.json" ]; then
+            echo "::error title=no Kargo App credential::qip-github-app-kargo-${ENVIRONMENT} holds no enabled version, and Kargo cannot push a promotion commit anonymously." >&2
+            echo "Seed it as infrastructure/gitops/bootstrap/README.md describes, then re-run:" >&2
+            echo "  gcloud secrets versions add qip-github-app-kargo-${ENVIRONMENT} --project ${GCP_PROJECT} --data-file=<app.json>" >&2
+            echo "Everything above this line is applied and running; Argo CD is unaffected." >&2
+            exit 1
+          fi
           kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap \
             -f "${scratch}/secret-kargo.json" >/dev/null
           rm -f "${scratch}/secret-kargo.json"
