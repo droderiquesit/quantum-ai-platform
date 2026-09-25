@@ -1,0 +1,1528 @@
+[
+  {
+    "id": "DATA-001",
+    "domain": "DATA",
+    "title": "No raw external-world corpus is ever retained",
+    "statement": "External world content (web pages, filings, news, social and public discussion, product pages, regulatory records, geospatial feeds and other third-party sources) is never stored durably in raw form, in any store. Durable storage begins at the knowledge boundary, not the document boundary. There is no general-purpose raw-world-data lake, no copied document set and no web archive.",
+    "rationale": "A retained copy of third-party content turns a sensing platform into a redistributor of other people's data. It brings licensing and privacy exposure, grows without bound, and leaves the cognitive layer working on copied text rather than on knowledge.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable (opening paragraph)"},
+      {"doc": "M", "page": "12", "section": "§6 Global Scout & Data Acquisition Fabric (intro: 'The goal is not to hoard the internet')"},
+      {"doc": "M", "page": "12", "section": "§6.3 Pass-Through Acquisition and Knowledge Distillation ('Durable storage begins at the knowledge boundary, not the document boundary')"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture, placement table, row 'Tick archive + replay' ('never retained as a raw corpus')"},
+      {"doc": "G", "page": "2", "section": "§1 Executive Architecture (intro: 'persists only compact derived knowledge plus provenance references')"},
+      {"doc": "G", "page": "2", "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant (intro)"},
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules, rule 7 'State ownership is explicit' ('external world payloads are transient')"},
+      {"doc": "G", "page": "10", "section": "§9.1 Pass-Through World Sensing Pipeline ('intentionally no general-purpose raw-world-data lake')"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog, row 'Cloud Storage' ('External world payloads are not retained')"},
+      {"doc": "H", "page": "L77", "section": "World-data rule notice"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture source carrying a unique marker string is driven through the whole pipeline, then every durable sink the pipeline writes (manifests, K0-K3 stores, knowledge packs, the event log) is searched for the marker and for the payload's bytes, and the test fails if any sink holds more than the allow-listed derived fields of DATA-005."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "COMPLIANCE"],
+    "notes": "Ten citations of one invariant, merged. M gives the list of content types. G adds 'no general-purpose raw-world-data lake' and the reason for it (cost, licensing and privacy exposure). The positive allow-list of what may persist is DATA-005, the runtime discard is DATA-004, and the refusal of a landing bucket is DATA-040. The raw G p2 §1 'Data/Intelligence plane' row was folded in for its pass-through sentence; its service list is covered by the store requirements DATA-041 to DATA-063. M §6's 'the goal is not to hoard the internet' is a purpose statement for this invariant and was folded in rather than kept. Tick/order-book and internal records are a separate retention class (DATA-009) and are outside this prohibition. P0 because the rule constrains the first line of code that touches external content, whatever phase that lands in."
+  },
+  {
+    "id": "DATA-002",
+    "domain": "DATA",
+    "title": "Pass-through acquisition runs as one ordered pipeline",
+    "statement": "Every acquisition of external content passes through these stages in this order: source (API, web or feed); secure web/API egress; transient fetch in a scout worker; parse/extract; evidence/provenance check; entity/event/fact/feature extraction; knowledge delta; world models and memory. No stage may be skipped. In particular, no extracted content becomes knowledge without passing the evidence check.",
+    "rationale": "The evidence check is what stops scraped text becoming a fact. A path from parse straight to the knowledge stores skips it, and nothing downstream can tell that it did.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.3 (opening paragraph: 'The system extracts evidence and knowledge')"},
+      {"doc": "M", "page": "12", "section": "§6.3 Pass-Through Acquisition and Knowledge Distillation (pipeline diagram)"},
+      {"doc": "G", "page": "9", "section": "§9.1 Pass-Through World Sensing Pipeline (pipeline diagram)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture source is fetched end to end and the recorded stage trace shows every stage in the stated order. A second fixture whose evidence check fails produces no knowledge delta."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EVID", "WORLD", "NET"],
+    "notes": "M §6.3 and G §9.1 draw the same pipeline. G is more specific at the front: it adds secure web/API egress and calls the transient worker a scout worker. It also names the destinations (Spanner Graph, Bigtable, vector+memory), which are DATA-050. M names the extraction targets (entity/event/fact/feature). The side branches are the manifest (DATA-003) and the discard (DATA-004). NON_RUST was dropped from the raw flags because neither diagram requires a non-Rust stage. In this repository outbound HTTP is plaintext HTTP/1.1 behind the egress proxy, and that proxy is what 'secure web/API egress' maps to. How a claim becomes an evidence object is CONTRACT-005."
+  },
+  {
+    "id": "DATA-003",
+    "domain": "DATA",
+    "title": "Every fetch writes a source manifest record sufficient to re-fetch",
+    "statement": "Every fetch of an external source writes a Source Manifest record. The record carries: the canonical URI or provider ID and the provider/source identity; retrieval time; version/etag when the source supplies one; a cryptographic hash/fingerprint; entitlement; geography; cursor; freshness/expiry; parser/version lineage; and re-fetch instructions. The record holds no copy of the source body.",
+    "rationale": "Once the payload is discarded, the manifest is the only way to show where a piece of knowledge came from and to fetch the source again. A fetch with no manifest yields knowledge that cannot be traced or re-verified.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.3 (opening paragraph 'records how to find the source again'; bullet 'Persist the source reference...')"},
+      {"doc": "M", "page": "12", "section": "§6.3 (pipeline branch 'SOURCE MANIFEST + HASH + CURSOR')"},
+      {"doc": "G", "page": "2", "section": "§2.1, 'Source Manifest Registry' bullet"},
+      {"doc": "G", "page": "9", "section": "§9.1 (pipeline branch 'SOURCE MANIFEST / HASH / CURSOR')"},
+      {"doc": "H", "page": "L238", "section": "VIEWS.data, 04 World Sensing, Tick History & Durable Knowledge, node 'source' ('URI · hash · etag · cursor')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For arbitrary fixture fetches, each fetch produces exactly one manifest record. Every listed field is populated, with etag allowed empty only when the source supplies none. The stored hash equals the hash of the fetched bytes, and no field of the record holds the body."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EVID", "CONTRACT"],
+    "notes": "The field lists in M p3 and G p2 overlap and are unioned. Only M has geography and expiry. Only G has cursor and re-fetch instructions. H L238 lists URI, hash, etag and cursor. The M p3 'Persist the source reference' bullet was not in the raw set; it is added as the most complete statement. The storage placement (Spanner/AlloyDB) is DATA-041. P0 because the manifest is a canonical contract, and without it the discard (DATA-004) destroys provenance. The Scout Fabric that writes manifests at scale arrives in master Phase 2."
+  },
+  {
+    "id": "DATA-004",
+    "domain": "DATA",
+    "title": "The raw external payload is discarded as soon as processing ends",
+    "statement": "An external source payload exists only long enough to be parsed, validated, extracted and reasoned over, whether or not processing produced a knowledge delta. The pipeline has a mandatory discard stage, wired from knowledge-delta creation as a security control, that removes the payload from memory and ephemeral disk. A pipeline assembled without that stage is refused.",
+    "rationale": "A payload that outlives its processing is a retained copy under another name. When the discard is a required, security-classed stage, a pipeline that leaves it out fails to build; it cannot quietly accumulate third-party content.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.3 (opening paragraph: 'then discards the external content')"},
+      {"doc": "M", "page": "12", "section": "§6.3 (branch 'RAW EXTERNAL CONTENT DISCARDED'; 'External source payloads exist only long enough to parse, validate, extract and reason over them')"},
+      {"doc": "G", "page": "2", "section": "§2.1 (intro: 'the source payload is then discarded')"},
+      {"doc": "G", "page": "9", "section": "§9.1 (branch 'RAW PAYLOAD DISCARDED')"},
+      {"doc": "H", "page": "L243", "section": "VIEWS.data, 04, node 'discard' ('Discard Raw External Payload', marked 'required')"},
+      {"doc": "H", "page": "L257-261", "section": "VIEWS.data, 04, edge delta -> discard (class 'security')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With the payload held in an instrumented buffer and an ephemeral file, one successful fetch and one fetch that fails at parse are run. After each, the test asserts that the buffer is released and the file is deleted, and that a pipeline built without the discard stage fails to construct."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["SEC"],
+    "notes": "Merged from seven extractions. M and G state the rule. H is more specific: the discard node is marked 'required', and the delta-to-discard edge is classed security, not data. The failed-fetch case follows from M §6.3's 'only long enough to parse, validate, extract and reason'. The H edge on its own would discard only after a delta exists. In this repository, refusing to construct a pipeline without the stage is the structural form that principle 4 (make it structural) asks for."
+  },
+  {
+    "id": "DATA-005",
+    "domain": "DATA",
+    "title": "Only allow-listed compact knowledge types persist from world data",
+    "statement": "Only these types persist from external world data: source manifests and hashes; normalized facts, entities, relationships, events and causal edges; embeddings/features; summaries; beliefs, with confidence, contradictions and novelty; timestamps; world-model and knowledge deltas; and memory episodes. A durable record derived from world data whose type is not on this list is refused.",
+    "rationale": "A write seam can check an allow-list mechanically, which it cannot do with a bare rule of 'no raw content'. The list also fixes, for an auditor, exactly what crosses the durability boundary.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.3, bullet 'Persist compact knowledge'"},
+      {"doc": "G", "page": "10", "section": "§9.1 ('The durable plane stores only Algorik's compact interpretation of the world and the metadata required to revisit the source')"},
+      {"doc": "H", "page": "L77", "section": "World-data rule notice (the retained-artifact list)"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The durable write seam for world-derived records accepts each allow-listed type and refuses a record of any other type. A test enumerates the types the seam accepts and compares them with this list, failing on any difference."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "MEMORY"],
+    "notes": "M's list is the more specific and is kept. The H notice names source manifests, hashes and knowledge deltas explicitly. G §9.1 puts it as 'compact interpretation plus the metadata required to revisit the source'. The raw extraction of H L77 read the list as exhaustive ('nothing beyond that list counts as durable world-data storage'), and that reading is the refusal clause here. Tick/order-book and internal execution data are not on the list because they are a separate retention class (DATA-009)."
+  },
+  {
+    "id": "DATA-006",
+    "domain": "DATA",
+    "title": "Historical world analysis re-fetches the source through its manifest",
+    "statement": "When historical reasoning needs external content again, it re-fetches that content from the original source or provider using the source's manifest, then processes it transiently again under DATA-004. The manifest's metadata (URI/provider ID, hash, etag, cursor) drives the re-fetch. A retained copy of the content never does.",
+    "rationale": "Re-fetching is what makes discarding safe. If historical analysis could fall back on a cached copy, the cache would become the raw corpus that DATA-001 forbids.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.3, bullet 'Historical reasoning re-fetches the original source or licensed historical API using its manifest'"},
+      {"doc": "M", "page": "35", "section": "§26 placement table, row 'Tick archive + replay' ('re-fetched from its origin/provider when needed')"},
+      {"doc": "G", "page": "3", "section": "§2.1, 'Historical world analysis' bullet"},
+      {"doc": "H", "page": "L257-261", "section": "VIEWS.data, 04, edge source -> scout (control, 're-fetch manifest')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture source is fetched and the pipeline discards it. The test then requests historical analysis of that source and asserts that a new fetch was made to the fixture origin using the manifest's URI and cursor, and that no stored copy was read."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "EVID"],
+    "notes": "M and G state the same rule. H adds that the edge from the registry to the scout workers is a control edge labelled 're-fetch manifest'. Licensed historical APIs are covered by DATA-007, and content that can no longer be retrieved by DATA-008. No source says what should happen when the hash of a re-fetched body differs from the one in the manifest."
+  },
+  {
+    "id": "DATA-007",
+    "domain": "DATA",
+    "title": "Licensed historical APIs are queried on demand, never bulk-copied",
+    "statement": "Where a licensed provider exposes a historical API, historical analysis queries it on demand through the manifest, only for what the analysis needs. The provider's corpus is never copied.",
+    "rationale": "Copying a licensed provider's history usually falls outside the licence. It also recreates the raw corpus under a different name.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.3, bullet 'Historical reasoning' ('or licensed historical API using its manifest')"},
+      {"doc": "G", "page": "3", "section": "§2.1, 'Historical world analysis' bullet ('query them on demand rather than copying their whole corpus')"},
+      {"doc": "H", "page": "L235", "section": "VIEWS.data, 04, node 'hist' ('Historical world data requested on demand')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a fixture historical provider that counts requests, an analysis over a bounded window requests only that window. Afterwards, the only things written are derived knowledge and manifest entries."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["COMPLIANCE"],
+    "notes": "Split from the G p3 historical-analysis bullet; its re-fetch half is DATA-006. P0 because it is a licensing invariant, and this repository evaluates licensing posture before a source is used (rules/domains/data-and-streaming.md)."
+  },
+  {
+    "id": "DATA-008",
+    "domain": "DATA",
+    "title": "Knowledge from unretrievable evidence is kept and marked no longer re-fetchable",
+    "statement": "If the original content behind a piece of knowledge can no longer be retrieved, the derived knowledge is kept, and the fact that its evidence is no longer re-fetchable is recorded against it.",
+    "rationale": "Deleting the knowledge would throw away what was learned. Keeping it unmarked would let later reasoning treat it as verifiable when it no longer is.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.3, bullet 'Historical reasoning' ('If the original content cannot be retrieved, Algorik still retains the derived knowledge plus the fact that the evidence is no longer re-fetchable')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture source is fetched and distilled, then removed from its origin. The re-fetch attempt fails. The test asserts that the derived knowledge is still present and now carries a not-re-fetchable marker that its consumers can see."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EVID", "WORLD"],
+    "notes": "Split from the M p3 bullet whose first half is DATA-006. No raw extraction carried this clause. It surfaced when the merged citations were checked against the source text. Neither G nor H mentions it."
+  },
+  {
+    "id": "DATA-009",
+    "domain": "DATA",
+    "title": "Tick/order-book data and internal financial records are their own retention classes",
+    "statement": "High-rate tick/order-book market data and Algorik's own financial/execution records are distinct retention classes. Each is separate from pass-through world data and has its own retention policy. On the storage map they form Tier T (governed history), which is separate from knowledge tiers K0-K3.",
+    "rationale": "Replay, accounting, audit and execution research need these records kept, and world data must not be kept. Putting both in one class would either destroy records that are needed or permit keeping content that is forbidden.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "4", "section": "§1.3, bullet 'High-rate tick/order-book data and Algorik's own financial/execution records are separate retention classes'"},
+      {"doc": "G", "page": "3", "section": "§2.1, bullet 'Tick/order-book and Algorik-owned financial/execution data are distinct retention classes'"},
+      {"doc": "G", "page": "10", "section": "§9.2 Durable Knowledge Tiers, 'Tier T - retained market/internal history'"},
+      {"doc": "H", "page": "L77", "section": "World-data rule notice ('Tick/internal financial history has a separate governed retention policy')"},
+      {"doc": "H", "page": "L244-249", "section": "VIEWS.data, 04, tier map (node 'tick': 'T governed history')"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Every retained record type maps to exactly one retention class. The tick/order-book class and the internal financial/execution class are distinct values from the world-knowledge class, and a record with no class is refused at the write seam."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MARKETDATA", "LEDGER", "COMPLIANCE"],
+    "notes": "Split: the permission to retain (rights and policy) is DATA-010. H's tier map puts both classes in one 'T governed history' tier on GCS, while M and G both say 'separate'/'distinct' retention classes; the classes are kept distinct here. Where Tier T lives is DATA-037. P0 because master Phase 1 requires canonical tick capture and deterministic replay for the first market, and the ledger is foundation work."
+  },
+  {
+    "id": "DATA-010",
+    "domain": "DATA",
+    "title": "Tick and execution data are retained only where rights, law and policy allow",
+    "statement": "Tick/order-book data and Algorik's own financial/execution records are retained only when venue rights (entitlements), legal obligations and policy allow it. A request to retain data whose entitlement does not allow storage is refused.",
+    "rationale": "Venue market-data licences often restrict storage and derived use. An archive that retains without checking turns a replay store the platform needs into a licence breach.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "4", "section": "§1.3, bullet 'They may be retained when venue rights, legal obligations and policy allow'"},
+      {"doc": "G", "page": "3", "section": "§2.1, bullet 'can be archived when rights/policy require replay, accounting, audit or model training'"},
+      {"doc": "G", "page": "10", "section": "§9.2, 'Tier T' ('under entitlements and policy')"},
+      {"doc": "H", "page": "L248", "section": "VIEWS.data, 04, node 'tick' ('under rights/policy')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two fixture venues are set up, one whose entitlement allows historical storage and one whose entitlement forbids it. Archiving the same event shape succeeds for the first and, for the second, is refused with an error naming the entitlement."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MARKETDATA", "COMPLIANCE", "LEDGER"],
+    "notes": "M p4 was extracted twice (once inside the retention-class item) and the extractions are merged. G p3 phrases it as archiving 'when rights/policy require replay, accounting, audit or model training', which reads as driven by need. M's 'when venue rights, legal obligations and policy allow' states the permission and is kept. Admission of raw market events into tick learning under the same entitlements is DATA-024. The case where a legal obligation requires retention, rather than merely permitting it, is DATA-052."
+  },
+  {
+    "id": "DATA-011",
+    "domain": "DATA",
+    "title": "Ambient source watchers track change with cursors and fingerprints, not copies",
+    "statement": "For each watched source, an ambient source watcher keeps a cursor, the last-seen fingerprint and the knowledge deltas derived since. The platform therefore knows continuously what is changing without keeping the source corpus.",
+    "rationale": "Change detection is the usual excuse for keeping a copy to diff against. A fingerprint and a cursor detect change without one.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "4", "section": "§1.3, bullet 'Ambient source watchers maintain cursors, last-seen fingerprints and knowledge deltas'"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A watcher over a fixture source detects an edit through a change of fingerprint, advances its cursor and emits a knowledge delta. Afterwards it holds no copy of either version of the body."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["AMBIENT", "WORLD"],
+    "notes": "The fingerprint is the manifest hash of DATA-003. Ambient models asking the registry for a re-fetch is AMBIENT-027. P1 because source watching belongs to the master Phase 2 Scout Fabric, not to the Phase 8 ambient model mesh."
+  },
+  {
+    "id": "DATA-012",
+    "domain": "DATA",
+    "title": "The durable knowledge layer is smaller and cheaper than the source data",
+    "statement": "The durable knowledge derived from world data is smaller than the source content it was derived from, and cheaper to keep. It holds structured graph state, compact packs, vectors/features, summaries and episodic memory, not copied documents or web archives.",
+    "rationale": "If the knowledge layer grows as fast as its sources, the pass-through rule is being kept in name only.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "4", "section": "§1.3, bullet 'The durable knowledge layer is intentionally cheaper and smaller than source data'"},
+      {"doc": "G", "page": "3", "section": "§2.1, 'Cheap Knowledge Packs' bullet ('dramatically smaller than source corpora')"}
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Over a fixed fixture campaign, the bytes durably written for world data (manifests, K0-K3, packs) are measured against the bytes fetched. The run fails if the ratio is not below the threshold set for it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FINOPS"],
+    "notes": "Split from the M p4 bullet; its format half is DATA-013. Neither source gives a ratio, so a threshold has to be set by record before this can be tested. The raw NEW_DEPENDENCY flag was dropped here and kept on DATA-013, where the format that needs a dependency is stated."
+  },
+  {
+    "id": "DATA-013",
+    "domain": "DATA",
+    "title": "Knowledge packs are compact protobuf/Parquet artifacts",
+    "statement": "Knowledge packs are compressed, compact protobuf/Parquet artifacts. They hold Algorik-derived summaries, embeddings, model and world-state snapshots, world-model deltas, model artifacts and episodic memory packs.",
+    "rationale": "A fixed, schema-bound pack format means a pack written today can be read by a later model or a replay. An ad hoc dump can be neither versioned nor reliably reloaded.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "4", "section": "§1.3, bullet 'compact protobuf/Parquet knowledge packs'"},
+      {"doc": "G", "page": "3", "section": "§2.1, 'Cheap Knowledge Packs' bullet"},
+      {"doc": "G", "page": "10", "section": "§9.2, 'Tier K2 - cheap knowledge packs'"},
+      {"doc": "H", "page": "L246", "section": "VIEWS.data, 04, node 'packs' ('Compressed protobuf/Parquet summaries, embeddings and world-state snapshots')"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A pack of each content type round-trips through the pack encoding byte for byte and carries its schema version. A pack containing a field outside the pack schema is refused."
+    },
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["MEMORY", "MODEL"],
+    "notes": "Protobuf and Parquet encoders are neither serde nor serde_json. Under ADR 0002/0009 this needs a dependency record before implementation, and ADR 0099 conflict C2 already names prost. Until such a record exists, an in-tree serde-based pack is the permitted form and the gap is scored. Where packs live (GCS lifecycle tiers) is DATA-044."
+  },
+  {
+    "id": "DATA-014",
+    "domain": "DATA",
+    "title": "The Scout Fabric runs continuously and needs no human to add a feed",
+    "statement": "The Scout Fabric operates continuously. It searches for and brings in sources without waiting for a human to add a feed.",
+    "rationale": "A discovery system that waits for a human is a request queue, and the world changes faster than anyone files feeds.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1, row 'Data discovery finds sources' ('searches continuously')"},
+      {"doc": "M", "page": "12", "section": "§6 Global Scout & Data Acquisition Fabric ('continuously operating discovery system. It does not wait for a human to add a feed')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With no operator action, a scheduled scout run over a fixture index discovers a newly published fixture source and moves it into inspection (DATA-016)."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPANSION"],
+    "notes": "The §2 row lists six capabilities. They are split across DATA-014 to DATA-018 and merged with their §6 counterparts. The autonomy covers discovery only: every candidate still passes the inspection gate (DATA-016) and the sandbox (DATA-034) before promotion."
+  },
+  {
+    "id": "DATA-015",
+    "domain": "DATA",
+    "title": "Each source is scored on information gain, timeliness, reliability and realized contribution",
+    "statement": "Every registered source is scored on incremental (unique) predictive information gain, timeliness, reliability and realized strategy contribution (source alpha), and each source's score is recorded over time.",
+    "rationale": "Without a measured contribution every feed looks useful and none is ever retired. Ten copies of one signal also look like ten signals.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "5", "section": "§2, row 'Data discovery finds sources' ('scores novelty', 'measures source alpha')"},
+      {"doc": "M", "page": "12", "section": "§6 ('measures whether they add unique predictive information')"},
+      {"doc": "M", "page": "13", "section": "§6.2 Discovery Agent Loop, step 5"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "A fixture history is replayed with one informative source and one source that duplicates it. The scorer gives the duplicate near-zero incremental information gain and gives the informative source a positive realized contribution."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EVID", "MODEL"],
+    "notes": "§6.2 step 5 is the most specific wording and is kept. §2's 'novelty' and 'source alpha' and §6's 'unique predictive information' correspond to its information-gain and realized-contribution terms. Source reputation as an evidence-quality artifact (EvidencePolicy/SourceScore, M p28) belongs to EVID and EXPANSION."
+  },
+  {
+    "id": "DATA-016",
+    "domain": "DATA",
+    "title": "Every candidate source is inspected, including law and terms, before registration",
+    "statement": "Before a candidate source is registered, it is inspected for access method, law/terms (access rights), schema, freshness, cost, expected uniqueness and manipulation risk. A candidate is never registered if its inspection is incomplete or if its law/terms evaluation does not permit use.",
+    "rationale": "A licence checked after a source is in use is a breach that has already happened. The inspection is the gate that keeps unlicensed or manipulable sources out of the catalogue.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "5", "section": "§2, row 'Data discovery finds sources' ('validates access rights')"},
+      {"doc": "M", "page": "12", "section": "§6.2 Discovery Agent Loop, step 3"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Registering a fixture candidate succeeds when its inspection record is complete and permits use. It is refused, with an error naming the attribute, when any attribute is missing or the law/terms evaluation is negative."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["COMPLIANCE", "EVID", "SEC"],
+    "notes": "P0 although the discovery loop is master Phase 2, because a licence check is a precondition rather than a feature. This repository already requires licensing posture to be evaluated before a source is used, in qip-data-finder. The continuing check after adoption is DATA-021."
+  },
+  {
+    "id": "DATA-017",
+    "domain": "DATA",
+    "title": "The Scout Fabric creates or proposes adapters for approved sources",
+    "statement": "For an approved source, the Scout Fabric creates the feed adapter or proposes one.",
+    "rationale": "A source that needs a human to hand-write its adapter is not being discovered continuously.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "5", "section": "§2, row 'Data discovery finds sources' ('creates adapters')"},
+      {"doc": "M", "page": "12", "section": "§6 ('creates or proposes adapters')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For a fixture source with a documented schema, the fabric emits an adapter or an adapter proposal. The adapter parses a sample record into the canonical form, and the result is registered against the source."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPANSION", "SEC"],
+    "notes": "An adapter created autonomously runs in the sandbox first (DATA-034). Generated code that reaches production goes through the normal CI and supply-chain path, like any other change."
+  },
+  {
+    "id": "DATA-018",
+    "domain": "DATA",
+    "title": "Sources are promoted, throttled, quarantined or retired automatically under policy",
+    "statement": "According to its score and access status, each source is promoted, throttled, quarantined or retired automatically under policy.",
+    "rationale": "Low-value and suspect feeds cost money and add noise or manipulation risk. A source that is never retired is a source nobody is measuring.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "5", "section": "§2, row 'Data discovery finds sources' ('retires weak feeds')"},
+      {"doc": "M", "page": "12", "section": "§6 ('retires low-value sources')"},
+      {"doc": "M", "page": "13", "section": "§6.2 Discovery Agent Loop, step 6"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Three fixture sources are set up: one scored below the retirement threshold, one flagged for manipulation, and one scored above the promotion threshold. With no operator action, policy retires, quarantines and promotes them respectively, and each transition appears in the event log."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "EVID"],
+    "notes": "§6.2 step 6 is the most specific wording and is kept. Retirement, as stated in §2 and §6, is one of its four transitions. The thresholds are policy and no source gives them. Recording each transition in the event log is the repository's auditability rule, not a blueprint clause."
+  },
+  {
+    "id": "DATA-019",
+    "domain": "DATA",
+    "title": "Sensing covers every listed access method and source family",
+    "statement": "Global sensing discovers and ingests over web, API, WebSocket, file, stream, database and registry access methods. It covers satellite/geospatial, IoT, shipping, customs, blockchain, news, social, product and filing sources.",
+    "rationale": "A sensing layer that supports only the transports someone happened to build first leaves whole classes of evidence invisible.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "6", "section": "§3 Full Capability Map, row 'Global sensing'"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "One fixture source per listed access method is ingested through its adapter into the canonical pipeline. The test fails if any listed method has no adapter."
+    },
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["WORLD", "NET"],
+    "notes": "The source families overlap the §6.1 source universe (DATA-022 and DATA-025 to DATA-030). This requirement is kept for the access methods, which §6.1 does not list. WebSocket clients, streaming-database clients and similar are not among the two permitted dependencies, so each needs an in-tree implementation or a dependency record (ADR 0002/0009). Product and customs sources overlap COMMERCE."
+  },
+  {
+    "id": "DATA-020",
+    "domain": "DATA",
+    "title": "The Scout Fabric searches for new lawful sources",
+    "statement": "The Scout Fabric actively searches for new sources whose use is lawful, instead of working only from a fixed list.",
+    "rationale": "No source list is treated as permanent (M §1.1). A fabric that only maintains the feeds it already has goes blind as the world moves.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "12", "section": "§6 ('It searches for new lawful sources')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A discovery run over a fixture index that contains both new lawful and new unlawful candidates proposes the lawful ones for inspection, and no unlawful candidate reaches registration."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPANSION"],
+    "notes": "Lawfulness is decided by the inspection gate, DATA-016. The world-coverage-expansion view of the same activity, which emits SourceSpec/FeedPack artifacts, is DATA-035 (master Phase 9)."
+  },
+  {
+    "id": "DATA-021",
+    "domain": "DATA",
+    "title": "Access and terms of adopted sources are monitored continuously",
+    "statement": "For every adopted source, the Scout Fabric keeps monitoring access and terms. A change that no longer permits use triggers the lifecycle policy (DATA-018) for that source.",
+    "rationale": "Terms change after adoption. A licence checked once at intake and never again becomes a breach on the day the provider changes it.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "12", "section": "§6 ('monitors access/terms')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture provider changes its terms to forbid use. Within the monitoring interval the source's status changes to quarantined or retired, and no further fetch is made."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["COMPLIANCE"],
+    "notes": "The intake check is DATA-016 (P0). No source gives the monitoring interval."
+  },
+  {
+    "id": "DATA-022",
+    "domain": "DATA",
+    "title": "The source universe includes exchange and market feeds",
+    "statement": "The source universe includes exchange feeds, order books, trades, quotes, options surfaces, funding, borrow, rates and venue status.",
+    "rationale": "These are the inputs that both the reflex path and the tick learning fabric are built on.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "12", "section": "§6.1 Source Universe, first bullet"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A simulated venue emits one message of each listed kind, and each is normalized into a canonical market event that carries venue identity and entitlement."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MARKETDATA"],
+    "notes": "The first venue's book and trades are master Phase 1 (P0) and are covered by DATA-023. The full list is multi-asset work (Phase 3). In this repository venue data comes from simulated or sandbox feeds only (ADR 0003)."
+  },
+  {
+    "id": "DATA-023",
+    "domain": "DATA",
+    "title": "Raw market events feed both the reflex path and the tick learning fabric",
+    "statement": "The raw market events that drive the live reflex path are the same events delivered to the historical Market Intelligence & Tick Learning Fabric.",
+    "rationale": "If learning sees a different stream from the one execution saw, replay and training describe a market the system never traded.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "12", "section": "§6.1 Source Universe, first bullet ('Raw market events feed both the live reflex path and the historical Market Intelligence & Tick Learning Fabric')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Events captured from a simulated session feed a replay. The replay's event sequence, including source sequence numbers and timestamps, is identical to the sequence the reflex path consumed."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MARKETDATA", "REFLEX", "REPLAY"],
+    "notes": "Split from the §6.1 exchange-feed bullet. Its entitlement clause is DATA-024. P0 because master Phase 1 makes canonical tick capture and deterministic replay for the first market mandatory. The learning fabric that consumes the history arrives in Phase 2. The canonical event fields are CONTRACT-018."
+  },
+  {
+    "id": "DATA-024",
+    "domain": "DATA",
+    "title": "Raw market events enter tick learning only under venue entitlements and retention rules",
+    "statement": "Raw market events are admitted to the Market Intelligence & Tick Learning Fabric only as far as the venue's entitlements and the retention rules allow. An event that a venue does not license for historical or derived use still reaches the reflex path but does not enter learning.",
+    "rationale": "Real-time rights and historical or derived-use rights are licensed separately. A learning fabric that ignores the difference trains on data the platform may not hold.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "12", "section": "§6.1 Source Universe, first bullet ('subject to venue entitlements and retention rules')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture venue's entitlement allows real-time use but not storage or derived use. Its events reach the reflex path, and none reaches the tick learning fabric or the archive."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MARKETDATA", "COMPLIANCE"],
+    "notes": "The same bullet was extracted twice and the two are merged. The storage side of the same gate is DATA-010. The split between real-time rights and derived-use rights is how 'subject to venue entitlements' is read here; the source does not spell it out."
+  },
+  {
+    "id": "DATA-025",
+    "domain": "DATA",
+    "title": "The source universe includes filings and public records",
+    "statement": "The source universe includes filings, earnings, regulatory portals, court/docket data, procurement, patents, corporate registries, government statistics and central-bank releases.",
+    "rationale": "Public records are primary evidence for the world model, and they are usually more authoritative than coverage of them.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "12", "section": "§6.1 Source Universe, second bullet"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture from each listed family passes through the pass-through pipeline and yields at least one knowledge delta with a manifest, and no raw document is retained."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD"],
+    "notes": "Each family still passes the inspection gate (DATA-016) before it is used."
+  },
+  {
+    "id": "DATA-026",
+    "domain": "DATA",
+    "title": "The source universe includes news and the public web",
+    "statement": "The source universe includes news, press releases, expert publications, the public web, deep-web databases, public social signals and public discussion communities.",
+    "rationale": "Much early evidence of a change appears first in these channels, and they are also where manipulation concentrates.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "12", "section": "§6.1 Source Universe, third bullet"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture from each listed family passes through the pass-through pipeline and yields at least one knowledge delta with a manifest, and no raw page is retained."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "EVID"],
+    "notes": "Public social and discussion sources are the most exposed to coordinated manipulation. Adversarial detection belongs to EVID."
+  },
+  {
+    "id": "DATA-027",
+    "domain": "DATA",
+    "title": "The source universe includes blockchain state and flows",
+    "statement": "The source universe includes blockchain state, mempools, token flows, smart-contract events and protocol governance.",
+    "rationale": "For tokenized assets, the chain is itself the primary record, and mempool and flow data show intent before it settles.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "12", "section": "§6.1 Source Universe, fourth bullet"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture chain feed that includes a block, a pending transaction, a token transfer, a contract event and a governance proposal yields one normalized event of each kind, with a manifest."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "ASSET"],
+    "notes": "Chain observation is read-only. Nothing in this requirement signs or submits a transaction."
+  },
+  {
+    "id": "DATA-028",
+    "domain": "DATA",
+    "title": "The source universe includes geospatial, logistics and IoT sources",
+    "statement": "The source universe includes geospatial/satellite, weather, shipping/AIS, flight, port, traffic, commodity-flow, energy-grid and public IoT sources.",
+    "rationale": "Physical-world signals such as shipping, weather and energy corroborate or contradict what filings and news claim.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "12", "section": "§6.1 Source Universe, fifth bullet"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture from each listed family passes through the pass-through pipeline and yields at least one knowledge delta with a manifest, and no raw imagery or feed body is retained."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD"],
+    "notes": "The bullet's licensing condition is DATA-029, which was extracted separately."
+  },
+  {
+    "id": "DATA-029",
+    "domain": "DATA",
+    "title": "Geospatial, logistics and IoT sources are used only where licensed or public",
+    "statement": "Geospatial/satellite, weather, shipping/AIS, flight, port, traffic, commodity-flow, energy-grid and IoT sources are used only where licensed or publicly available. A source that is neither is refused at inspection.",
+    "rationale": "Satellite and logistics data is often sold under restrictive terms. Using it without a licence is a breach, however useful the signal is.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "12", "section": "§6.1 Source Universe, fifth bullet ('where licensed/available')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture satellite source with no licence and no evidence of public availability is refused at registration, and a licensed one is admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["COMPLIANCE"],
+    "notes": "Split from the same §6.1 bullet as DATA-028. The general gate is DATA-016, and this is the family-specific case the source calls out."
+  },
+  {
+    "id": "DATA-030",
+    "domain": "DATA",
+    "title": "Licensed and user-authorized sources are admitted only under explicit entitlements",
+    "statement": "Private, alternative and licensed datasets, and sources a user has authorized, are admitted only under explicit entitlements.",
+    "rationale": "These sources are usable only within the terms someone granted. With no entitlement on record, nobody can later show that a use stayed within those terms.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "12", "section": "§6.1 Source Universe, seventh bullet"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture user-authorized source with no entitlement record is refused. With an entitlement record, it is ingested and the entitlement appears in its manifest."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["COMPLIANCE", "SEC"],
+    "notes": "The raw extraction framed this as inclusion in the source universe. Inclusion is trivial and the entitlement condition is the actual requirement, so it is stated as a gate. User-authorized sources may carry personal data, and privacy handling belongs to SEC and COMPLIANCE. The sixth §6.1 bullet (product/SKU listings) was not in this domain's raw set and belongs to COMMERCE."
+  },
+  {
+    "id": "DATA-031",
+    "domain": "DATA",
+    "title": "Source discovery starts from observed gaps and forecast errors",
+    "statement": "The discovery agent loop observes gaps in the world model and in strategies, as well as forecast errors, and uses them as the starting point for source discovery.",
+    "rationale": "Discovery aimed at measured ignorance finds sources that matter. Undirected crawling finds volume.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "12", "section": "§6.2 Discovery Agent Loop, step 1"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture spike in forecast error on an entity that no source covers produces a discovery target naming that entity."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "MODEL"],
+    "notes": "Step 1 of §6.2."
+  },
+  {
+    "id": "DATA-032",
+    "domain": "DATA",
+    "title": "Discovery queries are generated by geography, entity, domain and language",
+    "statement": "The discovery agent loop generates source-discovery queries and candidate locations by geography, entity, domain and language.",
+    "rationale": "Searching only in one language or one jurisdiction leaves the platform blind wherever the evidence is local.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "12", "section": "§6.2 Discovery Agent Loop, step 2"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Given a fixture gap, every generated query and candidate location is tagged with geography, entity, domain and language, and the test fails if any dimension is missing."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD"],
+    "notes": "Step 2 of §6.2."
+  },
+  {
+    "id": "DATA-033",
+    "domain": "DATA",
+    "title": "An approved source's metadata is registered in the source registry",
+    "statement": "Each source that passes inspection has its metadata registered in the source registry.",
+    "rationale": "The registry is the one place that says which sources exist and may be used. A feed running for a source with no registry entry cannot be governed or retired.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "13", "section": "§6.2 Discovery Agent Loop, step 4 ('Register approved source metadata')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "After a fixture candidate passes inspection, the registry holds its metadata record. A candidate that failed inspection has no record."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV"],
+    "notes": "Split from §6.2 step 4; its sandbox half is DATA-034. The registry record for a source (what it is and whether it may be used) is distinct from the per-fetch Source Manifest (DATA-003). The blueprints do not say whether the two share a store. The source registry named in master Phase 9 is the governed-registry form of the same thing."
+  },
+  {
+    "id": "DATA-034",
+    "domain": "DATA",
+    "title": "A new source's feed and adapter start in a sandbox",
+    "statement": "The feed/adapter for a newly approved source is instantiated in a sandbox first. It leaves the sandbox only through promotion under the lifecycle policy (DATA-018).",
+    "rationale": "An autonomously created adapter is untrusted code reading untrusted content. Running it in production first would give both of them a path into the trading estate.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "13", "section": "§6.2 Discovery Agent Loop, step 4 ('instantiate a feed/adapter in sandbox')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The adapter for a newly registered fixture source runs only in the sandbox environment. Its output reaches production knowledge stores only after a recorded promotion."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["SEC", "GOV"],
+    "notes": "Split from §6.2 step 4."
+  },
+  {
+    "id": "DATA-035",
+    "domain": "DATA",
+    "title": "World-coverage expansion records each new source surface as a SourceSpec/FeedPack",
+    "statement": "Scout agents continuously discover new countries, venues, APIs, registries, datasets, sensors, products, chains, languages and lawful information surfaces. Each discovery is recorded as a new SourceSpec/FeedPack.",
+    "rationale": "Recording each expansion as a typed artifact lets coverage growth be reviewed, benchmarked and reversed like any other promoted capability.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "28", "section": "§23 Intelligence Expansion Engine, mechanism table, row 'World-coverage expansion'"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture discovery of a new registry produces a versioned SourceSpec/FeedPack artifact that links the registry, its inspection record and its adapter."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPANSION", "CONTRACT"],
+    "notes": "P3 because the Intelligence Expansion Engine and its source registry arrive with master Phase 9. The artifact's type contract is CONTRACT-009. The underlying Phase 2 discovery is DATA-020. MULTI_REGION was dropped from the raw flags: 'new countries' means data coverage, not deployment regions."
+  },
+  {
+    "id": "DATA-036",
+    "domain": "DATA",
+    "title": "Cloud Storage holds campaign artifacts and the durable research archive",
+    "statement": "Cloud Storage holds object and campaign data: temporary and retained artifacts, manifests and hashes, model weights and packages, simulation outputs, reproducible campaign datasets, curated internal and tick datasets, compact knowledge snapshots, and legally required internal evidence.",
+    "rationale": "Campaign results can be reproduced only if their inputs and outputs are kept as immutable objects that can be addressed later.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 placement table, row 'Object/data campaigns'"},
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Cloud Storage durable research/archive'"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog, row 'Cloud Storage'"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares the durable research/archive bucket(s) and a bucket or object prefix for each listed class, and declares no other store for them."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "MODEL", "REPLAY"],
+    "notes": "M p34 is generic ('Cloud Storage for temporary/retained artifacts...'). G p10 names the durable research/archive location and its contents, and its wording is kept. The lifecycle from landing is DATA-048 and Bucket Lock is DATA-052. ADR 0099 conflict C4 lists the managed stores that collide with standing decisions, and GCS is not among them."
+  },
+  {
+    "id": "DATA-037",
+    "domain": "DATA",
+    "title": "Tier T history lives in a Cloud Storage tick/internal lake",
+    "statement": "Retained tick/order-book and internal execution/financial history (Tier T) is stored in a Cloud Storage tick/internal lake, with compressed partitioning, manifests and entitlements.",
+    "rationale": "Exact replay and retraining need every retained event in cheap, immutable, partitioned storage. The entitlement recorded with each partition keeps the archive within the rights it was retained under.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26 placement table, row 'Tick archive + replay'"},
+      {"doc": "G", "page": "10", "section": "§9.2, 'Tier T - retained market/internal history'"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog, row 'Cloud Storage' ('Tick/internal replay lake')"},
+      {"doc": "H", "page": "L244-249", "section": "VIEWS.data, 04, node 'tick' ('GCS Tick / Internal Lake', 'T governed history')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Archiving a fixture session writes compressed, partitioned objects to the tick/internal lake location. Each object comes with a manifest naming its partitions and the entitlement under which it was retained."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["MARKETDATA", "REPLAY", "LEDGER"],
+    "notes": "The raw extraction of M p35 kept only the row's last sentence (see DATA-001 and DATA-006). Its tick-archive placement is added here as the source of the partitioning, manifest and entitlement detail. G p10 names Tier T, G p17 calls it the tick/internal replay lake, and H calls it 'GCS Tick / Internal Lake, T governed history'. Replay workers on dedicated compute with local caches, from the same M p35 row, belong to REPLAY. P1 because the Tick Lake is master Phase 2 and GCP Phase 5. Phase 1 needs first-market capture and replay but does not require GCS."
+  },
+  {
+    "id": "DATA-038",
+    "domain": "DATA",
+    "title": "Acceptance: discovery finds, assesses, registers, feeds and retires sources on its own",
+    "statement": "Global data discovery can find, assess, register, feed and retire sources autonomously.",
+    "rationale": "This is the blueprint's completion test for the Scout Fabric: every step of a source's life runs without a human in the loop, and each step stays inside its gates.",
+    "kind": "acceptance",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "42", "section": "§31 Capability Completeness Checklist ('COMPLETE TARGET: Global data discovery can autonomously find, assess, register, feed and retire sources')"}
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "An end-to-end run over a fixture world, with no operator action, takes a new source through discovery, inspection, registration, a sandboxed feed and promotion. After its contribution is made to decay, the source is retired. Each step appears in the event log."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPANSION"],
+    "notes": "This is the exit check for DATA-014 to DATA-018 and DATA-031 to DATA-034. It is P1 because it is the completion target of master Phase 2's Scout Fabric."
+  },
+  {
+    "id": "DATA-039",
+    "domain": "DATA",
+    "title": "Scout workers process source bytes only in memory or on encrypted ephemeral disk",
+    "statement": "Scout/crawler workers reach sources over secure egress and stream source bytes through memory or encrypted ephemeral disk only. No external payload is written to a persistent disk or volume.",
+    "rationale": "A payload spilled to a persistent disk survives the worker and becomes an unmanaged copy. Encrypting the ephemeral disk means that even a spill leaves nothing readable behind.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "2", "section": "§2.1, 'Transient fetch' bullet"},
+      {"doc": "H", "page": "L239", "section": "VIEWS.data, 04, node 'scout' ('Secure egress; memory/encrypted ephemeral processing')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The scout workload's definition mounts no persistent volume and only an encrypted ephemeral one. Its only outbound route is the egress path declared for scouts."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["SEC", "NET"],
+    "notes": "G p2 and H L239 say the same thing, and H adds 'secure egress'. The G bullet was extracted twice; its 'no landing bucket' clause was split into DATA-040. KUBERNETES and MANAGED_SERVICE were dropped from the raw flags because the constraint holds equally for Cloud Run jobs or VMs."
+  },
+  {
+    "id": "DATA-040",
+    "domain": "DATA",
+    "title": "No landing bucket exists for external-world content",
+    "statement": "No Cloud Storage landing bucket exists, by default, for external-world content. The regional landing buckets that do exist hold only retained tick/internal replay segments and compact derived knowledge packs, never a raw external-world corpus.",
+    "rationale": "A landing bucket for scraped content is where a raw corpus starts: 'temporary' objects that nobody deletes. Declaring none makes that failure impossible to fall into by default.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "2", "section": "§2.1, 'Transient fetch' bullet ('no default GCS landing bucket for external-world content')"},
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Cloud Storage regional landing' ('never a raw external-world corpus')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan contains no bucket whose declared purpose is external-world content. The scout workers' identity has no object-create permission on any bucket, including the regional landing buckets."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "SEC"],
+    "notes": "Split from the G p2 transient-fetch bullet. 'By default' is the source's own wording, so any exception would need its own record. The 'never a raw external-world corpus' clause of the G p10 landing row is folded in here. What the landing buckets are for is DATA-047."
+  },
+  {
+    "id": "DATA-041",
+    "domain": "DATA",
+    "title": "The Source Manifest Registry is stored in Spanner or AlloyDB",
+    "statement": "The Source Manifest Registry is stored in Spanner or AlloyDB.",
+    "rationale": "Manifests are the only durable link back to discarded sources. They need a consistent, backed-up relational store, not a cache.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "2", "section": "§2.1, 'Source Manifest Registry' bullet ('Spanner/AlloyDB stores...')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares the registry's database in Spanner or AlloyDB, and the pipeline's manifest writer targets it."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP"],
+    "notes": "Split from the G p2 registry bullet, whose field list is DATA-003. ADR 0099 conflict C4: both stores collide with ADR 0002/0009 and with ADR 0089's file-backed log, so a storage record has to decide this. Until then the registry is in-tree and the gap is scored."
+  },
+  {
+    "id": "DATA-042",
+    "domain": "DATA",
+    "title": "Tier K1 structured knowledge is Spanner Graph",
+    "statement": "Tier K1 (structured knowledge) is Spanner Graph. It holds durable entities, relationships, temporal facts, causal edges, beliefs, confidence, contradictions and provenance/source references, and never copied documents.",
+    "rationale": "Entity, causal and provenance state is connected data that the cognitive layer queries as a graph. Holding only references to sources keeps the graph from turning into a document store.",
+    "kind": "placement",
+    "priority": "P2",
+    "sources": [
+      {"doc": "G", "page": "2", "section": "§2.1, 'Knowledge Graph' bullet"},
+      {"doc": "G", "page": "10", "section": "§9.2, 'Tier K1 - structured knowledge'"},
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Spanner Graph'"},
+      {"doc": "H", "page": "L244-249", "section": "VIEWS.data, 04, tier map (node 'graph': 'K1 structured knowledge')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares a Spanner Graph database for K1. Its schema defines node and edge types for the listed kinds and has no column that could hold a source body."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["WORLD", "GCP"],
+    "notes": "G p2's Knowledge Graph bullet was not in the raw set. It is merged here because it gives the fullest content list, including 'never copied documents'. G p10 and H give the tier name. P2 because GCP Phase 8 introduces Spanner Graph, although the world model it serves is master Phase 2. ADR 0099 conflict C4."
+  },
+  {
+    "id": "DATA-043",
+    "domain": "DATA",
+    "title": "Tier K0 fast knowledge state is held in caches and Bigtable",
+    "statement": "Tier K0 (live ambient / fast knowledge state) is held in in-memory/GKE caches and Bigtable. It covers seconds to hours of compact derived state: high-rate derived features, entity/event state, ambient-model state and time-indexed knowledge deltas.",
+    "rationale": "The newest derived state is read often and becomes stale quickly. It belongs in a low-latency store with a short horizon, not in the durable graph.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "2", "section": "§2.1, 'Fast Knowledge State' bullet"},
+      {"doc": "G", "page": "10", "section": "§9.2, 'Tier K0 - live ambient state'"},
+      {"doc": "H", "page": "L245", "section": "VIEWS.data, 04, node 'bt' ('K0 fast knowledge')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares the Bigtable table(s) for K0 with age-based garbage collection bounded to the stated horizon. Every record the K0 writer produces is a derived type."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "KUBERNETES"],
+    "secondary_domains": ["AMBIENT", "GCP"],
+    "notes": "G p2 ('Fast Knowledge State') and G p10 ('Tier K0') describe the same tier, and H labels Bigtable 'K0 fast knowledge'. The horizon is given only as 'seconds to hours', with no exact bound. The ambient-model-state part is also AMBIENT-024 (P2). ADR 0099 conflicts C3 (GKE caches) and C4 (Bigtable)."
+  },
+  {
+    "id": "DATA-044",
+    "domain": "DATA",
+    "title": "Tier K2 knowledge packs are stored in Cloud Storage with lifecycle tiers",
+    "statement": "Tier K2 (cheap knowledge packs) is Cloud Storage, using the Standard, Nearline and Coldline lifecycle tiers.",
+    "rationale": "Packs are read rarely once they age. Letting lifecycle move them to colder classes is what keeps this layer cheap.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "3", "section": "§2.1, 'Cheap Knowledge Packs' bullet ('may be stored in GCS with lifecycle tiers')"},
+      {"doc": "G", "page": "10", "section": "§9.2, 'Tier K2 - cheap knowledge packs' ('GCS Standard/Nearline/Coldline')"},
+      {"doc": "H", "page": "L246", "section": "VIEWS.data, 04, node 'packs' ('K2 cheap compact memory')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The knowledge-pack bucket declares lifecycle rules that move objects from Standard to Nearline to Coldline, and the bucket holds only pack objects."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "FINOPS"],
+    "notes": "Pack contents and format are DATA-013, so the raw NEW_DEPENDENCY flag was dropped here. G p3 says 'lifecycle tiers', and G p10 names the three classes; the G p10 wording is kept. No source gives the ages at which packs move."
+  },
+  {
+    "id": "DATA-045",
+    "domain": "DATA",
+    "title": "Memorystore holds only ephemeral, non-authoritative state",
+    "statement": "Memorystore Redis Cluster holds only ephemeral caches, rate-limiting state and warm coordination hints. It is never authoritative. Losing it causes a cache rebuild or degraded latency, never lost state.",
+    "rationale": "A cache that has quietly become the only copy of something turns a routine cache loss into data loss.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules, rule 7 ('caches own nothing authoritative')"},
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Memorystore Redis Cluster'"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog, row 'Memorystore Redis Cluster'"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "The cache is flushed during a fixture workload. No financial or knowledge state is lost, and the workload continues at degraded latency while the cache rebuilds."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["RES", "GCP"],
+    "notes": "The raw item was the G p17 catalog row. G p10's store row adds 'never authoritative' and the behaviour on loss, and G p3 rule 7 states the general rule. P1 because the Redis cache is GCP Phase 6. ADR 0099 conflict C4."
+  },
+  {
+    "id": "DATA-046",
+    "domain": "DATA",
+    "title": "A prod/data project is the data governance and analytics boundary",
+    "statement": "A prod/data project holds the retained tick/internal archive and the compact knowledge packs in Cloud Storage, together with Bigtable, BigQuery and Knowledge Catalog. It is the data governance and analytics boundary, separate from the ledger, world-model, AI, execution and fabric projects.",
+    "rationale": "Analytics load and broad data-access grants should not share a blast radius with financial truth or execution. The project boundary is where IAM and audit separate them.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model, row 'prod/data'"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan places the listed resources in a data project distinct from the ledger, world-model, AI, execution and fabric projects, and declares no data resource in any other project."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "GOV"],
+    "notes": "P0 because the org/folder/project model is GCP Phase 0. The nonprod/* mirror of the same boundary applies too. Under ADR 0099, ADR 0093's cost posture and ADR 0040's workflow rule apply before any project is added."
+  },
+  {
+    "id": "DATA-047",
+    "domain": "DATA",
+    "title": "fabric-archive writes content-addressed closed segments to regional landing buckets",
+    "statement": "fabric-archive writes closed Fabric segments to regional Cloud Storage landing buckets over private Google APIs, content-addressed. The regional landing is the cheap, durable replay foundation for retained tick/internal segments and compact knowledge packs.",
+    "rationale": "Content addressing makes an archive write idempotent and checkable. Archiving closed segments promptly is what lets the Fabric's own journal retention stay bounded.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§7 Rust Event & Control Fabric, 'Archival' bullet"},
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Cloud Storage regional landing'"},
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix, row 'Fabric Archive'"},
+      {"doc": "H", "page": "L218-221", "section": "§03 Native Rust Event & Control Fabric, edge Segment Store -> GCS Archive"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Closing a fixture segment produces exactly one landing object, named by the hash of its contents and written over the private-access path. Closing the same segment again writes nothing new."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["FABRIC", "REPLAY", "GCP"],
+    "notes": "G p9 §7's archival bullet, which was not in the raw set, supplies 'content-addressed'. G p10's landing row, G p19's matrix row and H's Segment Store to GCS Archive edge supply the rest. P0 because a GCS archive is part of GCP Phase 2 (Rust Fabric MVP). Private Google API access belongs to NET."
+  },
+  {
+    "id": "DATA-048",
+    "domain": "DATA",
+    "title": "Landing objects move to durable research/archive locations per residency policy",
+    "statement": "Objects move from regional landing to durable research/archive locations by lifecycle rule or copy, according to residency policy.",
+    "rationale": "Landing is regional and short-lived, while the archive is where history is kept. Residency decides where each class of data may come to rest.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§7 Rust Event & Control Fabric, 'Archival' bullet ('then lifecycle/copied to durable research/archive locations according to residency policy')"},
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Cloud Storage durable research/archive' ('Lifecycle from landing')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The landing buckets declare the lifecycle or copy to archive locations, and every archive location lies in a region the residency policy permits for its data class."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "COMPLIANCE"],
+    "notes": "The landing copy is kept until the archive copy exists (DATA-068)."
+  },
+  {
+    "id": "DATA-049",
+    "domain": "DATA",
+    "title": "Crawler and scout workers are isolated from trading",
+    "statement": "Crawler/scout workers run in a dedicated project and VPC, on isolated GKE node pools or Cloud Run jobs, with their own egress identity, quotas and security posture, separate from trading.",
+    "rationale": "Scouts read untrusted content from the open internet. Isolating them keeps a compromised or misbehaving scout from sharing a network, identity or quota with anything that trades.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane, row 'Crawler/scout workers'"},
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane, 'Crawler/scout isolation' bullet ('dedicated project/VPC/node pools and egress identity')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan places scout workloads in their own project and VPC under a service account used by nothing else, with no network path or IAM grant shared with execution, fabric or ledger resources."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["SEC", "NET", "GCP"],
+    "notes": "G p9 §8 gives the placement, and G p11 §12 adds the dedicated project/VPC and the egress identity. What the isolation is for (untrusted content cannot reach tools or secrets) is DATA-064. The GKE form falls under ADR 0099 conflict C3; Cloud Run jobs are the form this repository's current runtime allows."
+  },
+  {
+    "id": "DATA-050",
+    "domain": "DATA",
+    "title": "Knowledge deltas fan out to the four knowledge tiers",
+    "statement": "The Knowledge Delta Builder's output is written to the knowledge tiers: Spanner Graph (K1), Bigtable (K0), GCS knowledge packs (K2) and BigQuery (K3), with vector and memory stores fed alongside.",
+    "rationale": "A delta that reaches only some tiers leaves the graph, the fast state and the analytical history disagreeing about what the platform knows.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§9.1 Pass-Through World Sensing Pipeline (branch 'SPANNER GRAPH / BIGTABLE / VECTOR+MEMORY')"},
+      {"doc": "H", "page": "L257-261", "section": "VIEWS.data, 04, edges delta -> graph, bt, packs, bq"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture delta carrying graph, feature, pack and analytical content lands in each of the four tier stores (or their test doubles), each with a reference back to the delta."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["WORLD", "MEMORY"],
+    "notes": "H L257-261 gives the four tier edges, and G p9 lists Spanner Graph, Bigtable and vector+memory. The G p9 pipeline was split, with its stage order going to DATA-002. The K1 edge depends on DATA-042 (GCP Phase 8), so part of this P1 requirement is P2 work. G p10 also has evidence and world-model workers writing normalized entities and edges to Spanner Graph, so the delta builder is not the graph's only writer."
+  },
+  {
+    "id": "DATA-051",
+    "domain": "DATA",
+    "title": "Tier K3 analytical knowledge is BigQuery, holding derived data only",
+    "statement": "Tier K3 (analytical knowledge) is BigQuery. It holds derived facts, features, outcomes and research datasets, never copied external documents.",
+    "rationale": "Analytical tables are the easiest place for copied documents to accumulate unseen, so the tier is defined by what it may not hold as much as by what it does.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2, 'Tier K3 - analytical knowledge'"},
+      {"doc": "H", "page": "L247", "section": "VIEWS.data, 04, node 'bq' ('K3 analytical knowledge', 'no copied source documents')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every table in the K3 dataset has a derived-type schema, and none has a column that could hold a source document body."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "MODEL"],
+    "notes": "G p10 and H agree. ADR 0099 conflict C4."
+  },
+  {
+    "id": "DATA-052",
+    "domain": "DATA",
+    "title": "Retention that must be immutable is enforced with Bucket Lock and versioning",
+    "statement": "Where retention must be immutable, including legally required internal evidence, archive objects are protected by Bucket Lock and object versioning.",
+    "rationale": "Evidence that an administrator can delete or overwrite is not evidence. The lock moves immutability from a promise into the storage layer.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Cloud Storage durable research/archive' ('Bucket Lock/versioning where retention must be immutable')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every bucket holding legally required internal evidence declares a locked retention policy and versioning, and a plan that would unlock the policy or shorten its period fails a module test."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER", "GOV", "SEC"],
+    "notes": "Split from G p10's durable research/archive row. G p11 applies the same lock to immutable ledger export and audit manifests, which belong to LEDGER. Beyond legally required internal evidence, the source does not say which classes must be immutable. P0 because immutable evidence underpins GCP Phase 4 (financial truth). A locked retention policy cannot be undone, so creating one is an irreversible operation that needs explicit approval under the change-management rules."
+  },
+  {
+    "id": "DATA-053",
+    "domain": "DATA",
+    "title": "Bigtable is the hot time-series store for features and replay indexes",
+    "statement": "Bigtable holds recent market features, replay indexes and high-rate entity/time series.",
+    "rationale": "High-rate keyed time series need a store with low read latency at scale, kept apart from both the ledger and the analytical warehouse.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Bigtable multi-cluster'"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog, row 'Bigtable'"},
+      {"doc": "H", "page": "L121", "section": "§01 Global Platform Topology, node 'bigtable' ('hot derived state')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares Bigtable tables for each listed class and declares no other hot time-series or replay-index store."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["MARKETDATA", "REPLAY", "GCP"],
+    "notes": "G p10, G p17 and the H node agree. The K0 world-knowledge state in the same store is DATA-043. ADR 0099 conflict C4. G p3 rule 1 keeps Bigtable off the hot path; that rule belongs to REFLEX."
+  },
+  {
+    "id": "DATA-054",
+    "domain": "DATA",
+    "title": "fabric-sink-bigtable consumes Fabric partitions into Bigtable",
+    "statement": "fabric-sink-bigtable consumes Fabric partitions from the brokers and writes them to Bigtable.",
+    "rationale": "A dedicated sink keeps Bigtable's availability off the Fabric's critical path, so a slow table becomes consumer lag rather than producer backpressure.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Bigtable multi-cluster' ('fabric-sink-bigtable consumes partitions')"},
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix, row 'Fabric Bigtable Sink'"},
+      {"doc": "H", "page": "L218-221", "section": "§03 Native Rust Event & Control Fabric, edge Broker C -> Bigtable Sink"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Records published to a fixture Fabric partition appear in the Bigtable table (or its emulator), and the sink's committed consumer offset advances only after the write succeeds."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["FABRIC"],
+    "notes": "G p10 names the sink, G p19 gives its protocol (gRPC, async), and H draws Broker C to the Bigtable Sink. A gRPC client falls under ADR 0099 conflict C2. Sinks scaling from consumer lag on dedicated node pools (G p9 §8) belongs to FABRIC."
+  },
+  {
+    "id": "DATA-055",
+    "domain": "DATA",
+    "title": "Bigtable routing and app profiles are chosen per workload by consistency need",
+    "statement": "Bigtable uses multi-cluster routing for read resilience, and each workload gets an application profile chosen for its consistency need.",
+    "rationale": "Multi-cluster routing buys availability at the price of read-your-writes. A workload that needs consistency but is given a multi-cluster profile will read stale data without any error.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Bigtable multi-cluster' ('multi-cluster routing for read resilience, app profiles chosen by consistency need')"},
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery, row 'Bigtable cluster' ('App profiles define behavior')"},
+      {"doc": "G", "page": "16", "section": "§18 Scaling and Performance Model, row 'Bigtable' ('workload-specific app profiles')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Each Bigtable consumer has its own app profile. Multi-cluster routing is used only for workloads declared eventually consistent, and single-cluster routing for any workload declared to need read-your-writes or transactional writes."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "RES"],
+    "notes": "Split from G p10's Bigtable row; the G p15 and G p16 fragments say the same and are merged. G p23 §29 repeats that the routing and app-profile choice must match read/write consistency needs."
+  },
+  {
+    "id": "DATA-056",
+    "domain": "DATA",
+    "title": "BigQuery holds historical research, backtests, attribution and data quality",
+    "statement": "BigQuery holds historical research, backtests, P&L attribution, data quality and feature studies.",
+    "rationale": "Large analytical scans belong in a warehouse built for them, away from the stores that serve latency-sensitive reads.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'BigQuery'"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog, row 'BigQuery'"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares a BigQuery dataset for each listed purpose."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "COST"],
+    "secondary_domains": ["MODEL", "LEDGER", "GCP"],
+    "notes": "G p10 and G p17 agree. P&L attribution here is analytical, and the ledger of record is never BigQuery (Spanner, LEDGER). ADR 0099 conflict C4."
+  },
+  {
+    "id": "DATA-057",
+    "domain": "DATA",
+    "title": "BigQuery is fed by fabric-sink-bigquery and batch loads from Cloud Storage",
+    "statement": "Data reaches BigQuery through fabric-sink-bigquery (the BigQuery Storage Write API) and through batch loads from Cloud Storage.",
+    "rationale": "Two defined paths in, one streaming and one batch from immutable objects, make every table's provenance traceable to a Fabric partition or a GCS segment.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'BigQuery' ('fabric-sink-bigquery / batch loads from GCS')"},
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix, row 'Fabric BigQuery Sink' ('BigQuery Storage Write API')"},
+      {"doc": "H", "page": "L218-221", "section": "§03 Native Rust Event & Control Fabric, edge Broker C -> BigQuery Sink"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Records from a fixture Fabric partition arrive in BigQuery through the sink, and a batch load of a fixture GCS segment arrives with the same table shape."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["FABRIC"],
+    "notes": "Split from G p10's BigQuery row. The Storage Write API is gRPC, which falls under ADR 0099 conflict C2. H draws Broker C to the BigQuery Sink."
+  },
+  {
+    "id": "DATA-058",
+    "domain": "DATA",
+    "title": "BigQuery is isolated from the hot path",
+    "statement": "BigQuery is isolated from the hot path. No reflex or order decision waits on a BigQuery read or write.",
+    "rationale": "A warehouse query's latency is unbounded compared with a market event. One synchronous dependency on it would make execution latency depend on someone's backtest.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'BigQuery' ('isolated from hot path')"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The architecture acceptance suite asserts that no crate on the reflex path depends, directly or transitively, on the BigQuery sink or client."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX"],
+    "notes": "Split from G p10's BigQuery row. The general rule that nothing between tick and order touches GKE, Spanner, Bigtable, Redis, BigQuery or AI (G p3 rule 1, G p23 §27) belongs to REFLEX; this is the BigQuery case as the data-store table states it. MANAGED_SERVICE was dropped because the requirement is about isolation, not adoption. P0 because hot-path isolation is part of the One Reflex Cell phase."
+  },
+  {
+    "id": "DATA-059",
+    "domain": "DATA",
+    "title": "Knowledge Catalog records lineage, quality and context for every data asset",
+    "statement": "Knowledge Catalog registers data products, with their lineage, quality and business/technical context, for the platform's GCS, BigQuery, Spanner and AI assets, together with their evidence contracts.",
+    "rationale": "Without recorded lineage, a derived table cannot be traced to the sources and jobs that produced it, and the auditability principle has nothing to stand on.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Knowledge Catalog'"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog, row 'Knowledge Catalog'"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "After a fixture pipeline run, the catalog (or its test double) holds a lineage edge from each GCS, BigQuery or Spanner asset that was written to the inputs and job that produced it."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GOV", "EVID", "GCP"],
+    "notes": "G p10 and G p17 agree. G p24 notes that Knowledge Catalog was formerly Dataplex Universal Catalog. ADR 0099 conflict C4. G §16's 'lineage completeness' signal is this requirement's metric (OBS)."
+  },
+  {
+    "id": "DATA-060",
+    "domain": "DATA",
+    "title": "Agents are grounded in governed context from the Knowledge Catalog",
+    "statement": "Agents are grounded in the governed context that the Knowledge Catalog holds.",
+    "rationale": "An agent that picks its own data sources can reason from ungoverned or unlicensed data. Resolving data through the catalog keeps it inside what has been registered.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Knowledge Catalog' ('grounds agents in governed context')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An agent's tool call for data resolves assets through the catalog, and an asset absent from the catalog is not offered to the agent."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["REASON", "GOV"],
+    "notes": "Split from G p10's Knowledge Catalog row. G p11 has foundation and ambient agents consuming evidence from Knowledge Catalog, Spanner Graph and BigQuery. P2 because this is GCP Phase 8 (cognitive/AI)."
+  },
+  {
+    "id": "DATA-061",
+    "domain": "DATA",
+    "title": "AlloyDB holds operational metadata and never financial truth",
+    "statement": "AlloyDB holds operational relational metadata and workflow state that is not financial truth: admin and research workflow state, agent jobs and configuration history. It never holds ledger, position or cash state.",
+    "rationale": "A second relational store holding anything financial would be a second source of truth for a fact the ledger already owns.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'AlloyDB'"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog, row 'AlloyDB'"}
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The AlloyDB schema DDL contains only the listed operational tables, and a check over it finds no ledger, position, cash or obligation table."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER", "GCP"],
+    "notes": "G p10 and G p17 agree. Spanner owns financial truth (G p3 rule 7). ADR 0099 conflict C4."
+  },
+  {
+    "id": "DATA-062",
+    "domain": "DATA",
+    "title": "Dataflow and Dataproc Serverless run batch reprocessing from durable sources",
+    "statement": "Dataflow, and optionally Dataproc Serverless, run large batch reprocessing, enrichment, historical transforms and Spanner change-stream pipelines, reading from durable GCS and BigQuery sources.",
+    "rationale": "Reprocessing history is a batch job over immutable inputs. Running it on the live path would make it compete with the traffic it is reprocessing.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Dataflow / Dataproc Serverless'"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog, rows 'Dataflow' and 'Dataproc Serverless'"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan's Dataflow and Dataproc jobs read only from GCS, BigQuery or Spanner change streams and write only to derived stores."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "NON_RUST"],
+    "secondary_domains": ["LEDGER", "GCP"],
+    "notes": "G p10 and G p17 agree. G p17 adds Spanner change-stream pipelines and marks Dataproc as optional. Beam and Spark jobs are non-Rust, which falls under ADR 0099 conflict C5 in spirit; the stores fall under C4. Change streams feeding BigQuery are downstream analytics and never the system of record (G p11)."
+  },
+  {
+    "id": "DATA-063",
+    "domain": "DATA",
+    "title": "Dataflow and Dataproc are never the live Fabric consumer path",
+    "statement": "Dataflow and Dataproc are never the primary live Fabric consumer path or the live bus.",
+    "rationale": "The Fabric's semantics (ordering, fencing, offsets) are defined by the Rust Fabric. A batch engine consuming it live would reinterpret them.",
+    "kind": "prohibition",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 store/service table, row 'Dataflow / Dataproc Serverless' ('not the primary live Fabric consumer path')"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog, row 'Dataflow' ('not primary live bus')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Among the declared consumers, no Fabric topic's live consumer group is a Dataflow or Dataproc job."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC"],
+    "notes": "Split from the G p10 and G p17 rows. Live consumption is done by the Rust Fabric's sinks (DATA-054, DATA-057). MANAGED_SERVICE and NON_RUST were dropped because this prohibition adopts nothing."
+  },
+  {
+    "id": "DATA-064",
+    "domain": "DATA",
+    "title": "Untrusted web content cannot reach high-authority tools or production secrets",
+    "statement": "Untrusted web content processed by crawler/scout workers cannot directly invoke high-authority tools or read production secrets.",
+    "rationale": "Scraped pages can carry instructions aimed at whatever reads them. Isolation ensures such an instruction has nothing with authority to act on.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane, 'Crawler/scout isolation' bullet"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A scout worker is fed a fixture page that embeds tool-invocation and secret-read instructions. No tool call and no secret access follow, and when the scout's identity attempts either directly, it is denied."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["SEC"],
+    "notes": "G p11 §12 was extracted twice and the extractions are merged. The isolation infrastructure half of the bullet is DATA-049. This is the platform-level form of a rule this repository already applies to agents: fetched content is data, not instructions. KUBERNETES was dropped because the control is independent of the runtime."
+  },
+  {
+    "id": "DATA-065",
+    "domain": "DATA",
+    "title": "Bigtable reads fail over automatically; single-cluster workloads fail over explicitly",
+    "statement": "If a Bigtable cluster fails, reads routed through multi-cluster routing fail over to another cluster automatically. Workloads on single-cluster (transactional) routing fail over only by explicit action.",
+    "rationale": "Automatic failover of a transactional workload could lose or reorder writes without anyone noticing. Automatic failover of reads should not need a human.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery, row 'Bigtable cluster'"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With one cluster of a test instance made unavailable, reads through the multi-cluster profile continue from the other cluster. A workload on a single-cluster profile stops until its documented explicit failover is performed."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["RES"],
+    "notes": "App-profile selection is DATA-055. Rebuilding lost state is DATA-066."
+  },
+  {
+    "id": "DATA-066",
+    "domain": "DATA",
+    "title": "Derived stores can be rebuilt by replay from Fabric and immutable GCS objects",
+    "statement": "Derived stores can be rebuilt from immutable sources: Bigtable by replay from Fabric/GCS, and derived stores in general by rehydration from immutable Cloud Storage objects.",
+    "rationale": "If a derived store cannot be rebuilt, it has quietly become a system of record, and losing it is permanent.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17, row 'Bigtable cluster' ('replay from Fabric/GCS if necessary')"},
+      {"doc": "G", "page": "15", "section": "§17, row 'GCS research region' ('Rehydrate derived stores from immutable objects')"}
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "In a nonprod environment a derived store is emptied and rebuilt by replay from Fabric/GCS, and for the replayed window its contents match a snapshot taken before the loss."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["REPLAY", "RES", "FABRIC"],
+    "notes": "Merged from the recovery columns of two G p15 rows. Neither raw item led this requirement, so it is counted as a split. G p23 §27 carries the related COMPLETE TARGET on reconstructing history from Fabric/GCS (REPLAY)."
+  },
+  {
+    "id": "DATA-067",
+    "domain": "DATA",
+    "title": "Research and archive data is held in replicated or dual-region locations",
+    "statement": "Research and archive data in Cloud Storage is held in replicated or dual-region locations chosen according to residency policy, so that losing one research region does not lose it.",
+    "rationale": "A single-region archive makes one regional outage a permanent loss of history.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17, row 'GCS research region' ('Use replicated/dual-region locations according to residency policy')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Each research/archive bucket's location is dual-region, multi-region or replicated, and every location is one the residency policy permits for its data class."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "MULTI_REGION"],
+    "secondary_domains": ["REGION", "COMPLIANCE", "RES"],
+    "notes": "P1 because multi-region is GCP Phase 7."
+  },
+  {
+    "id": "DATA-068",
+    "domain": "DATA",
+    "title": "A landing segment stays until it has been archived",
+    "statement": "A regional landing object remains the source copy of its segment until the segment has been archived. It is not deleted or expired before the archive copy exists.",
+    "rationale": "A lifecycle rule that expires landing objects on age alone will, during an archive outage, delete the only copy of retained history.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17, row 'GCS research region' ('regional landing remains source segment until archived')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With the archive copy blocked in a test, the landing lifecycle does not remove the segment. Once the archive copy is confirmed, removal is permitted."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["FABRIC", "REPLAY"],
+    "notes": "Split from G p15's GCS research-region row. P0 because losing a closed segment before it is archived loses retained tick/internal history, and the GCS archive is GCP Phase 2."
+  },
+  {
+    "id": "DATA-069",
+    "domain": "DATA",
+    "title": "Bigtable scales under managed autoscaling",
+    "statement": "Bigtable capacity scales by nodes and clusters under managed autoscaling.",
+    "rationale": "Feature and replay-index load follows market activity. Fixed capacity either wastes money in quiet periods or throttles in busy ones.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "16", "section": "§18 Scaling and Performance Model, row 'Bigtable'"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Each Bigtable cluster declares autoscaling with minimum and maximum nodes and a utilization target."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "FINOPS"],
+    "notes": "Split from G p16's Bigtable row; its row-key half is DATA-070 and its app-profile half is DATA-055. G p23 §29 confirms the autoscaling support."
+  },
+  {
+    "id": "DATA-070",
+    "domain": "DATA",
+    "title": "Bigtable row keys are hotspot-safe",
+    "statement": "Bigtable row keys are designed so that writes do not concentrate on a hotspot.",
+    "rationale": "Time-first keys send every new write to the same tablet, and autoscaling cannot fix that: more nodes do not help when one of them takes all the load.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "16", "section": "§18 Scaling and Performance Model, row 'Bigtable' ('hotspot-safe row keys')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For each table, the row-key builder places a high-cardinality, non-monotonic component (such as instrument or entity) before any timestamp, and a property test over generated keys finds no key that begins with a time component."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["MARKETDATA"],
+    "notes": "Split from G p16's Bigtable row."
+  },
+  {
+    "id": "DATA-071",
+    "domain": "DATA",
+    "title": "BigQuery research, backtest and BI workloads run under separate reservations",
+    "statement": "BigQuery compute is divided into separate reservations for research, backtests and BI, with workload management, so that no single job can monopolize it.",
+    "rationale": "Without separate reservations, one large backtest can starve every research query and dashboard in the organisation.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "16", "section": "§18 Scaling and Performance Model, row 'BigQuery'"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares separate reservations and assignments for research, backtests and BI, and a query from each workload runs under its own assignment."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "COST"],
+    "secondary_domains": ["FINOPS", "MODEL"],
+    "notes": "Reservations are a committed cost, so ADR 0093's owner cost instruction applies before one is created."
+  },
+  {
+    "id": "DATA-072",
+    "domain": "DATA",
+    "title": "Cloud Storage objects are partitioned and written as immutable segments",
+    "statement": "Objects in Cloud Storage are partitioned by source, date and instrument and written as immutable, reasonably sized segments.",
+    "rationale": "Partitioning by the keys replay selects on lets a replay read only what it needs. Immutability is what makes a segment's hash a durable identity.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "16", "section": "§18 Scaling and Performance Model, row 'GCS'"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The archive writer's object-naming function produces names partitioned by source, date and instrument. The writer never overwrites an existing object and emits segments within the configured size band."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["MARKETDATA", "REPLAY"],
+    "notes": "Split from G p16's GCS row; its compaction half is DATA-073. 'Reasonably sized' is not quantified, so the size band has to be set."
+  },
+  {
+    "id": "DATA-073",
+    "domain": "DATA",
+    "title": "Tiny Cloud Storage objects are compacted asynchronously",
+    "statement": "Tiny Cloud Storage objects are compacted asynchronously into larger segments.",
+    "rationale": "Many tiny objects inflate per-operation cost and listing time. Compacting off the write path keeps writes fast and reads cheap.",
+    "kind": "nfr",
+    "priority": "P3",
+    "sources": [
+      {"doc": "G", "page": "16", "section": "§18 Scaling and Performance Model, row 'GCS' ('compact tiny objects asynchronously')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A compaction job over a fixture prefix of many small objects produces larger segments whose contents, checked by hash, cover the originals exactly. The job runs off the write path."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["FINOPS"],
+    "notes": "Split from G p16's GCS row. P3 because it is an optimisation. Compaction must respect the locked objects of DATA-052 and must not remove a landing segment before it is archived (DATA-068)."
+  },
+  {
+    "id": "DATA-074",
+    "domain": "DATA",
+    "title": "Each regional service plane reads and writes Spanner Graph",
+    "statement": "Each regional GKE service plane reads and writes Spanner Graph over knowledge-class connections: entities, temporal facts, causal edges and provenance references.",
+    "rationale": "Regional warm services (evidence, world-model) are where graph state is produced and consumed. Without that access, every region would need its own graph.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "H", "page": "L136", "section": "§01 Global Platform Topology, edges am_gke/eu_gke/ap_gke -> graph (knowledge)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Each region's service-plane identity holds read and write access to the Spanner Graph database."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "KUBERNETES", "MULTI_REGION"],
+    "secondary_domains": ["WORLD", "REGION", "GCP"],
+    "notes": "H only. P2 because Spanner Graph is GCP Phase 8. ADR 0099 conflicts C3 (GKE) and C4 (Spanner Graph)."
+  },
+  {
+    "id": "DATA-075",
+    "domain": "DATA",
+    "title": "Each regional service plane reads and writes Bigtable",
+    "statement": "Each regional GKE service plane reads and writes Bigtable over knowledge-class connections: recent features, entity/event state and replay indexes.",
+    "rationale": "Warm regional services are the main readers and writers of recent derived state, and they need it without a round trip through another region.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "H", "page": "L137", "section": "§01 Global Platform Topology, edges am_gke/eu_gke/ap_gke -> bigtable (knowledge)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Each region's service-plane identity holds read and write access to the Bigtable instance through an app profile of its own."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "KUBERNETES", "MULTI_REGION"],
+    "secondary_domains": ["REGION", "GCP"],
+    "notes": "H only. P1 because this is GCP Phase 6 (regional service plane). ADR 0099 conflicts C3 and C4."
+  },
+  {
+    "id": "DATA-076",
+    "domain": "DATA",
+    "title": "The Knowledge Delta Builder writes back to the Source Manifest Registry",
+    "statement": "The Knowledge Delta Builder writes back to the Source Manifest Registry over a knowledge-class edge, so that the manifest reflects what each fetch yielded when later re-fetch decisions are made.",
+    "rationale": "If a re-fetch decision cannot see what the last fetch yielded, it keeps re-fetching sources that no longer produce anything.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "H", "page": "L258", "section": "VIEWS.data, 04, edge delta -> source (knowledge)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "After a fixture fetch produces a knowledge delta, the delta builder updates the source's manifest record, and the next re-fetch decision for that source reads the update."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EVID"],
+    "notes": "H only. The diagram does not say which fields the write-back updates; freshness and a reference to the last delta produced are the likely candidates, but that is not stated."
+  }
+]

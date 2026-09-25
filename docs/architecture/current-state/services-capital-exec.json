@@ -1,0 +1,476 @@
+[
+  {
+    "name": "qip-brokers",
+    "path": "backend/crates/services/qip-brokers",
+    "kind": "service",
+    "purpose": "Broker and exchange adapter framework standing between the OMS and a venue: a VenueAdapter trait extending the narrow Broker trait with session/logon, heartbeat, market data and book reconciliation, plus concrete simulated-venue, sandbox-DEX-model and REST order-entry implementations. Structurally excludes a live adapter — AdapterClass has only Simulated and Sandbox variants and rejects the string \"live\" at deserialisation.",
+    "key_contracts": [
+      "trait VenueAdapter: Broker (src/adapter.rs:310)",
+      "enum AdapterClass { Simulated, Sandbox } (src/adapter.rs:63)",
+      "struct SimulatedExchange, SimulatedDepth (src/exchange.rs:201,67)",
+      "struct RestOrderEntryAdapter, RestVenueConfig, IdempotencySupport (src/rest.rs:450,256,223)",
+      "struct DexVenue (model-only, no chain client) (src/dex.rs:76)",
+      "struct MatchingEngine, Trade, ExecutionOutcome (src/matching.rs:145,71,88)",
+      "struct VenueCredential, Secret (redacted Debug/Display, no Serialize/Deserialize) (src/credential.rs:276,214)",
+      "struct ConnectionState, ConnectionPhase (src/connection.rs:104,39)",
+      "struct AccountLedger, MarginPolicy (src/ledger.rs:75,37)",
+      "fn credential::standard_requirements"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-financial", "qip-market", "qip-portfolio", "qip-routing", "qip-execution-engine", "qip-transport"],
+    "reached_from_production": "partial",
+    "production_evidence": "Imported by backend/crates/apps/qip-edge-node/src/gateway.rs:48-54 (VenueAdapter, ConnectionPhase, credential types, SimulatedExchange, RestOrderEntryAdapter) and backend/crates/apps/qip-edge-node/src/venue.rs:74-77, backend/crates/apps/qip-edge-node/src/feed.rs:64 — all compiled into the qip-edge-node binary's non-test code. Also imported by the qip-cli `demo --live` subcommand (backend/crates/apps/qip-cli/src/demo/mod.rs:90-94). NOT a dependency of qip-kernel (0 references; `grep -c qip_brokers backend/crates/runtime/qip-kernel/src` = 0), so qip-api/qip-fastbrain/qip-deepbrain never reach it. qip-edge-node itself is never deployed: `execution_nodes = {}` in every environment tfvars (backend/../infrastructure/environments/{dev,stage,test,prod}/terraform.tfvars), so the code compiles into a binary that ships to no environment.",
+    "io_and_state": "rest.rs opens blocking plaintext HTTP via qip_transport::HttpClient (src/rest.rs:184) with an explicit timeout; no TLS by design (needs the egress proxy per the data-and-streaming domain rule). connection.rs and matching.rs are pure in-memory state machines. credential.rs never persists a Secret (no Serialize/Deserialize). Timing uses std::time::Instant only inside a latency test helper (src/rest.rs:742).",
+    "tests": {
+      "count": 89,
+      "notable": [
+        "a_credential_never_serialises_the_secret_it_carries",
+        "a_degraded_session_refuses_a_new_order_and_still_accepts_a_cancel",
+        "a_retry_permitted_by_a_venues_idempotency_carries_the_key_of_the_first_attempt"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Well-tested (89 tests) and structurally paper-only, but the one binary that links it (qip-edge-node) is deployed nowhere per every environment's terraform.tfvars, so the code has no live process to run in.",
+    "blueprint_capabilities": ["EXEC", "MESH", "SEC"],
+    "gaps_observed": [
+      "dex.rs deliberately does not implement VenueAdapter — no chain client, no transaction signer; only the pricing model half exists (src/dex.rs:56-61)",
+      "qip-edge-node (the only binary that constructs these adapters) is never deployed: execution_nodes = {} in dev/stage/test/prod terraform.tfvars"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-brokers/src/lib.rs:17-33",
+      "backend/crates/apps/qip-edge-node/src/gateway.rs:48-54",
+      "backend/crates/apps/qip-cli/src/demo/mod.rs:90-94",
+      "backend/crates/runtime/qip-kernel/Cargo.toml (no qip-brokers dependency)",
+      "infrastructure/environments/dev/terraform.tfvars:227"
+    ]
+  },
+  {
+    "name": "qip-capital",
+    "path": "backend/crates/services/qip-capital",
+    "kind": "service",
+    "purpose": "Central-plane counterpart to the edge cells: decides how much risk capital to allocate, issues the signed CapitalEnvelope grants cells trade against without asking permission, aggregates exposure across cells, computes margin/collateral, tracks per-user ledgers with tax lots and entitlements, and recalls capital. Overview module; see sub-records for ledger and collateral/exploration.",
+    "key_contracts": [
+      "struct CapitalAllocator, AllocationPlan (src/allocation.rs:330,278)",
+      "struct EnvelopeIssuer, EnvelopeTerms, const MAXIMUM_ENVELOPE_VALIDITY (src/envelope.rs:122,71)",
+      "struct AggregateExposure::crowded (src/exposure.rs:126, fn at 201)",
+      "struct MarginModel, LiquidityAssessment (src/margin.rs:34,172)",
+      "struct RecallRegister, RecallOrder (src/recall.rs:139,73)",
+      "struct ReservationLedger (src/reservation.rs:100)",
+      "struct CompoundingPolicy, ThresholdLadder (src/compounding.rs:72,351)",
+      "struct CapacityModel, CapacityBound (src/capacity.rs:85,31) — tests-only, see gaps"
+    ],
+    "workspace_deps": ["qip-core", "qip-financial", "qip-contracts", "qip-portfolio"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel's Cargo.toml depends on qip-capital directly (backend/crates/runtime/qip-kernel/Cargo.toml). CapitalAllocator/AllocationPlan used in central/plane.rs and central/regions.rs; EnvelopeIssuer constructed and used in central/plane.rs:36 and directly imported in qip-api/src/main.rs:1095 (`use qip_capital::MAXIMUM_ENVELOPE_VALIDITY`) and qip-cli demo (src/demo/mod.rs:95); MarginModel used in cross_margin.rs:82; RecallRegister used in central/plane.rs:40; CompoundingPolicy constructed in adaptive_cadence.rs:268 (Platform::policy_for).",
+    "io_and_state": "No direct I/O (a service, no std::env; per the core-rust domain rule). State (ledgers, allocations, envelopes) is held in-memory structures composed by qip-kernel's Platform and persisted through the kernel's event log, not by this crate itself.",
+    "tests": {
+      "count": 127,
+      "notable": [
+        "an_issuer_with_a_short_key_or_no_key_id_is_refused",
+        "a_stored_mandate_whose_terms_have_gone_bad_is_refused_on_the_way_back_in",
+        "a_pro_rata_split_reconciles_to_the_fill_exactly_and_the_remainder_is_recorded_not_dropped"
+      ]
+    },
+    "status": ["exists", "hardened", "requires-migration"],
+    "status_reason": "Deeply wired into production and well-tested, but envelope.rs's own module doc names a structural cryptographic gap: HMAC-SHA-256 signing is symmetric, so any cell that can verify a grant can also mint one — inadequate for production, per the module's own documentation.",
+    "blueprint_capabilities": ["CAPITAL", "RISK", "LEDGER", "GOV"],
+    "gaps_observed": [
+      "envelope.rs signs with symmetric HMAC-SHA-256, not asymmetric signatures; no HSM/key-store, no key rotation, no per-envelope revocation, no replay scoping — named explicitly in the module doc as inadequate for production (src/envelope.rs:19-40)",
+      "capacity.rs (CapacityModel/CapacityBound/Capacity) has zero references in qip-kernel or any app — tests-only (grep for CapacityModel|CapacityBound|Capacity in backend/crates/runtime/qip-kernel/src and backend/crates/apps/*/src returns nothing)"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-capital/src/lib.rs:1-40",
+      "backend/crates/services/qip-capital/src/envelope.rs:19-40",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:32-40",
+      "backend/crates/apps/qip-api/src/main.rs:1095",
+      "backend/crates/runtime/qip-kernel/src/adaptive_cadence.rs:268"
+    ]
+  },
+  {
+    "name": "qip-capital::ledger",
+    "path": "backend/crates/services/qip-capital/src/ledger",
+    "kind": "service",
+    "purpose": "Per-user accounting inside qip-capital: mandates, eligibility, entitlements, cash balances, tax lots, pro-rata fill attribution across a strategy's book, and the mandate registry. The largest coherent sub-namespace in the crate (~4,500 lines across 10 files).",
+    "key_contracts": [
+      "struct UserLedger, StrategyBook, ProRataSplit (book.rs:155,92,68)",
+      "struct EligibilityRegistry, Eligibility, EligibilityDecision (eligibility.rs:346,170,228)",
+      "struct MandateRegistry, RegisteredMandate (registry.rs:59,36)",
+      "struct Mandate, MandateTerms, PermittedFamilies (mandate.rs:69,45,24)",
+      "struct TaxLot, HoldingPeriodDistribution (lot.rs:198,243)",
+      "struct CashBalance, ExpectedInflow, PostedInflow (cash.rs:102,92,124)",
+      "struct Entitlement, Role, Capability, WithdrawalEntitlement (entitlement.rs:118,30,68,88)",
+      "struct ProductCatalogue (product.rs:52)",
+      "struct InvestmentRequest, InvestmentDecision, RefusedLimit (request.rs:34,79,46)",
+      "struct UserId, MandateId, Jurisdiction (identity.rs:67,97,178)"
+    ],
+    "workspace_deps": ["qip-core", "qip-financial", "qip-contracts", "qip-portfolio"],
+    "reached_from_production": "yes",
+    "production_evidence": "UserLedger used in kernel exploration.rs:91; EligibilityRegistry, ProductCatalogue and InvestmentRequest used directly in platform.rs (struct fields `products: ProductCatalogue`, `catalog`-adjacent state); MandateRegistry and Mandate used in kernel config.rs:11,18 for reading the configured mandate at composition-root time; Entitlement also referenced from qip-edge-node/src/venue.rs.",
+    "io_and_state": "No direct I/O. Ledger state lives in-memory inside qip-kernel's Platform and is journaled through the kernel's own event log (not written here).",
+    "tests": {
+      "count": 127,
+      "notable": [
+        "an_expected_inflow_cannot_be_spent_until_the_ledger_posts_it",
+        "a_declared_threshold_splits_contributions_into_short_and_long_at_the_boundary",
+        "a_contribution_records_the_basis_the_instant_and_the_jurisdiction_it_was_made_under"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Reached from every composition root that reads a mandate (config.rs) and from the exploration/allocation paths; the largest test file in the crate (tests/user_ledger.rs, 2183 lines) targets this sub-namespace specifically.",
+    "blueprint_capabilities": ["CAPITAL", "LEDGER", "GOV"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/services/qip-capital/src/ledger/mod.rs:1-40",
+      "backend/crates/runtime/qip-kernel/src/exploration.rs:91",
+      "backend/crates/runtime/qip-kernel/src/config.rs:11,18",
+      "backend/crates/apps/qip-edge-node/src/venue.rs (Entitlement)"
+    ]
+  },
+  {
+    "name": "qip-capital::collateral+exploration",
+    "path": "backend/crates/services/qip-capital/src/{collateral.rs,exploration.rs}",
+    "kind": "service",
+    "purpose": "collateral.rs (1640 lines, the crate's single largest file) models the cross-venue collateral graph: which asset backs which obligation, under which margin regime, and what a forced close-out at one venue does to margin elsewhere via LiquidationCascade. exploration.rs (1255 lines) runs small-size probes into candidate strategies/venues and books their outcomes into an ExplorationBook, distinct from capital already allocated to proven strategies.",
+    "key_contracts": [
+      "struct CollateralGraph, CollateralReuse (collateral.rs:395,291)",
+      "struct LiquidationCascade, CascadeStep (collateral.rs:345,331)",
+      "enum MarginRegime, Rehypothecation (collateral.rs:78,101)",
+      "struct DomainCoverage, MarginDomain (collateral.rs:187,148)",
+      "struct ExplorationBook, ExplorationPlan (exploration.rs:538,340)",
+      "struct Probe, ProbeCandidate, ProbeOutcome, ProbeSettlement (exploration.rs:297,208,444,485)",
+      "enum ProbeKind, ProbeEvidence (exploration.rs:149,424)"
+    ],
+    "workspace_deps": ["qip-core", "qip-financial", "qip-contracts", "qip-portfolio"],
+    "reached_from_production": "yes",
+    "production_evidence": "collateral.rs types (MarginRegime, CrossVenueLink, etc.) imported in kernel's asset_class_registry.rs:65 and cross_margin.rs:78-82. exploration.rs's ExplorationBook, Probe, ProbeKind are re-exported and used by kernel's own exploration.rs module (backend/crates/runtime/qip-kernel/src/exploration.rs:60,90-92), which is the kernel's DISCOVER-stage wrapper around this crate's probe machinery.",
+    "io_and_state": "No direct I/O. Both modules are pure in-memory data/decision structures composed by qip-kernel.",
+    "tests": {
+      "count": 127,
+      "notable": [
+        "(shared crate test count; exploration-specific: tests/exploration.rs, 285 lines)"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Both modules have direct, named production call sites in qip-kernel (cross_margin.rs, asset_class_registry.rs, exploration.rs) and dedicated test files.",
+    "blueprint_capabilities": ["CAPITAL", "RISK"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/services/qip-capital/src/collateral.rs:78-395",
+      "backend/crates/services/qip-capital/src/exploration.rs:149-538",
+      "backend/crates/runtime/qip-kernel/src/cross_margin.rs:78-82",
+      "backend/crates/runtime/qip-kernel/src/exploration.rs:60,90-92"
+    ]
+  },
+  {
+    "name": "qip-capital-fabric",
+    "path": "backend/crates/services/qip-capital-fabric",
+    "kind": "service",
+    "purpose": "Predictive capital fabric: forecasts where cash, collateral, FX funding and margin will be needed per region/currency/venue ahead of time, prices moving it (transfer.rs), knows settlement conventions (T+0/T+1/T+2), takes a pre-positioning decision against qip_capital's live limits (plan.rs), and scores the decision afterward (evaluate.rs). Overview module; see sub-records for the reached corridor/gate/journal control path and the unreached custody/destination/assessment path.",
+    "key_contracts": [
+      "struct DemandForecaster, DemandForecast, Interval (forecast.rs:321,214,95)",
+      "struct TransferCostModel, ShortfallAsymmetry (transfer.rs:363,55)",
+      "struct SettlementBook, SettlementCalendar, enum SettlementConvention (settlement.rs:304,129,40)",
+      "struct PrePositioningPlanner, PrePositioningPlan, PrePositioningRequest (plan.rs:436,336,135)",
+      "fn evaluate::evaluate -> PlanScore, RealisedDemand, LaneOutcome (evaluate.rs:40,98,129)",
+      "fn replay::replay_from (replay.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events", "qip-contracts", "qip-financial", "qip-capital", "qip-numerics"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel depends on qip-capital-fabric directly. DemandForecaster::new() and PrePositioningPlanner::new() are both constructed in Platform's own constructor (backend/crates/runtime/qip-kernel/src/platform.rs:4389,4489) and exercised by Platform::pre_position (platform.rs:18021), called each DECIDE-stage cycle per pre_positioning.rs's own module doc. TransferCostModel/FundingCurve/FxRates reached via the crate-root re-export used in platform.rs:96-99.",
+    "io_and_state": "No direct I/O. FabricJournal (journal.rs) is an in-memory EventLog-backed state machine; qip-kernel resumes it from its own persisted event log (resume_fabric in platform.rs).",
+    "tests": {
+      "count": 154,
+      "notable": [
+        "a_settlement_calendar_that_pays_out_before_its_own_cut_off_is_refused",
+        "replay_is_deterministic_across_two_runs_and_two_journals",
+        "every_legal_corridor_edge_transitions_and_nothing_else_does"
+      ]
+    },
+    "status": ["exists", "hardened", "partial"],
+    "status_reason": "The forecast/plan/evaluate pre-positioning loop is fully wired into every DECIDE cycle; the crate's own pre_positioning.rs module doc in qip-kernel states explicitly that a plan's moves never become transfer intents and 'nothing here reaches the fabric's gate' — see the gate/custody sub-record.",
+    "blueprint_capabilities": ["CAPITAL", "FABRIC", "RISK"],
+    "gaps_observed": [
+      "\"A plan's moves never become transfer intents, and nothing here reaches the fabric's gate. That is not a gap left for later\" — backend/crates/runtime/qip-kernel/src/pre_positioning.rs:22-31, explaining that GateCommand's enforcement-point attestations are facts a human must establish out of band"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-capital-fabric/src/lib.rs:1-40",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4389,4489,18021",
+      "backend/crates/runtime/qip-kernel/src/pre_positioning.rs:1-40"
+    ]
+  },
+  {
+    "name": "qip-capital-fabric::gate+journal+tolerance",
+    "path": "backend/crates/services/qip-capital-fabric/src/{gate.rs,journal.rs,tolerance.rs,corridor.rs,wallet.rs}",
+    "kind": "service",
+    "purpose": "The seven-veto TransferGate (§37.3): CorridorAuthority, Caps, MinimumInterval, StatedPurpose, SourceBalance, VelocityAndAnomaly, KillSwitch, run in order with the first veto stopping the rest. FabricJournal::decide wraps every FabricCommand (wallet assemble/reconcile, corridor propose, gate assess) as an event-logged, replay-deterministic record. tolerance.rs holds per-venue-asset reconciliation tolerance schedules; wallet.rs reconciles observed vs. ledger holdings and raises drift/halt alerts.",
+    "key_contracts": [
+      "struct TransferGate; fn assess(...) -> Result<Approved, Vetoed> (gate.rs:727,741)",
+      "enum GateCheck (7 variants) (gate.rs:540-560)",
+      "struct FabricJournal, FabricState; fn decide (journal.rs:866,944)",
+      "enum FabricCommand, FabricOutcome (journal.rs:405,427)",
+      "struct PolicyRateTable, ToleranceSchedule, SourcedIntervalRate (tolerance.rs:1123,571,767)",
+      "struct Wallet, ReconciliationOutcome, ReconciliationAlert (wallet.rs:507,398,363)",
+      "struct Corridor, CorridorId, CorridorStage (corridor.rs:357,33,245)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events", "qip-contracts", "qip-financial", "qip-capital", "qip-numerics"],
+    "reached_from_production": "partial",
+    "production_evidence": "FabricJournal::decide is called directly by qip-kernel's Platform (backend/crates/runtime/qip-kernel/src/platform.rs:7470,7601) for Wallet::Assemble/Reconcile commands the kernel constructs itself (platform.rs:7913,7922). The kernel also inspects `FabricCommand::Gate` when one arrives (platform.rs:7583, cross-checking gate.funding against Platform::corridor_funding) — meaning the Gate path is wired to run correctly IF invoked. But no production code anywhere (kernel or any app) constructs a `GateCommand` literal to submit: `grep -rn \"GateCommand {\" backend/crates/apps backend/crates/runtime --include=*.rs` matches only test files. So TransferGate::assess (and by extension the custody/destination checks it requires, see the next sub-record) is reachable but not exercised by any production caller.",
+    "io_and_state": "No direct I/O; FabricJournal wraps an in-memory qip-events EventLog, resumed from qip-kernel's persisted log at startup (resume_fabric).",
+    "tests": {
+      "count": 154,
+      "notable": [
+        "a_gate_refusal_record_names_the_refusing_check_as_a_delimited_token",
+        "an_amount_over_the_per_transfer_cap_vetoes_on_caps_naming_the_cap",
+        "a_corridor_whose_source_class_the_custody_policy_says_never_transfers_vetoes_on_corridor_authority"
+      ]
+    },
+    "status": ["exists", "hardened", "requires-migration"],
+    "status_reason": "Wallet-assemble/reconcile commands run in every DECIDE-adjacent cycle and are hardened; the seven-veto TransferGate itself is structurally wired (the kernel validates a Gate command's funding field when one shows up) but has no production emitter, matching pre_positioning.rs's own statement that nothing currently reaches the gate.",
+    "blueprint_capabilities": ["CAPITAL", "FABRIC", "RISK", "GOV"],
+    "gaps_observed": [
+      "No production construction site for GateCommand anywhere in backend/crates/apps or backend/crates/runtime outside tests/ directories",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:7583 shows the kernel is prepared to validate a Gate command's funding field, confirming the seam exists but is unused"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-capital-fabric/src/gate.rs:540-620,727,741-860",
+      "backend/crates/services/qip-capital-fabric/src/journal.rs:829-865,944",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:7470,7583,7601,7913,7922"
+    ]
+  },
+  {
+    "name": "qip-capital-fabric::custody+destination+assessment",
+    "path": "backend/crates/services/qip-capital-fabric/src/{custody.rs,destination.rs,assessment.rs}",
+    "kind": "service",
+    "purpose": "custody.rs (1217 lines, the crate's largest file) models §37.4's three-enforcement-point agreement — custody class, custodian, enforcement points, attestations, and a TransferAuthority that proves three independent identities agreed. destination.rs is the venue-allowlist registry a corridor's destination must appear on. assessment.rs mints a content-digest AssessmentId (not an event id or chain-head) that binds an attestation to exactly what was assessed.",
+    "key_contracts": [
+      "struct CustodyPolicy, TransferAuthority, EnforcementPoints (custody.rs:388,1185,979)",
+      "struct Agreement, Attestation, Identity (custody.rs:1067,935,902)",
+      "enum CustodyClass, Custodian, CorridorKind (custody.rs:69,113,155)",
+      "struct DestinationRegistry, DestinationRecord, Approver (destination.rs:311,292,176)",
+      "enum DestinationStatus (destination.rs:248)",
+      "struct AssessmentId (content digest, not an event id) (assessment.rs:114)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events", "qip-contracts", "qip-financial", "qip-capital", "qip-numerics"],
+    "reached_from_production": "tests-only",
+    "production_evidence": "grep for CustodyPolicy, TransferAuthority, EnforcementPoints, Agreement, DestinationRegistry, DestinationRecord and AssessmentId across backend/crates/runtime/qip-kernel/src and backend/crates/apps/*/src (all non-test source) returns zero matches for every symbol. These types are required parameters of TransferGate::assess (gate.rs:741-753: `custody: &CustodyPolicy, authority: &TransferAuthority, registry: &DestinationRegistry`), and that function is only reachable through a GateCommand, which (per the gate/journal sub-record) no production code constructs. FabricState itself (journal.rs:529-535) holds a DestinationRegistry field but no CustodyPolicy/TransferAuthority field — those arrive only via the never-constructed GateCommand.",
+    "io_and_state": "No direct I/O; pure in-memory policy/record types.",
+    "tests": {
+      "count": 154,
+      "notable": [
+        "a_corridor_whose_source_class_the_custody_policy_says_never_transfers_vetoes_on_corridor_authority",
+        "(custody, destination and assessment are exercised in tests/corridor_and_gate.rs, tests/attestation_binding.rs and tests/custody_mirror.rs)"
+      ]
+    },
+    "status": ["exists", "unused", "requires-migration"],
+    "status_reason": "Fully implemented and tested in isolation, but structurally unreachable from any deployable binary because the only entry point (GateCommand) is never constructed outside tests.",
+    "blueprint_capabilities": ["CAPITAL", "FABRIC", "GOV", "SEC"],
+    "gaps_observed": [
+      "Zero production references to CustodyPolicy/TransferAuthority/EnforcementPoints/Agreement/DestinationRegistry/DestinationRecord in backend/crates/runtime/qip-kernel/src or backend/crates/apps/*/src",
+      "FabricState (journal.rs:529-535) carries a DestinationRegistry field but no CustodyPolicy or TransferAuthority field, so even the journal's own persisted state cannot supply a Gate assessment's required custody/authority arguments without an external caller"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-capital-fabric/src/custody.rs:1-30,388,979,1067,1185",
+      "backend/crates/services/qip-capital-fabric/src/destination.rs:1-20,311",
+      "backend/crates/services/qip-capital-fabric/src/assessment.rs:1-30,114",
+      "backend/crates/services/qip-capital-fabric/src/gate.rs:741-753",
+      "backend/crates/services/qip-capital-fabric/src/journal.rs:529-535"
+    ]
+  },
+  {
+    "name": "qip-execution-engine",
+    "path": "backend/crates/services/qip-execution-engine",
+    "kind": "service",
+    "purpose": "ACT stage: the order management system (OMS), execution algorithms, multi-leg groups, a quoting module that structurally cannot become an order (no function converts a QuotePair to an Order), and origination gating for creating new markets under a hard-coded $250,000,000 (raw i128 units) maximum exposure ceiling.",
+    "key_contracts": [
+      "trait Broker: Send + Sync + fmt::Debug (broker.rs:42)",
+      "struct SimulatedBroker, SimulationSettings, LiveBroker, LiveVenueConfig (broker.rs:278,99,641,623)",
+      "struct OrderManager; fn submit refuses a live venue below live autonomy (oms.rs:371)",
+      "enum RefusalReason (oms.rs:69)",
+      "struct Order, Fill (order.rs:197,172); Fill::simulated set by the OMS, not the broker",
+      "struct QuotePolicy, QuotePair, QuoteInputs (quoting.rs:100,429,309)",
+      "struct LegGroup, enum Verdict, GroupState (multileg.rs:310,253,153)",
+      "struct OriginationMandate; const ORIGINATION_MAX_EXPOSURE = 250_000_000_000_000 raw (origination.rs:205,46)",
+      "struct SessionRecorder, RecordedSession (session.rs:228,142)",
+      "struct VenueFeasibility, Infeasible (feasibility.rs:70,141)"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-market", "qip-risk", "qip-risk-engine"],
+    "reached_from_production": "yes",
+    "production_evidence": "Broker/Order/OrderType/Side used directly by qip-edge-node/src/gateway.rs:65-66; OrderManager and Broker used by qip-cli demo (src/demo/mod.rs:106-108); qip-kernel's Platform holds a SimulatedBroker/SimulationSettings/Broker (platform.rs:134), a QuotePair-producing quote_loop.rs (kernel/src/quote_loop.rs:88-89,213), a SessionRecorder (session_replay.rs:77) and reads feasibility (venue_review.rs:712). qip-api Cargo.toml also depends on it directly.",
+    "io_and_state": "No direct network/file I/O in this crate itself; SimulatedBroker/LiveBroker model fills without a transport. qip_transport-based network I/O lives one layer down in qip-brokers (the venue adapters) and qip-mesh (the spine), not here.",
+    "tests": {
+      "count": 105,
+      "notable": [
+        "the_oms_does_not_take_the_brokers_word_for_the_simulation_flag",
+        "a_pre_trade_refusal_names_the_limits_that_refused_it_and_not_a_word_of_the_sentence",
+        "an_order_to_a_withdrawn_venue_is_refused_as_unavailable_even_though_the_venue_is_simulated"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Deeply wired into both qip-edge-node and qip-kernel/Platform, 105 tests, and LiveBroker is a complete interface with no transport (reports itself unavailable rather than trading) — the crate's own doc comments call this out as deliberate.",
+    "blueprint_capabilities": ["EXEC", "RISK"],
+    "gaps_observed": [
+      "LiveBroker (broker.rs:641) has no credential, no FIX/REST client and no egress path by design — reports itself unavailable rather than submitting; this is the intended paper-trading boundary, not an unintentional stub"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-execution-engine/src/lib.rs:1-25",
+      "backend/crates/services/qip-execution-engine/src/origination.rs:29-47",
+      "backend/crates/apps/qip-edge-node/src/gateway.rs:65-66",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:134",
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs:88-213"
+    ]
+  },
+  {
+    "name": "qip-risk-engine",
+    "path": "backend/crates/services/qip-risk-engine",
+    "kind": "service",
+    "purpose": "The deterministic control function: autonomy level and kill switch (autonomy.rs), pre-trade order checks against risk state computed before the trade rather than after (pretrade.rs), and real-time book monitoring (monitor.rs). No model is consulted anywhere in this crate by design.",
+    "key_contracts": [
+      "enum AutonomyLevel (autonomy.rs:30)",
+      "struct AutonomyController, AutonomyChange (autonomy.rs:473,462)",
+      "struct KillSwitch, KillSwitchTrip, KillSwitchClearance (autonomy.rs:320,275,290)",
+      "struct OperatorIdentity; fn verified, with_second_approver (autonomy.rs:193)",
+      "struct PreTradeChecker, ProposedOrder; enum PreTradeDecision (pretrade.rs:141,23,75)",
+      "struct RiskMonitor, MonitorPolicy; enum MonitorAction (monitor.rs:121,74,20)"
+    ],
+    "workspace_deps": ["qip-core", "qip-risk"],
+    "reached_from_production": "yes",
+    "production_evidence": "AutonomyLevel imported in qip-fastbrain/src/main.rs:46 and qip-deepbrain/src/main.rs:55 and qip-api/src/main.rs:34 (composition-root startup checks). OperatorIdentity::verified called 12 times in qip-api/src/routes.rs (e.g. lines 1404,1495,1579,...,2402) for every autonomy-change endpoint. PreTradeChecker used in qip-kernel platform.rs:183 and directly constructed by qip-cli demo (src/demo/mod.rs:129). KillSwitch::clear_global referenced from qip-api console.rs and qip-web console rendering.",
+    "io_and_state": "No direct I/O. Autonomy state and kill-switch state are held by qip-kernel's Platform in memory and journaled through the kernel's event log.",
+    "tests": {
+      "count": 41,
+      "notable": [
+        "the_permitted_quantity_is_the_exact_boundary_and_one_more_unit_breaches",
+        "two_operators_can_enable_live_trading_where_the_ceiling_permits_it",
+        "the_same_breach_halts_immediately_at_a_live_autonomy_level"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Reached from every composition root (qip-api, qip-fastbrain, qip-deepbrain, qip-cli) and from qip-kernel's Platform; no TODO/stub markers found; 41 tests including exact-boundary and dual-approver cases.",
+    "blueprint_capabilities": ["RISK", "GOV", "SEC"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/services/qip-risk-engine/src/lib.rs:1-21",
+      "backend/crates/apps/qip-fastbrain/src/main.rs:46",
+      "backend/crates/apps/qip-api/src/routes.rs:1404,1495,1579,1637,1709,1752,1851,1910,1998,2065,2139,2402",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:181-183"
+    ]
+  },
+  {
+    "name": "qip-portfolio-engine",
+    "path": "backend/crates/services/qip-portfolio-engine",
+    "kind": "service",
+    "purpose": "DECIDE stage: PortfolioConstructor sizes approved hypotheses through the compute router into a Proposal (intent plus reasoning plus checks passed, explicitly not an order). Structural rules: a leg with no hypothesis fails validation; approval requires both risk and compliance sign-off; only an approved proposal can be released; a veto works from any pre-release state.",
+    "key_contracts": [
+      "struct PortfolioConstructor; fn new(mandate, router) (construction.rs:157)",
+      "struct ApprovedThesis, ConstructionOutcome (construction.rs:26,149)",
+      "struct Mandate (construction.rs:68)",
+      "struct Proposal, ProposalLeg; enum ProposalStatus, Side (proposal.rs:131,44,73,21)"
+    ],
+    "workspace_deps": ["qip-core", "qip-optimization-engine"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel depends on qip-portfolio-engine directly (Cargo.toml). PortfolioConstructor::new(config.mandate, router) is called in Platform's constructor (backend/crates/runtime/qip-kernel/src/platform.rs:4514) and held as a field (`constructor: PortfolioConstructor`, platform.rs:232). ApprovedThesis and Proposal/ProposalStatus/Side are used throughout platform.rs (12000+ lines reference construction outcomes) and capacity_review.rs:74-403. Note: qip-api's Cargo.toml has no direct qip-portfolio-engine line — qip-api reaches it transitively only through qip-kernel; qip-api's own source only references it in doc comments (routes.rs:2742,2826, auth.rs:38).",
+    "io_and_state": "No direct I/O. Construction/proposal state lives in Platform and is journaled through the kernel's event log.",
+    "tests": {
+      "count": 31,
+      "notable": [
+        "a_vetoed_proposal_cannot_be_approved_afterwards",
+        "two_controls_approve_and_the_proposal_can_then_be_released",
+        "construction_refuses_a_thesis_with_an_impossible_conviction"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Directly instantiated in Platform's constructor and exercised every DECIDE cycle; 31 tests cover the dual-control and veto-from-any-state rules explicitly.",
+    "blueprint_capabilities": ["EXEC", "RISK", "REASON"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/services/qip-portfolio-engine/src/lib.rs:1-22",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:169-170,232,4514",
+      "backend/crates/runtime/qip-kernel/src/capacity_review.rs:74,403"
+    ]
+  },
+  {
+    "name": "qip-lifecycle",
+    "path": "backend/crates/services/qip-lifecycle",
+    "kind": "service",
+    "purpose": "Evidence and approval gates for the candidate→holdout→paper→shadow→pilot→scaled ladder (and retire, from anywhere). Gates never score (one failing check fails the gate); gates recompute evidence from raw series via qip-simulation-engine rather than trusting a submitted Sharpe; promotion to a capital-holding rung is unrepresentable without a dual Approval; demotion needs no approver at all.",
+    "key_contracts": [
+      "trait Gate; struct HoldoutGate, PaperGate, ShadowGate, PilotGate, ScaledGate (gates.rs:52,130,490,629,744,871)",
+      "struct LifecycleLedger, AuthorisedPromotion, LedgerEntry (ledger.rs:154,49,119)",
+      "struct VenueLadder, VenuePromotionPolicy; trait VenueGate (venue_ladder.rs:700,305,361)",
+      "struct DemotionMonitor, DemotionPolicy; enum DemotionTrigger (demotion.rs:370,322,149)",
+      "struct StrategyEvidence, EvidencePackage, LeakageAudit (evidence.rs:440,533,50)",
+      "trait HorizonReconciler; struct HorizonAssurance (horizon.rs:237,304)",
+      "struct TrialBook, TrialAccount, StrategyFamily (trials.rs:392,314,145)",
+      "struct HoldoutBand, BandVerdict (band.rs:70,204)",
+      "fn corridor::emit -> CorridorPolicy (corridor.rs:303) — see gaps",
+      "fn scoring::periodic_sharpe, annualised_sharpe (scoring.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-contracts", "qip-financial", "qip-ai", "qip-simulation-engine", "qip-observability"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel depends on qip-lifecycle directly and constructs/uses it in venue_measurement.rs, central/horizon.rs, central/foundry.rs, central/learning.rs, venue_admission.rs, central/factory.rs. HorizonReconciler has two real implementations composed in kernel: PoolReconciler and UnarmedHorizons (central/horizon.rs:439,581). qip-deepbrain also imports it directly: LifecycleLedger in succession.rs:68, evidence types in evolution.rs:50, HoldoutPolicy::default() in evolution.rs:194,3364.",
+    "io_and_state": "No direct I/O. LifecycleLedger and TrialBook are in-memory; trials.rs notes a composition root supplies a durable store (LifecycleLedger::with_trial_book) — not this crate's own I/O.",
+    "tests": {
+      "count": 77,
+      "notable": [
+        "an_expired_capital_envelope_demotes_the_strategy_trading_under_it",
+        "a_strategy_two_sources_place_at_different_horizons_cannot_take_a_rung_that_holds_capital",
+        "an_automatically_retired_strategy_is_terminal_and_a_later_review_neither_moves_nor_fails_it"
+      ]
+    },
+    "status": ["exists", "hardened", "partial"],
+    "status_reason": "Gates, ledger, demotion and horizon reconciliation are all wired into qip-deepbrain and qip-kernel; but corridor.rs's own policy-computation function (`emit`, the thing that actually derives a CorridorPolicy from ledger state) has zero production callers.",
+    "blueprint_capabilities": ["GOV", "EVID", "RISK", "CAPITAL"],
+    "gaps_observed": [
+      "corridor::emit (corridor.rs:303), the function that computes CorridorPolicy/CorridorRuling from strategy standings, has no caller in backend/crates/runtime/qip-kernel/src or backend/crates/apps/*/src — only CorridorSubject (a plain data record) is referenced there (central/factory.rs:28); CorridorPolicy and CorridorRuling by name have zero production references"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-lifecycle/src/lib.rs:1-45",
+      "backend/crates/services/qip-lifecycle/src/corridor.rs:1-30,303",
+      "backend/crates/runtime/qip-kernel/src/central/horizon.rs:73-74,439,581",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:50,194,3364",
+      "backend/crates/apps/qip-deepbrain/src/succession.rs:68"
+    ]
+  },
+  {
+    "name": "qip-mesh",
+    "path": "backend/crates/services/qip-mesh",
+    "kind": "service",
+    "purpose": "Two unrelated things sharing a name: (1) point-in-time data mesh ports (Lakehouse/Analytical/HotSeries/MasterData/Graph/Evidence, each with in-memory and file-backed adapters, no `latest()` method anywhere so every read carries an as-of) declared against the architecture's named managed GCP services; and (2) spine.rs, the central plane's half of the regional network mesh — CapitalDispatcher pushing signed envelopes down to cells, CellDeltaReceiver draining cell state deltas up, over qip_transport's durable spool/retry/dead-letter machinery.",
+    "key_contracts": [
+      "struct Catalog, DatasetRegistration, DatasetLineage (catalog.rs:237,70,171)",
+      "trait Lakehouse, AnalyticalStore, HotSeries, MasterData, GraphStore, EvidenceStore (ports.rs:185,203,243,269,286,322)",
+      "struct MeshLakehouse<B>, MeshAnalytics<B>, ... (adapters.rs:24,80,161,221,282,351)",
+      "trait StateBacking<S>; struct MemoryBacking<S>, FileBacking<S> (backing.rs:19,29,61)",
+      "enum MeshPort, MeshTarget; struct MeshProvider (provider.rs:35,83,188)",
+      "struct DeltaOrder, DecodedCellDelta, fn decode_cell_delta (delta.rs:55,219)",
+      "struct CapitalDispatcher, DispatcherConfig; enum CapitalDispatch (spine.rs:273,143,201)",
+      "struct CellDeltaReceiver, ReceiverStats, DrainReport (spine.rs:791,733,763)",
+      "struct PolicyCourier; enum PolicySend (spine.rs:577,586)"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-storage", "qip-events", "qip-transport"],
+    "reached_from_production": "partial",
+    "production_evidence": "catalog::Catalog is constructed in Platform (platform.rs:4450 `catalog: Catalog::new()`) and held as a field. spine::{CapitalDispatcher, CellDeltaReceiver, PolicyCourier, ...} are imported and used directly in qip-api/src/mesh.rs:74-76, gated by the QIP_MESH_CELLS environment variable (mesh.rs:88-90) — real production wiring in the qip-api binary. qip-cli's demo --live also constructs spine types (demo/mod.rs:124). HOWEVER the data-mesh ports (adapters.rs, ports.rs, provider.rs, backing.rs) have zero references anywhere in backend/crates/runtime/qip-kernel/src or backend/crates/apps/*/src outside test files — grep confirms matches only in backend/crates/services/qip-mesh/tests/* and backend/crates/tests/qip-acceptance/tests/{compliance_proof,truth_loop}.rs.",
+    "io_and_state": "backing.rs::FileBacking performs real file I/O (std::fs::read_to_string, create_dir_all, write-then-rename at backing.rs:71,79,98-99) for its dev/single-node JSON-file adapter. spine.rs uses qip_transport's durable spool (file-backed) for undelivered capital envelopes. No managed-GCP-backed MeshTarget variant is implemented; MeshProvider returns qip_core::Error::Unavailable naming the missing credential/project for BigQuery/Bigtable/Spanner/etc.",
+    "tests": {
+      "count": 76,
+      "notable": [
+        "an_envelope_to_a_cell_that_is_down_stays_in_the_spool_rather_than_being_lost",
+        "the_graph_traverses_no_edge_recorded_after_the_as_of",
+        "a_dataset_grants_nothing_for_an_instant_before_it_was_registered"
+      ]
+    },
+    "status": ["exists", "hardened", "partial"],
+    "status_reason": "The network-mesh half (spine/delta, catalog) is live in qip-api's production route, env-gated; the data-mesh half (the six port traits and their adapters, which are most of the crate's doc-comment purpose) is implemented and tested but never constructed by any composition root.",
+    "blueprint_capabilities": ["MESH", "DATA", "LEDGER"],
+    "gaps_observed": [
+      "MeshLakehouse/MeshAnalytics/MeshHotSeries/MeshMasterData/MeshGraph/MeshEvidence (adapters.rs) and the six port traits (ports.rs) have zero production references in qip-kernel or any app — data-mesh reads/writes are exercised only in this crate's own tests and in qip-acceptance",
+      "MeshProvider (provider.rs) declares BigLakeIceberg/BigQuery/Bigtable/Spanner/SpannerGraph/CloudStorageWorm targets but every one returns Error::Unavailable naming a missing credential — no managed-GCP implementation exists in-tree (provider.rs:1-17)"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-mesh/src/lib.rs:1-40",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:159,4450",
+      "backend/crates/apps/qip-api/src/mesh.rs:73-90",
+      "backend/crates/services/qip-mesh/src/backing.rs:71,79,98-99",
+      "backend/crates/services/qip-mesh/src/provider.rs:1-17"
+    ]
+  }
+]

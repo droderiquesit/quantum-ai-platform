@@ -1,0 +1,1243 @@
+[
+  {
+    "id": "QUANT-001",
+    "domain": "QUANT",
+    "title": "A Quantum Foundry hosts hybrid optimisation and experimental-learning workloads behind one benchmark harness",
+    "statement": "The platform provides a Quantum Foundry: a hybrid quantum-classical research and optimisation component into which workloads plug as named workload families (hybrid QAOA/QUBO optimisation, graph/search, feature/ensemble selection, quantum kernels/variational models, quantum reservoir/extreme-learning research, scenario/hypothesis selection, and structured symbolic/combinatorial search), each run through a shared benchmark harness.",
+    "rationale": "The blueprint widens quantum from allocation-only to a foundry. If the foundry has no named, pluggable families with a harness in front of them, 'broad' turns into a set of one-off experiments that no gate can see or compare.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "\u00a71 Executive Summary ('Quantum is a hybrid research/optimization accelerator ...'; 'Quantum resources can assist selected combinatorial search, scenario/ensemble selection and experimental reasoning workloads')"
+      },
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 row 'Quantum only optimizes allocation/path decisions'"
+      },
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 row 'Quantum is mainly optimization + experimental QML'"
+      },
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "\u00a73 Full Capability Map \u2014 Quantum foundry row ('... benchmark harness')"
+      },
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "\u00a74 Time-Lane Architecture \u2014 Lane 4 (Quantum/Research) ('Includes experimental quantum-assisted symbolic/combinatorial search, scenario diversification and world-model ensemble selection')"
+      },
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "\u00a711 Quantum Foundry \u2014 intro ('experimental co-processor for structured symbolic/combinatorial reasoning, scenario selection and world-model ensemble search')"
+      },
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "\u00a723 Intelligence Expansion Engine \u2014 mechanism table, Quantum-assisted research row"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "\u00a731 Capability Completeness Checklist ('Quantum Foundry supports optimization and experimental learning')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('Quantum research can assist selected structured symbolic/combinatorial search and world-model/scenario ensemble selection')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a732 Technology Reality Notes ('architecturally broad but operationally benchmark-gated')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An acceptance test enumerates the foundry's workload-family registry and finds each family named in the M p20-21 table either registered with its classical counterpart and a harness entry, or recorded explicitly as not built. No family is silently absent."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "ARCH",
+      "MODEL",
+      "EXPANSION"
+    ],
+    "notes": "This requirement is the umbrella. Ten scope statements that list the same families are merged into it. M p6 and the M p20-21 table are the most specific, and each family is its own requirement (QUANT-013, QUANT-017 to QUANT-026). The 'measurable advantage' and 'where benchmarked value is demonstrated' clauses of the same sentences are QUANT-002. The QuantumExperiment/Benchmark artifact of M p28 is QUANT-031. ARCH-036 (Phase 6 exit) calls the families 'plug-ins'. NON_RUST and NEW_DEPENDENCY are kept because the QML families would in practice need Qiskit, which is Python and would need an ADR. In-tree: qip-quantum (statevector simulator, QAOA, a QuantumProvider port with a HostedProvider for IBM Quantum REST, a quantum-inspired annealer, and SolverBenchmark) and qip-optimization-engine's ComputeRouter implement one family, portfolio allocation. No workload-family registry exists."
+  },
+  {
+    "id": "QUANT-002",
+    "domain": "QUANT",
+    "title": "A quantum path goes to production only on a benchmarked win on the same objective, cost and latency",
+    "statement": "A quantum or quantum-assisted path is used in production for a workload only after it has shown a benchmarked improvement over the classical method on the same objective and within the same cost and latency constraints. A path that wins on the objective but is slower or more expensive than the classical method does not qualify.",
+    "rationale": "Quantum ML and quantum advantage are still experimental for many practical workloads (M p22, p44). A path that is more accurate but slower or dearer is a regression that an objective-only comparison would hide.",
+    "kind": "acceptance",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "\u00a71 Executive Summary ('used where measurable advantage exists')"
+      },
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "\u00a74 Time-Lane Architecture \u2014 Lane 4 (Quantum/Research) ('where benchmarked value is demonstrated')"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "\u00a711 Quantum Foundry \u2014 Reality boundary ('Production use requires benchmarked improvement versus classical methods on the same objective, cost and latency constraints')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a732 Technology Reality Notes ('operationally benchmark-gated')"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "\u00a711 Cognitive, Model and Quantum Compute Plane \u2014 Quantum row ('Classical benchmark ... required before any artifact can promote')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The promotion gate receives three benchmark records for one workload: one better on the objective but over the classical cost, one better but past the latency bound, and one better on all three axes. It admits only the third."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "EVAL",
+      "FINOPS",
+      "MODEL"
+    ],
+    "notes": "The M p10 raw item R14 read 'where benchmarked value is demonstrated' as governing only scenario diversification and world-model ensemble selection. The sentence governs all three items in its list, symbolic/combinatorial search included, and is merged here on that reading. NON_RUST, NEW_DEPENDENCY and MANAGED_SERVICE (from the merged M p2, M p10 and G p11 items) were dropped because a promotion criterion is none of those things. G p11's 'validation' is QUANT-012, and its 'before any artifact can promote' is QUANT-034. ARCH-037 (ship only measured wins) and FINOPS-016 (benefit per dollar and per unit of latency) state the same rule from the phase and cost sides. In-tree: ComputeRouter uses the quantum answer only when it is feasible and beats the baseline by RoutingPolicy::quantum_margin (default 0.01). SolverBenchmark records modelled runtime and exact money beside quality, but its module doc says quality is the only axis that decides anything, so cost and latency are recorded and do not gate. No promotion gate for a quantum path exists."
+  },
+  {
+    "id": "QUANT-003",
+    "domain": "QUANT",
+    "title": "Quantum output is an advisory candidate, never a proof of truth",
+    "statement": "Every quantum or quantum-assisted result is typed and recorded as an advisory candidate solution or search aid. No quantum result is recorded or consumed as a proof of truth or a truth oracle. Evidence and classical verification stay authoritative over any quantum result.",
+    "rationale": "A result a quantum device touched can read as more authoritative than it is. If nothing says what carries authority, a downstream consumer can treat the quantum answer as self-certifying.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "\u00a71 Executive Summary ('never confer truth')"
+      },
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 row 'Quantum is mainly optimization + experimental QML' ('never treated as a truth oracle')"
+      },
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "\u00a74 Time-Lane Architecture \u2014 Lane 4 (Quantum/Research) ('quantum output is advisory')"
+      },
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "\u00a711 Quantum Foundry \u2014 intro ('a candidate solution or search aid, never a proof of truth; evidence and classical verification remain authoritative')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A test proves that the only types a quantum solver or provider returns are candidate types, and that nothing converts them into an evidence, belief or usable-solution value except the classical validator."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID",
+      "REASON",
+      "WORLD"
+    ],
+    "notes": "One raw item cited the \u00a711 sentence as p21. It is on p20 and is cited here as p20. NON_RUST, carried by the M p5 item, was dropped because the invariant is about how a result is typed, not about implementation language. The rule has three surface-specific forms, kept separate because each is checked on a different record: evidence authenticity (QUANT-014), empirical validation (QUANT-027) and causal proof (QUANT-029). The 'classically verified' half of the Lane 4 clause is QUANT-012. In-tree: qip-quantum returns SolverCandidate and QaoaResult carrying a claimed objective. ValidatedSolution has private fields, one constructor (ClassicalValidator::validate) and no Deserialize, so an unvalidated claim cannot be carried forward or read back from JSON."
+  },
+  {
+    "id": "QUANT-004",
+    "domain": "QUANT",
+    "title": "Quantum output never bypasses evidence rules or deterministic controls",
+    "statement": "Quantum resources never bypass evidence rules or deterministic controls. A quantum result reaches a decision only as an input that the owning deterministic control (risk gate, order manager, capital issuer, evidence rules) evaluates. No component that vetoes, executes or moves money can reach a quantum solver, directly or through an intermediate crate.",
+    "rationale": "An optimiser's answer is policy (a budget, a whitelist, a target) for a deterministic control to judge. If the control can call the solver, the solver's answer becomes the decision, and the thing meant to constrain it is the thing asking.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "\u00a71 Executive Summary ('never ... bypass evidence and deterministic controls')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The architecture suite computes the transitive crate graph and asserts in both directions that no crate that vetoes, executes or moves money can reach the quantum solver crate. A vacuity guard asserts that the optimiser does reach it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "EXEC",
+      "CAPITAL",
+      "EVID"
+    ],
+    "notes": "Split from the M p2 sentence whose other half, 'never confer truth', is QUANT-003. In-tree: qip-acceptance/tests/architecture.rs holds nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver and a_quantum_solver_cannot_reach_anything_that_vetoes_executes_or_moves_money, both with vacuity anchors. The promotion-gate form of 'never bypasses' is QUANT-034 and the intervention-gate form is QUANT-028."
+  },
+  {
+    "id": "QUANT-005",
+    "domain": "QUANT",
+    "title": "Every quantum result is benchmarked against a classical baseline on the same instance",
+    "statement": "Whenever a quantum or quantum-assisted path runs, a classical baseline is solved on the same problem instance with the same objective, and the quantum result is compared with it. No quantum result exists without its classical comparator beside it.",
+    "rationale": "Quantum claims fail in three known ways: a weak baseline, a slightly different problem, and noise read as advantage (ADR 0006). Computing the baseline every time, on the same instance, closes the first two.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "\u00a71.1 Product Identity \u2014 Quantum-assisted ('always benchmarked against classical baselines')"
+      },
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 row 'Quantum is mainly optimization + experimental QML' ('always benchmarked against classical solvers')"
+      },
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Symbolic/combinatorial reasoning search row ('compare to classical solvers')"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "\u00a731 Capability Completeness Checklist ('benchmarked against classical baselines')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('every result is benchmarked')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Over generated problem instances, every solver run that includes a quantum or quantum-inspired path produces a report whose classical-baseline field is populated for the identical instance. A run whose baseline cannot be computed returns an error before any quantum solver is invoked."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVAL"
+    ],
+    "notes": "This is ADR 0006, already a standing decision in this repository. NON_RUST, carried by all five merged items, was dropped because the rule does not depend on implementation language. In-tree: ComputeRouter::solve always runs the classical path first. BenchmarkReport carries its baseline in a non-optional field, and SolverBenchmark::run computes the baseline first and errors if it cannot. ADR 0006 adds that if a full classical solve ever becomes intractable, the honest substitute is a bounded classical baseline, never none. Declaring each workload's baseline up front is QUANT-015. Recording results by family and size is QUANT-031."
+  },
+  {
+    "id": "QUANT-006",
+    "domain": "QUANT",
+    "title": "Quantum work runs in Lane 4, on a minutes-to-days time scale",
+    "statement": "Quantum and hybrid quantum-classical work (optimisation and learning experiments, benchmarked asynchronous workloads, scenario search and novel algorithm research) is scheduled as Lane 4 (Quantum/Research) work with a time budget of minutes to days. It is never assigned to a faster lane.",
+    "rationale": "QPU jobs queue on shared external hardware. A budget shorter than minutes would invite a faster lane to wait on them.",
+    "kind": "placement",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "\u00a74 Time-Lane Architecture \u2014 Lane 4 (Quantum/Research), time scale 'minutes to days' and responsibilities"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every quantum workload family declares Lane 4 and a time budget of minutes or longer, and no workload declared in Lanes 0-3 references a quantum solver or the Quantum Gateway."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": "ARCH-021 records this lane's time scale from the architecture side; this requirement assigns quantum work to it. NEW_DEPENDENCY, carried by the raw item, was dropped because placing work in a lane adds no dependency. The same cell's 'never blocks execution' is QUANT-008, and its 'benchmarked asynchronous workloads' is QUANT-007. In-tree: the lane model is not implemented as such. qip-kernel builds the ComputeRouter it sizes proposals with, and attaches a SimulatedProvider only when quantum_enabled is set (default false), so the only quantum path that can run today runs inside the central cycle rather than in a minutes-to-days lane."
+  },
+  {
+    "id": "QUANT-007",
+    "domain": "QUANT",
+    "title": "Quantum jobs are submitted and collected asynchronously through queue-aware orchestration",
+    "statement": "QPU jobs are submitted to IBM Quantum and their results collected asynchronously, through a job orchestrator that is aware of the device queue. Submission returns a job handle at once. The result arrives later, as an event or by polling the handle. No caller holds a request or a cycle open waiting on the device.",
+    "rationale": "A shared QPU queue can hold a job for hours. A caller that waits synchronously takes on that queue's latency and its outages.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "\u00a74 Time-Lane Architecture \u2014 Lane 4 (Quantum/Research) ('benchmarked asynchronous workloads')"
+      },
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "\u00a711 Quantum Foundry \u2014 intro ('QPU jobs are asynchronous')"
+      },
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "\u00a726 Platform & Deployment Architecture \u2014 placement table, Quantum row ('queue-aware asynchronous job orchestration')"
+      },
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "\u00a720 Critical Service-to-Service Connection Matrix \u2014 Agent/Symbolic workers to IBM Quantum gateway, Mode 'Async'"
+      },
+      {
+        "doc": "H",
+        "page": "L125",
+        "section": "\u00a701 Global Platform Topology \u2014 node 'ibm' ('async quantum')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A stub IBM Quantum endpoint holds a job queued for longer than the caller's cycle. Submission returns a handle without waiting, the cycle completes on schedule, and the result is attached to the job's record when the stub later completes the job."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "NEW_DEPENDENCY is kept as a warning. 'Asynchronous' here means a submit-and-collect protocol at the job level, and it does not license an async runtime: ADR 0001 and ADR 0011 keep blocking I/O with explicit timeouts. NON_RUST was dropped because the in-tree Rust adapter already speaks IBM Quantum's REST API. EXTERNAL_ACTION was dropped because a compute job sent to a vendor is not an action on the world. H L125 is the diagram's node label; the raw H item cites the edges at L128-138 (QUANT-036). In-tree: HostedProvider submits and then polls on the calling thread, bounded by HostedTransport::max_polls, and IbmQuantumConfig carries a QueuePolicy (maximum queue wait, shots, circuits per job, mode). So queue bounds exist, but the call is synchronous and nothing orchestrates jobs across callers. HostedProvider has no production caller."
+  },
+  {
+    "id": "QUANT-008",
+    "domain": "QUANT",
+    "title": "Quantum work never blocks execution and is never on the market hot path",
+    "statement": "No execution path (market event to order, risk check, order management, fill handling) depends on a quantum job, the Quantum Gateway or IBM Quantum. QPU jobs never sit on the market hot path, and a slow, queued, failed or unreachable quantum service cannot delay or stop execution.",
+    "rationale": "A QPU round trip on a shared queue takes minutes to hours. An execution path that waits on one takes on that latency and that outage.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "\u00a74 Time-Lane Architecture \u2014 Lane 4 (Quantum/Research) ('Never blocks execution', stated twice)"
+      },
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "\u00a711 Quantum Foundry \u2014 intro ('never sit on the market hot path')"
+      },
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "\u00a720 Critical Service-to-Service Connection Matrix \u2014 Agent/Symbolic workers to IBM Quantum gateway ('no execution dependency')"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With the gateway returning errors or never answering, a paper-trading run keeps producing decisions and simulated orders at its normal cadence."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC",
+      "REFLEX",
+      "RES"
+    ],
+    "notes": "M p43 \u00a731 says the same thing ('quantum and global cognition can never block the reflex path'). EXTERNAL_ACTION, carried by the G p19 item, was dropped as not applicable. In-tree: no_edge_cell_can_reach_a_quantum_solver in qip-acceptance/tests/architecture.rs proves the edge half structurally. The central cycle is a different case: when quantum_enabled is set, qip-kernel's portfolio construction runs ComputeRouter::solve synchronously inside the cycle, with SimulatedProvider only. Wiring HostedProvider in there as it stands would put a QPU queue inside the central decision cycle. QUANT-007 is what would make that safe."
+  },
+  {
+    "id": "QUANT-009",
+    "domain": "QUANT",
+    "title": "Quantum work aimed at microstructure or reflex models is benchmarked against classical microstructure baselines",
+    "statement": "When quantum-assisted feature, ensemble or path selection, or a hybrid-learning idea, targets microstructure, execution or reflex models, its benchmark baseline is the classical microstructure model for the same task, not a generic or weaker classical method.",
+    "rationale": "A quantum result compared with a weak baseline proves nothing (ADR 0006). For microstructure work, the honest comparator is the classical microstructure model the reflex path already uses.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "\u00a74 Time-Lane Architecture \u2014 Lane 4 (Quantum/Research) ('May benchmark feature/ensemble/path-selection or hybrid learning ideas against classical microstructure baselines')"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Each such experiment's benchmark record names as its classical baseline the microstructure model registered for that task. The harness refuses a record whose baseline is any other model."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK",
+      "REFLEX",
+      "MODEL"
+    ],
+    "notes": "The source wording is permissive ('may benchmark'). It is read here as fixing which baseline applies when such an experiment runs. Feature/ensemble selection itself is QUANT-020 and path selection is QUANT-018. Not built."
+  },
+  {
+    "id": "QUANT-010",
+    "domain": "QUANT",
+    "title": "Quantum-assisted search over intervention portfolios and sequences",
+    "statement": "The Causal Agency / Intervention Engine can use combinatorial optimisation or quantum-assisted research, run asynchronously and benchmarked, to search large permitted action sets, timing choices and resource allocations under constraints, and to rank large constrained action/scenario sets. The output is a ranked list of candidate plans.",
+    "rationale": "Intervention planning is a combinatorial search over actions, timing and resources, which is a structure QUBO-style formulations can express. The output is a ranking of candidates, which is the proper role for a search aid.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "\u00a74 Time-Lane Architecture \u2014 Lane 4 (Quantum/Research) ('May explore large combinatorial intervention sets ... asynchronously')"
+      },
+      {
+        "doc": "M",
+        "page": "11",
+        "section": "\u00a75 End-to-End System Path ('quantum-assisted search / ensemble / scenario research (async, benchmarked)')"
+      },
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Intervention portfolio / sequence search row"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('may rank large constrained action/scenario sets')"
+      },
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "\u00a732 Technology Reality Notes ('may help explore candidate action/scenario spaces')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Given a permitted action set and its constraints, the search returns ranked candidate plans that each satisfy the constraints and carry their classical-solver comparison. The plans are handed to the agency pipeline, never to an action surface."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY",
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": "P3 because the consumer is the Causal Agency engine: master Phase 10 and GCP Phase 10 (ARCH-069). The guard on this search's output (re-scoring and gates before any execution, and no authority to intervene) is QUANT-028, which is P0. External actions are scored BLOCKED under the paper-trading precedence rule (docs/blueprint/README.md, precedence 4). Not built."
+  },
+  {
+    "id": "QUANT-011",
+    "domain": "QUANT",
+    "title": "Quantum-assisted selection of counterfactual branches for simulation and experiment design",
+    "statement": "Scenario/ensemble search can select high-information alternate futures and intervention/no-intervention branches, and explore scenario branches asynchronously, to decide which branches receive expensive simulation or experiment design.",
+    "rationale": "Simulation and experiments are the expensive part of counterfactual reasoning, and choosing which branches deserve them is a combinatorial selection problem.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "\u00a74 Time-Lane Architecture \u2014 Lane 4 (Quantum/Research) ('... or scenario branches asynchronously')"
+      },
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Counterfactual branch selection row"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "For a fixed simulation budget, the branch set the selector picks is compared with a classical diversity/information selector's choice from the same candidate pool, and the record states which covered more information."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY",
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "AGENCY",
+      "WORLD"
+    ],
+    "notes": "The row's 'no quantum result is treated as causal proof by itself' is QUANT-029. P3 because intervention/no-intervention branches exist only with the agency engine (master Phase 10). Selecting world-model scenario subsets without interventions is QUANT-025 (P2). Not built."
+  },
+  {
+    "id": "QUANT-012",
+    "domain": "QUANT",
+    "title": "A quantum result is classically verified before anything uses it",
+    "statement": "Before any quantum or quantum-assisted result is used by a decision, a benchmark verdict or a promotion, a classical evaluator independently re-evaluates its solution against the real problem, including any constraints its own encoding relaxed. A result is refused if its claimed value does not match the re-evaluation or if it is infeasible.",
+    "rationale": "A QPU result is a number a remote service sent. Re-evaluating the assignment classically costs one pass over the problem, and it is the only thing that turns the claim into something the platform can check.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "\u00a74 Time-Lane Architecture \u2014 Lane 4 (Quantum/Research) ('advisory and classically verified')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('every result is benchmarked and independently verified')"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "\u00a711 Cognitive, Model and Quantum Compute Plane \u2014 Quantum row ('Classical benchmark and validation required')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The validator refuses a candidate whose claimed objective differs from the classical recomputation by more than the tolerance, and a candidate whose assignment violates a constraint the QUBO relaxation dropped. Neither ever becomes a usable solution."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVAL"
+    ],
+    "notes": "The Lane 4 clause says 'advisory and classically verified'. The raw item R15 stressed that verification is a required check, not a restatement of 'advisory'. The advisory half is QUANT-003. NON_RUST, MANAGED_SERVICE and COST (from the M p44 and G p11 items) were dropped because validation is an in-platform check and none of them applies to it. In-tree: ClassicalValidator::validate is the only constructor of ValidatedSolution. HostedProvider also recomputes the energy of every returned assignment and refuses a mismatch. ComputeRouter scores every candidate against the real PortfolioProblem, dropped constraints included."
+  },
+  {
+    "id": "QUANT-013",
+    "domain": "QUANT",
+    "title": "Optional experimental quantum work on evidence graphs",
+    "statement": "The Quantum Foundry may run optional, experimental optimisation, clustering, selection and model-selection work on evidence graphs, to speed up structured clustering and selection problems.",
+    "rationale": "Clustering and selection over a large evidence graph are combinatorial problems. Whether a quantum method helps is an empirical question for the benchmark, which is why the work is optional and experimental.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "\u00a77 Evidence, Provenance & Truth Fabric \u2014 Quantum role"
+      },
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Evidence graph clustering row"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "An evidence-graph clustering experiment runs the quantum-assisted method and a classical clustering on the same graph snapshot, and records quality, runtime and cost for both."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": "Split from both sources. Their prohibition halves ('does not itself confer authenticity or truth'; 'never used as a truth oracle') are QUANT-014. Not built."
+  },
+  {
+    "id": "QUANT-014",
+    "domain": "QUANT",
+    "title": "Quantum processing never confers authenticity or truth on evidence",
+    "statement": "No quantum or quantum-assisted result changes the authenticity, trust, corroboration or truth status of an evidence item or claim. Only the Evidence & Truth Fabric's own authenticity and corroboration mechanisms set that status. A quantum clustering or selection may only organise evidence for them.",
+    "rationale": "Without this rule, a result a quantum device touched could be read as more authoritative than the authenticity and corroboration mechanisms that actually establish truth, which is the same failure the classical-baseline discipline guards against elsewhere.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "\u00a77 Evidence, Provenance & Truth Fabric \u2014 Quantum role ('quantum does not itself confer authenticity or truth')"
+      },
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Evidence graph clustering row ('never used as a truth oracle')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "No writer reachable from quantum workload output can set the evidence store's authenticity or trust fields. A test feeds a quantum clustering result into the evidence pipeline and finds every item's authenticity and confidence unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": "Two raw extractions of the M p13 row are merged here with the M p21 row's prohibition half. This is the evidence-specific form of QUANT-003. NON_RUST, carried by the M p21 item, was dropped as not applicable to a prohibition."
+  },
+  {
+    "id": "QUANT-015",
+    "domain": "QUANT",
+    "title": "Every quantum workload declares a classical baseline, a common objective and a promotion threshold",
+    "statement": "A quantum workload family is admitted to the foundry only if it declares three things: its classical baseline method, the single objective on which both the quantum and classical paths are scored, and the promotion threshold the quantum path must clear. A workload missing any of the three is refused.",
+    "rationale": "Comparing on a slightly different problem is one of the known ways quantum claims fail (ADR 0006). A shared objective and a threshold declared in advance stop both the comparison and the bar from being chosen after the result is known.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "\u00a711 Quantum Foundry \u2014 intro ('Every quantum workload has a classical baseline, a common objective and a promotion threshold')"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "\u00a711 Quantum Foundry \u2014 Reality boundary ('on the same objective')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Registering a workload family is refused when it lacks a classical baseline, when it lacks a shared objective, and when it lacks a promotion threshold, each case tested separately."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVAL"
+    ],
+    "notes": "The raw item R37 joined this sentence with the p22 promotion rule. Its promotion half is QUANT-002 and its ship-classical half is QUANT-030. In-tree: portfolio allocation, the one family that exists, has all three. Both paths solve the same PortfolioProblem, the classical solver is the baseline, and RoutingPolicy::quantum_margin (default 0.01, non-zero on purpose) is the threshold. There is no family registration yet, so nothing can be refused."
+  },
+  {
+    "id": "QUANT-016",
+    "domain": "QUANT",
+    "title": "A quantum path is attempted only when the problem admits a useful encoding",
+    "statement": "The foundry attempts a quantum path for a problem instance only when the instance admits a useful quantum encoding: discrete structure, a size at which the encoding can pay for itself, and a fit within the device's qubits. It records why it did or did not attempt one. Otherwise only the classical solver runs.",
+    "rationale": "An encoding that costs more than the classical solve, or a continuous convex problem the classical solver already solves exactly, spends QPU money and learns nothing.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "\u00a711 Quantum Foundry \u2014 intro ('when those problems admit useful encodings')"
+      },
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Symbolic/combinatorial reasoning search row ('when the formulation is suitable')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The router declines the quantum path, and records the reason, for a continuous convex instance, for an instance below the minimum size, and for one larger than the device's qubits. It attempts the quantum path for an eligible instance."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REASON"
+    ],
+    "notes": "The M p20 sentence's capability half (the co-processor role) is folded into QUANT-001. NON_RUST was dropped because the suitability check is in-platform and independent of language. In-tree: ComputeRouter::quantum_assessment declines continuous convex problems, problems below RoutingPolicy::minimum_assets_for_quantum, and problems larger than the provider's max_qubits. It returns its reason as quantum_note, which qip-kernel journals per cycle in SolverRoutingJournal. Only portfolio allocation is covered."
+  },
+  {
+    "id": "QUANT-017",
+    "domain": "QUANT",
+    "title": "Hybrid QUBO/QAOA optimisation of portfolio and family capital allocation",
+    "statement": "A QUBO/QAOA or other hybrid optimiser can produce a capital allocation across portfolios or strategy families under cardinality, diversification and exposure constraints.",
+    "rationale": "Cardinality-constrained allocation is a discrete selection problem, which is the textbook QUBO case and the first family the blueprint names.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "\u00a711 Quantum Foundry \u2014 Portfolio/family allocation row"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "On the same allocation instances, the hybrid optimiser's allocations are scored against the classical solver's on the shared objective with every cardinality, diversification and exposure constraint enforced. An allocation that violates a constraint is reported infeasible."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "CAPITAL",
+      "ASSET"
+    ],
+    "notes": "The most complete family in-tree. qip-optimization-engine's ComputeRouter solves PortfolioProblem classically every time and by QAOA (qip-quantum) when a provider is attached. families.rs clusters strategies into families (level 1), and the problem allocates across them (level 2). qip-kernel attaches only SimulatedProvider, so no hardware result has ever been produced, and RoutingDecision::quantum_note says a simulated result is not evidence of advantage. NON_RUST is kept because a hardware run executes a runtime program the deployment publishes on IBM's side."
+  },
+  {
+    "id": "QUANT-018",
+    "domain": "QUANT",
+    "title": "QUBO/graph optimisation selects feasible multi-leg cycle and path sets",
+    "statement": "QUBO/graph optimisation can select feasible multi-leg cycle/path sets under inventory, settlement, capital and concurrency constraints.",
+    "rationale": "Choosing which cycles to take together, when they compete for the same inventory, capital and settlement capacity, is a constrained subset-selection problem.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "\u00a711 Quantum Foundry \u2014 Multi-leg path selection row"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "On recorded multi-leg opportunity graphs, the selected cycle/path sets are checked for feasibility against inventory, settlement, capital and concurrency constraints, and scored against a classical graph solver on the same instance."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "ARBITRAGE",
+      "MESH",
+      "EXEC"
+    ],
+    "notes": "The selection is an asynchronous Lane 4 input to arbitrage planning. It cannot sit in the reflex mesh's multi-leg coordination path, which QUANT-008 forbids. qip-arbitrage lives in crates/edge and is structurally barred from reaching qip-quantum (no_edge_cell_can_reach_a_quantum_solver), so any path-set output has to reach a cell as a pre-computed policy. Not built."
+  },
+  {
+    "id": "QUANT-019",
+    "domain": "QUANT",
+    "title": "Combinatorial optimisation of collateral and cash placement across regions and venues",
+    "statement": "Combinatorial optimisation can determine where collateral and cash should sit across regions and venues, given expected opportunities and transfer cost.",
+    "rationale": "Capital in the wrong region misses opportunities, and moving it costs money. Where to hold it is a discrete placement problem with a transfer-cost objective.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "\u00a711 Quantum Foundry \u2014 Capital placement row"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "On historical opportunity and transfer-cost data, the placement is scored against a classical optimiser on the same objective and the same transfer-cost model."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "CAPITAL",
+      "TREASURY"
+    ],
+    "notes": "The output is a recommendation to the Capital and Treasury brains. Moving capital stays theirs and is paper-only here. Pre-positioning capital for cross-region arbitrage is CAPITAL-027. Not built."
+  },
+  {
+    "id": "QUANT-020",
+    "domain": "QUANT",
+    "title": "Quantum-assisted binary selection of compact learner and feature sets",
+    "statement": "Quantum-assisted binary selection can choose compact learner or feature sets for specialist or reflex models.",
+    "rationale": "Subset selection under a size budget is a binary optimisation problem. Compact sets matter most for reflex models, which run on a bounded runtime.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "\u00a711 Quantum Foundry \u2014 Feature/ensemble selection row"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "The quantum-selected subset and a classical subset-selection method's choice, from the same candidate pool and budget, are each used to train the target model. Out-of-time performance and model size are compared."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "MODEL",
+      "REFLEX"
+    ],
+    "notes": "For reflex or microstructure targets the baseline is fixed by QUANT-009. The training lifecycle (M p20 \u00a710.1, steps 3-4) trains and calibrates the classical baseline first and evaluates quantum-assisted variants only optionally, on eligible workloads. Not built."
+  },
+  {
+    "id": "QUANT-021",
+    "domain": "QUANT",
+    "title": "QML research on quantum kernels and variational models",
+    "statement": "QML research evaluates whether quantum embeddings (kernels) or variational circuits add measurable classification or regression value over classical models on the same task.",
+    "rationale": "Published surveys still name data encoding, noise and training as practical limits (M p44-45). The workload therefore exists to measure value, not to assume it.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Quantum kernels / variational models row"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Each experiment records the quantum-kernel or variational model's out-of-time classification or regression metric beside a classical model's on the same data split, with cost and runtime."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "A research workload. Production use is governed by QUANT-002. It would in practice need Qiskit (Python), and any such dependency needs an ADR first (ADR 0002, ADR 0009). Not built."
+  },
+  {
+    "id": "QUANT-022",
+    "domain": "QUANT",
+    "title": "QML research on quantum reservoir and extreme-learning representations",
+    "statement": "QML research provides an experimental quantum reservoir / extreme-learning representation path for selected time-series or nonlinear tasks.",
+    "rationale": "Reservoir methods avoid the training difficulty of variational circuits. Whether that yields a useful representation for market time series is an open question worth an experiment.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Quantum reservoir/extreme learning row"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "On the selected time-series tasks, the reservoir representation's forecast metric is recorded beside a classical reservoir (echo-state) or linear baseline on identical data splits."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "MODEL",
+      "TICK"
+    ],
+    "notes": "A research workload governed by QUANT-002 for any production use. Not built."
+  },
+  {
+    "id": "QUANT-023",
+    "domain": "QUANT",
+    "title": "Selection of diverse, high-information scenarios and experiments under compute and data budgets",
+    "statement": "Optimisation or research methods choose diverse, high-information scenarios or experiments under limited compute and data budgets.",
+    "rationale": "Simulation and experiment budgets are finite. Choosing which scenarios to run is a diversity-under-budget selection problem.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Scenario/hypothesis selection row"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Under a fixed budget, the chosen scenario or experiment set is compared by information covered with a classical diversity or information-gain selector's choice from the same pool."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "WORLD",
+      "EXPANSION"
+    ],
+    "notes": "M p4's 'scenario exploration' is folded into QUANT-001. World-model ensemble selection, which additionally must preserve minority hypotheses, is QUANT-025. Not built."
+  },
+  {
+    "id": "QUANT-024",
+    "domain": "QUANT",
+    "title": "Experimental hybrid search over symbolic and combinatorial reasoning problems",
+    "statement": "Experimental hybrid QUBO/QAOA/search can explore candidate constraint solutions, graph selections or symbolic hypothesis subsets for the Symbolic Reasoning Fabric, and each result is compared with a classical solver on the same formulation.",
+    "rationale": "Some symbolic reasoning reduces to constraint satisfaction or subset selection, which QUBO can express. A classical SAT/SMT/MILP solver is the obvious and strong comparator.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Symbolic/combinatorial reasoning search row"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "For each formulation the experiment runs, a classical SAT/SMT/MILP or graph solver runs on the same instance, and the record compares solution quality, runtime and cost."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "REASON"
+    ],
+    "notes": "The Phase 6 exit (ARCH-036) names benchmarked experiments for symbolic/combinatorial search. The row's suitability condition is QUANT-016, and its 'compare to classical solvers' is the general rule QUANT-005 made specific. G p11 places the classical symbolic reasoners on GKE (Z3/OR-Tools/custom Rust/Python). Not built."
+  },
+  {
+    "id": "QUANT-025",
+    "domain": "QUANT",
+    "title": "World-model ensemble and scenario selection that preserves uncertainty and minority hypotheses",
+    "statement": "Experimental optimisation or sampling selects diverse, high-value world-model or scenario subsets under compute budgets. The selection preserves uncertainty and minority hypotheses rather than collapsing onto the consensus.",
+    "rationale": "The world-model federation exists so that disagreement survives. A selector that keeps only the highest-scoring models would erase the minority views the federation is meant to hold.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 World-model ensemble / scenario selection row"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated model populations that contain minority hypotheses above a declared weight floor, the selected subset always keeps at least one member for each such hypothesis."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "WORLD",
+      "REASON"
+    ],
+    "notes": "The Phase 6 exit (ARCH-036) names benchmarked experiments for world-model/scenario ensemble selection. Its benchmark against a classical selector is required by QUANT-005 like any other family. Not built."
+  },
+  {
+    "id": "QUANT-026",
+    "domain": "QUANT",
+    "title": "Hypothesis-space exploration is a research-only workload",
+    "statement": "Hypothesis-space exploration is research only. It tests whether quantum-assisted sampling or optimisation improves exploration of structured hypothesis spaces or experiment portfolios, and it is never promoted to production use.",
+    "rationale": "The blueprint classes this family as research only, unlike the other rows in its table, so it has no production path to benchmark toward.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Hypothesis-space exploration row ('Research only')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The workload is registered with a research-only class, and the promotion gate refuses any artifact that comes from it."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "EXPANSION",
+      "REASON"
+    ],
+    "notes": "Split from its row. The row's 'never treated as empirical validation' is QUANT-027. M p5's scope mention is folded into QUANT-001. Not built."
+  },
+  {
+    "id": "QUANT-027",
+    "domain": "QUANT",
+    "title": "Quantum exploration output is never treated as empirical validation",
+    "statement": "No hypothesis, experiment portfolio or belief is marked validated, supported or confirmed on the strength of quantum-assisted exploration output. Validation status changes only on empirical evidence from experiments, backtests, replay or observed outcomes.",
+    "rationale": "A research pipeline can make exactly this mistake by promoting exploration output directly. Exploration says where to look. It does not say what is true.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Hypothesis-space exploration row ('never treated as empirical validation')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Feeding a hypothesis-exploration result into the hypothesis lifecycle leaves the hypothesis's validation status unchanged, and the lifecycle's 'validated' transition rejects a record whose only support is a quantum exploration record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "EVAL",
+      "WORLD"
+    ],
+    "notes": "Two raw extractions of the same row are merged. This is the hypothesis-specific form of QUANT-003. NON_RUST, carried by one of them, was dropped as not applicable to a prohibition."
+  },
+  {
+    "id": "QUANT-028",
+    "domain": "QUANT",
+    "title": "Quantum-ranked intervention plans pass every classical agency gate before execution",
+    "statement": "A candidate intervention plan that quantum-assisted search produced or ranked is re-scored by classical causal models, policy gates and simulation. It must pass classical causal validation and the policy, identity, conduct and authorisation gates before any execution. Quantum search never authorises a real-world intervention.",
+    "rationale": "Current quantum methods do not establish causal truth (M p45). A top ranking from a search aid is a reason to evaluate a plan, never a reason to act on it.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Intervention portfolio / sequence search row ('Candidate plans are re-scored by classical causal models, policy gates and simulation before any execution')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('cannot bypass classical causal validation, policy, identity, conduct or authorization gates')"
+      },
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "\u00a732 Technology Reality Notes ('do not ... authorize real-world interventions')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A plan injected as top-ranked quantum output is refused at the matching gate in each of five cases (failing causal validation, policy, identity, conduct or authorisation), and no action intent is created in any of them."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY",
+      "GOV",
+      "COMPLIANCE"
+    ],
+    "notes": "The capability half of these sources is QUANT-010. NON_RUST was dropped because a gate-bypass prohibition does not depend on implementation language. AGENCY-034 fixes the agency stage order (simulate and gate before acting). This requirement holds for the shadow-only agency form too, since external actions are scored BLOCKED here (docs/blueprint/README.md, precedence 4). Kept at P0 although its consumer is P3, following AGENCY's treatment of its own safety invariants."
+  },
+  {
+    "id": "QUANT-029",
+    "domain": "QUANT",
+    "title": "No quantum result is treated as causal proof",
+    "statement": "No quantum or quantum-assisted result is recorded or used as proof of a causal effect or a causal structure. Causal claims come only from classical causal identification, meaning experiments or defensible observational methods.",
+    "rationale": "Reliable agency needs identifiable causal structure and measured effects (M p45). A search aid can find branches worth testing, but it cannot supply the test.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "\u00a711 Quantum Foundry \u2014 Counterfactual branch selection row ('no quantum result is treated as causal proof by itself')"
+      },
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "\u00a732 Technology Reality Notes ('current quantum methods do not establish causal truth')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An attempt to write a causal-effect record whose evidence basis is a quantum result is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY",
+      "WORLD"
+    ],
+    "notes": "The causal-specific form of QUANT-003. AGENCY-030 ('Correlation is never recorded as causal certainty') is the general agency rule. NON_RUST, carried by the M p21 item, was dropped as not applicable."
+  },
+  {
+    "id": "QUANT-030",
+    "domain": "QUANT",
+    "title": "If the quantum path loses, the classical result ships",
+    "statement": "When a quantum answer does not beat the classical baseline under the workload's promotion criteria, the classical result is the one used or shipped, and the record says the classical path won. This covers a tie and an answer that is infeasible or fails classical validation.",
+    "rationale": "A tie is not evidence (ADR 0006). If the quantum answer won ties, sampling noise would decide which solver the platform reports as better.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "\u00a711 Quantum Foundry \u2014 Reality boundary ('If quantum loses, the classical result ships')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Given four quantum answers (one tying the baseline, one inside the margin, one infeasible, one failing validation), the router returns the classical answer every time and records the reason."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVAL"
+    ],
+    "notes": "The raw item R37 is merged here for its closing clause, and its 'on any of those axes' reading is carried by QUANT-002's criteria. M p42 (Phase 6, 'ship only measured wins') is ARCH-037. The device-unavailable case is QUANT-033. In-tree: ComputeRouter::solve implements this for portfolio allocation. Inside the margin, the quantum_note reads 'the classical baseline stands: a tie is not evidence'."
+  },
+  {
+    "id": "QUANT-031",
+    "domain": "QUANT",
+    "title": "Quantum-vs-classical results are recorded as QuantumExperiment/Benchmark records per workload family and instance size",
+    "statement": "Every quantum run and its classical comparison is recorded as a typed QuantumExperiment/Benchmark record, keyed by workload family and instance size, and the Continuous Learning & Evaluation Brain reads advantage per family and per size rather than as one aggregate.",
+    "rationale": "Quantum advantage, where it exists at all, depends on problem family and size. An aggregate can hide a family where quantum loses behind one where it wins, and it cannot show the size at which a crossover happens.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "\u00a722 Continuous Learning & Evaluation Brain ('Quantum-vs-classical benchmarking recorded per workload family and instance size')"
+      },
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "\u00a723 Intelligence Expansion Engine \u2014 mechanism table, Quantum-assisted research row (output 'QuantumExperiment / Benchmark')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying the event log reproduces every benchmark record. A query grouped by workload family and instance size returns the quantum and classical results for each group from the log alone."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVAL",
+      "CONTRACT",
+      "EXPANSION"
+    ],
+    "notes": "The M p28 row's capability half is folded into QUANT-001. CONTRACT-009 requires each expansion mechanism to emit its named artifact. G p15 \u00a716 lists 'quantum/classical benchmark delta' among the AI SLO examples. In-tree: qip-kernel journals a SolverRoutingJournal on every cycle entry (chosen solver, solvers run, objective, classical objective, improvement, measured advantage, quantum_note), and it reaches the event log. It is keyed by cycle, not by workload family or instance size. qip-events defines Topic::SolverBenchmarked ('optimization.benchmarked') with no production publisher, and SolverBenchmark reports are produced only in tests."
+  },
+  {
+    "id": "QUANT-032",
+    "domain": "QUANT",
+    "title": "QPU workloads reach IBM Quantum only through an isolated Quantum Gateway over controlled HTTPS egress",
+    "statement": "IBM Quantum is the QPU provider, and every quantum job reaches it through one isolated Quantum Gateway/Foundry over controlled HTTPS egress. No other workload holds a network route or a credential to IBM Quantum.",
+    "rationale": "A QPU provider is an external, billed service that receives problem data. A single isolated path keeps who can spend on it, and what leaves the platform, down to one component.",
+    "kind": "placement",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "\u00a726 Platform & Deployment Architecture \u2014 intro ('IBM Quantum for QPU workloads') and placement table, Quantum row ('IBM Quantum via isolated Quantum Gateway/Foundry')"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "\u00a711 Cognitive, Model and Quantum Compute Plane \u2014 Quantum row ('Controlled egress gateway to IBM Quantum')"
+      },
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "\u00a720 Critical Service-to-Service Connection Matrix \u2014 Agent/Symbolic workers to IBM Quantum gateway ('HTTPS controlled egress')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan grants egress to the IBM Quantum hosts only to the gateway's trust zone and mounts the IBM Quantum token only on the gateway. Every other workload's egress rules and secret mounts exclude both."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST",
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "NET",
+      "SEC"
+    ],
+    "notes": "The M p34 row also carries 'queue-aware asynchronous job orchestration' (QUANT-007) and 'classical fallback' (QUANT-033). EXTERNAL_ACTION (from G p19) was dropped because a compute job is not an action on the world. NON_RUST is kept because the egress path is Envoy. G places the gateway in GCP Phase 10, which would make it P3 under this catalogue's rule. M places the foundry in Phase 6, and P2 follows the master's phase. In-tree: the egress host list in infrastructure/terraform/variables.tf includes quantum.cloud.ibm.com and api.quantum.ibm.com. infrastructure/egress/envoy.yaml declares ibm-quantum listeners in the one bootstrap every proxy mounts, so every sidecar has the listener, and the binding control is the zone firewall: modules/trust-zones lets only the 'optimisation' zone declare an ibm-quantum destination. A qip-quantum-token Secret Manager container is declared in every environment. There is no dedicated gateway service, HostedProvider has no production caller, and nothing has been applied that gives a deployed process an outbound HTTPS path."
+  },
+  {
+    "id": "QUANT-033",
+    "domain": "QUANT",
+    "title": "When quantum is unavailable, the classical path runs with no interruption",
+    "statement": "When IBM Quantum, the Quantum Gateway or a quantum job is unavailable, queued past its bound or failed, the workload's classical solver/model path produces the result. Nothing that depends on the workload is interrupted, and nothing waits for quantum to come back.",
+    "rationale": "Quantum is an optional accelerator. If its outage became the platform's outage, 'optional' would be false.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "\u00a726 Platform & Deployment Architecture \u2014 placement table, Quantum row ('classical fallback')"
+      },
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "\u00a728 Failure and Degradation Model \u2014 'Quantum unavailable' row ('Classical solver/model path runs; no execution interruption')"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With the gateway made unreachable mid-run, every workload that would have attempted quantum returns its classical result and records the provider as unavailable, and the cycle or job completes within its normal budget."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": "M p39 is not among the raw items. It is added because it is the blueprint's own degraded-mode statement for this row and is more specific than M p34. NON_RUST, carried by the M p34 item, was dropped because the fallback is in-platform. In-tree: ComputeRouter treats an unreachable provider exactly like no provider. quantum_assessment declines with the provider's own requirement text, and the classical answer is used ('A deployment with no quantum backend behaves identically to one whose backend is unreachable'). This covers portfolio allocation only."
+  },
+  {
+    "id": "QUANT-034",
+    "domain": "QUANT",
+    "title": "Quantum-derived results reach production only through the Evaluation/Promotion Gate",
+    "statement": "Quantum-assisted learning and search never bypass classical benchmarks, evidence rules or production promotion gates. Every quantum-derived artifact (model, policy, strategy, allocation rule) reaches production only by passing the Evaluation/Promotion Gate. The Quantum Gateway's output enters that gate as an evaluation input, never as a deploy candidate with its own path to the registry.",
+    "rationale": "A side door from research output to the registry would make every other quantum rule advisory. The diagram draws the gateway's edge into the gate as 'control' and Vertex training's as 'deploy' for exactly this reason.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "\u00a731 Capability Completeness Checklist ('never bypasses classical benchmarks, evidence rules or production promotion gates')"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "\u00a711 Cognitive, Model and Quantum Compute Plane \u2014 Quantum row ('before any artifact can promote')"
+      },
+      {
+        "doc": "H",
+        "page": "L292-293",
+        "section": "\u00a705 Cognitive/AGI/Quantum Plane \u2014 edges quantum\u2192eval ('control') and vertex\u2192eval ('deploy')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The promotion pipeline has no path from the gateway or a quantum job record to the model/policy registry except through the gate, and the registry refuses a quantum-derived artifact submitted without a gate pass."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "EVAL",
+      "MODEL",
+      "GOV"
+    ],
+    "notes": "The criteria the gate applies are QUANT-002 (improvement on objective, cost and latency) and QUANT-012 (classical validation). NON_RUST and COST (from the M p43, G p11 and H items) were dropped as not applicable to a path invariant. MANAGED_SERVICE is kept because the registry on GCP is Vertex Model Registry. G p20 \u00a721.2 step 5 says the same for the whole cognitive path: validated results become proposals that promotion gates convert into signed packages, 'never an unreviewed direct hot-path call'. In-tree: no promotion gate for quantum-derived artifacts exists. The only quantum use is at run time in ComputeRouter, which QUANT-030 governs."
+  },
+  {
+    "id": "QUANT-035",
+    "domain": "QUANT",
+    "title": "The Quantum Gateway accepts only asynchronous optimisation, hypothesis/search and QML research jobs",
+    "statement": "The Quantum Gateway admits only jobs that are eligible for asynchronous execution and belong to one of three classes, all benchmark-gated: optimisation, hypothesis/search, and quantum-ML research. It refuses a job outside those classes, and a job a caller needs synchronously.",
+    "rationale": "Scoping the gateway to research keeps QPU spend and data egress on work that can tolerate queues and is benchmarked by design.",
+    "kind": "prohibition",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "\u00a711 Cognitive, Model and Quantum Compute Plane \u2014 Quantum row, Interaction ('Only async eligible optimization/search/QML research')"
+      },
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "\u00a720 Critical Service-to-Service Connection Matrix \u2014 Agent/Symbolic workers to IBM Quantum gateway ('Eligible quantum jobs only')"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "\u00a721.2 World event to cognitive response, step 4 ('quantum is invoked only for eligible asynchronous research')"
+      },
+      {
+        "doc": "H",
+        "page": "L285",
+        "section": "\u00a705 Cognitive / AGI / Quantum Plane \u2014 node 'quantum' ('Optimization, hypothesis/search, quantum ML research; benchmark-gated')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A job of each eligible class is accepted. A job of any other class, or one flagged synchronous, is refused with a reason that names the eligible classes."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "COGNITION"
+    ],
+    "notes": "H's three classes match G's list word for word. G p20 is not among the raw items and is added as a third statement of the same rule. The G p11 row also carries the egress route (QUANT-032) and the promotion criterion (QUANT-002, QUANT-034). MANAGED_SERVICE, NON_RUST and EXTERNAL_ACTION were dropped because an admission check is in-platform and is not an action on the world. P2 rather than P0 because the safety half of 'async only', that nothing in execution depends on quantum, is QUANT-008. In-tree: modules/trust-zones lets only the 'optimisation' trust zone declare an ibm-quantum egress destination. That zone's name is narrower than these three classes, and no zone is declared for QML or hypothesis/search research."
+  },
+  {
+    "id": "QUANT-036",
+    "domain": "QUANT",
+    "title": "Cognitive-plane research workers dispatch quantum jobs to the gateway as asynchronous control requests",
+    "statement": "Only the cognitive plane's research workers submit jobs to the Quantum Gateway: agent and symbolic-reasoning workers, and Vertex training/pipeline jobs. They submit over HTTPS through controlled egress, in asynchronous mode, as control-class requests.",
+    "rationale": "Naming the callers makes the gateway's client list something a plan can check, and keeps every non-research plane off it without relying on convention.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "\u00a720 Critical Service-to-Service Connection Matrix \u2014 Agent/Symbolic workers to IBM Quantum gateway (HTTPS controlled egress, Async)"
+      },
+      {
+        "doc": "H",
+        "page": "L128-138",
+        "section": "\u00a701 Global Platform Topology \u2014 edge vertex\u2192ibm ('control')"
+      },
+      {
+        "doc": "H",
+        "page": "L292",
+        "section": "\u00a705 Cognitive/AGI/Quantum Plane \u2014 edge vertex\u2192quantum ('control')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The gateway's ingress admits exactly the agent/symbolic-worker and Vertex-pipeline service identities, and a plan granting any other workload identity access fails the trust-zone check."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NON_RUST",
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "COGNITION",
+      "MODEL",
+      "SEC"
+    ],
+    "notes": "G names agent/symbolic workers as the caller, and H draws only Vertex. Both are cognitive-plane research callers, so both are kept. G's row is more specific about protocol and mode and its wording is used. G's 'no execution dependency' is QUANT-008 and its 'eligible quantum jobs only' is QUANT-035. EXTERNAL_ACTION (from G p19) was dropped as not applicable. In-tree: HostedProvider is a library adapter with no production caller, qip-kernel attaches only SimulatedProvider, and no service identity is scoped to call IBM Quantum beyond membership of the 'optimisation' trust zone."
+  }
+]

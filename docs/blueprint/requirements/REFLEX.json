@@ -1,0 +1,1225 @@
+[
+  {
+    "id": "REFLEX-001",
+    "domain": "REFLEX",
+    "title": "Reflex decisions run within the Lane 0 time scale",
+    "statement": "The Reflex Node must react to local market state within the Lane 0 time scale: about 10 microseconds to 10 milliseconds from market event to decision.",
+    "rationale": "The reflex system exists to act on local market state faster than any path through the global brain could. A cell that takes seconds to decide is a warm service in the wrong place, and the opportunity it was placed regionally to catch is gone.",
+    "kind": "nfr",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1 Executive Summary — fast reflex system ('reacts to local market state in microseconds to milliseconds')"},
+      {"doc": "M", "page": "9", "section": "§4 Time-Lane Architecture — Lane 0 (Reflex Hot) time scale '~10 us to 10 ms'"}
+    ],
+    "verification": {"method": "benchmark", "check": "On the target machine shape, replaying a recorded session through the cell yields a market-event-to-decision p99 and p99.9 inside 10 ms, reported per venue shard. The benchmark fails the build when either percentile leaves the budget."},
+    "policy_flags": [],
+    "secondary_domains": ["ARCH", "OBS"],
+    "notes": "Merges the latency clause of the M p2 sentence with the Lane 0 time scale from the M p9 responsibilities row. The p2 sentence's 'without waiting for the global brain' clause is REFLEX-002, and the rest of the p9 row is REFLEX-004. ARCH-014 holds the lane definition; this is the Reflex Node's own budget. G p15 §16 names 'market-event-to-decision p99/p99.9' as a Reflex SLO; that line is not among the raw items here. GCP Rule 10 (REFLEX-053) bounds venue round-trip time, not decision time inside the node. P0 because Master Phase 0 includes the benchmark harness and Phase 1 exits on a 'local fast path'."
+  },
+  {
+    "id": "REFLEX-002",
+    "domain": "REFLEX",
+    "title": "Nothing remote stands between a venue event and the local order",
+    "statement": "Between a venue event and the local order it produces, the hot path must use only four things: local process memory, local deterministic risk, local session state and the venue adapter. It must make no synchronous call to, and wait on no acknowledgement from, the Fabric, GKE, Spanner, Bigtable, Redis, BigQuery, any AI or model endpoint, the global brain or another region.",
+    "rationale": "Every remote hop on the decision path adds its latency and its outages to every order. A cell that waits on the centre stops trading when the centre stops, and the regional design exists to remove exactly that coupling.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1 Executive Summary — 'without waiting for the global brain'"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 — 'Regional nodes are independent' row ('No synchronous global dependency on the hot path')"},
+      {"doc": "M", "page": "9", "section": "§4 Time-Lane Architecture — Lane 0 (Reflex Hot) ('No remote dependency')"},
+      {"doc": "M", "page": "23", "section": "§16 Regional Reflex Nodes — 'It does not wait for the global brain'"},
+      {"doc": "M", "page": "24", "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage — corrected rule ('no remote dependency is required for a local hot-path decision')"},
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 1 'Hot path owns its dependencies' (rule and consequence)"},
+      {"doc": "G", "page": "23", "section": "§27 Architecture Acceptance Criteria — first COMPLETE TARGET (no synchronous call between a venue event and a local order)"}
+    ],
+    "verification": {"method": "chaos", "check": "The Fabric, the central API, every model endpoint and every peer are black-holed or stalled. A simulated venue event still produces its paper order in the same pass, with unchanged decision latency. An architecture test also asserts that no crate on the tick-to-order call path links a network client other than the venue adapter."},
+    "policy_flags": [],
+    "secondary_domains": ["ARCH", "FABRIC", "MESH", "RES"],
+    "notes": "Merges eight raw items (G p3 Rule 1 was extracted twice). The GCP wording is kept because it names both what is allowed and what is banned. G p23 adds BigQuery and 'another region' to Rule 1's list, and both are included here. M p24 §17 explains why the rule says 'no remote dependency' rather than 'no cross-region call': peer messages are allowed (REFLEX-003, REFLEX-040 to REFLEX-042), but never as a precondition of a local decision. REFLEX-045 is the narrower and stronger rule for model endpoints. Removed LIVE_CAPITAL (from G p23) and MULTI_REGION (from M p5): this is a property of the decision path, provable on paper with one region. In-tree, ADR 0008 holds the same line. qip_edge's Cell::on_bytes and Cell::work touch only memory and arithmetic, and Cell::flush is the one call that may block."
+  },
+  {
+    "id": "REFLEX-003",
+    "domain": "REFLEX",
+    "title": "Regional nodes share compressed state with their peers",
+    "statement": "Each regional Reflex Node must exchange compressed opportunity and state summaries directly with peer nodes over the Reflex Mesh. Each node keeps deciding locally while cross-region opportunities are coordinated.",
+    "rationale": "A node that sees only its own region cannot find the far legs of a cross-region opportunity. A node that waits on its peers inherits their outages. Exchanging compressed state asynchronously gives the first without the second.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — 'Reflexive'"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 — 'nodes communicate via peer mesh for cross-region opportunities'"},
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Peer mesh client ('Fast state summaries')"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — 'communicate with peers'"}
+    ],
+    "verification": {"method": "integration", "check": "Two cells joined by a loopback Reflex Mesh each publish compressed state summaries on every pass, and each updates its view of the other. No message carries a full order book, and cutting the link changes neither cell's local decisions."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["MESH"],
+    "notes": "Merges M p3, the connected half of the M p5 correction, the state-summary clause of the M p24 Peer mesh client row, and the 'communicate with peers' half of the M p43 checklist. The other halves are placed elsewhere: 'no synchronous global dependency' from M p5 is REFLEX-002, tokens, reservations and sagas from the M p24 row are REFLEX-040 to REFLEX-042, and 'operate independently' from M p43 is REFLEX-052. Two passages not among the raw items say the same thing. M p25 §17.2 step 2 has nodes publish 'compressed executable edge states - not entire raw books', and G p16 §18 says of the Reflex Mesh 'exchange compressed state only; bound fan-out'. In-tree, qip_edge::mesh carries cell state up to the centre and policy and capital down from it; this entry does not establish whether any direct cell-to-cell path exists. P1: Master Phase 4."
+  },
+  {
+    "id": "REFLEX-004",
+    "domain": "REFLEX",
+    "title": "Every Lane 0 function runs inside the regional node",
+    "statement": "All of the following must run inside the regional Reflex Node: feed decode, local market data and book update, features, reflex inference, strategy predicates, local risk, netting, inventory, routing, order and quote generation, and the venue adapters. The node itself must evaluate each event against its local book, features and models.",
+    "rationale": "Each of these functions is on the path from tick to order. Placing any of them outside the node puts a network hop and a second failure domain inside the decision.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Reflex execution row"},
+      {"doc": "M", "page": "9", "section": "§4 Time-Lane Architecture — Lane 0 (Reflex Hot) responsibilities"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 2 ('Local book/features/reflex model evaluate the event')"}
+    ],
+    "verification": {"method": "integration", "check": "Given a simulated venue feed and its package, a single cell process takes an event through every listed stage to a paper order with no out-of-process call. An architecture test asserts that each stage's crate is linked into the node binary and that none is reached through a transport."},
+    "policy_flags": [],
+    "secondary_domains": ["ARCH", "EXEC", "RISK"],
+    "notes": "The union of the M p7 and M p9 lists: M p7 adds inventory and venue adapters, and M p9 adds feed decode, routing and order/quote generation. The M p9 time scale is REFLEX-001. G p20 step 2's clauses on the risk gate and the direct send are REFLEX-032, REFLEX-072 and REFLEX-050. Removed LIVE_CAPITAL and EXTERNAL_ACTION (carried by M p9 and G p20) and MULTI_REGION (M p7): where a function runs is provable against a simulated venue in one region. In-tree, qip_edge::Cell aggregates book, strategies, capital, journal and metrics, and qip-edge-node calls Cell::work. The node is deployed nowhere, since execution_nodes = {} in every environment."
+  },
+  {
+    "id": "REFLEX-005",
+    "domain": "REFLEX",
+    "title": "Lane 0 features are compact and tick-derived",
+    "statement": "The features and embeddings the hot lane uses must be compact representations derived from tick learning and shipped to the node.",
+    "rationale": "The hot lane can afford only bounded features. Deriving them from the tick-learning fabric carries replay's microstructure lessons into the node without putting replay on the decision path.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "9", "section": "§4 Time-Lane Architecture — Lane 0 (Reflex Hot) ('Uses compact tick-derived features/embeddings')"}
+    ],
+    "verification": {"method": "inspection", "check": "Every feature and embedding in an active package names the tick-learning artefact and dataset version it was derived from, and declares a fixed state size."},
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "MODEL"],
+    "notes": "Split from the M p9 item; its model clause is REFLEX-006. Tick-derived features presuppose the Tick Lake and the Market Intelligence & Tick Learning Fabric (Master Phase 2), hence P1. A Phase 1 cell may run hand-defined features under the bounded-cost rule of REFLEX-023. REFLEX-007 forbids historical reads on the order path."
+  },
+  {
+    "id": "REFLEX-006",
+    "domain": "REFLEX",
+    "title": "Reflex inference runs tiny distilled models locally",
+    "statement": "Reflex inference must run tiny, locally loaded models distilled from larger microstructure and reflex models. Each model must stay within a declared, bounded resource and latency budget.",
+    "rationale": "A large model on the hot path makes decision latency depend on model size and on how well it is served. Distilling it keeps the learned behaviour and drops the unbounded cost.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "9", "section": "§4 Time-Lane Architecture — Lane 0 (Reflex Hot) ('distilled microstructure/reflex models')"},
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Reflex inference ('Tiny local models')"}
+    ],
+    "verification": {"method": "benchmark", "check": "Before promotion, each model in a package is benchmarked on the target shape. Its per-inference latency and memory stay within the budget its manifest declares, and a model that exceeds either is refused at package load."},
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "EVAL"],
+    "notes": "Merges the model clause of M p9 with the 'tiny local models' clause of the M p24 Reflex inference row. That row's 'calibrated scores' clause is REFLEX-024. The budget in the check comes from M p31: 'A new reflex artifact must meet deterministic resource, latency and failure-mode budgets before regional deployment.' Distilled models come from the model foundry (Master Phase 2), hence P1. A Phase 1 cell may trade on rule-based predicates (REFLEX-025) with no learned model."
+  },
+  {
+    "id": "REFLEX-007",
+    "domain": "REFLEX",
+    "title": "The order path never reads the historical Tick Lake",
+    "statement": "Lane 0 must never read the historical Tick Lake on the order path.",
+    "rationale": "A historical store is an unbounded read behind a remote interface. If the order path consults it, decision latency depends on archive latency, and the size of the lookup sets the cost of the decision.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "9", "section": "§4 Time-Lane Architecture — Lane 0 (Reflex Hot) ('never reads the historical Tick Lake in the order path')"}
+    ],
+    "verification": {"method": "inspection", "check": "An architecture test asserts that no crate on the tick-to-order path depends on a Tick Lake, archive or historical-replay reader. The node binary's dependency graph contains no such client."},
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "DATA", "ARCH"],
+    "notes": "Kept apart from REFLEX-002 because this prohibition is stronger. It also forbids a local copy of historical ticks on the order path, not only a remote read. History reaches the node only as what tick learning distils into the package (REFLEX-005, REFLEX-006)."
+  },
+  {
+    "id": "REFLEX-008",
+    "domain": "REFLEX",
+    "title": "Three regional Reflex Cells: Americas, Europe and APAC",
+    "statement": "The Global Reflex Mesh must comprise regional Reflex Cells for Americas, Europe and APAC. Each runs its own local hot lane, wired to its own markets and venues.",
+    "rationale": "A cell near each major time zone's venues is what makes a local decision local. Three named cells are the smallest mesh on which the cross-region multi-leg design can be exercised.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — Global Reflex Mesh diagram (AMERICAS / EUROPE / APAC REFLEX)"}
+    ],
+    "verification": {"method": "infra-plan", "check": "A plan for the multi-region target instantiates exactly one Reflex Cell per logical region (Americas, Europe, APAC), each with its own venue list and its own hot-lane process."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["GCP", "MESH", "REGION"],
+    "notes": "P1: Master Phase 4 (Americas/Europe/APAC nodes) and GCP Phase 7 (three regional Reflex/Fabric/GKE cells). The three names are logical regions. GCP §3 (p3) treats the exact GCP regions as a measurement outcome (REFLEX-053). In-tree, the execution-node Terraform module exists, but execution_nodes = {} in every environment, so no cell is deployed in any region."
+  },
+  {
+    "id": "REFLEX-009",
+    "domain": "REFLEX",
+    "title": "The Reflex package carries the node's whole decision input",
+    "statement": "A Reflex Node must run a locally loaded package containing its models, strategies, beliefs, feasibility rules, capital grants, risk limits, target inventory and opportunity definitions. It must make its decisions by combining that package with live local state.",
+    "rationale": "The package is the one channel through which slow intelligence, capital and risk policy reach the hot path. A decision input outside it is either a remote dependency or an unversioned one, and a decision made on it cannot be replayed or attributed.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "23", "section": "§16 Regional Reflex Nodes — 'It runs a signed package of models, strategies, beliefs, feasibility rules, capital grants, risk limits, target inventory and opportunity definitions'"},
+      {"doc": "G", "page": "11", "section": "§11 Cognitive, Model and Quantum Compute Plane — Model-package rule ('executes a locally loaded ... model/policy package')"}
+    ],
+    "verification": {"method": "unit", "check": "The package type has all eight sections, and loading a package that lacks any of them is refused with the missing section named. Replaying one pass from only the package and the recorded local state reproduces that pass's decisions exactly."},
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT", "MODEL", "RISK", "CAPITAL"],
+    "notes": "Merges two raw M p23 items that quote the same sentence, plus the 'locally loaded' clause of G p11. The signature requirement in both is REFLEX-010. G p11's 'tested' is the promotion gate's job (EVAL), and its 'with deterministic risk' is REFLEX-032. The H 'Reflex Package Builder' node, not a raw item here, is the build-side view of this contract: 'compact model + strategy + feature graph + risk envelope + config'. In-tree, the cell receives separate verified objects rather than one package: qip_edge::envelope::VerifiedEnvelope for capital and policy::VerifiedPolicy for policy."
+  },
+  {
+    "id": "REFLEX-010",
+    "domain": "REFLEX",
+    "title": "Only a package whose signature verifies is ever activated",
+    "statement": "Before staging a package, the Reflex Node must verify its manifest and its KMS signature. The node must never stage, activate or execute a package that fails verification or carries no signature.",
+    "rationale": "The package decides what the node trades and within which limits. If packages are unsigned, anyone who can write to their storage or their delivery path can set the node's capital grants and risk limits.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "23", "section": "§16 Regional Reflex Nodes — 'It runs a signed package'"},
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Package manager bullet ('verifies manifest/KMS signature')"},
+      {"doc": "G", "page": "11", "section": "§11 Model-package rule — 'tested, signed model/policy package'"},
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Package Manager to Artifact Registry/GCS + KMS verification"},
+      {"doc": "H", "page": "L178-184", "section": "§02 Regional Cell edges — Secret Manager / KMS to Reflex Package Agent ('package signing/verification')"}
+    ],
+    "verification": {"method": "integration", "check": "Four packages are each refused before staging: one with a flipped byte, one whose manifest digest does not match its contents, one signed by an unknown key, and one with no signature. After each refusal the active package is unchanged and the refusal is journaled with its reason."},
+    "policy_flags": ["MANAGED_SERVICE", "NEW_DEPENDENCY"],
+    "secondary_domains": ["SEC", "SUPPLY_CHAIN", "MODEL"],
+    "notes": "NEW_DEPENDENCY is kept. Verifying a KMS asymmetric signature needs an asymmetric primitive, which ADR 0043 names as a gap no in-tree code may close, and ADR 0009 forbids the Google auth flow a KMS call needs. In-tree, VerifiedPolicy and VerifiedEnvelope verify an HMAC-SHA256 under a key the cell shares with the centre. That is the same refusal shape with a symmetric key, and not what this requirement asks for. G p23 §27, not a raw item here, adds that every model or policy executing in Reflex must be traceable to its signature, approval and activation epoch."
+  },
+  {
+    "id": "REFLEX-011",
+    "domain": "REFLEX",
+    "title": "Each node embeds a Rust fabric client",
+    "statement": "Each Reflex Node must embed, in process, a non-blocking Rust client for the Event & Control Fabric.",
+    "rationale": "An out-of-process shipper is one more process that can fail between the node and its durable record. A blocking client would turn every Fabric stall into a decision stall (see REFLEX-013).",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "23", "section": "§16 Regional Reflex Nodes — 'Each Reflex Node embeds a non-blocking Rust fabric client'"}
+    ],
+    "verification": {"method": "integration", "check": "Started against a test Fabric broker, the node binary publishes its journal through the embedded client, with no sidecar or separate shipper process. With the broker stopped, the client's publish call returns without waiting."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["FABRIC", "EVENT"],
+    "notes": "G p19 §20, not a raw item here, specifies the Reflex Node to Regional Fabric link as QUIC/mTLS and async, where 'failure cannot block order'. A QUIC or TLS stack may not be written in-tree (ADR 0009) and is not in the two-crate allowance (ADR 0002), so this needs an ADR, hence NEW_DEPENDENCY. P0: GCP Phase 3 'One Reflex Cell' includes an async Fabric journal. In-tree there is no fabric client. qip_edge::journal ships through a Mirror (FileMirror appends JSON lines to a file), called only from Cell::flush."
+  },
+  {
+    "id": "REFLEX-012",
+    "domain": "REFLEX",
+    "title": "Each node keeps a durable local append-only event journal",
+    "statement": "Each Reflex Node must write its events to a durable, local, append-only event journal.",
+    "rationale": "The local journal is the node's only record while every remote store is unreachable. If that journal could be edited or lost, a node could trade and leave no record that outlives it.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "23", "section": "§16 Regional Reflex Nodes — 'local append-only event journal'"},
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Event journal ('Durable local event stream')"}
+    ],
+    "verification": {"method": "property", "check": "For arbitrary sequences of decisions, the journal exposes no update or delete operation and every entry's chain link verifies. Editing any recorded entry breaks verification at that entry, and every entry recorded before a simulated crash is present after restart."},
+    "policy_flags": [],
+    "secondary_domains": ["EVENT", "LEDGER", "EVID"],
+    "notes": "Merges the journal clause of M p23 with the M p24 Event journal row. The row's 'forwarded to ledger/learning asynchronously' clause is REFLEX-015. In-tree, qip_edge::journal::Journal is hash-chained and verifies (the_journal_chain_catches_an_edited_decision). It stays in memory until Cell::flush ships it to a Mirror, so whether it is durable before the flush is a gap to check."
+  },
+  {
+    "id": "REFLEX-013",
+    "domain": "REFLEX",
+    "title": "The decision path never waits on the fabric or a broker acknowledgement",
+    "statement": "Order-book processing, model inference, the risk veto and the venue send must never wait on the fabric or on a broker acknowledgement. The decision thread publishes through a non-blocking local ring/journal writer and continues.",
+    "rationale": "A decision that waits for a durable acknowledgement takes on the broker's tail latency and its outages. The record is still made, locally first and durably afterwards.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "23", "section": "§16 Regional Reflex Nodes — 'The decision thread never waits on the fabric'"},
+      {"doc": "M", "page": "36", "section": "§26.1 Native Rust Event & Control Fabric — Hot-path contract"}
+    ],
+    "verification": {"method": "chaos", "check": "A recorded session is replayed while the Fabric broker accepts connections but never acknowledges, then again while it is unreachable. Both runs produce the same decisions at the same per-event latency as a run with a healthy broker, and the unacknowledged records accumulate in the local journal."},
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "EVENT"],
+    "notes": "Merges two raw M p23 items with the two raw M p36 hot-path-contract items. 'Never waits on the fabric' and 'never wait on a broker acknowledgement' are the same rule, because the fabric is the broker. The mechanism (preallocated lock-free queues and a ring writer) is REFLEX-014, and the NEW_DEPENDENCY flag moved there with it. The separate core is REFLEX-051. M p44 §31 carries the matching COMPLETE TARGET: 'A fabric outage cannot block market-event-to-order execution'."
+  },
+  {
+    "id": "REFLEX-014",
+    "domain": "REFLEX",
+    "title": "The decision thread hands off through preallocated lock-free queues",
+    "statement": "The decision thread must hand journal and outbound records to preallocated, lock-free queues or ring buffers, so that publishing takes no lock and makes no heap allocation on that thread.",
+    "rationale": "The drainer may hold a lock just when the decision thread needs it, and an allocation can stall in the allocator. Either puts unbounded, load-dependent latency into a path budgeted in microseconds.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "23", "section": "§16 Regional Reflex Nodes — 'it writes to preallocated lock-free queues/journals and continues'"},
+      {"doc": "M", "page": "36", "section": "§26.1 Hot-path contract — 'non-blocking local ring/journal writer'"}
+    ],
+    "verification": {"method": "benchmark", "check": "Under an allocation-counting allocator and a lock-acquisition probe, a replayed session records zero heap allocations and zero lock acquisitions on the decision thread for each published record."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["FABRIC"],
+    "notes": "Merges the mechanism clause of the two raw M p23 items with the ring-writer clause of M p36. It serves the invariant in REFLEX-013. NEW_DEPENDENCY is kept because the workspace sets unsafe_code = forbid, and a bounded lock-free ring written without unsafe normally comes from a crate. std's sync_channel is preallocated but not lock-free. Either choice needs an ADR under ADR 0002 and ADR 0009. P1 rather than P0 because this is how REFLEX-001 and REFLEX-013 are met, not a separate safety property."
+  },
+  {
+    "id": "REFLEX-015",
+    "domain": "REFLEX",
+    "title": "Outcomes, telemetry and acknowledgements drain asynchronously to the regional Fabric",
+    "statement": "The node must drain durable outcomes, telemetry and policy/model acknowledgements from its local journal to the regional Fabric. The drain is asynchronous and off the decision path, and from the Fabric the records reach the ledger and the learning loop.",
+    "rationale": "The ledger and the learning loop need every outcome the node produced. Draining asynchronously keeps the node's record complete without putting the ledger's availability into the decision.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "23", "section": "§16 Regional Reflex Nodes — 'Durable outcomes, telemetry and policy/model acknowledgments are drained asynchronously to the regional fabric'"},
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Event journal ('forwarded to ledger/learning asynchronously')"},
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — State bullet ('journal asynchronously to Fabric')"}
+    ],
+    "verification": {"method": "integration", "check": "In a session where the Fabric was down for a period and then restored, every journal record reaches the Fabric exactly once in effect by event id and in journal order, including outcomes, telemetry and package acknowledgements. No decision in that session waited on the drain."},
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "LEDGER", "EVENT", "OBS"],
+    "notes": "Merges three raw items. G p20 §21.1 step 3, not a raw item here, names what is appended (tick, feature snapshot, decision, order and fill/cancel) and the P1/P2 topics it goes to. GCP Rule 4 (at-least-once delivery plus idempotency) is why the check says 'exactly once in effect'. In-tree, Cell::flush drains the journal to a Mirror, and no Fabric exists yet (REFLEX-011)."
+  },
+  {
+    "id": "REFLEX-016",
+    "domain": "REFLEX",
+    "title": "Venue market data reaches the node directly",
+    "statement": "Feed adapters must consume native venue feeds (FIX, WebSocket or native TCP/UDP) directly from the venue into the regional Reflex Node. No broker, Fabric, proxy or other intermediate service may sit between them.",
+    "rationale": "Market data is the start of the only true trading path. An intermediary adds latency and a failure mode to every decision and no information.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Feed adapters ('Native venue feeds')"},
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Regional Reflex Cells ('direct venue connectivity')"},
+      {"doc": "G", "page": "18", "section": "§20 Critical Service-to-Service Connection Matrix — Venue feed to Reflex Node (FIX/WS/native TCP/UDP, sync hot)"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 1 ('enters the regional Reflex adapter directly')"},
+      {"doc": "H", "page": "L178-184", "section": "§02 Regional Cell edges — Market Data Feeds to algorik-node on the hot path, no intermediate broker"}
+    ],
+    "verification": {"method": "integration", "check": "Against a simulated venue speaking its native protocol, the feed adapter consumes the feed over a direct connection. A topology assertion in the test confirms there is no Fabric, proxy or broker hop between the venue and the adapter."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["EXEC", "MARKETDATA", "NET"],
+    "notes": "This is the inbound half of the direct-connectivity requirement. The order half is REFLEX-050, and the gVNIC/Tier-1 clause of the H edge is REFLEX-055. G p23 §28, not a raw item here, states the same rule negatively: 'Putting the Rust Fabric in front of venue market data'. G p6's Venue sessions bullet is held as EXEC-033 to EXEC-035. Removed LIVE_CAPITAL and EXTERNAL_ACTION from the G p18 and G p20 items, because receiving market data is neither, and MANAGED_SERVICE from the H edge. NEW_DEPENDENCY is kept: a venue WebSocket or FIX session over TLS needs a TLS stack, which ADR 0009 forbids writing in-tree, and routing through the egress proxy instead collides with REFLEX-073. In-tree, qip-edge-node accepts only QIP_VENUE_FEED=simulated."
+  },
+  {
+    "id": "REFLEX-017",
+    "domain": "REFLEX",
+    "title": "Feed adapters normalise venue messages in memory",
+    "statement": "Feed adapters must normalise each venue's native messages into the platform's canonical market events, in memory, before the book sees them.",
+    "rationale": "Books, features and strategies written against one canonical event serve every venue. A strategy that parses a venue's own format is coupled to that venue, and a change to that format would not be caught.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Feed adapters ('normalization')"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 1 ('normalized in memory')"}
+    ],
+    "verification": {"method": "unit", "check": "For each supported venue, recorded native messages normalise into canonical events with the expected fields. A malformed or unknown message is refused with a named reason, never coerced into a default."},
+    "policy_flags": [],
+    "secondary_domains": ["MARKETDATA", "CONTRACT"],
+    "notes": "Split from the M p24 Feed adapters row. Sequence and gap detection is REFLEX-018 and timestamping is REFLEX-019. The blueprint says only 'normalization'; the refusal in the check applies the house rule 'refuse rather than guess'."
+  },
+  {
+    "id": "REFLEX-018",
+    "domain": "REFLEX",
+    "title": "Feed adapters detect sequence gaps",
+    "statement": "Feed adapters must check venue sequence numbers and detect gaps, duplicates and out-of-order messages in each feed before any of its data is applied to the local book.",
+    "rationale": "A book that silently skips a missed update is wrong from that point on, and every decision made on it uses prices that do not exist.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Feed adapters ('sequence/gap detection')"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 1 ('sequence-checked')"}
+    ],
+    "verification": {"method": "replay", "check": "A feed is replayed with an injected dropped, duplicated and reordered sequence number. Each raises its own gap, duplicate or reorder signal, and the out-of-sequence message is never applied to the book as if the stream were contiguous."},
+    "policy_flags": [],
+    "secondary_domains": ["MARKETDATA", "EVENT"],
+    "notes": "Neither blueprint specifies what the book does after a gap: resynchronise, take a snapshot or mark itself stale. The check requires only that the gap is detected and not papered over. In-tree, qip-sequencing (backend/crates/edge) holds the sequencing discipline."
+  },
+  {
+    "id": "REFLEX-019",
+    "domain": "REFLEX",
+    "title": "Feed adapters timestamp every event on receipt",
+    "statement": "Feed adapters must timestamp each market event at the moment the node receives it.",
+    "rationale": "Without a receipt time, a replay cannot say what the node knew and when, and market-event-to-decision latency cannot be measured.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Feed adapters ('timestamping')"}
+    ],
+    "verification": {"method": "unit", "check": "Every normalised event carries a receipt timestamp from the node's clock, monotonic within each adapter. Where the venue supplies its own source timestamp, it is carried too, in a separate field."},
+    "policy_flags": [],
+    "secondary_domains": ["MARKETDATA", "REPLAY"],
+    "notes": "GCP Rule 3 (G p3), not a raw item here, requires every asynchronous event to carry both a logical timestamp and a source timestamp, which is why the check keeps the venue's time apart from the node's. P0 because Master Phase 1 makes canonical tick capture and deterministic replay mandatory for the first market."
+  },
+  {
+    "id": "REFLEX-020",
+    "domain": "REFLEX",
+    "title": "The node keeps its own books, trades, inventory and venue health",
+    "statement": "The node's local state module must maintain order books, trades, inventory and venue health for its venues, locally.",
+    "rationale": "Every hot-path decision reads these facts. Held locally, they are current to the last message the node processed and cost no network hop to read.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Local books/state"}
+    ],
+    "verification": {"method": "integration", "check": "Driven by a simulated feed and fills, the node's books match a reference reconstruction message for message and its inventory matches the fills it received. A venue marked unhealthy is visible to the router on the next pass."},
+    "policy_flags": [],
+    "secondary_domains": ["MARKETDATA", "EXEC", "CAPITAL"],
+    "notes": "Split from the M p24 Local books/state row by phase. Funding and borrow (REFLEX-021) arrive with multi-asset capital in Master Phase 3, and reservations (REFLEX-022) with the multi-region mesh in Phase 4. Where this state lives (memory and local SSD) is REFLEX-058. In-tree, qip-orderbook and the Cell's book state hold it."
+  },
+  {
+    "id": "REFLEX-021",
+    "domain": "REFLEX",
+    "title": "The node keeps funding and borrow state locally",
+    "statement": "The node's local state module must maintain funding and borrow state for the instruments it trades.",
+    "rationale": "Carry and borrow costs decide whether a position is worth holding. A node that has to ask for them either waits for the answer or trades without it.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Local books/state ('funding, borrow')"}
+    ],
+    "verification": {"method": "unit", "check": "Funding-rate and borrow-availability updates are reflected in the node's local state on the next pass and exposed to the feasibility gate."},
+    "policy_flags": [],
+    "secondary_domains": ["CAPITAL", "RISK"],
+    "notes": "Split from the M p24 Local books/state row. P1 because funding and borrow belong to the multi-asset capital phase (Master Phase 3)."
+  },
+  {
+    "id": "REFLEX-022",
+    "domain": "REFLEX",
+    "title": "The node holds its reservations in local state",
+    "statement": "The node's local state module must hold the inventory and capital reservations the node has made or accepted, including distributed reservations for multi-leg opportunities.",
+    "rationale": "A reservation the node cannot see locally can be spent twice. The local record of reservations stops a second opportunity from consuming capital already promised to the first.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Local books/state ('reservations')"}
+    ],
+    "verification": {"method": "unit", "check": "A reservation reduces the capacity available to the next intent by exactly the reserved amount, and releasing it or letting it expire restores that capacity. A second intent cannot consume reserved capacity."},
+    "policy_flags": [],
+    "secondary_domains": ["CAPITAL", "MESH", "ARBITRAGE"],
+    "notes": "Split from the M p24 Local books/state row. Exchanging reservations with peers is REFLEX-041. P1 because distributed reservations arrive in Master Phase 4. In-tree, qip_edge::reservation::RegionTable and RegionAllocation are the region capital ledger."
+  },
+  {
+    "id": "REFLEX-023",
+    "domain": "REFLEX",
+    "title": "Features update incrementally at bounded cost",
+    "statement": "The feature engine must update each feature incrementally, event by event, at a cost that does not grow with how much history the node has seen.",
+    "rationale": "A feature whose cost grows with history makes decision latency grow through the trading day until it breaks the Lane 0 budget, and it grows fastest on the busiest days.",
+    "kind": "nfr",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Feature engine ('Incremental bounded-cost features')"}
+    ],
+    "verification": {"method": "benchmark", "check": "The per-event cost of a feature update is measured after 10^3 and after 10^6 prior events of the same replay, and the two figures differ by no more than measurement noise. A feature definition that declares unbounded state is refused at package load."},
+    "policy_flags": [],
+    "secondary_domains": ["MARKETDATA", "MODEL"],
+    "notes": "P0 because features are on the Phase 1 local fast path. In-tree, qip-feature-dag (backend/crates/edge) holds the feature engine."
+  },
+  {
+    "id": "REFLEX-024",
+    "domain": "REFLEX",
+    "title": "Reflex models emit calibrated scores",
+    "statement": "Reflex inference must emit calibrated scores, meaning scores whose stated probabilities match observed frequencies, not raw model outputs.",
+    "rationale": "Sizing, the edge-after-costs check and the risk gate all use scores as probabilities. An uncalibrated score overstates or understates edge systematically, and sizing turns that error into position size.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Reflex inference ('calibrated scores')"}
+    ],
+    "verification": {"method": "replay", "check": "On held-out replay, each model's reliability curve lies within the calibration tolerance its manifest declares. A model outside that tolerance is refused at package load."},
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "EVAL"],
+    "notes": "Split from the M p24 Reflex inference row; its 'tiny local models' clause is REFLEX-006. The house form of the same demand is ADR 0005 (confidence as arithmetic). P1 because learned models arrive with the foundry in Master Phase 2."
+  },
+  {
+    "id": "REFLEX-025",
+    "domain": "REFLEX",
+    "title": "Strategies run as compiled, deterministic predicates",
+    "statement": "The strategy runtime must execute strategies as compiled, deterministic predicates loaded from the package.",
+    "rationale": "A compiled predicate has a known cost and a deterministic result, so every pass can be timed and replayed. A strategy evaluated through an interpreter or a model call can be neither.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Strategy runtime ('Compiled strategy predicates')"}
+    ],
+    "verification": {"method": "unit", "check": "Each strategy in a package loads as a compiled predicate, and evaluating it twice on the same state returns the same result. A package whose strategy needs an interpreter or an external call is refused at load."},
+    "policy_flags": [],
+    "secondary_domains": ["EXEC", "MODEL"],
+    "notes": "Split from the M p24 Strategy runtime row; opportunity detectors are REFLEX-026. M p18 §9 describes validated discoveries becoming 'bounded reflex predicates that execute deterministically'. In-tree, qip-strategy (backend/crates/edge) and the Cell's deployed strategies."
+  },
+  {
+    "id": "REFLEX-026",
+    "domain": "REFLEX",
+    "title": "Opportunity detectors run in the strategy runtime",
+    "statement": "The strategy runtime must run the package's opportunity detectors against live local state and raise an opportunity whenever an opportunity definition's conditions are met.",
+    "rationale": "The package ships opportunity definitions (REFLEX-009). They are useless unless something in the hot lane evaluates them on every relevant event.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Strategy runtime ('opportunity detectors')"}
+    ],
+    "verification": {"method": "unit", "check": "For each opportunity definition in a test package, local state that meets its conditions raises exactly one opportunity carrying the definition's id, and state just outside those conditions raises none."},
+    "policy_flags": [],
+    "secondary_domains": ["ARBITRAGE", "EXEC"],
+    "notes": "Split from the M p24 Strategy runtime row. P1 because opportunity definitions matter from the multi-venue and multi-region phases onward. A Phase 1 cell trades one venue using strategy predicates alone."
+  },
+  {
+    "id": "REFLEX-027",
+    "domain": "REFLEX",
+    "title": "The arbitrage scanner evaluates whitelisted graph cycles",
+    "statement": "The arbitrage scanner must evaluate whitelisted arbitrage graph cycles against local state for executable expected value.",
+    "rationale": "A whitelisted cycle has been reviewed. Scanning it continuously in the node is how a known opportunity gets caught while it still exists.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Arbitrage scanner ('Whitelisted ... graph cycles')"}
+    ],
+    "verification": {"method": "unit", "check": "When local prices, fees and sizes make a whitelisted cycle's executable expected value positive after costs, the scanner raises an opportunity. A positive theoretical spread whose executable value is not positive raises none."},
+    "policy_flags": [],
+    "secondary_domains": ["ARBITRAGE"],
+    "notes": "Split from the M p24 Arbitrage scanner row; discovered cycles are REFLEX-028 and distributed opportunities REFLEX-029. M p24 §17.1, not a raw item here, requires cycles to be 'evaluated for executable expected value, not theoretical spread'. P1 because Master Phase 4 includes 2-5 leg cycles; Phase 5 extends this to 2-20 legs. Removed MULTI_REGION because a whitelisted cycle can lie within one region. In-tree, qip-arbitrage (backend/crates/edge) and qip_edge::arbitrage."
+  },
+  {
+    "id": "REFLEX-028",
+    "domain": "REFLEX",
+    "title": "The arbitrage scanner evaluates discovered graph cycles",
+    "statement": "Alongside the whitelist, the arbitrage scanner must evaluate candidate cycles that the arbitrage brain discovered and shipped to the node.",
+    "rationale": "A fixed whitelist finds only the opportunities someone already thought of. Discovered cycles let the node act on templates the warm arbitrage brain found after the whitelist was written.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Arbitrage scanner ('discovered graph cycles')"}
+    ],
+    "verification": {"method": "integration", "check": "A cycle template discovered centrally and delivered in a signed package is scanned by the node on the pass after activation, with no code change. A template that arrives outside a verified package is ignored."},
+    "policy_flags": [],
+    "secondary_domains": ["ARBITRAGE", "MODEL"],
+    "notes": "Split from the M p24 Arbitrage scanner row. According to M p24 §17.2 step 1, the Global/Warm Arbitrage Brain 'continuously discovers candidate cycle templates'. P2 because open-ended discovery at 2-20 legs is Master Phase 5 (arbitrage and market making). Removed MULTI_REGION: a discovered cycle that spans regions is covered by REFLEX-029."
+  },
+  {
+    "id": "REFLEX-029",
+    "domain": "REFLEX",
+    "title": "The arbitrage scanner finds distributed opportunities",
+    "statement": "Using peer state received over the Reflex Mesh, the arbitrage scanner must detect distributed opportunities (cycles whose legs span this node and its peers) as well as opportunities local to the node.",
+    "rationale": "Cross-region cycles are why the mesh exists, and a scanner that sees only local legs never raises one.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Arbitrage scanner ('local and distributed opportunities')"}
+    ],
+    "verification": {"method": "integration", "check": "Two cells on a loopback mesh each hold one leg of a two-leg cycle. They raise a distributed opportunity when the combined executable value is positive, and neither raises one from its own state alone."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["ARBITRAGE", "MESH"],
+    "notes": "Split from the M p24 Arbitrage scanner row. Coordination after detection (tokens, reservations and sagas) is REFLEX-040 to REFLEX-042. P1 because distributed opportunities are part of Master Phase 4."
+  },
+  {
+    "id": "REFLEX-030",
+    "domain": "REFLEX",
+    "title": "Intents are netted across strategies",
+    "statement": "Before routing, the node must net opposing intents from different strategies, so that only the net quantity goes to a venue.",
+    "rationale": "Two strategies that trade against each other through a venue pay the spread and fees twice and leave the book's exposure unchanged.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Intent netting ('Cross-strategy netting')"}
+    ],
+    "verification": {"method": "property", "check": "For arbitrary sets of intents on one instrument, the total signed quantity of the netted orders equals that of the intents, and after netting no instrument has orders on both sides."},
+    "policy_flags": [],
+    "secondary_domains": ["EXEC", "RISK"],
+    "notes": "Split from the M p24 Intent netting row; internal crossing is REFLEX-031. Netting's place in the pipeline (after risk, before execution) is REFLEX-072. P1 because netting needs more than one strategy on an instrument, which Phase 1's single asset and venue does not require. In-tree, the Cell nets and crosses intents; qip_edge_netting_ratio and qip_edge_internal_crosses_total are its metrics series."
+  },
+  {
+    "id": "REFLEX-031",
+    "domain": "REFLEX",
+    "title": "Opposing intents can be crossed internally",
+    "statement": "The node must be able to cross opposing intents internally, filling one strategy against another without sending either to a venue.",
+    "rationale": "Crossing internally saves venue fees and market impact on flow the platform would otherwise trade against itself.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Intent netting ('internal crossing')"}
+    ],
+    "verification": {"method": "integration", "check": "Opposing intents that cross are filled internally at a recorded price, both fills are journaled, and neither reaches the venue adapter."},
+    "policy_flags": [],
+    "secondary_domains": ["EXEC", "LEDGER", "COMPLIANCE"],
+    "notes": "Split from the M p24 Intent netting row. The blueprint does not set the internal crossing price rule. Whichever record implements this must set that rule and record it with each fill, because an internal cross at a price that favours one strategy transfers value between books."
+  },
+  {
+    "id": "REFLEX-032",
+    "domain": "REFLEX",
+    "title": "The risk/feasibility gate is local and deterministic",
+    "statement": "The node's risk/feasibility gate must run locally and deterministically. Its approve-or-veto verdict must be a pure function of the proposed order, the node's local state and the active package, computed with no remote call and no model inference.",
+    "rationale": "A risk check that depends on a remote service is switched off whenever that service is down. A check that can give different answers for the same inputs cannot be audited or replayed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Risk/feasibility gate ('Local hard constraints')"},
+      {"doc": "G", "page": "11", "section": "§11 Model-package rule — 'with deterministic risk'"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 2 ('deterministic local risk gate approves/vetoes')"}
+    ],
+    "verification": {"method": "property", "check": "For generated (order, local state, package) triples, the verdict is identical on repeated evaluation and across replay. It is reproduced exactly with every network client and model endpoint disabled."},
+    "policy_flags": [],
+    "secondary_domains": ["RISK"],
+    "notes": "This is also a house rule: 'Pre-trade deterministic checks never route to a model' (rules/10-product-direction; qip-cost-router Determinism::Required). What the gate checks is REFLEX-033 and REFLEX-034, and the rule that every order passes it before reaching the venue is REFLEX-072. Removed LIVE_CAPITAL and EXTERNAL_ACTION, which the raw G p20 item carried."
+  },
+  {
+    "id": "REFLEX-033",
+    "domain": "REFLEX",
+    "title": "The gate enforces hard constraints, capacity, inventory and limits",
+    "statement": "The risk/feasibility gate must veto any order that would breach a hard constraint, venue or instrument capacity, available inventory, or a risk or capital limit in the active package.",
+    "rationale": "These checks stop the node spending money it does not have or taking risk it was not granted. Each must be able to fire: a limit that cannot fire looks like protection and is not.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Risk/feasibility gate ('hard constraints, capacity, inventory, limits')"}
+    ],
+    "verification": {"method": "unit", "check": "For each check class, one test drives an order just past the bound and asserts a veto naming that check, and another drives one just inside and asserts approval. Each test is mutation-verified by disabling its check."},
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "CAPITAL"],
+    "notes": "Split from the M p24 Risk/feasibility gate row; expected edge after costs is REFLEX-034. The demand that every check be able to fire comes from rules/domains/risk-and-execution, whose MaxExpectedShortfall history is a shipped limit that could never trigger."
+  },
+  {
+    "id": "REFLEX-034",
+    "domain": "REFLEX",
+    "title": "The gate vetoes orders without positive expected edge after costs",
+    "statement": "The risk/feasibility gate must veto any order whose expected edge is not positive after fees, slippage and other execution costs.",
+    "rationale": "An order that is profitable before costs and unprofitable after them loses money on average every time it trades. Checking net edge in the gate stops a strategy paying the venue for activity that earns nothing.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Risk/feasibility gate ('expected edge after costs')"}
+    ],
+    "verification": {"method": "unit", "check": "An order whose modelled expected edge after costs is zero or negative is vetoed under a named feasibility gate, and one with a small positive net edge is admitted. A cost component the gate cannot evaluate causes a refusal rather than being assumed to be zero."},
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "EXEC"],
+    "notes": "Split from the M p24 Risk/feasibility gate row. The blueprint does not list the costs here. 'Fees, slippage and other execution costs' follows the M p24 §17.1 edge attributes: fees, size-dependent slippage, carry/funding and borrow. In-tree, qip_edge::feasibility and the test a_figure_the_cell_cannot_evaluate_refuses_under_a_named_gate_and_sends_nothing already refuse a figure the gate cannot evaluate."
+  },
+  {
+    "id": "REFLEX-035",
+    "domain": "REFLEX",
+    "title": "The router supports the order types its strategies use",
+    "statement": "The router/execution module must support the order types the node's strategies use, and must map each one onto an order type the target venue accepts.",
+    "rationale": "If the router cannot express an order type, the order either fails at the venue or is silently turned into a different type carrying different risk.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Router/execution ('Order types')"}
+    ],
+    "verification": {"method": "integration", "check": "Against a simulated venue, each supported order type is placed, acknowledged and reflected in open-order state. A requested type the venue does not support is refused before sending, and every order the adapter receives is stamped simulated."},
+    "policy_flags": ["LIVE_CAPITAL"],
+    "secondary_domains": ["EXEC"],
+    "notes": "Split from the M p24 Router/execution row, whose five responsibilities are REFLEX-035 to REFLEX-039. At a real venue this is order submission, so the live form is BLOCKED under ADR 0003 and ADR 0099 and is built only against the simulated venue. P0 because local order flow is the GCP Phase 3 exit. In-tree, the Placer trait is the only order-sending seam, is_simulated() stamps every order, and an order for a live-class venue is refused under GATE_LIVE_VENUE."
+  },
+  {
+    "id": "REFLEX-036",
+    "domain": "REFLEX",
+    "title": "The router selects the venue for each order",
+    "statement": "For each order, the router/execution module must select the venue from the node's configured venues, using local state such as price, depth, fees and venue health.",
+    "rationale": "Choosing the venue locally, per order, is how the node gets the best available execution without asking anyone.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Router/execution ('venue selection')"}
+    ],
+    "verification": {"method": "unit", "check": "Given the same order and local venue states, the router chooses the same venue every time. It never chooses an unhealthy or unconfigured venue, and when a different venue offers the better net execution, the choice changes to it."},
+    "policy_flags": [],
+    "secondary_domains": ["EXEC"],
+    "notes": "Split from the M p24 Router/execution row. Removed LIVE_CAPITAL: choosing a venue sends nothing and is fully testable on paper. P1 because a Phase 1 cell has only one venue. In-tree, qip-routing (backend/crates/edge)."
+  },
+  {
+    "id": "REFLEX-037",
+    "domain": "REFLEX",
+    "title": "The router sequences the legs of multi-leg orders",
+    "statement": "The router/execution module must order and release the legs of a multi-leg opportunity according to that opportunity's sequencing policy.",
+    "rationale": "If every leg is sent at once to venues of different speeds, the book is exposed to whichever legs happen to fill. Sequencing lets the riskiest leg go first and keeps the hedge exposure bounded.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Router/execution ('leg sequencing')"}
+    ],
+    "verification": {"method": "integration", "check": "Against simulated venues, a three-leg opportunity releases its legs in the planned order. When the first leg fails to fill, the later legs are not sent, and every order is stamped simulated."},
+    "policy_flags": ["LIVE_CAPITAL"],
+    "secondary_domains": ["EXEC", "ARBITRAGE"],
+    "notes": "Split from the M p24 Router/execution row. According to M p25 §17.2 step 6, 'Legs execute concurrently or in risk-ordered sequence according to cycle policy'. The cross-region coordination around sequencing is REFLEX-040 to REFLEX-042. The live form is BLOCKED under ADR 0003 and ADR 0099. P1 because multi-leg cycles arrive in Master Phase 4. In-tree, qip_edge::decomposition and the Cell's passive-first dispatch."
+  },
+  {
+    "id": "REFLEX-038",
+    "domain": "REFLEX",
+    "title": "The router hosts the quote engine",
+    "statement": "The router/execution module must include the quote engine that places and maintains the node's quotes.",
+    "rationale": "Quotes have to be adjusted at hot-path speed as the book moves, and a quote engine outside the node would be quoting on stale state.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Router/execution ('quote engine')"}
+    ],
+    "verification": {"method": "integration", "check": "Against a simulated venue, the node's quote engine keeps its quotes resting across passes and replaces them when its inputs move past the requote threshold. Every quote the adapter receives is stamped simulated."},
+    "policy_flags": ["LIVE_CAPITAL"],
+    "secondary_domains": ["EXEC"],
+    "notes": "Split from the M p24 Router/execution row. EXEC-001 to EXEC-005 specify how quoting behaves; this requirement places the engine in the node. P2 because market making is Master Phase 5. The live form is BLOCKED under ADR 0003 and ADR 0099. In-tree, qip_edge::quoting and the quote-budget gate (GATE_QUOTE_BUDGET)."
+  },
+  {
+    "id": "REFLEX-039",
+    "domain": "REFLEX",
+    "title": "The router cancels and replaces orders",
+    "statement": "The router/execution module must cancel and replace working orders at the venue.",
+    "rationale": "A node that cannot withdraw or amend an order carries every mistake and every stale price until the order fills or expires.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Router/execution ('cancel/replace')"}
+    ],
+    "verification": {"method": "integration", "check": "Against a simulated venue, one working order is cancelled and another is replaced with a new price and size, and open-order state and the journal reflect each acknowledgement. When a cancel races a fill, the filled quantity is still accounted correctly."},
+    "policy_flags": ["LIVE_CAPITAL"],
+    "secondary_domains": ["EXEC"],
+    "notes": "Split from the M p24 Router/execution row. P0 because withdrawing orders is part of local order flow (GCP Phase 3), and a mass withdrawal on halt depends on it (REFLEX-067). The live form is BLOCKED under ADR 0003 and ADR 0099. In-tree, the Cell withdraws expired and halted orders; qip_edge_orders_expired_total and qip_edge_orders_mass_cancelled_total count them."
+  },
+  {
+    "id": "REFLEX-040",
+    "domain": "REFLEX",
+    "title": "The peer mesh client exchanges opportunity tokens",
+    "statement": "The node's peer mesh client must send and receive opportunity tokens that identify a distributed opportunity and its epoch across the nodes taking part in it.",
+    "rationale": "Nodes coordinating a cross-region cycle need a shared identifier for it. Without one, two nodes can each act on what they believe is the same opportunity while actually executing different ones.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Peer mesh client ('opportunity tokens')"}
+    ],
+    "verification": {"method": "integration", "check": "On a loopback mesh, a token raised by one cell reaches its peer with the same id and epoch. A token past its TTL, or from a stale epoch, is refused."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["MESH", "ARBITRAGE"],
+    "notes": "Split from the M p24 Peer mesh client row. State summaries are REFLEX-003, reservations REFLEX-041 and sagas REFLEX-042. The TTL and epoch in the check come from two passages. M p24 §17 names 'synchronized opportunity epochs, bounded TTLs'. M p25 §17.2 step 3 says an opportunity epoch 'identifies the cycle, legs, size, minimum edge, model versions, TTL and unwind policy'. P1 because Master Phase 4 lists opportunity tokens."
+  },
+  {
+    "id": "REFLEX-041",
+    "domain": "REFLEX",
+    "title": "The peer mesh client exchanges reservations",
+    "statement": "The node's peer mesh client must request, grant and release distributed inventory and capital reservations with peer nodes.",
+    "rationale": "A cross-region cycle is safe only if the inventory for each leg is held for it. Reservations tell a node that its peer's leg is promised before it commits its own.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Peer mesh client ('reservations')"}
+    ],
+    "verification": {"method": "integration", "check": "On a loopback mesh, a reservation requested by one cell is granted by its peer and reduces the peer's available capacity (REFLEX-022). It is released on completion or TTL expiry, and a duplicate request has no further effect."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["MESH", "CAPITAL", "ARBITRAGE"],
+    "notes": "Split from the M p24 Peer mesh client row. How the node holds its reservations locally is REFLEX-022. According to M p25 §17.2 step 4, each node 'reserves required inventory/capital atomically'. P1 because Master Phase 4 lists distributed reservations."
+  },
+  {
+    "id": "REFLEX-042",
+    "domain": "REFLEX",
+    "title": "The peer mesh client carries saga messages",
+    "statement": "The node's peer mesh client must send and receive the saga messages (resize, hedge, reroute and unwind) that recover a multi-leg opportunity whose legs did not all complete.",
+    "rationale": "Distant legs cannot be atomic. When one fails, the others must be hedged or unwound, and only messages between the nodes holding those legs can arrange that with bounded loss.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§16 Regional Reflex Nodes — module table, Peer mesh client ('saga messages')"}
+    ],
+    "verification": {"method": "integration", "check": "On a loopback mesh, a two-leg opportunity's second leg fails. The first cell is driven through the saga to hedge or unwind its filled leg, and both journals record the same saga id and outcome."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["MESH", "ARBITRAGE", "RISK"],
+    "notes": "Split from the M p24 Peer mesh client row. The four transitions are the ones M p25 §17.2 step 7 names: partial fills trigger 'resize, hedge, reroute or unwind state transitions'. M p24 §17 prefers 'saga-style recovery rather than pretending distant legs are atomic', and the M p7 Reflex mesh row names 'bounded-loss multi-leg sagas'. P1 because this is Phase 4 multi-leg coordination."
+  },
+  {
+    "id": "REFLEX-043",
+    "domain": "REFLEX",
+    "title": "Regional reflex experience becomes globally shared episodes",
+    "statement": "Each reflex cell's useful lessons (microstructure drift, local failures, missed fills, queue behaviour and venue anomalies) must propagate asynchronously to global learning as typed RegionalEpisode/ReflexDelta artefacts, not stay in the region that saw them.",
+    "rationale": "A venue anomaly seen in one region is often the first sign of the same anomaly in another. Experience kept in one region is paid for and learned from only once.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "27", "section": "§22 Continuous Learning & Evaluation Brain — 'Regional reflex contribution' bullet"},
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table, Reflex-node local learning ('useful lessons propagate to global training'; RegionalEpisode / ReflexDelta)"}
+    ],
+    "verification": {"method": "integration", "check": "A cell that records a missed-fill episode emits a typed RegionalEpisode, which reaches the global learning store through the Fabric. Producing and shipping it adds no call to the decision path."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["EXPANSION", "EVAL", "MODEL", "FABRIC"],
+    "notes": "Merges M p27 with the propagation clause of M p29. Recording episodes locally is REFLEX-044, and 'latency-critical inference stays local' is REFLEX-045. M p43 §31, not a raw item here, carries the matching COMPLETE TARGET: regional reflex experience merges into global learning 'through typed episodes/knowledge deltas without adding a synchronous hot-path dependency'. P1 because episodic memory and the tick-learning loop are Master Phase 2."
+  },
+  {
+    "id": "REFLEX-044",
+    "domain": "REFLEX",
+    "title": "Each reflex cell records its own learning episodes",
+    "statement": "Each reflex cell must record episodes of its local microstructure, venue behaviour, latency, fill and slippage outcomes, anomalies and failures.",
+    "rationale": "Only the cell sees its venues at the resolution the hot lane trades at. If that evidence is not recorded, it is gone by the time anyone asks why a model drifted.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table, Reflex-node local learning ('Each reflex cell records local ... episodes')"}
+    ],
+    "verification": {"method": "integration", "check": "A replayed session with injected slippage, a latency spike and a venue failure produces one typed episode of each kind in the cell's journal. Each episode carries the venue, the time window and the measured values."},
+    "policy_flags": [],
+    "secondary_domains": ["EXPANSION", "EVID", "OBS"],
+    "notes": "Split from the M p29 Reflex-node local learning row. Removed MULTI_REGION: recording is local to one cell."
+  },
+  {
+    "id": "REFLEX-045",
+    "domain": "REFLEX",
+    "title": "No model endpoint takes part in an order decision",
+    "statement": "A Reflex Node must never call a general or global model endpoint to decide an order. Latency-critical inference runs locally from the tested, signed package. General intelligence changes only what goes into the next package, never an order already in flight.",
+    "rationale": "A model endpoint in the decision makes the order depend on an external service's latency, availability and version, and neither the package nor the journal records any of the three. An order made that way cannot be replayed or attributed.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — Reflex-node local learning ('latency-critical inference stays local')"},
+      {"doc": "G", "page": "11", "section": "§11 Model-package rule — 'A Reflex Node never calls a general model endpoint to decide a live order'"},
+      {"doc": "H", "page": "L273-289", "section": "§05 Cognitive/AGI/Quantum Plane — Regional Reflex Cells node ('no global inference dependency')"}
+    ],
+    "verification": {"method": "inspection", "check": "An architecture test asserts that the node binary links no model-serving or AI-endpoint client, and the node's egress configuration contains no route to one."},
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "ARCH"],
+    "notes": "Kept apart from REFLEX-002. That rule bans synchronous remote calls between tick and order; this one keeps model endpoints out of the decision at any latency, including an asynchronous Lane 1 consultation before an order. Removed LIVE_CAPITAL (from G p11) and MULTI_REGION (from H L273): the rule binds paper orders too. H L273's 'Atomic package activation' is REFLEX-064. ARCH-002 holds the architecture-level form."
+  },
+  {
+    "id": "REFLEX-046",
+    "domain": "REFLEX",
+    "title": "Reflex Cells run on dedicated low-latency Compute Engine VMs",
+    "statement": "Each Regional Reflex Cell must run on dedicated, low-latency Compute Engine VMs of the C4D/C4 class or an equivalent benchmarked shape. It must not run on shared, serverless or Kubernetes-managed compute.",
+    "rationale": "Shared or managed compute brings scheduling jitter and noisy neighbours into the decision loop, and the cell's latency budget has no room for either.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Regional Reflex Cells ('Dedicated GCE C3/C3D-class low-latency VMs or equivalent')"},
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Compute bullet ('C4D/C4-class Compute Engine')"},
+      {"doc": "H", "page": "L157", "section": "§02 Regional Cell — algorik-node runtime ('Dedicated Compute Engine')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "For an environment with an execution node, the plan shows the Reflex binary on a google_compute_instance whose machine type is in the permitted C4D/C4 set and which runs no other workload. No Reflex process appears in any Cloud Run service or GKE workload."},
+    "policy_flags": ["COST", "MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "FINOPS", "ARCH"],
+    "notes": "The blueprints differ on machine class: M p34 says C3/C3D and G p6 says C4D/C4. G is kept as the later and more specific GCP statement, and README precedence rule 2 gives GCP v2.1 authority over where things run. In-tree, infrastructure/terraform/modules/execution-node permits only c3-highcpu-8/22 and c3d-highcpu-8/16, citing §41.4 of the earlier spec. That is a live disagreement, to be settled by a record rather than by an edit. Sizing by venue/instrument shard is REFLEX-054. Removed MULTI_REGION: the machine class does not depend on how many regions there are. ARCH-046 holds the plane-level form."
+  },
+  {
+    "id": "REFLEX-047",
+    "domain": "REFLEX",
+    "title": "The Rust Reflex binary runs directly under systemd",
+    "statement": "The Reflex binary must be written in Rust and run directly under systemd on the host. No Kubernetes, container orchestrator or service mesh may sit in the decision loop.",
+    "rationale": "An orchestrator or a mesh sidecar adds scheduling and proxy jitter to every decision, and adds a control plane whose outage can stop the cell.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Regional Reflex Cells ('Rust')"},
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Host model bullet ('run the Rust Reflex binary directly under systemd ... Avoid Kubernetes/service-mesh jitter in the decision loop')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "The execution-node template starts the Reflex binary as a systemd unit whose ExecStart is the Rust binary itself. The host has no kubelet, no container runtime and no service-mesh sidecar."},
+    "policy_flags": [],
+    "secondary_domains": ["GCP", "ARCH"],
+    "notes": "Merges the language clause of M p34 with the G p6 Host model bullet; that bullet's 'hardened minimal image' clause is REFLEX-057. Removed COST and MULTI_REGION, which the M p34 raw items carried for the VM choice. In-tree, the execution-node module writes a systemd EnvironmentFile and unit (ADR 0024), and its startup script also runs an Envoy egress-proxy unit beside the node (see REFLEX-073)."
+  },
+  {
+    "id": "REFLEX-048",
+    "domain": "REFLEX",
+    "title": "Reflex hosts are tuned for latency",
+    "statement": "Where justified, Reflex hosts must apply latency tuning: isolated CPU sets and CPU affinity (pinning), huge pages, mlockall, tuned IRQ/RPS/XPS, bounded background services, busy polling, and deterministic allocator and profile choices.",
+    "rationale": "Without isolation, the kernel, interrupts and page faults steal time from the decision thread at random. The result is tail latency that no code change can remove.",
+    "kind": "nfr",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Regional Reflex Cells ('CPU pinning/huge pages/mlock/busy polling as justified')"},
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — OS tuning bullet"}
+    ],
+    "verification": {"method": "infra-plan", "check": "The rendered startup configuration for a Reflex host isolates the decision cores, reserves huge pages, runs the binary under mlockall and pins IRQ/RPS/XPS away from the isolated cores. Each setting is visible both in the plan and on the booted host."},
+    "policy_flags": ["COST"],
+    "secondary_domains": ["GCP", "NET"],
+    "notes": "The union of the two lists: M adds busy polling, and G adds IRQ/RPS/XPS, bounded background services and allocator/profile choices. G's 'local scratch SSD' belongs with state residency and is placed in REFLEX-058. That each tuning is validated under replay is REFLEX-049. P3 as an optimisation, because M makes every technique conditional ('as justified'). COST is kept because isolated cores are paid for and not shared. Removed MULTI_REGION. In-tree, the execution-node module isolates cores (see its isolated_cpus output). It also documents a 16-core thread assignment that does not fit an 8-vCPU shape."
+  },
+  {
+    "id": "REFLEX-049",
+    "domain": "REFLEX",
+    "title": "Every host tuning is justified under replay before it is applied",
+    "statement": "Before any host tuning is applied, it must be validated under replay. The validation must show that the tuning leaves decisions unchanged and gives a measured latency benefit.",
+    "rationale": "A tuning that changes timing can change behaviour, and one whose benefit is assumed rather than measured costs capacity for nothing. Replay is the one place where both can be seen before production.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Regional Reflex Cells ('as justified')"},
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — OS tuning bullet ('Validate every tuning under replay')"}
+    ],
+    "verification": {"method": "replay", "check": "Each tuning in the host configuration has a recorded replay comparison, run with and without it, that shows identical decisions and the measured latency difference. A tuning with no such record fails the configuration check."},
+    "policy_flags": [],
+    "secondary_domains": ["REPLAY", "OBS"],
+    "notes": "Kept separate from REFLEX-048 so that the list of techniques and the proof obligation are checked on their own. The blueprint does not say what validation compares; 'decisions unchanged' is the house reading. Removed COST and MULTI_REGION, which the M p34 raw items carried."
+  },
+  {
+    "id": "REFLEX-050",
+    "domain": "REFLEX",
+    "title": "Orders go straight from the node to the venue",
+    "statement": "The Reflex Node must send orders directly to the venue over the venue's native session. No broker, Fabric, proxy or other intermediate service may sit between them.",
+    "rationale": "An order that detours through another service arrives later and gains one more component that can lose it. Nothing but the node should stand between a decision and the venue.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Regional Reflex Cells ('direct venue connectivity')"},
+      {"doc": "G", "page": "18", "section": "§20 Critical Service-to-Service Connection Matrix — Venue feed to Reflex Node ('Market data and orders; only true trading path')"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 2 ('order is sent directly to venue')"}
+    ],
+    "verification": {"method": "integration", "check": "Against a simulated venue, an approved order leaves the node's venue adapter over a direct session, and the test topology has no Fabric, proxy or broker hop. Every order the simulated venue receives is stamped simulated."},
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION", "NEW_DEPENDENCY"],
+    "secondary_domains": ["EXEC", "NET"],
+    "notes": "This is the outbound half of direct venue connectivity; the inbound half is REFLEX-016. At a real venue this is live order submission, so the live form is BLOCKED under ADR 0003 and ADR 0099 and only the simulated form may be built. All three paper-trading layers stay unchanged: the Terraform ceiling, AutonomyLevel::deployable, and the Cell/Placer types. EXEC-033 and EXEC-037 hold the venue-session and order-flow detail. NEW_DEPENDENCY is kept for the TLS stack a native venue session needs (ADR 0009)."
+  },
+  {
+    "id": "REFLEX-051",
+    "domain": "REFLEX",
+    "title": "The journal writer runs on its own core",
+    "statement": "The Reflex Node's local ring/journal writer must run on a different CPU core from the hot-path decision thread.",
+    "rationale": "A writer that shares the decision thread's core takes its time slices, so every flush becomes a pause in deciding. That happens exactly when activity, and so journal volume, is highest.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Native Rust Event & Control Fabric — Hot-path contract ('running on a separate core')"}
+    ],
+    "verification": {"method": "integration", "check": "At runtime the node reports its thread affinities, and the journal writer's core set is disjoint from the decision thread's. A burst of journal flushes leaves decision-thread latency within its budget."},
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "OBS"],
+    "notes": "Merges two raw M p36 items that quote the same clause. It supports the non-blocking contract of REFLEX-013. P1 because it is how REFLEX-001 is met rather than a separate safety property. The execution-node module's documented core assignment does not fit an 8-vCPU shape (see REFLEX-048)."
+  },
+  {
+    "id": "REFLEX-052",
+    "domain": "REFLEX",
+    "title": "A cell keeps trading under its last valid envelope when the centre is lost",
+    "statement": "Losing the Fabric, GKE, the global AI or peer regions must not halt a Reflex Cell immediately. The cell must keep operating independently under its last valid envelope and package.",
+    "rationale": "A cell that halts whenever the centre falters turns every central incident into a global trading stop. Regional autonomy exists to prevent exactly that coupling.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — 'Regional reflex nodes can operate independently'"},
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Degraded mode bullet ('loss of Fabric/GKE/global AI does not immediately halt. Reflex continues under last valid envelope')"}
+    ],
+    "verification": {"method": "chaos", "check": "With the Fabric, the central control plane, model endpoints and peers all cut while the cell holds a valid envelope, the cell keeps deciding and placing paper orders within that envelope. It journals that it is running degraded."},
+    "policy_flags": [],
+    "secondary_domains": ["RES", "ARCH"],
+    "notes": "Merges the 'operate independently' half of the M p43 checklist with the first clause of the G p6 degraded-mode bullet. Continuing is bounded by narrowing (REFLEX-066) and by the halt on expiry (REFLEX-067). M p37 §26.1 adds that a node without the fabric 'continues under its last valid package and local journal until the package TTL or risk policy requires degradation'. GCP Rule 5 (G p3) states the platform form, and ADR 0008 (cells decide alone) is the house decision. Removed MULTI_REGION."
+  },
+  {
+    "id": "REFLEX-053",
+    "domain": "REFLEX",
+    "title": "Region and topology are chosen by venue benchmark",
+    "statement": "The GCP region and network topology of each Reflex Cell must be chosen from venue-specific latency benchmarks, not fixed in advance.",
+    "rationale": "GCP regional execution is fast cloud trading, not colocation, and only a measurement shows which region is nearest a given venue. A region chosen by assumption can put a cell further from its venues than it needs to be.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 10 'Cloud latency has physics'"}
+    ],
+    "verification": {"method": "benchmark", "check": "Each venue has a recorded round-trip benchmark from each candidate region. The region configured for the cell serving that venue is the one the benchmark supports, or a record explains why not."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["GCP", "NET", "ARCH"],
+    "notes": "Rule 10 also says that true sub-millisecond colocation 'would require edge/colo nodes outside ordinary cloud regions'. That limits what may be promised; it is not a separate build item. It bounds venue round-trip time, not the in-node budget of REFLEX-001. GCP §3 (G p3) treats exact regions as a measurement outcome, and ARCH-055 holds the architecture form. P1 because region choice matters from the multi-region phase, though the first cell's region should be chosen the same way."
+  },
+  {
+    "id": "REFLEX-054",
+    "domain": "REFLEX",
+    "title": "Reflex scales by pre-provisioned venue/instrument shard",
+    "statement": "Reflex capacity must be sized and scaled by venue/instrument shard, one shard per VM. Capacity grows by sharding sessions and instruments and provisioning the VMs in advance.",
+    "rationale": "Pre-provisioned shards give each venue session a known, isolated home whose latency has been benchmarked. Capacity found on demand has not been benchmarked.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Compute bullet ('sized by venue/instrument shard')"},
+      {"doc": "G", "page": "16", "section": "§18 Scaling and Performance Model — Reflex row (scale unit venue/instrument shard / VM; 'Scale intentionally by sharding sessions/instruments and pre-provisioning')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "The plan declares Reflex VMs per venue/instrument shard from committed configuration, and assigns each shard's sessions to exactly one VM. Adding a shard is a reviewed configuration change that appears in the plan as a new VM."},
+    "policy_flags": ["COST"],
+    "secondary_domains": ["GCP", "FINOPS"],
+    "notes": "The prohibition on reactive autoscaling in the same G p16 row is REFLEX-070. COST is kept because pre-provisioning pays for idle headroom by design; G p21 §23, not a raw item here, calls Reflex capacity 'intentionally overprovisioned for latency and failure headroom'. In-tree, the execution-node machine_type has no default and is 'chosen by venue count'."
+  },
+  {
+    "id": "REFLEX-055",
+    "domain": "REFLEX",
+    "title": "Reflex hosts use gVNIC/Tier-1 networking where a benchmark shows benefit",
+    "statement": "Reflex hosts must use gVNIC and Tier-1 networking for the venue path wherever a benchmark shows a benefit.",
+    "rationale": "The choice of network interface changes the latency and jitter of the path market data takes to the node. It is adopted by measurement because the benefit depends on the venue and the machine shape.",
+    "kind": "placement",
+    "priority": "P3",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Compute bullet ('Use gVNIC/Tier-1 networking where benchmarked beneficial')"},
+      {"doc": "H", "page": "L178-184", "section": "§02 Regional Cell edges — Market Data Feeds to algorik-node via 'gVNIC / Tier-1'"}
+    ],
+    "verification": {"method": "benchmark", "check": "A recorded benchmark compares venue-path latency with and without gVNIC/Tier-1 on the target shape. The plan enables them exactly where the benchmark showed a benefit."},
+    "policy_flags": ["COST", "MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "NET", "FINOPS"],
+    "notes": "Merges the G p6 networking clause with the gVNIC hop of the H market-data edge; that edge's 'no intermediate broker' clause is REFLEX-016. The H diagram draws gVNIC unconditionally, and G's 'where benchmarked beneficial' is kept as the more specific wording. P3 as an optimisation. In-tree, the execution-node module restricts machine shapes to those with Tier-1 networking and Titanium offload."
+  },
+  {
+    "id": "REFLEX-056",
+    "domain": "REFLEX",
+    "title": "Production Reflex capacity is held under reservations",
+    "statement": "Production Reflex VMs must run on Compute Engine capacity reservations, so the capacity the cells need is held even when a zone runs short.",
+    "rationale": "A cell that cannot get its machine back after a restart or failover in a constrained zone stays down for as long as the shortage lasts.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Compute bullet ('capacity reservations for production')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "The production plan declares a capacity reservation matching each Reflex VM's machine type and zone, including the standby's zone, and each Reflex instance consumes it."},
+    "policy_flags": ["COST"],
+    "secondary_domains": ["FINOPS", "GCP", "RES"],
+    "notes": "FINOPS-001 holds the same clause from the cost side. The standby's zone is included because REFLEX-059 puts the standby in another zone. G p4 §3 also says 'reserve hot Reflex capacity with reservations/commitments'. P1 because this is production readiness, not part of Phase 1 paper trading."
+  },
+  {
+    "id": "REFLEX-057",
+    "domain": "REFLEX",
+    "title": "Reflex hosts run a hardened minimal image",
+    "statement": "Reflex hosts must boot a hardened, minimal OS image that carries only what the Reflex binary and its host services need.",
+    "rationale": "Every package on the host is attack surface on a machine that holds venue sessions, and background work from it can add jitter.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Host model bullet ('on a hardened minimal image')"}
+    ],
+    "verification": {"method": "inspection", "check": "The Reflex boot image is pinned by digest to a hardened minimal base, and its installed package list matches a reviewed allowlist. No interactive login and no unused network service is enabled."},
+    "policy_flags": [],
+    "secondary_domains": ["SEC", "SUPPLY_CHAIN", "GCP"],
+    "notes": "Split from the G p6 Host model bullet; running under systemd is REFLEX-047. P0 as a security baseline of the foundation phases. In-tree, the execution-node module has a boot_image variable. Whether it is pinned by digest remains to be checked against the infrastructure rule 'upstream images pinned by digest'."
+  },
+  {
+    "id": "REFLEX-058",
+    "domain": "REFLEX",
+    "title": "Reflex working state is resident in memory",
+    "statement": "The cell's working state must be held in process memory, never in a remote store, with local SSD as its only scratch storage. That state comprises order books, features, compact reflex models, the active risk envelope and policy package, the session and inventory cache, instrument metadata and sequence state.",
+    "rationale": "State read from a remote store can be slow or missing at the moment of decision. Holding it in RAM makes the decision's inputs exactly as available as the process itself.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — OS tuning bullet ('local scratch SSD')"},
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — State bullet"},
+      {"doc": "H", "page": "L157", "section": "§02 Regional Cell — algorik-node state ('RAM + local SSD; policy package') and the Local SSD / RAM node"}
+    ],
+    "verification": {"method": "inspection", "check": "A state inventory maps each listed kind of state to an in-process structure, and the node holds no client handle to a remote store for any of them. Local SSD holds only scratch data that the node can lose and rebuild."},
+    "policy_flags": [],
+    "secondary_domains": ["ARCH", "MARKETDATA"],
+    "notes": "Merges two raw G p6 State items and the H node metadata, and takes 'local scratch SSD' from the G p6 OS tuning bullet. The State bullet's 'journal asynchronously to Fabric' is REFLEX-015. What the local state module maintains is REFLEX-020 to REFLEX-022. The H diagram labels this state 'ephemeral'. In-tree, the edge-cell survey records that no book, feature or watermark state persists across restarts, and books rebuild from the feed."
+  },
+  {
+    "id": "REFLEX-059",
+    "domain": "REFLEX",
+    "title": "Each Reflex Cell has a fenced warm standby in another zone",
+    "statement": "Each Reflex Cell shard must have a warm standby in a different zone of the same region. The standby is kept fenced from the venue until it is promoted.",
+    "rationale": "A single VM is a single point of failure for every venue session on it. A warm standby in another zone survives the loss of the primary's zone.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Failover bullet ('fenced warm standby in another zone')"},
+      {"doc": "H", "page": "L157", "section": "§02 Regional Cell — algorik-node ha ('active/standby or N+1 per region')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "For each shard, the plan declares a standby instance in a different zone from its primary, with the same image and package. The standby has no venue session credentials active until it is promoted."},
+    "policy_flags": ["COST"],
+    "secondary_domains": ["RES", "GCP", "FINOPS"],
+    "notes": "The H diagram also allows N+1 per region; G's 'in another zone' is kept as the more specific placement rule. Removed MULTI_REGION because the standby is in the same region. COST is kept for the doubled hardware. Promotion is REFLEX-060 and the single-owner invariant is REFLEX-061. P1 because this is GCP Phase 7 game-day failover. In-tree, neither the edge crates nor qip-edge-node contain standby or fencing code."
+  },
+  {
+    "id": "REFLEX-060",
+    "domain": "REFLEX",
+    "title": "Promotion requires liveness failure, a newer fencing epoch and venue-session ownership",
+    "statement": "A standby or a restarted process must stay fenced and must not take over a shard until three conditions hold: the primary's liveness has failed, it holds a newer fencing epoch, and it has confirmed ownership of the venue session.",
+    "rationale": "Promoting on a missed heartbeat alone promotes into a network partition while the old primary is still trading. The fencing epoch and the session check prove the old owner can no longer act.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Failover bullet ('Activation requires liveness failure + fencing epoch/venue-session ownership checks')"},
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Reflex process/VM row ('Standby remains fenced until failover criteria'; 'Restart/standby promotion after liveness + fencing + venue-session checks')"}
+    ],
+    "verification": {"method": "integration", "check": "Promotion is attempted with each of the three conditions missing in turn; it is refused every time and the standby sends nothing. With all three met, the standby promotes and journals the new epoch."},
+    "policy_flags": [],
+    "secondary_domains": ["RES", "EXEC"],
+    "notes": "Merges the activation clause of G p6 with the matching clauses of G p15. Removed LIVE_CAPITAL (from G p15): venue-session ownership can be proven against a simulated venue. P0 because this is the mechanism behind the safety invariant in REFLEX-061. It applies to a plain restart even before any standby exists."
+  },
+  {
+    "id": "REFLEX-061",
+    "domain": "REFLEX",
+    "title": "A shard never has two active owners",
+    "statement": "At most one Reflex process may be the active owner of a shard and its venue sessions at any moment. Actions that carry a superseded fencing epoch must be refused.",
+    "rationale": "Two active owners of one venue session send every order twice and split the journal into two histories that the ledger cannot reconcile. It is the failure that failover causes most easily.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Failover bullet ('never run two active owners accidentally')"}
+    ],
+    "verification": {"method": "chaos", "check": "Across many trials of partitioning the primary from the standby and killing and restarting each at random, two processes never place orders for the same shard. An order or journal write that carries a superseded epoch is refused every time."},
+    "policy_flags": [],
+    "secondary_domains": ["RES", "EXEC", "LEDGER"],
+    "notes": "Split from the G p6 Failover bullet, which states both this goal and its mechanism (REFLEX-060). GCP Rule 4 (G p3) names fencing epochs as the idempotency tool. No fencing exists in-tree yet."
+  },
+  {
+    "id": "REFLEX-062",
+    "domain": "REFLEX",
+    "title": "Package download and verification happen outside the hot loop",
+    "statement": "The package manager must download, verify and stage packages outside the hot loop, in warm mode. No package-handling work may run on the decision thread or block it.",
+    "rationale": "Downloading or verifying a multi-megabyte bundle on the decision thread would stall trading for as long as the transfer took.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Package manager bullet ('downloads signed model/policy bundles outside the hot loop')"},
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Package Manager row (mode 'Warm')"}
+    ],
+    "verification": {"method": "integration", "check": "A package is downloaded and verified during a replayed session. Per-event latency on the decision thread stays within budget, and a thread-attributed trace shows the thread doing no network or signature work."},
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "SUPPLY_CHAIN"],
+    "notes": "Removed MANAGED_SERVICE and NEW_DEPENDENCY, which the raw G p6 and G p19 items carried. They belong with the fetch channel (REFLEX-071) and the signature check (REFLEX-010), not with the question of which thread does the work."
+  },
+  {
+    "id": "REFLEX-063",
+    "domain": "REFLEX",
+    "title": "A package is staged and health-checked before activation",
+    "statement": "A verified package must be staged beside the active one and must pass a health check before it can be activated. A package that fails its health check must never become active.",
+    "rationale": "A correctly signed package can still be broken, for example a model that will not load or limits that do not parse. Health-checking it while the old package is still trading finds the break before any order is placed on it.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Package manager bullet ('stages, health-checks')"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 7 ('stages the new package')"}
+    ],
+    "verification": {"method": "integration", "check": "A signed package containing a model that fails to load is staged, fails its health check and is never activated, and the previous package keeps trading throughout. A healthy package passes and becomes eligible for activation."},
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "EVAL"],
+    "notes": "Merges the staging and health-check clauses of two raw G p6 items and G p20 step 7. The blueprint does not define the health check. The check here assumes the minimum: every component loads and the package's own self-test passes. M p31 also requires 'deterministic resource, latency and failure-mode budgets before regional deployment'. Removed MANAGED_SERVICE."
+  },
+  {
+    "id": "REFLEX-064",
+    "domain": "REFLEX",
+    "title": "Packages activate atomically at an approved epoch boundary",
+    "statement": "Package activation must be an atomic swap at an approved epoch boundary. Every decision must be made under exactly one package version, never a mix of old and new components.",
+    "rationale": "A decision made with the new model and the old limits is a combination nobody tested or approved, and the journal cannot say which package produced it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Package manager bullet ('atomically activates at an epoch boundary')"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 7 ('activates it atomically at the approved epoch')"},
+      {"doc": "H", "page": "L178-184", "section": "§02 Regional Cell — Reflex Package Agent ('Downloads/verifies immutable model/policy/config package and atomic swaps'; deploy edge into algorik-node)"},
+      {"doc": "H", "page": "L273-289", "section": "§05 Cognitive/AGI/Quantum Plane — Regional Reflex Cells node ('Atomic package activation')"}
+    ],
+    "verification": {"method": "property", "check": "Across generated interleavings of activation with event processing, every journaled decision carries exactly one package id and epoch, and all of its inputs come from that package. No decision falls between epochs."},
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "EVID", "REPLAY"],
+    "notes": "Merges four raw items. G p23 §27, not a raw item here, requires every executing model or policy to be traceable to its 'activation epoch'; the per-decision epoch in the check supplies that. Removed MANAGED_SERVICE and MULTI_REGION, which the H items carried. In-tree, policy application is sequence-numbered (VerifiedPolicy::sequence), and a replayed old sequence is refused where the policy is applied."
+  },
+  {
+    "id": "REFLEX-065",
+    "domain": "REFLEX",
+    "title": "The previous package stays ready for instant local rollback",
+    "statement": "After activating a new package, the node must keep the previous package loaded and able to become active again instantly and locally, with no download.",
+    "rationale": "If rolling back means fetching the old package again, the node keeps trading on the bad one until the fetch completes. Keeping the old package resident makes rollback a swap.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Package manager bullet ('retains instant local rollback')"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 7 ('previous package remains rollback-ready')"}
+    ],
+    "verification": {"method": "integration", "check": "A new package is activated and the network is then cut. A rollback command restores the previous package at the next epoch boundary with no download, and decisions after that carry the previous package's id."},
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "RES"],
+    "notes": "Merges two raw G p6 items and G p20 step 7, and reuses the atomic swap of REFLEX-064. The blueprint does not say who may order a rollback or whether the node may roll back on its own. P1 because the full package lifecycle is GCP Phase 8, though the rollback path costs little once REFLEX-064 exists."
+  },
+  {
+    "id": "REFLEX-066",
+    "domain": "REFLEX",
+    "title": "Exposure narrows progressively while dependencies stay lost",
+    "statement": "While running degraded, the cell must narrow its exposure progressively, following local policy, as its envelope, package and other inputs age.",
+    "rationale": "An envelope issued an hour ago describes an hour-old market, and trading it at full size treats stale authority as fresh. Narrowing turns growing ignorance into smaller positions.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Degraded mode bullet ('progressively narrows exposure according to local policy')"}
+    ],
+    "verification": {"method": "chaos", "check": "With every central dependency cut, the cell's sizing multiplier falls in steps as each input crosses its staleness threshold. Orders placed later in the outage are no larger than the narrowed limit allows."},
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "RES"],
+    "notes": "Merges two raw G p6 items. In-tree, Cell::narrowing(now) derives a DegradationState whose sizing multiplier narrows as capabilities move from Fresh to Stale to Unavailable. It is published as qip_edge_capability_freshness and qip_edge_sizing_multiplier (§6.2 of the earlier spec)."
+  },
+  {
+    "id": "REFLEX-067",
+    "domain": "REFLEX",
+    "title": "The cell halts when its freshness limits expire",
+    "statement": "When its freshness limits expire, a degraded cell must exit or halt. It must stop taking new risk rather than keep trading under an envelope it can no longer renew.",
+    "rationale": "Trading under a stale envelope is justified only for a bounded time. Beyond that the cell would be trading capital nobody has re-granted, on risk nobody has re-assessed, and the fail-closed default is to stop.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell — Degraded mode bullet ('then exits/halts if freshness limits expire')"}
+    ],
+    "verification": {"method": "chaos", "check": "With every central dependency cut, once the envelope's freshness limit passes, the cell places no new risk-increasing orders, withdraws its resting orders and reports halted. It resumes only when a fresh, verified envelope arrives."},
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "RES"],
+    "notes": "Merges two raw G p6 items; the second stresses that the non-halting behaviour of REFLEX-052 ends here. 'Exits/halts' could mean flattening positions or stopping the process. The check requires the fail-closed minimum (no new risk, resting orders withdrawn) and leaves flattening to local policy. In-tree, halts come from the kill switch, from policy and from a polled flag (qip_edge_halted{source}), and the Cell withdraws resting orders on a halt (qip_edge_orders_mass_cancelled_total). It remains to be checked whether freshness expiry triggers a halt or only narrows the sizing multiplier."
+  },
+  {
+    "id": "REFLEX-068",
+    "domain": "REFLEX",
+    "title": "A Reflex process or VM failure is contained to its shard",
+    "statement": "When a Reflex process or VM fails, only that shard's active venue connections may be lost. Other shards, in the same region or elsewhere, must keep trading.",
+    "rationale": "Sharding exists to bound the blast radius. If one failure takes down other shards, they were sharing something they should not have been.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Reflex process/VM row ('active venue connection lost only for that shard')"}
+    ],
+    "verification": {"method": "chaos", "check": "Killing one shard's process, and then its VM, leaves every other shard's venue sessions connected and its decisions uninterrupted. Only the killed shard reports a lost session."},
+    "policy_flags": [],
+    "secondary_domains": ["RES"],
+    "notes": "Split from the G p15 row; its promotion clause is REFLEX-060 and its recovery-target clause REFLEX-069. Removed LIVE_CAPITAL. P1 because containment needs more than one shard, which comes after the single-shard Phase 1 cell."
+  },
+  {
+    "id": "REFLEX-069",
+    "domain": "REFLEX",
+    "title": "Reflex recovery targets are measured per venue and never promised as zero-gap",
+    "statement": "Reflex failover recovery time must be measured and reported for each venue, and must never be promised as zero-gap.",
+    "rationale": "Venues differ in how fast a session can be re-established after failover. An unmeasured recovery promise is a false statement that a risk desk will plan around.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Reflex process/VM row ('Measure target per venue; do not promise zero-gap failover')"}
+    ],
+    "verification": {"method": "game-day", "check": "A scheduled game day fails the primary for each venue shard and records the measured session gap for each venue. The published recovery targets equal the measured figures, and no document claims zero-gap failover."},
+    "policy_flags": [],
+    "secondary_domains": ["RES", "OBS"],
+    "notes": "Split from the G p15 row. G p23 §27, not a raw item here, requires every critical component to have 'observable RTO/RPO or a documented reason exact guarantees cannot be promised'. Removed LIVE_CAPITAL."
+  },
+  {
+    "id": "REFLEX-070",
+    "domain": "REFLEX",
+    "title": "Reflex never autoscales reactively during a market burst",
+    "statement": "Reflex capacity must not be scaled reactively (autoscaled) during a market burst.",
+    "rationale": "A burst is exactly when a new, cold, unbenchmarked VM would join the venue path, and when its start-up latency would hurt most.",
+    "kind": "prohibition",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "16", "section": "§18 Scaling and Performance Model — Reflex row ('no reactive autoscale during a market burst')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "No environment's plan attaches an autoscaler, a managed-instance-group autoscaling policy or a scale-out trigger to any Reflex VM."},
+    "policy_flags": [],
+    "secondary_domains": ["GCP", "FINOPS"],
+    "notes": "Split from the G p16 Reflex row; the positive scaling rule is REFLEX-054. G p4 §3, not a raw item here, contrasts Reflex with warm, data and AI components, which do autoscale."
+  },
+  {
+    "id": "REFLEX-071",
+    "domain": "REFLEX",
+    "title": "Packages are fetched from Artifact Registry/GCS over a private channel",
+    "statement": "The package manager must fetch packages from Artifact Registry or GCS, and verify them against KMS, over private HTTPS/gRPC and never over the public internet.",
+    "rationale": "The package channel carries the node's whole decision input. A private path to the registry keeps both the fetch and the key lookup for verification off the public internet.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Package Manager to Artifact Registry/GCS + KMS verification (HTTPS/gRPC private)"}
+    ],
+    "verification": {"method": "infra-plan", "check": "The Reflex host's network plan reaches Artifact Registry, GCS and KMS only through Private Google Access or Private Service Connect, and those private endpoints are the ones the package manager is configured to use."},
+    "policy_flags": ["MANAGED_SERVICE", "NEW_DEPENDENCY"],
+    "secondary_domains": ["GCP", "SUPPLY_CHAIN", "NET", "SEC"],
+    "notes": "Split from the G p19 row; its 'KMS verification' is REFLEX-010 and its 'Warm' mode REFLEX-062. NEW_DEPENDENCY is kept because ADR 0009 forbids an in-tree gRPC, TLS or Google auth client, and this channel needs all three unless the egress proxy carries it. P2 because GCP Phase 8 names the signed model package lifecycle. In-tree, policy and capital reach the cell over the mesh downlink (qip_edge::mesh::PolicyDownlink and CapitalDownlink), not from a registry."
+  },
+  {
+    "id": "REFLEX-072",
+    "domain": "REFLEX",
+    "title": "The hot-path stages run in a fixed order, with risk before netting and execution",
+    "statement": "Each event must pass through the node's stages in a fixed order: feed decode, order books, features, models, strategy, risk, netting, execution. No order may reach execution, and so the venue, without the local risk gate's approval for that order.",
+    "rationale": "A fixed order makes every pass replayable and places the risk veto where nothing can route around it. An order that reaches the venue before risk has seen it is exactly the order the gate exists to stop.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 2 ('deterministic local risk gate approves/vetoes; order is sent directly to venue')"},
+      {"doc": "H", "page": "L157", "section": "§02 Regional Cell — algorik-node pipeline ('Feed decode → books → features → models → strategy → risk → netting → execution')"}
+    ],
+    "verification": {"method": "property", "check": "For generated event streams, every pass's journal shows the stages in the fixed order, and every order the venue adapter receives has an approve verdict for that order earlier in the same pass. Mutating the pipeline to skip the risk stage makes the check fail."},
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "EXEC", "ARCH"],
+    "notes": "Merges the two raw H L157 items, which quote the same pipeline, with the risk-then-send ordering of G p20 step 2. The gate's own properties are REFLEX-032 to REFLEX-034. The master's Lane 0 list (M p9), 'local risk, netting, routing', runs in the same order. In-tree, Cell::work runs signal to intent, feasibility, pricing, netting and crossing, decomposition, then dispatch, so feasibility also comes before netting. Neither blueprint says whether netted orders are checked again. Removed LIVE_CAPITAL and EXTERNAL_ACTION."
+  },
+  {
+    "id": "REFLEX-073",
+    "domain": "REFLEX",
+    "title": "No proxy, mesh or gateway on Reflex traffic without benchmarked necessity",
+    "statement": "Reflex traffic must not pass through a service mesh, proxy, Secure Web Proxy, Cloud NAT chain or general API gateway unless a benchmark shows that hop to be necessary.",
+    "rationale": "Each hop adds latency and a component whose failure stops trading. On the venue path, a proxy must earn its place by measurement.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "23", "section": "§28 Explicit Anti-Patterns — 'Routing Reflex traffic through service mesh, proxy, Secure Web Proxy, Cloud NAT chains or general API gateways without benchmarked necessity'"}
+    ],
+    "verification": {"method": "infra-plan", "check": "In the plan, the routes from each Reflex host to its venues and peers contain no service-mesh, proxy, Secure Web Proxy, Cloud NAT or API-gateway hop, apart from any hop justified by a committed benchmark record."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "SEC", "EXEC"],
+    "notes": "EXEC-030 holds the venue-side form. G p6's Host model bullet ('Avoid Kubernetes/service-mesh jitter') and G p5 §5 ('never inserted in Reflex path') say the same about the mesh. This conflicts with the in-tree design. The data-and-streaming rule puts the egress proxy (infrastructure/egress/envoy.yaml, run as a systemd unit beside the execution node under ADR 0024) in front of every vendor call, because the in-tree HTTP client speaks only plaintext. A real venue session through that proxy therefore needs the benchmark record this requirement asks for, or an ADR that changes one side or the other. No real venue exists today: QIP_VENUE_FEED accepts only simulated."
+  }
+]

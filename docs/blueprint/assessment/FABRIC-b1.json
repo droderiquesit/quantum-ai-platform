@@ -1,0 +1,727 @@
+[
+  {
+    "id": "FABRIC-001",
+    "status": "PARTIAL",
+    "current": "Negative half holds for crates only: no workspace crate declares a Pub/Sub or Kafka client crate (two-crate dependency test), and qip_streaming::pubsub::PubSubTransport is a refusal port (Error::Unavailable). The in-tree substitute for internal messaging is qip_events::{EventLog,EventBody} plus qip_transport's HTTP mesh (ADR 0011). Positive half is absent: no native fabric, fabric SDK or fabric schema model exists (FABRIC-013/015/022 are PARTIAL/MISSING; SchemaRegistry is never constructed outside tests). Terraform does what the requirement's own check forbids: modules/services enables pubsub.googleapis.com and modules/secrets declares google_pubsub_topic.rotation, both unconditionally; modules/trust-zones carries google_pubsub_topic_iam_member fabric_publish/fabric_attach for a Pub/Sub 'control fabric' (armed, control_fabric_topic = null today).",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/lib.rs:1-75 (module doc: ADR 0011 replaced Google Pub/Sub with the in-tree HTTP/1.1 mesh)",
+      "backend/crates/services/qip-streaming/src/pubsub.rs:1-8 ('The target architecture puts Pub/Sub between the ingestion edge and the central plane'), :83 (declared), registry.rs:67-69,217,228 (TransportKind::PubSub, refused)",
+      "infrastructure/terraform/modules/services/main.tf:56 (\"pubsub.googleapis.com\" enabled: 'the secret-rotation topic in modules/secrets')",
+      "infrastructure/terraform/modules/secrets/main.tf:64-89,112-118 (google_pubsub_topic.rotation and its publisher grant; module instantiated unconditionally at infrastructure/terraform/main.tf:226)",
+      "infrastructure/terraform/modules/trust-zones/main.tf:587-611 (google_pubsub_topic_iam_member fabric_publish/fabric_attach: Pub/Sub as the control fabric)",
+      "infrastructure/terraform/main.tf:458-497 (control_fabric_topic = null; comment: 'Blueprint §46.1's control fabric is Pub/Sub')",
+      "backend/crates/libs/qip-storage/src/gcp/mod.rs:1-8 (in-tree Google REST clients over qip_transport: a Pub/Sub REST client written the same way would pass the two-crate test)",
+      "test: no_crate_declares_a_third_party_dependency_beyond_the_two_permitted (backend/crates/tests/qip-acceptance/tests/architecture.rs:1485) -- refuses any third-party crate, not a Pub/Sub client as such, and scans no Terraform",
+      "./scripts/check-dependencies.sh -> 'dependency policy: 11 third-party package(s), all permitted' (re-run 2026-09-25)"
+    ],
+    "gap": "(1) The native fabric this invariant says internal messaging must use does not exist (no broker, SDK or registered schema model; FABRIC-013/015/022). (2) No acceptance test implements the stated verification: nothing scans Terraform for the Pub/Sub/Managed Kafka API or topics, nothing asserts every internal async contract is a registered fabric schema, and the crate check would not catch an in-tree Pub/Sub REST client. (3) That verification would fail today on modules/services (pubsub.googleapis.com) and modules/secrets (the secret-rotation topic); the rotation topic is a Google-service-to-operator notification rather than the internal core path, so it needs an explicit, argued exception in the test or removal -- an owner call. (4) Code and Terraform still name Pub/Sub as the target control fabric (pubsub.rs module doc, trust-zones fabric IAM, catalogue.tf/main.tf comments), in direct tension with this invariant.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-013",
+      "FABRIC-015",
+      "FABRIC-022"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test architecture no_crate_declares_a_third_party_dependency_beyond_the_two_permitted; ./scripts/check-dependencies.sh. The requirement's Terraform scan and registered-schema assertion do not exist; grep -rn 'google_pubsub\\|pubsub.googleapis' infrastructure/terraform shows what that scan would find.",
+    "work_item": "E03",
+    "tier": "T0",
+    "size": "S",
+    "notes": "Distinct from qip-capital-fabric and qip-api's fabric.rs (capital-transfer corridors) and qip-edge's MirrorArrangement (cross-venue instrument mirroring) -- naming collisions with this requirement's 'fabric', not evidence for it. The dormant modules/trust-zones 'control fabric' Pub/Sub IAM scaffolding (modules/trust-zones/main.tf:587-611) is armed-but-unset (control_fabric_topic=null everywhere); it should be removed rather than left wired for a value nothing may ever supply, since it names Pub/Sub as 'the control fabric' in direct tension with this invariant. verify: downgraded COMPLETE -> PARTIAL. The cited test only refuses third-party crates; it does not exercise the stated verification (Terraform scan, registered-schema assertion), which would fail today on the unconditional pubsub.googleapis.com API and google_pubsub_topic.rotation; the positive half (use the native fabric/SDK/schema model) is unbuilt. deployable and e2e set false: no e2e test demonstrates it, and the only cross-process substitute (the mesh) is unwired on Cloud Run. Corrected the main.tf line range and the trust-zones path in the notes."
+  },
+  {
+    "id": "FABRIC-002",
+    "status": "INCORRECT",
+    "current": "qip_edge::journal::Journal is an unbounded Vec<JournalEntry> that is never trimmed (entries are kept after shipping), hash-chained on the decision path, and drained by Cell::flush -> journal::ship -> Mirror::ship. In the only composition root that runs passes (qip-edge-node serve loop), cell.flush(mirror) is called synchronously on the same thread, immediately before run_pass, and StoreMirror::ship performs a synchronous KeyValueStore write. There is no preallocated bounded ring, no separate core and no asynchronous drain thread; the journal module doc's 'never happens on the hot path' holds for Cell::work itself but not for the loop that drives it.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/journal.rs:1-12 (module doc), :427-468 (Journal { entries: Vec<JournalEntry>, shipped } -- kept after shipping, no bound)",
+      "backend/crates/edge/qip-edge/src/cell.rs:7823 (Cell::flush -> journal::ship)",
+      "backend/crates/apps/qip-edge-node/src/main.rs:852 (cell.flush(mirror, now) on the serve-loop thread) then :888 (run_pass) -- one thread, sequential",
+      "backend/crates/apps/qip-edge-node/src/mirror.rs:145 (StoreMirror::ship: synchronous KeyValueStore write)",
+      "test: mirror_batches_chain_onto_each_other_across_flushes (backend/crates/edge/qip-edge/tests/cell.rs:398)",
+      "test: a_shipped_journal_is_readable_after_the_process_that_wrote_it_is_gone (backend/crates/apps/qip-edge-node/tests/mirror.rs:64)",
+      "docs/adr/0100-...md §6 ('The decision thread hands a batch to a bounded channel with try_send... A spool thread writes segments, and a drain thread produces') -- the decided replacement, not built"
+    ],
+    "gap": "The shape the requirement forbids is what runs: an unbounded in-memory journal whose drain is a synchronous store write on the decision loop's own thread, so a slow or stalled store delays the next pass. Needed: a preallocated bounded ring (try_send from the decision thread), a spool thread and a drain thread forwarding to the regional fabric (ADR 0100 §6), and the stalled-fabric burst test. The execution-node template does set QIP_VENUE_FEED=simulated (startup.sh.tftpl:189), but execution_nodes = {} in every environment, so no node runs this.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-004",
+      "FABRIC-015"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test cell mirror_batches_chain_onto_each_other_across_flushes; cargo test -p qip-edge-node --test mirror. The required burst-under-stalled-fabric test does not exist.",
+    "work_item": "E04",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: changed PARTIAL -> INCORRECT. The journal is an unbounded, never-trimmed Vec (not preallocated/bounded), and in qip-edge-node the drain (cell.flush -> StoreMirror::ship, a synchronous store write) runs on the same thread directly before run_pass (main.rs:852 then :888) -- the synchronous-dependency-on-the-hot-path shape the status definitions name as INCORRECT; ADR 0100 §6 records the replacement. Replaced the weak evidence test with two that exercise shipping, and corrected 'QIP_VENUE_FEED=simulated is never set' (the node template sets it; no node is declared)."
+  },
+  {
+    "id": "FABRIC-003",
+    "status": "INCORRECT",
+    "current": "Cell::work itself makes no fabric or broker call. But in the only composition root that runs it (qip-edge-node's serve loop), each pass runs on the same thread after cell.flush(mirror) (synchronous store write) and, when QIP_MESH_PEER is set, after MeshLink::exchange_with_installers -- the centre link that substitutes for the control fabric (FABRIC-007) -- whose uplink, capital and policy downlinks each use RetryPolicy::default (5 attempts, ~6 s ladder) with a real ThreadSleeper. Passes are also driven by health-probe arrival, not a timer. A stalled centre link or journal store therefore delays the next market-event-to-order pass.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:2838 (pub fn work -- no fabric call inside)",
+      "backend/crates/apps/qip-edge-node/src/main.rs:776 (fn serve), :852 (cell.flush), :869 (link.exchange_with_installers), :888 (run_pass) -- sequential on one thread",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs:115-120 (mesh_config uses RetryPolicy::default), :241-243 (ThreadSleeper in connect), :350 (exchange_with_installers)",
+      "backend/crates/libs/qip-transport/src/retry.rs:122-137 (default: 5 attempts, 50 ms initial, 5 s max backoff, x4)",
+      "test: a_delta_for_a_peer_that_is_not_listening_is_dead_lettered_rather_than_blocking_forever (backend/crates/edge/qip-edge/tests/mesh.rs:601) -- dead-letters eventually; does not show the pass is unaffected meanwhile",
+      "docs/adr/0100-...md §6 ('Control compilation, halt-wire polling and file reads move off the decision thread... Passes are driven by a timer, not by health probes') and 'What would make this wrong'"
+    ],
+    "gap": "The node's decision loop waits on the substitute fabric (journal drain and centre exchange) before every pass, which is the dependency this invariant forbids; no chaos test kills/partitions/stalls a fabric behind a replayed tick stream and compares orders and decision-to-send latency. Fix per ADR 0100 §6 (timer-driven passes; control, halt polling, drain and file reads off the decision thread), then write the chaos test once FABRIC-015 exists.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-002",
+      "FABRIC-015"
+    ],
+    "blocked_by": "",
+    "verification": "No test demonstrates the invariant. The required chaos test (kill/partition/stall a broker behind a replayed tick stream; compare orders and decision-to-send percentiles to a healthy run on a ManualClock) must be written once FABRIC-015 exists and the node's loop is restructured per ADR 0100 §6.",
+    "work_item": "E04",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: changed PARTIAL -> INCORRECT. The 'nothing sits on the path' claim holds only inside Cell::work; the composition root runs flush and the retrying centre exchange synchronously before run_pass on one thread, so a stall delays event-to-order execution. Fixed a wrong citation: the dead-letter test is in qip-edge/tests/mesh.rs:601, not qip-api/tests/mesh.rs. depends_on changed from FABRIC-008 (placement) to FABRIC-002/015: the chaos test needs a broker, not three-zone VMs."
+  },
+  {
+    "id": "FABRIC-004",
+    "status": "PARTIAL",
+    "current": "qip_edge::journal::Decision records per cell: Ingested (feed name and decoded/skipped COUNTS only, not the ticks acted on), SignalRaised (strategy, object, kind, conviction -- no feature snapshot), EdgePriced, OrderSent, Filled, OrderExpired, MassCancelled, Refused, PolicyApplied, CapitalRenewed, HaltChanged and others; Mirror::ship drains it to MemoryMirror/FileMirror/StoreMirror. No tick, feature snapshot or decision trace is journaled, and nothing is classified into P1/P2 topic classes.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/journal.rs:25-40 (Ingested {feed, decoded, skipped}; SignalRaised {strategy, object, kind, conviction_shrunk_f64})",
+      "backend/crates/edge/qip-edge/src/journal.rs:581-651 (MemoryMirror, FileMirror)",
+      "backend/crates/apps/qip-edge-node/src/mirror.rs:145 (StoreMirror::ship)",
+      "test: mirror_batches_chain_onto_each_other_across_flushes (backend/crates/edge/qip-edge/tests/cell.rs:398)",
+      "test: a_shipped_journal_is_readable_after_the_process_that_wrote_it_is_gone (backend/crates/apps/qip-edge-node/tests/mirror.rs:64)"
+    ],
+    "gap": "Ticks acted on, feature snapshots and decision traces are not journaled at all (Ingested is a count). Nothing ships the journal to a network fabric with P1 (financial outcomes) / P2 (market journal) classes; qip_events::TopicGroup carries no P0-P4 tiering and the edge journal never reaches qip-events or a broker. ADR 0100 §5 plans book state at each decision on P2 and fills on P1; Decision::Filled also lacks side, quote unit and fee (ADR 0100 §8).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-002",
+      "FABRIC-006",
+      "FABRIC-045"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test cell; the required replay-the-session-from-P1/P2-partitions-alone test does not exist because no partitioned fabric exists to replay from.",
+    "work_item": "E03",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: status and flags unchanged; corrected 'current', which overstated coverage (Ingested records counts, not ticks; no feature snapshot or decision trace exists), and replaced the empty-flush test with tests that exercise shipping."
+  },
+  {
+    "id": "FABRIC-005",
+    "status": "MISSING",
+    "current": "No Reflex Mesh exists: nothing coordinates directly peer-to-peer between Reflex Nodes. What this tree calls 'the mesh' is the centre<->cell spine -- qip-api::mesh::MeshBackbone and qip-edge-node::mesh::MeshLink over qip_transport -- which carries state deltas up and capital/policy down, i.e. the control and outcome traffic the blueprint assigns to the fabric (FABRIC-004/007). qip-edge-node reads one QIP_MESH_PEER (the central plane); RegionTable is an in-process ledger, and MirrorArrangement is cross-venue trading, not peer coordination. The node's journal store (StoreMirror) is separate from the centre link and a failure of either is logged without stopping the other (main.rs:852-874), which is adjacent, not this invariant.",
+    "evidence": [
+      "backend/crates/apps/qip-api/src/mesh.rs:1-40 (module doc: the centre's half; deltas up, capital envelopes down), :1033 (MeshBackbone)",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs:60 (PEER_VARIABLE = QIP_MESH_PEER: the single centre peer)",
+      "backend/crates/edge/qip-edge/src/reservation.rs:1-25 (RegionTable: one in-process table per region, not a peer link)",
+      "backend/crates/apps/qip-edge-node/src/main.rs:848-874 (flush failure logged and exchange continues; exchange failure reported and pass continues)"
+    ],
+    "gap": "Build a direct peer-to-peer Reflex Mesh for opportunity/reservation exchange between nodes (MESH domain), keep it off the fabric, then run the two-cell chaos test (stop the fabric -> mesh continues; sever the mesh -> journaling and control continue). Today the one link that exists conflates coordination, control and outcome reporting.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-002",
+      "FABRIC-004",
+      "FABRIC-015"
+    ],
+    "blocked_by": "",
+    "verification": "none exists; the cited cross_region/reservation suites test cross-venue mirroring and the in-process region ledger, not peer coordination.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: downgraded PARTIAL -> MISSING. The cited machinery is the centre<->cell spine (hub, carrying the fabric's control and outcome roles), not direct peer-to-peer Reflex Mesh coordination, and the cited test suites (cross_region.rs, reservation.rs) exercise cross-venue mirror arrangements and an in-process region ledger, not the separation this invariant states. No test demonstrates either direction of the separation."
+  },
+  {
+    "id": "FABRIC-006",
+    "status": "PARTIAL",
+    "current": "qip_events::log::EventLog is hash-chained (sequence + previous_hash + canonical event, SHA-256) and replayable from any retained sequence; qip_storage::chain::ChainArchive extends the chain across process restarts via a position-keyed KeyValueStore. Both are constructed in every central-plane composition root.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/log.rs:147-164 (LogRecord, EventLog), :655 (retained_anchor), :698 (append), :1001 (verify_chain), :1076 (replay)",
+      "backend/crates/libs/qip-storage/src/chain.rs:54-73 (ArchivedRecord: position/previous_digest/digest/record)",
+      "backend/crates/apps/qip-api/src/main.rs:107 (ChainArchive::open over the configured store)",
+      "infrastructure/terraform/variables.tf:365-383 (storage_target default \"memory\": 'a Cloud Run instance keeps nothing across a restart'; no environment overrides it)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4486 (journal: DurableLogTransport::in_memory)",
+      "test: a_file_backed_log_survives_a_restart (qip-events/tests/backbone.rs:769)",
+      "test: decision_relevant_topics_are_retained_permanently_and_never_dropped (qip-events/tests/backbone.rs:95)",
+      "test: absorbing_the_same_records_twice_writes_nothing_the_second_time (qip-storage/tests/chain.rs:125)",
+      "test: every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one_flipped_byte_refuses_the_replay (qip-acceptance/tests/truth_loop.rs:1193)"
+    ],
+    "gap": "This is one process's log/archive, not a partitioned multi-broker contract available 'to any authorised consumer' -- there is no consumer authorisation (FABRIC-018) and no cross-process partitioning; qip-kernel's own journal is always DurableLogTransport::in_memory (qip-kernel/src/platform.rs:4486), so even this substitute is not persisted to disk in the construction path that actually runs. In every environment storage_target is the default \"memory\", so the deployed archive and log keep nothing across a restart -- the durability this requirement is about is not what any environment runs.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": true,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-events --test backbone; cargo test -p qip-storage --test chain --test engine",
+    "work_item": "E03",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: deployable set false: storage_target defaults to memory and no environment overrides it (variables.tf:365-383), so no deployed process retains a record across restart. Added the restart and replay tests that actually exercise the claim; e2e kept true on the strength of truth_loop.rs:1193 (a second platform rebuilds from a file-backed log)."
+  },
+  {
+    "id": "FABRIC-007",
+    "status": "PARTIAL",
+    "current": "qip-api::mesh::{pending_capital, pending_policy, MeshBackbone::dispatch_policy} deliver capital grants and risk/policy envelopes to edge cells over qip_transport's mesh; Cell::apply_policy / Cell::apply_halt apply them exactly once and record the applied sequence.",
+    "evidence": [
+      "backend/crates/apps/qip-api/src/mesh.rs:612 (pending_capital), 793 (pending_policy), 1205 (dispatch_policy)",
+      "backend/crates/edge/qip-edge/src/cell.rs:2111 (apply_policy), 2054 (apply_halt)",
+      "test: a_cycle_ships_the_desk_a_live_grant_funds_as_a_whitelist_the_cell_verifies (qip-api/tests/mesh.rs:1338)",
+      "test: a_reconciliation_break_crossing_the_wire_halts_that_cell_and_only_that_cell (qip-api/tests/mesh.rs:475)"
+    ],
+    "gap": "Delivered over qip-transport's HTTP mesh rather than a fabric with P0 topic offsets; MeshBackbone is constructed only when QIP_MESH_CELLS is set, which no environment sets (no execution node exists), so it has never run against a real edge cell outside the test process.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": true,
+    "depends_on": [
+      "FABRIC-004",
+      "FABRIC-006"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-api --test mesh",
+    "work_item": "E04",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "FABRIC-008",
+    "status": "BLOCKED",
+    "current": "Nothing. ADR 0024's one execution node per region (a trading-compute node, not a broker/controller cluster) is the nearest committed infrastructure, and execution_nodes = {} in every environment today.",
+    "evidence": [
+      "infrastructure/environments/*/terraform.tfvars: execution_nodes = {} in every file",
+      "backend/crates: no broker or controller crate (only qip-capital-fabric, a capital-transfer service, matches *fabric*)",
+      "docs/adr/0099-...md conflict register C8 ('five Fabric brokers per region'; also billing disabled on dev)",
+      "docs/adr/0100-...md §3 (first build is one broker, one disk, per region: RF1, static leader epoch, no consensus)"
+    ],
+    "gap": "Requires a standalone broker+controller cluster on dedicated three-zone Compute Engine VMs -- a new deployment footprint and an owner-approved multi-region cost commitment ADR 0099 C8 currently withholds, before any code question is reached.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-015",
+      "FABRIC-017"
+    ],
+    "blocked_by": "C8, C2",
+    "verification": "no test exists; infra-plan verification is unreachable until a broker VM module is written and a cost ceiling is approved.",
+    "work_item": "E14",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "A placement/cost decision, not purely an implementation gap; the broker software itself (FABRIC-015) is a separate, buildable-in-tree question the epics list files under E03. verify: status unchanged; blocked_by C8 -> 'C8, C2': the three-zone controller quorum this placement hosts needs the consensus crate FABRIC-017/019 are blocked on, so cost approval alone would not unblock it; ADR 0100 §3 fixes the permitted form as one RF1 broker per region. Also blocked externally (dev billing disabled). Corrected the find evidence (qip-mesh does not match *fabric*)."
+  },
+  {
+    "id": "FABRIC-009",
+    "status": "BLOCKED",
+    "current": "qip_transport::{http,mesh} run plain HTTP/1.1 over std::net::TcpStream with no TLS and no peer authentication by design; the crate's own module doc states production must add mutual TLS via a service-mesh sidecar, not present in this crate or any deployed manifest.",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/lib.rs:45-75"
+    ],
+    "gap": "QUIC with TLS 1.3 mutual authentication needs a QUIC/TLS crate ADR 0099 C2 refuses; current transport is the opposite of the requirement -- plaintext and unauthenticated, relying on VPC-level isolation.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-008"
+    ],
+    "blocked_by": "C2",
+    "verification": "none exists; the module doc names the gap as an open item rather than a hidden one.",
+    "work_item": "E13",
+    "tier": "T4",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "FABRIC-010",
+    "status": "BLOCKED",
+    "current": "Nothing. No partition or replica concept exists because no broker exists to hold one.",
+    "evidence": [
+      "no replication-factor, in-sync-replica or partition-leader concept in backend/crates (grep -rni 'replication.factor|in.sync.replica|partition leader' -> no hits)",
+      "docs/adr/0100-...md §3 ('In-tree replication with in-sync replicas and automatic failover was proposed and rejected... Replication waits for C2's consensus record')"
+    ],
+    "gap": "Cannot exist before the broker cluster (FABRIC-008/015) does.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-008",
+      "FABRIC-015"
+    ],
+    "blocked_by": "C2, C8",
+    "verification": "none.",
+    "work_item": "E14",
+    "tier": "T4",
+    "size": "L",
+    "notes": "verify: status unchanged; blocked_by C8 -> 'C2, C8': ADR 0100 §3 rejects in-tree replication/failover and makes it wait on C2's consensus record; three-zone VMs are the C8 half."
+  },
+  {
+    "id": "FABRIC-011",
+    "status": "MISSING",
+    "current": "Nothing selective-mirrors fabric topics across regions. qip_edge::mirror::MirrorArrangement is an unrelated cross-venue instrument-mirroring concept for trading, not topic replication.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/mirror.rs:28,123 (MirrorArrangement -- 'names no venue and cannot make one reachable', a trading concept)"
+    ],
+    "gap": "No fabric-mirror exists. Its semantics (read configured topics from the local segment store, forward only those to a remote broker) are buildable in-tree on std TCP and testable in a two-broker localhost 'two-region' topology once FABRIC-015 exists; only deploying across real regions needs C8.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-015"
+    ],
+    "blocked_by": "",
+    "verification": "none.",
+    "work_item": "E11",
+    "tier": "T4",
+    "size": "L",
+    "notes": "Do not confuse with qip_edge::MirrorArrangement, a same-named but unrelated trading concept. verify: changed BLOCKED(C8) -> MISSING. The requirement's integration check runs in a two-region *test* topology, which needs no refused crate and no second real region, so C8 blocks deployment, not completion. ADR 0100 §1 lists the mirror as 'BLOCKED(C8)' and not built in the first build; that is a scheduling decision the programme may keep, but under the status rules it is MISSING with a C8 deployment note. Flagged for reconciliation with ADR 0100."
+  },
+  {
+    "id": "FABRIC-012",
+    "status": "MISSING",
+    "current": "No fabric-archive exists and no sealed segment exists to export. An adjacent building block exists: qip_storage::gcp::CloudStorageBlobStore, an in-tree Cloud Storage JSON-REST client over qip_transport (needs a TLS-terminating egress proxy and a bearer token), tested against a fake server, reached only through StorageTarget in provider.rs, which Terraform's storage_target validation (memory|file|engine) makes unselectable.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/gcp/mod.rs:1-35 (Cloud Storage and BigQuery over plain HTTP via qip_transport; TLS proxy and token required)",
+      "backend/crates/libs/qip-storage/src/provider.rs:430 (the only non-test construction of CloudStorageBlobStore)",
+      "backend/crates/libs/qip-storage/tests/gcp.rs:287 (bucket_store against a TestServer fake)",
+      "infrastructure/terraform/variables.tf:365-383 (storage_target validated to memory|file|engine)",
+      "docs/adr/0100-...md §1 (segment store and archive planned in qip-storage::segment; producer spool released on archived_through)"
+    ],
+    "gap": "Build the segment store, the sealer and an archiver that exports each sealed segment asynchronously off the broker's commit path (ADR 0100 places it in the first build), then the stalled-archiver test against an object-store fake. Exporting to real Cloud Storage in dev additionally hits external:billing and the storage_target allowlist.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-015"
+    ],
+    "blocked_by": "",
+    "verification": "none for segment archival; cargo test -p qip-storage --test gcp covers only the blob client against a fake.",
+    "work_item": "E03",
+    "tier": "T3",
+    "size": "L",
+    "notes": "The reusable building block (an in-tree, dependency-free GCS client) already exists and is a head start once a broker exists; the blocker is the broker, not this client. verify: changed BLOCKED(C8) -> MISSING and implemented/tested -> false. The row's own gap says the blocker is the missing broker, which is buildable (FABRIC-015 is MISSING, not blocked) and ADR 0100 puts the archive in the first build, so C8 is not the reason; a generic blob client is a building block, not segment archival ('a type existing is never enough'). Fixed the variables.tf line range (365-383)."
+  },
+  {
+    "id": "FABRIC-013",
+    "status": "PARTIAL",
+    "current": "qip_events::envelope::EventBody trait binds every event type to exactly one Topic and SCHEMA_VERSION at compile time (const TOPIC); Envelope<T> and EventBus are the typed publish/consume surface used across the central plane and edge.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/envelope.rs:21-34 (trait EventBody: const TOPIC, SCHEMA_VERSION)",
+      "backend/crates/libs/qip-events/src/envelope.rs:99-113 (AnyEvent: all fields pub, payload: serde_json::Value -- constructible untyped; EventLog::append takes &AnyEvent)",
+      "test: decoding_the_wrong_type_is_rejected (qip-events/tests/backbone.rs:138)",
+      "test: two_body_types_cannot_claim_the_same_topic (qip-events/tests/backbone.rs:929)"
+    ],
+    "gap": "No compile_fail doctest proves a type/topic mismatch fails to compile, as the requirement's stated verification method calls for -- today the guarantee is structural (a mismatched const TOPIC is a type owned by the wrong topic, caught by the exhaustive match the topic module doc describes) but unproven by that specific method; the SDK is also not bound to a Protobuf schema registry (FABRIC-022). The erased AnyEvent type has public fields and an untyped serde_json::Value payload, so the log and mesh accept records built without an EventBody; the typed-only rule is a convention (non-test code builds AnyEvent only via Envelope::erase and StreamEnvelope::to_frame), not a structural guarantee.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-022"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-events --test backbone two_body_types_cannot_claim_the_same_topic decoding_the_wrong_type_is_rejected",
+    "work_item": "E02",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status unchanged; e2e set false (no end-to-end test demonstrates typed-only publishing; the required check is a compile_fail doctest, which does not exist). Noted the AnyEvent untyped escape hatch and corrected the test line (929)."
+  },
+  {
+    "id": "FABRIC-014",
+    "status": "PARTIAL",
+    "current": "No fabric-bridge exists and no crate declares a Kafka or Pub/Sub client crate, so no bridge holds state or defines semantics. But the confinement the requirement states is not structural: qip-streaming, an internal service crate, carries a Pub/Sub transport port (PubSubTransport, TransportKind::PubSub) whose doc names Pub/Sub as the target between the ingestion edge and the central plane (inert: it refuses at construction/use); internal services do not use a native fabric protocol because none exists; and nothing would stop an in-tree Pub/Sub or Kafka REST client written over qip_transport, as qip_storage::gcp already does for Cloud Storage and BigQuery.",
+    "evidence": [
+      "test: no_crate_declares_a_third_party_dependency_beyond_the_two_permitted (backend/crates/tests/qip-acceptance/tests/architecture.rs:1485) -- crate-level only",
+      "backend/crates/services/qip-streaming/src/pubsub.rs:1-8,62-90 and registry.rs:67-69 (internal Pub/Sub port, refused)",
+      "backend/crates/libs/qip-storage/src/gcp/mod.rs:1-8 (precedent for in-tree Google REST clients the crate test cannot see)",
+      "find backend/crates -iname '*bridge*' -> no fabric-bridge crate exists",
+      "docs/adr/0100-...md §1 ('Bridge: not needed')"
+    ],
+    "gap": "No architecture test implements the stated verification (bridge is the only crate with a Kafka/Pub/Sub client, no internal crate depends on it, it holds no durable state); an in-tree HTTP client would bypass the two-crate check. The internal PubSubTransport port contradicts 'only at an external boundary' in shape and should be removed or moved behind a designated bridge. The 'internal services use the native fabric protocol' half waits on FABRIC-013/015.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-001",
+      "FABRIC-013",
+      "FABRIC-015"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test architecture no_crate_declares_a_third_party_dependency_beyond_the_two_permitted",
+    "work_item": "E01",
+    "tier": "T0",
+    "size": "S",
+    "notes": "No test names 'fabric-bridge' specifically, because no such crate exists to name; the prohibition holds by absence, proven by the same dependency-policy test as FABRIC-001. If a bridge is ever built this test alone will not confine it to a stateless external boundary -- a dedicated architecture test should be added at that time. verify: downgraded COMPLETE -> PARTIAL. 'Holds by absence' is proven only at the crate-manifest level: the test does not exercise bridge confinement, would miss an in-tree REST client, and an internal crate (qip-streaming) already declares a Pub/Sub transport port; the positive clause (internal services use the native fabric) is unbuilt. e2e set false; work_item set to E01 for the missing architecture test."
+  },
+  {
+    "id": "FABRIC-015",
+    "status": "MISSING",
+    "current": "qip_events::log::EventLog (log.rs) is the closest analog: an in-process, single-writer, append-only log with dense sequences and retention enforcement -- but it has no partition leadership, no follower, no cross-process routing, and no broker binary exists to serve producer ingress or consumer fetch over the network.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/log.rs:147-164 (LogRecord/EventLog, single-process)",
+      "find backend/crates -iname 'fabricd' -o -iname '*broker*' -> only qip-brokers (a venue-broker adapter service, unrelated)"
+    ],
+    "gap": "No broker process exists with partition leadership, follower routing, producer ingress or consumer fetch across processes; EventLog is a library type inside one process's memory.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "no property test exists at this scope; EventLog's own crash-recovery tests (qip-storage/tests/engine.rs) prove the single-process append-only invariant, not multi-broker leadership.",
+    "work_item": "E03",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "Buildable within the two-dependency policy (blocking std::net I/O, matching qip-transport's own style) -- not blocked by ADR 0099's conflict register by itself, only large."
+  },
+  {
+    "id": "FABRIC-016",
+    "status": "PARTIAL",
+    "current": "qip_transport::mesh::RemoteSubscriber tracks a per-peer cursor/position and redelivers on a lost poll response rather than losing frames; qip_events::log::EventLog supports replay from any retained sequence via retained_anchor().",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/mesh.rs:1110-1220 (RemoteSubscriber cursor/cursor_at)",
+      "test: a_poll_whose_response_is_lost_redelivers_rather_than_losing_frames (qip-transport/tests/mesh.rs:454)",
+      "test: a_poll_returns_only_what_was_known_by_its_until (qip-transport/tests/mesh.rs:514)",
+      "backend/crates/libs/qip-events/src/log.rs:655 (retained_anchor)"
+    ],
+    "gap": "The cursor is per-peer-link state inside one mesh session, not a durably committed per-partition consumer checkpoint that survives a consumer restart and lets any authorised consumer seek to an arbitrary retained offset, because there is no multi-consumer broker (FABRIC-015) for such a checkpoint to be registered against.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-015"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-transport --test mesh a_poll_whose_response_is_lost_redelivers_rather_than_losing_frames",
+    "work_item": "E03",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: deployable set false: RemoteSubscriber's cursor lives in the mesh, which no environment wires (QIP_MESH_CELLS unset; execution_nodes = {}; Cloud Run exposes one port), and the deployed event log is memory-only (storage_target default), so no committed configuration runs a consumer that resumes after restart."
+  },
+  {
+    "id": "FABRIC-017",
+    "status": "BLOCKED",
+    "current": "Nothing. No metadata controller or quorum process exists.",
+    "evidence": [
+      "find backend/crates -iname '*controller*' -o -iname '*meta*' under edge/services turns up no fabric-controller crate"
+    ],
+    "gap": "A three-zone replicated metadata quorum needs real cross-process consensus; the platform's stated bar is a 'mature' Raft implementation, explicitly not a hand-rolled one, and no such crate is permitted today.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-019"
+    ],
+    "blocked_by": "C2",
+    "verification": "none.",
+    "work_item": "E14",
+    "tier": "T4",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "FABRIC-018",
+    "status": "MISSING",
+    "current": "No ACL concept exists in qip-events, qip-transport or qip-mesh; authorisation in the workspace is at the HTTP-route layer (qip-api::auth::{Authenticator,RateLimiter,Role}), not at a broker/topic layer.",
+    "evidence": [
+      "grep -rl 'ACL' backend/crates/libs/qip-events/src backend/crates/libs/qip-transport/src backend/crates/services/qip-mesh/src -> no hits"
+    ],
+    "gap": "No broker exists to enforce anything against (FABRIC-015), and no ACL metadata model exists even in shape.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-015",
+      "FABRIC-017"
+    ],
+    "blocked_by": "",
+    "verification": "none.",
+    "work_item": "E03",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "FABRIC-019",
+    "status": "BLOCKED",
+    "current": "Nothing. No Raft crate or hand-rolled consensus implementation exists anywhere in the workspace (grep for 'raft' matches only unrelated English words such as 'aircraft').",
+    "evidence": [
+      "grep -rn 'raft' backend/crates --include=*.rs -i -> only incidental matches in unrelated prose/identifiers, no consensus crate or module"
+    ],
+    "gap": "A mature Rust Raft crate is exactly the consensus class ADR 0099 C2 refuses; a hand-rolled implementation is excluded by the requirement's own word 'mature'.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C2",
+    "verification": "none; ADR 0019 (this requirement's own numbering note: an ADR admitting the crate) does not exist.",
+    "work_item": "E14",
+    "tier": "T4",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "FABRIC-020",
+    "status": "MISSING",
+    "current": "Vacuously true only in the sense that nothing exists yet to depend on a cloud database, because no fabric metadata quorum exists at all.",
+    "evidence": [
+      "no fabric-controller crate exists (see FABRIC-017)"
+    ],
+    "gap": "Cannot be demonstrated -- there is no regional fabric metadata to keep out of a cloud database.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-017"
+    ],
+    "blocked_by": "C2",
+    "verification": "none.",
+    "work_item": "E14",
+    "tier": "T4",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "FABRIC-021",
+    "status": "PARTIAL",
+    "current": "No fabric and no cross-region fabric mirroring exist, so there is no commit path for a remote acknowledgement to enter. Adjacent and implemented at the edge cell (ADR 0008): Cell::apply_region_outlook / is_region_dark suspend only the cross-region trading legs that reach a dark region and leave home-venue trading unchanged, and a cell keeps its authority when the centre is unreachable. In qip-edge-node, however, a stalled centre link delays (does not stop) the next pass through the serial retry ladder described under FABRIC-003.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:1513 (apply_region_outlook), :1541 (is_region_dark)",
+      "test: a_dark_region_leaves_a_cell_whose_venues_are_all_at_home_trading_exactly_as_before (backend/crates/edge/qip-edge/tests/cross_region.rs:1307)",
+      "test: a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (backend/crates/apps/qip-edge-node/tests/mesh.rs:375)"
+    ],
+    "gap": "The claim this requirement makes -- cross-region fabric mirroring is asynchronous and never blocks a local commit, produce-ack latency or control application -- has nothing to test until FABRIC-011/015 exist; both are buildable in-tree and the chaos check can run on a localhost two-region topology. Deploying real regions is C8.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-011",
+      "FABRIC-015",
+      "FABRIC-003"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test cross_region a_dark_region_leaves_a_cell_whose_venues_are_all_at_home_trading_exactly_as_before; cargo test -p qip-edge-node --test mesh a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running",
+    "work_item": "E11",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: status and flags unchanged; replaced cited suites that do not test region loss (dispersion.rs is §32.1 fill-time dispersion; region_table.rs is the capital-share ledger) with the tests that do; blocked_by C8 -> '' because the mirroring semantics and the chaos check are buildable in-tree (see FABRIC-011); noted the FABRIC-003 delay."
+  },
+  {
+    "id": "FABRIC-022",
+    "status": "PARTIAL",
+    "current": "qip_events::registry::{SchemaDescriptor,SchemaRegistry} records topic, version, field-shape and a SHA-256 fingerprint per registered EventBody type -- but as JSON field-name shape, not a Protobuf descriptor with an immutable ID via prost.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/registry.rs:16-27 (SchemaDescriptor), 30-80 (SchemaRegistry::register)",
+      "test: the_registry_records_schema_shape_and_detects_drift (qip-events/tests/backbone.rs:878)",
+      "grep -rln 'SchemaRegistry::new' backend/crates --include=*.rs (excluding tests) -> no hits: never constructed in production"
+    ],
+    "gap": "No composition root constructs a SchemaRegistry -- it is reached only from its own tests; and the wire format is JSON via serde_json, not versioned Protobuf via prost, which ADR 0099 C2 blocks as a new dependency.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C2",
+    "verification": "cargo test -p qip-events --test backbone the_registry_records_schema_shape_and_detects_drift",
+    "work_item": "E02",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Wiring SchemaRegistry into a composition root is unblocked in-tree work (T2); moving the wire format to Protobuf/prost is the blocked half (C2)."
+  },
+  {
+    "id": "FABRIC-023",
+    "status": "MISSING",
+    "current": "qip_events::registry::SchemaRegistry::fingerprint() changes when any registered type's field shape changes, which a unit test demonstrates -- but nothing compares that fingerprint against a committed baseline in CI, and no policy distinguishes a compatible change (an added optional field) from an incompatible one (a removed required field, a renumbered or retyped field).",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/registry.rs:107-115 (fingerprint)",
+      "test: the_registry_records_schema_shape_and_detects_drift (qip-events/tests/backbone.rs:878) -- proves drift is detectable, not that CI gates on it",
+      "grep -n 'schema|contract|fingerprint' .github/workflows/ci.yml -> no hits"
+    ],
+    "gap": "No CI step runs a compatibility-policy check with fixtures for the four required cases (remove-required-field, renumber, retype, add-optional); the fingerprint primitive exists but nothing consumes it as a gate.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-022"
+    ],
+    "blocked_by": "",
+    "verification": "the required fixture test (four schema-change cases, asserting the first three fail and the fourth passes) does not exist.",
+    "work_item": "E02",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "FABRIC-024",
+    "status": "MISSING",
+    "current": "SchemaRegistry::register refuses only a topic already claimed by a different Rust type name (an accidental double-registration); it does not run at any broker's produce-time gate, because no broker exists, and it applies no backward/forward compatibility policy.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/registry.rs:68-76 (the only refusal SchemaRegistry::register makes)",
+      "test: two_body_types_cannot_claim_the_same_topic (qip-events/tests/backbone.rs)"
+    ],
+    "gap": "No broker exists to refuse an unregistered or incompatible schema ID at produce time (FABRIC-015); the registry's one refusal is narrower than a compatibility policy.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-015",
+      "FABRIC-022",
+      "FABRIC-023"
+    ],
+    "blocked_by": "",
+    "verification": "none at broker scope; the registry-level refusal is proven by two_body_types_cannot_claim_the_same_topic but is a different, narrower guarantee.",
+    "work_item": "E03",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "FABRIC-025",
+    "status": "BLOCKED",
+    "current": "Nothing generates types from schemas. Every EventBody implementor is a hand-written serde struct; no .proto file and no codegen build.rs exists. The permitted in-tree substitute -- a CI check that the hand-written types match committed registry descriptors (SchemaRegistry fingerprints) -- is also unbuilt and belongs with FABRIC-023.",
+    "evidence": [
+      "find . -iname '*.proto' -> no results",
+      "find . -iname 'build.rs' under qip-events/qip-transport -> no results"
+    ],
+    "gap": "Generating Rust types from Protobuf descriptors needs prost/protobuf-codegen, which ADR 0099 C2 refuses as a new dependency; today's types are hand-written and can drift from any future registry silently, the exact risk this requirement exists to close.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-022"
+    ],
+    "blocked_by": "C2",
+    "verification": "none.",
+    "work_item": "E02",
+    "tier": "T4",
+    "size": "M",
+    "notes": "verify: changed MISSING -> BLOCKED(C2). The requirement is generation from registered Protobuf descriptors, which is the 'Protobuf via prost' wire-schema class ADR 0099 C2 leaves refused; that, not effort, is why it cannot be completed. The drift-prevention intent's in-tree substitute is recorded in 'current' and is FABRIC-023's work."
+  },
+  {
+    "id": "FABRIC-026",
+    "status": "MISSING",
+    "current": "qip_storage::chain::ChainArchive gives each archived record a dense position (offset), a hash chain (previous_digest/digest) and O(1) lookup by position in its KeyValueStore -- a reusable adjacent primitive -- but it archives individual log records, not sealed broker segments, and carries no entitlements field.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/chain.rs:54-73 (ArchivedRecord: position/previous_digest/digest/record)",
+      "test: absorbing_the_same_records_twice_writes_nothing_the_second_time (qip-storage/tests/chain.rs)"
+    ],
+    "gap": "No 'segment' unit exists (no broker to seal one, FABRIC-015), no manifest object separate from the record, and no entitlements/licensing field is carried through archival.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-012",
+      "FABRIC-015"
+    ],
+    "blocked_by": "",
+    "verification": "none at segment scope; ChainArchive's own tests prove record-level chaining only.",
+    "work_item": "E03",
+    "tier": "T3",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "FABRIC-027",
+    "status": "MISSING",
+    "current": "qip-cli has eleven subcommands -- help, status, demo, cycle, agents, governance, limits, storage, registrations, replay, blueprint. None creates a topic, sets a quota or retention, or inspects partition health, consumer lag, ACLs or mirroring state. The nearest are 'storage' (prints the storage target, durability and the chain archive's description) and 'replay' (inspects and verifies a journal), which are diagnostics over the in-process log, not a fabric admin API.",
+    "evidence": [
+      "backend/crates/apps/qip-cli/src/main.rs:55-73 (the command match -- the entire command set)",
+      "backend/crates/apps/qip-cli/src/main.rs:218-239 (storage_command)",
+      "docs/adr/0100-...md §1 (fabricctl/fabric-inspect planned as 'qip event-fabric ...' subcommands; not built)"
+    ],
+    "gap": "No fabricctl-equivalent exists because there is no broker or metadata quorum (FABRIC-015/017) for it to read or write.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-015",
+      "FABRIC-017"
+    ],
+    "blocked_by": "",
+    "verification": "none.",
+    "work_item": "E03",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status unchanged; corrected 'current' and evidence, which said qip-cli has exactly three subcommands (it has eleven, none of them fabric administration)."
+  },
+  {
+    "id": "FABRIC-028",
+    "status": "MISSING",
+    "current": "No stream/partition isolation command exists anywhere in qip-cli. The nearest relative is qip_edge::Cell::apply_halt / AutonomyController, which halts an entire cell's trading -- an attributable, reversible operator action, but at the cell level, not at a fabric stream/partition.",
+    "evidence": [
+      "backend/crates/apps/qip-cli/src/main.rs:55-73 (no isolate/topic command in the command match)",
+      "backend/crates/edge/qip-edge/src/cell.rs:2054 (apply_halt) -- a structurally similar but differently-scoped control"
+    ],
+    "gap": "No fabricctl exists (FABRIC-027) and no broker/partition concept exists to isolate (FABRIC-015).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-015",
+      "FABRIC-027"
+    ],
+    "blocked_by": "",
+    "verification": "none.",
+    "work_item": "E03",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The platform already has the general pattern this requirement needs (an attributable, reversible operator action -- AutonomyController::request_change) to model isolation on, once a broker exists. verify: status unchanged; corrected the qip-cli evidence line range (the command match is main.rs:55-73)."
+  }
+]

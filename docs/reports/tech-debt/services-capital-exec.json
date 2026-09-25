@@ -1,0 +1,236 @@
+[
+  {
+    "item": "CapitalEnvelope grants are signed with symmetric HMAC-SHA-256: any cell that can verify a grant can also mint one",
+    "files": [
+      "backend/crates/services/qip-capital/src/envelope.rs:19-40",
+      "backend/crates/services/qip-capital/src/envelope.rs:71"
+    ],
+    "category": "security-shortcut",
+    "class": "B-refactor",
+    "why": "EnvelopeIssuer signs with qip_core::hmac_sha256, a symmetric primitive: the same key verifies and mints, so a compromised or malicious cell that can check a grant can also forge one. The module's own doc comment names the missing production requirements verbatim (asymmetric signatures, an HSM/key store, key rotation, per-envelope revocation, replay scoping) and calls the current scheme 'adequate for a single-operator deployment and for tests, and not adequate for production.' This is exactly one of the three in-tree-crypto gaps `.claude/rules/architecture/00-boundaries.md` names as still open ('asymmetric signing, a CSPRNG, and anchoring the event-log chain are three gaps no in-tree code may close — see ADR 0043 (proposed)'), and is independently confirmed in `docs/blueprint/assessment/GOV.json` (GOV-012), `SEC-b1.json` (SEC-001) and `CONTRACT-b1.json` (CONTRACT-004), all tagged against the same gap. Cannot be closed in-tree under ADR 0002/0009 (two dependencies only); it needs a dependency-class ADR for an asymmetric primitive before code changes, which is what ADR 0043 (proposed) is for.",
+    "blueprint_refs": ["v11.6 §13 (Capital Brain & Capital Bank — 'autonomous treasury transfer inside signed corridors and hard caps')", "GCP v2.1 §15 (Security and Trust Architecture)"],
+    "risk": "high",
+    "suggested_epic": "E13"
+  },
+  {
+    "item": "Evidence-weighted capacity-aware capital sizing is fully implemented but never populated in production: CentralPlane.proposals is always empty, so CapitalAllocator::allocate runs on zero strategies every cycle",
+    "files": [
+      "backend/crates/services/qip-capital/src/allocation.rs:40-53",
+      "backend/crates/services/qip-capital/src/capacity.rs:1-226",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:730",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:1343-1348",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:1574",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:1708",
+      "backend/crates/runtime/qip-kernel/src/central/learning.rs:651-668"
+    ],
+    "category": "dead-code-reachable-but-unpopulated",
+    "class": "B-refactor",
+    "why": "StrategyProposal (which carries the CapacityModel every capital-sizing decision is supposed to respect) has exactly one insertion path into CentralPlane's `proposals: BTreeMap<StrategyId, StrategyProposal>` — `set_proposal`, called only from `central/learning.rs`'s private `resize()`. `resize()` itself only mutates a proposal that must already exist (`self.proposal(strategy)?`), so nothing in non-test code ever performs the original insert; `grep -rn 'StrategyProposal {' backend/crates/runtime backend/crates/apps` outside tests returns nothing, and `grep -rn 'CapacityModel::new\\|CapacityModel {'` over the same scope returns nothing. `CapitalAllocator::allocate(&proposals, ...)` (plane.rs:1576,1709, reached every DECIDE cycle from platform.rs:7214) therefore always allocates against an empty proposal list in production today. The machinery reads as a working, evidence-driven, capacity-bounded allocator — API surface, 127 crate tests, a public setter and getter — while being structurally inert, which is the same shape `.claude/rules/domains/risk-and-execution.md` names as the thing not to add ('a control that cannot fire reads as protection and is not'). This is a sizing feature, not a live-capital path, so it is not blocked by ADR 0099's conflict register; wiring a real proposal source in is ordinary in-tree work.",
+    "blueprint_refs": ["v11.6 §13 (capital grants to strategies/regions with expiry, capacity and drawdown limits)"],
+    "risk": "high",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "The seven-veto TransferGate (CorridorAuthority/Caps/MinimumInterval/StatedPurpose/SourceBalance/VelocityAndAnomaly/KillSwitch) is fully implemented and hardened but has no production emitter — deliberately, and documented as such",
+    "files": [
+      "backend/crates/services/qip-capital-fabric/src/gate.rs:540-560",
+      "backend/crates/services/qip-capital-fabric/src/gate.rs:727,741-753",
+      "backend/crates/services/qip-capital-fabric/src/journal.rs:405-427",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:7583",
+      "backend/crates/runtime/qip-kernel/src/pre_positioning.rs:22-31"
+    ],
+    "category": "dead-code-tests-only-surface",
+    "class": "A-retain",
+    "why": "`grep -rn \"GateCommand {\" backend/crates/apps backend/crates/runtime` outside tests returns nothing — confirmed independently. But `pre_positioning.rs:22-31` states the reason in the kernel's own module doc: a `GateCommand` carries the three enforcement-point attestations of custody class, corridor signature and destination allowlist, and those 'are facts a human establishes out of band... A machine that manufactured them from its own plan would be attesting to itself, which is the control measuring itself.' Building an automatic emitter would be the defect, not the fix. `platform.rs:7583` shows the kernel already validates a Gate command's funding field when one arrives, so the seam is wired correctly and simply unused — matching ADR 0021's paper boundary and the blueprint's own 'begin shadow-only' directive (v11.6 §30, Phase 10) for anything requiring an external, human-attested act. Independently corroborated by `docs/blueprint/assessment/RISK.json` (RISK-001). Retained as-is; do not build an emitter without an owner decision that resolves ADR 0099's conflict C1 (autonomous treasury transfer is LIVE_CAPITAL/EXTERNAL_ACTION and structurally blocked).",
+    "blueprint_refs": ["v11.6 §13 (autonomous treasury transfer inside signed corridors)", "v11.6 §25 (Governance, Legal Isolation & Authority)"],
+    "risk": "medium",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "custody.rs / destination.rs / assessment.rs (three-enforcement-point custody model, venue allowlist, content-digest assessment binding) are fully implemented and tested in isolation but have zero production references anywhere",
+    "files": [
+      "backend/crates/services/qip-capital-fabric/src/custody.rs:388,979,1067,1185",
+      "backend/crates/services/qip-capital-fabric/src/destination.rs:311",
+      "backend/crates/services/qip-capital-fabric/src/assessment.rs:114",
+      "backend/crates/services/qip-capital-fabric/src/journal.rs:529-535"
+    ],
+    "category": "dead-code-tests-only-surface",
+    "class": "A-retain",
+    "why": "Confirmed independently: `grep -rn 'CustodyPolicy\\|TransferAuthority\\|DestinationRegistry' backend/crates/runtime/qip-kernel/src backend/crates/apps/*/src` outside tests returns nothing. These types exist purely as the required parameters of `TransferGate::assess` (gate.rs:741-753), which per the previous finding has no caller. `FabricState` (journal.rs:529-535) even carries a `DestinationRegistry` field but no `CustodyPolicy`/`TransferAuthority` field, so the journal's own persisted state could not supply a Gate assessment's arguments without an external caller regardless. This is the same deliberate 'shadow-form only, human attests the rest' posture as the gate itself (see previous finding's pre_positioning.rs citation), not abandoned code — 51 dedicated tests across tests/corridor_and_gate.rs, tests/attestation_binding.rs and tests/custody_mirror.rs exercise it. Retained; wiring it live is the same owner decision (ADR 0099 C1) as the gate itself.",
+    "blueprint_refs": ["v11.6 §15 (Ledger, Accounting & State of Truth — custody subledgers)", "v11.6 §30 Phase 3 (custody corridors)"],
+    "risk": "low",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "The crate name 'qip-capital-fabric' and its FabricJournal/FabricCommand/FabricState types collide in name with the blueprint's platform-wide native Rust Event & Control Fabric (fabricd, fabric-schema, fabric-mirror, ...), which is a distinct, not-yet-built subsystem",
+    "files": [
+      "backend/crates/services/qip-capital-fabric/src/lib.rs:1-40",
+      "backend/crates/services/qip-capital-fabric/src/journal.rs:405-427,866,944"
+    ],
+    "category": "competing-event-formats-or-duplicated-schemas",
+    "class": "E-needs-evidence",
+    "why": "qip-capital-fabric's 'Fabric' is a bounded-context capital pre-positioning and transfer-control journal (forecast/plan/transfer/gate), an in-tree, file-backed, serde_json event log. GCP v2.1 §7 names a completely different, platform-wide subsystem also called 'the Fabric' (fabricd broker on Tokio/QUIC/mTLS, fabric-schema on protobuf/prost, a Raft metadata quorum) — this is ADR 0099's conflict C2, not yet resolved. No code defect exists today (the two never share a wire format because the real Fabric does not exist yet), but the name collision is a documentation/clarity hazard for whoever builds C2's Fabric next to a crate already called 'capital-fabric' with its own FabricCommand/FabricJournal/FabricState vocabulary. Needs an owner decision, folded into C2's resolution: rename this crate's internal vocabulary, or reserve 'Fabric' for the platform subsystem and pick another name here.",
+    "blueprint_refs": ["GCP v2.1 §7 (Algorik Rust Event & Control Fabric)"],
+    "risk": "low",
+    "suggested_epic": "E03"
+  },
+  {
+    "item": "DexVenue models pricing/feasibility only and deliberately does not implement VenueAdapter — no order entry, no fills, tracked as open work in the blueprint requirements register",
+    "files": [
+      "backend/crates/services/qip-brokers/src/dex.rs:45-65",
+      "backend/crates/services/qip-brokers/src/dex.rs:76"
+    ],
+    "category": "unfinished-migration",
+    "class": "B-refactor",
+    "why": "The module doc is explicit and well-reasoned ('an adapter that implemented submit_order against a chain it cannot reach would be a stub that reads as a connection') — this is not an accidental stub, it is a scoped half-build. But it is also a named, open blueprint requirement rather than a closed decision: `docs/blueprint/assessment/EXEC-b1.json` (EXEC-018) and `COVERAGE.json` (COVERAGE-018) both score the simulated-DEX order-entry path MISSING/PARTIAL against v11.6's asset-coverage requirements, with work items already named (E04-dex-venue-adapter / E17-simulated-dex-adapter). A simulated on-chain adapter (matching-engine-backed, like SimulatedExchange) does not require live capital or external action, so it is not blocked by ADR 0099's conflict register — it can be built to the same paper-only standard as the CEX side.",
+    "blueprint_refs": ["v11.6 §21 (Asset & Market Coverage — decentralized venue state)", "v11.6 §6 (Global Scout & Data Acquisition Fabric — blockchain state)"],
+    "risk": "low",
+    "suggested_epic": "E04"
+  },
+  {
+    "item": "qip-edge-node (the only binary that constructs qip-brokers' venue adapters, and the intended host for qip-execution-engine's OMS at the edge) is deployed to no environment — execution_nodes = {} everywhere",
+    "files": [
+      "infrastructure/environments/dev/terraform.tfvars:1-27,227",
+      "infrastructure/environments/stage/terraform.tfvars:49",
+      "infrastructure/environments/test/terraform.tfvars:49",
+      "infrastructure/environments/prod/terraform.tfvars:51"
+    ],
+    "category": "temporary-infrastructure",
+    "class": "E-needs-evidence",
+    "why": "89 tests in qip-brokers, 105 in qip-execution-engine, all structurally paper-only, and none of it runs anywhere: `execution_nodes = {}` in every tfvars, confirmed directly. This is not neglect — dev's tfvars header explains precisely what blocks it: ADR 0035 authorises exactly one node (newyork-1, shadow mode, dev only) but no boot image has ever been baked (the bake workflow exists and has never been dispatched), and ADR 0045 proposes a capital allocation figure without setting one ('a number a person chooses and no workflow may pick'). ADR 0099's conflict C8 separately notes billing is disabled on the dev project today, so `deploy.yml` cannot even push an image. Needs: an owner to (1) dispatch the image bake per `docs/operations/deploying-an-edge-cell.md`'s documented sequence, (2) set the capital allocation ADR 0045 proposes, (3) resolve the billing block named in C8 — none of which an agent may do unilaterally.",
+    "blueprint_refs": ["v11.6 §30 Phase 1 (One Reflex Cell — local fast path, deterministic risk, ledger, paper trading, replay)"],
+    "risk": "medium",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "Two independently-defined margin models exist with no shared type and no reconciliation: qip-brokers::ledger::MarginPolicy (per-venue account, Reg-T defaults) and qip-capital::margin::MarginModel (central-plane portfolio margin with a concentration add-on)",
+    "files": [
+      "backend/crates/services/qip-brokers/src/ledger.rs:37-52",
+      "backend/crates/services/qip-capital/src/margin.rs:34-44"
+    ],
+    "category": "duplicate-systems",
+    "class": "E-needs-evidence",
+    "why": "MarginPolicy models what a simulated venue would require of one account (initial/maintenance fractions for long and short, defaulting to Regulation T); MarginModel models the central plane's own portfolio-wide margin (initial/maintenance rate plus a concentration add-on above a threshold). They may be legitimately different concerns — venue-quoted margin vs. platform risk margin — rather than true duplication, but nothing in either crate states that relationship, no shared trait or conversion exists between them, and their defaults (Reg-T vs. an arbitrary concentration threshold) could silently diverge from what the other believes is true collateral. Needs evidence: a product decision on whether AccountLedger's venue-reported margin should feed or be reconciled against qip-capital's MarginModel (per v11.6 §14's 'Counterparty/Venue' and 'Capital' risk domains, which name exactly this reconciliation), or whether the two are deliberately independent and should say so in their module docs.",
+    "blueprint_refs": ["v11.6 §14 (Risk Brain + Deterministic Risk Gate — Capital and Counterparty/Venue risk domains)"],
+    "risk": "medium",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "OriginationMandate::admit (the five-gate market-creation approval, hard-capped at $250M) is fully implemented and tested but called from no composition root",
+    "files": [
+      "backend/crates/services/qip-execution-engine/src/origination.rs:1-47"
+    ],
+    "category": "unfinished-migration",
+    "class": "B-refactor",
+    "why": "Confirmed independently: no call to `OriginationMandate::admit` exists in backend/crates/runtime or backend/crates/apps outside tests (the three `.admit(` hits that do exist in production code are unrelated methods — qip-api's auth admit, asset_class_registry::admit, and an investor-request admit). The gate itself is deliberately narrow (constructs no Order, names no venue, reaches no Broker — it only bounds a ceiling), so wiring it into the quoting path does not by itself create a market-creation or live-order capability; it is the shadow-form approval step v11.6 asks be built ahead of the live Market Factory, which `docs/blueprint/assessment/EXEC-b2.json` (EXEC-027) independently confirms is 'implemented and unit/acceptance-tested but reached from nowhere.' The full governed Market Factory (create/seed/manage/publish) remains correctly BLOCKED under ADR 0099's conflict C1 (external action / live capital) and must stay that way; only the paper-form approval gate is open work.",
+    "blueprint_refs": ["v11.6 §18.2 (Market Creation / Market Factory)", "v11.6 §25 (unsupported opportunities remain shadow-only)"],
+    "risk": "medium",
+    "suggested_epic": "E17"
+  },
+  {
+    "item": "qip-lifecycle's corridor::emit (the function that actually derives a CorridorPolicy/CorridorRuling from strategy standings) has zero production callers; only the plain data record CorridorSubject is referenced from the kernel",
+    "files": [
+      "backend/crates/services/qip-lifecycle/src/corridor.rs:1-30,303"
+    ],
+    "category": "dead-code-tests-only-surface",
+    "class": "E-needs-evidence",
+    "why": "Confirmed independently: `grep -rn 'corridor::emit\\|CorridorPolicy\\|CorridorRuling' backend/crates/runtime/qip-kernel/src backend/crates/apps/*/src` outside tests returns nothing; `central/factory.rs:28` references only `CorridorSubject`, the input record. The lifecycle ladder around it (gates, ledger, demotion, horizon reconciliation) is deeply wired into qip-deepbrain and qip-kernel with 77 tests, so this is not an abandoned crate — it is one function whose output (a computed policy/ruling) nothing downstream consumes. Needs evidence: was corridor::emit meant to feed venue-ladder or strategy-promotion decisions and the wiring was never finished, or has its purpose been superseded by something else in the ladder (e.g. VenueLadder/VenuePromotionPolicy)? The answer determines whether this is B (wire it in) or D (remove a function nothing was ever going to call).",
+    "blueprint_refs": ["v11.6 §22 (Continuous Learning & Evaluation Brain)"],
+    "risk": "low",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "qip-mesh's six data-mesh ports (Lakehouse/Analytical/HotSeries/MasterData/Graph/Evidence) are implemented, tested and never constructed by any composition root; every managed-GCP MeshProvider target unconditionally returns Error::Unavailable",
+    "files": [
+      "backend/crates/services/qip-mesh/src/adapters.rs:24-351",
+      "backend/crates/services/qip-mesh/src/ports.rs:185-322",
+      "backend/crates/services/qip-mesh/src/provider.rs:1-17",
+      "backend/crates/services/qip-mesh/src/backing.rs:71,79,98-99"
+    ],
+    "category": "temporary-infrastructure",
+    "class": "E-needs-evidence",
+    "why": "Confirmed independently: none of MeshLakehouse/MeshAnalytics/MeshHotSeries/MeshMasterData/MeshGraph/MeshEvidence, nor the six port traits, appear in kernel or app non-test source. This is a designed-ahead-of-the-store-decision port abstraction (the provider explicitly refuses to silently fall back to a local store when configured for a managed target, which is the right failure mode), and it is exactly ADR 0099's conflict C4: BigLake/BigQuery/Bigtable/Spanner/Spanner Graph/GCS-WORM are the blueprint's named backing services, and ADR 0002/0009 permit only serde+serde_json today. FileBacking (the one working implementation) is real file I/O — read_to_string/create_dir_all/write-then-rename — suitable for dev/single-node only, not the multi-region target. Needs an owner storage-record ADR per store, which ADR 0099 says the ledger should get first.",
+    "blueprint_refs": ["GCP v2.1 §9 (World, Tick and Replay Data Platform)", "GCP v2.1 §10 (Ledger, Capital and Financial State)"],
+    "risk": "medium",
+    "suggested_epic": "E06"
+  },
+  {
+    "item": "qip-mesh::spine implements only centre-to-cell hub-and-spoke dispatch (CapitalDispatcher down, CellDeltaReceiver up); no peer-to-peer inter-cell Reflex Mesh exists, though v11.6 §17 requires cells to exchange compressed opportunity/edge state directly with peers for cross-region 2-20-leg arbitrage — an architecture conflict with standing ADR 0008 ('Cells decide alone') that is not yet in ADR 0099's conflict register",
+    "files": [
+      "backend/crates/services/qip-mesh/src/spine.rs:1-30",
+      "backend/crates/services/qip-mesh/src/spine.rs:273",
+      "backend/crates/services/qip-mesh/src/spine.rs:791"
+    ],
+    "category": "architecture-conflict-incorrect-coupling",
+    "class": "E-needs-evidence",
+    "why": "spine.rs's own module doc states the topology directly: 'the wire between the nine regional cells and the central plane' — every CapitalDispatcher's 'peer' (spine.rs:275,308,323) is, from the centre's perspective, one cell, not another cell. v11.6 §17 requires a materially different shape for arbitrage coordination: 'Reflex nodes publish compressed executable edge states... to peers or regional coordinators' over a mesh that is explicitly 'deliberately separate' from the durable Fabric this crate's sibling channel resembles, and §30's Build Order names 'Multi-Region Reflex Mesh... peer mesh, opportunity tokens, distributed reservations, 2-5 leg cycles' as Phase 4's exit capability, growing to 3-20 legs in Phase 5. Today's centre-only fan-out cannot carry that traffic without going through the centre on every hop, which the blueprint explicitly rules out for latency-sensitive coordination. This is independently corroborated by `docs/blueprint/assessment/MESH-b1.json` (MESH-003: 'no peer channel exists'). ADR 0008 ('Cells decide alone... regional low-latency execution is separate from centralised training and portfolio intelligence, and the split is load-bearing') is a standing decision under `.claude/rules/10-product-direction.md`; per that rule, no code change may reopen it — this needs its own conflict-register entry and an owner ADR, the same way ADR 0099 treats C3/C7/C8, before any peer-mesh code is written.",
+    "blueprint_refs": ["v11.6 §17 (Global Reflex Mesh & 3-20-Leg Arbitrage)", "v11.6 §30 Phase 4 (Multi-Region Reflex Mesh) and Phase 5 (3-20 Leg Arbitrage + Market Making)"],
+    "risk": "high",
+    "suggested_epic": "E11"
+  },
+  {
+    "item": "LiveBroker exists as a complete interface with no credential, no transport and no egress path — reports itself unavailable rather than trading",
+    "files": [
+      "backend/crates/services/qip-execution-engine/src/broker.rs:641-666"
+    ],
+    "category": "simulated-only-production-path",
+    "class": "A-retain",
+    "why": "Confirmed: LiveBroker::new sets credential_present/transport_present/enabled_by_operator to false unconditionally, and a `configured` constructor exists 'for testing the logic' only. This is the intended shape of the paper-trading boundary at this layer, matching the type-system layer ADR 0021 relies on and blueprint conflict C1's correct treatment (LIVE_CAPITAL/EXTERNAL_ACTION, structurally BLOCKED). Nothing here should change without the owner decision C1 names; retained as a deliberately inert, self-reporting-unavailable interface rather than an accidental stub.",
+    "blueprint_refs": ["v11.6 §18.1 (Market Making)"],
+    "risk": "low",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "ORIGINATION_MAX_EXPOSURE ($250,000,000, raw i128) is hard-coded rather than configurable",
+    "files": [
+      "backend/crates/services/qip-execution-engine/src/origination.rs:44-47"
+    ],
+    "category": "hard-coded-configuration",
+    "class": "A-retain",
+    "why": "This is the requested category surfaced honestly rather than omitted, but it is not debt: the module's own doc explains the hard-coding is the point ('a number a deployment can raise is not that... a ceiling a deployment can edit is a ceiling an incident can edit'), it refuses above the ceiling rather than clamping to it (matching working-agreement principle 2, 'refuse rather than guess'), and OriginationMandate has no Deserialize, so the ceiling cannot be decoded into existence from a config file either. Retained deliberately.",
+    "blueprint_refs": ["v11.6 §18.2 (Market Creation / Market Factory)"],
+    "risk": "low",
+    "suggested_epic": "E17"
+  },
+  {
+    "item": "Central-plane capital state (allocations, envelopes, ledgers) and the capital-fabric journal persist only through qip-kernel's in-tree, file-backed event log — not the blueprint's authoritative multi-region Spanner Enterprise Plus ledger",
+    "files": [
+      "backend/crates/services/qip-capital/src/lib.rs:1-40",
+      "backend/crates/services/qip-capital-fabric/src/journal.rs:866,944",
+      "backend/crates/services/qip-capital/src/ledger/mod.rs:1-40"
+    ],
+    "category": "architecture-conflict",
+    "class": "E-needs-evidence",
+    "why": "None of qip-capital, qip-capital::ledger or qip-capital-fabric perform their own I/O (correctly, per the services-layer rule); qip-kernel's Platform composes and journals their state through its own event log, which is serde_json over the file system, not Spanner. This is ADR 0099's conflict C4 exactly, and `docs/blueprint/assessment/ARCH-b3.json` (ARCH-064, `blocked_by: 'C4'`) independently confirms it at the ledger seam: 'the literal same outcome delivered three times commits once to a Spanner ledger scenario cannot be demonstrated — only the equivalent property against the file-backed log.' ADR 0099 names the ledger as the storage record that should come first among C4's stores. No code action is appropriate before that owner-level storage-record ADR exists; noted here because it is the substrate every other finding in this group's capital/ledger path ultimately rests on.",
+    "blueprint_refs": ["GCP v2.1 §10 (Ledger, Capital and Financial State — Spanner Enterprise Plus)", "v11.6 §15 (Ledger, Accounting & State of Truth)"],
+    "risk": "medium",
+    "suggested_epic": "E05"
+  },
+  {
+    "item": "qip-risk-engine (autonomy/kill switch, pre-trade checks, monitor) has no gaps observed against the target and is reached from every composition root",
+    "files": [
+      "backend/crates/services/qip-risk-engine/src/lib.rs:1-21",
+      "backend/crates/apps/qip-fastbrain/src/main.rs:46",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:181-183"
+    ],
+    "category": "n-a",
+    "class": "A-retain",
+    "why": "Included for full component-group coverage rather than left silent: this crate is the deterministic Risk Gate the blueprint's §14 splits explicitly from the reasoning brain ('the brain can use complex AI/causal/scenario models... but every executable action still passes deterministic limits'), no model is consulted anywhere in this crate by design, and it is reached from qip-api, qip-fastbrain, qip-deepbrain, qip-cli and qip-kernel's Platform with 41 tests including exact-boundary and dual-approver cases. No debt found here worth tracking; already fits the target.",
+    "blueprint_refs": ["v11.6 §14 (Risk Brain + Deterministic Risk Gate)"],
+    "risk": "low",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "qip-portfolio-engine (proposal construction, dual sign-off, veto-from-any-state) has no gaps observed against the target",
+    "files": [
+      "backend/crates/services/qip-portfolio-engine/src/lib.rs:1-22",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:169-170,232,4514"
+    ],
+    "category": "n-a",
+    "class": "A-retain",
+    "why": "Included for full component-group coverage rather than left silent: directly instantiated in Platform's constructor and exercised every DECIDE cycle, with 31 tests covering the dual-control approval rule and the veto-from-any-pre-release-state rule explicitly. A leg with no hypothesis fails validation structurally. No debt found here worth tracking; already fits the target.",
+    "blueprint_refs": ["v11.6 §9 (Financial AGI / Cognitive Core — brain outputs sized through construction)"],
+    "risk": "low",
+    "suggested_epic": "E00"
+  }
+]

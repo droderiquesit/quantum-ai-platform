@@ -1,0 +1,399 @@
+[
+  {
+    "group": "libs-foundation",
+    "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/libs-foundation.json",
+    "components": 7,
+    "headline": "Seven foundation libs under backend/crates/libs/: qip-core (deterministic substrate — Decimal/Clock/Rng/Id/Error/secret), qip-contracts (edge-to-centre vocabulary — Stamped facts, NetEdge, capital envelopes, gates), qip-events (hash-chained typed event bus), qip-storage (KV/blob ports with memory/file/engine adapters live, GCP+Redis+AlloyDb/Spanner/Bigtable adapters built or ported but Terraform-unreachable), qip-transport (in-tree plaintext HTTP+mesh replacing Pub/Sub, wired into qip-api and qip-edge-node), qip-observability (OTel-shaped metrics/trace/log, emitting and scraped at /metrics but not yet ingested anywhere), and qip-confidential (differential-privacy release gate, built into every Platform but its query methods have zero production callers).",
+    "notable_gaps": [
+      "qip-storage: gcp::{CloudStorageBlobStore,BigQueryWarehouse} and redis::RedisKeyValueStore are implemented and tested but structurally unreachable — Terraform's storage_target variable validates only memory|file|engine (infrastructure/terraform/variables.tf:376-382)",
+      "qip-storage: AlloyDb, Spanner and Bigtable have no adapter at all (provider.rs:62-72) — refuse construction by design, needing a PostgreSQL or gRPC client this workspace does not carry",
+      "qip-storage: every Cloud Run environment runs QIP_STORAGE_TARGET=memory (infrastructure/gitops/envs/*/api.yaml), so central-plane state does not survive a restart in any deployed configuration; the durable engine target is only reached by an execution-node startup script, and execution_nodes = {} in every environment",
+      "qip-confidential: CellInsights is constructed in every Platform (qip-kernel/src/platform.rs:4441) but its mean_gross_notional/total_realised_loss methods and the insights_mut accessor have zero callers outside backend/crates/runtime/qip-kernel/tests/insights.rs — no console/API/CLI route surfaces an insight",
+      "qip-confidential: PrivacyLedger's spent-epsilon state is process-memory only with no persistence, so a restart silently resets every cell's privacy budget",
+      "qip-transport: no TLS and no peer authentication by design; the module's own doc states production must add mutual TLS via a service mesh sidecar, not present in any deployed manifest",
+      "qip-observability: metrics are emitted and /metrics is live in qip-api, but workload_metrics_exist defaults to false and nothing has been proven to scrape any deployed process, so every Cloud Monitoring alert policy is gated off"
+    ]
+  },
+  {
+    "group": "libs-finance",
+    "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/libs-finance.json",
+    "components": 19,
+    "headline": "Six dependency-light lib crates (~50,058 lines including tests) forming the platform's financial object model, market structure, numerics, accounting, risk-limit and governance layers. All six are constructed and exercised inside qip-kernel::Platform, which every deployable binary (qip-api, qip-fastbrain, qip-deepbrain) composes via Platform::new/new_serving in production main.rs -- so every crate is reached from a deployable binary, not just from tests. 629 #[test] functions total across the six crates (207+75+139+51+142+74 - some counted twice across parent/sub-records where a test file spans modules), zero I/O or ambient-clock calls anywhere (consistent with the libs-have-no-I/O architecture rule), and effectively no unwrap/expect/panic outside #[cfg(test)] except one documented case. The domain rule's claim that RiskState::with_tail_risk now fills expected_shortfall (fixing the historical MaxExpectedShortfall-can-never-fire defect) is directly verified in code: wired at qip-kernel platform.rs:15135, proven by the_expected_shortfall_limit_can_actually_fire at platform.rs:18759.",
+    "notable_gaps": [
+      "qip-financial/src/physical.rs (1072 lines: PhysicalArbitrage, LandedCost, Customs, Spoilage, LogisticsTerms, 11 embedded tests) has zero callers anywhere in the workspace outside its own file -- internally hardened but unreachable from any other crate, production or test.",
+      "qip-financial/src/costs.rs TransactionCostModel::estimate (costs.rs:463-471) panics on an unpriceable rate instead of returning Result; production caller qip-capital-fabric/src/transfer.rs:472 invokes this panicking path inside TransferCostModel::price, a function that otherwise returns Result and refuses every other invalid input via early Err returns.",
+      "qip-market/src/corporate_action.rs:294 adjust_prices has no production caller -- qip-kernel's apply_corporate_action (platform.rs:9607-9657) reimplements the same per-bar adjustment inline using CorporateAction::price_adjustment_factor directly rather than calling the crate's own convenience function; adjust_prices is exercised only by qip-market/tests/structure.rs.",
+      "qip-compliance/src/signing.rs is explicitly documented as symmetric HMAC-SHA256, not asymmetric signing: the module doc itself states none of the four production requirements (asymmetric signing, identity binding, key rotation/revocation, countersigned timestamping) are in this build. The gap is surfaced honestly via ComplianceReport's caveats mechanism (plane.rs:53) rather than hidden, and matches ADR 0043's named gap in .claude/rules/architecture/00-boundaries.md.",
+      "qip-financial/src/cashflow.rs:1107 names an acknowledged, undone modelling gap: 'A commitment whose call timing is not yet modelled' for unscheduled private-capital commitments."
+    ],
+    "label": "libs-finance (qip-financial, qip-market, qip-numerics, qip-portfolio, qip-risk, qip-compliance)"
+  },
+  {
+    "components": 5,
+    "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/libs-intelligence.json",
+    "group": "libs-intelligence",
+    "headline": "Five crates form the \"intelligence\" layer: qip-agents (governance/budget/capability runtime) and qip-investment-agents (the 18-agent organisation) are fully wired into every cycle via qip-kernel's Platform::organisation.dispatch(); qip-ai (model registry, language-model port, episodic memory) is likewise reached, with a real hosted model (HuggingFace, via qip-reasoning-engine) and a real in-tree served-model provider wired only in qip-deepbrain. qip-quantum's simulator/QAOA path is structurally wired into the compute router but never executes in any deployment because PlatformConfig::quantum_enabled defaults false and nothing ever sets it true outside tests (confirmed by the kernel's own test comment). qip-quant's signal primitives are used by four other crates; its factor/strategy SDK is untouched outside its own tests.",
+    "reached_from_production": [
+      "qip-agents",
+      "qip-ai",
+      "qip-investment-agents"
+    ],
+    "tests_only": [
+      "qip-quantum:solver.rs(ClassicalSolver/QuantumInspiredSolver/IbmQuantumSolver)",
+      "qip-quantum:benchmark.rs(SolverBenchmark)",
+      "qip-quantum:provider.rs(HostedProvider/HostedTransport)",
+      "qip-quant:factor.rs(FactorLibrary)",
+      "qip-quant:strategy.rs(Strategy/SignalWeightedStrategy)"
+    ],
+    "notable_gaps": [
+      "qip-quantum: `PlatformConfig::quantum_enabled` defaults to `false` (qip-kernel/src/config.rs:534) and its only setter `with_quantum()` (config.rs:573) has zero callers in any crates/apps/**/src; qip-kernel/tests/solver_routing.rs:231-232 states outright 'which is every deployment, quantum_enabled being off by default' — so the SimulatedProvider/QAOA/statevector path, while code-complete and tested, never runs in a deployed process today.",
+      "qip-agents: Capability::WriteResearchMemory is defined (capability.rs:44) and granted to LearningAttribution (qip-investment-agents/manifests.rs:492), but no code anywhere ever calls ctx.authorise(WriteResearchMemory,...), and Desk wires ResearchMemory via Gated::new (desk.rs:105) rather than Upstream::gate, so it has no write path at all and is permanently empty in production.",
+      "qip-investment-agents: because ResearchMemory is always empty, LearningAttribution::analyse (learning.rs:65-71) always takes the empty-memory branch and AdversarialReviewer's precedent check (review.rs:60-73) always sees zero episodes in a running deployment, even though both are exercised and pass against hand-populated memory in tests.",
+      "qip-ai: RemoteModel::is_available() is unconditionally `false` (language.rs:518-521); the hosted LanguageModel adapter actually wired into production (qip-deepbrain) is a different type (qip_reasoning_engine's HuggingFaceModel), so qip-ai's own RemoteModel is untested against any real caller.",
+      "qip-quant: strategy.rs's Strategy trait/SignalWeightedStrategy and factor.rs's FactorLibrary have no caller anywhere outside the crate's own tests; production portfolio construction is a hand-written Agent (qip-investment-agents::construction::PortfolioConstruction) that does not implement this crate's Strategy trait."
+    ]
+  },
+  {
+    "components": 22,
+    "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/services-data-world.json",
+    "group": "services-data-world",
+    "headline": "SENSE and UNDERSTAND are real and reached from production: market-ingestion runs 7 shipped connectors plus a synthetic/replay fallback (default when unconfigured), data-finder's discovery lifecycle is wired into qip-deepbrain via DiscoveryDesk, streaming's durable transport and entity-resolution's matcher both fire every cycle, and world-model's bitemporal graph/causal layer is written and read every cycle through a single live Upstream&lt;WorldModel&gt; instance. qip-chain is the outlier: fully implemented and tested, its types are imported into qip-kernel's Platform, but Platform::observe_chain and every ChainAdapter are called only from qip-kernel's own tests — no deployable binary feeds it a single on-chain event.",
+    "notable_gaps": [
+      "qip-chain: Platform::observe_chain (qip-kernel/src/platform.rs:16011) has zero non-test call sites in any crates/apps binary; no ChainAdapter (SyntheticChain/JsonRpcChainAdapter/NodeChainAdapter) is constructed outside qip-chain's own tests — the crate is dead code in every deployed process today.",
+      "qip-streaming: the kernel's own hash-chained journal is always DurableLogTransport::in_memory (platform.rs:4486, the sole construction site of the private `journal` field, no setter) even though DurableLogTransport::open(path) exists for file-backed persistence; MeshTransport and PubSubTransport are real but unreached from any app or runtime code outside registry.rs's own helper.",
+      "qip-market-ingestion: no licensed live feed is subscribed to — default deployment (no --tape/--replay) always falls back to SyntheticEnvironment (qip-deepbrain/src/main.rs:434-460); the rest/narrative/depth/alternative vendor adapters always report a non-None production_requirement (unconfigured for any real vendor anywhere in the repo).",
+      "qip-data-finder: no CRAWL stage exists (`follow_links`/`expand_from`/`fn crawl(` all absent) — candidates are a stated, committed list, never discovered autonomously; the crate's own module docs (lib.rs:64-69, probe.rs:14-20) still describe NetworkProbe as never opening a socket, which is stale relative to the ADR-0060 implementation that now makes real HTTP calls.",
+      "qip-entity-resolution and qip-world-model both have zero TODO/stub markers and are cleanly reached from production (absorb_news -> resolver.resolve, called from the SENSE absorption loop at platform.rs:8751)."
+    ],
+    "label": "services-data-world (qip-market-ingestion, qip-data-finder, qip-streaming, qip-entity-resolution, qip-world-model, qip-chain)"
+  },
+  {
+    "components": 12,
+    "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/services-capital-exec.json",
+    "group": "services-capital-exec",
+    "headline": "Eight backend/crates/services crates covering the capital and execution spine: risk-checked order management (qip-execution-engine) and paper-only venue adapters (qip-brokers) at the edge; central-plane capital allocation, envelopes and per-user ledgers (qip-capital) with a predictive pre-positioning layer (qip-capital-fabric); deterministic pre-trade/autonomy control (qip-risk-engine) and proposal construction (qip-portfolio-engine); the promotion/demotion evidence ladder (qip-lifecycle); and data-mesh plus network-mesh ports (qip-mesh). All are wired into qip-kernel's Platform and reached from qip-api/qip-fastbrain/qip-deepbrain/qip-cli except qip-brokers, whose only caller binary (qip-edge-node) is deployed to no environment.",
+    "notable_gaps": [
+      "qip-capital-fabric's seven-veto TransferGate (custody.rs, destination.rs, assessment.rs, ~2,800 lines) is fully implemented and tested but structurally unreachable in production: no code outside tests constructs a GateCommand, so CustodyPolicy/TransferAuthority/EnforcementPoints are never evaluated against a real transfer, confirmed by qip-kernel's own pre_positioning.rs doc comment stating 'nothing here reaches the fabric's gate' (backend/crates/runtime/qip-kernel/src/pre_positioning.rs:22-31)",
+      "qip-mesh's six data-mesh port traits and adapters (Lakehouse/Analytical/HotSeries/MasterData/Graph/Evidence, most of the crate's stated purpose) are exercised only in tests; qip-kernel constructs only catalog::Catalog (metadata), never a Lakehouse/AnalyticalStore/etc. instance, and MeshProvider's managed-GCP targets all return Error::Unavailable (no in-tree BigQuery/Bigtable/Spanner client)",
+      "qip-brokers (venue adapters, REST order entry, matching engine, credentials) compiles into qip-edge-node's non-test code but qip-edge-node is deployed to no environment: execution_nodes = {} in dev/stage/test/prod terraform.tfvars",
+      "qip-capital's envelope.rs signs capital grants with symmetric HMAC-SHA-256; the module's own doc says this is inadequate for production (any cell that can verify a grant can also mint one) and names the missing asymmetric-signing, HSM, rotation and replay-scoping work",
+      "qip-lifecycle's corridor.rs::emit, the function that actually derives a CorridorPolicy/CorridorRuling from strategy standings, has zero production callers; only the plain CorridorSubject data record reaches qip-kernel",
+      "qip-capital's capacity.rs (CapacityModel/CapacityBound) has zero production references anywhere, tests-only",
+      "qip-execution-engine's LiveBroker is a complete interface with no transport by design (paper-trading boundary), reporting itself unavailable rather than trading; ORIGINATION_MAX_EXPOSURE is a hard-coded, non-configurable ceiling by design, not a gap"
+    ],
+    "label": "Capital, risk and execution services (qip-brokers, qip-capital, qip-capital-fabric, qip-execution-engine, qip-risk-engine, qip-portfolio-engine, qip-lifecycle, qip-mesh)"
+  },
+  {
+    "group": "services-intelligence",
+    "file": "docs/architecture/current-state/services-intelligence.json",
+    "components": 13,
+    "headline": "Ten intelligence/decision-support service crates (qip-cost-router, qip-evolution, qip-learning-engine, qip-opportunity-engine, qip-optimization-engine, qip-prediction, qip-reasoning-engine, qip-simulation-engine, qip-training, qip-twin), all workspace dependencies of qip-kernel and constructed by all four composition roots (qip-api, qip-cli, qip-fastbrain, qip-deepbrain). Every crate has at least one module fully wired into a live DISCOVER/REASON/SIMULATE/DECIDE/LEARN cycle stage, but four of the ten (qip-cost-router, qip-evolution, qip-prediction, qip-twin) have a substantial pub module that is exported and tested but never called outside the crate's own test suite, and two further modules inside qip-simulation-engine and qip-training split the same way — documented here as 13 records (3 crates got module-level sub-records because a large fraction of their surface is unreached).",
+    "reached_from_production": [
+      "qip-learning-engine",
+      "qip-opportunity-engine",
+      "qip-optimization-engine",
+      "qip-reasoning-engine",
+      "qip-simulation-engine (core)",
+      "qip-simulation-engine::validation",
+      "qip-training (local)",
+      "qip-cost-router (router/tier/ledger/data/engine only, not reputation.rs)",
+      "qip-evolution (generate/mutate/challenger/promotion/grammar/scoring/cost_model only, not discovery.rs/attribution.rs)",
+      "qip-prediction (resolution.rs only, not market/oracle/adapter/arbitrage/cross/pricing/scoring)",
+      "qip-twin (asof/capture/counterfactual/value only, not record.rs/regret.rs)"
+    ],
+    "tests_only": [
+      "qip-simulation-engine::baseline+montecarlo (RegimeComparison ADR-0006-style regime baseline, and the Monte Carlo generator)",
+      "qip-training::vertex (VertexAiProvider, the entire managed Vertex AI training port, plus job.rs's TrainingProvider orchestration abstraction it implements)",
+      "qip-cost-router::reputation (ModelReputation/ReputationBook/Judgement)",
+      "qip-evolution::discovery and qip-evolution::attribution",
+      "qip-prediction: market.rs/oracle.rs/adapter.rs/arbitrage.rs/cross.rs/pricing.rs/scoring.rs — i.e. the crate's entire prediction-market trading engine, ~98% of its src lines",
+      "qip-twin::record (LearningRecord) and qip-twin::regret (RegretAnalysis)"
+    ],
+    "notable_gaps": [
+      "qip-prediction is a qip-kernel dependency in name only for most of its surface: only the resolution.rs module (ResolutionCriteria/Comparison, used to grade REASON-stage hypotheses) is reached from production; the actual prediction/event-market engine — books, oracle settlement, adapters, arbitrage, pricing, cross-market comparison — runs in zero deployed processes, and its one real venue adapter (VenueApiAdapter) always returns Error::Unavailable by design (backend/crates/services/qip-prediction/src/adapter.rs:11).",
+      "qip-training::vertex.rs (1,380 lines, the crate's largest file, implementing the managed Vertex AI training provider with WorkloadIdentityBinding) has zero production callers; production training goes entirely through the local in-tree path (LocalTrainer/distil/InTreeProvider), and the abstract job.rs TrainingProvider port that would let a composition root swap local for managed training is itself unreached — production code imports only job::TrainingSpec.",
+      "qip-optimization-engine's own module docs (src/lib.rs:93-121) self-report two unfed seams: CentralPlane::issue (in qip-kernel) has no production caller so family_structure always returns None, and no composition root attaches a HorizonAssurance to the LifecycleLedger, so family_horizons/family_horizons_settled run only in tests.",
+      "qip-cost-router's reputation.rs (per-context, Bayesian-shrunk model competence weighting — 418 lines) and qip-evolution's discovery.rs (feature-candidate stability screening) and attribution.rs (evolution's own cost-surprise ledger) are each fully implemented and tested but have no caller anywhere in qip-kernel or any app.",
+      "qip-twin's record.rs (LearningRecord, the JSON-serialisable persisted decision/outcome record with a validate() and round-trip) and regret.rs (RegretAnalysis/AlternativeRegret, systematic-regret detection) are unreached even internally by the rest of qip-twin — capture.rs and counterfactual.rs never call into either module.",
+      "qip-opportunity-engine's CatalystDetector is registered and runs every DISCOVER pass, but its ImpactHistory calibration input is never constructed or fed anywhere in qip-kernel, matching the crate's own comment that it is 'silent until its history has been fed' (backend/crates/services/qip-opportunity-engine/src/detector.rs:933-935).",
+      "No TODO!/unimplemented!/todo!() markers exist anywhere across all ten crates' src/ trees — every gap found is a documented, intentional absence of a caller rather than an unfinished function body."
+    ]
+  },
+  {
+    "group": "kernel-cycle",
+    "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/kernel-cycle.json",
+    "components": 3,
+    "headline": "qip-kernel's cycle.rs defines the eight-stage Stage/StageOutcome/CycleReport types (pure data, no I/O), and platform.rs's core (Platform::new and its three variants, run_cycle, the eight stage_* methods, ingest_cell_report, learn_from_cells, learn_from) is the actual loop: run_cycle calls all eight stages unconditionally in order, times each, charges cost, records telemetry, and journals the cycle to a DurableLogTransport-backed event log opened at assembly.",
+    "reached_from_production": [
+      "qip-kernel",
+      "qip-kernel::cycle",
+      "qip-kernel::platform (core loop)"
+    ],
+    "tests_only": [],
+    "notable_gaps": [
+      "run_cycle refuses (not journalled) a cycle dated before its own reasoned_through watermark, deliberately leaving no event-log trace of the refusal (platform.rs:9010-9012,9174-9209).",
+      "A cycle journal write failure is recorded only as a LEARN-stage problem, not a cycle failure -- the process keeps trading if its own journal can't be written (platform.rs:9133-9148).",
+      "stage_simulate's capacity probe swallows any refusal to None rather than surfacing it as a stage problem (platform.rs:12576-12581).",
+      "learn_from_cells and learn_from have no direct backend/crates/apps/*/src caller; both are reached from production only transitively, via stage_learn's private sub-calls review_strategies and calibrate_resolved.",
+      "platform.rs is 26,172 lines total; this record covers only the core-loop/ingest/learn surface named in the task, not the file's other subsystems (capital calls, capital fabric wallet/corridors, products, registrations, model promotion, etc.)."
+    ]
+  },
+  {
+    "group": "kernel-planes",
+    "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/kernel-planes.json",
+    "components": 48,
+    "headline": "48 records: 31 top-level src/ modules plus all 17 central/ submodules. This is the set of ~30 blueprint-control modules (adversary/venue/family/rule/sizing/causal review, cross-margin, hedge, quote loop, falsification, exploration, feature statistics, pre-positioning, etc.) that platform.rs's stages call into, plus the central plane (StrategyFactory, CapitalAllocator, region shares, realised P&L, DNA sealing, causal/belief/episodic digest producers) that composes edge-cell governance. Nearly all are pure, clock-free, I/O-free arithmetic over caller-supplied Timestamps; persistence is only via the platform's event log, written by callers.",
+    "notable_gaps": [
+      "capacity_review.rs (686 lines, blueprint §20.1's sixth control, 4 internal tests) has ZERO callers anywhere in the workspace outside its own test module — not from platform.rs, not from any app, not from any integration test. Declared at lib.rs:38 and otherwise dead: a complete, tested control that cannot fire.",
+      "central::dna's transport path (CentralPlane::ship at plane.rs:1985, CentralPlane::verify_dna at plane.rs:2010) has no production caller anywhere in crates/apps/*/src — only exercised in tests/central.rs:524-551,1234-1235. Separately, qip-edge-node (the cell process ADR 0008 describes as the DNA's recipient) does not depend on qip-kernel at all, so there is no wired transport from a sealed StrategyDna to any deployed edge cell today.",
+      "fabric_declaration.rs and references.rs are reached from production but NOT through Platform::run_cycle — they're used directly by qip-api's and qip-deepbrain's own composition roots (qip-api/src/fabric.rs:110, qip-deepbrain/src/campaign.rs:88,1141), a second production-reachability pattern distinct from the platform.rs cycle path most other modules use.",
+      "family_review.rs (ADR 0064) is deliberately half-built: it measures which strategy families are earning their funding but never revises weights; the module's own doc comment (lines 320-335) says the non-existence of a weight-mover is enforced only by a review discipline (REVIEWED_WEIGHT_MOVERS in qip-acceptance's security.rs), not a structural guarantee, and that an independent review has already defeated three prior versions of that scan.",
+      "blueprint_objectives.rs, exploration.rs, falsification.rs, model_serving.rs, references.rs, and valuation.rs each have zero internal #[test] despite being reached from production every cycle — their coverage lives entirely in separate integration-test files (tests/blueprint_objectives.rs, tests/exploration.rs, tests/falsification.rs, tests/serving.rs, tests/valuation_{plane,seam,credit}.rs), which is a real but indirect form of coverage worth distinguishing from capacity_review's total absence of any caller."
+    ],
+    "label": "qip-kernel: everything except cycle.rs and platform.rs (central/, valuation.rs, and the rest of src/)"
+  },
+  {
+    "group": "edge-cell",
+    "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/edge-cell.json",
+    "components": 21,
+    "headline": "qip-edge is a 19,968-line (37,655 with tests) crate implementing the whole regional edge-cell hot path (ADR 0008) as one `Cell` aggregate in src/cell.rs (9,040 lines): feed ingestion, feasibility, pricing/netting/crossing, arbitrage-cycle decomposition and passive-first dispatch, region capital reservation, settlement-timing checks, mesh state-up/capital-down, a hash-chained journal, and Prometheus-shaped telemetry. It is exhaustively tested (315 #[test] functions across 20 src modules and 26 integration files) and is called from a deployable binary's non-test code (qip-edge-node and qip-cli's demo subcommand), but qip-edge-node itself is instantiated in zero Terraform environments (execution_nodes = {} everywhere), so no live process runs this hot path today.",
+    "reached_from_production": [
+      "qip-edge::cell",
+      "qip-edge::arbitrage",
+      "qip-edge::decomposition",
+      "qip-edge::dispersion",
+      "qip-edge::dropcopy",
+      "qip-edge::envelope",
+      "qip-edge::feasibility",
+      "qip-edge::journal",
+      "qip-edge::mesh",
+      "qip-edge::mirror",
+      "qip-edge::passive",
+      "qip-edge::policy",
+      "qip-edge::priority",
+      "qip-edge::quoting",
+      "qip-edge::region",
+      "qip-edge::reservation",
+      "qip-edge::resume",
+      "qip-edge::seam",
+      "qip-edge::settlement",
+      "qip-edge::telemetry"
+    ],
+    "tests_only": [],
+    "notable_gaps": [
+      "qip-edge-node (the only binary that runs Cell::work) is deployed in no environment: execution_nodes = {} in infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars, so the crate's whole hot path, and everything it would emit to Prometheus via CellMetrics, reaches no live process.",
+      "qip-api declares qip-edge only under [dev-dependencies] (Cargo.toml:50) and every qip_edge:: mention in qip-api/src is a doc comment, not real code -- the serving binary never actually touches this crate.",
+      "The crate's Cargo.toml pins qip-execution-engine as a dependency that zero src files import; its own comment says it exists only to satisfy an architecture test's 'vacuity guard', not because the cell uses it.",
+      "src/cell.rs is 9,040 lines (45% of the crate) holding the entire per-pass cycle as one type with no internal module boundary; five functions carry #[allow(clippy::too_many_arguments)].",
+      "No stub/TODO/unimplemented!/panic!-in-Result markers found anywhere in src/, and no #[ignore]d tests -- the crate itself is code-complete and hardened; the gap is deployment and wiring into a Cloud Run/execution-node target, not missing logic."
+    ]
+  },
+  {
+    "group": "edge-libs",
+    "file": "docs/architecture/current-state/edge-libs.json",
+    "components": 10,
+    "headline": "Seven edge libraries (arbitrage, feature-dag, orderbook, protocols, routing, sequencing, strategy) are individually well-designed and heavily unit-tested, and their \"hot path\" pieces (arbitrage scan, cycle path routing, mirror/extension gating, reprice/rate-limit, book state, sequencer, strategy compiler/runtime) are all wired together correctly inside qip-edge's Cell and qip-edge-node's composition root. But qip-edge-node is never deployed (execution_nodes = {} in every Terraform environment), so that entire correctly-wired chain currently runs only under `cargo test`. Independently, roughly half of qip-routing (venue selection, order-type selection, health scoring, consolidation, the Gateway trait/SimulatedGateway/NativeGateway) and all of qip-protocols' actual wire decoders (FIX/ITCH/SBE) have zero production call sites anywhere, reached only by their own crate tests.",
+    "reached_from_production": [
+      "qip-strategy (via qip-deepbrain's training/backtest compiler, a genuinely deployed Cloud Run binary, outside any #[cfg(test)] block)",
+      "qip-sequencing::tracker (via qip-streaming, depended on by deployed qip-deepbrain)"
+    ],
+    "tests_only": [
+      "qip-orderbook (production path is qip-market-ingestion::depth, reached only through IngestionService which is constructed exclusively inside service.rs's own #[cfg(test)] block)",
+      "qip-sequencing::clock/arbitration/failover (ClockDiscipline, LineArbiter, FailoverReconciler)",
+      "qip-routing::router/ordertype/health/consolidate/gateway (Router, select_order_type, HealthTracker, Consolidator, Gateway trait + SimulatedGateway/NativeGateway)",
+      "qip-protocols::fix/itch/sbe/framing (FixDecoder, ItchDecoder, SbeDecoder, JsonFrameDecoder)",
+      "qip-feature-dag::features::standard_suite (never registered by any composition root)",
+      "qip-orderbook::auction (AuctionState)"
+    ],
+    "notable_gaps": [
+      "qip-edge-node (the only composition root that wires qip-arbitrage, qip-feature-dag's FeatureEngine, qip-protocols' registry, qip-routing's path/mirror/reprice subsystems, qip-sequencing's Sequencer, and qip-strategy's live runtime together) is never deployed: execution_nodes = {} in infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars.",
+      "qip-edge-node's production StrategyInstaller compiles every strategy with an empty FeatureCatalogue::new() (strategies.rs:355), so any StrategySpec referencing Expr::Feature(key) is structurally refused at compile time on the live path -- confirmed by tracing the exact refusal in qip-strategy's compile.rs:437-441.",
+      "qip-feature-dag's FeatureEngine is constructed in production (qip-edge-node/main.rs:360) but no code ever calls .register() on it, so it is permanently empty; the crate's own 12-feature standard_suite has no production caller anywhere.",
+      "qip-routing's venue-selection subsystem (Router, HealthTracker, select_order_type, Consolidator) and its Gateway trait/SimulatedGateway/NativeGateway are entirely unreached; qip-edge-node built its own independent SimulatedGateway/NodeGateway on top of qip-brokers instead of reusing qip_routing::gateway.",
+      "qip-protocols' actual venue-wire decoders (FIX, ITCH, SBE, JSON framing) are fully implemented and tested (51 tests) but never instantiated in production; the only decoder wired into a deployable binary is a local synthetic DepthDecoder reading from the simulated venue's own depth.",
+      "qip-orderbook and qip-sequencing's second production chain (via qip-market-ingestion, depended on by the actually-deployed qip-api/qip-fastbrain/qip-deepbrain) terminates in IngestionService, which is constructed only inside that service's own #[cfg(test)] module -- confirmed by locating the #[cfg(test)] boundary at service.rs:378, before every IngestionService::new call site.",
+      "qip-deepbrain trains/backtests strategies against a feature catalogue (qip_simulation_engine::harness::bar_catalogue) that shares no code with qip-feature-dag (qip-simulation-engine has no dependency on qip-feature-dag per cargo metadata), so the features a strategy is proven against in training are not the same implementation it would read from live."
+    ]
+  },
+  {
+    "components": 23,
+    "file": "docs/architecture/current-state/apps.json",
+    "group": "apps",
+    "headline": "Six Rust binaries (qip-api, qip-fastbrain, qip-deepbrain, qip-edge-node, qip-cli) plus one library-only \"app\" (qip-web, no main.rs) implement nearly the full blueprint surface: API/console/mesh/treasury (qip-api, 262 tests), fast execution (qip-fastbrain, 98 tests), research/evolution/learning (qip-deepbrain, 169 tests), the regional edge cell (qip-edge-node, 129 tests), an operator CLI (qip-cli, 34 tests) and no-JS server-rendered pages (qip-web, 37 tests). qip-api, qip-fastbrain and qip-deepbrain are built, attested and digest-pinned for Cloud Run but currently have no live service anywhere: dev was observed serving 2026-09-04, torn down 2026-09-13, and a 2026-09-20 reapply could not restore service because deployment moved (ADR 0036) to a GitOps/Argo CD control plane that ADR 0093 has since suspended. qip-edge-node is fully implemented and image-built but has never run outside tests in this repository's history because every environment sets execution_nodes = {}. qip-cli is deliberately never containerized (an operator tool by design, per deploy.yml).",
+    "notable_gaps": [
+      "qip-edge-node: never deployed in any environment (execution_nodes = {} in dev/test/stage/prod terraform.tfvars); ADR 0035 authorises exactly one shadow-mode node but its boot image has never been baked and its capital allocation has never been chosen by an operator.",
+      "qip-api, qip-fastbrain, qip-deepbrain: built and previously observed serving on Cloud Run in dev (2026-09-04), torn down 2026-09-13, and currently unreachable because the GitOps control-plane cluster that would reconcile their RunService manifests is suspended (ADR 0093) — deployment is blocked on infrastructure/CI state, not on missing application code.",
+      "qip-api's mesh backbone (mesh.rs) and qip-deepbrain's source-discovery/connector arms are structurally complete and tested but have no wired configuration in any environment, so they run only in tests today.",
+      "qip-api GET /data-sources always answers a fixed 'unavailable' body by design; the ledger/capital-call write surfaces exist but explicitly settle, post or fund nothing in this build.",
+      "qip-fastbrain: every configured feed (synthetic, replay, connector) is explicitly marked not production-grade in its own tests; no capital decision may rest on it as shipped.",
+      "qip-deepbrain: QIP_CENTRAL_HORIZONS_PATH is read by the composition root but wired in no environment, so the §23.4 horizon gate never arms in any deployment."
+    ],
+    "reached_from_production": [
+      "qip-api",
+      "qip-api::routes",
+      "qip-api::mesh",
+      "qip-api::ledger_views",
+      "qip-api::stream",
+      "qip-api::web_console",
+      "qip-api::feed",
+      "qip-api::auth",
+      "qip-api::treasury_feeds",
+      "qip-api::registrations",
+      "qip-api::trust_and_export",
+      "qip-fastbrain",
+      "qip-deepbrain",
+      "qip-deepbrain::evolution",
+      "qip-deepbrain::learning",
+      "qip-deepbrain::node",
+      "qip-deepbrain::campaign",
+      "qip-deepbrain::succession",
+      "qip-deepbrain::discovery_and_connectors",
+      "qip-deepbrain::language_and_attestation",
+      "qip-web"
+    ],
+    "tests_only": [
+      "qip-edge-node"
+    ]
+  },
+  {
+    "components": 27,
+    "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/frontend.json",
+    "group": "frontend",
+    "headline": "The portal is a real, deployed Next.js console (Cloud Run/GitOps, dev, behind IAP) that reads qip-api through a self-hosted BFF gateway with a structural write-allowlist, real session/IAP auth, and 182 Playwright tests; landing is a fully-built, CI-tested but never-deployed marketing site whose own README documents that it word-for-word duplicates the portal's separate (marketing) route group; of the 11 shared frontend/packages/*, only auth, validation, brand and (indirectly, via a regex-parsed build script) design-tokens are actually consumed — the other seven (analytics, api-client, charts, feature-flags, shared-types, testing, ui) are wired into next.config.ts's transpilePackages and portal's package.json but have zero import sites anywhere in the tree, most being pure re-export shims pointing back into the portal's own source.",
+    "reached_from_production": [
+      "portal (app shell)",
+      "portal BFF routes (api/*)",
+      "portal (auth) route group",
+      "portal (marketing) route group",
+      "portal (portal) — core & market pages",
+      "portal (portal)/treasury — the ledger plane",
+      "portal (portal) — risk, capital, execution, compliance, data-sources",
+      "portal (portal) — intelligence, cognition, loop, command, research, operations, admin",
+      "portal lib/server (session, identity, IAP)",
+      "portal lib/api (client, endpoints, redaction, types)",
+      "portal lib/hooks (data fetching)",
+      "portal components/chrome",
+      "portal components/data + components/viz",
+      "@algorik/auth",
+      "@algorik/brand",
+      "@algorik/design-tokens",
+      "@algorik/validation"
+    ],
+    "tests_only": [],
+    "notable_gaps": [
+      "landing has zero Terraform/GitOps/deploy.yml wiring despite a built Docker image and a pre-authorized Identity Platform hostname (environments/dev/terraform.tfvars:455,478-482) — CI-tested (ci.yml frontend-landing job, 13 Playwright tests) but reached_from_production is n/a.",
+      "The portal's own (marketing) route group and frontend/landing independently hand-write the same eleven/twelve marketing pages; frontend/landing/README.md:44-52 calls this 'a holding position, not a design' and says the portal's copy should become redirects — not done.",
+      "@algorik/api-client, @algorik/charts, @algorik/ui, @algorik/testing are 9-31 line files whose entire body is `export {...} from \"../../../portal/src/...\"`; @algorik/analytics and @algorik/feature-flags are fully-implemented (88 and 68 lines) but have zero callers anywhere; @algorik/shared-types (21 lines) already had one unused export set deleted and its two remaining types are also uncalled.",
+      "@algorik/design-tokens is never imported by TypeScript at all — frontend/scripts/generate-theme-css.mjs instead regex-parses the package's source text at build time to emit portal globals.css, a parser the file's own comment says 'throws loudly' on a malformed match.",
+      "portal's lib/sim (seeded/simWalk/simPick/simBetween) and the SimulatedBanner/SimChip components meant to display it per portal/CLAUDE.md's 'simulated data must be labelled' rule have zero call sites in any page — every current (portal) page reads real qip-api data instead.",
+      "lib/api/endpoints.ts's NOT_YET_SERVED table names 11 backend routes the UI cannot serve (positions, cash, data-sources/health, compliance, compliance/attestations, kill-switch/history, topology, account/me, ledger/users/{user}, and three explanation routes with no matching backend handler at all), each rendered as a named absence rather than invented data.",
+      "useTreasury.ts's expected-inflow declare/cancel routes are deliberately excluded from the gateway's write-allowlist because qip-api itself refuses them for every credential the console can currently hold (no per-person attested principal, ADR 0065/0075/0076) — documented as requires-migration, not a bug."
+    ],
+    "label": "frontend (portal, landing, packages/*, mobile)"
+  },
+  {
+    "group": "infrastructure",
+    "file": "docs/architecture/current-state/infrastructure.json",
+    "components": 43,
+    "headline": "A 26-module Terraform root (`infrastructure/terraform`) wires GCP for a Cloud-Run-plus-one-execution-node architecture (ADR 0022/0024/0036), with 4 environment tfvars where only `dev` (project `algorik-dev`) has ever held a real project. Every safety-relevant gate (paper-trading ceiling, venue-credential readability, Binary Authorization, trust-zone default-deny) is applied and test-covered in dev, but the platform is not currently serving traffic: the GitOps control-plane cluster that reconciles Cloud Run services is suspended because Argo CD's upstream image fails the CRITICAL scan gate, and the console/portal image has never been built (TO-PIN in every environment).",
+    "reached_from_production": [
+      "terraform-root",
+      "modules/binaryauthorization",
+      "modules/cicd",
+      "modules/cloudrun",
+      "modules/egress-proxy",
+      "modules/evidence",
+      "modules/identity",
+      "modules/network",
+      "modules/registry",
+      "modules/secrets",
+      "modules/services",
+      "modules/trust-zones",
+      "modules/iap-run",
+      "modules/openobserve",
+      "environments/dev",
+      "egress/envoy-bootstrap",
+      "egress/vendored-image-registry",
+      "docker/platform-Dockerfile"
+    ],
+    "tests_only": [
+      "modules/dns-zone",
+      "modules/public-edge",
+      "modules/iap-edge",
+      "modules/ai (training-account.tftest.hcl only)"
+    ],
+    "notable_gaps": [
+      "gitops-control-plane cluster in dev is applied-then-suspended: Argo CD v3.5.2 fails vendor.yml's CRITICAL Trivy gate on CVE-2025-68121 (unfixable upstream — vulnerable kustomize/git-lfs binaries are downloaded pre-built by every Argo CD release), and the platform's own remedy (argocd-patched.Dockerfile) has never been dispatched, so 0 Cloud Run services are actively reconciled today",
+      "qip-portal is TO-PIN in every environment's gitops/envs/<env>/kustomization.yaml — deploy.yml has never built the console image, so the portal's RunService cannot come up regardless of the cluster",
+      "execution_nodes = {} in all 4 environments: the ADR 0035 shadow-mode node in dev is fully specified in a tfvars comment but blocked on 2 human acts (boot-image bake never dispatched; region_allocation never chosen, deliberately never defaulted)",
+      "modules/observability's 9 alert policies and the Cloud Run metrics-collector sidecar are both gated off: Google's own cloud-run-gmp-sidecar 1.9.2 was reviewed and REFUSED (CVE-2026-56854, no fixed tag published) so workload_metrics_exist stays false everywhere and nothing is scraped in production",
+      "Kargo's promotion chain can only ever reach dev today — promoting to test/stage/prod would write dev's image digests into a registry that doesn't hold them and an attestor that never signed them (documented, unresolved architecture question in gitops/kargo/README.md)",
+      "test/stage/prod environments have project_id = \"unprovisioned\" (a value the root's own validation refuses at plan time) — no GCP project has ever existed for 3 of the 4 environments",
+      "modules/data, modules/ai, modules/connectivity, modules/scc, modules/public-edge, modules/dns-zone, modules/gitops-gateway, modules/iap-edge are all fully built and either test-covered or documented, but every enabling flag/hostname is off/empty in every committed tfvars, so they provision 0 resources anywhere"
+    ]
+  },
+  {
+    "components": 59,
+    "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/delivery.json",
+    "group": "delivery",
+    "headline": "This is the CI/CD, tooling and governance-register layer: 5 GitHub Actions workflows (ci/deploy/image/infra/vendor), 15 scripts (dependency/secret/manifest/provider gates, a delivery-register auditor, deploy/bootstrap tooling, and dev-only browser-automation/LLM-gateway tools explicitly walled off from backend/frontend), the Makefile (14 targets mirroring ci.yml 1:1), the .claude/ harness config (13 agents, 8 skills, 2 hooks + their test runner, the rules tree, settings.json), all 32 qip-acceptance cross-cutting test suites (317 #[test] functions total), and the two governance documents (docs/adr/README.md indexing 98 ADRs, docs/DELIVERY-STATUS.md scoring all 181 blueprint sections). ci.yml, the dependency/secret/manifest/provider check scripts, and the Makefile are all actively exercised and mutually consistent; infra.yml and vendor.yml are structurally sound but currently blocked end-to-end because Argo CD's own container image fails the platform's Trivy CVE gate with no upstream fix available, so the GitOps control plane has never successfully bootstrapped in any environment. docs/DELIVERY-STATUS.md's own latest headline tally: REACHED 46 (25%), PARTIAL 119 (66%), UNREACHED 1 (1%), ABSENT 0, NARRATIVE 15 (8%) of 181 sections — and its single governing fact is \"Nothing is deployed. No process of this platform has ever been observed running.\"",
+    "notable_gaps": [
+      "The GitOps control plane (infra.yml action=up, gitops.rs's whole subject) has never successfully bootstrapped anywhere: run 52 applied 238 Terraform resources cleanly but failed at the bootstrap step because vendor.yml's blocking Trivy gate refuses Argo CD's image on CVE-2025-68121 (no fixed upstream kustomize/git-lfs exists), which also blocks cert-manager's images in the same fail-fast loop — dev is now suspended (ADR 0093).",
+      "Makefile's `test` target (Makefile:54-55) omits --no-fail-fast, unlike ci.yml's test job, the Makefile's own `count` target, and top-level CLAUDE.md's documented command — a local `make test` can abort at the first failing binary and under-report, the exact failure mode the file's own comment warns against.",
+      "docs/adr/README.md claims ADR number 0097 (unlinked placeholder row, 'body to follow') but no 0097 file exists anywhere in docs/adr/ — a genuinely unwritten claimed ADR; separately, ADR 0099's body already exists on disk (185 lines, untracked) but the README still shows it as an unlinked placeholder, so the index lags the working tree.",
+      ".claude/rules/01-security-and-safety.md still names the destructive-command guard hook 'guard-dangerous-command.sh'; the actual, current implementation is guard-dangerous-command.py (a documented rewrite motivated by a shell-quoting bug) — the rules doc was not updated for the language change.",
+      "deploy.yml's final step ('replace every execution node under its group's rolling policy') is a structural no-op today: every environment's Terraform tfvars sets execution_nodes = {}, and image.yml (which bakes the boot image that step would deploy) has never been dispatched.",
+      "Three delivery-tooling scripts (audit-dead-code.py, audit-register.py, and the venue-signup/model-gateway dev tools) were not found wired into ci.yml or the Makefile during this pass — they appear to be manually/agent-invoked rather than gated, worth confirming separately.",
+      "docs/DELIVERY-STATUS.md explicitly refuses to compute a single delivered-percentage headline because the 181 blueprint sections are not equal-weight units (one bundles 9 execution domains, another is an 18-row control table) — 'PARTIAL at 66%' is stated as the accurate shape of the platform, not a hedge, and the document instructs readers to track individual rows rather than the aggregate."
+    ],
+    "reached_from_production": [
+      "ci.yml",
+      "deploy.yml",
+      "infra.yml",
+      "vendor.yml",
+      "check-dependencies.sh",
+      "check-secrets.sh",
+      "check-manifests.py",
+      "check-terraform-providers.sh",
+      "count-tests.sh",
+      "terraform-undeletable.py",
+      "bootstrap-deploy.sh",
+      "claude-hooks"
+    ],
+    "tests_only": [
+      "acceptance.rs",
+      "adversary.rs",
+      "api_boundary.rs",
+      "architecture.rs",
+      "blueprint_rules.rs",
+      "chaos.rs",
+      "cognition.rs",
+      "compliance_proof.rs",
+      "console_route.rs",
+      "cross_margin.rs",
+      "decentralised_venue.rs",
+      "documentation.rs",
+      "e2e.rs",
+      "e2e_live.rs",
+      "egress.rs",
+      "gitops.rs",
+      "infrastructure.rs",
+      "manifest_wiring.rs",
+      "paper_boundary.rs",
+      "path_router.rs",
+      "performance.rs",
+      "quote_loop.rs",
+      "regime_allocation.rs",
+      "region_share.rs",
+      "resilience.rs",
+      "security.rs",
+      "slo.rs",
+      "streaming_estimators.rs",
+      "stress.rs",
+      "terraform_contract.rs",
+      "terraform_plan.rs",
+      "truth_loop.rs",
+      "model-gateway.test.mjs"
+    ]
+  }
+]

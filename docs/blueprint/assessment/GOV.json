@@ -1,0 +1,701 @@
+[
+  {
+    "id": "GOV-001",
+    "status": "PARTIAL",
+    "current": "qip_agents::finding::AgentFinding (produced every cycle by the 18-agent organisation, qip_investment_agents::chief::Organisation::dispatch called from platform.rs:10998 in every REASON stage) originates claims/hypotheses-in-spirit for every instrument in scope; qip_reasoning_engine::hypothesis::Hypothesis is a typed hypothesis record with contributors and models fields; construction agents (PortfolioConstruction) originate strategy proposals; the capital-grant flow (platform.rs:7290-7318) is the closest thing to a capital recommendation. None of these are orders or action intents (no ActionIntent type exists at all in the workspace).",
+    "evidence": [
+      "backend/crates/libs/qip-agents/src/finding.rs:410-439 (AgentFinding: agent_id, claim, direction, facts -- no model-version field)",
+      "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs:259-311 (Hypothesis.contributors: Vec<String>, Hypothesis.models: Vec<String>, free text)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10998 (self.organisation.dispatch runs every REASON stage)",
+      "test an_agent_that_holds_a_language_model_cannot_touch_the_market -- backend/crates/tests/qip-acceptance/tests/architecture.rs:502"
+    ],
+    "gap": "No typed taxonomy for the seven named kinds (hypotheses, models, strategies, forecasts, explanations, opportunity intents, capital recommendations) exists as such, and no record structurally names 'originating model and version' -- AgentFinding carries only an agent_id string, and Hypothesis.models is free text with no enforced version field.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-agents; cargo test -p qip-reasoning-engine (existing tests exercise AgentFinding/Hypothesis production separately). No integration test replays a research window and asserts all seven named record kinds are emitted, each naming a model and version, with none an order/action intent.",
+    "work_item": "E16-origination-taxonomy",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The 'none of them is an order or action intent' half is trivially true today because no ActionIntent type exists anywhere in the workspace (see GOV-021's evidence)."
+  },
+  {
+    "id": "GOV-002",
+    "status": "PARTIAL",
+    "current": "qip_edge::Cell::deploy/deploy_with_pricing/install (cell.rs:2505-2551) take only a qip_edge::envelope::VerifiedEnvelope, whose only constructor VerifiedEnvelope::verify (qip-edge/src/envelope.rs:25-80) recomputes the HMAC against the cell's own key in constant time and refuses an empty key, a foreign cell and an expired window; VerifiedEnvelope::admit refuses a venue outside the grant and reduces then refuses as capital is used. That path is reached from a composition root only through qip-edge-node (strategies.rs:366, fed by mesh.rs:373/392) and qip-cli's demo, and qip-edge-node is deployed nowhere (execution_nodes = {} in every environment). The automatic actor that is deployable -- the central desk, Platform::stage_act_orders (platform.rs:13326) run by qip-api/qip-fastbrain -- holds no CapitalEnvelope: its automatic paper orders are bounded by the autonomy ceiling (PaperTrading), the risk LimitSet and sign-off in OrderManager::submit, which is the requirement's own reading of the envelope's ceiling but is neither cited nor tested here as an envelope refusal. Agents that hold a language model cannot reach the market at all (architecture.rs:502).",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:2505-2551 (deploy/deploy_with_pricing/install take VerifiedEnvelope; cell/strategy identity checked)",
+      "backend/crates/edge/qip-edge/src/envelope.rs:25-80 (VerifiedEnvelope: private inner value, verify is the only constructor; empty-key refusal, constant-time HMAC compare, cell and expiry checks)",
+      "backend/crates/apps/qip-edge-node/src/strategies.rs:366 (the only non-test composition-root caller of Cell::deploy_with_pricing; qip-edge-node is deployed in no environment)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13326 (stage_act_orders: the deployable central desk's automatic orders, bounded by autonomy level and risk limits, no CapitalEnvelope)",
+      "backend/crates/services/qip-capital/src/envelope.rs:177-289 (EnvelopeIssuer::issue/verify: the central issuing side, used by CentralPlane::issue at central/plane.rs:1936-1941)",
+      "test an_unsigned_envelope_cannot_become_a_verified_one -- backend/crates/edge/qip-edge/tests/cell.rs:69",
+      "test a_correctly_signed_envelope_for_another_cell_is_refused -- backend/crates/edge/qip-edge/tests/cell.rs:119",
+      "test an_expired_envelope_stops_the_cell_rather_than_letting_it_continue -- backend/crates/edge/qip-edge/tests/cell.rs:143",
+      "test a_verified_envelope_admits_then_reduces_then_refuses_as_capital_is_used -- backend/crates/edge/qip-edge/tests/cell.rs:157",
+      "test a_capital_envelope_granted_to_another_cell_is_refused_when_replayed -- backend/crates/tests/qip-acceptance/tests/security.rs:352",
+      "test an_expired_envelope_cannot_be_replayed_after_the_window_closes -- backend/crates/tests/qip-acceptance/tests/security.rs:374"
+    ],
+    "gap": "The envelope refusal is enforced only at the edge Cell, which runs only in qip-edge-node and is deployed nowhere. The deployable automatic actor (the central desk in qip-api/qip-fastbrain) holds no envelope and is bounded by the autonomy ceiling and risk limits instead, with no test framing that as the envelope refusal the requirement states. No property test over generated actions and envelopes exists, and nothing tests 'no accepted action widens any envelope'; the cited tests are example-based unit tests of VerifiedEnvelope::verify/admit rather than of an automatic action refused before effect.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test cell -- an_unsigned_envelope_cannot_become_a_verified_one a_correctly_signed_envelope_for_another_cell_is_refused an_expired_envelope_stops_the_cell_rather_than_letting_it_continue a_verified_envelope_admits_then_reduces_then_refuses_as_capital_is_used; cargo test -p qip-acceptance --test security -- a_capital_envelope_granted_to_another_cell_is_refused_when_replayed an_expired_envelope_cannot_be_replayed_after_the_window_closes. Not yet written: a property test generating actions and envelopes that asserts named refusal with no side effect, refusal of every action by an actor with no envelope, and that no accepted action widens an envelope; and a test on the central desk's path treating its autonomy ceiling and limits as the envelope.",
+    "work_item": "E07-envelope-property-suite",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The signature itself is symmetric HMAC (shared ADR 0043 gap, see GOV-012), which does not weaken the refuse-before-effect property this requirement states. e2e=false because all demonstrations are in-process crate/acceptance tests, not a qip-acceptance e2e.rs cross-process run. verify: downgraded COMPLETE -> PARTIAL and deployable true -> false. The cited tests are unit tests of the edge VerifiedEnvelope; the enforcing Cell is reached only from qip-edge-node (execution_nodes = {} everywhere); the deployable central desk acts automatically without holding an envelope; and the property form (generated actions, no widening) is untested. Also corrected the evidence: the cell's VerifiedEnvelope is built by qip_edge::envelope::VerifiedEnvelope::verify, not by qip_capital::envelope::EnvelopeIssuer::verify as the row claimed."
+  },
+  {
+    "id": "GOV-003",
+    "status": "MISSING",
+    "current": "nothing. No component originates research, warnings, opportunity candidates, simulations or proposed actions independent of a strategy tick. Every occurrence of 'ambient' in the tree is an unrelated sense (ambient clock, ambient noise, ambient temperature). qip-fastbrain's own run loop (node.rs) is the SENSE..LEARN strategy-tick cycle itself, not a background process that runs when no cycle is in flight.",
+    "evidence": [
+      "docs/blueprint/assessment/AMBIENT.json, AMBIENT-001 (nothing implements a distinct Proactive Ambient Model Mesh)",
+      "backend/crates/apps/qip-fastbrain/src/node.rs:192-266 (the cycle loop, sleeps the remainder of cycle_interval; is the trading cycle, not an independent background process)",
+      "rg -in 'ambientmesh|ambient_mesh|proactiveambient' backend/crates -> no hits"
+    ],
+    "gap": "No component runs on its own schedule or on events independent of the main SENSE..LEARN cycle.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "none exists; would need a test asserting mesh state advances during a window with zero calls to Platform::run_cycle.",
+    "work_item": "E09-ambient-mesh-scheduler",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: status unchanged after looking for a missed implementation. qip-deepbrain does originate unprompted on a cadence -- evolution rounds (qip-deepbrain/src/evolution.rs, every_cycles default 4) register strategy candidates and discovery rounds assess sources -- but every round runs inside the node loop keyed to Platform::run_cycle (qip-deepbrain/src/node.rs:157), the same SENSE..LEARN cycle, and it is the model foundry rather than an ambient model; nothing emits warnings, simulation requests or proposed actions independent of a cycle."
+  },
+  {
+    "id": "GOV-004",
+    "status": "MISSING",
+    "current": "nothing implements an ambient model (see GOV-003), so the invariant that its continuous operation does not raise its authority cannot be demonstrated for one. The adjacent, non-ambient-specific invariant is real and tested: qip_risk_engine::autonomy::AutonomyController has no code path from a model output, agent finding or config value to a higher autonomy level (module doc: 'nothing escalates itself'), and every proposal from the 18-agent organisation passes through the same deterministic risk/compliance checks regardless of how often or how continuously it was produced.",
+    "evidence": [
+      "backend/crates/services/qip-risk-engine/src/autonomy.rs:1-18 (module doc: 'Nothing escalates itself')",
+      "docs/blueprint/assessment/AMBIENT.json (no ambient model exists to test against)"
+    ],
+    "gap": "No ambient model exists to test the invariant against; the general 'nothing escalates itself' property proven for AutonomyController is a different claim from GOV-004's, which is specifically about an always-on model's accumulated proposals never buying it more authority.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GOV-003"
+    ],
+    "blocked_by": "",
+    "verification": "none exists.",
+    "work_item": "E09-ambient-mesh-scheduler",
+    "tier": "T3",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "GOV-005",
+    "status": "MISSING",
+    "current": "nothing implements a joint legal-entity + counterparty + jurisdiction gate for the five named regulated functions (deposit-taking, lending to third parties, brokerage, derivatives dealing, and similar). None of those five functions exist as a distinct code path -- this platform consumes external/simulated brokers rather than acting as one. The closest analog, qip_capital::ledger::product::ProductCatalogue and ledger::eligibility::EligibilityRegistry, gates jurisdiction x product-family for a user's own investment, fail-closed by design ('nothing is cleared here by default ... a family absent from it is refused everywhere', product.rs:13-17), but tracks neither 'counterparty' nor 'legal entity' as a dimension.",
+    "evidence": [
+      "backend/crates/services/qip-capital/src/ledger/product.rs:1-33",
+      "backend/crates/services/qip-capital/src/ledger/eligibility.rs:1-34",
+      "grep -rn 'deposit-taking|derivatives dealing|brokerage' backend/crates -> no hits outside comments referencing the blueprint"
+    ],
+    "gap": "No type combines legal entity, counterparty and jurisdiction for a regulated function; the five named functions have no representation in the codebase at all.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "none exists.",
+    "work_item": "E16-regulated-function-gate",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "GOV-006",
+    "status": "PARTIAL",
+    "current": "A legal-permission gate distinct from technical capability exists, but on the user-capital admission path, not the order path. Platform::decide_investment (platform.rs:6838), reached from qip-api's POST /ledger/users/:user/investment-requests (routes.rs:1430-1500), refuses a request when the factory has registered no family for the strategy (technical) and separately when UserLedger::admit refuses it under a named RefusedLimit -- Eligibility(Ineligible) from the operator-signed EligibilityRegistry (user x jurisdiction, fail-closed) or Entitlement from the ProductCatalogue (family x jurisdiction, empty catalogue refuses everything) (qip-capital/src/ledger/request.rs:46-65). On the execution path only technical gates exist: OrderManager::submit's six numbered checks (oms.rs:595-710: malformed, feasibility, kill switch, autonomy level, withdrawn venue, live-venue-vs-live-autonomy) and, at assembly, the asset class registry refusing a universe holding an instrument in a class nothing can price or settle (platform.rs:4091-4103). No legal/jurisdictional gate exists for a venue or an instrument, and ComplianceControl's finding for an 'uncovered' instrument is advisory, not a refusal.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:6838-6925 (decide_investment: technical family-registered check, then UserLedger::admit's named legal refusal)",
+      "backend/crates/services/qip-capital/src/ledger/request.rs:46-65 (RefusedLimit: Eligibility(Ineligible), Entitlement, ... -- each refusal names its gate)",
+      "backend/crates/services/qip-capital/src/ledger/eligibility.rs:1-34 and ledger/product.rs:1-33 (fail-closed user and product x jurisdiction registries)",
+      "backend/crates/apps/qip-api/src/routes.rs:1430-1500 (composition-root route reaching decide_investment)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4091-4103 (asset class registry refuses assembly over an unsupported class: a technical-capability gate)",
+      "backend/crates/services/qip-execution-engine/src/oms.rs:573-710 (six-step submit gate list, no legal-permission step)",
+      "backend/crates/agents/qip-investment-agents/src/control.rs:187-199,224 (blocked = !prohibited.is_empty() || !buy_blocked.is_empty(); an 'uncovered' instrument is excluded from that boolean)",
+      "test an_unverified_user_cannot_be_funded_and_the_refusal_names_the_reason -- backend/crates/runtime/qip-kernel/tests/ledger.rs:974",
+      "test a_user_whose_entitlement_refuses_the_strategys_family_cannot_be_funded_and_the_refusal_names_the_family_and_jurisdiction -- backend/crates/runtime/qip-kernel/tests/ledger.rs:1352",
+      "test a_universe_of_registered_classes_assembles_and_one_holding_an_unregistered_class_does_not -- backend/crates/runtime/qip-kernel/tests/asset_classes.rs:71"
+    ],
+    "gap": "On the order path -- where the requirement's own verification sits (a connected simulated adapter and supported instrument with no eligibility record refused by a legal gate; an eligibility record with no adapter refused by the technical gate; only the pair admits a paper order) -- OrderManager::submit and Cell::work carry technical gates only, and no venue or instrument has a legal-permission record to refuse on. The separated, named legal gate that does exist governs user-capital admission, not execution.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "GOV-007"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test ledger -- an_unverified_user_cannot_be_funded_and_the_refusal_names_the_reason a_user_whose_entitlement_refuses_the_strategys_family_cannot_be_funded_and_the_refusal_names_the_family_and_jurisdiction; cargo test -p qip-kernel --test asset_classes -- a_universe_of_registered_classes_assembles_and_one_holding_an_unregistered_class_does_not. No test pairs a legal and a technical gate on one paper order, because the order path has no legal gate.",
+    "work_item": "E16-legal-technical-gate-pair",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: upgraded MISSING -> PARTIAL. The assessor looked only at the order path; the ledger's investment-admission path already keeps a named, fail-closed legal gate (eligibility registry, product catalogue by jurisdiction) separate from a technical check, reached from qip-api and tested in qip-kernel/tests/ledger.rs. The order path still has no legal gate, which is the requirement's core."
+  },
+  {
+    "id": "GOV-007",
+    "status": "PARTIAL",
+    "current": "qip_financial::constraints::RegulatoryConstraints carries jurisdictions/restrictions/approved_venues per instrument, read by qip_investment_agents::control::ComplianceControl via Desk.compliance.constraints_for(id); an instrument absent from the register is correctly named 'not covered ... must be escalated' (control.rs:194-198,233-238) rather than silently permitted, for research findings. But the crate's own permits_venue accessor fail-opens on an empty approved_venues set ('empty means unrestricted', constraints.rs:167) and is reached from nowhere in production (only from qip-financial's own tests), and no execution-layer eligibility query exists for venue or strategy at all -- only user x product x jurisdiction (qip-capital's ledger) is covered.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/constraints.rs:99-169 (RegulatoryConstraints, permits_venue's empty-set fail-open at line 167)",
+      "backend/crates/agents/qip-investment-agents/src/control.rs:187-199,281-283 (uncovered instrument escalated rather than waved through, for the research path)",
+      "backend/crates/services/qip-capital/src/ledger/product.rs:1-33 (fail-closed for user x product x jurisdiction)",
+      "grep -rn 'permits_venue' backend/crates -> defined and only ever called inside qip-financial's own crate/tests"
+    ],
+    "gap": "permits_venue's own empty-set default is fail-open and unreached from production; venue and strategy have no eligibility registry at all; the only production path (ComplianceControl) produces an advisory finding, not a refusal, for missing metadata.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial (constraint tests); cargo test -p qip-capital --test user_ledger -- an_investment_request_is_admitted_or_refused_by_the_named_limit_before_anything_is_funded. A fail-closed test for permits_venue's own empty-set case does not exist, and one asserting fail-closed behaviour would currently fail against constraints.rs:167 as written.",
+    "work_item": "E16-venue-strategy-eligibility-registry",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "GOV-008",
+    "status": "PARTIAL",
+    "current": "The 18-agent organisation's research agents are not filtered by any eligibility/executable-scope gate: ComplianceControl continues to produce a finding ('must be escalated') for an instrument the compliance register does not cover rather than declining to analyse it, and no other agent consults an eligibility registry before reasoning. But because no execution-side venue/jurisdiction eligibility gate exists yet (see GOV-006/007/010), there is nothing for research's unconstrained reach to be contrasted against, so the requirement's own verification (the same opportunity refused at execution) cannot currently be demonstrated.",
+    "evidence": [
+      "backend/crates/agents/qip-investment-agents/src/control.rs:187-199,233-238 (uncovered instrument still analysed and reported, not refused)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10998 (organisation.dispatch runs unconditionally in REASON, not filtered by eligibility)"
+    ],
+    "gap": "No execution-side eligibility gate exists to demonstrate the same opportunity is refused there (tracked at GOV-006/GOV-010).",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "GOV-010"
+    ],
+    "blocked_by": "",
+    "verification": "none written; would pair control.rs's existing test suite with an execution-layer refusal test once GOV-010 exists.",
+    "work_item": "E16-venue-strategy-eligibility-registry",
+    "tier": "T2",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "GOV-009",
+    "status": "MISSING",
+    "current": "nothing gates strategy deployment on a recorded jurisdiction/product eligibility. qip_lifecycle::gates.rs's rung gates (HoldoutGate and others) check statistical/evidence quality -- deflated Sharpe, lifetime trial count, leakage -- never jurisdiction or product eligibility. qip_edge::Cell::deploy (cell.rs:2537-2551) checks only that the VerifiedEnvelope names the right cell and strategy.",
+    "evidence": [
+      "backend/crates/services/qip-lifecycle/src/gates.rs:1-45",
+      "backend/crates/edge/qip-edge/src/cell.rs:2533-2551 (install's only checks are cell/strategy identity)",
+      "grep -rn 'jurisdiction' backend/crates/services/qip-lifecycle -> no hits"
+    ],
+    "gap": "No gate anywhere refuses a strategy deployment for missing jurisdiction/product eligibility.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GOV-007"
+    ],
+    "blocked_by": "",
+    "verification": "none exists.",
+    "work_item": "E16-strategy-deployment-eligibility-gate",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "GOV-010",
+    "status": "MISSING",
+    "current": "nothing makes a venue or instrument non-executable until a jurisdiction/product eligibility gate passes. qip_execution_engine::oms::OrderManager::submit's checks (oms.rs:595-710) are feasibility/kill-switch/autonomy-level/venue-withdrawn/live-vs-paper; none is a jurisdiction/product eligibility flag. The nearest control is the kernel's asset class registry (qip-kernel/src/asset_class_registry.rs; platform.rs:4091-4103), which refuses to assemble over a universe holding an instrument in a class with no valuation engine, settlement convention or eligible family -- a technical-supportability gate, not a legal one, and its per-class family eligibility (AssetClassRecord::admits_family) has no caller. A new venue, or a new instrument in an already registered class, is executable the moment a broker and feasibility model exist for it.",
+    "evidence": [
+      "backend/crates/services/qip-execution-engine/src/oms.rs:573-710",
+      "grep -rn 'eligib' backend/crates/services/qip-execution-engine backend/crates/services/qip-risk-engine -> no hits",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:1-60,333-335 (technical class registry; admits_family is never called outside the file)"
+    ],
+    "gap": "No per-venue/per-instrument eligibility gate exists at all on the execution path.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "none exists.",
+    "work_item": "E16-strategy-deployment-eligibility-gate",
+    "tier": "T2",
+    "size": "M",
+    "notes": "This gate opens no live-venue path regardless of its own absence: qip_edge's GATE_LIVE_VENUE (Cell::send) and oms.rs step 6 already refuse a live-class venue independently of eligibility, per ADR 0021. The gap here is jurisdiction/product eligibility specifically, not the paper-trading boundary. verify: status unchanged; corrected 'current', which said a new instrument is executable as soon as a broker exists -- one in an unregistered asset class is refused at assembly. That registry is a technical-capability gate (GOV-006 forbids counting it as legal permission) and has no jurisdiction dimension, so it does not meet this requirement."
+  },
+  {
+    "id": "GOV-011",
+    "status": "PARTIAL",
+    "current": "Of the five named functions, only 'trading' exists in this platform; custody/transfer, market creation, banking/financing and commerce purchasing have no code or infrastructure. Trading's own credential is segregated by construction -- qip_brokers::credential::VenueCredential/Secret never derive Serialize/Deserialize and hand-write redacted Debug/Display -- and each Cloud Run workload (api/fastbrain/deepbrain/edge-node) gets its own workload identity and Secret Manager grants under infrastructure/terraform/modules/cloudrun, per catalogue.tf. Because the other four functions do not exist, there is no second identity for trading's to be checked against for cross-function leakage.",
+    "evidence": [
+      "backend/crates/services/qip-brokers/src/credential.rs:1-30",
+      "infrastructure/terraform/modules/cloudrun (per-service identity/secret pattern)",
+      ".claude/rules/01-security-and-safety.md (venue credential readable only where the ceiling could use it; secrets as files, never env)",
+      "test every_deployable_has_its_own_cloud_run_identity -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3073",
+      "test the_venue_credential_is_bound_to_the_fast_brain_and_only_where_the_ceiling_permits -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3338",
+      "test every_secret_a_workload_mounts_is_created_by_terraform_and_granted_to_it -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3018"
+    ],
+    "gap": "No infra-plan test asserts distinct identities/secrets across the five named functions, because four of the five have no identity to compare trading's against.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test infrastructure -- every_deployable_has_its_own_cloud_run_identity the_venue_credential_is_bound_to_the_fast_brain_and_only_where_the_ceiling_permits every_secret_a_workload_mounts_is_created_by_terraform_and_granted_to_it (static checks of the Terraform text for the trading slice). No test enumerates the five named functions and asserts no cross-function accessor or impersonation binding; custody/transfer exists here only as the paper capital fabric inside qip-api, with no identity of its own to compare.",
+    "work_item": "E13-function-identity-segregation-test",
+    "tier": "T1",
+    "size": "S",
+    "notes": "A function that does not exist here satisfies the requirement by having no identity to leak, per the requirement's own notes; the applicable slice (trading) is well-segregated. verify: tested false -> true: named acceptance tests already pin one Cloud Run identity per deployable and the venue credential's grant to the fast brain's identity alone, which demonstrates the trading slice. Status stays PARTIAL."
+  },
+  {
+    "id": "GOV-012",
+    "status": "PARTIAL",
+    "current": "qip_capital::envelope::EnvelopeIssuer::issue (envelope.rs:177-251) refuses any Approval that is not dual (approval.is_dual()), and platform.rs's capital-grant path builds that Approval only from an authenticated qip_risk_engine::autonomy::OperatorIdentity's fresh countersignature (platform.rs:7290-7318, operator.subject()). An unsigned, foreign or tampered envelope is refused by EnvelopeIssuer::verify's constant-time HMAC compare (envelope.rs:253-283), and the prior envelope stays in force until a new one verifies. But qip_contracts::governance::Approval is just {subject: String, approver: String, ...} (governance.rs:211-221) with no type-level distinction between a human/governance identity and a model/agent identity -- the guarantee that only a human signs rests on the fact that the only production caller of EnvelopeIssuer::issue is a human-authenticated API route, not on the type system refusing an agent-named approver.",
+    "evidence": [
+      "backend/crates/services/qip-capital/src/envelope.rs:177-289",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:7290-7318",
+      "backend/crates/libs/qip-contracts/src/governance.rs:211-264 (Approval has no human-vs-agent discriminant)",
+      "test an_unsigned_envelope_cannot_become_a_verified_one -- backend/crates/edge/qip-edge/tests/cell.rs:69"
+    ],
+    "gap": "No structural (type-level) refusal of an approval signed by a model/agent identity exists, only an operational one (only human-authenticated routes call the issuer). The signature itself is symmetric HMAC, one of the three gaps ADR 0043 names.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test cell -- an_unsigned_envelope_cannot_become_a_verified_one; no test exists asserting an envelope 'signed' under an agent-identity approver string is refused, because nothing currently distinguishes one from a human approver string.",
+    "work_item": "E13-asymmetric-signing",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Tracks the same ADR 0043 gap as GOV-014. verify: deployable true -> false. The refusal of an unsigned or altered envelope at the point it would take effect is VerifiedEnvelope::verify in the edge Cell, which runs only in qip-edge-node (execution_nodes = {} everywhere). The deployable half is issuance: CentralPlane::issue in qip-api refuses a non-dual approval and self-verifies (central/plane.rs:1936-1941)."
+  },
+  {
+    "id": "GOV-013",
+    "status": "PARTIAL",
+    "current": "qip_contracts::capital::CapitalEnvelope (capital.rs:20-37) and qip_capital::envelope::EnvelopeTerms (envelope.rs:71-84) carry one of the four named dimensions -- venues ('destinations') -- fail-closed on an empty list ('An empty list is no venues, not all of them', capital.rs:29-31) -- plus gross/order/loss limits, which are not one of the four named dimensions. There is no leverage field, no product-class field and no regulated-function field anywhere on the envelope.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/capital.rs:20-37",
+      "backend/crates/services/qip-capital/src/envelope.rs:69-114"
+    ],
+    "gap": "Leverage, product classes and regulated functions are not represented on the envelope contract at all; only destinations (venues) is.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GOV-012"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test cell (covers the venues dimension only); no test exists for a leverage/product-class/regulated-function dimension because none exists to test.",
+    "work_item": "E16-envelope-dimension-expansion",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: deployable true -> false. The one enforced dimension (venues) is refused at VerifiedEnvelope::admit in the edge Cell, reachable only through qip-edge-node, which no environment deploys; the central whitelist's refusal of a policy venue the grant does not permit (central/whitelist.rs:575) is a producer-side check, not a refused action."
+  },
+  {
+    "id": "GOV-014",
+    "status": "PARTIAL",
+    "current": "qip_events::log::EventLog hash-chains every record (each commits to its predecessor's hash) and offers no edit, delete or remove method anywhere in the crate; EventLog::verify_chain (log.rs:1001) walks the chain and returns the first broken sequence. Demonstrated against a realistic attack: editing the backing JSONL file on disk (not the in-memory log), then reopening and re-verifying.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/log.rs:1-45,698,1001-1049 (append at :698, verify_chain at :1001; grep for 'fn edit|fn delete|fn remove' finds none)",
+      "test editing_stored_history_is_detected_by_the_chain -- backend/crates/libs/qip-events/tests/backbone.rs:533-573"
+    ],
+    "gap": "The hash chain is self-contained with no external anchor (no WORM store, no timestamping authority, no commitment outside the process); an actor with full write access to the log's backing file could in principle regenerate a self-consistent chain from scratch, undetected by verify_chain alone. ADR 0043 names this as one of three gaps no in-tree code may close. The existing test tampers a record's payload in place; no test explicitly deletes a line (though the previous_hash linkage implies the same detection would fire).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-events --test backbone -- editing_stored_history_is_detected_by_the_chain",
+    "work_item": "E13-chain-external-anchor",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Tracks the same ADR 0043 gap named at GOV-012 (anchoring the chain outside the process)."
+  },
+  {
+    "id": "GOV-015",
+    "status": "PARTIAL",
+    "current": "Version-naming is fragmented rather than unified. qip_core::lineage::Lineage, attached to every event, names only a producer component string (lineage.rs:61-74) -- no model/data/policy/code/control version fields. qip_reasoning_engine::hypothesis::Hypothesis carries models: Vec<String> and contributors: Vec<String> (free text, hypothesis.rs:259-311). qip_twin::record::LearningRecord carries model_versions: Vec<(String,String)> (record.rs:131), but only for counterfactual/digital-twin scoring. No single per-decision record names all five of model, data, policy, code and control versions together.",
+    "evidence": [
+      "backend/crates/libs/qip-core/src/lineage.rs:61-74",
+      "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs:259-311",
+      "backend/crates/services/qip-twin/src/record.rs:115-131",
+      "grep -rln 'model_version|policy_version|control_version|dataset_version|code_version' backend/crates -> only qip-twin/src/record.rs"
+    ],
+    "gap": "No unified per-decision version record covers all five named classes (model, data, policy, code, control); reproducing a decision from exactly its recorded versions is unproven.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "GOV-014"
+    ],
+    "blocked_by": "",
+    "verification": "none exists that reproduces a decision from its recorded model/data/policy/code/control versions; writing one that refuses a record lacking any of the five is also unwritten.",
+    "work_item": "E00-per-decision-version-record",
+    "tier": "T2",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "GOV-016",
+    "status": "MISSING",
+    "current": "nothing implements an 'executable scope' concept for an opportunity to be outside of, so nothing can be shown to keep such an opportunity shadow-only. The 18-agent organisation's findings feed the same REASON pipeline for every instrument the desk holds data for; oms.rs's submit() gates are technical (feasibility/autonomy/venue), not eligibility-based, so an opportunity in an 'uncovered' instrument is not structurally blocked from reaching the order path -- only its advisory ComplianceControl finding is escalated (see GOV-006).",
+    "evidence": [
+      "backend/crates/agents/qip-investment-agents/src/control.rs:224-241 (uncovered != blocked)",
+      "grep -rn 'ActionIntent' backend --include=*.rs -> zero hits (docs/blueprint/assessment/CONTRACT-b2.json, CONTRACT-029, confirms no shadow-record type exists)"
+    ],
+    "gap": "No executable-scope concept and no shadow-record type exist; an opportunity research finds outside a would-be executable scope cannot currently be shown to stay off the order path.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GOV-007",
+      "GOV-010"
+    ],
+    "blocked_by": "",
+    "verification": "none exists.",
+    "work_item": "E16-actionintent-shadow-type",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "GOV-017",
+    "status": "MISSING",
+    "current": "nothing. No action-tool registry exists; no type requires an identity, permission scope, disclosure policy, audience/channel rules, rate/budget limits and revocation path to be declared before a tool can act. qip_agents::capability::CapabilitySet and qip_agents::budget::BudgetLedger are the nearest existing pattern -- a typed capability-tier grant and a pre-work-charged budget ledger for the 18 investment analyst agents -- but they govern read/compute/production/authority tiers for analysis agents, not identity/jurisdiction/channel/rollback declarations for external action tools.",
+    "evidence": [
+      "docs/blueprint/assessment/AGENCY-b1.json, AGENCY-026",
+      "backend/crates/libs/qip-agents/src/capability.rs, budget.rs (nearest pattern, different contract)",
+      "grep -rn 'ActionIntent' backend --include=*.rs -> zero hits"
+    ],
+    "gap": "No action-tool registry, no six-field contract, no revocation path exists anywhere.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "none exists; would assert registering a tool with any of the six declarations missing is refused, and a revoked tool's next call is refused.",
+    "work_item": "E16",
+    "tier": "T2",
+    "size": "L",
+    "notes": "Matches AGENCY-026's own finding for the same gap."
+  },
+  {
+    "id": "GOV-018",
+    "status": "MISSING",
+    "current": "nothing. No GoalSpec/plan/execution three-stage audit record exists. The kernel's SENSE..LEARN cycle (qip_kernel::cycle::Stage) enforces a fixed stage order for trading decisions but has no goal-approval/plan-approval/execution-approval semantics for anything to attribute separately.",
+    "evidence": [
+      "docs/blueprint/assessment/AGENCY-b2.json, AGENCY-034",
+      "backend/crates/runtime/qip-kernel/src/cycle.rs (Stage enum: Sense, Understand, Discover, Reason, Simulate, Decide, Act, Learn -- no goal/plan/execution approval concept)"
+    ],
+    "gap": "No three-stage (goal/plan/execution) audit record exists to attribute approvals separately; the kernel's cycle stages are a different property over a different object.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GOV-017"
+    ],
+    "blocked_by": "",
+    "verification": "none exists.",
+    "work_item": "E16-agency-loop-state-machine",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Matches AGENCY-034's own finding for the same gap."
+  },
+  {
+    "id": "GOV-019",
+    "status": "MISSING",
+    "current": "nothing. No per-intervention-class approval-strength configuration exists (there is no intervention/ActionIntent concept at all to attach one to). The nearest mechanism, qip_risk_engine::autonomy::AutonomyController::request_change (autonomy.rs:563-620), gates one global, platform-wide autonomy ceiling behind dual authenticated approval for any live raise -- real, tested and reached from every composition root, but a single ceiling, not a per-class strength.",
+    "evidence": [
+      "backend/crates/services/qip-risk-engine/src/autonomy.rs:563-620",
+      "docs/blueprint/assessment/AGENCY-b1.json, AGENCY-017"
+    ],
+    "gap": "No intervention-class taxonomy and no per-class approval-strength configuration exist.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GOV-017",
+      "GOV-018"
+    ],
+    "blocked_by": "",
+    "verification": "none exists.",
+    "work_item": "E16",
+    "tier": "T2",
+    "size": "M",
+    "notes": "AutonomyController::request_change is the pattern to extend, per AGENCY-017's own finding, not a substitute for this requirement."
+  },
+  {
+    "id": "GOV-020",
+    "status": "PARTIAL",
+    "current": "One market-conduct pattern is structurally prevented for market-facing paper actions: a self-trade (wash pair) between the platform's own strategies. qip_contracts::intent::net (intent.rs:1-30, :689) nets every strategy's intents on one instrument/venue/representation into a single signed net before any order exists, and qip_edge::Cell::work calls it on every pass (cell.rs:3110-3128) after Cell::venue_for consolidates venue-less intents onto one venue, so opposing intents cancel internally, no order is sent, and the cancellation is counted (qip_edge_intents_cancelled_total). qip-routing's Consolidator does the same for intents that named no venue. Nothing else exists: no conduct check whose result is recorded with the action, no refusal of layered/spoof order patterns or of a coordinated-rumour communication, no Communications & Conduct Brain, no public-communication path, and nothing on the central desk's order path (OrderManager::submit). The one control runs only where Cell::work runs: qip-edge-node, deployed nowhere.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/intent.rs:1-30,689 (netting exists to make a self-trade structurally impossible)",
+      "backend/crates/edge/qip-edge/src/cell.rs:3110-3128 (Cell::work nets intents before place_net)",
+      "backend/crates/edge/qip-routing/src/consolidate.rs:1-40 (consolidation onto one venue so a buy and a sell cannot cross each other)",
+      "test two_strategies_that_cancel_to_zero_count_a_cancellation_and_a_cap_refusal_and_no_order -- backend/crates/edge/qip-edge/tests/telemetry.rs:462",
+      "test a_buy_and_a_sell_that_named_no_venue_cancel_internally_instead_of_crossing_each_other -- backend/crates/edge/qip-routing/tests/consolidation.rs:187",
+      "docs/blueprint/assessment/AGENCY-b2.json, AGENCY-037, AGENCY-039",
+      "docs/blueprint/assessment/AGENCY-b1.json, AGENCY-011"
+    ],
+    "gap": "No conduct cross-check with a recorded result exists on any market-facing action or communication: self-trade prevention is netting, not a check, and covers only opposing intents of the platform's own strategies within one cell pass. No spoof/layering/rumour fixture is refused, nothing refuses an action for lacking a check, the central desk's path has no equivalent, and the one existing control is not deployable (qip-edge-node only).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GOV-017"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test telemetry -- two_strategies_that_cancel_to_zero_count_a_cancellation_and_a_cap_refusal_and_no_order; cargo test -p qip-routing --test consolidation -- a_buy_and_a_sell_that_named_no_venue_cancel_internally_instead_of_crossing_each_other. No test gives a conduct gate a manipulation fixture (layered spoof, wash pair across venues, coordinated rumour) and asserts a recorded refusal.",
+    "work_item": "E16-conduct-brain-gate",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Matches AGENCY-037/039/011's own findings for the same gap; buildable shadow-only (paper orders, unsent drafts) with no ADR 0099 conflict, per those requirements' own notes. verify: upgraded MISSING -> PARTIAL. The assessor's grep (wash_trad|spoof|manipulation|conduct_check) missed 'self-trade': intent netting in qip-contracts, called from Cell::work, structurally prevents wash pairs between the platform's own strategies and is tested at the cell. It is one pattern, not a recorded conduct check, and runs only in qip-edge-node."
+  },
+  {
+    "id": "GOV-021",
+    "status": "MISSING",
+    "current": "nothing. No ActionIntent or justification-record type exists at all, so there is nothing to check a justification against, let alone refuse one that names only expected profit or price impact.",
+    "evidence": [
+      "docs/blueprint/assessment/CONTRACT-b2.json, CONTRACT-029",
+      "grep -rn 'ActionIntent' backend --include=*.rs -> zero hits"
+    ],
+    "gap": "No action record and no justification field exist to check.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GOV-020"
+    ],
+    "blocked_by": "",
+    "verification": "none exists.",
+    "work_item": "E16-actionintent-shadow-type",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "GOV-022",
+    "status": "MISSING",
+    "current": "infrastructure/terraform/modules/data/main.tf declares one Cloud Storage 'archive' bucket with age-based storage-class lifecycle_rule blocks (NEARLINE at 90 days, COLDLINE at 365 days, main.tf:144-162), but there is no 'landing' tier bucket or transfer configuration anywhere in Terraform for such a lifecycle to move objects from, and the archive bucket itself is created in no environment: enable_cloud_storage = false in every one of dev/test/stage/prod's terraform.tfvars.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:115-163",
+      "infrastructure/environments/dev/terraform.tfvars:253, test/terraform.tfvars:107, stage/terraform.tfvars:107, prod/terraform.tfvars:110 (enable_cloud_storage = false in all four)",
+      "grep -rln 'landing' infrastructure/terraform -> no hits in the data module",
+      "infrastructure/terraform/variables.tf:838-842 (enable_cloud_storage doc: 'Requires an adapter for StorageTarget::CloudStorage', which does not exist in-tree)"
+    ],
+    "gap": "No landing-tier bucket or transfer configuration exists to lifecycle from, and the archive bucket itself is disabled in every environment.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "none exists; a terraform plan in any environment creates no archive bucket (enable_cloud_storage=false everywhere).",
+    "work_item": "E06-durable-archive-lifecycle",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "GOV-023",
+    "status": "PARTIAL",
+    "current": "The evidence store's bucket (infrastructure/terraform/modules/evidence/main.tf:58-102), which holds legally required internal evidence written through qip_mesh::ports::EvidenceStore, declares versioning{enabled=true} and retention_policy{is_locked = var.retention_locked} with a 2557-day default period; retention_locked defaults to true (evidence/variables.tf:41-57) and the root module (infrastructure/terraform/main.tf:552-584) instantiates the module unconditionally without overriding it, so every environment declares a locked, versioned evidence bucket. Writers hold roles/storage.objectCreator only. But the data module's event-archive bucket -- the store for the hash-chained event log, i.e. the manifests/hashes class -- declares retention_policy is_locked = false as a literal (data/main.tf:139-142); it is disabled in every environment (enable_cloud_storage = false), so no unlocked immutable-class bucket is created today, but enabling it would create one. Nothing makes a plan fail on an immutable-class bucket without the lock: retention_locked is an unvalidated bool an environment may set false.",
+    "evidence": [
+      "infrastructure/terraform/modules/evidence/main.tf:58-102 (evidence bucket: versioning enabled; retention_policy is_locked = var.retention_locked)",
+      "infrastructure/terraform/modules/evidence/variables.tf:41-57 (retention_locked, default true, no validation)",
+      "infrastructure/terraform/main.tf:552-584 (module \"evidence\" instantiated unconditionally; retention_locked not overridden)",
+      "infrastructure/terraform/modules/data/main.tf:128-142 (event-archive bucket: versioning enabled; retention_policy is_locked = false)",
+      "infrastructure/environments/*/terraform.tfvars (enable_cloud_storage = false everywhere, so the unlocked archive bucket is never created)",
+      "test the_evidence_bucket_is_versioned_and_retained -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4002",
+      "test no_workload_identity_can_delete_from_the_evidence_bucket -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4044"
+    ],
+    "gap": "The archive bucket declared for the event log is unlocked by literal; no plan-time validation or terraform test fails a declared immutable-class bucket that lacks the lock (the requirement's 'a plan declaring such a bucket without the lock fails validation'), and retention_locked can be set false per environment with no guard. The acceptance test asserts versioning, the presence of a retention_policy block and the variable's default, but not that the bucket's is_locked reads the variable: replacing it with 'is_locked = false' would still pass. Whether the lock has actually been applied in dev (irreversible) was not verifiable here.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "GOV-022"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test infrastructure -- the_evidence_bucket_is_versioned_and_retained no_workload_identity_can_delete_from_the_evidence_bucket (static checks of module text; they do not pin is_locked on the resource). No plan-time validation exists; a test asserting the archive bucket is locked would fail against data/main.tf:141.",
+    "work_item": "E06-durable-archive-lifecycle",
+    "tier": "T1",
+    "size": "S",
+    "notes": "The module's own comment argues for the lock ('A retention policy that permitted deletion would let the one record an investigation needs be the one that aged out'), and the requirement's own notes observe that locking is irreversible for its period and needs explicit approval under change-management -- so this reads as deliberately deferred pending that approval, not merely forgotten. As written today, the requirement is not met. verify: INCORRECT -> PARTIAL. The assessor missed modules/evidence, which declares the legally-required-evidence bucket locked (default true, not overridden) and versioned in every environment; the unlocked data-module archive bucket is real but created nowhere. tested stays false because the cited test would pass with the lock removed from the resource."
+  },
+  {
+    "id": "GOV-024",
+    "status": "PARTIAL",
+    "current": "qip_lifecycle's gate ladder (qip_contracts::gate::GateStage: Candidate..Scaled) and qip_compliance::approval::ApprovedCapital/CapitalRequest give a validated result a promotable, reviewable form, and qip_reasoning_engine::hypothesis::Hypothesis is a typed strategy/model proposal linked to an EvidenceSet and a BeliefUpdate confidence. But there is no single 'world event -> cognitive response' flow wired end to end in the kernel whose final step emits one of the four named proposal kinds (strategy/model/risk/capital) linked back to the validated result and evidence that produced it -- the pieces exist separately rather than as one flow.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/gate.rs:14-31 (GateStage ladder)",
+      "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs:257-311 (Hypothesis: evidence-linked typed proposal)",
+      "backend/crates/libs/qip-compliance/src/approval.rs (ApprovedCapital/CapitalRequest)"
+    ],
+    "gap": "No single integration test drives one world event through sense -> hypothesis -> promotion and asserts a typed strategy/model/risk/capital proposal record comes out linked to the evidence it came from.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "none written; would combine qip-reasoning-engine's hypothesis tests with qip-lifecycle's gate tests into one end-to-end flow test.",
+    "work_item": "E09-world-event-cognitive-flow",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "GOV-025",
+    "status": "PARTIAL",
+    "current": "qip_edge::policy::VerifiedPolicy structurally cannot exist except from a payload that verified against the cell's own key (Cell::apply_policy takes only VerifiedPolicy, policy.rs:1-68), so the sizing/capability policy the centre pushes to a cell is a signed-package path with no unreviewed direct call. architecture.rs's no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy independently proves a cell cannot reach qip-lifecycle or qip-capital to mint its own authority. But there is no Reflex Package Controller or model/strategy-code promotion mechanism at all: the only rollout path for an execution node is a full VM image replace, and execution_nodes = {} in every environment.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/policy.rs:1-68 (VerifiedPolicy, signed-payload-only construction)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:792-837 (no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy)",
+      "docs/blueprint/assessment/CICD-b3.json, CICD-082 (no Reflex Package Controller exists anywhere in the codebase)"
+    ],
+    "gap": "Policy (sizing/capability) signing exists and is enforced; strategy/model *code* promotion to a hot-path (Reflex) package does not exist at all, and no execution node is deployed anywhere for it to activate on.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GOV-024"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test architecture -- no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy; no test exists for signed model/strategy package promotion because the mechanism does not exist.",
+    "work_item": "E04",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "deployable=false because execution_nodes={} in every environment (see CICD-082); the policy-signing half is deployable and tested on its own."
+  },
+  {
+    "id": "GOV-026",
+    "status": "PARTIAL",
+    "current": "qip_risk_engine::autonomy::AutonomyController::request_change (autonomy.rs:567-620) requires a fresh, authenticated OperatorIdentity and a second approver to raise the ceiling toward a live level, with no code path from a model output, agent finding or config value (module doc: 'nothing escalates itself'). architecture.rs's no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy independently proves no edge crate can reach qip-capital or qip-lifecycle to mint capital or custody authority itself. But there is no distinct 'autonomous agent' IAM principal anywhere in Terraform to check 'holds no IAM role on capital/custody resources' against -- agents run in-process under whichever service's own Cloud Run identity, so that half of the requirement's own verification is unverifiable here rather than failing.",
+    "evidence": [
+      "backend/crates/services/qip-risk-engine/src/autonomy.rs:1-18,563-620",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:792-837",
+      "grep -rn 'agent' infrastructure/terraform/modules/cloudrun -> no distinct agent-identity IAM principal exists"
+    ],
+    "gap": "No separate agent-identity IAM principal exists to assert holds-no-capital-role against; only the in-process/architectural half of the requirement is proven.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-risk-engine (autonomy tests, e.g. one_operator_cannot_enable_live_trading_alone -- backend/crates/services/qip-risk-engine/tests, line ~75); cargo test -p qip-acceptance --test architecture -- no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy",
+    "work_item": "E13-agent-identity-iam-test",
+    "tier": "T1",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "GOV-027",
+    "status": "PARTIAL",
+    "current": "deploy.yml's gate job (deploy.yml:91-262) refuses to build/sign/ship unless ci.yml's own run concluded success for the exact commit (the runs?head_sha=...&status=success query at :220); infrastructure.rs's production_is_never_deployed_automatically and the_infrastructure_workflow_cannot_touch_production hold the same shape for prod and infra.yml; .claude/hooks/guard-dangerous-command.py blocks destructive git/shell patterns before a Bash call in a Claude Code session (it does not bind a human or a non-Claude agent).",
+    "evidence": [
+      "docs/blueprint/assessment/CICD-b1.json, CICD-007",
+      ".github/workflows/deploy.yml:91-262 (gate job; :220 queries ci.yml runs for this head_sha with status=success)",
+      "test production_is_never_deployed_automatically -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4724",
+      "test the_infrastructure_workflow_cannot_touch_production -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4340",
+      ".claude/hooks/guard-dangerous-command.py:1-181"
+    ],
+    "gap": "No game-day test gives an agent identity a malicious instruction and confirms it cannot merge, push to a protected branch, or deploy around the gates (G section 25's own acceptance criterion). Whether GitHub branch protection structurally requires human review, versus only convention, was unverifiable in this session because the github MCP connector failed to connect.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test infrastructure -- production_is_never_deployed_automatically the_infrastructure_workflow_cannot_touch_production (static checks of workflow text for the deploy/infra gates). No game-day test gives an agent identity a malicious instruction and asserts refusal of merge-without-review, push to a protected branch and deploy of an unattested digest; GitHub branch-protection rules on main remain unread.",
+    "work_item": "E01",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Matches CICD-007's own finding for the same gap; the github MCP server failed to connect in this session too (ENOENT: flatpak-spawn), so branch-protection settings remain unread here as well. verify: tested false -> true for the pipeline-gate slice (two named acceptance tests exist and were cited); corrected the deploy.yml citation (lines 41-58 are the workflow_run trigger, the gate job is 91-262) and narrowed the hook claim, which binds Claude Code sessions only. Status stays PARTIAL."
+  },
+  {
+    "id": "GOV-028",
+    "status": "PARTIAL",
+    "current": "Every workflow that reaches GCP (deploy.yml, infra.yml, image.yml, vendor.yml) authenticates through google-github-actions/auth with workload_identity_provider and id-token: write, and no .tf file declares google_service_account_key or google_storage_hmac_key. Not present: no organization policy (constraints/iam.disableServiceAccountKeyCreation or ...KeyUpload) is declared anywhere under infrastructure/, so key creation is refused by convention and by a text test rather than by the platform; nothing asserts the absence of a storage HMAC key; the acceptance test for WIF-only authentication reads deploy.yml alone, so infra.yml, image.yml and vendor.yml could regress to credentials_json unobserved; and there is no distinct autonomous-agent identity to show holds only federated access (agent sessions are kept from ~/.config/gcloud by a .claude/settings.json Read deny, a per-tool rule rather than an identity boundary).",
+    "evidence": [
+      "docs/blueprint/assessment/CICD-b2.json, CICD-046",
+      ".github/workflows/deploy.yml:376-378,664-666; infra.yml:309-311; image.yml:489; vendor.yml:141 (workload_identity_provider)",
+      "test the_pipeline_authenticates_without_a_long_lived_key -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4748-4766 (reads deploy.yml only)",
+      "test no_service_account_key_exists_anywhere_in_the_terraform -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2073-2088",
+      "rg 'disableServiceAccountKeyCreation|google_org_policy|org_policy|google_storage_hmac_key' infrastructure .github -> no hits"
+    ],
+    "gap": "The requirement's plan check needs the organization policy that disables service-account key creation to be enforced; none is declared (and whether the dev project sits under an organization that could carry one was not verifiable here). No test covers storage HMAC keys or the three GCP-reaching workflows other than deploy.yml, and no agent identity exists to demonstrate federated-only access.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test infrastructure -- the_pipeline_authenticates_without_a_long_lived_key no_service_account_key_exists_anywhere_in_the_terraform. Not yet written: an assertion that the plan declares an iam.disableServiceAccountKeyCreation policy, that no google_storage_hmac_key exists, and that every GCP-reaching workflow uses workload_identity_provider and never credentials_json.",
+    "work_item": "E14-disable-sa-key-org-policy",
+    "tier": "T1",
+    "size": "S",
+    "notes": "e2e=false only because no run has actually exchanged a token against live GCP (dev project's billing is disabled, ADR 0099 external:billing); the configuration and its test coverage are complete. verify: downgraded COMPLETE -> PARTIAL. The verification check requires an enforced org policy disabling service-account key creation and no storage HMAC key; no org policy exists anywhere in infrastructure/, HMAC keys are untested, and the WIF test covers deploy.yml only."
+  }
+]

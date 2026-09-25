@@ -1,0 +1,636 @@
+[
+  {
+    "id": "MODEL-025",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il \"uplift\" backend --type rust -> no hits",
+      "rg -il \"abstain\" backend --type rust -> only qip-risk limit abstention and qip-twin record abstention, none about causal identifiability",
+      "backend/crates/services/qip-world-model/src/confounder.rs:1-40 and backend/crates/libs/qip-numerics/src/stats.rs:467-520 (granger_causality_controlling_for): the nearest in-tree analogue -- an unobserved confounder downgrades a causal EDGE to Suggestive; it estimates no intervention effect and chooses no treatment, so there is nothing that could abstain"
+    ],
+    "gap": "No uplift/intervention-effect model type exists anywhere in the workspace. There is no causal-identifiability check and no abstention path for an uplift estimate; the platform has Bayesian belief updates (qip-reasoning-engine::bayes) and P&L attribution, but neither is an intervention-effect estimator.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-024"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Would need a property test building a dataset with a confounder fully aligned with treatment (unidentified) and one without (identified), asserting the model abstains on the first and estimates on the second.",
+    "work_item": "E10-uplift-abstention",
+    "tier": "T3",
+    "size": "L",
+    "notes": "MODEL-024 (the uplift model itself, master Phase 10) is a precondition this repository has not built either. verify: status MISSING confirmed (rg uplift|identifiab|treatment effect -> no estimator). Added the confounder machinery as the reusable analogue so the work item does not re-derive it; it is causal-graph edge standing, not an uplift model."
+  },
+  {
+    "id": "MODEL-026",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il \"planner|action.policy\" backend --type rust -> hits are all arbitrage/routing path planners (crates/edge/qip-arbitrage/src/plan.rs, crates/edge/qip-routing/src/path.rs) or venue/order 'planner' language unrelated to causal intervention sequencing"
+    ],
+    "gap": "No action-policy/planner model class exists that proposes intervention sequences under causal, cost, risk, legal, identity, authority and timing constraints. The 18-agent organisation (qip-investment-agents) proposes trades, not general interventions, and carries none of the seven named constraint kinds as a first-class type.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test exists. Would need a fixture where only a constraint-violating sequence reaches the goal and assert no proposal is made.",
+    "work_item": "E16-planner-proposals",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Master Phase 10; secondary domain AGENCY. This requirement only proposes (no authority), so it is not BLOCKED by C1 — it can be built in-tree as a deterministic Rust module analogous to qip-reasoning-engine's ReasoningEngine."
+  },
+  {
+    "id": "MODEL-027",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "No planner proposal type exists (see MODEL-026), so there is nothing for an authority gate to evaluate against simulators and counterfactual branches",
+      "The pattern this would reuse exists elsewhere: qip-twin::CounterfactualEngine (struct at backend/crates/services/qip-twin/src/counterfactual.rs:494; plan :544, settle :639, evaluate :818) and qip-simulation-engine::StressTester (backend/crates/services/qip-simulation-engine/src/scenario.rs:317), both reached from qip-kernel/src/platform.rs"
+    ],
+    "gap": "Since the planner (MODEL-026) does not exist, there is no authority gate refusing an un-evaluated proposal. The simulator and counterfactual machinery that such a gate would call already exists and is production-reached for trade decisions, but is not wired to any planner output.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-026"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Would need a test asserting the authority gate refuses a proposal with no recorded simulator+counterfactual evaluation, and admits one to the gate (not past it) once recorded.",
+    "work_item": "E16-planner-sim-gate",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Governance path (authority) is separate again, per the requirement's own note; this row is only the evaluation-before-authority half. verify: status MISSING confirmed; corrected the counterfactual.rs line citations (evaluate is :818, :494 is the struct)."
+  },
+  {
+    "id": "MODEL-028",
+    "status": "COMPLETE",
+    "current": "qip-deepbrain::campaign::{CampaignConfig, CampaignSummary, assemble} (backend/crates/apps/qip-deepbrain/src/campaign.rs:117,136,308), called every learning round from node::run via main.rs; resolves each subject's stream through the licensing gate (catalogue-admitted connector, replayed-admitted door, or the platform's own synthetic/tape generation), verifies content hashes against the ledger's prior reference, and journals the closed campaign's manifest to a permanently-retained event-log topic",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs:117,136,269,308",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:365-412,598-602",
+      "test: a_window_is_assembled_through_a_campaign_whose_manifest_is_journaled (campaign.rs)",
+      "test: a_replay_under_admission_is_referenced_through_the_replayed_door_and_backs_no_vendor (campaign.rs)",
+      "test: a_sketch_whose_declared_error_exceeds_the_fits_tolerance_refuses_the_assembly (campaign.rs)"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-deepbrain --lib campaign::",
+    "work_item": "",
+    "tier": "T0",
+    "size": "S",
+    "notes": "A stream that is none of internal/reference/licensed is refused before any bytes are read (RefusedAtDoor), matching the requirement's refusal semantics. No committed environment currently runs qip-deepbrain (torn down 2026-09-13, GitOps suspended), so this is deployable-from-config but not presently live. verify: COMPLETE retained after a refutation attempt. Reach confirmed: qip-deepbrain main.rs builds the EvolutionEngine -> node.rs:340 engine.maybe_learn -> evolution.rs:575 campaign::assemble; the door refusal is Assembly::RefusedAtDoor (campaign.rs:319-335) and a_stream_that_is_neither_admitted_nor_generated_is_refused_at_the_door (campaign.rs:1251) exercises it; every manifest entry is a DataReference carrying content_hash + origin. Caveats recorded, not downgraded: (1) the strategy search (EvolutionEngine::maybe_turn -> turn, evolution.rs:736-930) backtests over self.history with no campaign manifest -- strategy research, outside the model-training lifecycle this row covers; (2) a fallback window (platform.fallback_bars) is referenced under the subject's own stream descriptor/door, so a fallback drawn from a different source would be filed under the wrong door; (3) the licence decision itself is not on the manifest, only the origin/category -- the check is met through the 'external reference with a content hash' arm."
+  },
+  {
+    "id": "MODEL-029",
+    "status": "PARTIAL",
+    "current": "qip-training::dataset::TrainingDataset (backend/crates/services/qip-training/src/dataset.rs:25,33) names its dataset and carries a per-row Timestamp; qip-deepbrain::learning::fit (backend/crates/apps/qip-deepbrain/src/learning.rs:1229) builds rows from bar-derived columns with each row's timestamp taken from the bar's close_time; qip-deepbrain::campaign's manifest records content-hash references for the source data (MODEL-028)",
+    "evidence": [
+      "backend/crates/services/qip-training/src/dataset.rs:25-30 (name + times, no per-feature source/code lineage)",
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs:308 (hash-verified source reference, but at campaign not per-feature grain)",
+      "rg 'code.digest|code_digest|transformation.*version' backend --type rust -> no hits"
+    ],
+    "gap": "No feature or representation carries a recorded transformation-code version (digest of the computing code). Source-data versioning exists at campaign grain (content hash) and computation instant exists per row, but there is no lineage record resolving a feature to a code digest, so recomputing a feature from its recorded lineage cannot be verified structurally.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-028"
+    ],
+    "blocked_by": "",
+    "verification": "No test proves code-digest lineage; TrainingDataset::new's invariants are tested in crates/services/qip-training/tests/training.rs but do not cover code-version lineage.",
+    "work_item": "E10-feature-lineage-digest",
+    "tier": "T2",
+    "size": "M",
+    "notes": "qip_core::hash (SHA-256, in-tree per ADR 0002/ADR 0043) is available to compute a code digest without a new dependency."
+  },
+  {
+    "id": "MODEL-030",
+    "status": "PARTIAL",
+    "current": "qip-world-model::features::FeatureStore::{value_as_of, lookup_as_of} (backend/crates/services/qip-world-model/src/features.rs:640,659) structurally refuses a read of data not yet knowable, keyed on (valid_at, known_at); reached from production via WorldModel (qip-kernel/src/platform.rs) and qip-investment-agents::support.rs. The STRATEGY evaluation path (qip-deepbrain evolution.rs:1270-1350) builds purged k-fold splits with PurgedSplit and a LeakageAudit of FeatureTiming{known_at, used_at} from the harness trace, which the lifecycle holdout gate refuses when a feature was used before it was known (qip-lifecycle/src/evidence.rs:38,65). The MODEL training path (qip-deepbrain::learning::fit, learning.rs:1229) uses neither: it computes columns from raw bars (look-ahead avoided by construction per the module doc, learning.rs:19-22) and holds out with a single chronological TrainingDataset::split_at_fraction, with no structural as-of check and no purge/embargo.",
+    "evidence": [
+      "backend/crates/services/qip-world-model/src/features.rs:640-703 (module doc: 'A backtest that reads a feature by valid time alone will read values assembled from data that had not arrived yet')",
+      "backend/crates/agents/qip-investment-agents/src/support.rs:216,238,317",
+      "rg 'FeatureStore' backend --type rust -> zero references from qip-training or qip-deepbrain/src/learning.rs",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:1270-1350 (PurgedSplit + LeakageAudit on the strategy holdout, not on the model fit)",
+      "backend/crates/services/qip-lifecycle/src/evidence.rs:38,65 (FeatureTiming::leaks, the refusal the holdout gate applies)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:1363 and backend/crates/services/qip-training/src/local.rs:585 (model holdout is split_at_fraction only)"
+    ],
+    "gap": "The structural bitemporal refusal (FeatureStore) and the used-before-known leakage audit exist and are reached, but only for REASON-stage feature reads and for strategy holdout evidence. The model-training lifecycle in qip-deepbrain::learning computes feature columns from raw bars with no as-of check and no leakage audit, so a feature whose input became knowable after the decision instant would not be refused there; no property test recomputes stored features as of each example's instant.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-029"
+    ],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-world-model (as-of tests, e.g. tests/exposure.rs an_exposure_is_invisible_before_the_instant_the_link_became_knowable) and cargo test -p qip-lifecycle --test lifecycle a_leakage_audit_that_examined_nothing_is_not_a_clean_audit; no equivalent structural test exists for qip-deepbrain::learning's feature computation.",
+    "work_item": "E10-training-leak-guard",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Data-and-streaming domain rule prohibits point-in-time leakage generally; this row is specifically about the training path, which bypasses the one structural mechanism the repo already built for it. verify: status PARTIAL kept; corrected 'current' -- it said the model fit relies on qip-simulation-engine's purged k-fold + embargo, but PurgedSplit/LeakageAudit are used only in the strategy evaluation path (evolution.rs:1270-1350); the model fit uses a single chronological split_at_fraction."
+  },
+  {
+    "id": "MODEL-031",
+    "status": "PARTIAL",
+    "current": "qip-deepbrain::learning::fit (learning.rs:1229) fits the linear BASELINE_CLASS on every round before the boosted challenger (learning.rs:1317 then :1318, the baseline's refusal aborts the round via '?') and choose_class (learning.rs:258-273) is fail-closed toward the baseline. But the baseline is never CALIBRATED: LocalTrainer::fit sets Calibration::default() (identity, qip-training/src/local.rs:606) and no production code applies UpdatePayload::Calibration; and the baseline is put on record only when it is the class chosen -- register_fit registers the chosen teacher alone (learning.rs:1347), so a round that registers the challenger leaves no baseline record at all. The challenger is fitted and scored every round regardless of any baseline record.",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:70-84,258-273,1317-1353",
+      "backend/crates/services/qip-training/src/local.rs:251-280 (Calibration is a scale/offset), :606 (every fit starts at Calibration::default(), identity)",
+      "rg 'UpdatePayload::Calibration' backend --type rust -> only the match arm in qip-training/src/local.rs:505; no production writer",
+      "test: a_round_fits_the_baseline_and_the_challenger_and_scores_each_class_in_the_regime (learning.rs:2225) -- proves both classes are fitted and scored, not ordering, calibration or a refusal",
+      "test: an_established_precedent_that_does_not_beat_the_baseline_keeps_the_baseline (learning.rs:2352)"
+    ],
+    "gap": "Three parts of the requirement are absent. (1) No calibration step exists for the baseline (identity Calibration on every fit), so 'trained and calibrated first' is half met. (2) There is no 'calibrated baseline on record' precondition: the challenger is fitted and evaluated on every round without reference to any recorded baseline, and when the challenger is chosen the baseline is not registered at all. (3) No test asserts that evaluating a candidate is refused when no calibrated baseline is on record, or that the baseline's record carries its calibration.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-deepbrain --lib learning:: (proves the baseline is fitted and fail-closed class choice). Needed: a test that a candidate evaluation is refused with no calibrated baseline on record, and that the recorded baseline carries a fitted (non-identity) calibration.",
+    "work_item": "E10-baseline-calibration-gate",
+    "tier": "T2",
+    "size": "S",
+    "notes": "This is the training-lifecycle instance of ADR 0006's classical-baseline-always discipline; the portfolio-optimisation instance is qip-optimization-engine::ComputeRouter (separate service). verify: downgraded COMPLETE -> PARTIAL. The cited tests prove the baseline is fitted beside the challenger and preferred on ties; neither the calibration (Calibration::default() is identity and nothing fits one) nor the 'refuse a candidate without a calibrated baseline on record' check exists, and the baseline is not registered when the challenger is chosen."
+  },
+  {
+    "id": "MODEL-032",
+    "status": "MISSING",
+    "current": "qip-quantum::provider::{QuantumProvider, SimulatedProvider} (backend/crates/libs/qip-quantum/src/provider.rs) plus qip-optimization-engine::ComputeRouter::solve (backend/crates/services/qip-optimization-engine/src/router.rs:196) always runs classical first and only tries quantum when PlatformConfig::quantum_enabled is true; the training lifecycle itself (qip-training, qip-deepbrain::learning/evolution) never references quantum at all",
+    "evidence": [
+      "rg 'quantum' backend/crates/services/qip-training/src backend/crates/apps/qip-deepbrain/src/learning.rs backend/crates/apps/qip-deepbrain/src/evolution.rs -> no hits",
+      "backend/crates/runtime/qip-kernel/src/config.rs:534 (quantum_enabled defaults false; no caller of with_quantum() in crates/apps/**/src)",
+      "backend/crates/runtime/qip-kernel/tests/solver_routing.rs:231-232 (own comment: 'A deployment with no quantum provider configured — which is every deployment')"
+    ],
+    "gap": "No quantum-assisted MODEL-training variant exists and no workload eligibility classification exists anywhere (rg -i 'eligib' in qip-quantum and qip-optimization-engine -> no hits). The training lifecycle does complete without quantum, but only vacuously, because it never references quantum at all. The only quantum-optional-with-classical-fallback path is portfolio optimisation (ComputeRouter, DECIDE stage), which is not training and is disabled in every composition root (no caller of with_quantum() in crates/apps).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-031"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists at the training seam. crates/libs/qip-quantum/tests exercises the general solver pattern but nothing calls it from a training round.",
+    "work_item": "E10-quantum-training-eligibility",
+    "tier": "T2",
+    "size": "M",
+    "notes": "ADR 0006's classical-baseline-always machinery (qip-quantum, ComputeRouter) is reusable infrastructure; this is a wiring gap into the training lifecycle specifically, not a missing capability from scratch. P2 (master Phase 6). verify: NEEDS-VALIDATION -> MISSING. NEEDS-VALIDATION requires code that implements the behaviour and is reached; the row itself records implemented=false and integrated=false, and no eligibility classifier or quantum training variant exists. The vacuous half ('completes without quantum') is not an implementation."
+  },
+  {
+    "id": "MODEL-033",
+    "status": "PARTIAL",
+    "current": "qip-lifecycle::gates::{HoldoutGate, PaperGate, ShadowGate} (backend/crates/services/qip-lifecycle/src/gates.rs:130,490,629) with HoldoutEvidence/PaperEvidence/ShadowEvidence (backend/crates/services/qip-lifecycle/src/evidence.rs:110,134,204) cover out-of-time (purged k-fold + deflated Sharpe) and paper-trading simulation robustly and are reached from qip-kernel's central plane; qip-evolution::scoring::Scoreboard covers regime-conditioned scoring (MODEL-043); qip-simulation-engine::StressTester covers scenario/adversarial stress but is a portfolio-risk tool, not tied to a model/strategy's own acceptance evidence",
+    "evidence": [
+      "backend/crates/services/qip-lifecycle/src/gates.rs:1-28 (module doc: 'run every check, and fail if any single check failed')",
+      "backend/crates/services/qip-lifecycle/src/evidence.rs:110,134,204,297",
+      "rg -ln 'StressTester' backend --type rust -> reached only from qip-kernel/src/platform.rs:12798 (SIMULATE stage risk scenario), not from any gate/evidence struct"
+    ],
+    "gap": "No single acceptance record ties out-of-time, cross-regime, adversarial and paper-trading-simulation results together and refuses a model/strategy missing any one of the four; the four checks exist as separate, real, tested mechanisms in different crates rather than one unified acceptance step.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-031"
+    ],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-lifecycle --lib gates::; no test asserts refusal for a record missing exactly one of the four named validations.",
+    "work_item": "E10-model-acceptance-record",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Overlaps CONTRACT-007. The gate ladder (Holdout->Paper->Shadow->Pilot->Scaled) is strategy-lifecycle, general and well-hardened; unifying it with model acceptance and adding the regime/adversarial fields is the remaining work."
+  },
+  {
+    "id": "MODEL-034",
+    "status": "PARTIAL",
+    "current": "qip_ai::registry::ModelRegistry::promote_artifact (backend/crates/libs/qip-ai/src/registry.rs:304-341) refuses re-promoting a reference whose card already records a different artifact_digest, and Platform::promote_model (qip-kernel/src/model_serving.rs:210) journals a ModelPromotion before adopting it, called from qip-deepbrain LearningDesk::promote_candidate (learning.rs:821-960). The invariant holds only inside one ModelRegistry instance's lifetime: ModelRegistry::register (registry.rs:229-231) silently replaces a card -- artifact_digest included -- and the platform's promoted set (apply_promotion, model_serving.rs:166-171, also used by resume_model_promotions on restart) inserts a second digest under an existing reference without refusal. The deep brain's desk versions by a per-process fit counter ('0.{fits}.0', learning.rs:1281,1295; fits starts at 0 in LearningDesk::new, :741) and its registry is not resumed, so after a restart over the same file-backed log the first promotion reuses '...@0.1.0' with different bytes and nothing refuses it.",
+    "evidence": [
+      "backend/crates/libs/qip-ai/src/registry.rs:229-231 (register overwrites), 304-341 (promote_artifact digest check)",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:150-171 (resume_model_promotions / apply_promotion insert without a digest check), 210-260 (promote_model promotes a clone of the CALLER's registry)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:741,1281,1295 (version = per-process fit count, reset on restart), 871-877 (incumbents read from the desk's own registry)",
+      "test: a_version_cannot_be_re_promoted_with_different_bytes_under_the_same_reference (crates/libs/qip-ai/tests/model_infrastructure.rs:895) -- same registry instance only",
+      "test: a_restarted_platform_resumes_its_promotions_from_the_log_alone (crates/runtime/qip-kernel/tests/serving.rs:224) -- proves resume, not that a second digest under the same reference is refused"
+    ],
+    "gap": "'A version always resolves to the digest first published under it' is not held across registry instances or restarts: register() can wipe a recorded digest, the platform's promoted set accepts a second digest for an existing reference, and the deep brain's version counter restarts at 0.1.0 each process. The refusal needs to live where the history is (the log-derived promoted set / a version ledger resumed from the log), and the requirement's property test over generated publish sequences does not exist. Policy packages are not covered by any digest-per-version rule.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-033"
+    ],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-ai --test model_infrastructure a_version_cannot_be_re_promoted && cargo test -p qip-kernel --test serving. Needed: a property test over generated publish sequences, including a restart over the same log, asserting a reference always resolves to its first digest and a second digest is refused by the platform (not only by one registry instance).",
+    "work_item": "E10-model-version-immutability",
+    "tier": "T1",
+    "size": "S",
+    "notes": "The digest is SHA-256 over the canonical payload (qip_core::hash, ADR 0002/0009) — it proves the bytes are the bytes, not who produced them; that gap is MODEL-035/036. verify: downgraded COMPLETE -> PARTIAL. The refusal is per-ModelRegistry-instance only: register() overwrites cards, apply_promotion/resume accept a second digest under an existing reference, and the deep brain's '0.{fits}.0' version restarts per process, so a restart re-publishes '@0.1.0' with different bytes unrefused. Found by reading the code path; no test was run to demonstrate it."
+  },
+  {
+    "id": "MODEL-035",
+    "status": "PARTIAL",
+    "current": "Model artifacts are never signed: qip-ai's ModelArtifact/ModelCard carry a SHA-256 digest only (registry.rs:88-95, serving.rs:17,77). A generic HMAC-signed artifact control does exist in-tree and is reached only from tests: qip_compliance::artifacts::ArtifactStore (backend/crates/libs/qip-compliance/src/artifacts.rs:160-300) admits nothing whose bytes do not match its Provenance digest or whose signature does not verify under the store's SigningKey (HMAC-SHA256, qip-compliance/src/signing.rs), and qip-kernel's StrategyDna::seal/verify (central/dna.rs; CentralPlane::ship/verify_dna, central/plane.rs:1985-2012) signs a strategy's shipped bundle (compiled program, models, evidence artifacts, envelope) with the same HMAC key. CompliancePlane constructs the store in production but nothing stores into it, and ship/verify_dna have no caller outside tests.",
+    "evidence": [
+      "backend/crates/libs/qip-ai/src/registry.rs:88-95 ('A digest and not a signature ... (ADR 0043)')",
+      "backend/crates/libs/qip-ai/src/serving.rs:17,77 (same statement in the served-model port)",
+      "backend/crates/libs/qip-compliance/src/signing.rs:1-31 (HMAC is symmetric; asymmetric KMS signing named as absent)",
+      "backend/crates/libs/qip-compliance/src/artifacts.rs:226-270 (store/check: digest match + signature verify)",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:1985-2012 (ship/verify_dna) -- rg '\\.ship\\(|verify_dna' -> callers only in tests",
+      "test: tampered_bytes_are_rejected_and_the_rejection_names_both_digests, an_unsigned_artifact_cannot_be_stored, an_artifact_signed_under_a_different_key_is_rejected (backend/crates/libs/qip-compliance/tests/provenance.rs:28,54,70)",
+      "test: qip-kernel tests/central.rs:524-551 (a tampered DNA is refused by verify_dna)"
+    ],
+    "gap": "No accepted model artifact or policy bundle is signed at acceptance or verified before staging/activation in any production path: ModelArtifact is digest-only, and the two signing mechanisms that exist (ArtifactStore, StrategyDna) are HMAC -- whoever can verify can sign, so 'made by an unregistered key' is only 'made without the shared secret' -- and are reached only from tests. The requirement's asymmetric form needs a managed signer (Cloud KMS) or an ADR-admitted crate (ADR 0043); in-tree asymmetric signing is prohibited.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-034"
+    ],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-compliance --test provenance && cargo test -p qip-kernel --test central (DNA tamper refusal). Needed: staging and activation of a MODEL package refusing a missing signature, an unregistered key and a one-byte change, on a production path.",
+    "work_item": "E10-model-artifact-signing",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Not BLOCKED under ADR 0099's register: the repository already signs container images through GCP KMS/Binary Authorization from CI (.github/workflows/deploy.yml, vendor.yml — 'gcloud beta container binauthz attestations sign-and-create'), an established managed-service pattern (not a new in-tree crate) that could extend to model artifacts. policy_flags NEW_DEPENDENCY/MANAGED_SERVICE reflect that a KMS call, not in-tree crypto, is the intended route. verify: upgraded MISSING -> PARTIAL. The assessor searched only qip-ai; qip-compliance's ArtifactStore and qip-kernel's StrategyDna already implement sign-then-verify with exactly the check's three refusals (tested), but in HMAC form and reached only from tests, and no model artifact goes through either. integrated/deployable stay false."
+  },
+  {
+    "id": "MODEL-036",
+    "status": "PARTIAL",
+    "current": "No accepted model carries a provenance attestation: ModelCard has artifact_digest and training_datasets only, with no training commit or pipeline-run id. A generic provenance record exists and is reached only from tests: qip_contracts::governance::Provenance (digest, signer, built_at, inputs) is HMAC-signed by qip_compliance::artifacts::ArtifactStore::seal, store() refuses bytes whose digest differs from the provenance's, and provenance_chain() walks an artifact's input digests back to registered raw datasets and names the exact break (artifacts.rs:120-160,226-270,330-420). StrategyDna seals per-section digests of a strategy bundle including its models and evidence artifact references (central/dna.rs), also reached only from tests.",
+    "evidence": [
+      "rg -ni 'attestation|provenance' backend/crates/libs/qip-ai backend/crates/runtime/qip-kernel/src/model_serving.rs -> no hits",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:33-38 ('nothing here signs ... not who trained the model (ADR 0043)')",
+      "backend/crates/libs/qip-compliance/src/artifacts.rs:1-19 (Control 5: signed artifacts and provenance), 330-420 (provenance_chain)",
+      "test: a_provenance_chain_reaches_the_raw_datasets_it_was_built_from, a_broken_chain_reports_exactly_where_it_breaks (backend/crates/libs/qip-compliance/tests/provenance.rs:103,150)"
+    ],
+    "gap": "Nothing binds a model's artifact digest to its training code commit or pipeline run (no such fields exist anywhere in the model path), no model is sealed into the ArtifactStore, and staging does not refuse a model whose attestation is missing or names a different digest. The generic Provenance/ProvenanceChain mechanism covers the digest-to-input-data binding and the mismatch refusal, but only for artifacts nothing in production stores, and under HMAC rather than a verifiable signer (ADR 0043).",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-034",
+      "MODEL-035"
+    ],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-compliance --test provenance (generic mechanism only). Needed: a test that an accepted model's attestation subject digest equals the artifact's, that its commit and campaign-manifest references resolve, and that staging refuses a missing or mismatched attestation.",
+    "work_item": "E10-model-provenance-attestation",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Same non-blocked reasoning as MODEL-035: the repo's container-image Binary Authorization attestations (deploy.yml) are the precedent for the pipeline-provenance half of this requirement; the fields it would need to bind (commit, dataset manifest) already exist elsewhere (ModelCard::training_datasets, campaign manifests) and would only need collecting. verify: upgraded MISSING -> PARTIAL on the evidence of qip-compliance's Provenance/ArtifactStore/ProvenanceChain (tested, reached only from tests); the commit and pipeline-run bindings and any model-path use are still absent, so integrated/deployable stay false."
+  },
+  {
+    "id": "MODEL-037",
+    "status": "PARTIAL",
+    "current": "No 'ModelPack' type exists, but the promoted set behaves as an unversioned pack with log-recorded deltas: every Platform::promote_model journals a ModelPromotion naming the model added (reference, digest, distillate) and the incumbents it removes (displaced), apply_promotion applies the delta, and resume_model_promotions rebuilds membership from the log alone (qip-kernel/src/model_serving.rs:150-260). A model without a passing evaluation cannot be promoted (ModelRegistry::promote, registry.rs:280-290). Platform::model_manifest produces the membership as qip_contracts::policy::ModelManifest (policy.rs:265-268), shipped by qip-api (mesh.rs:880); promotions come from qip-deepbrain's promote_candidate.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:150-171 (resume/apply: add + displaced), 210-260 (promote_model journals the delta)",
+      "backend/crates/libs/qip-contracts/src/policy.rs:265-268 (ModelManifest: flat name -> digest map, no pack version or predecessor)",
+      "backend/crates/apps/qip-api/src/mesh.rs:880 (manifest shipped from production)",
+      "rg -n 'ModelPack' backend --type rust -> no hits",
+      "test: a_displaced_incumbent_is_retired_on_the_same_record_and_leaves_the_manifest (crates/runtime/qip-kernel/tests/serving.rs:315)",
+      "test: a_restarted_platform_resumes_its_promotions_from_the_log_alone (crates/runtime/qip-kernel/tests/serving.rs:224)"
+    ],
+    "gap": "There is no pack version identity: no pack id, no predecessor pointer, no explicit 'kept' set, and the manifest carries no lineage. Membership at a point in time is reconstructible only by replaying ModelPromotion records in log order, and acceptance is the producer's own skill-bar verdict (see MODEL-040), not an acceptance record. A ModelPack entity naming its predecessor and added/kept/removed delta, and a test walking pack lineage, are still to build.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-034",
+      "MODEL-036"
+    ],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-kernel --test serving. Needed: a test that each accepted-model addition creates a new pack version naming its predecessor and delta, that an unaccepted model is refused, and that walking the lineage reconstructs every pack.",
+    "work_item": "E10-model-pack-lineage",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Overlaps CONTRACT-007 (acceptance precondition) and CONTRACT-011 (ModelPack fields, also not found in this codebase search). ModelManifest is the nearest existing structure to build this on top of. verify: upgraded MISSING -> PARTIAL. The promoted set's ModelPromotion records already carry add/remove deltas and are replayed from the log (tested, reached from qip-deepbrain and shipped by qip-api); what is missing is a versioned pack entity with predecessor lineage."
+  },
+  {
+    "id": "MODEL-038",
+    "status": "PARTIAL",
+    "current": "qip_kernel::central::learning::LearningVerdict (Scale/Hold/Adapt/Retire, backend/crates/runtime/qip-kernel/src/central/learning.rs:142) is computed from live performance vs pilot baseline (assess_overfitting) and qip_lifecycle::demotion::DemotionTrigger (backend/crates/services/qip-lifecycle/src/demotion.rs:149: PerformanceDecay, RegimeDrift, KillConditionBreached, ModelReviewOverdue, CapitalEnvelopeExpired, OutsideHoldoutBand)",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/central/learning.rs:1-30,142-157",
+      "backend/crates/services/qip-lifecycle/src/demotion.rs:149-176",
+      "rg -n 'RegretAnalysis|qip_twin::regret' backend/crates/runtime/qip-kernel/src -> no hits (qip-twin's regret.rs has zero callers outside its own tests, per the services-intelligence current-state record)",
+      "test: regime_drift_demotes_a_strategy_out_of_capital (crates/services/qip-lifecycle/tests/lifecycle.rs:1056)"
+    ],
+    "gap": "Live performance and a drift-like signal (regime volatility shift, ModelCard.drift_score) both drive the promote/hold/retire-adjacent verdict and are recorded on it, but counterfactual performance is not one of the three inputs — qip-twin's RegretAnalysis (the module that would supply it) has no production caller anywhere.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-033",
+      "MODEL-042"
+    ],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-lifecycle --test lifecycle regime_drift_demotes_a_strategy_out_of_capital (the demotion tests are in tests/lifecycle.rs, not in demotion.rs's lib tests)",
+    "work_item": "E10-promotion-counterfactual-input",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Fails the requirement's 'all three inputs recorded' verification specifically on the counterfactual leg; live+drift are solidly covered. verify: status PARTIAL kept; corrected the verification command -- the cited test is in qip-lifecycle's tests/lifecycle.rs:1056, so 'cargo test --lib demotion::' does not run it. RegretAnalysis confirmed to have no production caller (only the lib.rs re-export)."
+  },
+  {
+    "id": "MODEL-039",
+    "status": "PARTIAL",
+    "current": "qip_kernel::Platform::{score_declined, score_filled} (backend/crates/runtime/qip-kernel/src/platform.rs:16326,16483) turn declined orders and filled orders into counterfactual episodes every LEARN stage, bounded by COUNTERFACTUALS_PER_CYCLE with the overflow counted as deferred; refusals are captured as Action::Rejected (platform.rs:15506) and each fill slice as Action::Filled (platform.rs:15624). qip_twin::capture::Action has a PartiallyFilled variant, but production never constructs it: a partially filled order's filled slices are recorded as Filled, and its unfilled remainder is recorded nowhere as an episode.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:16218-16290 (evaluate_alternatives), 16326,16483 (score_declined/score_filled), 15506 (Rejected), 15601-15630 (OrderPlaced/Filled per fill)",
+      "backend/crates/services/qip-twin/src/capture.rs:44-74 (Action enum: OrderPlaced, Filled, PartiallyFilled, Cancelled, Rejected)",
+      "rg -n 'Action::PartiallyFilled' backend --type rust -> constructed only in crates/tests/qip-acceptance/tests/e2e.rs:810 (hand-built fixture), never in production",
+      "test (cross-stage, run_cycle): crates/tests/qip-acceptance/tests/adversary.rs:176-205 (every fill reaches the twin's queue and is priced after cycles)",
+      "test (cross-stage): crates/runtime/qip-kernel/tests/valuation_seam.rs:860-900 (seeded declines and fills are all scored across LEARN passes)"
+    ],
+    "gap": "Actions taken (fills) and declined opportunities (including refusals) become counterfactual episodes every cycle; partial fills do not become episodes of their own kind -- PartiallyFilled is never constructed in production, so the unfilled remainder of a partially filled order produces no episode. The per-cycle cap means episodes lag decisions (deferred, not dropped), and no test asserts 'episodes == decisions' over a cycle containing an action, a decline, a partial fill and a failure. These records feed evaluation (sizing review, venue review), not any model's training set.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-kernel --test valuation_seam && cargo test -p qip-acceptance --test adversary. Needed: a replayed cycle with one action, one decline, one partial fill and one failure asserting one episode each.",
+    "work_item": "E10-partial-fill-episodes",
+    "tier": "T1",
+    "size": "S",
+    "notes": "e2e=true reflects that the acceptance suite exercises the type; it does not prove production code ever produces a PartiallyFilled action, which is the actual gap. verify: status PARTIAL and e2e=true kept, but the e2e evidence is replaced: the e2e.rs:810 fixture is hand-built and proves nothing about production; qip-acceptance adversary.rs drives real fills through run_cycle into score_filled, which is the cross-stage demonstration for the half that exists. Gap sharpened: partial fills are recorded as Filled slices, the remainder is never an episode."
+  },
+  {
+    "id": "MODEL-040",
+    "status": "INCORRECT",
+    "current": "No Evaluation Brain independent of the Foundry exists, and both production promotion paths promote on the producer's own verdict, which this invariant forbids. Models: qip-kernel::central::models::register_fit (central/models.rs:83-150) writes the fit's own EvaluationRecord{passed} onto the card the learning desk just fitted, and LearningDesk::promote_candidate (qip-deepbrain/src/learning.rs:821-960) scores the candidate on its own holdout and calls Platform::promote_model, whose ModelRegistry::promote accepts that self-written verdict (registry.rs:280-290). EvaluationRecord (registry.rs:44-52) has no evaluator identity field and ModelRegistry::record_evaluation is open to any caller. Strategies: qip-deepbrain's evolution round promotes a candidate on 'the holdout gate read the search's own evidence' (evolution.rs:924-929); the lifecycle gate is separate code but judges evidence the producer computed. The only owner-separation rule in the tree, qip_agents::governance::Roster (governance.rs:188-205), covers the REASON-stage agent panel, not model/strategy evaluation.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/central/models.rs:83-150 (register_fit: producer writes passed)",
+      "backend/crates/libs/qip-ai/src/registry.rs:44-52 (EvaluationRecord: no evaluator identity), 280-290 (promote requires only latest_evaluation().passed)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:821-960 (promotion rule lives with the fitting desk)",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:924-929 (factory promote with 'the holdout gate read the search's own evidence')",
+      "backend/crates/libs/qip-agents/src/governance.rs:188-205 (owner separation, REASON panel only)",
+      "test: a_skilled_candidate_is_promoted_against_no_incumbent_and_an_equal_successor_is_not (qip-deepbrain/src/learning.rs:1561) -- demonstrates the self-evaluated promotion"
+    ],
+    "gap": "The foundry writes, and promotes on, the evaluation verdict of its own candidates. Making the invariant hold means changing the existing model and strategy promotion paths so the verdict comes from an evaluator identity the producer does not control, recording that identity on the verdict, and refusing a promotion whose verdict names the producer -- not only adding a check.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-033"
+    ],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-deepbrain --lib learning:: (shows self-evaluated promotion). Needed: attempt to promote a candidate carrying only its producer's verdict and assert refusal, then admission once a distinct evaluator identity has scored it; both the model promote step and the strategy holdout step would fail the first half today.",
+    "work_item": "E16-independent-evaluator",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Overlaps CICD-021. The governance.rs pattern (owner-identity separation, refused on intersection) is directly reusable. verify: MISSING -> INCORRECT, consistent with EXPAND-029. The row treated this as absence, but production already implements the forbidden shape: register_fit has the producer write its own passed verdict and promote_candidate/factory promote act on it. Flags describe that existing path (implemented/tested/integrated/deployable true), as in EXPAND-029."
+  },
+  {
+    "id": "MODEL-041",
+    "status": "PARTIAL",
+    "current": "Two of the seven factors are attributed in production. Strategy: CentralPlane's settlement attributes each cell-reported fill to the contributing strategies' books by the FillShare the cell sent, refusing shares that do not sum to the fill (qip-kernel/src/central/plane.rs, Settlement::by_strategy :612, reached from Platform::ingest_cell_report via qip-api mesh.rs:1621). Belief: Platform attributes every fill through qip_learning_engine::attribution::Attributor with the order's hypotheses carried on each PositionPeriod (platform.rs:14750-14830) and reads Attribution::by_hypothesis (attribution.rs:199). Model, evidence source, capital policy, risk rule and execution path are not attribution axes anywhere; the Attributor's Source axis is cause-of-return (market_move, factor, commission, spread, ...), a different decomposition.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:603-616 (cost_bps_by_strategy, by_strategy)",
+      "backend/crates/apps/qip-api/src/mesh.rs:1621 (ingest_cell_report from the mesh, production)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14750-14830 (PositionPeriod.hypotheses from the order; by_hypothesis read)",
+      "backend/crates/services/qip-learning-engine/src/attribution.rs:199-214 (by_hypothesis splits a multi-thesis position evenly by Decimal division, not split_pro_rata)",
+      "rg -n 'split_pro_rata' backend --type rust -> called only from attribution.rs's own #[cfg(test)] module",
+      "test: a_netted_orders_fill_is_attributed_to_its_contributors_with_zero_residual (crates/runtime/qip-kernel/tests/attribution.rs:187)",
+      "test: a_fill_whose_shares_do_not_sum_to_it_is_refused_rather_than_booked_short (crates/runtime/qip-kernel/tests/attribution.rs:649)",
+      "test: crates/services/qip-learning-engine/tests/learning.rs:192,213 (by_hypothesis)"
+    ],
+    "gap": "No attribution record names one value for each of the seven factors: model, evidence source, capital policy, risk rule and execution path are not carried to the outcome at all, and belief attribution splits evenly by Decimal division (a residual is possible on non-dividing splits). Strategy attribution is exact but only for cell-reported fills, and no cell runs in any environment (execution_nodes = {}).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-039"
+    ],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-kernel --test attribution && cargo test -p qip-learning-engine --test learning. Needed: a booked simulated outcome whose attribution names all seven factors and sums exactly along each.",
+    "work_item": "E10-seven-factor-attribution",
+    "tier": "T3",
+    "size": "L",
+    "notes": "split_pro_rata is directly reusable (fair-share arithmetic that closes exactly); the gap is the seven-factor decomposition logic and the fields to carry strategy/model/belief/source/policy/rule/path identity through to the outcome record. verify: upgraded MISSING -> PARTIAL. The row missed that strategy attribution (central plane, exact, tested) and belief attribution (by_hypothesis over the order's hypotheses, production) already exist; five of the seven factors remain absent."
+  },
+  {
+    "id": "MODEL-042",
+    "status": "PARTIAL",
+    "current": "qip_twin::counterfactual::{CounterfactualEngine, Alternative} (backend/crates/services/qip-twin/src/counterfactual.rs:47,494,544,639,818) prices DoNotTrade, LargerSize/SmallerSize, DifferentVenue/DifferentRegion, DelayedEntry and DifferentHedge/NoHedge alternatives, reached from qip-kernel::Platform::evaluate_alternatives every LEARN cycle for declined and filled orders. In production the ActualTrade is built without a hedge (platform.rs:16255-16290; no production caller of ActualTrade::hedged_with or AlternativeMenu::with_hedge), so a hedged opportunity is never replayed as hedged -- NoHedge on an unhedged trade is the trade.",
+    "evidence": [
+      "backend/crates/services/qip-twin/src/counterfactual.rs:47-71 (Alternative enum), 112-216 (menu: DifferentHedge only when a hedge is configured)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:16218-16290,16326,16483",
+      "rg -n 'hedged_with|with_hedge\\(' backend --type rust (excluding tests and counterfactual.rs) -> no qip-kernel caller",
+      "test: planning_an_alternative_against_a_later_market_is_refused_and_names_the_leak (crates/services/qip-twin/tests/twin.rs:221)",
+      "MODEL-039's evidence: Action::PartiallyFilled never constructed in production, so a 'partially filled' opportunity has no captured instance to counterfact"
+    ],
+    "gap": "Only declined opportunities (and filled orders' size alternatives) are replayed counterfactually in production. Hedged opportunities are not: the twin supports a hedged ActualTrade but the platform never builds one. Partially filled opportunities are not captured (MODEL-039), and no 'unwound' capture path or alternative exists.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-039"
+    ],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-twin --test twin",
+    "work_item": "E10-counterfactual-partial-unwound",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Point-in-time correctness (MODEL-030's property) is directly enforced here: planning against a later market is refused and named as leakage. verify: status PARTIAL kept; corrected the claim that hedged opportunities are 'genuinely replayed' -- the platform builds every ActualTrade unhedged and never configures the hedge menu, so of the four kinds only 'declined' is covered in production."
+  },
+  {
+    "id": "MODEL-043",
+    "status": "PARTIAL",
+    "current": "Regime-keyed scoring exists on three boards, none of which is a champion scorecard and a challenger scorecard per regime. (1) qip-deepbrain LearningDesk.classes = Scoreboard::models() (learning.rs:713,740) scores the two model CLASSES (linear baseline, boosted challenger) per platform regime, and choose_class reads it; the actual champion/challenger decision for models (promote_candidate, learning.rs:821-960) is one rmse comparison on the candidate's holdout with no regime condition. (2) SuccessionDesk.scoreboard = Scoreboard::strategies() (succession.rs:143,178,284-360) records one binary per challenge -- did the challenger beat the champion -- keyed (subject, regime), a win-rate board for challenges, not a scorecard for each side. (3) Platform.claim_scores (platform.rs:899,14585-14640) scores claim CLASSES (anomaly kinds) by regime, not strategies or models. Challengers do not run continuously alongside champions: a challenge is minted and compared within one evolution round.",
+    "evidence": [
+      "backend/crates/services/qip-evolution/src/scoring.rs:283-298 (Scoreboard constructors; no unit tests in this file)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:258-273,713,740 (class board and choose_class)",
+      "backend/crates/apps/qip-deepbrain/src/succession.rs:130-143,284-360 (challenge win/loss per subject-regime)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:891-899,14585-14640 (claim_scores keyed on claim.class, the anomaly kind)",
+      "test: a_round_fits_the_baseline_and_the_challenger_and_scores_each_class_in_the_regime (learning.rs:2225)",
+      "test: an_established_precedent_for_the_challenger_registers_it_in_that_regime_and_nowhere_else (learning.rs:2285)",
+      "test: a_regime_with_an_established_losing_record_holds_back_a_win_until_it_repeats (succession.rs:665)"
+    ],
+    "gap": "No active model or strategy has a champion scorecard and challenger scorecards per regime that are updated continuously while both run (shadow challengers). Model promotion is regime-blind; strategy challenges are scored as one win/loss bit per comparison; claim_scores is about claim classes. The requirement's replay across two regimes -- one scorecard per regime for each of champion and challenger, with a split verdict reported as such -- has no implementation or test.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-038"
+    ],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-deepbrain --lib -- learning:: succession:: (qip-evolution's scoring.rs has no unit tests, so the original 'cargo test -p qip-evolution --lib scoring::' ran nothing). Needed: a two-regime replay giving champion and challenger one scorecard per regime each.",
+    "work_item": "E10-regime-champion-challenger-scorecards",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Scoreboard::sources() (the fifth of the crate's five named constructors) is never constructed in production — see MODEL-044, which is the actual gap that name suggests. verify: downgraded COMPLETE -> PARTIAL. The cited boards score model classes, challenge outcomes and claim classes by regime; none gives champion and challenger their own per-regime scorecard, model promotion is regime-blind, and the row's claim that claim_scores scores strategies is wrong (it is keyed on the anomaly kind)."
+  },
+  {
+    "id": "MODEL-044",
+    "status": "MISSING",
+    "current": "qip_evolution::scoring::Scoreboard::sources() (backend/crates/services/qip-evolution/src/scoring.rs:296-298) exists as a named constructor ('How often a source was timely and correct') but is never called",
+    "evidence": [
+      "backend/crates/services/qip-evolution/src/scoring.rs:296-298",
+      "rg -n 'Scoreboard::sources\\(\\)|ScoreDomain::Source' backend --type rust -> only the definition itself; zero callers anywhere including tests",
+      "rg -ni 'source.alpha|alpha.attribution|source_contribution' backend --type rust -> no hits"
+    ],
+    "gap": "No mechanism measures a data source's contribution to decisions net of its cost and delay. The nearest scaffold (Scoreboard::sources()) is unused, and even if wired up it would measure timeliness/correctness rather than a masked-feature decision-improvement test net of qip-cost-router::DataCostModel's recorded cost and latency, which is what the requirement specifically asks for.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-041"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Would need a masked-vs-present feature replay test attributing improvement net of qip_cost_router::data::DataCostModel's charge.",
+    "work_item": "E08-source-alpha-attribution",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Drives qip-data-finder's source retirement per M §6, per the requirement's own note; qip-cost-router::DataCostModel (backend/crates/services/qip-cost-router/src/data.rs:132,176) already computes the cost half and is production-reached."
+  },
+  {
+    "id": "MODEL-045",
+    "status": "PARTIAL",
+    "current": "qip_lifecycle::demotion::DemotionMonitor::enforce (backend/crates/services/qip-lifecycle/src/demotion.rs:484) retires a strategy automatically once sustained decay at the floor passes RetirementThreshold, with no human call, reached from qip-kernel::central::factory.rs:567 every LEARN pass; qip_kernel::central::learning.rs's RetirementDisposition then schedules the retired strategy's open lots for unwind",
+    "evidence": [
+      "backend/crates/services/qip-lifecycle/src/demotion.rs:453-520 (retirement_due, ledger.retire)",
+      "backend/crates/runtime/qip-kernel/src/central/factory.rs:567",
+      "backend/crates/runtime/qip-kernel/src/central/learning.rs:32-49 (RetirementDisposition: unwind, never orphaned silently)",
+      "test: sustained_decay_at_the_floor_retires_the_strategy_without_a_human_call (crates/services/qip-lifecycle/tests/lifecycle.rs:2429)",
+      "rg -n 'reactivat|last_known_good' backend --type rust -> Corridor::reactivate (capital-fabric, unrelated), no model/strategy artifact reactivation found"
+    ],
+    "gap": "Automatic retirement is real, tested and reached from production, and open positions are dispositioned (unwound) rather than orphaned. But nothing reactivates a previously-displaced 'last known-good' model artifact or strategy when the current one is retired for degradation — ModelRegistry::retire (registry.rs:345) is only ever called as the losing side of a new promotion (model_serving.rs:242), never as a rollback triggered by degradation.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-038",
+      "MODEL-034"
+    ],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-lifecycle --test lifecycle sustained_decay_at_the_floor_retires_the_strategy_without_a_human_call (the test is in tests/lifecycle.rs:2429, not demotion.rs's lib tests)",
+    "work_item": "E10-model-rollback-known-good",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The requirement bundles retirement + rollback as one action deliberately ('retiring without a fallback leaves the slot empty'); this repository has the retirement half solidly and the rollback half not at all. verify: status PARTIAL kept; corrected the verification command, which filtered lib tests and would not have run the cited integration test."
+  },
+  {
+    "id": "MODEL-046",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -ni 'research.prompt|research_prompt|closed.loop' backend --type rust -> no hits",
+      "rg -ni 'curriculum' backend --type rust -> only a label string in crates/apps/qip-cli/src/blueprint.rs:77 ('Intelligence expansion engine, registries, curriculum')"
+    ],
+    "gap": "No mechanism turns a failure cluster or unexplained residual into a research prompt, and nothing tracks a prompt to the research task that answered it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-047"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Would need a test injecting a cluster of similar failures and asserting one prompt referencing the cluster's episodes.",
+    "work_item": "E08-research-prompts",
+    "tier": "T3",
+    "size": "L",
+    "notes": "P2 (self-directed research campaigns are master Phase 8, per the requirement's own note); no scaffold of any kind exists yet."
+  },
+  {
+    "id": "MODEL-047",
+    "status": "PARTIAL",
+    "current": "No unified gap register exists, but detectors for several of the six kinds already run in production, each in its own shape. Low-confidence regions: qip_ai::memory::experience (blind spots = regimes the platform can label but holds no episode for), read every LEARN stage by Platform::experience (platform.rs:8539, called at ~13937). No competent specialist: the REASON stage's OrganisationReport.deferred / coverage() and ReasoningOutcome.deferred_by record agents that declined as out of competence (qip-investment-agents chief.rs:36-100; qip-reasoning-engine engine.rs:60-66). Contradictory evidence: OrganisationReport::is_contested and ReasoningOutcome.dissenters. Unsupported asset classes: Platform assembly refuses a universe holding an unregistered class, naming it (platform.rs:4090-4104) -- a refusal, not a gap record. Unexplained residuals: only market-level -- AnomalyKind::UnexplainedMove (qip-opportunity-engine detector.rs:46) -- not model residuals. Missing causal links: nothing.",
+    "evidence": [
+      "backend/crates/libs/qip-ai/src/memory/experience.rs:1-45 (blind spots), backend/crates/runtime/qip-kernel/src/platform.rs:8539,13920-13945",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs:36-100 (deferred, is_contested, coverage)",
+      "backend/crates/services/qip-reasoning-engine/src/engine.rs:60-66 (deferred_by: 'a thesis nobody competent looked at is visible as such')",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4090-4104 (unsupported asset class stops assembly)",
+      "backend/crates/services/qip-opportunity-engine/src/detector.rs:46 (UnexplainedMove)",
+      "rg -ni 'knowledge.gap|knowledge_gap' backend --type rust -> no hits (no gap record type)",
+      "test: a_blind_spot_is_a_known_regime_with_no_episode_and_an_unknown_label_is_reported_not_folded (qip-ai/src/memory/experience.rs:387)",
+      "test: the_macro_analyst_defers_on_an_intraday_horizon, the_report_reports_coverage_rather_than_implying_a_consensus (qip-investment-agents/tests/organisation.rs:907,1530)",
+      "test: a_universe_of_registered_classes_assembles_and_one_holding_an_unregistered_class_does_not (qip-kernel/tests/asset_classes.rs:71)"
+    ],
+    "gap": "The detections are scattered and emit no 'gap record' of a named kind: blind spots are a report line, deferrals and contests are per-question fields, the asset-class check is a start-up refusal, and 'unexplained' covers market moves rather than model residuals. Missing causal links have no detector at all. Nothing collects these into gap records a Curriculum Engine (MODEL-049) could consume, and the requirement's six-fixtures-plus-empty test does not exist.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cd backend && cargo test -p qip-ai --lib memory::experience:: && cargo test -p qip-investment-agents --test organisation && cargo test -p qip-kernel --test asset_classes. Needed: one fixture per gap kind producing a gap record of that kind, and an empty fixture producing none.",
+    "work_item": "E08-novelty-gap-detection",
+    "tier": "T3",
+    "size": "L",
+    "notes": "P2; the Curriculum Engine that would consume these signals (MODEL-049, master Phase 9) also does not exist. verify: upgraded MISSING -> PARTIAL. The row searched only for 'knowledge gap'/'novelty' wording; production already detects regime blind spots, out-of-competence deferrals, contested findings and unsupported asset classes (all tested), though none as a gap record and nothing for missing causal links or model residuals."
+  },
+  {
+    "id": "MODEL-048",
+    "status": "MISSING",
+    "current": "qip_evolution::TrialLedger (backend/crates/services/qip-evolution/src/challenger.rs:96) counts how many strategies were tried (multiple-testing defense) but does not select what to retrain based on information value; no TrainingCampaign type exists",
+    "evidence": [
+      "rg -n 'TrainingCampaign' backend --type rust -> no hits anywhere in the workspace",
+      "backend/crates/services/qip-evolution/src/challenger.rs:96 (TrialLedger — trial counting, not selection-by-information-value)",
+      "backend/crates/runtime/qip-kernel/src/exploration.rs:113-122 (ExplorationDesk ranks capital PROBES by uncertainty and probe rarity with a stated constant RESOLUTION_VALUE_BPS because 'the platform measures no per-subject value of information' -- exploration capital, not training-data selection)"
+    ],
+    "gap": "No active-learning selection policy exists (choosing what to label/simulate/collect/retrain by outcome, drift, uncertainty and information value), and the TrainingCampaign output type the requirement names does not exist. Retraining today is cadence-driven (qip-training::cadence::TrainingCadence) rather than value-selected.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-028",
+      "MODEL-044",
+      "MODEL-047"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Would need a test offering candidate datasets of differing information value and asserting the higher-value one is selected, with the selection criteria recorded on a TrainingCampaign.",
+    "work_item": "E10-active-learning-campaign",
+    "tier": "T3",
+    "size": "L",
+    "notes": "P3 (active learning is named in master Phase 9, per the requirement's own note). qip-training::cadence::TrainingCadence is the nearest existing structure but drives cadence, not value-based selection. verify: status MISSING confirmed; recorded the exploration budget as the nearest uncertainty-driven selector so the work item can reuse its ranking, noting it selects capital probes and measures no value of information."
+  }
+]

@@ -1,0 +1,1523 @@
+[
+  {
+    "id": "LEDGER-001",
+    "domain": "LEDGER",
+    "title": "One authoritative ledger of truth",
+    "statement": "The platform maintains exactly one authoritative multi-asset ledger of financial truth. Every derived copy of ledger data (change-stream feeds, BigQuery/reporting tables, derived caches) is downstream of it and is never the system of record for a fact the ledger holds.",
+    "rationale": "Two stores that both claim authority over a balance will disagree, and whichever one a consumer happens to read decides what the platform believes it owns. Market data can disappear and models can be retrained; the ledger is the one record that cannot be regenerated, so there can be only one.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test enumerates every component that writes cash, position or obligation records and finds exactly one (the ledger writer), and every consumer of balances (risk, capital, API views) reads them from the ledger or from a view that names the ledger sequence it was derived from."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH",
+      "DATA"
+    ],
+    "notes": "Merges the §1 'one authoritative multi-asset ledger of truth' with the invariant half of GCP §10 'Change propagation' ('that is downstream analytics, not the system of record'); the propagation capability itself is LEDGER-039. MANAGED_SERVICE from the GCP item was removed: the single-authority invariant holds whatever store implements it. Also restated outside the extracted set in the master conclusion (M p.45, 'maintains one authoritative ledger') and GCP §2 principle 7 (G p.3, 'Spanner owns financial truth'). The repository's boundary rule 'No second source of truth for a fact the event log already holds' is the same invariant."
+  },
+  {
+    "id": "LEDGER-002",
+    "domain": "LEDGER",
+    "title": "Multi-asset postings balance per unit",
+    "statement": "The ledger is multi-asset: every posting names the asset or currency unit it moves, balances are held per unit, and no entry offsets one unit against another except through an explicit exchange entry (a trade, conversion or transfer) that posts both units.",
+    "rationale": "A ledger that reduces everything to one currency at posting time bakes a price into the record of what is held; when the price moves, the ledger no longer says what the platform owns. Even a single-venue paper cell moves two units per fill, the instrument and the cash leg.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      },
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated sequences of trades, conversions and transfers across several units, debits equal credits within each unit separately, and a posting whose legs would balance only after converting one unit into another at a price is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET"
+    ],
+    "notes": "Taken from the adjective 'multi-asset' in §1, §3 and §15. The per-unit balancing rule is how the double-entry invariant (LEDGER-006) applies across units; the blueprints assert 'multi-asset' without spelling it out. P0 rather than waiting for master Phase 3's multiple asset classes, because the first paper cell already posts two units per fill."
+  },
+  {
+    "id": "LEDGER-003",
+    "domain": "LEDGER",
+    "title": "Ledger Brain is a first-class domain",
+    "statement": "Ledger/accounting is a first-class autonomous domain, the Ledger Brain, with an explicit contract: other domains record economic events and read ledger state only through that contract, never by writing ledger records directly.",
+    "rationale": "When the ledger is a part of the capital engine rather than a domain with its own contract, its invariants hold only where each caller remembers to enforce them. v11.6 lists 'capital engine is a component' as a v10.1 defect to be corrected.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The dependency graph shows a ledger component whose published types are the only way to record or read ledger entries, and an architecture test fails if any other crate constructs a posting."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH",
+      "CONTRACT"
+    ],
+    "notes": "Split from the §2 correction that promotes Asset Brain, Capital Brain, Risk Brain, Treasury Bank, Ledger Brain and Settlement Brain into first-class domains. The Settlement Brain is LEDGER-004; the others belong to ASSET, CAPITAL and RISK. The §31 checklist repeats this as a COMPLETE TARGET (M p.43, outside the extracted set: 'Asset, Capital, Risk, Treasury, Ledger and Settlement brains are separate first-class domains'). P0 because the ledger and canonical contracts are master Phase 0 exits; the brain's autonomy is not what P0 asks for. The ledger's event contract (LedgerEvent, M p.37 §27) is in CONTRACT."
+  },
+  {
+    "id": "LEDGER-004",
+    "domain": "LEDGER",
+    "title": "Settlement Brain is separate from the Ledger Brain",
+    "statement": "Settlement is a first-class autonomous domain, the Settlement Brain, with its own explicit contract and separate from the Ledger Brain; the ledger records settlement state from the Settlement Brain's events rather than performing settlement itself.",
+    "rationale": "Recording what is owed and getting it settled are different jobs with different failure modes: a failed settlement leaves the ledger correct and the obligation open. When one component does both, a settlement failure can be 'fixed' by changing the record.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The settlement component is a separate crate or service with its own contract types; it changes ledger state only by submitting events through the ledger's contract; and the ledger contains no settlement-instruction or scheduling logic."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "ARCH"
+    ],
+    "notes": "Split from the same §2 correction as LEDGER-003. Also named in the §31 checklist (M p.43, outside the extracted set). 'Records settlement state from the Settlement Brain's events' interprets 'distinct from the Ledger Brain'; the blueprint gives no interface. P1 because master Phase 3 introduces the separate brains, treasury and custody corridors. The ledger's own settlement state is P0 (LEDGER-008)."
+  },
+  {
+    "id": "LEDGER-005",
+    "domain": "LEDGER",
+    "title": "Ledger state is derived from the journal",
+    "statement": "The ledger is event-sourced: its state (balances, positions, obligations, settlement state) is the deterministic fold of its journal of economic events, and rebuilding it from the journal gives exactly the state the ledger reports.",
+    "rationale": "If state can change without an event, the journal is a log about the ledger rather than the ledger itself, and an audit that replays it will not reach the balances the platform traded on.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying the complete journal into an empty ledger reproduces every balance, position and obligation exactly, and replaying any prefix reproduces the state as of that event."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REPLAY"
+    ],
+    "notes": "Merges 'event-sourced' from §3 and §15."
+  },
+  {
+    "id": "LEDGER-006",
+    "domain": "LEDGER",
+    "title": "Every entry is double-entry and balances",
+    "statement": "Every ledger entry is double-entry: its debits equal its credits (per unit, see LEDGER-002), and an entry that does not balance is refused, never adjusted until it does.",
+    "rationale": "A one-sided entry creates or destroys value silently. Double entry makes each such error show up as an imbalance when it is written, and refusing the entry instead of plugging the difference keeps the caller's bug visible.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist"
+      },
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated entries, the ledger accepts exactly those whose per-unit debits equal credits and refuses the rest with a named error, and the trial balance over any journal prefix sums to zero in every unit."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Merges 'double-entry' from §3 and §15, the §31 COMPLETE TARGET 'Ledger is authoritative and double-entry across cash, positions, obligations, collateral and physical inventory' (its coverage half is split across LEDGER-007, -008, -009 and -013), and the GCP write model's 'updates double-entry postings' (extracted twice). 'Refused, never adjusted' applies the repository's refuse-rather-than-clamp principle; the blueprints do not say what happens to an unbalanced entry. The master LedgerEvent contract ('immutable economic event with debit/credit impacts', M p.37 §27, outside the extracted set) is the matching contract."
+  },
+  {
+    "id": "LEDGER-007",
+    "domain": "LEDGER",
+    "title": "Positions and cash in the trading subledger",
+    "statement": "The ledger is the authoritative record of positions and cash, held in a trading subledger: a fill posts its position and cash legs there, and every other domain reads positions and cash from the ledger.",
+    "rationale": "Positions and cash drive every limit and every sizing decision. If the risk gate reads a figure the ledger does not hold, a limit can pass against a position the platform does not have.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist"
+      },
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      },
+      {
+        "doc": "H",
+        "page": "L249",
+        "section": "VIEWS.data — 04 · World Sensing, Tick History & Durable Knowledge (node 'sp')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A simulated fill produces balanced position and cash postings in the trading subledger, and the position and cash the risk and capital services read afterwards equal the trading subledger's balances."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "CAPITAL",
+      "EXEC"
+    ],
+    "notes": "Merges the positions/cash items of the §3 scope row, the §15 authoritative-for list (extracted twice), the 'trading' entry of the §15 subledger list (extracted twice), the §31 checklist, the GCP Financial Truth row ('positions') and the diagram's Spanner Ledger node ('cash, positions'). MANAGED_SERVICE, LIVE_CAPITAL and COST from the GCP row were removed: holding positions and cash as ledger records needs neither a particular store nor live capital. Fees are LEDGER-011."
+  },
+  {
+    "id": "LEDGER-008",
+    "domain": "LEDGER",
+    "title": "Obligations and settlement state",
+    "statement": "The ledger is the authoritative record of obligations and their settlement state: every fill creates the obligations it implies (to deliver, pay or receive), and an obligation's settlement state changes only when a settlement event is recorded.",
+    "rationale": "Between trade and settlement, cash and assets are owed rather than held. A ledger that records only positions treats unsettled proceeds as spendable, and capital gets granted against money that has not arrived.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist"
+      },
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      },
+      {
+        "doc": "H",
+        "page": "L249",
+        "section": "VIEWS.data — 04 · World Sensing, Tick History & Durable Knowledge (node 'sp')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A fill creates open obligations of the right amount, unit and due date; only a settlement event closes one; a partial settlement leaves the remainder open; and a settlement event that names no open obligation is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": "Merges 'obligations' and 'settlement state' from the §3 scope row and the §15 authoritative-for list, 'obligations' from the §31 checklist and the GCP Financial Truth row, and 'obligations, settlement' from the diagram's Spanner Ledger node. P0 because the §15 lineage (LEDGER-021) runs through settlement from the first fill. The Settlement Brain that drives settlement is LEDGER-004 (P1). Flags from the GCP row removed as for LEDGER-007."
+  },
+  {
+    "id": "LEDGER-009",
+    "domain": "LEDGER",
+    "title": "Physical inventory in the ledger",
+    "statement": "The ledger is the authoritative record of physical inventory, held in a physical inventory/commerce subledger: acquisitions, disposals and returns of physical units are ledger entries in units and at cost basis, not records kept only in a commerce system.",
+    "rationale": "Physical goods tie up capital just as positions do. If inventory lives only in the commerce plane, capital and risk see cash leave with nothing received, and a lost or unsold unit never shows up as a loss.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Purchase, sale and return events for a physical product post balanced entries to the inventory subledger in units and at cost basis, and the quantity the commerce domain reports equals the subledger balance."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMMERCE"
+    ],
+    "notes": "Merges 'inventory' from the §3 scope row and the §15 authoritative-for list, the 'physical inventory/commerce' entry of the §15 subledger list, and 'physical inventory' from the §31 checklist. The commerce plane's Inventory Ledger row (M p.26, outside the extracted set: 'physical units, condition, location, cost basis, reservations') gives the fields. P2 because physical commerce is master Phase 7. Inventory accounting can be exercised on paper, so no LIVE_CAPITAL flag."
+  },
+  {
+    "id": "LEDGER-010",
+    "domain": "LEDGER",
+    "title": "Tax lots",
+    "statement": "The ledger maintains tax lots: each acquisition opens a lot with quantity, cost basis and acquisition time, and each disposal relieves lots under a declared method that is recorded on the disposal.",
+    "rationale": "Realised gain, cost basis and tax owed all depend on which lots a disposal consumed. A ledger that keeps only an average cost cannot answer that question after the fact.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated buy/sell sequences, open-lot quantities sum to the position, relieved cost basis plus open cost basis equals total acquisition cost, and the relief method recorded on each disposal is the one that was applied."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMPLIANCE"
+    ],
+    "notes": "Merges 'tax lots' from the §3 scope row and the §15 authoritative-for list (extracted twice). Split from accruals (LEDGER-012) and fees/taxes (LEDGER-011): each can be built and tested without the others. P1: tax-lot accounting matters once master Phase 3 brings multiple asset classes."
+  },
+  {
+    "id": "LEDGER-011",
+    "domain": "LEDGER",
+    "title": "Fees and taxes in their own subledger",
+    "statement": "Every fee and tax the platform incurs is a ledger posting in a fees/taxes subledger, linked to the fill or event that incurred it.",
+    "rationale": "A fee netted into a fill price disappears from every cost analysis, and the platform cannot tell a strategy that pays for itself from one the venue is paid by.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A paper fill with a venue fee posts the fee to the fees/taxes subledger inside the fill's balanced entry and referencing the fill's event ID, and the subledger total equals the sum of fees on the fills."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC",
+      "COMPLIANCE"
+    ],
+    "notes": "Merges 'fees' from the §3 scope row and the §15 authoritative-for list with the 'fees/taxes' entry of the §15 subledger list. P0 because the first paper cell charges simulated fees on its fills. Tax postings arrive with the asset classes that incur them."
+  },
+  {
+    "id": "LEDGER-012",
+    "domain": "LEDGER",
+    "title": "Accruals",
+    "statement": "The ledger records accruals (amounts earned or owed over time, such as interest and funding) as they accrue, before any cash moves, and clears each accrual when its cash event is recorded.",
+    "rationale": "Without accruals, profit and loss jumps on payment dates, and a book that owes funding every day looks free until the day the funding is paid.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Over a period with an accruing item, the accrued balance grows on the accrual schedule, the cash settlement clears the accrual exactly, and no accrual remains once it has settled."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": "Only the §3 scope row names accruals; the §15 authoritative-for list does not. The examples (interest, funding) are illustrative rather than from the source."
+  },
+  {
+    "id": "LEDGER-013",
+    "domain": "LEDGER",
+    "title": "Collateral and margin",
+    "statement": "The ledger is the authoritative record of collateral posted and received and of margin requirements and balances, per venue and counterparty.",
+    "rationale": "Collateral is the platform's own asset held somewhere it cannot freely use. If the ledger does not show what is pledged, the same asset can be counted as free capital and as margin at once.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Posting and releasing collateral and meeting a margin call produce balanced entries, pledged collateral is excluded from free balances, and the collateral and margin the risk engine reads equal the ledger's balances."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "CAPITAL"
+    ],
+    "notes": "Merges 'margin' from the §3 scope row, 'collateral' and 'margin' from the §15 authoritative-for list, and 'collateral' from the §31 checklist. P1 because master Phase 3 brings margin-bearing asset classes and collateral corridors."
+  },
+  {
+    "id": "LEDGER-014",
+    "domain": "LEDGER",
+    "title": "Commitments in the private commitments subledger",
+    "statement": "The ledger is the authoritative record of commitments (undrawn obligations such as capital committed to private investments), held in a private commitments subledger, and posts each drawdown against the commitment it reduces.",
+    "rationale": "An undrawn commitment is cash the platform has promised but not yet paid. Leave it off the ledger and liquidity looks larger than it is until the capital call arrives.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A commitment records its total and undrawn amounts; a drawdown reduces the undrawn amount by exactly its size and posts the cash leg; and a drawdown larger than the undrawn amount is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "ASSET"
+    ],
+    "notes": "Merges 'commitments' from the §3 scope row and the §15 authoritative-for list with the 'private commitments' entry of the §15 subledger list. P1 because private and illiquid classes arrive with master Phase 3's multiple asset classes."
+  },
+  {
+    "id": "LEDGER-015",
+    "domain": "LEDGER",
+    "title": "Every reflex fill reaches the ledger through the Fabric",
+    "statement": "Every fill and outcome event produced by any regional reflex cell reaches the ledger: cells journal outcomes to the Rust Fabric's P1 Financial Outcomes partitions, and a regional ledger writer (the Spanner sink) consumes those partitions into the ledger.",
+    "rationale": "An outcome that reaches the Fabric but not the ledger is a trade the platform made and does not know it holds. The journal-then-sink path is also what keeps the ledger off the hot path (LEDGER-036).",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§5 End-to-End System Path"
+      },
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      },
+      {
+        "doc": "H",
+        "page": "L218-221",
+        "section": "§03 Native Rust Event & Control Fabric (edges)"
+      },
+      {
+        "doc": "H",
+        "page": "L257-261",
+        "section": "§04 World Sensing, Tick History & Durable Knowledge (edges)"
+      },
+      {
+        "doc": "H",
+        "page": "L393-395",
+        "section": "§08 End-to-End Operating Flow (edges)"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "A paper fill produced by a reflex cell appears in the ledger as a committed entry carrying the fill's event ID, having travelled through the Fabric P1 partition and the ledger writer, and no other path writes it."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "FABRIC",
+      "REFLEX"
+    ],
+    "notes": "Merges the ledger half of the §5 path ('fills/events -> LEDGER + TREASURY + SETTLEMENT + INVENTORY'; the other half is LEDGER-016), 'consumes P1 outcome partitions' from the GCP write model, the diagram's Broker B -> Spanner Sink edge, the ledger half of the Algorik Outcomes -> Spanner Ledger edge, and the Rust Fabric -> Ledger/Outcomes edge. MULTI_REGION was removed because the path is per cell and works with one region; the three-region deployment belongs to REFLEX and MESH. LIVE_CAPITAL was removed because paper fills take the same path. GCP §21 flow step 4 (G p.20, outside the extracted set) says the same: sinks 'commit financial outcomes idempotently to Spanner'."
+  },
+  {
+    "id": "LEDGER-016",
+    "domain": "LEDGER",
+    "title": "Fills also feed treasury, settlement and inventory",
+    "statement": "The fills and events that reach the ledger also feed treasury, settlement and inventory, so that those domains act on the same outcomes the ledger records.",
+    "rationale": "If treasury or settlement works from its own copy of fills, each will eventually disagree with the ledger about what was traded, and the disagreement surfaces as a settlement failure rather than as a reconciliation break.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§5 End-to-End System Path"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A paper fill produces the matching treasury cash movement, settlement tracking and (for an inventory-bearing instrument) inventory change, each referencing the same event ID as the ledger entry."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "COMMERCE"
+    ],
+    "notes": "Split from the §5 path diagram, whose single box 'LEDGER + TREASURY + SETTLEMENT + INVENTORY' names four consumers of the same fills. The ledger consumer is LEDGER-015. MULTI_REGION and LIVE_CAPITAL removed for the same reasons as there."
+  },
+  {
+    "id": "LEDGER-017",
+    "domain": "LEDGER",
+    "title": "The ledger is append-only",
+    "statement": "The ledger is append-only: no entry is ever updated or deleted, and a correction is a new entry that reverses or adjusts the original and references it.",
+    "rationale": "An entry that can be edited is not evidence: after the edit, nobody can tell what the platform believed when it acted. Corrections as new entries keep both the mistake and its repair on the record.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "The ledger's interface exposes no update or delete, and for generated correction sequences every original entry stays byte-identical while each correction references the entry it corrects."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "From the first sentence of §15. The repository's hash-chained event log already enforces the same rule for its own records ('nothing may edit history that has been sealed')."
+  },
+  {
+    "id": "LEDGER-018",
+    "domain": "LEDGER",
+    "title": "Transfers in the treasury and custody subledgers",
+    "statement": "The ledger is the authoritative record of transfers of cash and assets between the platform's accounts, venues and custodians, and holds treasury and custody subledgers that show where every balance is held and what is in transit.",
+    "rationale": "Money moving between a venue and a custodian belongs to neither while it is in flight. A ledger without in-transit state either counts it twice or loses it.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A transfer from a venue account to a custodian posts out of the source location, through an in-transit account and into the destination on confirmation, and each unit's total across all locations is unchanged by the transfer."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": "Merges 'transfers' from the §15 authoritative-for list with the 'treasury' and 'custody' entries of the §15 subledger list. 'In transit' is how a transfer between locations must be represented, not a source phrase. P1 because treasury and custody corridors are master Phase 3."
+  },
+  {
+    "id": "LEDGER-019",
+    "domain": "LEDGER",
+    "title": "No ledger entry is a guess",
+    "statement": "No ledger entry is derived from an estimate, a model output or market data: every entry cites the observed economic event (fill report, settlement confirmation, statement) that caused it, and an event whose economic effect is not known is refused rather than estimated.",
+    "rationale": "Market data can disappear and models can be retrained; the ledger cannot be reconstructed from guesses. Once stored, an estimated entry looks exactly like an observed one, and the ledger stops being evidence.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An entry request with no source-event reference, or whose amounts come from a price or model estimate instead of the event, is refused, and every stored entry resolves to exactly one source event."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "The source sentence ('the ledger cannot be reconstructed from guesses') is also the rationale of the §15 authoritative-for item. It supports two requirements: nothing in the ledger is a guess (this one), and the ledger must be kept durably because it cannot be rebuilt, which is LEDGER-029 (immutable archive) and LEDGER-042 (backups)."
+  },
+  {
+    "id": "LEDGER-020",
+    "domain": "LEDGER",
+    "title": "Exactly-once-in-effect ledger commit by event_id",
+    "statement": "Every event in the global journal carries a stable, idempotent event ID, and the ledger writer commits each financial outcome exactly once in effect. In a single transaction keyed by event_id it applies the double-entry postings and the position and cash updates and records the event ID as processed, so a duplicate delivery is a no-op.",
+    "rationale": "Transport is at-least-once, so every outcome will sometimes arrive twice. If processing is not idempotent, a redelivered fill doubles a position, and the double looks like a real trade.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      },
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      },
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      },
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§27 Architecture Acceptance Criteria"
+      },
+      {
+        "doc": "H",
+        "page": "L218-221",
+        "section": "§03 Native Rust Event & Control Fabric (edges)"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated delivery sequences with duplicates, redeliveries in a different order, and crashes injected between commit and acknowledgement, the ledger's postings equal those from delivering each event once, and the processed-ID record holds each event ID exactly once."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Merges the idempotent-event-ID half of the §15 journal bullet (the lineage half is LEDGER-021), GCP §1 'idempotent outcome processing', the GCP §10 write model (extracted twice, once with 'duplicate delivery becomes a no-op'), the §20 matrix's reason 'Idempotent authoritative financial commit', the exactly-once half of the §27 COMPLETE TARGET ('committed exactly once in effect to Spanner through event-id idempotency, even when delivered multiple times'; the 'eventually' half is LEDGER-033), and the diagram's Spanner Sink ('idempotent materialization'). The GCP wording is kept because it specifies the mechanism. GCP §28 (G p.23, outside the extracted set) rules out claiming global exactly-once delivery and requires 'at-least-once transport plus idempotent state transitions and fencing'. NEW_DEPENDENCY from the §20 item belongs to the connection itself (LEDGER-045); LIVE_CAPITAL and COST from GCP §1 removed."
+  },
+  {
+    "id": "LEDGER-021",
+    "domain": "LEDGER",
+    "title": "Immutable lineage from intent to cash impact",
+    "statement": "The journal keeps immutable lineage from intent to order to fill to settlement to position/cash impact: every position or cash change resolves to the settlement, fill, order and intent that caused it, and a link cannot be altered once written.",
+    "rationale": "A position nobody can trace back to the decision that took it cannot be explained, attributed or learned from. The research desk's question, 'why do we hold this', must have an answer in the record itself.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      },
+      {
+        "doc": "H",
+        "page": "L249",
+        "section": "VIEWS.data — 04 · World Sensing, Tick History & Durable Knowledge (node 'sp')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "In a replayed paper session, following the lineage links from every position and cash posting reaches exactly one fill, order and intent (and a settlement once settled), and an attempt to rewrite a link is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC",
+      "REPLAY"
+    ],
+    "notes": "Split from the §15 journal bullet (its idempotent-ID half is LEDGER-020). Merges the diagram's Spanner Ledger node, which lists orders and fills as ledger records alongside cash and positions."
+  },
+  {
+    "id": "LEDGER-022",
+    "domain": "LEDGER",
+    "title": "User/mandate ownership subledger",
+    "statement": "The ledger holds a user/mandate ownership subledger that records which user or mandate beneficially owns each balance.",
+    "rationale": "Once more than one owner's capital is in the book, a balance with no recorded owner cannot be attributed, reported or returned to anyone.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "For every partitioned balance, the ownership subledger's balances sum across owners to the ledger balance, and a posting to a tracked balance that names no owner is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV",
+      "COMPLIANCE"
+    ],
+    "notes": "From the last entry of the §15 subledger list (extracted twice). P3: no build phase in either blueprint names it, and it implies external beneficial owners, which the repository's working agreement lists as a non-goal (the research and risk desk is the user; no external customers). Revisit if a mandate structure is adopted by ADR."
+  },
+  {
+    "id": "LEDGER-023",
+    "domain": "LEDGER",
+    "title": "Continuous reconciliation against venues",
+    "statement": "The ledger is continuously reconciled against venue truth (the venue's own record of orders, fills and positions): every difference between what a venue reports and what the ledger holds is detected while trading continues, not in a batch at period end.",
+    "rationale": "The venue's record is what the platform will be held to. A difference found at month end has had a month to compound, and every sizing decision in between used the wrong position.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against the simulated venue, an injected divergence (a fill the ledger lacks, a quantity mismatch, a position drift) is detected within the reconciliation interval and attributed to the venue and instrument."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC",
+      "RISK"
+    ],
+    "notes": "Split by counterparty class from the §15 reconciliation bullet (venues here; banks, custodians, wallets and settlement agents in LEDGER-024; warehouses and marketplaces in LEDGER-025), merged with the venue half of GCP §10 'continuously compare venue/custody truth with ledger'. What happens on a discrepancy is LEDGER-040 and LEDGER-041. LIVE_CAPITAL was removed: reconciling paper fills against the simulated venue, or a provider sandbox, is inside the paper boundary. Reconciling against a live account's statements would not be. The repository's edge cell and central plane already record reconciliation breaks against the simulated venue, which is this requirement in its paper form. Reconciliation is a GCP Phase 4 exit, hence P0."
+  },
+  {
+    "id": "LEDGER-024",
+    "domain": "LEDGER",
+    "title": "Continuous reconciliation against banks, custodians, wallets and settlement agents",
+    "statement": "The ledger is continuously reconciled against banks, custodians, wallets and settlement agents: the cash, asset and settlement positions they report are compared with the ledger's treasury, custody and obligation records, and every difference is detected.",
+    "rationale": "Custodians and banks hold the assets the ledger says the platform owns. If they disagree and nobody compares, the first sign is a failed withdrawal or a failed settlement.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against sandbox or recorded bank, custodian and wallet statements, an injected difference in a held balance or a settlement status is detected and attributed to the counterparty and account."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": "Split from the §15 reconciliation bullet and merged with the custody half of GCP §10. LIVE_CAPITAL kept: real banks, custodians and wallets mean live accounts. Under the paper-trading boundary this can be built and tested only against sandboxes or recorded statements, and reconciliation with a live account is BLOCKED (ADR 0099). P1 because custody corridors and treasury are master Phase 3."
+  },
+  {
+    "id": "LEDGER-025",
+    "domain": "LEDGER",
+    "title": "Continuous reconciliation against warehouses and marketplaces",
+    "statement": "The ledger is continuously reconciled against warehouses and marketplaces: the physical inventory and marketplace settlements they report are compared with the inventory subledger, and every difference is detected.",
+    "rationale": "Physical stock goes missing, gets damaged or is sold twice on a marketplace. Only a comparison with the holder's own count finds that before the platform promises a unit it does not have.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a simulated warehouse and marketplace, an injected count or settlement difference is detected and attributed to the location and product."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "COMMERCE"
+    ],
+    "notes": "Split from the §15 reconciliation bullet. LIVE_CAPITAL kept for the same reason as LEDGER-024: real warehouses and marketplaces mean real goods and accounts. P2 because physical commerce is master Phase 7."
+  },
+  {
+    "id": "LEDGER-026",
+    "domain": "LEDGER",
+    "title": "Decisions record their version identifiers",
+    "statement": "Every model, strategy, capital and risk decision stores the version identifiers of what produced it (model, strategy, policy and configuration versions), so that the decision can be explained and replayed completely.",
+    "rationale": "A decision that cannot name the model version that made it cannot be reproduced. Once that model is retrained, nobody can say why the platform did what it did.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "For a recorded decision, the stored version identifiers resolve to exact artifacts and replaying with them reproduces the decision, and a decision record missing any identifier is refused when written."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "REPLAY",
+      "GOV",
+      "RISK",
+      "CAPITAL"
+    ],
+    "notes": "The last §15 bullet. It is kept in LEDGER because the blueprint places it in the ledger's section; the identifiers mostly originate in MODEL and GOV. P0 because deterministic replay is a master Phase 1 exit."
+  },
+  {
+    "id": "LEDGER-027",
+    "domain": "LEDGER",
+    "title": "Ledger store is Spanner Enterprise Plus",
+    "statement": "The authoritative ledger runs on a strongly consistent transactional store with external consistency, Cloud Spanner Enterprise Plus, which is the primary runtime of the Financial Truth plane.",
+    "rationale": "Positions, cash and capital grants are read and written from several regions. A store that can serve a stale read lets two regions spend the same capital.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "§26 Platform & Deployment Architecture — placement table (Global ledger)"
+      },
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      },
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      },
+      {
+        "doc": "G",
+        "page": "17",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The Terraform plan declares a Spanner Enterprise Plus instance and a ledger database in the ledger project, and the ledger writer's configuration names that database."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "Merges the store half of the master §26 'Global ledger' row ('Cloud Spanner or equivalent strongly consistent multi-region transactional store'), the GCP §1 Financial Truth row, the first half of the GCP §10 Spanner bullet ('with external consistency') and the §19 catalog row. The master blueprint allows 'or equivalent'; the GCP blueprint fixes Spanner Enterprise Plus, and the more specific wording is kept. Multi-region is split out as LEDGER-028 and the archive as LEDGER-029. MULTI_REGION moved to LEDGER-028; LIVE_CAPITAL from GCP §1 removed. Standing decisions still apply: a Spanner client needs gRPC, TLS and Google auth, which ADR 0002 and ADR 0009 do not permit in-tree or as a new crate. Building this needs its own ADR (see LEDGER-045 and ADR 0099)."
+  },
+  {
+    "id": "LEDGER-028",
+    "domain": "LEDGER",
+    "title": "Ledger store is multi-region",
+    "statement": "The ledger's Spanner instance uses a multi-region configuration, so that losing one region does not lose committed ledger entries or the ability to commit.",
+    "rationale": "The ledger is global and the regions are not. A single-region ledger makes one region's outage an outage of financial truth for all of them.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "§26 Platform & Deployment Architecture — placement table (Global ledger)"
+      },
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      },
+      {
+        "doc": "G",
+        "page": "17",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan's instance configuration for the ledger is a multi-region configuration, not a regional one."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REGION",
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "RES"
+    ],
+    "notes": "Split from the same sources as LEDGER-027 ('multi-region' in master §26 and GCP §10, 'multi-region HA' in §19). GCP §29 (G p.23, outside the extracted set) also allows dual-region Enterprise Plus. P1 because multi-region is GCP Phase 7 and master Phase 4. Behaviour when the leader region is lost is LEDGER-043."
+  },
+  {
+    "id": "LEDGER-029",
+    "domain": "LEDGER",
+    "title": "Immutable ledger archive in locked Cloud Storage",
+    "statement": "Alongside the transactional store, ledger exports and audit manifests are written to an append-only archive in retention-locked Cloud Storage, as immutable evidence from which the ledger can be reconstructed independently of the database.",
+    "rationale": "The ledger cannot be reconstructed from guesses. If the only copy is the database, a bad migration, a compromised credential or an operator mistake can alter the record, with nothing outside it to show what it said.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "§26 Platform & Deployment Architecture — placement table (Global ledger)"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The export writes ledger segments and a manifest (hashes, sequence range) to a bucket whose retention policy is locked; an attempt to overwrite or delete an exported object is refused; and a ledger rebuilt from the exports alone reproduces the database's balances."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "SEC"
+    ],
+    "notes": "Merges the archive half of the master §26 row (extracted twice: 'append-only object/event archive for immutable evidence') with the export half of the GCP §10 'Backups/audit' bullet ('immutable ledger export/audit manifests to locked GCS for independent reconstruction evidence'). The GCP wording is kept as more specific. Scheduled backups and PITR from the same bullet are LEDGER-042. COST and MULTI_REGION from the master row belong to the Spanner store (LEDGER-027 and LEDGER-028)."
+  },
+  {
+    "id": "LEDGER-030",
+    "domain": "LEDGER",
+    "title": "Capital grants are financial truth",
+    "statement": "The Financial Truth store holds capital grants as records with the same strong consistency as the ledger, positions and obligations.",
+    "rationale": "A capital grant is a commitment of the platform's money to a cell. If grants are held anywhere weaker than the ledger, two cells can be granted the same capital.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A capital grant issued by the Capital Brain is committed as a record in the Financial Truth store, and the grants the platform reports as outstanding equal those records."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": "Split from the GCP §1 Financial Truth row, whose other parts are LEDGER-007, -008, -020 and -027. P0 because capital/risk envelope contracts are a GCP Phase 4 exit. LIVE_CAPITAL was removed because capital grants to paper cells are inside the paper boundary. COST is carried by LEDGER-027."
+  },
+  {
+    "id": "LEDGER-031",
+    "domain": "LEDGER",
+    "title": "Dedicated prod/ledger project",
+    "statement": "The ledger, accounting and capital Spanner databases and the KMS keys that protect them live in a dedicated prod/ledger project, isolated from analytics workloads.",
+    "rationale": "A project boundary is an IAM and blast-radius boundary. With financial truth in the analytics project, every analyst's grant and every noisy query job sits next to the ledger.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan places the ledger/accounting/capital databases and their KMS keys in the prod/ledger project, and no analytics dataset, job or analytics service account is created in or granted on that project."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "SEC"
+    ],
+    "notes": "P0 because the project model is GCP Phase 0 (org/folders/projects). LIVE_CAPITAL removed: project layout needs no live capital. The world-model project (prod/world-model) is separate in the same table; database-level separation from the world graph is LEDGER-034."
+  },
+  {
+    "id": "LEDGER-032",
+    "domain": "LEDGER",
+    "title": "P1 outcome topics keep long retention and an immutable archive",
+    "statement": "Fabric P1 Financial Outcomes topics (fills, cancels, position deltas, settlement events) have long hot retention and an immutable archive, so any outcome the ledger has not yet committed can still be replayed into it.",
+    "rationale": "During a ledger outage, outcomes wait in the Fabric. If retention is shorter than the outage, the outcomes expire before the ledger can take them, and trades vanish from financial truth.",
+    "kind": "nfr",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.2 Fabric topic classes"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The P1 topic class is configured with the long hot retention and immutable GCS archive, and an outcome older than the hot window is still recoverable from the archive and replayable into the ledger writer."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Split from the P1 row of GCP §7.2; the sink's retry behaviour is LEDGER-033. The same row gives P1 'RF3 quorum, idempotent IDs', which belong to FABRIC and LEDGER-020. GCP §22 (G p.21, outside the extracted set) relies on this: during a Spanner outage 'outcome partitions accumulate durably in Fabric; ledger writer replays idempotently when restored'. P0 because the Fabric's GCS archive is a GCP Phase 2 exit."
+  },
+  {
+    "id": "LEDGER-033",
+    "domain": "LEDGER",
+    "title": "Ledger sink retries indefinitely; no outcome is dropped",
+    "statement": "The ledger sink retries committing P1 outcomes to the ledger indefinitely: no financial outcome is dropped, dead-lettered or skipped because a commit failed, and every financial outcome is eventually committed.",
+    "rationale": "Any other policy turns a ledger outage into lost trades. A sink that gives up after N attempts has decided which fills the platform will forget.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.2 Fabric topic classes"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With the ledger store unavailable for longer than the sink's backoff ceiling, no outcome is dropped or dead-lettered, and after recovery every outcome published during the outage is committed exactly once."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "FABRIC",
+      "RES"
+    ],
+    "notes": "Merges 'ledger sink retries indefinitely' (GCP §7.2 P1 row) with the 'eventually committed' half of the §27 COMPLETE TARGET (the exactly-once half is LEDGER-020). A consequence to design for: an outcome that can never commit (malformed or refused) stops its partition instead of being skipped. That is the fail-closed choice, and it must show up in the backlog signal (LEDGER-044)."
+  },
+  {
+    "id": "LEDGER-034",
+    "domain": "LEDGER",
+    "title": "Ledger does not share a Spanner database or instance with the world graph",
+    "statement": "The ledger runs in its own Spanner database and instance, separate from the world graph, so that graph and cognition load cannot contend with ledger commits.",
+    "rationale": "Graph traversal and analytical queries are bursty and hard to bound. On shared compute, a research workload can slow or abort ledger transactions (the noisy-neighbour coupling the blueprint names).",
+    "kind": "invariant",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares the ledger database on an instance that hosts no world-graph (Spanner Graph) database."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "WORLD",
+      "GCP"
+    ],
+    "notes": "Merges the second half of the GCP §10 Spanner bullet with its separate extraction. GCP §28 (G p.23, outside the extracted set) lists 'Using one Spanner database for ledger, world graph, agent memory and every service table' as an anti-pattern. MULTI_REGION was removed because the separation does not depend on region count. P2 because the world graph arrives in GCP Phase 8; until then the ledger instance simply has nothing to share with."
+  },
+  {
+    "id": "LEDGER-035",
+    "domain": "LEDGER",
+    "title": "Leader region chosen by write origin and residency",
+    "statement": "The ledger's Spanner instance configuration and default leader region are chosen according to where ledger writes originate and to legal residency requirements.",
+    "rationale": "Write latency follows the leader, and some jurisdictions constrain where records may be held. A leader chosen by default can be both slow and non-compliant.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan's instance configuration and default leader match a recorded write-origin and residency analysis, and a plan with a leader in a region that analysis excludes is refused."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "COMPLIANCE"
+    ],
+    "notes": "Split from the GCP §10 'Leader placement' bullet; its second sentence (the ledger is asynchronous to order placement) is LEDGER-036. P1 because leader choice matters only with the multi-region configuration (LEDGER-028)."
+  },
+  {
+    "id": "LEDGER-036",
+    "domain": "LEDGER",
+    "title": "Ledger commits are off the order path",
+    "statement": "Ledger commits are asynchronous to order placement: no step on the order path waits for a ledger write, so the ledger's global consistency adds no latency to the hot path.",
+    "rationale": "A globally consistent commit costs cross-region round trips. If the order path waits for it, every trade pays that latency, and a ledger outage halts trading everywhere at once.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With ledger commits stalled, a reflex cell keeps placing paper orders inside its envelope with unchanged decision-to-order latency while its outcomes queue durably for later commit."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "EXEC"
+    ],
+    "notes": "Merges the second sentence of the GCP §10 'Leader placement' bullet with its separate extraction. MANAGED_SERVICE and MULTI_REGION were removed because the invariant holds for any store. Asynchronous does not mean unbounded: master §28 (M p.39, outside the extracted set) says 'new money-risking actions halt if authoritative accounting cannot be committed', and GCP §22 (G p.21) continues trading 'only within cached capital/risk envelope until ledger-lag threshold'. The ledger-lag bound belongs to RISK and REFLEX. A GCP §27 COMPLETE TARGET (G p.23, outside the extracted set) states the same from the order side: no synchronous call to Spanner (among others) is required between a venue event and a local order."
+  },
+  {
+    "id": "LEDGER-037",
+    "domain": "LEDGER",
+    "title": "Autoscaling floor sized for peak close and reconciliation",
+    "statement": "The ledger's Spanner instance uses managed autoscaling with a deliberately high minimum capacity, sized for peak financial close and reconciliation periods.",
+    "rationale": "Autoscaling reacts after load arrives. At financial close the load arrives all at once, and a floor sized for the quiet hours means the ledger falls behind exactly when it is being checked.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      },
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan enables managed autoscaling on the ledger instance with a minimum processing-unit floor at or above the documented close/reconciliation peak sizing."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "Merges the first half of the GCP §10 'Autoscaling' bullet with the §18 Spanner row ('managed autoscaling with high floor'). The key-design half of both is LEDGER-038."
+  },
+  {
+    "id": "LEDGER-038",
+    "domain": "LEDGER",
+    "title": "Hotspot-safe ledger keys",
+    "statement": "The ledger schema's keys are hotspot-safe (no primary key leads with a monotonically increasing value such as a timestamp or sequence number), so that write load is spread by design and not by autoscaling.",
+    "rationale": "Autoscaling adds capacity, but a monotonic key sends every write to the same split regardless of capacity. It is a schema defect that scaling hides until the load that exposes it.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      },
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A review or lint of the ledger DDL finds no table whose primary key's leading column is a timestamp, sequence or other monotonically increasing value."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "Merges the second half of the GCP §10 'Autoscaling' bullet ('not a substitute for hotspot-safe keys', extracted twice) with the §18 Spanner row ('schema/key design eliminates hotspots before scaling'). The monotonic-key test is the standard form of hotspot safety for Spanner, not a source phrase. P1, but it should be decided when the GCP Phase 4 schema is first written, because primary keys are expensive to change afterwards."
+  },
+  {
+    "id": "LEDGER-039",
+    "domain": "LEDGER",
+    "title": "Change streams feed reporting and derived caches downstream",
+    "statement": "Ledger changes propagate to BigQuery reporting and derived caches through Spanner change streams (with Dataflow where needed), as consumers downstream of the ledger.",
+    "rationale": "Reporting and caches need ledger data without putting query load on the ledger. A change stream supplies it in commit order and makes each copy's lag measurable.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A committed ledger entry appears in the reporting table and derived cache through the change stream, carrying its ledger commit reference, and ledger commits continue unaffected while the downstream pipeline is stopped."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "GCP"
+    ],
+    "notes": "The capability half of the GCP §10 'Change propagation' bullet; its invariant half (downstream copies are not the system of record) is merged into LEDGER-001. P1 because BigQuery and the data plane are GCP Phase 5."
+  },
+  {
+    "id": "LEDGER-040",
+    "domain": "LEDGER",
+    "title": "Reconciliation discrepancies raise a Fabric event",
+    "statement": "Every discrepancy that reconciliation finds between venue or custody truth and the ledger is published as a P0 or P1 Fabric event.",
+    "rationale": "A break known only to the reconciliation job reaches no one who can act on it. On the durable control fabric it reaches the cells, the risk gate and the operators, and it is replayable afterwards.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An injected mismatch between a simulated venue report and the ledger produces exactly one break event on the P0 or P1 topic, carrying the gap, its direction and the venue or custodian."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "OBS"
+    ],
+    "notes": "Split from the GCP §10 'Reconciliation' bullet; the comparison itself is LEDGER-023 and LEDGER-024, and the execution response is LEDGER-041. LIVE_CAPITAL removed: a break against a simulated venue exercises the same path. GCP §16 (G p.15, outside the extracted set) lists 'reconciliation mismatch age' as a ledger SLO signal."
+  },
+  {
+    "id": "LEDGER-041",
+    "domain": "LEDGER",
+    "title": "Deterministic policy narrows or stops execution on a discrepancy",
+    "statement": "A reconciliation discrepancy can narrow or stop local execution, and whether it does is decided by deterministic policy.",
+    "rationale": "Trading on a position the venue disagrees with compounds the error with every order. Leaving the response to a model makes it neither predictable nor replayable, which is why the decision is deterministic.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With a break outstanding above the policy threshold, the affected cell narrows or halts as the policy table specifies, the same break replayed produces the same action, and no model is invoked on that path."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "REFLEX"
+    ],
+    "notes": "Split from the GCP §10 'Reconciliation' bullet. The repository's rule that pre-trade deterministic checks never route to a model (qip-cost-router Determinism::Required) is the existing precedent for 'deterministic policy'. The repository's central plane already records a cell halt carrying reconciliation breaks (CentralPlane::record_halt, qip_central_cell_halts_total); whether that halt meets 'deterministic policy' as meant here is for the traceability matrix to establish. LIVE_CAPITAL removed as for LEDGER-040."
+  },
+  {
+    "id": "LEDGER-042",
+    "domain": "LEDGER",
+    "title": "Scheduled backups and point-in-time recovery",
+    "statement": "The ledger database has scheduled backups and point-in-time recovery configured.",
+    "rationale": "The immutable export proves what the ledger said; backups and PITR restore the database itself quickly after corruption or an erroneous write, without rebuilding it from the archive.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan configures a backup schedule and a version-retention period (PITR) on the ledger database, and a restore drill recovers the database to a chosen timestamp."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "RES"
+    ],
+    "notes": "Split from the GCP §10 'Backups/audit' bullet; its export half is LEDGER-029. The source hedges with 'where configured'; it is scored here as required for the ledger database. P1 because the GCP Phase 4 exit list names the ledger writer, idempotency and reconciliation but not backups."
+  },
+  {
+    "id": "LEDGER-043",
+    "domain": "LEDGER",
+    "title": "Ledger survives loss of the Spanner leader region",
+    "statement": "When the Spanner leader region is lost, leadership moves according to the instance configuration and the ledger keeps committing, at changed latency, without losing or duplicating outcomes.",
+    "rationale": "The ledger depends on managed failover it does not control. A game day is the only way to learn whether the writer's timeouts, retries and idempotency hold while leadership moves.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "15",
+        "section": "§17 Availability, Resilience and Disaster Recovery"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "In a game day that removes the leader region, commits resume after leadership moves, the outcome-to-ledger backlog drains, and a post-drill reconciliation finds no lost or duplicated outcome."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "RES"
+    ],
+    "notes": "Split from the GCP §17 'Spanner leader region' row; its monitoring half is LEDGER-044. P1 because it needs the multi-region configuration (LEDGER-028) and GCP Phase 7 game-day failover."
+  },
+  {
+    "id": "LEDGER-044",
+    "domain": "LEDGER",
+    "title": "Outcome-to-ledger backlog is monitored",
+    "statement": "The outcome-to-ledger backlog (outcomes published on P1 but not yet committed to the ledger) is measured and monitored continuously.",
+    "rationale": "Because the ledger is asynchronous, a stalled writer does not stop trading. Only the backlog shows that financial truth is falling behind what the cells have done.",
+    "kind": "nfr",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "15",
+        "section": "§17 Availability, Resilience and Disaster Recovery"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The ledger writer emits an outcome-to-ledger backlog and lag series that rises while commits are stalled and returns to zero after recovery, and a test asserts the series is recorded."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": "Split from the GCP §17 'Spanner leader region' recovery column ('monitor outcome-to-ledger backlog'). GCP §16 (G p.15, outside the extracted set) lists 'outcome-to-ledger lag' among the ledger's SLO signals, with Spanner commit p99, reconciliation mismatch age and transaction abort rate. MANAGED_SERVICE and MULTI_REGION removed: the writer measures the backlog in any deployment. P0 because observability is a master Phase 0 exit. Under the repository's observability rules, an alert on this series needs proof of ingestion first."
+  },
+  {
+    "id": "LEDGER-045",
+    "domain": "LEDGER",
+    "title": "Ledger writer talks to Spanner over gRPC, async and transactional",
+    "statement": "The ledger writer connects to Spanner over gRPC in asynchronous transactional mode.",
+    "rationale": "The ledger commit is transactional and off the hot path; the connection matrix fixes that pairing so that the commit never runs synchronously inside order flow and never runs outside a transaction.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against the Spanner emulator, the ledger writer commits an outcome in a read-write transaction over the gRPC API, deduplicates a redelivery, and is invoked only from the sink consumer, never from the order path."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "The protocol half of the §20 row; its reason ('Idempotent authoritative financial commit') is merged into LEDGER-020. NEW_DEPENDENCY applies: a Spanner gRPC client needs HTTP/2, TLS and Google auth. ADR 0009's prohibition is on writing exactly those clients in-tree, and ADR 0002 permits only serde and serde_json as crates. Under ADR 0099 that standing decision keeps its force until a new ADR resolves it, so this requirement is blocked on an ADR, not on code."
+  },
+  {
+    "id": "LEDGER-046",
+    "domain": "LEDGER",
+    "title": "Reconciliation rebuilds positions and cash without trusting caches",
+    "statement": "Reconciliation can rebuild and verify positions and cash from the authoritative ledger plus venue and custody statements alone, without trusting any cache.",
+    "rationale": "A reconciliation that reads a cache verifies the cache against itself. Rebuilding from the ledger and the counterparties' own statements is the only check that can find a cache that has drifted.",
+    "kind": "acceptance",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "With every cache and derived store emptied or deliberately poisoned, a reconciliation run rebuilds positions and cash from the ledger and the (simulated) venue and custody statements, matches the values from before the test, and no poisoned cache value appears in its output."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "RISK"
+    ],
+    "notes": "A GCP §27 COMPLETE TARGET. MANAGED_SERVICE removed: the property does not depend on the store. GCP §28 (G p.23, outside the extracted set) forbids 'Using Redis as position/capital truth', which this criterion tests from the other side. P0 because reconciliation is a GCP Phase 4 exit."
+  },
+  {
+    "id": "LEDGER-047",
+    "domain": "LEDGER",
+    "title": "Regional service planes write durable control state to Spanner",
+    "statement": "Each regional GKE service plane writes its durable control-plane state to Cloud Spanner, the store that also holds the global ledger.",
+    "rationale": "Control state such as grants issued and envelope versions must outlive a regional cluster. Keeping it in the globally consistent store means a rebuilt region resumes from what was committed, not from what it remembers.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L128-138",
+        "section": "§01 Global Platform Topology (edges)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A regional service's durable control state is present in the Spanner control-state database after a write, and it survives the regional cluster being destroyed and recreated."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "KUBERNETES",
+      "MULTI_REGION",
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "CAPITAL"
+    ],
+    "notes": "Diagram-only: the three regional GKE nodes have 'control' edges to the Cloud Spanner node, labelled 'Global ledger/accounting and durable control state'. The diagram does not say which control state, or whether it shares the ledger's database. GCP §28 (G p.23, outside the extracted set) warns against one Spanner database for the ledger and every service table, so the control state should be in its own database (see LEDGER-034). P1 because the regional service plane is GCP Phase 6. The repository has no Kubernetes today (Cloud Run per ADR 0024), which the KUBERNETES flag records."
+  },
+  {
+    "id": "LEDGER-048",
+    "domain": "LEDGER",
+    "title": "Internal outcomes bypass the world-data discard pipeline",
+    "statement": "Algorik's own outcome records (orders, fills, decisions) never pass through the world-data pipeline, whose delta stage may discard records; they are written directly to their durable stores.",
+    "rationale": "The world-data pipeline is built to throw away what it judges redundant. The platform's own orders and fills are irreplaceable, and a deduplicating stage that mistook one for noise would delete a trade from the record.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L257-261",
+        "section": "§04 World Sensing, Tick History & Durable Knowledge (edges)"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A wiring test shows no path from the internal outcome stream into the scout/parse/evidence/delta/discard chain, and an outcome the delta stage would classify as a duplicate is still present in the ledger and the internal lake."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA",
+      "WORLD"
+    ],
+    "notes": "Split from the diagram's §04 edges: 'internal' (Algorik Outcomes, 'Internal irreplaceable records') feeds 'tick' (data) and 'sp' (control), never 'delta'/'discard'. The ledger write is merged into LEDGER-015 and the lake write is LEDGER-049. MANAGED_SERVICE removed: this is a routing invariant. P1 because the discard pipeline arrives with the master Phase 2 cognitive data loop."
+  },
+  {
+    "id": "LEDGER-049",
+    "domain": "LEDGER",
+    "title": "Internal outcomes are also retained in the Tick/Internal Lake",
+    "statement": "Algorik's own outcomes (orders, fills, decisions) are also written to the GCS Tick/Internal Lake as retained execution history, alongside the ledger.",
+    "rationale": "The ledger holds the economic effect; learning and replay need the full execution history beside the market ticks it happened against, in a store built for scanning, not in the transactional ledger.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L257-261",
+        "section": "§04 World Sensing, Tick History & Durable Knowledge (edges)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A paper session's orders, fills and decisions appear in the internal lake partition with the same event IDs as their ledger entries, and the lake and ledger counts for the session agree."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "TICK",
+      "REPLAY"
+    ],
+    "notes": "Split from the diagram's Algorik Outcomes -> GCS Tick/Internal Lake edge. Kept in LEDGER because the extraction placed it here; the lake belongs to DATA and TICK. P1 because the retained internal archive is GCP Phase 5."
+  }
+]

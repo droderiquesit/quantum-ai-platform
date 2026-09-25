@@ -1,0 +1,373 @@
+[
+  {
+    "id": "ASSET-001",
+    "domain": "ASSET",
+    "title": "Each supported asset class is reached through its own adapter",
+    "statement": "Every supported asset class (liquid, event-driven, illiquid, private, tokenized and physical) is reached through a class-specific adapter. A class with no adapter of its own is refused, never routed through another class's adapter.",
+    "rationale": "Classes differ in how they are reached (venue protocol, fund administrator, marketplace, on-chain). Pushing a class through another class's adapter carries the wrong settlement and pricing semantics without any error.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1.1 Product Identity"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For each of the six classes, a registered instrument resolves to that class's own adapter, and an instrument of a class with no registered adapter is refused with an error naming the class instead of falling back to a generic adapter."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXEC", "COVERAGE"],
+    "notes": "Split from the §1.1 'Multi-asset' bullet, which also requires class-specific lifecycle engines (ASSET-002). Master Phase 3 brings 'multiple asset classes', which is why this is P1. The event-driven and physical classes arrive with master Phase 7 (prediction/commerce, P2), so full coverage of all six classes is P2 work. Under ADR 0003/0021 every adapter targets the simulated broker or a provider sandbox only. The related COMPLETE TARGET for an extensible class registry (M p42 §31) was not in this domain's raw set and probably belongs to COVERAGE."
+  },
+  {
+    "id": "ASSET-002",
+    "domain": "ASSET",
+    "title": "Each supported asset class has its own lifecycle engine",
+    "statement": "Every supported asset class (liquid, event-driven, illiquid, private, tokenized and physical) has a class-specific lifecycle engine that carries the class's own lifecycle events. A position of a class with no lifecycle engine is refused rather than handled by a generic one.",
+    "rationale": "A capital call, a corporate action, a token bridge transfer and a warehouse movement are different lifecycle events. A single generic lifecycle either drops them or models them wrongly.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1.1 Product Identity"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A position of each of the six classes is driven through a class-specific event (e.g. a corporate action, a capital call, a bridge transfer, an inventory move); the test asserts that the class's own engine handled it and that a position of an unregistered class is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["COVERAGE"],
+    "notes": "Split from the same §1.1 bullet as ASSET-001. The shared stage sequence that every engine follows is ASSET-005; this requirement is about the class-specific events each engine adds. Phase note as for ASSET-001: P1 for the Phase 3 classes, while the event-driven and physical engines are master Phase 7."
+  },
+  {
+    "id": "ASSET-003",
+    "domain": "ASSET",
+    "title": "Portfolio construction across strategies, asset classes, regions and horizons",
+    "statement": "The Asset Brain builds the portfolio across strategies, asset classes, regions and investment horizons together, and reports the resulting exposure along each of those four dimensions.",
+    "rationale": "Building per strategy or per region in isolation hides overlapping exposure that appears only once the whole book is assembled across all four dimensions.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "6", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "22", "section": "§12 Asset Management Brain"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated opportunity sets that span at least two strategies, asset classes, regions and horizons, the constructed portfolio reports exposure broken down by each of the four dimensions, each breakdown sums to the portfolio total, and no candidate's exposure is missing from any breakdown."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["CAPITAL", "RISK"],
+    "notes": "Merged: §3 lists only 'portfolio construction'. The more specific §12 wording ('across strategies, asset classes, regions and horizons') is kept. Cross-region construction depends on the master Phase 4 multi-region mesh, which is still P1."
+  },
+  {
+    "id": "ASSET-004",
+    "domain": "ASSET",
+    "title": "Per-position economic state the Asset Brain maintains",
+    "statement": "For every position in every supported asset class, the Asset Brain maintains: the mandate it is held under, its target exposure, its valuation together with the valuation's confidence, its investment horizon, its expected liquidity, its hedges, the corporate actions affecting it, its commitments, and its exit plan. A position record missing any of these is refused rather than defaulted.",
+    "rationale": "These fields are the concrete content of 'owns the economic lifecycle'. Without a fixed contract each class carries a different, partial record, and no test can say what the Asset Brain is supposed to know.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "6", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society"},
+      {"doc": "M", "page": "22", "section": "§12 Asset Management Brain"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Building a position record with any one of the nine fields absent is refused with an error naming that field, and a complete record for each supported class survives a serialisation round trip with every field intact."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT"],
+    "notes": "Merged from four raw items: the §12 sentence, its restatement as a field list, the §3 capability-map row (mandates, horizons, valuation, corporate actions, commitments, divestment, hedging) and the §9.1 Portfolio/Asset Brain row (mandates, horizons, exposures, hedges, divestment). §3 says 'valuation' and §12 says 'valuation confidence', so both are kept as one field pair. §9.1's 'exposures' is read as §12's 'target exposures', and 'divestment' as the 'exit plan'. §12's trailing 'attribution' is a derived output, not maintained state, and is ASSET-006. P0 because it is a canonical contract (master Phase 0: 'canonical types/contracts'); filling it across classes is Phase 3 work."
+  },
+  {
+    "id": "ASSET-005",
+    "domain": "ASSET",
+    "title": "Positions follow the discover-to-attribute lifecycle",
+    "statement": "Every position moves through the lifecycle discover -> evaluate -> acquire -> hold/hedge -> monitor -> resize -> exit/divest -> settle -> attribute. Each transition is recorded as an event, and a transition that skips a required stage (for example exit to attribute without settle) is refused.",
+    "rationale": "An explicit, ordered lifecycle lets each position's history be replayed and each transition attributed. An implicit one lets a position be exited without being settled, or settled without being attributed.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "6", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "22", "section": "§12 Asset Management Brain"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Over generated event sequences, the lifecycle state machine accepts only the transitions §12 lists (with hold/hedge, monitor and resize allowed to repeat), refuses every stage skip, and every position that reaches exit/divest can reach attribute only through settle; replaying the recorded events rebuilds the same stage for each position."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXEC", "LEDGER"],
+    "notes": "Merged: §3 names 'lifecycle, divestment, hedging'; the more specific §12 nine-stage sequence is kept. Whether resize may repeat is not stated in §12; allowing it is an interpretation, recorded here. Under ADR 0003/0021, 'acquire', 'exit/divest' and 'settle' take place against the simulated broker only."
+  },
+  {
+    "id": "ASSET-006",
+    "domain": "ASSET",
+    "title": "Every settled position is attributed",
+    "statement": "When a position is settled, the Asset Brain produces an attribution of its outcome, across all supported classes. The attribution can be reproduced from the event log alone.",
+    "rationale": "The platform exists to say why it did what it did (ADR 0007, exact attribution). A position whose outcome is not attributed cannot feed learning or be explained afterwards.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "6", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "22", "section": "§12 Asset Management Brain"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying the event log of a run that settled positions in at least two classes rebuilds each position's attribution byte-for-byte, and each attribution's components sum exactly to that position's realised result."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["LEDGER"],
+    "notes": "Split out of the §12 sentence ('... exit plans and attribution'), and merged with §3's 'attribution' and the final 'attribute' stage of the §12 lifecycle (ASSET-005). The blueprint does not name the attribution dimensions; 'components sum to the realised result' is the minimum check that applies whatever dimensions are chosen."
+  },
+  {
+    "id": "ASSET-007",
+    "domain": "ASSET",
+    "title": "Illiquid/private positions are valued by dated marks with confidence",
+    "statement": "In illiquid/private mode, a position is valued by a mark that carries its as-of date and a valuation confidence. A position with no mark is reported as unvalued rather than valued at cost, at zero or at a last trade.",
+    "rationale": "Illiquid positions have no continuous price. A dated mark with a confidence is the only honest value; defaulting to cost or a last trade is a guess presented as a price.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society"},
+      {"doc": "M", "page": "22", "section": "§12 Asset Management Brain"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A private position with a mark reports that mark's value, date and confidence; the same position with no mark reports 'unvalued' and contributes no value to portfolio totals, instead of reporting cost or zero."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["LEDGER", "RISK"],
+    "notes": "Merged from the §9.1 Private Markets Brain row ('illiquid valuations') and the §12 illiquid/private bullet ('marks'), in both its original and its split raw form. Refusing to default an absent mark follows the repository's 'refuse rather than guess' principle. The blueprint does not say how an absent mark is handled."
+  },
+  {
+    "id": "ASSET-008",
+    "domain": "ASSET",
+    "title": "Illiquid/private mode tracks commitments and capital calls",
+    "statement": "In illiquid/private mode, the Asset Brain tracks each commitment and every capital call drawn against it, so that the unfunded remainder of each commitment is always known. A call larger than the unfunded remainder is refused.",
+    "rationale": "Unfunded commitments are future cash obligations. Without them the platform cannot say what is owed and when, and a call can arrive with no liquidity reserved for it.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society"},
+      {"doc": "M", "page": "22", "section": "§12 Asset Management Brain"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated sequences of commitments and calls, the unfunded remainder always equals the commitment minus the sum of calls and is never negative, and a call that would make it negative is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CAPITAL", "LEDGER"],
+    "notes": "Merged from the §9.1 Private Markets Brain row ('commitments, capital calls') and the §12 illiquid/private bullet ('commitments, calls'), in both raw forms. Commitments and calls are kept as one requirement because a call can only be checked against the commitment it draws on. Feeding unfunded commitments into the liquidity ladder is Capital Brain work (M §13) and is not stated here."
+  },
+  {
+    "id": "ASSET-009",
+    "domain": "ASSET",
+    "title": "Private-company and fund lifecycle is modelled",
+    "statement": "A Private Markets specialist brain models the lifecycle of private-company and fund positions, and a position's stage changes only on a recorded lifecycle event (for example a capital call, a distribution or an exit).",
+    "rationale": "Private companies and funds pass through stages (investment, calls, distributions, exit) that a listed-security lifecycle does not have. Without a model of them, time-to-exit and expected cash flows are unknown.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A private-company position and a fund position are each driven from commitment to exit; the brain's reported stage for each changes on, and only on, the matching recorded event, and replaying the events rebuilds the same stages."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REASON"],
+    "notes": "Split from the §9.1 Private Markets Brain row; its valuation and commitment/call parts merged into ASSET-007 and ASSET-008. P2 because it belongs to the specialist brain society (master Phase 8: 'specialist-agent society'), while the §12 illiquid mode it complements is Phase 3. §9.1 does not list the stages; the ones named in the statement are examples, not requirements."
+  },
+  {
+    "id": "ASSET-010",
+    "domain": "ASSET",
+    "title": "Allocation by factor and causal driver",
+    "statement": "The Portfolio/Asset Brain allocates by factor and by causal driver as well as by instrument, and reports its exposure to each factor and each causal driver.",
+    "rationale": "Allocating by instrument alone hides concentration in a shared factor or causal driver, and correlated losses come from exactly those concentrations.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Given positions with known factor and causal-driver loadings, the reported exposure to each factor and driver equals the loading-weighted sum over positions, and an allocation that would exceed a mandate cap on one driver is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "RISK"],
+    "notes": "Split from the §9.1 Portfolio/Asset Brain row; its mandates, horizons, exposures, hedges and divestment merged into ASSET-004. Causal-driver loadings depend on the world model and causal graph of master Phase 2. The mandate-cap part of the check is an interpretation of 'allocation', not stated in §9.1."
+  },
+  {
+    "id": "ASSET-011",
+    "domain": "ASSET",
+    "title": "The Asset Brain owns economic lifecycle, not execution",
+    "statement": "The Asset Brain owns the economic lifecycle of positions and none of the execution mechanics. It emits targets and plans; it never places, amends or cancels an order and holds no venue connection. Execution stays behind the Reflex cell's deterministic risk gate.",
+    "rationale": "With execution kept out of the Asset Brain, every order still passes the deterministic risk gate. An Asset Brain that could execute would be a second order path around that gate and around the paper-trading layers.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "22", "section": "§12 Asset Management Brain"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture-suite test asserts that the Asset Brain crate depends on no execution, broker or venue-adapter crate and exposes no function that returns or submits an order, and the test is mutation-verified by adding such a dependency and watching it fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXEC", "RISK", "ARCH"],
+    "notes": "Split out of the first §12 sentence; its field list is ASSET-004 and its 'attribution' is ASSET-006. P0 as a safety invariant: it keeps the deterministic pre-trade gate (and so the paper boundary) the only order path. M p4 §2 Corrections Required to v10.1 ('Promote Asset Brain ... into first-class autonomous domains with explicit contracts') supports the separation but was not in the raw set."
+  },
+  {
+    "id": "ASSET-012",
+    "domain": "ASSET",
+    "title": "Illiquid/private mode enforces lockups",
+    "statement": "In illiquid/private mode, the Asset Brain records each position's lockup and refuses an exit or divestment plan dated before the lockup expires.",
+    "rationale": "An exit planned inside a lockup cannot be carried out. A plan that ignores the lockup overstates liquidity and understates time-to-exit.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "22", "section": "§12 Asset Management Brain"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An exit plan dated one instant before lockup expiry is refused and one dated at expiry is admitted, and the boundary is mutation-verified by shifting the comparison."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["RISK"],
+    "notes": "Split from the §12 illiquid/private bullet (both raw forms). Commitments/calls are ASSET-008, marks ASSET-007, secondary exits ASSET-013. 'Refuses' is the enforcement reading of 'lockups'; §12 names lockups without saying what they constrain."
+  },
+  {
+    "id": "ASSET-013",
+    "domain": "ASSET",
+    "title": "Illiquid/private mode has secondary-exit logic",
+    "statement": "In illiquid/private mode, the exit planner can produce a secondary-sale exit for a position that has no primary liquidity event before its horizon, with an estimated discount to its mark.",
+    "rationale": "Private positions often have no primary exit before term. Without a secondary-sale route their exit plan is empty and their liquidity is misstated.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "22", "section": "§12 Asset Management Brain"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For a private position with no primary liquidity event before its horizon, the exit plan contains a secondary-sale route with a discount to the current mark; a position with a scheduled primary event does not get one by default; and the route runs only against the simulator."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXEC"],
+    "notes": "Split from the §12 illiquid/private bullet. §12 names 'secondary-exit logic' only; the discount-to-mark and no-primary-event trigger are the minimum content that makes it checkable. Carrying out a secondary sale is an external action and stays simulated under ADR 0003/0021."
+  },
+  {
+    "id": "ASSET-014",
+    "domain": "ASSET",
+    "title": "Physical positions are tied to inventory and logistics state",
+    "statement": "In physical mode, the economic exposure of each physical position is linked to inventory and logistics state (units, location, condition, reservations), and it reconciles to that state.",
+    "rationale": "A physical position is units in a place, not a price. Without inventory and logistics state its economic exposure cannot be reconciled to what is actually held.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "22", "section": "§12 Asset Management Brain"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In the simulated commerce plane, a physical position's economic quantity equals the inventory ledger's units for that product; a logistics move changes location without changing quantity or ownership; and a unit count mismatch raises a reconciliation break."
+    },
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["COMMERCE", "LEDGER"],
+    "notes": "Split from the §12 physical-mode bullet; product-level economics is ASSET-015. The inventory fields listed follow the Inventory Ledger row of M p26 §20 Physical Commerce & Product Arbitrage (physical units, condition, location, cost basis, reservations), which was not in this domain's raw set. P2 because physical commerce and logistics adapters are master Phase 7. EXTERNAL_ACTION: real purchasing and logistics are outside ADR 0021, so this is scored BLOCKED beyond its simulated form (ADR 0099)."
+  },
+  {
+    "id": "ASSET-015",
+    "domain": "ASSET",
+    "title": "Physical positions carry product-level economics",
+    "statement": "In physical mode, the Asset Brain values and attributes each physical position per product, including acquisition cost, storage, shipping, duties/taxes and resale fees, not by price alone.",
+    "rationale": "Storage, shipping, duties and resale fees can exceed the spread on a physical trade. Economics measured on price alone reports profits that do not exist.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "22", "section": "§12 Asset Management Brain"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "For a product with known acquisition, storage, shipping, duty and resale-fee costs, the reported product-level result equals resale proceeds minus the sum of those costs, and omitting any one cost component changes the result."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["COMMERCE"],
+    "notes": "Split from the §12 physical-mode bullet. The raw item's EXTERNAL_ACTION flag was removed here: computing product-level economics needs no external action, and the flag stays on ASSET-014. §12 says only 'product-level economics'; the cost components are drawn from the commerce plane of M p26 §20 (taxes/duties, logistics, resale) and are illustrative, not an exhaustive list."
+  },
+  {
+    "id": "ASSET-016",
+    "domain": "ASSET",
+    "title": "Economic exposure is reconciled against settled ownership",
+    "statement": "The Asset Brain continuously reconciles each position's economic exposure against its legal/settled ownership, and raises a break on any divergence rather than trusting either side.",
+    "rationale": "Economic exposure and settled ownership are two independent claims about the same fact. They diverge on failed settlement, corporate actions and custody errors, and an undetected divergence is a position the platform believes it holds and does not.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "22", "section": "§12 Asset Management Brain"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Injecting a fill that is booked economically but fails simulated settlement, and separately a settled holding with no economic position, each raises a reconciliation break within the next cycle, and neither side is silently overwritten to match the other."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["LEDGER"],
+    "notes": "P0 because reconciliation is a GCP Phase 4 ('Financial truth ... reconciliation') exit criterion and a correctness invariant. It overlaps G p23 §27's COMPLETE TARGET that reconciliation rebuilds positions from the authoritative ledger plus venue/custody statements without trusting caches, which probably belongs to LEDGER. In paper trading, 'legal/settled ownership' means the simulated custody/settlement record."
+  },
+  {
+    "id": "ASSET-017",
+    "domain": "ASSET",
+    "title": "Asset/Portfolio Brain runs on Regional GKE Standard",
+    "statement": "The Asset/Portfolio Brain is deployed as a warm regional service on a Regional GKE Standard cluster in each execution region, off the Reflex hot path.",
+    "rationale": "G §8 places the Asset/Portfolio Brain as warm, regional logic separate from the Reflex cell, so that no hot-path decision waits on it.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane"},
+      {"doc": "G", "page": "22", "section": "§26 Recommended Build Order (Phase 6 - Regional service plane)"},
+      {"doc": "H", "page": "view 01", "section": "01 · Global Platform Topology (Regional GKE nodes: Asset/Capital/Risk/Evidence/World-model services)"},
+      {"doc": "H", "page": "view 02", "section": "02 · Regional Cell (Asset / Strategy k8s service)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "A terraform plan for a regional environment shows the Asset Brain workload on a regional GKE Standard cluster (regional control plane, node pools across at least two zones), and no Reflex-cell code path makes a synchronous call to it."
+    },
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["GCP", "ARCH"],
+    "notes": "Split from the G §8 row; state backing is ASSET-018 and scaling ASSET-019. The G p22 and H citations were added while checking the source text; they were not in the raw extraction. H view 02 labels the node 'Asset / Strategy - Portfolio/strategy lifecycle and opportunities' and shows it consuming from and publishing control to the Rust Fabric brokers. That edge is not captured by any ASSET item and probably belongs to FABRIC. Contradicts standing decisions ADR 0024 (Kubernetes retired for Cloud Run) and ADR 0091 (five binaries), which are ADR 0099 conflicts C3 and C7. The standing decisions keep their force until a runtime record resolves them. MANAGED_SERVICE was dropped from this split and kept on ASSET-018."
+  },
+  {
+    "id": "ASSET-018",
+    "domain": "ASSET",
+    "title": "Asset/Portfolio Brain state is held in Spanner/Bigtable",
+    "statement": "The Asset/Portfolio Brain is stateful logic whose durable state is held in Spanner/Bigtable, not in replica memory, so a replacement replica resumes from the stores.",
+    "rationale": "State held only in a replica is lost when the replica is rescheduled. Durable external state lets a replacement resume without rebuilding positions from guesses.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Terminating the Asset Brain replica mid-cycle and starting a new one yields every position's state (ASSET-004 fields) identical to the state before termination, read back from Spanner/Bigtable."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "DATA"],
+    "notes": "Split from the G §8 row. Contradicts ADR 0002/0009 (in-tree storage, two dependencies) and ADR 0089 (file-backed log), which is ADR 0099 conflict C4. Until a storage record exists, the testable part is that state is not replica-local; the choice of Spanner/Bigtable as the store is scored as blocked on C4."
+  },
+  {
+    "id": "ASSET-019",
+    "domain": "ASSET",
+    "title": "Asset/Portfolio Brain scales by HPA on CPU and custom metrics",
+    "statement": "The Asset/Portfolio Brain scales horizontally through a HorizontalPodAutoscaler driven by CPU and by at least one custom workload metric the service actually emits.",
+    "rationale": "Scaling on a named signal keeps the service responsive under load without manual action. G §27 requires every GCP workload to document its scaling model.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan shows an HPA on the Asset Brain deployment targeting CPU and a named custom metric, and a test asserts the service records that custom metric, so the HPA does not scale on a series nothing emits."
+    },
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["GCP", "OBS"],
+    "notes": "Split from the G §8 row. The observability rule forbids naming a metric nothing emits, which is why the check requires the emitting code as well as the plan. Subject to the same ADR 0099 conflicts (C3, C7) as ASSET-017."
+  }
+]

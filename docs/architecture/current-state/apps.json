@@ -1,0 +1,724 @@
+[
+  {
+    "name": "qip-api",
+    "path": "backend/crates/apps/qip-api",
+    "kind": "app",
+    "purpose": "An in-tree HTTP/1.1 server, a versioned REST API of 63 routes, SSE streaming and the authentication in front of both (backend/crates/apps/qip-api/src/lib.rs:1-37). It is the composition root that reads all runtime configuration, assembles a `Platform` in serving mode, hardens the paper-trading trust root and serves the operator console, treasury/ledger, mesh and live-stream surfaces (backend/crates/apps/qip-api/src/main.rs:81-235).",
+    "key_contracts": [
+      "routes::ROUTES: &[Route] — the entire 63-route API surface with required role (backend/crates/apps/qip-api/src/routes.rs:105-804)",
+      "routes::Api struct + Api::new/with_mesh/with_feed/with_cells/with_archive (backend/crates/apps/qip-api/src/routes.rs:807-1106)",
+      "auth::Authenticator::authenticate — constant-time bearer-token check (backend/crates/apps/qip-api/src/auth.rs:367,421)",
+      "auth::Role enum (Monitor/Viewer/Analyst/Operator) (backend/crates/apps/qip-api/src/auth.rs:52)",
+      "http::Server::bind / Handler trait / ServerLimits (backend/crates/apps/qip-api/src/http.rs:37,286)",
+      "web::Router::new/with_console, web::Web (backend/crates/apps/qip-api/src/web.rs:677,42,68)",
+      "console::Console::model (backend/crates/apps/qip-api/src/console.rs:44,86)",
+      "mesh::MeshBackbone::open/dispatch_policy (backend/crates/apps/qip-api/src/mesh.rs:1033,1080,1205)",
+      "stream::StreamKind (5 SSE kinds: Market/Signals/Orders/Positions/Health) (backend/crates/apps/qip-api/src/stream.rs:74-120)",
+      "feed::ApiFeed::open — tape or licensed connector, chosen at start-up (backend/crates/apps/qip-api/src/feed.rs:249,308)",
+      "trust::harden_central — installs/refuses the envelope signing key (backend/crates/apps/qip-api/src/trust.rs:72)",
+      "openapi::document() — OpenAPI 3.1 generated from ROUTES (backend/crates/apps/qip-api/src/openapi.rs:43)",
+      "cells::CellRegistry — edge-cell freshness/staleness tracking (backend/crates/apps/qip-api/src/cells.rs:67)",
+      "ledger_views::ledger_users / EligibilityRequest / InflowDeclarationBody (backend/crates/apps/qip-api/src/ledger_views.rs:289,459,676)",
+      "openobserve::spawn — telemetry drain thread (backend/crates/apps/qip-api/src/openobserve.rs:516)"
+    ],
+    "workspace_deps": [
+      "qip-core", "qip-events", "qip-financial", "qip-risk", "qip-observability", "qip-storage",
+      "qip-agents", "qip-risk-engine", "qip-kernel", "qip-training", "qip-web", "qip-contracts",
+      "qip-mesh", "qip-transport", "qip-market-ingestion", "qip-data-finder",
+      "(dev-only) qip-edge, qip-ai, qip-strategy, qip-lifecycle, qip-compliance, qip-capital, qip-simulation-engine, qip-market, qip-execution-engine"
+    ],
+    "reached_from_production": "partial",
+    "production_evidence": "Its own main.rs IS the composition root a production binary runs (backend/crates/apps/qip-api/src/main.rs). Built and attested in deploy.yml's image matrix (.github/workflows/deploy.yml:278) and named in infrastructure/terraform/catalogue.tf as one of the three warm binaries served by Cloud Run through modules/cloudrun; infrastructure/gitops/envs/dev/kustomization.yaml pins it to a real digest (sha256:14fd83be...). infrastructure/CLAUDE.md records it was observed serving on Cloud Run in dev on 2026-09-04 (\"qip-dev-api ... answered Google Frontend's internal-ingress 404\"), was torn down 2026-09-13, and after re-applying Terraform on 2026-09-20 'no Cloud Run service exists' because ADR 0036 moved deployment to a GitOps/Argo CD chain whose control-plane cluster is suspended (ADR 0093, blocked on a CVE in the Argo CD image with no upstream fix). So the binary is genuinely production code, wired for deployment, but is not currently a running service in any environment.",
+    "io_and_state": "Binds a TCP listener via qip_api::http::Server::bind (main.rs:483). Reads from the process environment (composition-root only, per architecture rule): QIP_API_ADDRESS, QIP_AUTONOMY_CEILING, QIP_UNIVERSE_PATH, QIP_RISK_LIMITS_PATH, QIP_VENUE_REGISTRATIONS_PATH, QIP_ARBITRAGE_POLICY_PATH, QIP_REGION_DARK_AFTER, QIP_WALLET_STATEMENT_PATH, QIP_CAPITAL_FABRIC_PATH, QIP_MESH_* (mesh.rs), QIP_TOKEN_{MONITOR,VIEWER,ANALYST,OPERATOR}[_FILE], the envelope-key variable, and the OpenObserve drain URL. Persists to a KeyValueStore under namespaces event-log, trial-book, universe, mesh (main.rs:107,291,322,696-699). Spawns an optional background thread that POSTs telemetry to OpenObserve on an interval (openobserve.rs:516).",
+    "tests": {
+      "count": 262,
+      "notable": [
+        "a_delta_published_twice_by_a_restarted_cell_is_one_ingestion (tests/mesh.rs)",
+        "every_treasury_route_answers_its_role_with_the_documented_keys_and_the_posture_literal (tests/ledger_routes.rs)",
+        "a_reinstatement_is_refused_before_the_kernel_is_asked_because_nothing_attests_a_person (tests/venues.rs)"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Large, heavily tested (262 tests) composition root implementing nearly the full blueprint API/console/mesh/treasury surface; the code is production-grade but no Cloud Run instance is currently live in any environment because the GitOps control plane it depends on is suspended.",
+    "blueprint_capabilities": ["API", "GOV", "SEC", "OBS", "LEDGER", "CAPITAL", "MESH", "EVID", "TICK"],
+    "gaps_observed": [
+      "GET /data-sources always answers a fixed refusal — 'no deployment of this process has ever served a source list...the handler matches one expression and answers available: false unconditionally' (backend/crates/apps/qip-api/src/routes.rs:312-329)",
+      "QIP_TOKEN_APPROVER / QIP_TOKEN_APPROVER_FILE are refused outright as retired variables, naming the replacement (backend/crates/apps/qip-api/src/main.rs:54-72,366-370)",
+      "The mesh is entirely absent unless QIP_MESH_CELLS is set; no execution node exists to speak it in any environment today (infrastructure/terraform/catalogue.tf:29-33; backend/crates/apps/qip-api/src/main.rs:588-593)",
+      "No live Cloud Run service currently exists for this binary; deployment is blocked on ADR 0093's suspended GitOps cluster, not on the code (infrastructure/CLAUDE.md 'Before changing anything' section)"
+    ],
+    "evidence": [
+      "backend/crates/apps/qip-api/src/lib.rs:1-37",
+      "backend/crates/apps/qip-api/src/main.rs:1-235,481-632",
+      "backend/crates/apps/qip-api/src/routes.rs:105-804",
+      "backend/crates/apps/qip-api/Cargo.toml",
+      "infrastructure/terraform/catalogue.tf:1-40",
+      "infrastructure/gitops/envs/dev/kustomization.yaml:1-25",
+      ".github/workflows/deploy.yml:227-260,278"
+    ]
+  },
+  {
+    "name": "qip-api::routes (Api + ROUTES table)",
+    "path": "backend/crates/apps/qip-api/src/routes.rs",
+    "kind": "app",
+    "purpose": "The single table of every HTTP route this binary serves — pattern, required Role, HTTP method and success code — read by the security review, the OpenAPI generator and the router itself, so anything not in the table 404s (backend/crates/apps/qip-api/src/routes.rs:29-105). `Api` is the handler that matches a request against the table and dispatches to the other modules.",
+    "key_contracts": [
+      "Route struct {method, pattern, required_role, summary, success} (routes.rs:83-104)",
+      "ROUTES: &[Route; 63] (routes.rs:105-804)",
+      "Api::route_for(method, path) -> Option<&Route> (routes.rs:1171)",
+      "Api::new/with_mesh/with_feed/with_cells/with_archive/with_cycle_overview (routes.rs:894-1106)"
+    ],
+    "workspace_deps": ["qip-core", "qip-kernel", "qip-storage", "qip-observability"],
+    "reached_from_production": "partial",
+    "production_evidence": "Directly instantiated in backend/crates/apps/qip-api/src/main.rs:426-445 (`Api::new(...).with_cells(...).with_archive(...)`) and served through web::Router in the same file; same Cloud Run deployment caveat as the parent qip-api record.",
+    "io_and_state": "No I/O of its own; dispatches to modules that do (mesh, ledger_views, stream, etc.). Holds shared Arc<Mutex<Platform>> and Arc<CellRegistry>/Arc<ChainArchive> handles.",
+    "tests": {"count": 76, "notable": [
+      "a_path_cannot_escape_its_prefix (tests/api.rs)",
+      "a_valid_token_authenticates_to_its_role (tests/api.rs)",
+      "no_method_but_get_reaches_any_treasury_path (tests/ledger_routes.rs)"
+    ]},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "63 routes, one authoritative table, generated OpenAPI doc, 76 tests in tests/api.rs alone covering routing edge cases (path traversal, control characters, separators) and auth.",
+    "blueprint_capabilities": ["API", "GOV", "SEC"],
+    "gaps_observed": [
+      "GET /data-sources route intentionally answers a fixed refusal rather than any real source list (routes.rs:312-329)"
+    ],
+    "evidence": ["backend/crates/apps/qip-api/src/routes.rs:29-1171", "backend/crates/apps/qip-api/tests/api.rs"]
+  },
+  {
+    "name": "qip-api::mesh (MeshBackbone)",
+    "path": "backend/crates/apps/qip-api/src/mesh.rs",
+    "kind": "app",
+    "purpose": "The API's half of ADR 0011's mesh backbone: serves per-cell HTTP listeners for delta publication and capital polling, drains delta reports into the central plane, dispatches signed capital envelopes and policy frames, and journals undelivered envelopes to a durable spool (backend/crates/apps/qip-api/src/mesh.rs:1033-1205).",
+    "key_contracts": [
+      "MeshBackbone::open/cells/regions/dispatch_policy (mesh.rs:1033,1080,1191,1205)",
+      "MeshSettings::from_env/parse (mesh.rs:133,149,170)",
+      "PendingGrant, pending_capital(platform, now) (mesh.rs:600,612)",
+      "PendingPolicy, pending_policy(...) (mesh.rs:635,793)",
+      "MeshStatus/MeshCellStatus/BackboneCounters/DrainSummary/DispatchSummary (mesh.rs:484-600)"
+    ],
+    "workspace_deps": ["qip-mesh", "qip-transport", "qip-contracts", "qip-kernel", "qip-storage"],
+    "reached_from_production": "partial",
+    "production_evidence": "Constructed in main.rs:319-332 only when QIP_MESH_CELLS is set; wired into Api via with_mesh (main.rs:435-437). No environment sets QIP_MESH_CELLS today (no execution node exists, per infrastructure/terraform/catalogue.tf:29-33), so in every current deployment the mesh is built with zero cell listeners and /api/v1/mesh answers available:false.",
+    "io_and_state": "Opens one TCP listener per configured cell plus one internal capital-feed listener; persists dead-lettered envelopes and drain state to a KeyValueStore under the 'mesh' namespace (main.rs:322).",
+    "tests": {"count": 21, "notable": [
+      "a_reconciliation_break_crossing_the_wire_halts_that_cell_and_only_that_cell (tests/mesh.rs)",
+      "a_dispatched_envelope_survives_the_spool_and_verifies_at_a_real_downlink (tests/mesh.rs)",
+      "an_api_without_mesh_configuration_serves_no_mesh_and_says_so (tests/mesh.rs)"
+    ]},
+    "status": ["exists", "partial", "hardened"],
+    "status_reason": "Code is tested and structurally complete for a per-cell listener model, but no deployed edge cell exists anywhere to connect to it, so the whole module runs unexercised outside tests in every current environment.",
+    "blueprint_capabilities": ["MESH", "CAPITAL", "FABRIC"],
+    "gaps_observed": [
+      "No environment sets QIP_MESH_CELLS; the mesh backbone has never run against a real edge cell outside tests (infrastructure/terraform/catalogue.tf:29-33)"
+    ],
+    "evidence": ["backend/crates/apps/qip-api/src/mesh.rs:60-1205", "backend/crates/apps/qip-api/src/main.rs:315-332"]
+  },
+  {
+    "name": "qip-api::ledger_views (treasury / user ledger)",
+    "path": "backend/crates/apps/qip-api/src/ledger_views.rs",
+    "kind": "app",
+    "purpose": "Renders and writes the blueprint's per-account entitlement, wallet, mandate, balance, eligibility and expected-inflow views for /ledger/* routes, and parses the operator-only write bodies (eligibility decisions, investment requests, inflow declarations) before they raise typed kernel intents (backend/crates/apps/qip-api/src/ledger_views.rs:289,459-627).",
+    "key_contracts": [
+      "ledger_users(platform, now) -> LedgerUsersView (ledger_views.rs:289)",
+      "UserView/MandateView/BalanceView/EligibilityView/ExpectedInflowView (ledger_views.rs:139-250)",
+      "EligibilityRequest::parse (ledger_views.rs:479)",
+      "InflowDeclarationBody::parse (ledger_views.rs:684)",
+      "decided_eligibility(...) -> EligibilityDecisionView (ledger_views.rs:627)"
+    ],
+    "workspace_deps": ["qip-kernel", "qip-contracts", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "Reached from routes.rs handlers for GET/POST /ledger/users, /ledger/users/:user/eligibility, /ledger/users/:user/investment-requests and /ledger/users/:user/expected-inflows (backend/crates/apps/qip-api/src/routes.rs:440-562); same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "No direct I/O; reads the in-process Platform's ledger registry and journals writes through Platform::decide_eligibility / expect_inflow / cancel_inflow, which append to the kernel's event log.",
+    "tests": {"count": 27, "notable": [
+      "the_desk_is_enrolled_with_its_mandate_and_no_balance_until_a_fill_is_booked (tests/ledger_routes.rs)",
+      "a_fill_the_centre_settles_appears_as_the_desks_balance_with_inflows_kept_apart (tests/ledger_routes.rs)",
+      "a_monitor_credential_is_below_the_viewer_role_and_is_refused (tests/ledger_routes.rs)"
+    ]},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "The largest single file in qip-api (2093 lines); implements the §40.9/§40.12/ADR 0085 treasury surface end to end with 27 route-level tests plus mutation-verified parsers.",
+    "blueprint_capabilities": ["LEDGER", "CAPITAL", "COMMERCE", "GOV"],
+    "gaps_observed": [
+      "Funding is deliberately two-step and un-chained: an admitted investment request never itself funds — Platform::fund_user is the only funder and re-runs the gates (ledger_views.rs route doc, routes.rs:504-528)",
+      "Capital-call settlement and inflow posting are named but not implemented in this build (routes.rs:540-552,563-598 doc comments: 'nothing this build runs ever posts/settles it')"
+    ],
+    "evidence": ["backend/crates/apps/qip-api/src/ledger_views.rs:101-819", "backend/crates/apps/qip-api/tests/ledger_routes.rs"]
+  },
+  {
+    "name": "qip-api::stream (SSE live surface)",
+    "path": "backend/crates/apps/qip-api/src/stream.rs",
+    "kind": "app",
+    "purpose": "Serves five server-sent-event streams (market, signals, orders, positions, health) under /api/v1/stream, each either a live view over the platform's own event log or, for health, this process's observed status; handles heartbeats, Last-Event-ID resume and a bounded connection duration (backend/crates/apps/qip-api/src/stream.rs:74-120,830).",
+    "key_contracts": [
+      "StreamKind enum {Market,Signals,Orders,Positions,Health} + from_pattern/descriptor (stream.rs:74,120,277)",
+      "EventSource trait, LoggedEvents::new (stream.rs:437,488)",
+      "SseEvent::frame/data (stream.rs:329,339,388)",
+      "select(records, topics, after, limit) -> Vec<Emission> (stream.rs:597)",
+      "StreamLimits{heartbeat_after, max_duration} (stream.rs:830)",
+      "EventStream::open (stream.rs:877,906)"
+    ],
+    "workspace_deps": ["qip-events", "qip-kernel", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "Routed from routes.rs's five /stream/* entries (routes.rs:766-803) and started from main.rs's banner/limits construction (main.rs:508-519); same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "No persistent state of its own; reads the platform's in-memory event log under lock per poll and streams frames over the already-open HTTP connection.",
+    "tests": {"count": 24, "notable": [
+      "a_payload_containing_a_newline_cannot_split_one_event_into_two_frames (tests/stream.rs)",
+      "every_event_carries_the_six_fields_a_client_needs_to_detect_a_gap_and_reconnect (tests/stream.rs)",
+      "sequence_numbers_increase_by_exactly_one_on_every_delivered_event (tests/stream.rs)"
+    ]},
+    "status": ["exists", "hardened"],
+    "status_reason": "Framing and resume semantics are directly tested at the byte level (24 tests); each connection is bounded to a stated duration and resumes on Last-Event-ID.",
+    "blueprint_capabilities": ["API", "OBS", "TICK"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/apps/qip-api/src/stream.rs:74-906", "backend/crates/apps/qip-api/tests/stream.rs"]
+  },
+  {
+    "name": "qip-api::web_console (operator UI)",
+    "path": "backend/crates/apps/qip-api/src/web.rs + console.rs",
+    "kind": "app",
+    "purpose": "Serves the nine investment-surface pages (web.rs, delegating render to qip-web) and the nine-view read-only operator console (console.rs), assembling a ConsoleModel/ViewModel off the live Platform on every request; the console can trip the kill switch but has no route that clears one (backend/crates/apps/qip-api/src/console.rs:22-27 doc; web.rs:42-130).",
+    "key_contracts": [
+      "web::Web::new/serve/cycle_overview (web.rs:111,336,130)",
+      "web::CycleOverview::record/rows (web.rs:68,77,94)",
+      "web::Router::new/with_console (web.rs:677,696,705)",
+      "console::Console::new/model/owns (console.rs:44,64,86,81)"
+    ],
+    "workspace_deps": ["qip-web", "qip-kernel", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "Web and Console are constructed in main.rs:420-452 and wired into the Router that Server::bind serves (main.rs:453,483); same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "No I/O beyond the request/response cycle; reads the in-process Platform state under lock per page render.",
+    "tests": {"count": 0, "notable": []},
+    "status": ["exists", "blueprint-compatible"],
+    "status_reason": "No dedicated #[test] in web.rs/console.rs themselves — rendering correctness is proven downstream in qip-web's own 37 tests (panel/escaping/view coverage) rather than duplicated here.",
+    "blueprint_capabilities": ["API", "OBS", "GOV"],
+    "gaps_observed": [
+      "console.rs states explicitly it has no route to clear a kill-switch trip, only to set one (console.rs module doc)"
+    ],
+    "evidence": ["backend/crates/apps/qip-api/src/web.rs:1-751", "backend/crates/apps/qip-api/src/console.rs:1-976"]
+  },
+  {
+    "name": "qip-api::feed (sensing source selection)",
+    "path": "backend/crates/apps/qip-api/src/feed.rs",
+    "kind": "app",
+    "purpose": "Chooses and opens the single source POST /cycle senses from: a committed tape on its own clock, or a licensed connector admitted through the data-finder catalogue before any socket opens; refuses to fall back to generated prices when neither is configured (backend/crates/apps/qip-api/src/main.rs:145-150; feed.rs:249-341).",
+    "key_contracts": [
+      "FeedSettings::from_env/parse (feed.rs:100,109,119)",
+      "ApiFeed enum {Tape, Connector} + open/tape/connector (feed.rs:249,308,327,336)",
+      "ApiFeed::connector_admitted_by_registered / readmit (feed.rs:387,514)",
+      "ApiFeed::journal_to / licensing_standing (feed.rs:467,564)"
+    ],
+    "workspace_deps": ["qip-market-ingestion", "qip-data-finder", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "Opened in main.rs:151-168 before the platform is assembled, using the platform's own registration registry; same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "Opens either a file (tape path) or an outbound HTTP connector through the egress proxy; journals stream fingerprints to a KeyValueStore under the StreamJournal namespace for dedup across restarts (main.rs:182-199).",
+    "tests": {"count": 10, "notable": []},
+    "status": ["exists", "hardened"],
+    "status_reason": "Licensing gate is evaluated before any socket opens and covered by tests; in every current deployment neither QIP_TAPE_PATH nor a connector source is set, so POST /cycle senses nothing (main.rs:261-270 banner text).",
+    "blueprint_capabilities": ["DATA", "TICK"],
+    "gaps_observed": [
+      "With no feed configured, POST /cycle reasons over what the platform already holds and no research route shows an instrument (main.rs:262-270)"
+    ],
+    "evidence": ["backend/crates/apps/qip-api/src/feed.rs:80-564", "backend/crates/apps/qip-api/src/main.rs:145-272"]
+  },
+  {
+    "name": "qip-api::auth (Authenticator, RateLimiter, Role)",
+    "path": "backend/crates/apps/qip-api/src/auth.rs",
+    "kind": "app",
+    "purpose": "Bearer-token authentication in constant time (no early return on a match, to avoid a timing oracle), four-role authorisation (Monitor/Viewer/Analyst/Operator), and a fixed-window rate limiter (backend/crates/apps/qip-api/src/lib.rs:11-14; auth.rs:367,421).",
+    "key_contracts": [
+      "Role enum + parse/includes (auth.rs:52,73,84)",
+      "Credential::from_token/is_expired (auth.rs:225,252,268)",
+      "Authenticator::new/authenticate/unrecognised_attempts (auth.rs:367,383,409,421)",
+      "RateLimiter::new (auth.rs:497,504)"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "Credentials are read from environment/secret files and validated (>=32 chars) at start-up in main.rs:372-407, and the Authenticator is shared across Api/Web/Console (main.rs:410,421-452); same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "No I/O of its own beyond reading the credential strings handed to it at construction (main.rs reads them via qip_core::secret, supporting the CSI driver's _FILE indirection).",
+    "tests": {"count": 0, "notable": []},
+    "status": ["exists", "hardened"],
+    "status_reason": "No local #[test] block in auth.rs, but its behaviour is exercised extensively from tests/api.rs (76 tests) which include timing/role assertions.",
+    "blueprint_capabilities": ["SEC"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/apps/qip-api/src/auth.rs:52-530", "backend/crates/apps/qip-api/src/main.rs:372-411"]
+  },
+  {
+    "name": "qip-api::treasury_feeds (statement.rs + fabric.rs)",
+    "path": "backend/crates/apps/qip-api/src/statement.rs + fabric.rs",
+    "kind": "app",
+    "purpose": "Two file-watched feeds applied before serving and re-read on every admitted POST /cycle: a custodian wallet statement (statement.rs) observed into the platform for LEARN-stage reconciliation, and a capital-fabric declaration (fabric.rs) of destinations/corridors/transfer intents applied through the seven-check transfer gate (backend/crates/apps/qip-api/src/main.rs:294-313).",
+    "key_contracts": [
+      "Statement::parse/observe_into (statement.rs:150,336)",
+      "StatementFeed::from_env/refresh/describe (statement.rs:435,481,513)",
+      "StatementRefresh<H> handler wrapper (statement.rs:676,691)",
+      "FabricFeed::from_env/apply_pending/refresh (fabric.rs:173,213,235)",
+      "FabricRefresh<H> handler wrapper (fabric.rs:325,340)"
+    ],
+    "workspace_deps": ["qip-kernel", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "Wired around the router in main.rs:454-481 so an admitted cycle re-reads both files before running; same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "Reads two operator-named files from local disk (QIP_WALLET_STATEMENT_PATH, QIP_CAPITAL_FABRIC_PATH) on each admitted cycle; writes into the platform's fabric journal (kernel event log).",
+    "tests": {"count": 26, "notable": []},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Until this feed existed, decide_fabric's only production caller was Wallet commands and GET /transfer-gate answered last_assessment:null permanently (fabric.rs module doc, main.rs:303-313); now both are wired and covered by 13+13 tests.",
+    "blueprint_capabilities": ["LEDGER", "CAPITAL", "FABRIC"],
+    "gaps_observed": [
+      "Neither variable is set in any committed environment file (both are operator-supplied local paths, not part of the GitOps catalogue)"
+    ],
+    "evidence": ["backend/crates/apps/qip-api/src/statement.rs:111-768", "backend/crates/apps/qip-api/src/fabric.rs:145-420", "backend/crates/apps/qip-api/src/main.rs:294-313"]
+  },
+  {
+    "name": "qip-api::registrations (registration_views.rs, venue_views.rs, rule_views.rs)",
+    "path": "backend/crates/apps/qip-api/src/registration_views.rs + venue_views.rs + rule_views.rs",
+    "kind": "app",
+    "purpose": "The venue-registration, venue-withdrawal/reinstatement and risk-recalibration operator surfaces: lists what each catalogued source demands and its standing (registration_views.rs), records a two-signature venue reinstatement after an ADR 0062 withdrawal (venue_views.rs), and shows/approves recalibration proposals generated from counterfactual regret (rule_views.rs) — never emitting a credential value on the wire.",
+    "key_contracts": [
+      "registrations(platform, now) -> RegistrationsView (registration_views.rs:227)",
+      "standings(...) -> RegistrationStandingsView (registration_views.rs:378)",
+      "ApprovalRequest::parse (registration_views.rs:536)",
+      "withdrawals(...) -> WithdrawnVenuesView (venue_views.rs:100)",
+      "VenueReinstatementRequest::parse (venue_views.rs:182)",
+      "recalibrations(platform) -> RecalibrationsView (rule_views.rs:33)"
+    ],
+    "workspace_deps": ["qip-data-finder", "qip-kernel", "qip-contracts"],
+    "reached_from_production": "partial",
+    "production_evidence": "Reached from routes.rs's /registrations*, /venues/withdrawals, /venues/:venue/reinstatements and /risk/recalibrations* handlers (routes.rs:647-757); same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "No direct I/O; reads the platform's registration/withdrawal/recalibration registries and writes operator-approved decisions through typed kernel intents into the event log.",
+    "tests": {"count": 6, "notable": [
+      "a_blank_or_key_shaped_secret_is_refused_and_echoed_nowhere (tests/registrations.rs)",
+      "no_pair_of_operators_can_put_a_venue_back_while_the_credential_attests_nobody (tests/venues.rs)"
+    ]},
+    "status": ["exists", "hardened"],
+    "status_reason": "Secret handling is refused-by-shape before the kernel ever sees a pasted key, and reinstatement requires two distinct authenticated operators, both directly tested.",
+    "blueprint_capabilities": ["GOV", "SEC", "CAPITAL"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/apps/qip-api/src/registration_views.rs:101-819", "backend/crates/apps/qip-api/src/venue_views.rs:32-227", "backend/crates/apps/qip-api/src/rule_views.rs:20-111"]
+  },
+  {
+    "name": "qip-api::trust_and_export (trust.rs + openobserve.rs)",
+    "path": "backend/crates/apps/qip-api/src/trust.rs + openobserve.rs",
+    "kind": "app",
+    "purpose": "trust.rs installs the operator's capital-envelope signing key (or refuses to run live-capable on the seed-derived default); openobserve.rs is an optional background thread that POSTs this process's metrics/spans to an OpenObserve endpoint on an interval (backend/crates/apps/qip-api/src/trust.rs:39,72; openobserve.rs:516).",
+    "key_contracts": [
+      "KeyProvenance enum + describe (trust.rs:39)",
+      "harden_central(platform, key) -> KeyProvenance (trust.rs:72)",
+      "OpenObserveConfig::from_env/read/parse (openobserve.rs:144,155,169,197)",
+      "spawn(telemetry, config, clock) -> DrainHandle (openobserve.rs:516)"
+    ],
+    "workspace_deps": ["qip-kernel", "qip-observability", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "harden_central is called unconditionally in main.rs:251; spawn is called conditionally on OPENOBSERVE_URL in main.rs:340-347; same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "trust.rs reads the envelope-key secret via qip_core::secret (supports CSI-mounted files). openobserve.rs performs outbound HTTP POSTs on a timer thread that must outlive serve().",
+    "tests": {"count": 16, "notable": []},
+    "status": ["exists", "hardened"],
+    "status_reason": "A live-capable process cannot boot on the reproducible default key (refusal, not a warning); the OpenObserve drain's module doc notes nothing in this deployment currently answers on the other end (per the observability domain doc, the Cloud Run collector sidecar is blocked on an unfixed CVE).",
+    "blueprint_capabilities": ["SEC", "OBS", "CAPITAL"],
+    "gaps_observed": [
+      "The managed-Prometheus/OpenObserve collector path for Cloud Run has no working sidecar image (CVE-2026-56854 unfixed upstream), so nothing currently scrapes what this drain exports even when configured (per .claude/rules/domains/observability.md)"
+    ],
+    "evidence": ["backend/crates/apps/qip-api/src/trust.rs:32-185", "backend/crates/apps/qip-api/src/openobserve.rs:90-797"]
+  },
+  {
+    "name": "qip-fastbrain",
+    "path": "backend/crates/apps/qip-fastbrain",
+    "kind": "app",
+    "purpose": "The fast-path node: market data, microstructure, real-time risk and execution, cycling on a millisecond-scale interval with a hard budget ceiling. Refuses to start if any hosted agent could call a language model, checked before anything else runs (backend/crates/apps/qip-fastbrain/src/main.rs:1-17).",
+    "key_contracts": [
+      "FastBrainConfig::from_env (config.rs:52)",
+      "roster::clear/clear_agents — the fast-path model-free check (roster.rs:79,88)",
+      "Feed enum + source_standings (feed.rs:84,596)",
+      "node::run/step/flush (node.rs:173,99,351)",
+      "health::bind/serve/respond (health.rs:207,220,135)",
+      "status::NodeStatus/Unready (status.rs:33,83)",
+      "trust::harden_central (trust.rs:65)"
+    ],
+    "workspace_deps": [
+      "qip-core", "qip-financial", "qip-observability", "qip-storage", "qip-agents",
+      "qip-investment-agents", "qip-kernel", "qip-risk", "qip-risk-engine", "qip-market",
+      "qip-data-finder", "qip-contracts", "qip-market-ingestion", "qip-transport"
+    ],
+    "reached_from_production": "partial",
+    "production_evidence": "Its own main.rs is the composition root a production binary runs. Built and attested in deploy.yml's image matrix (.github/workflows/deploy.yml:278) and named in infrastructure/terraform/catalogue.tf; dev's kustomization pins it to sha256:c9f2cb45.... infrastructure/CLAUDE.md records it was observed serving on Cloud Run in dev on 2026-09-04 as 'qip-dev-fastbrain', torn down 2026-09-13, and not currently reachable because the GitOps chain that would reconcile the RunService manifest is suspended (ADR 0093).",
+    "io_and_state": "Binds a health TCP listener (health.rs:207) proven bindable before the platform is assembled. Reads QIP_AUTONOMY_CEILING, QIP_UNIVERSE_PATH, QIP_RISK_LIMITS_PATH and feed-selection variables from the environment (main.rs, composition-root only). Persists event log to a KeyValueStore under event-log/trial-book/universe namespaces (main.rs:86,247,432-436). Polls a Feed (synthetic exchange, replay or connector) each cycle.",
+    "tests": {"count": 98, "notable": [
+      "no_source_this_build_has_is_production_grade_and_each_says_what_is_missing (src/feed.rs)",
+      "the_environment_may_not_raise_the_fast_path_ceiling_above_what_the_roster_check_enforces (src/config.rs)",
+      "a_cycle_slower_than_the_ceiling_is_reported_as_a_breach_rather_than_refused (src/node.rs)"
+    ]},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "98 tests covering the model-free roster check, cycle budget breach detection and feed selection; the binary is production code but no Cloud Run instance is currently live in any environment.",
+    "blueprint_capabilities": ["EXEC", "RISK", "TICK", "REFLEX", "OBS"],
+    "gaps_observed": [
+      "feed.rs states 'no source this build has is production_grade' — every configured feed (synthetic exchange, replay, catalogued connector) is explicitly marked not production-grade, so no capital decision may rest on it in this build (src/feed.rs test name and doc)"
+    ],
+    "evidence": [
+      "backend/crates/apps/qip-fastbrain/src/main.rs:1-391",
+      "backend/crates/apps/qip-fastbrain/src/feed.rs:80-596",
+      "infrastructure/terraform/catalogue.tf",
+      "infrastructure/gitops/envs/dev/kustomization.yaml:16-19"
+    ]
+  },
+  {
+    "name": "qip-deepbrain",
+    "path": "backend/crates/apps/qip-deepbrain",
+    "kind": "app",
+    "purpose": "The research node: world model, causal reasoning, simulation, optimisation, evolution-based strategy discovery and learning, cycling on a minute-scale cadence with no ceiling on a cycle's length. Refuses to start if any hosted agent holds a market-touching capability (backend/crates/apps/qip-deepbrain/src/main.rs:1-10).",
+    "key_contracts": [
+      "DeepBrainConfig::from_env (config.rs:163)",
+      "roster::clear/refuse_tape_beyond_review (roster.rs:100,124)",
+      "evolution::EvolutionEngine::new/over_synthetic/with_discovery/with_connector (evolution.rs:329)",
+      "learning::LearningDesk (learning.rs:642)",
+      "discovery::DiscoveryDesk::new/with_probe/maybe_run (discovery.rs:91)",
+      "connectors::ConnectorArm::open (connectors.rs:67)",
+      "succession::SuccessionDesk (succession.rs:120)",
+      "campaign::assemble/campaign_id (campaign.rs:308,208)",
+      "language::assemble(config) -> AssembledModel (language.rs:181)",
+      "node::run/step/flush (node.rs:277,155,493)",
+      "trust::harden_central (trust.rs:65)"
+    ],
+    "workspace_deps": [
+      "qip-core", "qip-events", "qip-financial", "qip-observability", "qip-storage", "qip-agents",
+      "qip-investment-agents", "qip-risk", "qip-risk-engine", "qip-kernel", "qip-evolution",
+      "qip-simulation-engine", "qip-strategy", "qip-market", "qip-market-ingestion", "qip-ai",
+      "qip-training", "qip-quant", "qip-numerics", "qip-lifecycle", "qip-contracts",
+      "qip-data-finder", "qip-transport", "qip-reasoning-engine", "(dev-only) qip-streaming"
+    ],
+    "reached_from_production": "partial",
+    "production_evidence": "Its own main.rs is the composition root a production binary runs. Built and attested in deploy.yml's image matrix and named in catalogue.tf; dev's kustomization pins it to sha256:ab01314a.... infrastructure/CLAUDE.md records it was observed serving on Cloud Run in dev on 2026-09-04 as 'qip-dev-deepbrain', torn down 2026-09-13, and not currently reachable because the GitOps control-plane cluster is suspended (ADR 0093).",
+    "io_and_state": "Binds a health listener before the platform is assembled (deliberately, since assembly is slow). Reads QIP_AUTONOMY_CEILING, QIP_CENTRAL_HORIZONS_PATH, QIP_DEEPBRAIN_REPLAY_PATH/TAPE_PATH, QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH, connector-feed variables. Persists event-log/trial-book/universe/model-artifacts namespaces to a KeyValueStore (main.rs:95,237,266-267). Optionally opens outbound HTTP connector sessions through the egress proxy (ConnectorArm).",
+    "tests": {"count": 169, "notable": [
+      "a_document_load_central_horizons_would_parse_arms_the_pool_gate (src/main.rs tests)",
+      "the_first_round_crowns_a_champion_from_a_candidate_the_gate_admitted (src/evolution.rs)",
+      "a_skilled_candidate_is_promoted_against_no_incumbent_and_an_equal_successor_is_not (src/learning.rs)"
+    ]},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "The largest of the six apps by test count (169) and by src size (17,201 lines); implements evolution-based strategy search, drift-triggered relearning, champion/challenger succession and source discovery. Production code, but no Cloud Run instance is currently live in any environment.",
+    "blueprint_capabilities": ["REASON", "MODEL", "QUANT", "EXPAND", "WORLD", "DATA", "AGENCY"],
+    "gaps_observed": [
+      "QIP_CENTRAL_HORIZONS_PATH is read by this root but 'grep -rn QIP_CENTRAL_HORIZONS_PATH infrastructure/environments' finds it wired nowhere — every deployment today runs with the §23.4 horizon gate refusing to arm for want of a policy (main.rs:1006-1015, doc comment verified by grep)",
+      "Until this root's connectors.rs and campaign.rs wiring, DiscoveryDesk and the fetch-campaign lane were reached by nothing outside this crate's own tests (main.rs:475-485 doc comment)",
+      "The replay path (QIP_DEEPBRAIN_REPLAY_PATH) has no reference-data source of its own, so every backtest on it refuses with 'no fill' rather than register a flat curve as evidence (main.rs:417-426 doc comment)"
+    ],
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/main.rs:1-1497",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs",
+      "infrastructure/gitops/envs/dev/kustomization.yaml:20-23"
+    ]
+  },
+  {
+    "name": "qip-deepbrain::evolution (EvolutionEngine)",
+    "path": "backend/crates/apps/qip-deepbrain/src/evolution.rs",
+    "kind": "app",
+    "purpose": "The node's strategy-discovery loop: generates candidates from a grammar, backtests them against observed bars, and registers survivors at the bottom rung — never promoting a candidate to capital itself. The largest file in the crate (3459 lines) and the deep brain's first data-observing loop (backend/crates/apps/qip-deepbrain/src/main.rs:325-330).",
+    "key_contracts": [
+      "EvolutionConfig::from_lookup/default (evolution.rs:71)",
+      "EvolutionEngine::new/over_synthetic/with_discovery/with_connector/with_standing_admission (evolution.rs:329)",
+      "RoundSummary, EvolutionStats (evolution.rs:203,322)",
+      "minimum_bars_for_the_holdout_gate (evolution.rs, grepped fn)"
+    ],
+    "workspace_deps": ["qip-evolution", "qip-simulation-engine", "qip-strategy", "qip-market", "qip-market-ingestion", "qip-kernel"],
+    "reached_from_production": "partial",
+    "production_evidence": "Instantiated unconditionally in main.rs:354-462 (tape, replay or synthetic branch, chosen by which path variable is set); same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "Reads bars from whichever DataAdapter it was built with (synthetic exchange by default, a committed tape, or a replay file); writes trial-book accounting through Platform::open_trial_book.",
+    "tests": {"count": 23, "notable": [
+      "a_round_registers_only_when_the_reference_universe_is_populated (evolution.rs)",
+      "the_first_round_crowns_a_champion_from_a_candidate_the_gate_admitted (evolution.rs)",
+      "every_challenger_minted_is_counted_as_a_trial (evolution.rs)"
+    ]},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "23 in-file tests proving the registration gate, holdout evidence and trial accounting; in every current deployment it runs over the synthetic exchange because no tape/replay path is set.",
+    "blueprint_capabilities": ["EXPAND", "QUANT", "REASON"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/apps/qip-deepbrain/src/evolution.rs:71-3459"]
+  },
+  {
+    "name": "qip-deepbrain::learning (LearningDesk)",
+    "path": "backend/crates/apps/qip-deepbrain/src/learning.rs",
+    "kind": "app",
+    "purpose": "The LEARN-stage desk: scores candidates' out-of-sample evidence, promotes or demotes them, detects per-model feature drift past a population-stability threshold, and reports which features degraded which models (backend/crates/apps/qip-deepbrain/src/main.rs:628-679).",
+    "key_contracts": [
+      "LearningConfig, LearningRound (learning.rs:316,344)",
+      "LearningDesk (learning.rs:642)",
+      "PromotionOutcome enum (learning.rs:417)",
+      "DriftObservation, LearningStats (learning.rs:605,625)",
+      "ClassChoice/ClassReason (learning.rs:185,210)"
+    ],
+    "workspace_deps": ["qip-ai", "qip-training", "qip-kernel", "qip-numerics"],
+    "reached_from_production": "partial",
+    "production_evidence": "Driven each cycle from node::run's evolution/learning outcome handling (main.rs:628-679, writing published model artifacts to model-artifacts namespace); same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "Writes promoted-model artifacts under a digest-named key in the model-artifacts KeyValueStore namespace (main.rs:862-876).",
+    "tests": {"count": 17, "notable": [
+      "a_skilled_candidate_is_promoted_against_no_incumbent_and_an_equal_successor_is_not (learning.rs)",
+      "a_model_whose_features_have_moved_records_drift_past_its_own_threshold (learning.rs)",
+      "a_feature_that_drifts_past_the_estimators_bound_degrades_every_model_that_reads_it (learning.rs)"
+    ]},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "2925-line module with 17 tests directly proving promotion and drift-degradation logic against constructed fixtures.",
+    "blueprint_capabilities": ["MODEL", "REASON"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/apps/qip-deepbrain/src/learning.rs:185-2925"]
+  },
+  {
+    "name": "qip-deepbrain::node (run loop)",
+    "path": "backend/crates/apps/qip-deepbrain/src/node.rs",
+    "kind": "app",
+    "purpose": "The bounded cycle loop this binary runs: one platform cycle plus an evolution round and a learning round per pass, an interruptible wait to the next cadence tick, and the archive hand-over on quiesce or stop (backend/crates/apps/qip-deepbrain/src/node.rs:79-277).",
+    "key_contracts": [
+      "Stop enum, step(platform, now, interval) -> StepOutcome (node.rs:79,155)",
+      "run(...) -> RunSummary (node.rs:277,232)",
+      "flush(...) -> FlushReport (node.rs:493,438)",
+      "should_stop, wait, appended_since (node.rs:255,213,199)"
+    ],
+    "workspace_deps": ["qip-kernel", "qip-storage", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "node::run is the top-level loop main.rs:604-703 hands the assembled Platform, evolution engine and archive to; same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "Calls ChainArchive::absorb after every cycle and once on the way out (durable hand-over); the interruptible wait polls an AtomicBool stop flag set by the health thread's /quiesce.",
+    "tests": {"count": 22, "notable": [
+      "one_step_runs_every_stage_of_a_cycle (node.rs)",
+      "a_cycle_slower_than_the_interval_is_recorded_as_an_overrun_and_not_as_a_problem (node.rs)",
+      "a_quiesce_during_the_wait_between_cycles_does_not_wait_out_the_cadence (node.rs)"
+    ]},
+    "status": ["exists", "hardened"],
+    "status_reason": "Directly tests that an overrun is never treated as a fault (deep brain has no cycle ceiling, unlike the fast brain) and that quiesce interrupts the wait rather than the cycle in flight.",
+    "blueprint_capabilities": ["REASON", "OBS"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/apps/qip-deepbrain/src/node.rs:79-493"]
+  },
+  {
+    "name": "qip-deepbrain::campaign (fetch-campaign window assembly)",
+    "path": "backend/crates/apps/qip-deepbrain/src/campaign.rs",
+    "kind": "app",
+    "purpose": "Assembles each learning round's observation window through a licensed fetch campaign (§22.4), journals the closed campaign's manifest to the permanently-retained event-log topic, and routes a replay file through the shipped connector's own licensing gate under its named source rather than treating replayed bytes as a vendor (backend/crates/apps/qip-deepbrain/src/main.rs:598-602; campaign.rs:269-308).",
+    "key_contracts": [
+      "CampaignConfig, CampaignSummary (campaign.rs:117,136)",
+      "assemble(...) -> Assembly (campaign.rs:308,269)",
+      "campaign_id(subject, cycle, log_sequence) (campaign.rs:208)",
+      "count_door_refusal(platform) (campaign.rs:292)"
+    ],
+    "workspace_deps": ["qip-data-finder", "qip-market-ingestion", "qip-events", "qip-kernel"],
+    "reached_from_production": "partial",
+    "production_evidence": "Called from the evolution/learning round machinery each cycle; the replay-admission path is exercised directly in main.rs:382-412 when QIP_DEEPBRAIN_REPLAY_PATH is set. Same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "Journals campaign manifests to the kernel's event log under a permanently-retained topic (module doc, main.rs:598-602); no separate key-value copy is kept.",
+    "tests": {"count": 7, "notable": [
+      "a_window_is_assembled_through_a_campaign_whose_manifest_is_journaled (campaign.rs)",
+      "a_replay_under_admission_is_referenced_through_the_replayed_door_and_backs_no_vendor (campaign.rs)",
+      "a_sketch_whose_declared_error_exceeds_the_fits_tolerance_refuses_the_assembly (campaign.rs)"
+    ]},
+    "status": ["exists", "hardened"],
+    "status_reason": "A replay that names no `# recorded-from:` source reports Restricted and every learning round is refused at the campaign's door per subject (main.rs:403-411).",
+    "blueprint_capabilities": ["DATA", "TICK", "EVID"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/apps/qip-deepbrain/src/campaign.rs:117-1357", "backend/crates/apps/qip-deepbrain/src/main.rs:365-412"]
+  },
+  {
+    "name": "qip-deepbrain::succession (champion/challenger)",
+    "path": "backend/crates/apps/qip-deepbrain/src/succession.rs",
+    "kind": "app",
+    "purpose": "Runs the champion/challenger contest every round: whether a challenger displaces the strategy currently speaking for an instrument, printed on the cycle line only after this desk existed (backend/crates/apps/qip-deepbrain/src/main.rs:616-626).",
+    "key_contracts": [
+      "SuccessionDesk (succession.rs:120)",
+      "ChallengeSummary::describe (succession.rs:74)",
+      "SuccessionStats (succession.rs:111)"
+    ],
+    "workspace_deps": ["qip-kernel", "qip-strategy"],
+    "reached_from_production": "partial",
+    "production_evidence": "Constructed as part of the evolution engine and reported via outcome.challenge in main.rs:624-626; same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "No direct I/O; reads/writes the platform's strategy registry in-memory, journaled through the kernel.",
+    "tests": {"count": 7, "notable": [
+      "a_challenge_round_of_no_challengers_is_refused (succession.rs)",
+      "a_crowning_names_the_new_champion_and_the_round_it_won (succession.rs)",
+      "a_regime_with_no_precedent_lets_a_genuine_win_crown (succession.rs)"
+    ]},
+    "status": ["exists", "hardened"],
+    "status_reason": "Directly tests that a desk with no champion has nothing to mutate and that a round with no crowning does not falsely report an instrument as self-defended.",
+    "blueprint_capabilities": ["REASON", "AGENCY"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/apps/qip-deepbrain/src/succession.rs:74-723"]
+  },
+  {
+    "name": "qip-deepbrain::discovery_and_connectors",
+    "path": "backend/crates/apps/qip-deepbrain/src/discovery.rs + connectors.rs",
+    "kind": "app",
+    "purpose": "§7.4-§7.6.2 source discovery: assesses an operator-stated candidate catalogue through the licensing gate on its own cadence, each candidate probed through a named reviewed egress route (ADR 0060); connectors.rs is the catalogued-connector arm this node (uniquely, ADR 0024) may open beside its own stream, each admitted through the licensing gate before any socket (backend/crates/apps/qip-deepbrain/src/main.rs:475-594).",
+    "key_contracts": [
+      "DiscoveryConfig::from_lookup (discovery.rs:66)",
+      "DiscoveryDesk::new/with_probe/maybe_run (discovery.rs:91)",
+      "ConnectorArm::open/journal_to/shutdown/describe (connectors.rs:67)"
+    ],
+    "workspace_deps": ["qip-data-finder", "qip-market-ingestion", "qip-transport", "qip-kernel"],
+    "reached_from_production": "partial",
+    "production_evidence": "DiscoveryDesk is wired via evolution.with_discovery in main.rs:508-511; ConnectorArm is opened per source_id when QIP_DEEPBRAIN_CONNECTOR_FEED names one, main.rs:519-593. Neither is configured in any committed environment today.",
+    "io_and_state": "DiscoveryDesk probes reach an operator-named egress route over HTTP. ConnectorArm opens a vendor connector session and journals stream fingerprints to a KeyValueStore under StreamJournal::NAMESPACE (main.rs:555-577).",
+    "tests": {"count": 4, "notable": [
+      "a_desk_configured_off_never_reaches_the_probe (discovery.rs)",
+      "a_production_desk_probes_each_entry_through_the_route_it_names (discovery.rs)",
+      "an_admission_refusal_after_the_feed_opens_still_releases_it (connectors.rs)"
+    ]},
+    "status": ["exists", "partial"],
+    "status_reason": "Structurally complete and tested, but 'None in every environment today' per this crate's own module doc (main.rs:512-517) — no committed candidate catalogue or connector-feed configuration exists.",
+    "blueprint_capabilities": ["DATA", "EXPAND"],
+    "gaps_observed": [
+      "QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH and the connector-feed variables are unset in every environment; discovery and connector-catalogue polling have never run outside tests (main.rs:512-517 doc)"
+    ],
+    "evidence": ["backend/crates/apps/qip-deepbrain/src/discovery.rs:66-383", "backend/crates/apps/qip-deepbrain/src/connectors.rs:67-374", "backend/crates/apps/qip-deepbrain/src/main.rs:475-594"]
+  },
+  {
+    "name": "qip-deepbrain::language_and_attestation",
+    "path": "backend/crates/apps/qip-deepbrain/src/language.rs + attestation.rs",
+    "kind": "app",
+    "purpose": "Assembles the ADR 0037 language-model chain: a hosted adapter first when a provider is named, its terms attested by a named operator and a credential resolved, falling through to the deterministic in-tree model whenever any precondition is unmet; the only root permitted to construct a hosted adapter (backend/crates/apps/qip-deepbrain/src/main.rs:206-214,305-309).",
+    "key_contracts": [
+      "assemble(config) -> AssembledModel (language.rs:181,51)",
+      "HostedDecision, HostedSummary, Withheld (language.rs:66,77,90)",
+      "ProviderTerms, ProviderTermsAttestation (attestation.rs:50,175)"
+    ],
+    "workspace_deps": ["qip-ai", "qip-kernel", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "language::assemble is called unconditionally at main.rs:214 and its describe() is printed in the start-up banner (main.rs:309); same Cloud Run deployment caveat as the parent record.",
+    "io_and_state": "Reads the hosted provider's credential via qip_core::secret (no environment-variable credential); makes no outbound call itself — the model chain is handed to the kernel, which calls it during REASON.",
+    "tests": {"count": 6, "notable": []},
+    "status": ["exists", "hardened"],
+    "status_reason": "Withheld enum names every unmet precondition explicitly; describe() never prints the credential, only which provider was configured and which precondition blocked it if any.",
+    "blueprint_capabilities": ["MODEL", "SEC"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/apps/qip-deepbrain/src/language.rs:51-536", "backend/crates/apps/qip-deepbrain/src/attestation.rs:50-388"]
+  },
+  {
+    "name": "qip-edge-node",
+    "path": "backend/crates/apps/qip-edge-node",
+    "kind": "edge",
+    "purpose": "The regional edge cell deployable: one region's hot execution path running next to its venues, deciding without asking the central plane. Structurally paper-only — it does not depend on qip-ai directly or transitively, so a language-model call does not exist to be made (backend/crates/apps/qip-edge-node/src/main.rs:1-44).",
+    "key_contracts": [
+      "NodeConfig::from_env — refuses to start missing any of: cell id, region, envelope key, venue set, region allocation (main.rs:183-309)",
+      "assemble(...) -> NodeAssembly{telemetry, cell, mesh_series} (main.rs:373; lib.rs)",
+      "NodeGateway::open, SimulatedGateway, RestGateway (gateway.rs:179,786,1075; main.rs:417)",
+      "VenueChoice::from_env — refuses a live REST endpoint unless an operator has written the destination out (venue.rs:123; main.rs:413)",
+      "run_pass(cell, gateway, feed, requoter, stats, now) (pass.rs:117)",
+      "MeshLink::connect/exchange_with_installers (mesh.rs:221; main.rs:563,869)",
+      "StoreMirror::open — durable decision journal, no books/features restored (mirror.rs:49; main.rs:474)",
+      "ArbitrageInstaller, StrategyInstaller (arbitrage.rs:249; strategies.rs:236)",
+      "Requoter/RequotingPlacer (reprice.rs:273,754)",
+      "CrossRegionMirror::read — §31.1 mirror declaration (cross_region.rs:129,277)",
+      "HaltFlag, DarkRegionWire — the second (filesystem-polled) halt/§36.3 wire (halt.rs:38; dark.rs:52)",
+      "RegionCapital::read — the region-wide capital ceiling, refused rather than defaulted (allocation.rs:63)"
+    ],
+    "workspace_deps": [
+      "qip-core", "qip-contracts", "qip-edge", "qip-arbitrage", "qip-feature-dag",
+      "qip-observability", "qip-storage", "qip-brokers", "qip-execution-engine", "qip-transport",
+      "qip-protocols", "qip-orderbook", "qip-strategy", "qip-financial", "qip-routing",
+      "(dev-only) qip-events"
+    ],
+    "reached_from_production": "no",
+    "production_evidence": "The binary IS built and attested — deploy.yml's image matrix includes qip-edge-node (.github/workflows/deploy.yml:278) as 'the attested artefact the execution node's boot image is contracted to be built from' (deploy.yml:236). But every environment's terraform.tfvars sets execution_nodes = {} (infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars, all grepped 'execution_nodes = {}'), so `modules/execution-node` never provisions a Compute Engine instance anywhere. Dev's own tfvars documents why: ADR 0035 authorises exactly one node (newyork-1, us-east4, shadow mode) but 'no boot image exists yet' and 'nobody has chosen the node's capital allocation' (infrastructure/environments/dev/terraform.tfvars:1-27). So this binary has never run outside `cargo test` in this repository's history.",
+    "io_and_state": "Binds a bespoke (non-qip-api) TCP health listener with a 2-second request timeout on the same thread that decides, halts and flushes (main.rs:103,791-793). Journals every decision to a KeyValueStore ('cell-journal' namespace) each health probe (main.rs:474-478,852-857) — order books, features and stream watermarks are deliberately NOT persisted and are always rebuilt from the feed (main.rs:31-38). Polls a filesystem halt flag and a §36.3 dark-region file when configured (halt.rs, dark.rs). Optionally opens an outbound REST venue session (gateway.rs RestGateway) or a mesh TCP connection to the centre (mesh.rs MeshLink::connect).",
+    "tests": {
+      "count": 129,
+      "notable": [
+        "a_client_that_sends_nothing_does_not_hold_the_thread_the_cell_decides_on (main.rs)",
+        "the_live_adapter_is_selected_only_when_an_operator_names_the_endpoint (tests/venue.rs)",
+        "a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move (tests/pass.rs)"
+      ]
+    },
+    "status": ["exists", "hardened", "unused", "blueprint-compatible"],
+    "status_reason": "129 tests and a fully implemented gateway/mesh/arbitrage/reprice/cross-region stack, built into an attested image every deploy.yml run — but structurally unreachable from any live deployment because every environment sets execution_nodes = {} and no boot image has ever been baked (per dev tfvars' own note).",
+    "blueprint_capabilities": ["EXEC", "RISK", "MESH", "FABRIC", "TICK", "REFLEX"],
+    "gaps_observed": [
+      "execution_nodes = {} in every one of the four environment tfvars files — no Compute Engine execution node has ever been created (infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars)",
+      "Producing the one authorised node (ADR 0035) requires three sequenced human acts (bake subnet, dispatch infra.yml up, then image.yml) plus an operator-chosen capital allocation that 'no workflow may pick' — none of which has happened (infrastructure/environments/dev/terraform.tfvars:11-27)",
+      "The live REST venue adapter path (venue.rs VenueChoice, RestGateway) exists and is tested but has never been exercised against a real venue outside tests, since only the simulated gateway is ever selected in the one place a feed drives it (main.rs:424-441)"
+    ],
+    "evidence": [
+      "backend/crates/apps/qip-edge-node/src/main.rs:1-1157",
+      "backend/crates/apps/qip-edge-node/src/lib.rs:1-60",
+      "infrastructure/environments/dev/terraform.tfvars:1-27,51",
+      "infrastructure/environments/prod/terraform.tfvars:51",
+      "infrastructure/environments/test/terraform.tfvars:49",
+      "infrastructure/environments/stage/terraform.tfvars:49",
+      ".github/workflows/deploy.yml:227-260,278"
+    ]
+  },
+  {
+    "name": "qip-cli",
+    "path": "backend/crates/apps/qip-cli",
+    "kind": "app",
+    "purpose": "The operator command line: run cycles, inspect platform state, check agent-roster governance, verify the event log's hash chain, report venue-registration standing, and replay a journal against a configuration. Deliberately cannot raise the autonomy level from any subcommand, matching the two-operator API rule (backend/crates/apps/qip-cli/src/main.rs:1-25).",
+    "key_contracts": [
+      "main(): dispatches help/status/demo/cycle/agents/governance/limits/storage/registrations/replay (main.rs:52-85)",
+      "cycle_count/cycle — refuses a non-numeric or out-of-range count (main.rs:239-273)",
+      "demo(arguments) -> LiveDemo::stand_up + banner/cycle/closing lines (main.rs:288-331)",
+      "registrations_command -> qip_cli::registrations::report (main.rs:453-471)",
+      "replay_command -> qip_cli::replay::verify (main.rs:480-495)",
+      "demo::LiveDemo, DemoSettings (demo/mod.rs:710,635)",
+      "demo::doubles::{Loopback, VendorDouble, VenueDouble, MeshPeer} (demo/doubles.rs:82,199,250,351)",
+      "replay::verify -> Verdict{AGREES=0, DIFFERS=3} (replay.rs:75,83,91,101)",
+      "registrations::report -> Report{ADMITTED=0, PENDING=3} (registrations.rs:38,47,51,69)"
+    ],
+    "workspace_deps": [
+      "qip-core", "qip-events", "qip-financial", "qip-observability", "qip-storage", "qip-agents",
+      "qip-risk", "qip-kernel", "qip-api", "qip-market-ingestion", "qip-brokers",
+      "qip-execution-engine", "qip-risk-engine", "qip-edge", "qip-mesh", "qip-capital",
+      "qip-contracts", "qip-transport", "qip-feature-dag", "qip-strategy",
+      "qip-capital-fabric", "qip-streaming"
+    ],
+    "reached_from_production": "n/a",
+    "production_evidence": "Deliberately excluded from every deployed container image by design: deploy.yml's image-matrix comment states 'qip, from qip-cli, is absent on purpose: it is an operator's tool, run by a person against a cluster rather than scheduled in one' (.github/workflows/deploy.yml:249-250). backend/crates/tests/qip-acceptance/tests/infrastructure.rs enforces the exclusion is intentional (documented in ADR 0010) rather than an oversight. So it is real, tested production tooling but is never itself a deployable artifact — an operator builds and runs it by hand against a store/API they point it at.",
+    "io_and_state": "Every subcommand except demo reads/writes through StorageSettings::from_env and ChainArchive on the operator's own machine or wherever they run it (main.rs:129-137); each invocation builds a fresh in-process Platform and exits — only the archive persists across invocations. `demo --live` opens three loopback TCP servers on ephemeral ports it binds itself and takes no address from any configuration, so it cannot be pointed at a real venue (main.rs:11-17).",
+    "tests": {
+      "count": 34,
+      "notable": [
+        "a_cycle_count_that_is_not_a_number_is_refused_rather_than_silently_run_once (main.rs)",
+        "a_clean_journal_replays_into_three_identical_registries_and_the_run_exits_zero (tests/replay.rs)",
+        "every_kind_of_record_the_four_feeds_produce_reaches_the_platform_in_one_cycle (tests/demo.rs)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "34 tests including replay's chain-verification and demo's live-path walk against self-scripted loopback doubles; by design never containerized or scheduled, so it is a real operator tool rather than a service.",
+    "blueprint_capabilities": ["GOV", "EVID", "OBS"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/apps/qip-cli/src/main.rs:1-541",
+      "backend/crates/apps/qip-cli/Cargo.toml",
+      ".github/workflows/deploy.yml:249-256"
+    ]
+  },
+  {
+    "name": "qip-web",
+    "path": "backend/crates/apps/qip-web",
+    "kind": "app",
+    "purpose": "The institutional web application: server-rendered pages with no JavaScript at all — nine investment surfaces (pages.rs) and a nine-view read-only operator console (console/). It is a library, not a binary: no [[bin]] target and no main.rs; qip-api links it directly and serves its pages on qip-api's own port (backend/crates/apps/qip-web/src/lib.rs:1-25; deploy.yml:255-259).",
+    "key_contracts": [
+      "pages::Surface enum (9 pages: Overview/Opportunities/Theses/Portfolio/Risk/Execution/Agents/Governance/Audit) + render (pages.rs:25,88)",
+      "console::View enum (9 views: Global/Regional/Trading/Arbitrage/Ai/Quantum/DataFinder/Risk/Operations) + render (console/mod.rs:43,120)",
+      "panel::Panel<T> + Freshness — never a bare Vec; distinguishes 'not reported' from 'zero' (panel.rs:89,34)",
+      "view::Fact enum — a missing figure reaches a page as the reason it is missing, never 0 (view.rs:23)",
+      "view::ViewModel — the single struct every page renders from (view.rs:269)",
+      "html::Element::text/escape — the only path markup reaches a page, and it always escapes (html.rs:20,63)"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "partial",
+    "production_evidence": "Imported directly by qip-api's web.rs ('use qip_web::pages::{Surface, render}; use qip_web::panel::Panel; use qip_web::view::{...}', backend/crates/apps/qip-api/src/web.rs:22-24) and declared as a dependency in qip-api/Cargo.toml. deploy.yml explicitly documents it is absent from the image matrix because it is not a binary — 'its pages are already served by the qip-api image' (.github/workflows/deploy.yml:255-259). So its production reachability is identical to qip-api's: compiled into that binary, but no Cloud Run instance of qip-api is currently live.",
+    "io_and_state": "None — pure rendering functions over a ViewModel/ConsoleModel the caller assembles; no I/O, no persistence, `serde` is its only dependency.",
+    "tests": {
+      "count": 37,
+      "notable": [
+        "there_are_nine_console_views_and_each_renders_on_a_platform_that_has_reported_nothing (tests/console.rs)",
+        "a_panel_nobody_reported_defaults_to_absent_rather_than_to_zero (tests/console.rs)",
+        "there_is_no_way_to_insert_raw_markup (tests/web.rs)"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "37 tests, half of them proving every one of the nine console views renders safely against an empty/unreported platform and that no code path can insert unescaped markup (XSS is structurally impossible rather than merely filtered).",
+    "blueprint_capabilities": ["API", "OBS", "GOV"],
+    "gaps_observed": [
+      "backend/crates/tests/qip-acceptance's infrastructure suite explicitly fails the build if qip-web ever gains a main.rs, to keep it from quietly shipping as an unserved library (deploy.yml:257-259 doc)"
+    ],
+    "evidence": [
+      "backend/crates/apps/qip-web/src/lib.rs:1-43",
+      "backend/crates/apps/qip-web/src/pages.rs:25-90",
+      "backend/crates/apps/qip-web/src/console/mod.rs:43-65",
+      "backend/crates/apps/qip-api/src/web.rs:22-24",
+      ".github/workflows/deploy.yml:255-259"
+    ]
+  }
+]

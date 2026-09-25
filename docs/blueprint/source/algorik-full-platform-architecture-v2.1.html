@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Algorik Full Platform Architecture v2.1</title>
+<style>
+:root{
+ --bg:#06080d;--panel:#0b1018;--panel2:#101722;--line:#253247;--text:#eaf0f7;--muted:#8391a5;
+ --orange:#ff7a00;--blue:#4aa3ff;--teal:#2dd4bf;--green:#62d39a;--purple:#b58cff;--red:#ff6d78;--gold:#f6c85f;
+ --cyan:#55d6e5;--pink:#ea86d8
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial,sans-serif;overflow:hidden}
+header{height:76px;border-bottom:1px solid #202b3b;background:#070b11;display:flex;align-items:center;padding:0 18px;gap:18px;position:relative;z-index:10}
+.brand{min-width:320px}.brand .t{font-weight:900;font-size:19px;letter-spacing:.025em}.brand .t b{color:var(--orange)}.brand .s{font-size:9px;color:var(--muted);margin-top:5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.tabs{display:flex;gap:5px;flex:1;overflow:auto}.tab{white-space:nowrap;padding:9px 11px;border-radius:8px;border:1px solid #26354a;background:#0d141e;color:#aab5c5;font-weight:760;font-size:10px;cursor:pointer}
+.tab.active{background:#23170d;color:white;border-color:#ff7a006d;box-shadow:inset 0 0 0 1px #ff7a0025}
+.headerStatus{font-size:9px;padding:7px 10px;border:1px solid #2a384b;border-radius:999px;color:#abb7c6;white-space:nowrap}.headerStatus b{color:#65d99b}
+.app{height:calc(100% - 76px);display:grid;grid-template-columns:270px 1fr 330px}
+.sidebar,.inspector{background:#090e15;overflow:auto;padding:13px}.sidebar{border-right:1px solid #1f2a39}.inspector{border-left:1px solid #1f2a39}
+.viewport{position:relative;overflow:hidden;background:radial-gradient(circle at 48% 35%,#101927 0,#080c13 56%,#05070a 100%)}
+svg{width:100%;height:100%;display:block;touch-action:none;cursor:grab}svg:active{cursor:grabbing}
+.sectionTitle{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:#728198;margin:8px 0 7px}
+.search{width:100%;padding:9px 10px;border-radius:8px;border:1px solid #2a394e;background:#0d1520;color:#eef3f8;outline:none}
+.buttons{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:8px 0}.btn{padding:7px;border-radius:7px;border:1px solid #28364a;background:#101722;color:#b9c3cf;font-size:9px;cursor:pointer}
+.legend{display:grid;grid-template-columns:1fr 1fr;gap:5px}.lg{font-size:8px;color:#9ba8b8;display:flex;align-items:center;gap:6px}.dot{width:9px;height:9px;border-radius:50%}
+.catalogGroup{margin:10px 0;border:1px solid #202b3b;border-radius:8px;overflow:hidden}.catalogHead{font-size:9px;font-weight:800;padding:8px 9px;background:#0e151f;color:#d6dee9}.catalogItem{font-size:8px;color:#9aa7b7;padding:6px 8px;border-top:1px solid #182330;cursor:pointer}.catalogItem:hover{color:#fff;background:#111a26}
+.pageTitle{position:absolute;left:16px;top:14px;z-index:5;padding:9px 12px;background:#080d14e8;border:1px solid #28364a;border-radius:9px;max-width:760px;box-shadow:0 8px 26px #0008}
+.pageTitle b{font-size:14px}.pageTitle span{display:block;color:#8290a3;font-size:9px;line-height:1.45;margin-top:4px}
+.notice{position:absolute;left:16px;bottom:15px;z-index:5;max-width:620px;border:1px solid #34536a;background:#07141bdc;padding:8px 11px;border-radius:8px;color:#b9dce8;font-size:8px;line-height:1.4}
+.zoomBadge{position:absolute;right:14px;bottom:14px;border:1px solid #29384c;background:#0a1019e8;border-radius:7px;padding:6px 8px;color:#b4bfcc;font:9px ui-monospace,monospace;z-index:5}
+.zone{fill:#0b1119;stroke:#2a3749;stroke-width:1.2;opacity:.68;vector-effect:non-scaling-stroke}.zone.edge{fill:#11140e;stroke:#53633a}.zone.reflex{fill:#191107;stroke:#7d4c21}.zone.fabric{fill:#071514;stroke:#23685e}.zone.gke{fill:#08121a;stroke:#245379}.zone.data{fill:#100d18;stroke:#5b4778}.zone.ai{fill:#15100a;stroke:#6c562b}.zone.sec{fill:#170d11;stroke:#6b3946}.zone.dev{fill:#0f1117;stroke:#4d586b}
+.zoneLabel{fill:#dce4ed;font-size:11px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;paint-order:stroke;stroke:#05070a;stroke-width:4px}.zoneSub{fill:#7f8ea2;font-size:8px;paint-order:stroke;stroke:#05070a;stroke-width:3px}
+.edgePath{fill:none;stroke:#65758b;stroke-width:1.5;opacity:.52;vector-effect:non-scaling-stroke}.edgePath.hot{stroke:#ff9b4a;stroke-width:2.2;opacity:.9}.edgePath.control{stroke:#ae8eff}.edgePath.data{stroke:#4aa3ff}.edgePath.knowledge{stroke:#2dd4bf}.edgePath.deploy{stroke:#65d99b}.edgePath.security{stroke:#ff7d8a}.edgePath.dim{opacity:.05}.edgeLabel{fill:#8594a8;font-size:7px;paint-order:stroke;stroke:#07090d;stroke-width:3px}
+.node{cursor:pointer}.node .shape{stroke-width:1.4;vector-effect:non-scaling-stroke}.node text{pointer-events:none;text-anchor:middle;fill:#ecf2f8;font-size:8px;font-weight:760}.node .tiny{fill:#8291a3;font-size:6.5px;font-weight:520;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.node.gcp .shape{fill:#091822;stroke:#4aa3ff9e}.node.rust .shape{fill:#17110a;stroke:#ff9c43aa}.node.k8s .shape{fill:#071a18;stroke:#2dd4bfaa}.node.data .shape{fill:#151020;stroke:#b58cff9e}.node.ai .shape{fill:#17120b;stroke:#f6c85fa8}.node.sec .shape{fill:#190e13;stroke:#ff6d78a8}.node.dev .shape{fill:#10151e;stroke:#9ca9bba8}.node.external .shape{fill:#141419;stroke:#77869a}.node.hot .shape{fill:#201207;stroke:#ff7a00}.node.selected .shape{stroke:#fff;stroke-width:2.5;filter:drop-shadow(0 0 6px #ff7a0088)}.node.dim{opacity:.12}
+.inspector h2{font-size:16px;margin:3px 0 5px}.inspector .type{font-size:9px;color:#ffad61;margin-bottom:9px;font-family:ui-monospace,monospace}.inspector p{font-size:10px;line-height:1.55;color:#b4bfcd}
+.kv{display:grid;grid-template-columns:85px 1fr;gap:7px;padding:6px 0;border-bottom:1px solid #1b2634;font-size:9px}.kv b{color:#77869a}.kv span{color:#c4cdd8}
+.callout{margin:9px 0;padding:9px;border-radius:8px;border:1px solid #2b3b50;background:#0c141e;font-size:9px;color:#b9c5d1;line-height:1.5}.callout b{color:#fff}
+.flowList{display:grid;gap:5px;margin-top:7px}.flow{padding:7px 8px;border-left:2px solid #ff7a00;background:#0b121b;border-radius:0 6px 6px 0;font-size:8px;color:#b9c4d0}
+@media(max-width:1180px){.app{grid-template-columns:230px 1fr}.inspector{display:none}.brand{min-width:255px}.headerStatus{display:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="t">ALGORIK <b>FULL PLATFORM</b></div><div class="s">GCP · native Rust event fabric · pass-through world sensing · regional reflex execution · autonomous engineering</div></div>
+  <div class="tabs" id="tabs"></div>
+  <div class="headerStatus"><b>v2.1</b> implementation architecture</div>
+</header>
+<div class="app">
+<aside class="sidebar">
+  <div class="sectionTitle">Find a component</div>
+  <input class="search" id="search" placeholder="Search service, function, protocol…"/>
+  <div class="buttons"><button class="btn" id="fitBtn">Fit</button><button class="btn" id="resetBtn">Reset</button><button class="btn" id="labelsBtn">Labels</button></div>
+  <div class="sectionTitle">Flow types</div>
+  <div class="legend">
+    <div class="lg"><i class="dot" style="background:#ff9b4a"></i>Hot path</div>
+    <div class="lg"><i class="dot" style="background:#ae8eff"></i>Control</div>
+    <div class="lg"><i class="dot" style="background:#4aa3ff"></i>Data</div>
+    <div class="lg"><i class="dot" style="background:#2dd4bf"></i>Knowledge</div>
+    <div class="lg"><i class="dot" style="background:#65d99b"></i>Deploy</div>
+    <div class="lg"><i class="dot" style="background:#ff7d8a"></i>Security</div>
+  </div>
+  <div class="sectionTitle">Service catalog</div>
+  <div id="catalog"></div>
+</aside>
+<main class="viewport">
+  <div class="pageTitle" id="pageTitle"></div>
+  <svg id="svg">
+    <defs>
+      <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 z" fill="#738399"/></marker>
+      <marker id="arrowHot" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 z" fill="#ff9b4a"/></marker>
+    </defs>
+    <g id="world"></g>
+  </svg>
+  <div class="notice"><b>World-data rule:</b> external world content is pass-through. Algorik persists source manifests, hashes, facts, relationships, beliefs, embeddings/features, summaries and knowledge deltas — not a copied world-data corpus. Tick/internal financial history has a separate governed retention policy.</div>
+  <div class="zoomBadge" id="zoomBadge">100%</div>
+</main>
+<aside class="inspector" id="inspector"></aside>
+</div>
+<script>
+const VIEWS = {};
+function n(id,label,x,y,kind='gcp',sub='',detail='',meta={}){return {id,label,x,y,kind,sub,detail,meta};}
+function e(a,b,type='data',label=''){return {a,b,type,label};}
+function z(x,y,w,h,label,sub='',kind=''){return {x,y,w,h,label,sub,kind};}
+
+VIEWS.global={
+ title:'01 · Global Platform Topology',
+ sub:'Three regional execution cells around a global cognitive/data/control plane. Hot execution stays regional; global services are asynchronous.',
+ zones:[
+  z(35,95,1120,120,'GLOBAL EDGE & MANAGEMENT','user edge, engineering, security and global control','edge'),
+  z(35,240,350,470,'AMERICAS','regional execution + services','reflex'),
+  z(420,240,350,470,'EUROPE','regional execution + services','reflex'),
+  z(805,240,350,470,'APAC','regional execution + services','reflex'),
+  z(150,745,870,170,'GLOBAL DATA / KNOWLEDGE / AI','financial truth, compact knowledge, training and model distribution','data')
+ ],
+ nodes:[
+  n('users','Portal / Mobile / API',100,135,'external','clients','Investor/admin/user surfaces'),
+  n('glb','Global External LB',245,135,'gcp','Cloud Load Balancing','Anycast customer/API edge',{runtime:'GCP managed',ha:'global anycast'}),
+  n('armor','Cloud Armor',390,135,'sec','WAF / DDoS','Edge protection and policy'),
+  n('github','GitHub',545,135,'dev','source + config','Code, IaC and environment desired state'),
+  n('build','Cloud Build Private Pools',700,135,'dev','CI / provenance','Isolated build workers, tests and attestations'),
+  n('ar','Artifact Registry',870,135,'gcp','images / packages','Signed deployment artifacts'),
+  n('sec','Security Control Plane',1030,135,'sec','IAM · KMS · SCC · VPC SC','Cross-platform identity, keys and security posture'),
+  n('am_reflex','Reflex Cell',120,330,'hot','C4/C4D/C3D','Direct venue I/O, local models/risk/order books'),
+  n('am_mesh','Reflex Mesh',290,330,'rust','direct peer','Low-latency cross-region opportunity coordination'),
+  n('am_fabric','Rust Fabric',120,475,'rust','3+ brokers','Durable regional event/control journal'),
+  n('am_gke','Regional GKE',290,475,'k8s','service plane','Asset/Capital/Risk/Evidence/World-model services'),
+  n('eu_reflex','Reflex Cell',505,330,'hot','C4/C4D/C3D','Direct venue I/O, local models/risk/order books'),
+  n('eu_mesh','Reflex Mesh',675,330,'rust','direct peer','Low-latency cross-region opportunity coordination'),
+  n('eu_fabric','Rust Fabric',505,475,'rust','3+ brokers','Durable regional event/control journal'),
+  n('eu_gke','Regional GKE',675,475,'k8s','service plane','Asset/Capital/Risk/Evidence/World-model services'),
+  n('ap_reflex','Reflex Cell',890,330,'hot','C4/C4D/C3D','Direct venue I/O, local models/risk/order books'),
+  n('ap_mesh','Reflex Mesh',1060,330,'rust','direct peer','Low-latency cross-region opportunity coordination'),
+  n('ap_fabric','Rust Fabric',890,475,'rust','3+ brokers','Durable regional event/control journal'),
+  n('ap_gke','Regional GKE',1060,475,'k8s','service plane','Asset/Capital/Risk/Evidence/World-model services'),
+  n('ncc','Network Connectivity Center',590,630,'gcp','hub/spoke','Global private network topology, Interconnect/VPN attachments'),
+  n('spanner','Cloud Spanner',270,800,'data','financial truth','Global ledger/accounting and durable control state'),
+  n('graph','Spanner Graph',445,800,'data','knowledge graph','Entities, temporal facts, causal edges and provenance refs'),
+  n('bigtable','Bigtable',620,800,'data','hot derived state','Recent features, entity/event state, replay indexes'),
+  n('gcs','Cloud Storage',795,800,'data','tick/internal archive + knowledge packs','Retained tick/internal history, Fabric segments, model artifacts and compact knowledge packs'),
+  n('vertex','Vertex AI / Agent Runtime',445,875,'ai','training + agents','Model foundry, ambient/specialist agents, evaluation'),
+  n('bq','BigQuery',620,875,'data','derived analytics','Research, backtests and compact derived datasets'),
+  n('ibm','IBM Quantum',795,875,'ai','async quantum','Benchmark-gated hybrid quantum workloads')
+ ],
+ edges:[
+  e('users','glb','data','HTTPS'),e('glb','armor','security'),e('armor','am_gke','data'),e('armor','eu_gke','data'),e('armor','ap_gke','data'),
+  e('github','build','deploy','OIDC/WIF'),e('build','ar','deploy'),e('ar','am_gke','deploy'),e('ar','eu_gke','deploy'),e('ar','ap_gke','deploy'),e('ar','am_reflex','deploy'),e('ar','eu_reflex','deploy'),e('ar','ap_reflex','deploy'),
+  e('am_reflex','am_mesh','hot'),e('eu_reflex','eu_mesh','hot'),e('ap_reflex','ap_mesh','hot'),e('am_mesh','eu_mesh','hot'),e('eu_mesh','ap_mesh','hot'),e('ap_mesh','am_mesh','hot'),
+  e('am_reflex','am_fabric','data','async journal'),e('eu_reflex','eu_fabric','data','async journal'),e('ap_reflex','ap_fabric','data','async journal'),
+  e('am_fabric','am_gke','data'),e('eu_fabric','eu_gke','data'),e('ap_fabric','ap_gke','data'),
+  e('am_gke','ncc','control'),e('eu_gke','ncc','control'),e('ap_gke','ncc','control'),
+  e('am_fabric','gcs','data','segments'),e('eu_fabric','gcs','data','segments'),e('ap_fabric','gcs','data','segments'),
+  e('am_gke','spanner','control'),e('eu_gke','spanner','control'),e('ap_gke','spanner','control'),
+  e('am_gke','graph','knowledge'),e('eu_gke','graph','knowledge'),e('ap_gke','graph','knowledge'),
+  e('am_gke','bigtable','knowledge'),e('eu_gke','bigtable','knowledge'),e('ap_gke','bigtable','knowledge'),
+  e('graph','vertex','knowledge'),e('bigtable','vertex','knowledge'),e('gcs','vertex','data'),e('bq','vertex','data'),e('vertex','ibm','control'),e('vertex','ar','deploy','model package')
+ ]
+};
+
+VIEWS.regional={
+ title:'02 · Regional Cell',
+ sub:'One region: venue edge, dedicated Reflex compute, direct peer mesh, Rust Fabric, regional GKE services and managed sinks.',
+ zones:[
+  z(35,90,190,760,'VENUES / EXTERNAL','market feeds and order gateways','external'),
+  z(250,90,280,760,'REFLEX CELL','speed-critical deterministic execution','reflex'),
+  z(555,90,250,760,'RUST FABRIC','durable async nervous system','fabric'),
+  z(830,90,330,760,'REGIONAL GKE','warm service plane','gke')
+ ],
+ nodes:[
+  n('md','Market Data Feeds',125,160,'external','native protocols','Exchange/venue feeds'),
+  n('ord','Order Gateways',125,300,'external','FIX/native','Orders, cancels, fills'),
+  n('phys','Physical / Event Venues',125,440,'external','APIs','Commerce/prediction/other permitted venues'),
+  n('peer','Other Regions',125,650,'external','Reflex Mesh','Peer opportunity coordination'),
+  n('nic','gVNIC / Tier-1',390,145,'gcp','network','High-performance Compute Engine network'),
+  n('node','algorik-node',390,270,'hot','Rust process','Feed decode → books → features → models → strategy → risk → netting → execution',{runtime:'Dedicated Compute Engine',state:'RAM + local SSD; policy package',ha:'active/standby or N+1 per region'}),
+  n('local','Local SSD / RAM',390,420,'hot','ephemeral state','Order books, features, compact models, session/inventory state'),
+  n('mesh','Reflex Mesh Agent',390,575,'rust','direct QUIC/UDP/TCP','Compressed state and opportunity reservations across regions'),
+  n('pkg','Reflex Package Agent',390,720,'dev','signed activation','Downloads/verifies immutable model/policy/config package and atomic swaps'),
+  n('b1','Fabric Broker A',680,180,'rust','journal broker','Partition leader/follower'),
+  n('b2','Fabric Broker B',680,320,'rust','journal broker','Partition leader/follower'),
+  n('b3','Fabric Broker C',680,460,'rust','journal broker','Partition leader/follower'),
+  n('meta','Fabric Meta / Schema',680,600,'rust','control','Topic metadata, schema compatibility, producer fencing, ACLs'),
+  n('arch','Fabric Archiver',680,730,'rust','sink','Closed segments → GCS; offsets/manifests'),
+  n('risk','Risk Brain',920,170,'k8s','service','Slow/warm risk forecasting and envelope generation'),
+  n('capital','Capital / Treasury',1070,170,'k8s','service','Capital grants, liquidity/collateral placement'),
+  n('asset','Asset / Strategy',920,315,'k8s','service','Portfolio/strategy lifecycle and opportunities'),
+  n('evidence','Evidence / World Model',1070,315,'k8s','service','Pass-through source evidence → knowledge deltas'),
+  n('ambient','Ambient / Causal Agents',920,460,'ai','persistent agents','Always-on prediction, surprise detection, intervention planning'),
+  n('api','Regional APIs',1070,460,'k8s','service','Portal/service APIs'),
+  n('sink','Fabric Sink Workers',920,610,'k8s','consumers','Spanner/Bigtable/BQ/GCS sinks with independent backpressure'),
+  n('otel','OTel Collectors',1070,610,'gcp','telemetry','Async metrics/logs/traces'),
+  n('secrets','Secret Manager / KMS',920,750,'sec','identity+keys','Credentials, envelope keys, package signing/verification'),
+  n('meshsec','Service Mesh / mTLS',1070,750,'sec','east-west','Identity-aware GKE service communication')
+ ],
+ edges:[
+  e('md','nic','hot'),e('nic','node','hot'),e('node','ord','hot'),e('ord','node','hot'),e('phys','node','hot'),
+  e('node','local','hot'),e('node','mesh','hot'),e('mesh','peer','hot'),e('node','b1','data','async'),e('node','b2','data'),e('node','b3','data'),
+  e('b1','b2','control','replicate'),e('b2','b3','control','replicate'),e('b3','b1','control','replicate'),
+  e('meta','b1','control'),e('meta','b2','control'),e('meta','b3','control'),e('b1','arch','data'),e('b2','arch','data'),e('b3','arch','data'),
+  e('b1','risk','data'),e('b1','capital','data'),e('b1','asset','data'),e('b1','evidence','data'),e('b1','ambient','data'),e('b1','sink','data'),
+  e('risk','b1','control'),e('capital','b1','control'),e('asset','b1','control'),e('evidence','b1','knowledge'),e('ambient','b1','knowledge'),
+  e('pkg','node','deploy'),e('secrets','pkg','security'),e('secrets','risk','security'),e('meshsec','risk','security'),e('meshsec','capital','security'),e('otel','b1','data')
+ ]
+};
+
+VIEWS.fabric={
+ title:'03 · Native Rust Event & Control Fabric',
+ sub:'One product-owned event backbone with workload-specific QoS. Durable, replayable and regional-first; never a synchronous dependency of the trading hot path.',
+ zones:[
+  z(35,90,240,740,'PRODUCERS','reflex + services + agents',''),
+  z(300,90,490,740,'REGIONAL FABRIC CLUSTER','Rust broker/journal/meta plane','fabric'),
+  z(815,90,345,740,'CONSUMERS / SINKS','durable storage and services','data')
+ ],
+ nodes:[
+  n('p_reflex','Reflex Nodes',155,160,'hot','P1/P2 producer','Outcomes, journals, decision traces'),
+  n('p_gke','GKE Services',155,290,'k8s','P0/P1/P3','Risk envelopes, capital grants, world/knowledge events'),
+  n('p_agents','Ambient / Dev Agents',155,420,'ai','P3/P4','Research, operations and engineering events'),
+  n('p_pkg','Release / Package Controller',155,550,'dev','P0','Model/policy/package activation announcements'),
+  n('p_tel','OTel / AIOps',155,680,'gcp','P4','Telemetry events'),
+  n('f_meta','Meta / Schema / ACL',545,140,'rust','metadata quorum','Topic/partition map, schemas, ACLs, producer fencing'),
+  n('f1','Broker A',420,300,'rust','RF3 journal','Leader/follower partitions'),
+  n('f2','Broker B',545,300,'rust','RF3 journal','Leader/follower partitions'),
+  n('f3','Broker C',670,300,'rust','RF3 journal','Leader/follower partitions'),
+  n('f_seg','Segment Store',545,440,'rust','local PD / Local SSD cache','Append-only segments, indexes, checksums, retention'),
+  n('f_mirror','Cross-Region Mirror',420,600,'rust','selective async','Only selected topics mirror; never global synchronous quorum'),
+  n('f_admin','Admin / Repair / Rebalance',670,600,'rust','ops','Partition moves, retention, repair, offline compaction'),
+  n('c_gke','Regional GKE Consumers',910,160,'k8s','consumer groups','Typed domain services'),
+  n('c_sp','Spanner Sink',1055,160,'data','financial/control state','Idempotent materialization'),
+  n('c_bt','Bigtable Sink',910,310,'data','derived state','High-rate features and knowledge state'),
+  n('c_bq','BigQuery Sink',1055,310,'data','analytics','Derived facts, outcomes and research datasets'),
+  n('c_gcs','GCS Archive',910,470,'data','segments / tick / knowledge packs','Tick/internal retained history, broker segments and compact knowledge packs'),
+  n('c_vertex','Vertex / Model Foundry',1055,470,'ai','learning','Consumes knowledge/outcomes; produces model artifacts'),
+  n('c_other','Remote Fabric Regions',980,650,'rust','mirror endpoints','Critical controls/outcomes selectively mirrored')
+ ],
+ edges:[
+  e('p_reflex','f1','data'),e('p_gke','f2','control'),e('p_agents','f3','knowledge'),e('p_pkg','f_meta','deploy'),e('p_tel','f3','data'),
+  e('f_meta','f1','control'),e('f_meta','f2','control'),e('f_meta','f3','control'),e('f1','f2','control','replication'),e('f2','f3','control','replication'),e('f3','f1','control','replication'),
+  e('f1','f_seg','data'),e('f2','f_seg','data'),e('f3','f_seg','data'),e('f_seg','f_mirror','data'),e('f_admin','f1','control'),e('f_admin','f2','control'),e('f_admin','f3','control'),
+  e('f1','c_gke','data'),e('f2','c_sp','data'),e('f3','c_bt','data'),e('f3','c_bq','data'),e('f_seg','c_gcs','data'),e('f2','c_vertex','knowledge'),e('f_mirror','c_other','data')
+ ]
+};
+
+VIEWS.data={
+ title:'04 · World Sensing, Tick History & Durable Knowledge',
+ sub:'External world bytes pass through transient workers and are discarded. Durable state begins at the knowledge boundary. Tick/internal records have separate retention.',
+ zones:[
+  z(35,90,240,740,'EXTERNAL SENSORS','current + historical re-fetch','external'),
+  z(300,90,270,740,'PASS-THROUGH PROCESSING','ephemeral world-data path','gke'),
+  z(595,90,565,740,'DURABLE KNOWLEDGE / HISTORY','cheap compact memory + governed tick archive','data')
+ ],
+ nodes:[
+  n('web','Web / APIs / Feeds',150,145,'external','world sources','Current external sources'),
+  n('hist','Historical Provider APIs',150,275,'external','re-fetch','Historical world data requested on demand'),
+  n('market','Market Feeds',150,405,'external','ticks / books','Live market data'),
+  n('internal','Algorik Outcomes',150,535,'hot','orders / fills / decisions','Internal irreplaceable records'),
+  n('source','Source Manifest Registry',150,690,'data','URI · hash · etag · cursor','Where/how to re-fetch; no copied source body'),
+  n('scout','Scout / Crawler Workers',435,155,'k8s','ephemeral workers','Secure egress; memory/encrypted ephemeral processing'),
+  n('parse','Parse / Extract / Normalize',435,290,'k8s','streaming','Extract entities/events/facts/features'),
+  n('ev','Evidence / Provenance',435,425,'k8s','scoring','Corroboration, contradiction, source quality, freshness'),
+  n('delta','Knowledge Delta Builder',435,560,'ai','distillation','Facts, relationships, beliefs, summaries, embeddings/features'),
+  n('discard','Discard Raw External Payload',435,705,'sec','required','External source content leaves memory/ephemeral disk after processing'),
+  n('graph','Spanner Graph',700,160,'data','K1 structured knowledge','Entities, relationships, temporal facts, causal edges, beliefs and source refs'),
+  n('bt','Bigtable',885,160,'data','K0 fast knowledge','Recent derived state, features, ambient-model state and replay indexes'),
+  n('packs','GCS Knowledge Packs',1070,160,'data','K2 cheap compact memory','Compressed protobuf/Parquet summaries, embeddings and world-state snapshots'),
+  n('bq','BigQuery',700,330,'data','K3 analytical knowledge','Derived facts/features/outcomes; no copied source documents'),
+  n('tick','GCS Tick / Internal Lake',885,330,'data','T governed history','Retained tick/order-book and Algorik execution history under rights/policy'),
+  n('sp','Spanner Ledger',1070,330,'data','financial truth','Orders/fills/cash/positions/obligations/settlement'),
+  n('memory','Episodic / Semantic Memory',700,515,'ai','knowledge memory','Compressed episodes, procedural memory, counterfactual outcomes'),
+  n('world','World Model Federation',885,515,'ai','multi-world','Competing causal/temporal models consume durable knowledge'),
+  n('replay','Market Replay / Simulation',1070,515,'ai','tick history','Reconstruct market conditions and counterfactual executions'),
+  n('ambient','Ambient Models',790,690,'ai','always on','Watch compact state, predict, detect surprise and request re-fetch'),
+  n('training','Model Foundry',1010,690,'ai','train/distill','Train specialists/reflex models from governed knowledge + tick/internal data')
+ ],
+ edges:[
+  e('web','scout','data'),e('hist','scout','data'),e('source','scout','control','re-fetch manifest'),e('scout','parse','data'),e('parse','ev','data'),e('ev','delta','knowledge'),e('delta','discard','security'),
+  e('delta','source','knowledge'),e('delta','graph','knowledge'),e('delta','bt','knowledge'),e('delta','packs','knowledge'),e('delta','bq','knowledge'),
+  e('market','tick','data'),e('internal','tick','data'),e('internal','sp','control'),e('tick','replay','data'),
+  e('graph','world','knowledge'),e('bt','world','knowledge'),e('packs','world','knowledge'),e('memory','world','knowledge'),e('world','ambient','knowledge'),e('ambient','source','control','request refresh'),
+  e('world','memory','knowledge'),e('world','training','knowledge'),e('replay','training','data'),e('tick','training','data'),e('bq','training','data')
+ ]
+};
+
+VIEWS.ai={
+ title:'05 · Cognitive / AGI / Quantum Plane',
+ sub:'Federated world models, symbolic reasoning, ambient proactive models and benchmark-gated quantum research generate bounded intelligence packages for fast regional execution.',
+ zones:[
+  z(35,90,310,740,'KNOWLEDGE INPUTS','compact durable memory','data'),
+  z(370,90,500,740,'COGNITIVE SOCIETY','models, reasoners and agents','ai'),
+  z(895,90,265,740,'OUTPUT / PROMOTION','tested intelligence packages','dev')
+ ],
+ nodes:[
+  n('kg','Spanner Graph',180,160,'data','knowledge graph','Entities, relationships, causal/temporal state'),
+  n('state','Bigtable / Memory',180,300,'data','fast state','Derived ambient state/features'),
+  n('analytics','BigQuery / Knowledge Packs',180,440,'data','derived history','Research and compact historical knowledge'),
+  n('ticks','Tick/Internal Replay',180,580,'data','market history','Execution replay and microstructure learning'),
+  n('wm','World Model Federation',510,150,'ai','many competing worlds','Macro, company, supply chain, microstructure, event, capital, regional and counterfactual models'),
+  n('sym','Neuro-Symbolic Reasoning',730,150,'ai','rules + solvers','Knowledge graph reasoning, temporal logic, causal/abductive reasoning, SAT/SMT/MILP/QUBO'),
+  n('amb','Ambient Proactive Mesh',510,315,'ai','always running','Forecast, surprise, opportunity, risk, curiosity and assumption sentinels'),
+  n('meta','Meta / Arbitration Brain',730,315,'ai','epistemic control','Weights models by regime/evidence and preserves disagreement'),
+  n('agency','Causal Agency Engine',510,480,'ai','intervention planning','Goal → levers → action candidates → simulation → governed action → attribution'),
+  n('special','Specialist Brain Society',730,480,'ai','domain experts','Macro, company, microstructure, event, supply chain, crypto, private markets, portfolio, capital, risk'),
+  n('vertex','Vertex Training / Pipelines',510,650,'ai','model foundry','Train/evaluate/distill models'),
+  n('quantum','IBM Quantum Gateway',730,650,'ai','async research','Optimization, hypothesis/search, quantum ML research; benchmark-gated'),
+  n('eval','Evaluation / Promotion Gate',1015,190,'dev','independent tests','Calibration, replay, robustness, safety, benchmark and authority checks'),
+  n('registry','Model / Policy Registry',1015,355,'gcp','versions','Immutable model/policy/feature/risk packages'),
+  n('package','Reflex Package Builder',1015,520,'dev','signed package','Bundle compact model + strategy + feature graph + risk envelope + config'),
+  n('regions','Regional Reflex Cells',1015,690,'hot','fast inference','Atomic package activation; no global inference dependency')
+ ],
+ edges:[
+  e('kg','wm','knowledge'),e('state','amb','knowledge'),e('analytics','wm','knowledge'),e('ticks','special','data'),e('wm','sym','knowledge'),e('wm','amb','knowledge'),e('sym','meta','knowledge'),e('amb','meta','knowledge'),
+  e('meta','agency','knowledge'),e('special','agency','knowledge'),e('agency','vertex','knowledge'),e('special','vertex','knowledge'),e('vertex','quantum','control'),e('vertex','eval','deploy'),e('quantum','eval','control'),e('eval','registry','deploy'),e('registry','package','deploy'),e('package','regions','deploy')
+ ]
+};
+
+VIEWS.security={
+ title:'06 · Network, Security & Trust Boundaries',
+ sub:'Separate projects and VPCs contain blast radius. Identity, keys, egress and supply-chain trust are explicit across every plane.',
+ zones:[
+  z(35,90,320,740,'ORG / IDENTITY','organization controls','sec'),
+  z(380,90,360,740,'NETWORK / SERVICE SECURITY','private connectivity and workload identity','gke'),
+  z(765,90,395,740,'RUNTIME / DATA / SUPPLY CHAIN','policy enforcement','dev')
+ ],
+ nodes:[
+  n('org','Organization Policies',190,145,'sec','org/folder constraints','Restrict APIs, regions, external IPs, service account behavior'),
+  n('iam','Cloud IAM + Workload Identity',190,280,'sec','identity','Least privilege human/workload access'),
+  n('pam','Privileged Access Manager',190,415,'sec','JIT elevation','Time-bound admin access'),
+  n('kms','Cloud KMS / HSM',190,550,'sec','keys/signing','Encryption and package signing roots'),
+  n('scc','Security Command Center',190,690,'sec','posture/findings','Central security telemetry and findings'),
+  n('svpc','Shared VPC',505,145,'gcp','network foundation','Host/service project segmentation'),
+  n('ncc','Network Connectivity Center',655,145,'gcp','hub/spoke','Regional VPCs, Interconnect and VPN'),
+  n('psc','Private Service Connect',505,300,'gcp','private APIs','Private managed-service endpoints where supported'),
+  n('mesh','Service Mesh / mTLS',655,300,'sec','east-west','Workload identity and mTLS inside GKE'),
+  n('swp','Secure Web Proxy / NAT',505,455,'sec','controlled egress','Crawler/agent/build internet egress; domain/audit controls'),
+  n('armor','Cloud Armor',655,455,'sec','edge','DDoS/WAF/rate policy'),
+  n('vpcsc','VPC Service Controls',580,640,'sec','data perimeter','Reduce data exfiltration across supported services'),
+  n('secret','Secret Manager',885,150,'sec','runtime secrets','Venue credentials and service secrets'),
+  n('binauth','Binary Authorization',1040,150,'dev','deploy policy','Only attested artifacts may deploy'),
+  n('artifact','Artifact Registry',885,315,'gcp','trusted artifacts','Images, packages, model bundles'),
+  n('analysis','Artifact Analysis / SBOM',1040,315,'dev','vuln/provenance','Scan and track supply chain'),
+  n('gitops','GitOps Desired State',885,480,'dev','immutable intent','Environment manifests and policy changes through review'),
+  n('audit','Cloud Audit Logs',1040,480,'sec','evidence','Administrative and data-access logs'),
+  n('shield','Shielded / Confidential VM',885,650,'gcp','compute hardening','Reflex/Fabric compute hardening where compatible'),
+  n('policy','Admission / NetworkPolicy',1040,650,'sec','runtime controls','GKE policy, egress and namespace boundaries')
+ ],
+ edges:[
+  e('org','iam','security'),e('iam','pam','security'),e('kms','secret','security'),e('scc','audit','security'),
+  e('svpc','ncc','data'),e('ncc','psc','data'),e('svpc','mesh','security'),e('svpc','swp','security'),e('armor','svpc','security'),e('vpcsc','psc','security'),
+  e('secret','policy','security'),e('artifact','analysis','deploy'),e('analysis','binauth','deploy'),e('gitops','binauth','deploy'),e('binauth','policy','deploy'),e('policy','shield','security'),e('audit','scc','security')
+ ]
+};
+
+VIEWS.cicd={
+ title:'07 · CI/CD, GitOps & Autonomous Development',
+ sub:'Agents can plan, code, test and operate quickly, but production changes still traverse the same versioned, attested and reversible supply chain.',
+ zones:[
+  z(35,90,260,740,'SOURCE / PLAN','human + agent intent','dev'),
+  z(320,90,335,740,'AUTONOMOUS ENGINEERING','sandboxed agent workforce','ai'),
+  z(680,90,255,740,'CI / SUPPLY CHAIN','build and attest','dev'),
+  z(960,90,200,740,'GITOPS / RUNTIME','promote and observe','gke')
+ ],
+ nodes:[
+  n('issue','Blueprint / Issue / Goal',165,160,'dev','work item','Architecture requirements and measurable acceptance criteria'),
+  n('gh','GitHub Monorepo',165,310,'dev','source','Application, Rust Fabric, IaC, policies, schemas, models/config'),
+  n('cfg','Environment / GitOps Repo',165,480,'dev','desired state','Versioned environment manifests and package pins'),
+  n('docs','Architecture Contracts',165,650,'dev','schemas / ADRs','Machine-readable contracts, SLOs and design decisions'),
+  n('orch','Agent Orchestrator',485,140,'ai','planner','Decomposes work, allocates agents and tracks evidence'),
+  n('code','Coding Agents',400,300,'ai','parallel builders','Implement scoped changes in isolated worktrees/environments'),
+  n('test','Test / Replay Agent',570,300,'ai','validation','Unit/integration/fuzz/replay/performance/model tests'),
+  n('secagent','Security Agent',400,470,'ai','security review','SAST/SCA/IaC/secret/threat checks'),
+  n('archagent','Architecture Agent',570,470,'ai','contract review','Checks dependencies, service ownership, latency/failure invariants'),
+  n('sreagent','SRE / Learning Agent',485,650,'ai','operate + learn','Analyzes deployment/runtime outcomes; proposes remediations and new tests'),
+  n('build','Cloud Build Private Pools',805,155,'dev','CI','Hermetic/private builds using WIF'),
+  n('tests','Quality Gates',805,305,'dev','gates','Tests, replay, performance, schema compatibility and policy checks'),
+  n('ar','Artifact Registry',805,455,'gcp','artifact store','Images, Rust binaries, SBOMs and model/reflex packages'),
+  n('attest','Attestation / Binary Auth',805,610,'sec','supply-chain trust','Provenance, vulnerability and approval attestations'),
+  n('argo','Argo CD + Kargo',1060,155,'k8s','GitOps promotion','Reconciles GKE desired state and staged environment promotion'),
+  n('roll','Argo Rollouts',1060,315,'k8s','progressive delivery','Canary/blue-green with SLO gates'),
+  n('pkg','Reflex Package Controller',1060,475,'rust','VM promotion','Signed package activation, cohort/canary rollout and instant rollback'),
+  n('obs','Observability / SLOs',1060,650,'gcp','feedback','Cloud Monitoring/Prometheus/Logging/Trace + domain SLOs')
+ ],
+ edges:[
+  e('issue','orch','deploy'),e('gh','orch','deploy'),e('docs','orch','deploy'),e('orch','code','deploy'),e('orch','test','deploy'),e('orch','secagent','deploy'),e('orch','archagent','deploy'),
+  e('code','gh','deploy'),e('gh','build','deploy'),e('build','tests','deploy'),e('tests','ar','deploy'),e('ar','attest','deploy'),e('attest','cfg','deploy'),e('cfg','argo','deploy'),e('argo','roll','deploy'),e('cfg','pkg','deploy'),
+  e('roll','obs','data'),e('pkg','obs','data'),e('obs','sreagent','knowledge'),e('sreagent','issue','knowledge'),e('sreagent','gh','deploy')
+ ]
+};
+
+VIEWS.flow={
+ title:'08 · End-to-End Operating Flow',
+ sub:'From sensing the world and markets to durable knowledge, cognition, capital/risk decisions, fast execution and continuous learning.',
+ zones:[z(35,100,1120,700,'END-TO-END','data → knowledge → intelligence → capital → reflex → outcome → learning','')],
+ nodes:[
+  n('s1','World Sources',95,220,'external','pass-through','Current/historical external sources are fetched on demand'),
+  n('s2','Tick / Market Feeds',95,520,'external','retained by policy','Live market microstructure'),
+  n('s3','Evidence + Extraction',260,220,'k8s','transient processing','Validate and distill external source content'),
+  n('s4','Source Manifest',260,390,'data','re-fetch pointer','URI/provider/hash/version/cursor/entitlement'),
+  n('s5','Knowledge Layer',430,220,'data','compact durable state','Graph facts, beliefs, relationships, embeddings/features, summaries and episodes'),
+  n('s6','Tick / Internal History',430,520,'data','replay','Governed retained market/internal data'),
+  n('s7','World Models + Ambient AI',610,220,'ai','cognition','Competing world models, symbolic reasoners and proactive sentinels'),
+  n('s8','Replay / Training / Quantum',610,520,'ai','learning','Simulation, model training/distillation and benchmarked quantum search'),
+  n('s9','Capital / Risk / Strategy',790,220,'k8s','policy','Capital grants, risk envelopes, strategy/model packages'),
+  n('s10','Rust Fabric',790,520,'rust','durable async','Distribute controls/journals/outcomes and replayable events'),
+  n('s11','Regional Reflex Cells',970,220,'hot','fast path','Local model/risk/order-book inference and direct execution'),
+  n('s12','Reflex Mesh',970,390,'rust','peer fast path','Cross-region multi-leg coordination'),
+  n('s13','Venues / Markets',1100,220,'external','execution','Financial/event/physical venues'),
+  n('s14','Ledger / Outcomes',970,650,'data','truth','Spanner ledger + outcome events'),
+  n('s15','Evaluation / Memory',790,650,'ai','learn','Attribution, calibration, counterfactuals and knowledge/model updates'),
+  n('s16','Autonomous Engineering',610,650,'dev','improve platform','Agents create tests/fixes/features through governed CI/GitOps')
+ ],
+ edges:[
+  e('s1','s3','data'),e('s3','s4','knowledge'),e('s3','s5','knowledge'),e('s2','s6','data'),e('s5','s7','knowledge'),e('s6','s8','data'),e('s7','s8','knowledge'),
+  e('s7','s9','knowledge'),e('s8','s9','knowledge'),e('s9','s10','control'),e('s10','s11','control'),e('s11','s12','hot'),e('s11','s13','hot'),e('s13','s11','hot'),
+  e('s11','s10','data','outcomes'),e('s10','s14','data'),e('s14','s15','knowledge'),e('s15','s5','knowledge'),e('s15','s8','knowledge'),e('s15','s16','knowledge'),e('s16','s9','deploy'),e('s4','s1','control','re-fetch')
+ ]
+};
+
+const VIEW_ORDER=['global','regional','fabric','data','ai','security','cicd','flow'];
+const LABELS={global:'01 Global',regional:'02 Region',fabric:'03 Rust Fabric',data:'04 Data/Knowledge',ai:'05 Cognitive AI',security:'06 Security',cicd:'07 CI/CD',flow:'08 Flow'};
+
+let current='global', transform={x:0,y:0,k:1}, drag=null, showLabels=true, selected=null;
+const svg=document.getElementById('svg'), world=document.getElementById('world');
+const ns='http://www.w3.org/2000/svg';
+function S(tag,attrs={}){const el=document.createElementNS(ns,tag);for(const [k,v] of Object.entries(attrs))el.setAttribute(k,v);return el;}
+function nodeById(id){return VIEWS[current].nodes.find(n=>n.id===id);}
+function renderTabs(){
+ const t=document.getElementById('tabs');t.innerHTML='';
+ VIEW_ORDER.forEach(k=>{const b=document.createElement('button');b.className='tab'+(k===current?' active':'');b.textContent=LABELS[k];b.onclick=()=>{current=k;selected=null;transform={x:0,y:0,k:1};render();};t.appendChild(b);});
+}
+function renderCatalog(){
+ const cat=document.getElementById('catalog');cat.innerHTML='';
+ const groups={Rust:[],GCP:[],Kubernetes:[],Data:[],AI:[],Security:[],External:[],Delivery:[]};
+ for(const x of VIEWS[current].nodes){
+  let g=x.kind==='rust'||x.kind==='hot'?'Rust':x.kind==='k8s'?'Kubernetes':x.kind==='data'?'Data':x.kind==='ai'?'AI':x.kind==='sec'?'Security':x.kind==='external'?'External':x.kind==='dev'?'Delivery':'GCP';
+  groups[g].push(x);
+ }
+ for(const [g,items] of Object.entries(groups)){if(!items.length)continue;const box=document.createElement('div');box.className='catalogGroup';box.innerHTML=`<div class="catalogHead">${g}</div>`;items.forEach(x=>{const d=document.createElement('div');d.className='catalogItem';d.textContent=x.label;d.onclick=()=>selectNode(x.id);box.appendChild(d)});cat.appendChild(box);}
+}
+function render(){
+ renderTabs();renderCatalog();
+ const v=VIEWS[current];document.getElementById('pageTitle').innerHTML=`<b>${v.title}</b><span>${v.sub}</span>`;
+ world.innerHTML=''; world.setAttribute('transform',`translate(${transform.x} ${transform.y}) scale(${transform.k})`);
+ v.zones.forEach(q=>{const r=S('rect',{x:q.x,y:q.y,width:q.w,height:q.h,rx:12,class:'zone '+(q.kind||'')});world.appendChild(r);const t=S('text',{x:q.x+14,y:q.y+22,class:'zoneLabel'});t.textContent=q.label;world.appendChild(t);if(q.sub){const s=S('text',{x:q.x+14,y:q.y+38,class:'zoneSub'});s.textContent=q.sub;world.appendChild(s);}});
+ v.edges.forEach(ed=>drawEdge(ed));
+ v.nodes.forEach(nd=>drawNode(nd));
+ applySearch();updateInspector();updateZoom();
+}
+function drawEdge(ed){
+ const a=nodeById(ed.a),b=nodeById(ed.b);if(!a||!b)return;
+ const dx=b.x-a.x,dy=b.y-a.y;
+ const c1x=a.x+dx*.45,c1y=a.y, c2x=b.x-dx*.45,c2y=b.y;
+ const p=S('path',{d:`M ${a.x} ${a.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${b.x} ${b.y}`,class:`edgePath ${ed.type||''}`,'data-a':ed.a,'data-b':ed.b,marker_end:ed.type==='hot'?'url(#arrowHot)':'url(#arrow)'});
+ world.appendChild(p);
+ if(showLabels&&ed.label){const tx=(a.x+b.x)/2,ty=(a.y+b.y)/2-5;const l=S('text',{x:tx,y:ty,class:'edgeLabel'});l.textContent=ed.label;world.appendChild(l);}
+}
+function drawNode(nd){
+ const g=S('g',{class:`node ${nd.kind||'gcp'} ${selected===nd.id?'selected':''}`,'data-id':nd.id,transform:`translate(${nd.x} ${nd.y})`});
+ const circle=S('circle',{cx:0,cy:0,r:42,class:'shape'});g.appendChild(circle);
+ const lines=wrapLabel(nd.label,15);lines.slice(0,3).forEach((ln,i)=>{const t=S('text',{x:0,y:(i-(lines.length-1)/2)*10-2});t.textContent=ln;g.appendChild(t)});
+ if(nd.sub){const t=S('text',{x:0,y:29,class:'tiny'});t.textContent=nd.sub.length>24?nd.sub.slice(0,23)+'…':nd.sub;g.appendChild(t);}
+ g.onclick=(ev)=>{ev.stopPropagation();selectNode(nd.id)};world.appendChild(g);
+}
+function wrapLabel(s,max){const ws=s.split(' '),out=[];let cur='';for(const w of ws){if((cur+' '+w).trim().length>max){out.push(cur);cur=w}else cur=(cur+' '+w).trim()}if(cur)out.push(cur);return out;}
+function selectNode(id){selected=id;render(); const nd=nodeById(id); if(nd){transform.x=0;}}
+function updateInspector(){
+ const ins=document.getElementById('inspector');
+ if(!selected){ins.innerHTML=`<h2>${VIEWS[current].title.replace(/^\d+\s*·?\s*/,'')}</h2><div class="type">ARCHITECTURE VIEW</div><p>${VIEWS[current].sub}</p>
+ <div class="callout"><b>Design invariant</b><br>Every component exists for a latency, consistency, availability, security or operational reason. The trading hot path is local and deterministic; durable global coordination is asynchronous.</div>
+ <div class="flowList"><div class="flow">Click any circle for purpose, runtime and resilience details.</div><div class="flow">Search dims unrelated components.</div><div class="flow">Drag to pan; wheel to zoom.</div></div>`;return;}
+ const n=nodeById(selected);if(!n)return;
+ const related=VIEWS[current].edges.filter(x=>x.a===n.id||x.b===n.id);
+ ins.innerHTML=`<h2>${n.label}</h2><div class="type">${(n.kind||'component').toUpperCase()} · ${n.sub||''}</div><p>${n.detail||'Platform component.'}</p>
+ ${Object.entries(n.meta||{}).map(([k,v])=>`<div class="kv"><b>${k}</b><span>${v}</span></div>`).join('')}
+ <div class="sectionTitle">Connections</div><div class="flowList">${related.map(x=>{const other=x.a===n.id?nodeById(x.b):nodeById(x.a);return `<div class="flow">${x.a===n.id?'→':'←'} ${other?other.label:''}${x.label?' · '+x.label:''}</div>`}).join('')}</div>`;
+}
+function applySearch(){
+ const q=document.getElementById('search').value.trim().toLowerCase();
+ const nodes=[...world.querySelectorAll('.node')], edges=[...world.querySelectorAll('.edgePath')];
+ nodes.forEach(el=>{const n=nodeById(el.dataset.id);const hit=!q||[n.label,n.sub,n.detail,JSON.stringify(n.meta)].join(' ').toLowerCase().includes(q);el.classList.toggle('dim',!hit)});
+ if(selected){edges.forEach(el=>{const hit=el.dataset.a===selected||el.dataset.b===selected;el.classList.toggle('dim',!hit)});nodes.forEach(el=>{if(el.dataset.id===selected)return;const connected=VIEWS[current].edges.some(x=>(x.a===selected&&x.b===el.dataset.id)||(x.b===selected&&x.a===el.dataset.id));if(!connected)el.classList.add('dim')});}else edges.forEach(el=>el.classList.remove('dim'));
+}
+document.getElementById('search').addEventListener('input',applySearch);
+document.getElementById('labelsBtn').onclick=()=>{showLabels=!showLabels;render()};
+document.getElementById('resetBtn').onclick=()=>{transform={x:0,y:0,k:1};selected=null;render()};
+document.getElementById('fitBtn').onclick=()=>{const vb=svg.getBoundingClientRect();const sx=vb.width/1200,sy=vb.height/950;transform={x:0,y:0,k:Math.min(sx,sy)*.94};render()};
+svg.addEventListener('wheel',ev=>{ev.preventDefault();const f=ev.deltaY<0?1.1:.9;transform.k=Math.max(.35,Math.min(3,transform.k*f));render();},{passive:false});
+svg.addEventListener('mousedown',ev=>{drag={x:ev.clientX,y:ev.clientY,ox:transform.x,oy:transform.y}});
+window.addEventListener('mousemove',ev=>{if(!drag)return;transform.x=drag.ox+(ev.clientX-drag.x);transform.y=drag.oy+(ev.clientY-drag.y);world.setAttribute('transform',`translate(${transform.x} ${transform.y}) scale(${transform.k})`);updateZoom()});
+window.addEventListener('mouseup',()=>drag=null);
+svg.addEventListener('click',()=>{selected=null;render()});
+function updateZoom(){document.getElementById('zoomBadge').textContent=Math.round(transform.k*100)+'%';}
+render();
+</script>
+</body>
+</html>

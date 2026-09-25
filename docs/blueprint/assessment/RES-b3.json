@@ -1,0 +1,855 @@
+[
+  {
+    "id": "RES-067",
+    "status": "BLOCKED",
+    "current": "nothing — no Fabric broker cluster and no cross-region mirror of any kind exists. The only 'mirror' machinery in the tree is qip_edge_node::cross_region::CrossRegionMirror (backend/crates/apps/qip-edge-node/src/cross_region.rs), which is the §31.1 arbitrage inventory-mirroring discipline between a cell and a foreign venue, not a Fabric-to-Fabric replication link; and qip_edge_node::mirror::StoreMirror (backend/crates/apps/qip-edge-node/src/mirror.rs), which ships one cell's own journal into a KeyValueStore, not a cross-region catch-up path. qip_storage::gcp::CloudStorageBlobStore exists and is tested but is Terraform-unreachable (storage_target admits only memory|file|engine).",
+    "evidence": [
+      "backend/crates/apps/qip-edge-node/src/cross_region.rs:1-26 (module doc: the §31.1 arbitrage mirror, a distinct concept)",
+      "backend/crates/apps/qip-edge-node/src/mirror.rs:1-23 (per-cell journal shipping, not cross-region)",
+      "docs/operations/multi-region.md:63-99 ('The central plane cannot be run twice' — no leader election, no chain a second region could read)",
+      "infrastructure/terraform/variables.tf:365-382 (storage_target excludes cloud_storage)"
+    ],
+    "gap": "No Fabric broker cluster exists to mirror in the first place, no cross-region link of any kind is deployed or deployable (a second central plane cannot be run at all, per multi-region.md), and the GCS-archive read path (CloudStorageBlobStore) is built but structurally unreachable.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-070",
+      "RES-074"
+    ],
+    "blocked_by": "C8",
+    "verification": "No test exists. Blocked on a second deployed region existing at all (multi-region.md: 'closed in the binaries or not at all'), which is also external:billing-blocked today.",
+    "work_item": "E11",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "C8/external:billing is the binding constraint: even with a Fabric and a GCS reader built, there is nowhere to deploy a second region to mirror into. verify: status, blocker and flags kept. Corrected the side-notes. The Fabric's absence is not C2: ADR 0100 (accepted 2026-09-25) makes the first Fabric an in-tree single-node broker on std TCP, so building the source Fabric is E03 work (RES-074, RES-076). Cloud Storage is not in ADR 0099's C4 list (Spanner, Spanner Graph, Bigtable, BigQuery, AlloyDB, Memorystore, Knowledge Catalog), so the GCS-archive read is unbuilt/unwired, not C4-blocked. DATA-066's verifier recorded the same. Evidence spot-checked: cross_region.rs:1-26, mirror.rs:1-23 and variables.tf:365-382 match what the row says."
+  },
+  {
+    "id": "RES-068",
+    "status": "MISSING",
+    "current": "nothing — modules/execution-node provisions one VM in one zone per entry in var.execution_nodes (google_compute_instance_template with zone = var.zone), with no paired standby, no fencing token and no promotion path in either Terraform or qip-edge. The only uses of 'promote' in qip-edge (cell.rs:2576-2673) concern model promotion into a strategy manifest, an unrelated concept.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node/variables.tf:78 (one zone per node entry, no pair)",
+      "docs/architecture/current-state/*.json (GCP-042 group finding, same underlying gap, assessed as GCP-043)",
+      "grep -in 'standby|fenc' backend/crates/edge/qip-edge/src/*.rs -> no hits outside unrelated model-promotion code"
+    ],
+    "gap": "No standby Reflex node, no fencing token and no promotion mechanism exist; a lost primary's zone has no second instance configured to take over.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-057",
+      "RES-069"
+    ],
+    "blocked_by": "",
+    "verification": "The monthly zonal-failure game day (RES-090): take down the Reflex primary's zone, assert a fenced standby in another zone is promoted only after liveness/fencing/session checks pass. No standby exists to promote.",
+    "work_item": "E04",
+    "tier": "T3",
+    "size": "L",
+    "notes": "execution_nodes = {} in every environment today regardless, so even a single Reflex node is unprovisioned; the RES-090 game day this feeds cannot run until this exists. Matches the assessment already recorded for GCP-043's identical finding on the same source row (G p4)."
+  },
+  {
+    "id": "RES-069",
+    "status": "BLOCKED",
+    "current": "the only GKE cluster in the tree (gitops-control-plane, Autopilot, regional) hosts no qip-* service and is itself suspended (ADR 0093); the actual warm-services runtime under ADR 0024 is Cloud Run, declared regionally in catalogue.tf (var.region), but since ADR 0036 a Cloud Run service is created only through the (suspended) GitOps control plane, so zero qip-* Cloud Run services currently serve traffic in any environment.",
+    "evidence": [
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:155 (location = var.region)",
+      "infrastructure/terraform/catalogue.tf:703 (module \"cloudrun\" for_each over the catalogue, region = var.region)",
+      "infrastructure/terraform/modules/cloudrun/main.tf:1-11 (the module no longer declares google_cloud_run_v2_service; a Config Connector RunService reconciled by Argo CD does)",
+      "docs/operations/scaling-and-availability.md:74-84 ('A zone was lost — Cloud Run is regional; the services need nothing from you')",
+      "docs/adr/0093-the-dev-control-planes-cluster-is-suspended-while-no-argo-cd-release-passes-the-scan-gate.md (cluster suspended; 0 services serving)"
+    ],
+    "gap": "No infra-plan test asserts every warm-services workload is regional/multi-zone, and today nothing is actually serving in any environment to exercise a zone loss against, whether on GKE or Cloud Run.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3",
+    "verification": "infra-plan: assert every warm-services Cloud Run entry in the catalogue is regional and that the path that would actually serve it (GitOps) is not suspended. No such test exists.",
+    "work_item": "E99",
+    "tier": "T4",
+    "size": "L",
+    "notes": "Cloud Run's own regionality would satisfy the property in the abstract once services actually serve, but ADR 0099 C3 covers GKE specifically and the source row names GKE explicitly; the Cloud Run equivalent is not currently exercised by anything. Matches the assessment already recorded for GCP-042 on the same source row. verify: status, blocker and flags kept. Replaced the citation catalogue.tf:241, which points inside the qip-api catalogue entry (health_path), with catalogue.tf:703, where the Cloud Run module receives region = var.region. docs/operations/multi-region.md carries the same stale :241 citation."
+  },
+  {
+    "id": "RES-070",
+    "status": "MISSING",
+    "current": "nothing: no per-topic mirroring-policy type exists anywhere. qip_events::Topic (topic.rs) declares a retention class per topic, through an exhaustive match (ADR 0089, Topic::retention_class, topic.rs:532). FABRIC-057 credits that as the one stream-policy declaration that exists. Topic has no mirroring field. qip_streaming::RoutingClass (routing.rs:77) has three classes, Hot/Warm/Cold, mapped onto two paths, Local/Durable. It has no cross-region dimension. The only 'mirror' concept wired into a composition root is qip_edge_node::cross_region::CrossRegionMirror, the §31.1 arbitrage-inventory discipline (per-instrument soft/hard bands against a foreign venue). That is a different vocabulary from a topic's cross-region replication policy.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/topic.rs:532 (retention_class is the only per-topic declaration; no mirroring field)",
+      "backend/crates/services/qip-streaming/src/routing.rs:75-110 (RoutingClass Hot/Warm/Cold over two paths, no cross-region dimension)",
+      "backend/crates/apps/qip-edge-node/src/cross_region.rs:1-26 (a different, non-Fabric mirroring concept)"
+    ],
+    "gap": "No StreamPolicy or Topic field declares a mirroring policy; nothing refuses a topic with no such declaration; there is no 'critical' set to compare a mirrored set against.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test exists. Verification requires a TopicSpec-style mirroring-policy field and an inspection test asserting the mirrored set equals a declared critical set.",
+    "work_item": "E03",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Buildable without a new dependency — pure data modelling on the existing event/topic types, the same shape as the QoS-class gap already recorded for FABRIC-057. verify: status MISSING kept. Corrected 'two-way Hot/Durable split' to RoutingClass's three classes over two paths, as FABRIC-057's verifier did. Recorded that the retention class is the one per-topic declaration that exists. rg for mirror in qip-events/src and qip-streaming/src found only prose uses of the word."
+  },
+  {
+    "id": "RES-071",
+    "status": "BLOCKED",
+    "current": "the one Spanner resource declared (modules/data/main.tf, google_spanner_instance.global) is single-region (config = \"regional-${var.region}\"), not multi-region, and is gated off (enable_spanner = false in every environment); the platform's actual ledger today is computed in-process by qip-kernel as part of the same cycle that produces an outcome (the same finding LEDGER-033 records), so there is no separate ledger *service* whose regional availability could be assessed at all. docs/operations/multi-region.md states directly that the central plane cannot be run from two regions ('closed in the binaries or not at all').",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:326-331 (single-region Spanner config)",
+      "infrastructure/terraform/modules/data/variables.tf:116-124 (enable_spanner default false)",
+      "docs/operations/multi-region.md:63-99 (the central plane cannot run twice)",
+      "docs/operations/disaster-recovery.md:28-36 ('The central plane holds nothing durable today')"
+    ],
+    "gap": "No multi-region ledger topology is declared, applied, or even architecturally reachable by the current single-instance central-plane binaries; the one Spanner resource that exists is regional — the opposite of what the requirement needs — and is disabled everywhere.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-004"
+    ],
+    "blocked_by": "C4, C8",
+    "verification": "game-day: no regional-loss game day has ever run (see RES-089); an infra-plan check would need exactly one ledger Spanner instance with a multi-region config, which does not exist.",
+    "work_item": "E05-ledger-spanner",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Mirrors the GCP-004 finding (INCORRECT there, because the literal ask was a multi-region Spanner instance and what exists is regional) for the ledger half; multi-region.md independently shows the central-plane singleton constraint (no leader election anywhere) would block availability through a regional failure regardless of Spanner's topology. verify: status kept; blocked_by C4 -> 'C4, C8'. Surviving a regional failure needs a second region, and that is C8 (plus external:billing) regardless of the ledger's managed topology. modules/data/main.tf:326-331 (config = regional-${var.region}) and enable_spanner = false in dev's tfvars were confirmed."
+  },
+  {
+    "id": "RES-072",
+    "status": "INCORRECT",
+    "current": "Terraform matches the requirement: google_redis_instance.cache sets persistence_mode = DISABLED, enable_memorystore = false everywhere, and var.storage_target's validation admits only memory|file|engine. The Rust storage layer does the opposite. StorageTarget::Memorystore is a selectable primary target. StorageSettings::from_env (qip-storage/src/settings.rs:102-110) parses QIP_STORAGE_TARGET=memorystore, and StorageProvider::key_value (provider.rs:358-360) builds a RedisKeyValueStore for any namespace. Every composition root opens its authoritative stores through that one setting: qip-api main.rs:105-107 puts the hash-chained 'event-log' ChainArchive on storage.key_value, as do the trial book and mesh spool, and qip-edge-node's cell-journal uses the same path. No root refuses Memorystore; qip-edge-node only warns on a non-durable target (main.rs:547). An out-of-band service update setting the variable would therefore put the event log in a persistence-disabled Redis, and a flush would lose it. That is exactly the financial-state loss this requirement forbids. No risk, capital or portfolio crate imports qip_storage::redis.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:295-322 (persistence_mode = DISABLED)",
+      "infrastructure/environments/dev/terraform.tfvars:256 (enable_memorystore = false)",
+      "infrastructure/terraform/variables.tf:365-383 (storage_target validation: memory|file|engine, a plan-time layer only)",
+      "backend/crates/libs/qip-storage/src/settings.rs:102-110 (from_env admits memorystore)",
+      "backend/crates/libs/qip-storage/src/provider.rs:358-360 (key_value builds a RedisKeyValueStore for any namespace)",
+      "backend/crates/apps/qip-api/src/main.rs:105-107 (event-log ChainArchive opened on the configured store; no Memorystore refusal)",
+      "backend/crates/apps/qip-edge-node/src/main.rs:547 (non-durable target warns, does not refuse)"
+    ],
+    "gap": "Only Terraform keeps Redis from being the store of record. The composition roots would put the event log, trial book, mesh spool and cell journal on a persistence-disabled Redis if QIP_STORAGE_TARGET=memorystore reached them. Fix in-tree, with no C4 dependency: refuse Memorystore as a StorageSettings primary target at from_env/preflight, and expose Redis only through a separate cache port whose values can be recomputed. The requirement's chaos test, which flushes and removes a live cache, needs the managed instance (C4).",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C4",
+    "verification": "To write: a qip-storage settings test asserting that from_env/preflight refuses QIP_STORAGE_TARGET=memorystore for any namespace that holds state, mutation-verified. Then, once C4 clears, the chaos test. The 35 redis.rs tests prove the RESP client, not non-authority.",
+    "work_item": "E14-memorystore-cache-only",
+    "tier": "T4",
+    "size": "M",
+    "notes": "Matches the assessments already recorded for DATA-045 (the resource/adapter pair) and ARCH-054 (the cache-authority invariant) exactly; this requirement is their failure-mode consequence — already true by absence, unproven by a chaos test. verify: BLOCKED -> INCORRECT, integrated false -> true, blocked_by C4 kept for the managed-instance chaos exercise. The row's premise, 'storage_target admits only memory|file|engine, so Redis can never be selected by any composition root', is false. storage_target is a Terraform variable. The binaries read QIP_STORAGE_TARGET through StorageSettings::from_env, which accepts memorystore, and provider.rs:358-360 builds Redis for whatever namespace asks, including qip-api's event-log (main.rs:105-107). Both confirmed by reading the code on 2026-09-25. This matches the verified DATA-045 (INCORRECT) and ARCH-054 findings the row claimed to match. work_item aligned with DATA-045."
+  },
+  {
+    "id": "RES-073",
+    "status": "MISSING",
+    "current": "nothing — no Fabric broker cluster exists to lose, so nothing emits or could emit a 'Fabric down' signal. The nearest analogue, qip_edge::telemetry's qip_edge_halted gauge (kill_switch/policy/polled sources), alerts on a cell's own halt, not on a shared broker cluster's availability, and none of the nine Cloud Monitoring alert policies in modules/observability/main.tf names a Fabric metric.",
+    "evidence": [
+      "grep -in fabric infrastructure/terraform/modules/observability/main.tf -> no hits",
+      "docs/architecture/current-state/*.json (the finding already recorded for GCP-046: 'no Fabric broker or shared event log exists anywhere in the tree')"
+    ],
+    "gap": "There is no broker cluster and no metric describing its health, so an alert policy naming one would name a descriptor nothing emits — exactly what the observability domain rule forbids.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-076",
+      "RES-003",
+      "RES-061",
+      "RES-062"
+    ],
+    "blocked_by": "",
+    "verification": "integration: stop every broker in a region, assert an alert naming the Fabric fires within the detection window. No brokers exist to stop.",
+    "work_item": "E03",
+    "tier": "T3",
+    "size": "M",
+    "notes": "Buildable once the Fabric MVP (E03) exists and emits a liveness metric; the alerting half is then ordinary Cloud Monitoring work (E12), gated by workload_metrics_exist per the observability domain rule."
+  },
+  {
+    "id": "RES-074",
+    "status": "MISSING",
+    "current": "nothing — there is no Fabric cluster, no node-local spool of Fabric records, and no restore-and-replay path. The closest built pieces are qip_storage::gcp::CloudStorageBlobStore (implemented and tested but Terraform-unreachable, storage_target admits only memory|file|engine) and qip_transport::spool::SpoolEntry (backend/crates/libs/qip-transport/src/spool.rs:73), a durable outbound spool proven for the mesh-publish seam (persist-then-send-then-forget), not applied to Fabric ingestion.",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/spool.rs:1-51,73 (durable spool pattern, a different seam)",
+      "infrastructure/terraform/variables.tf:365-382 (storage_target excludes cloud_storage)",
+      "docs/architecture/current-state/*.json (the finding already recorded for GCP-046: no Fabric exists)"
+    ],
+    "gap": "No Fabric cluster to restore, no local-spool-to-Fabric replay mechanism, and the GCS-read half (CloudStorageBlobStore) is built but structurally unreachable.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-073"
+    ],
+    "blocked_by": "",
+    "verification": "chaos: after an outage with local spooling, restore the cluster and assert every spooled record is present exactly once, in per-partition order. No cluster exists to restore.",
+    "work_item": "E03",
+    "tier": "T3",
+    "size": "L",
+    "notes": "qip_transport::spool's persist-then-send-then-forget discipline (mutation-tested for the mesh seam) is the closest in-tree pattern this could reuse. ADR 0100 makes the first Fabric an in-tree single-node broker, so nothing here is C2-blocked. verify: status MISSING kept. Removed the claim that the GCS-read half is 'additionally gated by C4'. Cloud Storage is not in ADR 0099's C4 list, so CloudStorageBlobStore is unwired (no composition root constructs it; storage_target excludes it), not blocked. spool.rs:73 (SpoolEntry) and :115 (DurableSpool) were confirmed."
+  },
+  {
+    "id": "RES-075",
+    "status": "COMPLETE",
+    "current": "qip_edge::cell::Cell::work never calls out to the centre on its hot path, by construction (ADR 0008). A cell trades on a pre-granted, signed, expiring CapitalEnvelope and on the last policy it applied. It stops only when that envelope's own clock runs out (the envelope_expiry gate), whatever hosts the warm plane. With no centre, nothing new can arrive, so no new policy or grant is activated: capital and policy reach a cell only through the mesh exchange. In production, qip-edge-node's serve loop (main.rs:866-930) logs a failed mesh exchange and still calls run_pass -> Cell::work (main.rs:888, pass.rs:117/203) under the simulated feed. Only a halt the centre itself issued stops the cell.",
+    "evidence": [
+      "docs/adr/0008-edge-cells-decide-alone.md",
+      "backend/crates/edge/qip-edge/src/cell.rs:3496,5927 (envelope_expiry gate)",
+      "backend/crates/apps/qip-edge-node/src/main.rs:866-930 (exchange failure logged at :877, pass runs regardless at :888); src/pass.rs:117,203",
+      "backend/crates/edge/qip-edge/tests/region_table.rs:1118 a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire (one policy payload, then silence: the cell keeps deciding and sending under what it holds, keeps its share when the slot goes stale, and stops only under envelope_expiry)",
+      "backend/crates/apps/qip-edge-node/tests/mesh.rs:375 a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (dead peer: poll_error reported, delta dead-lettered, cell not halted, deployed strategy unchanged)",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs:333 a_policy_going_stale_narrows_the_cell_to_the_floor_and_the_gauges_move_with_it"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test region_table a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire; cargo test -p qip-edge-node --test mesh a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running; cargo test -p qip-edge --test telemetry a_policy_going_stale_narrows_the_cell_to_the_floor_and_the_gauges_move_with_it",
+    "work_item": "",
+    "tier": "T0",
+    "size": "S",
+    "notes": "Realised generically (loss of contact with the centre, whatever runs it) rather than GKE-specifically, matching the finding already recorded for GCP-045 on the same source row. Not deployable only because execution_nodes = {} in every environment — a deployment gap, not a behavioural one. verify: COMPLETE kept; evidence and verification replaced. The test originally cited (region_table.rs:289, a_disconnected_cells_second_proposal_is_refused...) tests a different property: the region gate refusing a second proposal. The GCP-045 verifier found the same. The verifier ran the replacement tests on 2026-09-25: region_table 'test result: ok. 10 passed; 0 failed', telemetry 'test result: ok. 17 passed; 0 failed', qip-edge-node mesh 'test result: ok. 6 passed; 0 failed'. Composition was confirmed by reading serve() in qip-edge-node main.rs. Residual gaps, none of which warrants a downgrade: 'no new policy or grant is activated' holds because nothing can arrive, not because a test asserts it; no single test drives an unreachable link and a pass together; and the chaos form cannot run while execution_nodes = {} (deployable=false, e2e=false)."
+  },
+  {
+    "id": "RES-076",
+    "status": "MISSING",
+    "current": "nothing — no Fabric exists to keep journaling anything. qip-edge's own per-cell journal (qip_edge::journal, backend/crates/edge/qip-edge/src/journal.rs) is a local WAL for one cell's own decisions, not a shared event fabric other regions' or other services' consumers replay from.",
+    "evidence": [
+      "grep -rn 'struct.*Broker\\|FabricCluster' backend/crates -> no hits",
+      "docs/architecture/current-state/*.json (the finding already recorded for GCP-046, identical gap)"
+    ],
+    "gap": "No Fabric to journal, and so nothing to prove keeps journaling when a region's warm plane is lost.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "chaos: stop every warm-services consumer in a region, assert Fabric brokers keep accepting/retaining records and restarted consumers replay with no gap. Cannot be written until the Fabric exists.",
+    "work_item": "E03",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Matches the assessment already recorded for GCP-046, same source row."
+  },
+  {
+    "id": "RES-077",
+    "status": "BLOCKED",
+    "current": "nothing — a single project/region is applied (algorik-dev only; test/stage/prod tfvars carry project_id = \"unprovisioned\"), so there is no other region or global service to fail over any function to, and no eligibility register names which functions may be served from elsewhere.",
+    "evidence": [
+      "infrastructure/environments/{test,stage,prod}/terraform.tfvars (project_id = \"unprovisioned\")",
+      "docs/operations/multi-region.md:11-19 (one central-plane region, no execution nodes, in every environment)",
+      "docs/architecture/current-state/*.json (the finding already recorded for GCP-047, identical gap)"
+    ],
+    "gap": "No second region exists to fail over to, and no per-function eligibility declaration exists to check honoured or dishonoured against.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-075",
+      "RES-076"
+    ],
+    "blocked_by": "C8, C3",
+    "verification": "game-day: remove one region's warm-services plane, assert eligible functions resume elsewhere. No second region and no eligibility register exist.",
+    "work_item": "E99",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Matches the finding already recorded for GCP-047; also implicated: C8 (multi-region is an owner cost decision) and external:billing (dev's billing is disabled, independently blocking a second-region apply). verify: status kept; blocked_by C3 -> 'C8, C3', matching GCP-047's verified row. The substance is cover from another region, which needs a second region (C8 and external:billing) whether the warm plane is GKE or Cloud Run. test/stage/prod project_id = \"unprovisioned\" was confirmed."
+  },
+  {
+    "id": "RES-078",
+    "status": "MISSING",
+    "current": "nothing distinguishes a 'stricter' transfer/position action class tied to ledger freshness. qip_edge::cell::Cell gates every order on one binary envelope_expiry check (cell.rs:3496,5927), with no graduated tier. The ledger is computed in-process by the kernel in the same cycle that produces an outcome (LEDGER-033), so no independently-failable ledger service exists to key the distinction on. Transfers are not wholly absent. qip_capital_fabric::gate::TransferGate (qip-capital-fabric/src/gate.rs) assesses machine-generated transfer intents with §37.3's seven veto-only checks: CorridorAuthority, Caps, MinimumInterval, StatedPurpose, SourceBalance, VelocityAndAnomaly and KillSwitch. No engine executes an Approved (ADR 0021). None of the seven checks is keyed on ledger availability or balance freshness, so nothing disables a stricter class outright while the ledger is down.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:3496,5927 (single envelope_expiry gate, no tiering)",
+      "backend/crates/services/qip-capital-fabric/src/gate.rs:1-40 (TransferGate: veto-only, no transfer engine), :546-585 (GateCheck: seven checks, none on ledger freshness)",
+      "docs/architecture/current-state/*.json (the finding already recorded for LEDGER-033: no separate ledger sink exists)"
+    ],
+    "gap": "No two-tier action classification exists at all; building one needs a concept of 'ledger freshness' distinct from the capital envelope's own expiry, which nothing in qip-capital or qip-edge currently models.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-012",
+      "RES-079",
+      "RES-080"
+    ],
+    "blocked_by": "",
+    "verification": "integration: with ledger commits denied, submit a transfer and a stricter position change, assert both are refused immediately. No ledger-denial seam exists to drive this against.",
+    "work_item": "E07",
+    "tier": "T3",
+    "size": "M",
+    "notes": "Neither blueprint document names which actions are 'stricter'; that enumeration is itself part of the gap. Executing a transfer stays C1 (ADR 0021/0023). Refusing a transfer intent while the ledger is stale is a veto the in-tree TransferGate could carry, so it is buildable against the simulator. verify: status MISSING kept. Corrected 'no transfer, custody or purchasing action of any kind exists'. The assessor's grep (post.*collateral|transfer_engine) missed qip-capital-fabric's TransferGate. That gate assesses transfer intents with seven veto-only checks. rg for stale/fresh/as_of in gate.rs found no ledger-freshness check among them, so the requirement stays unmet. The veto is the natural home for the missing rule."
+  },
+  {
+    "id": "RES-079",
+    "status": "INCORRECT",
+    "current": "No Fabric and no separate ledger sink exist. The in-tree path that carries a cell's financial outcomes to the centre's ledger drops them during an outage, which the requirement forbids. A cell's orders, fills and crosses reach the centre only inside a CellStateDelta, which is per-interval and incremental (qip-edge/src/mesh.rs:201-254). The uplink retries on a bounded ladder and then dead-letters the delta (mesh.rs:409). While the circuit is open it refuses the delta outright. The node keeps dead letters in memory only, capacity 64, with no redrive (qip-edge-node/src/mesh.rs:64-69). qip-mesh/src/spine.rs:14 states the up direction is 'not durable'. So while the centre (and with it the ledger) is unreachable, outcomes do not accumulate durably for later commit. The cell's local journal still records its own decisions, but nothing replays it into the centre. The centre's EventLog refusing a new append rather than evicting a Permanent record is a different behaviour: it refuses the write, it does not retain a backlog.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/mesh.rs:201-254 (CellStateDelta: orders/fills/crosses per-interval and incremental)",
+      "backend/crates/edge/qip-edge/src/mesh.rs:409 (dead_lettered: deltas that spent the whole ladder)",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs:64-69 (DEAD_LETTER_CAPACITY = 64, in memory, 'a lost message is superseded by the next one')",
+      "backend/crates/services/qip-mesh/src/spine.rs:14 ('Up: state deltas, not durable')",
+      "backend/crates/apps/qip-edge-node/tests/mesh.rs:375,388,392 (a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running pins the dead-letter)",
+      "backend/crates/libs/qip-events/src/topic.rs:599-638 (Irreplaceable retention classes at the centre: a different failure mode)"
+    ],
+    "gap": "An outage longer than the retry ladder loses that interval's outcomes from the centre's books. What is needed: outcome-bearing deltas, or a dedicated outcome stream, spooled durably at the cell (qip_transport::spool::DurableSpool already exists and serves the capital downlink) and retried without limit, then the Fabric outcome partitions under P1 retention once E03 builds them. None of this needs Spanner or a refused crate.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-078",
+      "LEDGER-033"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge-node --test mesh a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (passed 2026-09-25) demonstrates the forbidden dead-letter. The required chaos test does not exist: deny the ledger longer than the backoff ceiling while trading continues, then assert every outcome was retained.",
+    "work_item": "E05-ledger-sink-retry",
+    "tier": "T4",
+    "size": "L",
+    "notes": "Matches the verified LEDGER-033 row (INCORRECT), same source mechanism. Only a Spanner-backed ledger writer would be C4; the durable-accumulation semantics are store-independent. verify: BLOCKED(C4) -> INCORRECT; implemented/integrated/deployable true -> false; blocked_by cleared. C4 is not the reason. The cited in-tree analogue, EventLog's fail-closed retention, refuses a new write rather than retaining an outcome backlog. The actual outcome path to the ledger (cell uplink -> CentralPlane::settle) dead-letters after a bounded ladder into a 64-entry in-memory buffer with no redrive, and the verifier confirmed each cited line. The row claimed to match LEDGER-033, whose verifier reached the same verdict."
+  },
+  {
+    "id": "RES-080",
+    "status": "PARTIAL",
+    "current": "Generic idempotent commit exists at the event-log layer: EventBody::idempotency_key + Platform::journal_once (qip-kernel/src/references.rs:502-517) consults EventLog::holds_idempotent before writing. At the edge, qip_edge::dropcopy::DropCopyReconciler recognises a redelivered fill against a settled order and counts it as late_duplicates rather than re-booking it (dropcopy.rs:166-226).",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/references.rs:502-517 (journal_once)",
+      "backend/crates/edge/qip-edge/src/dropcopy.rs:166-226 (late_duplicates)",
+      "backend/crates/edge/qip-edge/tests/fills.rs:558 (a_settled_order_s_redelivered_drop_copy_is_recognised_and_a_new_fill_on_it_is_not)"
+    ],
+    "gap": "No single ledger-writer transaction atomically applies postings, position and cash updates and records the event id as one commit. No such ledger-writer process exists (LEDGER-033). So the idempotency proven today is per-subsystem, not the one restart-and-replay-twice commit this requirement specifies. There is also no accumulated backlog to replay: outcome-bearing deltas sent during an outage are dead-lettered after a bounded ladder and never redriven (RES-079, LEDGER-033).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "RES-079",
+      "LEDGER-015"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test fills a_settled_order_s_redelivered_drop_copy_is_recognised_and_a_new_fill_on_it_is_not",
+    "work_item": "E05-ledger-writer-enumeration",
+    "tier": "T2",
+    "size": "L",
+    "notes": "Matches the assessment already recorded for LEDGER-020 exactly, same underlying mechanism and gap. verify: status and flags kept. Added to the gap that the replay half has nothing to replay, because the uplink dead-letters outcomes during an outage. Evidence spot-checked: references.rs:502-517 (journal_once), dropcopy.rs:169-226 (late_duplicates), fills.rs:558."
+  },
+  {
+    "id": "RES-081",
+    "status": "NEEDS-VALIDATION",
+    "current": "qip-edge (the hot-path Cell crate) carries no dependency on qip-storage at all — only qip-edge-node (the composition root) does, and only for its journal KeyValueStore mirror (memory/file/engine), never Bigtable or BigQuery. qip_storage::provider::StorageTarget::{Bigtable,BigQuery} exist as ports; BigQuery has a working in-tree adapter (gcp::BigQueryWarehouse, reachable in principle through the egress proxy) while Bigtable has none at all (refuses construction, needing a gRPC client this workspace does not carry). Neither is reachable from Cell::work by construction.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/Cargo.toml (no qip-storage dependency)",
+      "backend/crates/apps/qip-edge-node/Cargo.toml:24 (qip-storage present, used only for the journal mirror)",
+      "backend/crates/libs/qip-storage/src/provider.rs:107,115,253-261 (Bigtable/BigQuery port descriptions; Bigtable refuses construction)",
+      "rg -ln 'BigQuery|Bigtable' backend/crates/tests backend/crates/edge/qip-edge/tests backend/crates/apps/qip-edge-node/tests -> no hits"
+    ],
+    "gap": "No chaos test makes both stores unreachable and asserts reflex decision latency/fill rate are unchanged, because neither store is reachable from the hot path to begin with — the invariant holds by structural absence rather than a proven control, the same shape as the cache-authority finding already recorded for ARCH-054.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "no test exists; write a chaos test once a research/replay path actually depends on Bigtable/BigQuery, or a structural architecture.rs test asserting qip-edge never depends on qip-storage",
+    "work_item": "E06-store-isolation-chaos-test",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Same absence-not-proof shape as ARCH-054 (Redis/cache authority)."
+  },
+  {
+    "id": "RES-082",
+    "status": "BLOCKED",
+    "current": "No derived managed store exists to rebuild. Bigtable has no adapter, and one would need a gRPC client (C2). BigQuery's adapter is constructed by no composition root. The permitted in-tree form is derived registries rebuilt from the immutable hash-chained event log alone: Platform::replay_products, replay_eligibility and replay_registrations (platform.rs:6046,6164,7395), reached from qip-cli's replay command (replay.rs:316,346). The acceptance test every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one_flipped_byte_refuses_the_replay runs three cycles, assembles a second platform over the same log, and asserts its registries equal the first's. qip_storage::chain::ChainArchive proves the log's own integrity, not a rebuild. Nothing rehydrates from Cloud Storage: CloudStorageBlobStore exists, but no composition root constructs it.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:6046,6164,7395 (replay_products, replay_eligibility, replay_registrations)",
+      "backend/crates/apps/qip-cli/src/replay.rs:316,346",
+      "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:1193 (every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one_flipped_byte_refuses_the_replay)",
+      "backend/crates/libs/qip-storage/src/chain.rs:103,178,242 (log integrity)",
+      "backend/crates/libs/qip-storage/tests/chain.rs:125 (absorbing_the_same_records_twice_writes_nothing_the_second_time)"
+    ],
+    "gap": "The Bigtable half needs a Bigtable client (C2) and the managed store (C4). Rehydrating derived stores from immutable Cloud Storage objects is not C4, but it is unbuilt: no production code writes or reads GCS segments. Every Cloud Run environment runs QIP_STORAGE_TARGET=memory, so even the event-log rebuild has nothing durable to replay from after a restart.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-053"
+    ],
+    "blocked_by": "C2, C4",
+    "verification": "cargo test -p qip-acceptance --test truth_loop every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one_flipped_byte_refuses_the_replay; cargo test -p qip-storage --test chain",
+    "work_item": "E06",
+    "tier": "T4",
+    "size": "L",
+    "notes": "Matches the assessment already recorded for DATA-066 exactly, same source row. verify: status kept; blocked_by C4 -> 'C2, C4'; permitted-form evidence replaced to match the verified DATA-066 row. ChainArchive proves log integrity, not a rebuild. The truth_loop acceptance test and Platform::replay_* are the real 'derived state rebuilt from source history' analogue, and implemented/tested/integrated now rest on them. Line numbers confirmed on 2026-09-25."
+  },
+  {
+    "id": "RES-083",
+    "status": "MISSING",
+    "current": "nothing: no durable research-task queue exists, and no managed AI/Agent Platform (Vertex Agent Builder) dependency is wired into this build. The nearest mechanism takes the opposite approach. qip-deepbrain's language chain (src/language.rs, qip_ai::language::FallbackChain, ADR 0037 decision 4) degrades a hosted-model outage to the deterministic template model, so the work is processed at lower quality at once rather than queued for the hosted model's return. qip-training's Vertex adapter (src/vertex.rs) keeps an unresolved submission when a response cannot be read and reconciles it later. That keeps job state honest; it is not a backlog of research work. qip-deepbrain's discovery desk (src/discovery.rs) runs synchronously inside the cycle.",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs (discovery desk, synchronous, no backlog/queue)",
+      "backend/crates/apps/qip-deepbrain/src/language.rs:1-10,41,52 (FallbackChain: outage degrades to templates, not a queue)",
+      "backend/crates/services/qip-training/src/vertex.rs:1-30 (UnresolvedSubmission/reconcile: job-state honesty, not a work backlog)",
+      "rg -in backlog backend/crates -> only unrelated stream/spool backlog concepts (qip-api SSE reconnect, qip-transport spool)"
+    ],
+    "gap": "No 'Agent Platform unavailable' seam exists to detect, and no durable, exactly-once-processed research-task queue exists to hold work raised during one.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "integration: submit research tasks during a simulated Agent Platform outage, assert each is durably queued and processed exactly once after recovery. No queue exists to drive this against.",
+    "work_item": "E08",
+    "tier": "T3",
+    "size": "M",
+    "notes": "MANAGED_SERVICE names Vertex/Agent Platform (C4/C5); the queueing mechanism itself is buildable in-tree without a new dependency, per the requirement's own NEW_DEPENDENCY-dropped reasoning. verify: status MISSING kept. Added the two nearest mechanisms the assessor did not name, with why neither counts. FallbackChain processes work with a degraded model instead of queueing it, a deliberate ADR 0037 choice that whoever builds this must reconcile with the requirement. Vertex's unresolved-submission record concerns training job state, not a research backlog."
+  },
+  {
+    "id": "RES-084",
+    "status": "PARTIAL",
+    "current": "Two mechanisms each stop part of the behaviour, and neither is proven end to end for a stalled feed. (1) A sequence gap: the sequencer emits MessageBody::Reset, the book is marked awaiting-snapshot (qip_orderbook::venue::VenueState::is_stale returns awaiting_snapshot, venue.rs:257), the cell journals GapDetected, and Cell::route_for (cell.rs:3339-3420) refuses every intent against that book under 'stale_book'. The ordinary path and the ADR 0080 disposition path share this refusal. (2) A silent stall, where no messages arrive: the book is not marked stale, because VenueState has no time-based staleness and the sequencer's gap_timeout runs only once a gap has opened. CellConfig::max_staleness ('How long a book may go unrefreshed before its prices stop counting', cell.rs:300, default 5s at :396) is declared and read by nothing. It is a threshold that cannot fire. What does stop a strategy on a stall is the feature graph. qip-edge-node builds the cell's FeatureEngine with a 5s max_staleness (main.rs:360). FeatureContext::fresh returns None past it, and features go Undefined. qip-strategy's runtime then emits nothing from an undefined input. Reached in production via qip-edge-node main.rs:888 -> pass.rs:117 -> Cell::work.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:3381-3383 (stale_book refusal in route_for)",
+      "backend/crates/edge/qip-orderbook/src/venue.rs:257-259 (is_stale == awaiting_snapshot; no clock)",
+      "backend/crates/edge/qip-edge/src/cell.rs:300,396 (CellConfig::max_staleness declared and defaulted; rg max_staleness finds no reader in qip-edge)",
+      "backend/crates/edge/qip-feature-dag/src/definition.rs:115-119 (fresh() hides a state older than max_staleness); src/engine.rs:200-215",
+      "backend/crates/apps/qip-edge-node/src/main.rs:360 (FeatureEngine::new(..., Duration::from_secs(5)))",
+      "backend/crates/edge/qip-edge/tests/unevaluated.rs:293-320 (a_figure_the_cell_cannot_evaluate_refuses_under_a_named_gate_and_sends_nothing; the StaleBook row injects state.reset('a sequence gap was abandoned') at :232-235, not a stall)",
+      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs:650 (a_feed_that_has_gone_quiet_makes_its_features_undefined)",
+      "backend/crates/edge/qip-strategy/tests/strategy.rs:1015 (a_signal_is_never_emitted_from_an_undefined_input)"
+    ],
+    "gap": "No test stalls a feed through Cell::work and asserts that the strategies consuming it stop placing orders once the threshold is crossed while strategies on other feeds continue. That check is the requirement's own verification. The cell's routing-level staleness threshold (CellConfig::max_staleness) is dead configuration. A stall therefore stops a strategy only through undefined features. That works for a strategy whose rules read the stalled instrument's features, but nothing refuses under a named gate or journals the stall. A strategy whose features come from another instrument could still route an order against the silent venue's frozen book. The 'other feeds continue' half is unproven.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test unevaluated a_figure_the_cell_cannot_evaluate_refuses_under_a_named_gate_and_sends_nothing (gap-reset case); cargo test -p qip-feature-dag --test feature_dag a_feed_that_has_gone_quiet_makes_its_features_undefined; cargo test -p qip-strategy --test strategy a_signal_is_never_emitted_from_an_undefined_input. Needed: a Cell::work test that advances time past the threshold with one venue's feed silent and another live, and asserts which strategies stop.",
+    "work_item": "E04",
+    "tier": "T0",
+    "size": "S",
+    "notes": "Not deployable because execution_nodes = {} in every environment. The unread CellConfig::max_staleness is a limit that cannot fire, the defect class risk-and-execution.md names, and it should either gate route_for on book age or be deleted. verify: COMPLETE -> PARTIAL. The cited test does not exercise the requirement: its StaleBook row calls state.reset('a sequence gap was abandoned') (unevaluated.rs:232-235), so it proves the gap-reset path and not a stalled feed crossing a staleness threshold. The verifier read VenueState::is_stale, which returns awaiting_snapshot and reads no clock. The only book-age threshold on the cell, CellConfig::max_staleness, has no reader (rg max_staleness over backend/crates: only the declaration and the default in qip-edge). The feature-graph staleness path does stop a feature-dependent strategy on a stall, and its two halves were run on 2026-09-25: unevaluated 'test result: ok. 3 passed', feature_dag '1 passed', strategy '1 passed'. The assessor's own note conceded that 'other feeds continue' was unproven."
+  },
+  {
+    "id": "RES-085",
+    "status": "MISSING",
+    "current": "no cell-autonomous 'local playbook' exists. The only unwind mechanism, qip_edge::cell::Cell::disposition_intents (cell.rs:3178-3320), is centre-driven (ADR 0080): it acts only on Dispositions the centre shipped on the policy payload, not on a decision the cell reaches itself. It routes through the same Cell::route_for gates as new orders (cell.rs:3325-3337). So when the lost feed shows up as a sequence gap, a disposition at that venue is refused under 'stale_book' rather than executed as a hedge. When the feed simply goes silent, the book is never marked stale (see RES-084), so a disposition would route against the frozen pre-outage book. Neither outcome is a local hedge-or-exit playbook.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:3178-3243 (disposition_intents, centre-driven)",
+      "backend/crates/edge/qip-edge/src/cell.rs:3325-3337 (route_for shared by both paths, doc comment)",
+      "backend/crates/edge/qip-orderbook/src/venue.rs:257 (is_stale reflects a reset only, not elapsed time)",
+      "rg -in playbook backend/crates -> no hits anywhere in the workspace"
+    ],
+    "gap": "No cell-autonomous playbook concept exists at all, and the one unwind path that does exist both depends on the centre and is gated by the same stale-book check a lost feed would trip, so it cannot hedge against the very venue it would need to.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-084"
+    ],
+    "blocked_by": "",
+    "verification": "integration: stall a feed while a position is open, assert the cell executes a local hedge/exit recorded with a playbook version. No such mechanism exists to drive this against.",
+    "work_item": "E04",
+    "tier": "T3",
+    "size": "L",
+    "notes": "'Local' is the load-bearing word the requirement's rationale gives ('acts on that without waiting for a centre that may be unreachable too'); the only related mechanism today is the opposite — centre-dependent. verify: status MISSING kept. Corrected the claim that a disposition against a lost feed's venue 'would itself be refused under stale_book'. That holds only for a gap-reset book. A silent stall never marks the book stale, because is_stale reads no clock and CellConfig::max_staleness has no reader, so the disposition would price off a frozen book. rg for playbook|flatten|liquidat|hedge in the edge found no local playbook."
+  },
+  {
+    "id": "RES-086",
+    "status": "PARTIAL",
+    "current": "For a feed loss that shows up as a sequence gap, the incident half exists. Cell::on_bytes journals Decision::GapDetected{stream,detail} for every gap event the sequencer reports (cell.rs:2805-2815). Cell::refuse (cell.rs:7486) then journals Decision::Refused{gate:'stale_book'} and increments qip_edge_refusals_total{gate='stale_book'} on each routing attempt against the reset book. For a feed that simply goes silent, nothing is journaled: no gap opens, the book is not marked stale, and the strategy that stops does so by emitting nothing from undefined features (RES-084). No reconciliation event is recorded when a book is resynchronised or a feed resumes. ReconciliationRequired and VenueReconciled (journal.rs:328-343) belong to §36.3's node-crash venue reconciliation, not to feed recovery.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:2805-2815 (GapDetected journaled on a sequencer gap; no test asserts it: rg GapDetected finds no test)",
+      "backend/crates/edge/qip-edge/src/cell.rs:7486-7502 (refuse, journals Decision::Refused)",
+      "backend/crates/edge/qip-edge/tests/unevaluated.rs:293-320 (proves the stale_book refusal after an injected reset)",
+      "backend/crates/edge/qip-edge/src/journal.rs:328-343 (ReconciliationRequired/VenueReconciled are node-crash venue reconciliation, not feed recovery)"
+    ],
+    "gap": "A silent feed produces no incident event. No reconciliation event distinct from the absence of further refusals is recorded when a feed recovers. GapDetected is journaled but no test asserts it.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-084"
+    ],
+    "blocked_by": "",
+    "verification": "integration: stall a feed, assert an incident is journaled; after recovery, assert a reconciliation event. Only the first half is proven today (cargo test -p qip-edge --test unevaluated a_figure_the_cell_cannot_evaluate_refuses_under_a_named_gate_and_sends_nothing).",
+    "work_item": "E04",
+    "tier": "T2",
+    "size": "S",
+    "notes": "verify: status and flags kept. Added GapDetected, the actual incident record the assessor did not cite. It has no test. Recorded that a silent stall journals nothing, and that the tree's two reconciliation decisions concern node-crash venue reconciliation, not feed recovery."
+  },
+  {
+    "id": "RES-087",
+    "status": "NEEDS-VALIDATION",
+    "current": "ADR 0036's split is structural: a Cloud Run service is reconciled by the (suspended) GKE Autopilot control-plane cluster via Argo CD/Config Connector, but once a revision is routed, Cloud Run serves it independently of the cluster — the cluster only produces new desired state, it does not sit on the request path.",
+    "evidence": [
+      "infrastructure/terraform/modules/cloudrun/main.tf header ('no longer creates the google_cloud_run_v2_service resource itself')",
+      "docs/adr/0093-the-dev-control-planes-cluster-is-suspended-while-no-argo-cd-release-passes-the-scan-gate.md (the chain from apply to served request passes through Argo CD; cluster suspended, 0 services serving)",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:2240 (every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held: every RunService carries cnrm deletion-policy: abandon, so losing or rebuilding the control plane cannot cascade-delete a serving service; a precondition, not the behaviour)"
+    ],
+    "gap": "No chaos/game-day test stops the management cluster while a RunService is actually serving and asserts the service keeps answering; today nothing is serving in the one real environment to even observe.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "no chaos test exists; nearest is the static-shape checks in gitops.rs",
+    "work_item": "E14",
+    "tier": "T3",
+    "size": "M",
+    "notes": "Matches the assessment already recorded for CICD-073 exactly, same underlying architectural claim. verify: status and flags kept. Added the static precondition test CICD-073's verifier cited. It does not demonstrate a service surviving the loss of GitOps, so tested stays false."
+  },
+  {
+    "id": "RES-088",
+    "status": "MISSING",
+    "current": "nothing — no break-glass runbook document exists anywhere in the repository. infrastructure/terraform/modules/trust-zones/main.tf:103 references the concept in a comment ('break-glass that does not reach the thing on fire is not break-glass') but no runbook, procedure, or reconciliation-to-Git process is written down.",
+    "evidence": [
+      "find docs -iname '*runbook*' -o -iname '*emergency*' -> no results",
+      "infrastructure/terraform/modules/trust-zones/main.tf:103 (comment only, no procedure)",
+      "docs/operations/gitops-exceptions.md (documents what is outside GitOps and why, but names no emergency-change procedure)",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:2318-2321 (a RunService carrying a Binary Authorization breakglassJustification is refused: the one 'break-glass' mechanism in the tree is forbidden, not proceduralised)"
+    ],
+    "gap": "No pre-approved break-glass runbook exists, and so no reconciliation-to-Git procedure for one exists either.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-087"
+    ],
+    "blocked_by": "",
+    "verification": "game-day: exercise the break-glass runbook in nonprod, assert the change matches a later Git commit with no drift. No runbook exists to exercise.",
+    "work_item": "E14",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Process/documentation gap rather than a code gap; sized M for the reconciliation tooling a real runbook would need beside the document itself. verify: status MISSING kept. rg -i break.?glass across docs, infrastructure, .github and backend found only the trust-zones comment, ADR 0036/0042 prose, and acceptance tests refusing Binary Authorization breakglass. A runbook must not rely on admission breakglass, which the gate refuses."
+  },
+  {
+    "id": "RES-089",
+    "status": "BLOCKED",
+    "current": "no regional-loss game day has ever been run or recorded (no schedule, no runbook, no record found anywhere in the repository), and it structurally cannot be: only one project/region is ever applied (dev, algorik-dev; test/stage/prod all carry project_id = \"unprovisioned\"), so there is no second region to remove from service.",
+    "evidence": [
+      "grep -rln 'game.day|game_day' . -> only requirement/matrix documents and the blueprint domain label, no runbook or record",
+      "docs/operations/multi-region.md:11-19 (one central-plane region, no execution nodes, in every environment)"
+    ],
+    "gap": "No second deployed region exists to remove from service, so the exercise cannot be run even once, let alone quarterly.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-071",
+      "RES-077",
+      "RES-007",
+      "RES-008"
+    ],
+    "blocked_by": "C8",
+    "verification": "game-day: remove one execution region from service and control networking quarterly, checking continuation, mirror/recovery behaviour, and no cross-region arbitrage assuming the missing peer. No second region exists to remove.",
+    "work_item": "E11",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Also external:billing-blocked: dev's billing is disabled, so even a second region's apply would fail at image push today."
+  },
+  {
+    "id": "RES-090",
+    "status": "MISSING",
+    "current": "no zonal-failure game day has ever been run or recorded. The mechanism it would exercise (a fenced Reflex standby, RES-068) does not exist, so even a single execution node's zone could not be failed over today — only replaced with an empty journal, per docs/operations/scaling-and-availability.md's 'A zone was lost' section, which describes the execution node's own zone-loss behaviour (replacement, not a fenced standby taking over).",
+    "evidence": [
+      "docs/operations/scaling-and-availability.md:74-84 ('A zone was lost'; the node's own replacement, not a standby promotion)",
+      "grep -rln 'game.day|game_day' . -> no runbook or record",
+      "docs/architecture/current-state/*.json (the finding already recorded for GCP-043: no standby, no fencing, no promotion mechanism)"
+    ],
+    "gap": "No fenced standby exists to promote (RES-068), and no schedule or record of the exercise exists.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-068",
+      "RES-057",
+      "RES-058",
+      "RES-059"
+    ],
+    "blocked_by": "",
+    "verification": "game-day: terminate a Reflex primary's zone or a Fabric replica's zone monthly, proving fencing, quorum, failover and bounded outcome loss. Neither the standby nor the Fabric replicas exist to terminate.",
+    "work_item": "E04",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Matches the underlying gap already recorded for GCP-043; NEW_DEPENDENCY in the source requirement is about the Fabric half (v2.1's consensus/transport choices, ADR 0099 C2), not the Reflex-standby half, which is buildable in-tree."
+  },
+  {
+    "id": "RES-091",
+    "status": "MISSING",
+    "current": "no broker-backpressure game day has ever been run or recorded, and there is no broker to freeze: the current transport is qip_streaming::durable::DurableLogTransport, an in-process append to qip_events::EventLog, not a broker cluster with per-stream quotas or an overload policy of the kind the requirement exercises.",
+    "evidence": [
+      "backend/crates/services/qip-streaming/src/durable.rs:1-17 (in-process transport, not a broker cluster)",
+      "docs/architecture/current-state/*.json (the finding already recorded for FABRIC-057: no QoS-class type with quota/overload semantics exists)"
+    ],
+    "gap": "No broker cluster and no per-stream quota/overload-policy mechanism exist to freeze a sink or fill consumer lag against.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-070",
+      "FABRIC-057"
+    ],
+    "blocked_by": "",
+    "verification": "game-day: freeze a sink and fill consumer lag, verify priority QoS holds and broker memory does not explode. No broker exists to freeze.",
+    "work_item": "E03",
+    "tier": "T3",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "RES-092",
+    "status": "MISSING",
+    "current": "no ledger-outage game day has ever been run or recorded, and there is no external Spanner ledger to deny writes to — the kernel computes ledger state in-process as part of the same cycle that produced the outcome (the same finding LEDGER-033 records), so 'deny Spanner writes' names a seam that does not exist to sever.",
+    "evidence": [
+      "docs/architecture/current-state/*.json (the finding already recorded for LEDGER-033: no separate ledger sink component exists)",
+      "grep -rln 'game.day|game_day' . -> no runbook or record"
+    ],
+    "gap": "No external ledger dependency exists to deny, so the game day's premise cannot be constructed against the current build.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-012",
+      "RES-079",
+      "RES-080"
+    ],
+    "blocked_by": "",
+    "verification": "game-day: deny Spanner writes, verify Fabric P1 retention, capital-freshness degradation, and idempotent catch-up. No Spanner dependency exists to deny.",
+    "work_item": "E05",
+    "tier": "T4",
+    "size": "L",
+    "notes": "The three properties the game day verifies are all store-independent and buildable in-tree: P1 retention of outcomes (Fabric, E03, ADR 0100), cells narrowing as capital freshness decays, and idempotent catch-up (E05). Only the literal 'deny Spanner writes' needs C4, and the in-tree form (deny the centre's ledger path) would run today, and fail, because the uplink dead-letters outcomes (RES-079). verify: BLOCKED(C4) -> MISSING, blocked_by cleared. Under the rule that semantics buildable in-tree are MISSING/PARTIAL rather than BLOCKED, C4 is not the binding reason. The retention, freshness and catch-up behaviour this game day checks is store-independent and absent: RES-079 is INCORRECT and RES-080 PARTIAL. This matches the treatment of the sibling game days RES-090, RES-091 and RES-097."
+  },
+  {
+    "id": "RES-093",
+    "status": "PARTIAL",
+    "current": "The block half: qip_lifecycle::gates::ShadowGate (gates.rs:629-639) fails 'live_path_agrees_with_backtest' when a strategy's shadow decisions diverge from its backtest, unit-proven by shadow_decisions_diverging_from_the_backtest_block_the_rung. It is reachable from production code through qip_lifecycle::attempt_promotion -> gate_for(Shadow) (ledger.rs:618, gates.rs:1011-1016), which StrategyFactory::promote calls (qip-kernel central/factory.rs:489). But no production caller promotes a strategy to the Shadow rung. qip-deepbrain's evolution loop promotes one rung, Candidate to Holdout (evolution.rs:925). qip-api's approve_promotion signs only Pilot and Scaled (platform.rs:7044). The rollback half is wired. Every central binary's stage_learn calls review_strategies -> learn_from_cells -> CentralPlane::learn -> StrategyFactory::review, and qip_lifecycle::DemotionMonitor demotes, or retires, a strategy whose realised returns fall short of what it was promoted on. No bad-model/package game day has been run or recorded, and no nonprod/staging environment is deployed.",
+    "evidence": [
+      "backend/crates/services/qip-lifecycle/src/gates.rs:629,633,639 (ShadowGate); :1011-1016 (gate_for)",
+      "backend/crates/services/qip-lifecycle/src/ledger.rs:608-627 (attempt_promotion runs gate_for(to))",
+      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:595 (shadow_decisions_diverging_from_the_backtest_block_the_rung)",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:925 (production promotion: one rung, Candidate->Holdout); backend/crates/runtime/qip-kernel/src/platform.rs:7044 (approve_promotion: Pilot/Scaled only)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13828,14140,14281 (stage_learn -> review_strategies); :8109-8114 (learn_from_cells -> CentralPlane::learn); central/learning.rs:423 (factory.review, DemotionMonitor)",
+      "backend/crates/runtime/qip-kernel/tests/central.rs:2769 (the_learn_stage_retires_a_strategy_whose_cells_realised_sustained_decay_and_journals_its_disposition)"
+    ],
+    "gap": "No production path promotes to the Shadow rung, so ShadowGate never judges a real candidate. The demotion rollback depends on live cell outcomes, which no deployed cell produces. No scheduled game day promoting an intentionally degraded candidate has been run or recorded in a nonprod/staging environment, and none is deployed.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-lifecycle --test lifecycle shadow_decisions_diverging_from_the_backtest_block_the_rung; a game day additionally requires ShadowGate wired into qip-kernel's promotion path and a deployed nonprod/staging environment, neither of which exists.",
+    "work_item": "E10",
+    "tier": "T2",
+    "size": "M",
+    "notes": "NON_RUST names v2.1's Python training stack for model packages (C5); the gate mechanism itself is pure Rust and does not need it. verify: status PARTIAL kept; integrated false -> true for the rollback slice. The assessor's reachability claim ('ShadowGate is never constructed by qip-kernel... grep returns nothing') misreads the path. ShadowGate is built through gate_for inside attempt_promotion, which the kernel's StrategyFactory::promote calls. What is actually missing is a production caller that advances to Shadow. The requirement also accepts 'rolls it back', and DemotionMonitor does that from stage_learn in every central binary, proven by qip-kernel/tests/central.rs:2769. The verifier traced both paths by reading the code on 2026-09-25."
+  },
+  {
+    "id": "RES-094",
+    "status": "PARTIAL",
+    "current": "qip_events::registry::SchemaRegistry (registry.rs:44-116) records topic/version/field-shape/fingerprint, refuses two body types claiming one topic, and AnyEvent::decode refuses a payload whose schema_version is newer than the build's own. But SchemaRegistry is constructed only inside qip-events' own tests — no composition root ever builds one at start-up — so no producer or consumer is actually checked against a registered version at runtime, and no bad-schema game day has ever been run.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/registry.rs:17-117",
+      "backend/crates/libs/qip-events/src/envelope.rs:121-145",
+      "backend/crates/libs/qip-events/tests/backbone.rs:157,878 (a_payload_from_a_newer_schema_is_refused_rather_than_partially_read; the_registry_records_schema_shape_and_detects_drift)"
+    ],
+    "gap": "SchemaRegistry has no production caller, so the CI/runtime admission the requirement asks for is unproven at runtime, and no game day exercising an incompatible schema change has ever been run.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-events --test backbone the_registry_records_schema_shape_and_detects_drift a_payload_from_a_newer_schema_is_refused_rather_than_partially_read",
+    "work_item": "E02",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Matches the assessment already recorded for CICD-069 exactly, same underlying mechanism and gap. NEW_DEPENDENCY in the source requirement names v2.1's Protobuf/prost schema (C2); the in-tree serde_json registry already proves the property this build actually uses."
+  },
+  {
+    "id": "RES-095",
+    "status": "PARTIAL",
+    "current": "The four boundaries the game day would test each partially exist and are partially tested: AutonomyController::request_change (qip-risk-engine/src/autonomy.rs:567-620) refuses any escalation not carrying a fresh authenticated operator identity and a second approver (no model/agent/config path exists); architecture.rs's no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy proves no edge crate can mint capital or custody authority; deploy.yml's gate job and infrastructure.rs's production_is_never_deployed_automatically hold the merge/deploy boundary; .claude/hooks/guard-dangerous-command.py blocks destructive commands pre-execution; every workflow reaching GCP authenticates via Workload Identity Federation with no service-account key anywhere. No simulated-compromise game day itself — giving an agent identity malicious instructions and recording which boundary caught it — has ever been run or recorded.",
+    "evidence": [
+      "backend/crates/services/qip-risk-engine/src/autonomy.rs:1-18,563-620",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:792-837 (no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy)",
+      ".claude/hooks/guard-dangerous-command.py:1-181",
+      "docs/architecture/current-state/*.json (the findings already recorded for GOV-026/GOV-027/GOV-028 covering the same four boundaries)"
+    ],
+    "gap": "No agent-identity IAM principal exists to check 'holds no capital/custody role' against structurally; no game-day test actually gives an agent malicious instructions and records which boundary held; GOV-027's own assessment separately found GitHub branch-protection settings unverifiable in-session (the github MCP connector failed to connect).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "GOV-026",
+      "GOV-027",
+      "GOV-028"
+    ],
+    "blocked_by": "",
+    "verification": "game-day: give an agent malicious instructions, verify no secret read, no unapproved egress, nothing merged without review, nothing deployed to prod. No such exercise has been run; nearest are the unit/acceptance tests cited above for each boundary in isolation.",
+    "work_item": "E13",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P2 in the source requirement; this repository's own guard hook and settings.json are exactly the boundaries GOV-026/027/028 already assessed for the identical four-boundary claim."
+  },
+  {
+    "id": "RES-096",
+    "status": "BLOCKED",
+    "current": "the GitOps control-plane cluster (the only GKE cluster in the tree) is declared entirely in Terraform and Config Sync/Argo desired state, so it could in principle be recreated by an apply from Git alone — but it hosts no qip-* service, is suspended (ADR 0093), and there is no service-plane GKE cluster of the kind this requirement describes at all.",
+    "evidence": [
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:131 (declared entirely in Terraform)",
+      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md (conflict register row C3)"
+    ],
+    "gap": "No service-plane cluster exists to rebuild, and the one cluster that does is suspended rather than exercised.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3",
+    "verification": "the rebuild-from-zero game day: destroy a nonprod regional cluster and recreate it only from Terraform and GitOps, assert no manual step is logged. Not run because no service-plane cluster exists.",
+    "work_item": "E99",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Matches the assessment already recorded for GCP-048 exactly, same source row. Destroying the one cluster that does exist would need explicit conversational approval per 02-change-management.md, independent of this finding."
+  },
+  {
+    "id": "RES-097",
+    "status": "MISSING",
+    "current": "no Fabric cluster of any kind exists — not on GKE, not as dedicated VMs in a 'fabric-<region>' project as v2.1 describes, not anywhere. There is nothing to rebuild.",
+    "evidence": [
+      "grep -rln 'fabric-region\\|FabricCluster' infrastructure/ -> no hits",
+      "docs/architecture/current-state/*.json (the finding already recorded for GCP-046: no Fabric broker exists anywhere in the tree)"
+    ],
+    "gap": "No nonprod Fabric cluster exists to rebuild, and no Terraform module for one exists to rebuild it from.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-090",
+      "RES-091"
+    ],
+    "blocked_by": "",
+    "verification": "the rebuild-from-zero game day: recreate a nonprod Fabric cluster from committed Terraform and artifacts alone, pass its conformance tests. No cluster or module exists.",
+    "work_item": "E03",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Distinct from RES-096: the source places the Fabric on its own VMs outside GKE, so this is not GCP-048's gap restated — it is a separate, currently nonexistent module."
+  },
+  {
+    "id": "RES-098",
+    "status": "MISSING",
+    "current": "nothing — no list of 'critical components' is declared anywhere in the repository (grep of docs/ for the phrase outside the blueprint source documents returns nothing), and no game-day schedule or record of any kind exists to check components against.",
+    "evidence": [
+      "grep -rn 'critical component' docs/ -i -> no hits outside docs/blueprint's own source extraction",
+      "grep -rln 'game.day|game_day' . -> no runbook or record anywhere"
+    ],
+    "gap": "Neither the list of critical components nor a single game-day record exists; the comparison the requirement asks for has nothing on either side.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-089",
+      "RES-090",
+      "RES-091",
+      "RES-092",
+      "RES-093",
+      "RES-094",
+      "RES-095",
+      "RES-096",
+      "RES-097"
+    ],
+    "blocked_by": "",
+    "verification": "inspection: compare a declared critical-component list against the game-day schedule and records. Neither exists.",
+    "work_item": "E00",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Declaring the list is a programme/traceability task (E00), cheap relative to actually running every game day it would then require."
+  },
+  {
+    "id": "RES-099",
+    "status": "PARTIAL",
+    "current": "docs/operations/disaster-recovery.md documents an explicit RTO/RPO table and reasoning for several components — 'RPO for the chain: one cycle' (records reach the archive at cycle boundaries only), 'RPO for the node journal: the last snapshot' (daily schedule), 'RTO is bounded by the feed, not by the restore' — which is a written, reasoned answer, not a measured one. It is not observable: nothing scrapes any deployed process (per the observability domain rule), so no game day or metric has ever measured any of these figures, and no declared list of 'every critical component' exists to check completeness against.",
+    "evidence": [
+      "docs/operations/disaster-recovery.md:38-58 (the RPO/RTO section)",
+      "docs/operations/disaster-recovery.md:13-27 ('What is actually irreplaceable' table)",
+      ".claude/rules/domains/observability.md ('Do not describe this platform as observable... nothing has been shown to scrape any process')"
+    ],
+    "gap": "The declared/documented half is real for the components disaster-recovery.md covers; the 'observable' half (measured in operation or a game day) is true for none of them, and no complete list of critical components exists to check every one has either an observed figure or a documented reason.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-098"
+    ],
+    "blocked_by": "",
+    "verification": "inspection: for each declared critical component, assert an RTO/RPO with a metric or game-day measurement, or a written reason. Only the written-reason half exists today, and only for some components.",
+    "work_item": "E12",
+    "tier": "T2",
+    "size": "M",
+    "notes": "'Observable' explicitly excludes a bare declaration per the requirement's own notes; disaster-recovery.md is a genuine documented reason for the components it covers, which is the permitted alternative the requirement names."
+  }
+]

@@ -1,0 +1,901 @@
+[
+  {
+    "id": "RES-034",
+    "status": "PARTIAL",
+    "current": "No symbolic solver and no SymbolicDerivation contract exist. The in-tree numeric-constraint analogue does the requirement's core for portfolio sizing, on every DECIDE stage: qip_optimization_engine::router::ComputeRouter::score (router.rs:525-550) scores every solver run against the real constraint set (bounds, budget, cardinality) and records feasible=false with violated_constraint and worst_violation; the routing rationale says the returned answer is infeasible (router.rs:374-380); and PortfolioConstructor retains that trace on the proposal as a compromise ('no feasible sizing was found; <constraint> is breached by <amount>', construction.rs:491-497). Platform::new builds the router (platform.rs:4323). ComputeRouter::mandate_conflict (router.rs:499) names a conflicting set of mandate parameters but has no production caller. Separately, redteam's UnaddressedContradiction (redteam.rs:97,382) is an evidence-weight challenge that lowers a hypothesis's confidence (penalty 0.85) and can reject it; it is not a trace over formal constraints.",
+    "evidence": [
+      "backend/crates/services/qip-optimization-engine/src/router.rs:525-550 (score: feasible, worst_violation, violated_constraint on every run)",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:374-380 ('no feasible solution found; the best ... result is returned and is infeasible')",
+      "backend/crates/services/qip-portfolio-engine/src/construction.rs:491-497 (infeasible chosen run recorded on the proposal's compromises, naming the violated constraint)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4323 (Platform::new constructs ComputeRouter; construction runs in stage_decide)",
+      "test an_infeasible_quantum_answer_is_rejected_however_good_its_objective -- backend/crates/services/qip-optimization-engine/tests/optimization.rs:431 (asserts feasible == false and violated_constraint == 'cardinality'); ran 2026-09-25: 'test result: ok. 2 passed'",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:499 (mandate_conflict: names the conflicting cardinality/cap/gross; tested by a_mandate_whose_own_parameters_conflict_is_named_as_such, optimization.rs:602; no production caller)",
+      "backend/crates/libs/qip-numerics/src/qp.rs:319 (qp::solve discards the violated-constraint label: `let (violation, _) = problem.worst_violation(&x)`)",
+      "backend/crates/services/qip-reasoning-engine/src/redteam.rs:97,371-390 (UnaddressedContradiction, evidence-weight challenge)",
+      "rg -i 'z3|or-tools|SymbolicDerivation' backend/crates --type rust -> no hits"
+    ],
+    "gap": "No symbolic reasoning layer and no SymbolicDerivation contract. The numeric trace names only the single worst-violated constraint, as a string, not the conflicting set as a machine-checkable object; mandate_conflict, which does name a conflicting set, is never called outside its test; qp::solve discards the label. And the action is not marked infeasible: construction drafts a proposal from the infeasible weights anyway (see RES-036). A Rust checker that emits a SymbolicDerivation-shaped trace is buildable in-tree; C5 applies only if the programme insists on Z3/OR-Tools themselves.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-optimization-engine --test optimization an_infeasible_quantum_answer_is_rejected_however_good_its_objective (ran 2026-09-25: ok). That test drives the quantum run; no test drives a production (classical) infeasible sizing through PortfolioConstructor and asserts the trace on the proposal, and none submits a contradictory constraint set and asserts a machine-checkable conflict set.",
+    "work_item": "E09",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Splits from blueprint M p40 with RES-035/036. Blocked on ADR 0099 C5 (the research-runtime record naming Z3/OR-Tools has not been written). verify: BLOCKED(C5) -> PARTIAL, blocked_by cleared, implemented/tested/integrated/deployable true. Marking a result infeasible and keeping the trace needs no non-Rust runtime, so C5 is not the reason it is incomplete. The assessor missed the optimizer's per-run infeasibility scoring and the proposal compromise, which run every DECIDE stage in the central binaries."
+  },
+  {
+    "id": "RES-035",
+    "status": "PARTIAL",
+    "current": "No hypothesis-level or plan-level search is triggered by a contradiction, and redteam's UnaddressedContradiction is read by nothing that searches. The one place an infeasible answer is replaced by an alternative is ComputeRouter::solve: when a quantum run comes back infeasible, the classical baseline computed on every solve (ADR 0006) is chosen instead, both runs stay on RoutingDecision.runs, and the rationale names the violated constraint (router.rs:328-340). That path runs only with a quantum provider attached, which Platform::new does only when PlatformConfig::quantum_enabled (platform.rs:4323-4326); it defaults to false (config.rs:534) and no composition root sets it, so production solves one classical run, and when that run is infeasible nothing searches further: construction proceeds with it (construction.rs:491-497).",
+    "evidence": [
+      "backend/crates/services/qip-optimization-engine/src/router.rs:328-340 (infeasible quantum run -> classical baseline stands, rationale names the violation)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4323-4326 (quantum provider attached only when config.quantum_enabled)",
+      "backend/crates/runtime/qip-kernel/src/config.rs:534 (quantum_enabled: false); rg 'with_quantum\\(\\)|quantum_enabled' backend/crates/apps -> reads only, no setter",
+      "test an_infeasible_quantum_answer_is_rejected_however_good_its_objective -- backend/crates/services/qip-optimization-engine/tests/optimization.rs:431",
+      "test a_failed_quantum_attempt_leaves_the_classical_answer_standing -- backend/crates/services/qip-optimization-engine/tests/optimization.rs:527 (ran 2026-09-25 with the above: 'test result: ok. 2 passed')",
+      "backend/crates/services/qip-reasoning-engine/src/redteam.rs:371-390 (challenge raised; nothing downstream searches)"
+    ],
+    "gap": "No search is triggered by a contradiction: the router's alternative is a precomputed pair, reachable only in tests, and when the production (classical) run is infeasible nothing looks for a satisfiable alternative plan or hypothesis. Buildable in-tree (for example re-solving with the named constraint relaxed and recording both, or abstaining).",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "RES-034"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-optimization-engine --test optimization an_infeasible_quantum_answer_is_rejected_however_good_its_objective a_failed_quantum_attempt_leaves_the_classical_answer_standing (ran 2026-09-25: ok). No test covers a contradiction-triggered search on a path a composition root reaches.",
+    "work_item": "E09",
+    "tier": "T4",
+    "size": "L",
+    "notes": "Splits from blueprint M p40 with RES-034/036. verify: BLOCKED(C5) -> PARTIAL, blocked_by cleared; implemented/tested true, integrated/deployable false. The search semantics need no non-Rust runtime. The only alternative-selection that exists (infeasible quantum run -> classical baseline, both recorded) is reachable only with quantum_enabled, which no composition root sets."
+  },
+  {
+    "id": "RES-036",
+    "status": "PARTIAL",
+    "current": "Two deterministic fail-closed layers exist for orders. (1) Pre-trade: qip_risk_engine::pretrade::PreTradeChecker::check (pretrade.rs:171-240) refuses outright, before any limit is weighed and never by reduction, whenever RiskState::unevaluated names a figure its producer could not compute; the OMS refuses an order as Malformed when the check itself errors (oms.rs:735-746). (2) Sign-off: Platform::stage_act computes signable = action.permits_new_risk() && compliance.is_ok() && unevaluated.is_none() (platform.rs:13450) and withholds every signature while the liquidity floor is unevaluated, counted under PROPOSALS_UNSIGNED{control=liquidity-read} (platform.rs:13480). But one money-moving path proceeds on an unsatisfied constraint: when the portfolio optimizer finds no feasible sizing, PortfolioConstructor still drafts the proposal from the infeasible weights and records the breach only as a 'compromise' (construction.rs:491-497); stage_decide pushes it to the proposal set and stage_act's sign-off does not consult it. Only the per-order pre-trade limits then stand between it and an order, and they cover only the configured risk limits, not every optimizer constraint.",
+    "evidence": [
+      "backend/crates/services/qip-risk-engine/src/pretrade.rs:171-240 (unevaluated figure -> Rejected before limits, never Reduced)",
+      "backend/crates/services/qip-execution-engine/src/oms.rs:735-746 (a pre-trade check that errors refuses the order)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13450 (signable gate)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13480 (labels([(\"control\",\"liquidity-read\")]))",
+      "backend/crates/services/qip-portfolio-engine/src/construction.rs:491-497 (infeasible sizing recorded as a compromise; the proposal is still drafted)",
+      "test a_cycle_whose_liquidity_read_refused_withholds_the_sign_off_and_names_it -- backend/crates/runtime/qip-kernel/src/platform.rs:22275; ran 2026-09-25: ok",
+      "test an_order_is_refused_while_the_state_names_a_figure_nobody_could_compute -- backend/crates/services/qip-risk-engine/tests/risk_engine.rs:427; ran 2026-09-25: ok",
+      "test a_figure_nobody_could_compute_cannot_be_reduced_away -- backend/crates/services/qip-risk-engine/tests/risk_engine.rs:466; ran 2026-09-25: ok"
+    ],
+    "gap": "(1) An infeasible optimizer result is carried forward as a draft proposal with a compromise note instead of a refusal (construction.rs:491-497); nothing in sign-off reads it. Whether any shipped constraint that only the optimizer holds can then be breached by a submitted order has not been established; it should be refused at construction or at sign-off. (2) Coverage is the unevaluated-figure and errored-check classes on the order path only; there is no uniform infeasible/unresolved/timed-out/errored outcome type, and capital changes (region-share and envelope grants) and transfers are not shown refusing on an unresolved derivation. (3) The requirement's property test over generated money-moving actions does not exist; the tests cover single instances.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --lib a_cycle_whose_liquidity_read_refused_withholds_the_sign_off_and_names_it; cargo test -p qip-risk-engine --test risk_engine an_order_is_refused_while_the_state_names_a_figure_nobody_could_compute a_figure_nobody_could_compute_cannot_be_reduced_away (all ran 2026-09-25: ok). No property test exists.",
+    "work_item": "E07",
+    "tier": "T1",
+    "size": "S",
+    "notes": "This is the deterministic pre-symbolic gate the requirement's own note anticipates ('it holds from the first deterministic risk gate onward, before any symbolic reasoning service exists'); NON_RUST was correctly not applied to this requirement. verify: COMPLETE -> PARTIAL. The cited gate is real and reached, but it covers one unresolved class on the order path, the requirement's property test does not exist, and the assessor missed a money-moving path that proceeds on an infeasible constraint set: PortfolioConstructor drafts a proposal from an infeasible optimizer answer and records the breach as a 'compromise', which sign-off never reads. Added the generic pre-trade refusal on unevaluated figures and the errored-check refusal as evidence."
+  },
+  {
+    "id": "RES-037",
+    "status": "PARTIAL",
+    "current": "No Attention Router, declared attention budget or ambient model exists (AMBIENT-010 MISSING). The one proactive-alert-to-escalation path that exists, DISCOVER's detectors -> OpportunityEngine -> the REASON queue, is hard-capped per cycle: OpportunityEngine::scan truncates candidates to EngineConfig::max_per_cycle (default 12, engine.rs:38; truncation at engine.rs:122-124) and counts the rest in suppressed_count, which the DISCOVER stage reports every cycle ('{suppressed} suppressed this run', platform.rs:10412-10432); REASON convenes the panel for the queue head only. This is the slice AMBIENT-023 is credited with after verification.",
+    "evidence": [
+      "backend/crates/services/qip-opportunity-engine/src/engine.rs:38 (max_per_cycle: 12), :122-124 (truncate and count suppressed)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10412-10432 (DISCOVER scans and reports the suppressed count)",
+      "test the_queue_is_capped_and_the_suppressed_count_is_visible -- backend/crates/services/qip-opportunity-engine/tests/discovery.rs:490; ran 2026-09-25: 'test result: ok. 2 passed' (with the RES-038 test)",
+      "docs/blueprint/assessment/AMBIENT.json AMBIENT-023 (PARTIAL after verification, same evidence); AMBIENT-010 (MISSING)"
+    ],
+    "gap": "The bound is a per-cycle cap on surfaced opportunities, not a declared attention budget per window over escalations; the excess is a cumulative counter, not a per-alert shed or deferred record; no storm test drives alerts well above budget and asserts admitted escalations per window. No ambient models or Attention Router exist.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-010",
+      "AMBIENT-023"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-opportunity-engine --test discovery the_queue_is_capped_and_the_suppressed_count_is_visible (ran 2026-09-25: ok)",
+    "work_item": "E09",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Splits from blueprint M p40 with RES-038 to RES-041. verify: MISSING -> PARTIAL, implemented/tested/integrated/deployable true, consistent with AMBIENT-023's verified grade. The assessor cited AMBIENT-023 as MISSING; it was upgraded on the per-cycle cap and visible suppressed count, which is a real, reached bound on escalations though not the declared per-window budget the requirement states."
+  },
+  {
+    "id": "RES-038",
+    "status": "PARTIAL",
+    "current": "No AttentionEvent or ambient alert type exists. DISCOVER already clusters duplicate proactive alerts: OpportunityEngine::scan groups every detector's anomalies by primary subject, so 'several detectors firing on one instrument is one opportunity with corroborating evidence, not several to work through' (engine.rs:99-111), and the Opportunity carries each contributing detector and anomaly; repeats on the same subject within the novelty window lose novelty rather than re-escalating at full rank. Reached every DISCOVER stage (platform.rs:10412).",
+    "evidence": [
+      "backend/crates/services/qip-opportunity-engine/src/engine.rs:99-111 (group anomalies by primary_subject into one opportunity)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10412 (stage_discover calls OpportunityEngine::scan)",
+      "test corroborating_detectors_raise_confidence_above_any_one_of_them -- backend/crates/services/qip-opportunity-engine/tests/discovery.rs:449 (exactly one opportunity, >= 2 detectors cited); ran 2026-09-25: ok",
+      "test repeated_alerts_on_the_same_subject_lose_novelty -- backend/crates/services/qip-opportunity-engine/tests/discovery.rs:425",
+      "docs/blueprint/assessment/AMBIENT.json AMBIENT-010, AMBIENT-019 (both MISSING)"
+    ],
+    "gap": "Clustering keys on the instrument, not on the underlying condition: one condition spanning several instruments yields several escalations, and two distinct conditions on one instrument merge into one. The producers are DISCOVER's detectors, not ambient models, and nothing routes through an Attention Router. The test asserts at least two detectors in the one opportunity, not that all N alerts are cited.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-010",
+      "AMBIENT-019"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-opportunity-engine --test discovery corroborating_detectors_raise_confidence_above_any_one_of_them (ran 2026-09-25: ok)",
+    "work_item": "E09",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: MISSING -> PARTIAL, implemented/tested/integrated/deployable true. The assessor searched only for AttentionEvent and 'cluster.*alert'; OpportunityEngine::scan already merges several detectors' alerts on one subject into a single escalation citing each, reached every DISCOVER stage."
+  },
+  {
+    "id": "RES-039",
+    "status": "PARTIAL",
+    "current": "No Attention Router or ambient producer budget exists. The platform does penalise its own signal producers by measured value: LEARN grades resolved theses and charges each outcome to the components that produced it, qip_learning_engine::self_model::SelfModel::origin_factors (self_model.rs:417-425) turns each detector's and analyst's estimated accuracy into a factor, Platform hands the factors to the reasoning engine every LEARN pass (platform.rs:8480, set_origin_factors), and every later hypothesis is formed with them (qip-reasoning-engine engine.rs:230, Hypothesis::form_with_factors), so a producer whose output keeps proving wrong carries less weight in future hypotheses. Separately, FeedbackEngine::process computes agent_weight_adjustments (feedback.rs:363-371) that nothing outside a test reads.",
+    "evidence": [
+      "backend/crates/services/qip-learning-engine/src/self_model.rs:407-425 (factor = estimated accuracy; origin_factors for detectors and analysts)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8480 (self.reasoning.set_origin_factors(self.self_model.origin_factors()))",
+      "backend/crates/services/qip-reasoning-engine/src/engine.rs:230 (Hypothesis::form_with_factors)",
+      "test the_reason_factor_scales_an_origin_only_with_a_sufficient_sample_and_is_recorded_on_the_hypothesis -- backend/crates/runtime/qip-kernel/tests/self_model.rs:347",
+      "test grading_a_resolved_thesis_moves_the_self_model_for_the_components_that_produced_it -- backend/crates/runtime/qip-kernel/tests/self_model.rs:140 (both ran 2026-09-25: 'test result: ok. 2 passed')",
+      "backend/crates/services/qip-learning-engine/src/feedback.rs:363-371 (agent_weight_adjustments; only reader is qip-learning-engine/tests/learning.rs:646)"
+    ],
+    "gap": "The penalty lowers evidence weight inside REASON; it does not lower an attention budget or admission share for a producer's future alerts, and low value is measured as graded accuracy of resolved theses rather than whether an alert was acted on. No replay test compares two producers' budgets. FeedbackReport.agent_weight_adjustments is computed on every informative LEARN pass and read by nothing: a second, unconnected penalty to wire or delete.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-010"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test self_model the_reason_factor_scales_an_origin_only_with_a_sufficient_sample_and_is_recorded_on_the_hypothesis grading_a_resolved_thesis_moves_the_self_model_for_the_components_that_produced_it (ran 2026-09-25: ok)",
+    "work_item": "E09",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: MISSING -> PARTIAL, implemented/tested/integrated/deployable true. The assessor searched for 'signal producer' names; the self-model's per-origin accuracy factors down-weight a detector or analyst whose output proves wrong, wired from LEARN into REASON. Also recorded the dead agent_weight_adjustments output."
+  },
+  {
+    "id": "RES-040",
+    "status": "MISSING",
+    "current": "No ambient model and no attention path exist to quarantine from (AMBIENT-020 BLOCKED, AMBIENT-010 MISSING), and DISCOVER's detectors, the nearest proactive producers, have no drift check. A drift quarantine does exist for research models and is reached from a composition root: qip-deepbrain's learning round writes each model's drift into the registry (qip-deepbrain/src/learning.rs:1086, record_drift) and ModelCard::decision_eligibility refuses a card whose drift_score exceeds drift_threshold (qip-ai registry.rs:201-205), tested by a_drifted_model_is_refused_until_it_is_re_evaluated (qip-ai/tests/model_infrastructure.rs:567). It gates which models may inform a decision, not what reaches an attention path.",
+    "evidence": [
+      "backend/crates/libs/qip-ai/src/registry.rs:201-205 (drift threshold refusal), :363-368 (record_drift)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:1086 (record_drift called in production)",
+      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs:567 a_drifted_model_is_refused_until_it_is_re_evaluated",
+      "docs/blueprint/assessment/AMBIENT.json AMBIENT-020 (BLOCKED), AMBIENT-010 (MISSING)"
+    ],
+    "gap": "No ambient mesh or ambient model exists to quarantine; the real, tested ModelCard drift-refusal mechanism is generic and is never invoked by anything ambient.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-020"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists for the requirement itself; cargo test -p qip-ai a_drifted_model_is_refused_until_it_is_re_evaluated proves the adjacent generic mechanism.",
+    "work_item": "E09",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status kept MISSING. Corrected 'current': the ModelCard drift refusal is not unreached; qip-deepbrain writes drift in production (learning.rs:1086). It still quarantines research models from decisions, not ambient models from an attention path, and no drift check exists on DISCOVER's detectors."
+  },
+  {
+    "id": "RES-041",
+    "status": "MISSING",
+    "current": "nothing isolates reflex/ledger resources from background cognition, because no ambient mesh exists to isolate from. qip-cost-router governs which compute rung a model call uses but has no ambient-vs-reflex resource-pool distinction.",
+    "evidence": [
+      "rg -i ambient backend/crates/services/qip-cost-router/src -> no hits",
+      "docs/blueprint/assessment/AMBIENT.json AMBIENT-022 (MISSING, P0 read together with this requirement)"
+    ],
+    "gap": "No resource-isolation boundary exists between (non-existent) ambient compute and the reflex/risk/ledger/custody paths.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-022"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E09",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P0 priority (matches AMBIENT-022's own P0 read of the same isolation clause at AMBIENT-022, blueprint p44) even though the parent M p40 row is P2. verify: status kept MISSING. Nearest structural fact: reflex runs in its own binary (qip-edge-node, deployed nowhere), but ADR 0091 records 'no independent scaling within a binary' (ingestion and cognition share the deep brain's CPU) and the ledger path shares the central binaries with the cycle's cognition, so no resource boundary protects it and no chaos test measures one."
+  },
+  {
+    "id": "RES-042",
+    "status": "PARTIAL",
+    "current": "No EffectAttribution and no attribution step for the platform's own actions exist (AGENCY-048 MISSING). The adjacent market-causal-graph principle exists in library code only: qip_world_model marks an edge Suggestive rather than Established when a caller names an unobserved confounder, and never raises its confidence for doing so (causal.rs:328-345, confounder.rs:70-78). No production caller names one. The one production writer, Platform::discover_temporal_precedence (platform.rs:10181-10286, every UNDERSTAND stage), runs an uncontrolled lead-lag test with an empty ConfounderSet and writes each edge that clears it via claim_causal, which CausalEdge::standing reports as Established; causal_review's own module doc says these edges include common-driver artefacts (causal_review.rs:1-38). Their confidence is capped at 0.5 (granger.rs:87). causal_review::is_established (causal_review.rs:554) has no caller, and concentration_rests_on_unaudited_edges is read only to phrase a stage-detail clause (causal_review.rs:461) and cannot be true in production because nothing marks an edge Suggestive.",
+    "evidence": [
+      "backend/crates/services/qip-world-model/src/causal.rs:328-345 (EdgeStanding::Established/Suggestive/Retired)",
+      "backend/crates/services/qip-world-model/src/confounder.rs:70-78 (ConfounderStanding)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10181-10286 (discover_temporal_precedence: uncontrolled test, claim_causal at :10277)",
+      "backend/crates/runtime/qip-kernel/src/causal_review.rs:1-38 (module doc: the production scan is uncontrolled and its edges spurious together)",
+      "backend/crates/services/qip-world-model/src/granger.rs:87 (TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING = 0.5)",
+      "backend/crates/runtime/qip-kernel/src/causal_review.rs:554 (is_established: no caller), :461 (only reader of concentration_rests_on_unaudited_edges)",
+      "test an_unobserved_confounder_makes_the_edge_suggestive_and_never_raises_its_confidence -- backend/crates/services/qip-world-model/tests/confounders.rs:100 (library path)",
+      "test a_statistically_identical_test_is_not_made_established_by_naming_a_confounder -- backend/crates/services/qip-world-model/tests/confounders.rs:174 (library path)",
+      "docs/blueprint/assessment/AGENCY-b2.json AGENCY-030 (INCORRECT after verification, same evidence)"
+    ],
+    "gap": "(1) No attribution step for actions, so the requirement's own check has nothing to run against. (2) In the adjacent causal graph, the not-identified marking is library-only: production writes uncontrolled associations as Established, which AGENCY-030 grades INCORRECT. Both are buildable in-tree.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AGENCY-048",
+      "AGENCY-030"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-world-model --test confounders an_unobserved_confounder_makes_the_edge_suggestive_and_never_raises_its_confidence a_statistically_identical_test_is_not_made_established_by_naming_a_confounder (library path only; no composition root reaches it)",
+    "work_item": "E16",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Mirrors AGENCY-030's own grading and reasoning exactly, applied to this requirement. verify: status kept PARTIAL; integrated true -> false and deployable true -> false. The Suggestive/confounder path is reached only from tests: the production writer passes an empty ConfounderSet and writes Established edges, is_established has no caller, and the one reader of the standing phrases a sentence. Aligned with AGENCY-030's verified finding."
+  },
+  {
+    "id": "RES-043",
+    "status": "PARTIAL",
+    "current": "No intervention attribution exists, so nothing raises an evidence request or an experiment proposal for an intervention (AGENCY-045 MISSING). For the adjacent not-identified market causal edges the platform does seek discriminating evidence automatically: causal_review::audit_controls (causal_review.rs:224) re-runs every precedence edge's own test with a measured common driver held constant and reports, by name, the edges that do not survive. Platform runs it every UNDERSTAND stage (platform.rs:9901 via causal_review at :10045) and the finding is carried on the stage detail. It writes nothing back to the edge (ControlAudit doc, causal_review.rs:130-142) and proposes no experiment. ADR 0087 retirement (causal.rs:15-28) is a different remedy.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/causal_review.rs:224 (audit_controls), :130-142 (ControlAudit: finds, never retracts)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9901, :10045 (UNDERSTAND runs the review)",
+      "test an_edge_that_is_only_a_shared_driver_does_not_survive_the_control -- backend/crates/runtime/qip-kernel/src/causal_review.rs:635; ran 2026-09-25: ok",
+      "backend/crates/services/qip-world-model/src/causal.rs:15-28 (ADR 0087 retirement)",
+      "docs/blueprint/assessment/AGENCY-b2.json AGENCY-045 (MISSING)"
+    ],
+    "gap": "The discriminating re-test exists only for market causal edges, and its finding is a stage-detail sentence that is not linked onto the edge record or raised as an evidence request; nothing proposes a safer experiment; and for interventions nothing exists (no agency engine). An experiment that acts outside the platform stays BLOCKED beyond shadow (ADR 0021).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "AGENCY-045"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --lib an_edge_that_is_only_a_shared_driver_does_not_survive_the_control (ran 2026-09-25: ok)",
+    "work_item": "E16",
+    "tier": "T3",
+    "size": "M",
+    "notes": "Any resulting experiment is itself an intervention and stays BLOCKED beyond shadow form under ADR 0021 once an agency engine exists. verify: MISSING -> PARTIAL, implemented/tested/integrated/deployable true. The assessor cited only ADR 0087 retirement and missed causal_review::audit_controls, which seeks discriminating evidence (a controlled re-test) for every uncontrolled edge on each UNDERSTAND stage."
+  },
+  {
+    "id": "RES-044",
+    "status": "PARTIAL",
+    "current": "qip_risk_engine::autonomy::AutonomyController::request_change (autonomy.rs:567-622) is the only function that raises an autonomy level and requires an authenticated, freshly-credentialed operator, a stated reason of at least 10 characters, the deployment ceiling, and a second approver before any live level. It has no caller in any composition root or non-test source file: production mutations of the controller are kill-switch trip/clear only (qip-api routes.rs:2344, :2410). So in a deployed process autonomy cannot be raised at all, and the 'never on correlation' half holds because no raise path exists, not because an evidence check runs. request_change has no evidence precondition.",
+    "evidence": [
+      "backend/crates/services/qip-risk-engine/src/autonomy.rs:567-622 (request_change: operator, reason, ceiling, second approver; no evidence precondition)",
+      "rg 'request_change(' backend/crates --type rust outside tests -> only the definition",
+      "test one_operator_cannot_enable_live_trading_alone -- backend/crates/services/qip-risk-engine/tests/risk_engine.rs:75",
+      "test a_change_without_a_stated_reason_is_refused -- backend/crates/services/qip-risk-engine/tests/risk_engine.rs:144 (both ran 2026-09-25: ok)",
+      "docs/blueprint/assessment/AGENCY-b2.json AGENCY-056 (PARTIAL, integrated/deployable false after verification)"
+    ],
+    "gap": "request_change never inspects what justified a raise, so nothing refuses a raise supported only by an unidentified correlation. Moot above paper trading, which the three structural layers refuse regardless of evidence (ADR 0003/0099).",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AGENCY-056",
+      "AGENCY-048"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-risk-engine --test risk_engine one_operator_cannot_enable_live_trading_alone a_change_without_a_stated_reason_is_refused (ran 2026-09-25: ok). These prove operator authority, not an evidence precondition; no test refuses a correlation-only raise.",
+    "work_item": "E16",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Mirrors AGENCY-056's own grading exactly. verify: status kept PARTIAL; integrated true -> false and deployable true -> false, matching AGENCY-056's verified grade. request_change has no production caller. Replaced the cited qip-kernel/tests/autonomy_ceiling.rs, which tests that a stored live ceiling is refused on load (a different property), with the tests of operator authority."
+  },
+  {
+    "id": "RES-045",
+    "status": "PARTIAL",
+    "current": "No adapter object and no compromise signal exist. Two quarantine mechanisms exist, neither wired to a compromise. (a) qip_compliance::incident::{Incident, ResponsePolicy, IncidentLog} is an authority-free trip / credentialed-clear halt: any component may raise an Incident and halt a scope, cell or everything. Its one production call site is CentralPlane::halt_cell (central/plane.rs:2682-2705), fired only on a cell-reported reconciliation break, and no environment runs a cell. (b) A capital-transfer corridor, the one channel this tree can revoke, is suspended instantly by any anomaly or human with no approval (Corridor::suspend, corridor.rs:582) or revoked permanently (Corridor::revoke, corridor.rs:615), after which the transfer gate vetoes every intent on it; these commands reach Platform::decide_fabric only through qip-api's mounted capital-fabric declaration, which no environment sets.",
+    "evidence": [
+      "backend/crates/libs/qip-compliance/src/incident.rs (Incident, ResponsePolicy::response_to, IncidentLog::record)",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:2682-2705 (halt_cell, the only Incident::new call site in production code)",
+      "test tripping_a_halt_requires_no_authority_at_all -- backend/crates/libs/qip-compliance/tests/incident_response.rs:77 (suite ran 2026-09-25: 'test result: ok. 10 passed')",
+      "backend/crates/services/qip-capital-fabric/src/corridor.rs:582 (suspend: any anomaly or human), :615 (revoke: permanent)",
+      "test a_suspended_corridor_vetoes_on_corridor_authority_with_an_alert -- backend/crates/services/qip-capital-fabric/tests/corridor_and_gate.rs:353; ran 2026-09-25: ok",
+      "backend/crates/apps/qip-api/src/fabric.rs (the only producer of corridor commands); infrastructure/terraform/variables.tf capital_fabric_file (null in every environment)"
+    ],
+    "gap": "Nothing detects a compromised action/channel identity or credential, and nothing revokes a credential; both quarantine mechanisms exist but neither is triggered by a compromise signal. Neither runs in any environment: the incident path needs a cell report and the corridor path needs a mounted declaration.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AGENCY-052",
+      "AGENCY-057"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-compliance --test incident_response tripping_a_halt_requires_no_authority_at_all; cargo test -p qip-capital-fabric --test corridor_and_gate a_suspended_corridor_vetoes_on_corridor_authority_with_an_alert (ran 2026-09-25: ok)",
+    "work_item": "E13",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Splits from blueprint M p40 with RES-046 to RES-049. verify: status kept PARTIAL; deployable true -> false. The only production trigger of the incident halt is a cell-reported reconciliation break and no environment runs a cell. Added the capital corridor's suspend/revoke, the one revocable channel in the tree, which the assessor missed."
+  },
+  {
+    "id": "RES-046",
+    "status": "PARTIAL",
+    "current": "qip_edge::Cell::mass_cancel (cell.rs:4175, gate GATE_MASS_CANCEL cell.rs:193) withdraws every resting order at every venue the instant a cell halts (kill switch, policy, or the poll-based halt source), counted by qip_edge_orders_mass_cancelled_total. This is real, tested 'stop pending actions' behaviour for the order path, but it is triggered by a general cell halt, not by a detected adapter/credential compromise, and there is no non-order (communication, transfer) pending action to stop because no such action class exists yet.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:193 (GATE_MASS_CANCEL)",
+      "backend/crates/edge/qip-edge/src/cell.rs:4139-4142 (withdraw_expired calls mass_cancel when the cell is halted), :4175 (mass_cancel)",
+      "backend/crates/edge/qip-edge/src/telemetry.rs:500 (mass-cancel counter, 'because the cell is halted, by venue')",
+      "test a_halted_cell_withdraws_every_order_it_had_resting_and_charts_it_as_a_mass_cancel -- backend/crates/edge/qip-edge/tests/quoting.rs:385; ran 2026-09-25: ok",
+      "test a_halted_cell_withdraws_what_it_had_resting_and_that_capital_returns_exactly_once -- backend/crates/edge/qip-edge/tests/region_table.rs:516",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:117 (run_pass, the composition root that withdraws before Cell::work)"
+    ],
+    "gap": "Withdrawal is triggered by a general cell halt, not specifically by a detected adapter/credential compromise, and covers only resting orders -- no other action class exists to stop.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test quoting a_halted_cell_withdraws_every_order_it_had_resting_and_charts_it_as_a_mass_cancel (ran 2026-09-25: ok)",
+    "work_item": "E13",
+    "tier": "T2",
+    "size": "S",
+    "notes": "deployable=false because execution_nodes={} in every environment, so qip-edge-node's Cell::work pass this depends on is not deployed anywhere, only run in tests. verify: status and flags kept. Replaced the unnamed 'tests/cell.rs (mass-cancel coverage)' citation, which names no mass-cancel test, with the tests that exercise it (quoting.rs:385, region_table.rs:516) and the halted-arm seam (cell.rs:4139-4142)."
+  },
+  {
+    "id": "RES-047",
+    "status": "PARTIAL",
+    "current": "No adapter and no compromise handling exist. Two audit slices exist. (a) qip_compliance::incident::IncidentLog records incidents and clearances with who, method, reason and what was lifted (every_clearance_is_recorded_with_who_why_and_what_it_lifted, incident_response.rs:142), but it is an in-memory ComplianceState structure: CentralPlane::halt_cell records into it (plane.rs:2704) and no path journals an Incident or Clearance into the hash-chained EventLog. (b) The capital-transfer channel's lifecycle is on the hash chain: Platform::decide_fabric appends every destination/corridor command, suspend and revoke included, to the event log (platform.rs:7559-7625); prior records survive a suspension and verify (a_state_rebuilt_from_the_journal_equals_the_live_state_after_a_mixed_sequence asserts verify_chain Ok on a sequence ending with the corridor suspended); and qip-api refuses to start or cycle when an already-journalled declaration command was edited or removed.",
+    "evidence": [
+      "backend/crates/libs/qip-compliance/src/incident.rs (IncidentLog::clearances)",
+      "test every_clearance_is_recorded_with_who_why_and_what_it_lifted -- backend/crates/libs/qip-compliance/tests/incident_response.rs:142",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:2704 (incidents_mut().record; no journal write)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:7559-7625 (decide_fabric appends each fabric record to the event log)",
+      "test a_state_rebuilt_from_the_journal_equals_the_live_state_after_a_mixed_sequence -- backend/crates/services/qip-capital-fabric/tests/journal.rs:443; ran 2026-09-25: ok",
+      "tests an_edited_command_that_was_already_journalled_stops_the_feed, a_removed_command_that_was_already_journalled_stops_the_feed -- backend/crates/apps/qip-api/tests/fabric.rs:335,381; ran 2026-09-25: 'test result: ok. 2 passed'"
+    ],
+    "gap": "No adapter-specific audit trail exists (no adapters), incidents and clearances never reach the hash chain, and nothing exercises revocation followed by rotation. The corridor slice runs only when an operator mounts a capital-fabric declaration, which no environment does.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-capital-fabric --test journal a_state_rebuilt_from_the_journal_equals_the_live_state_after_a_mixed_sequence; cargo test -p qip-api --test fabric an_edited_command_that_was_already_journalled_stops_the_feed a_removed_command_that_was_already_journalled_stops_the_feed (ran 2026-09-25: ok)",
+    "work_item": "E13",
+    "tier": "T2",
+    "size": "S",
+    "notes": "verify: status kept PARTIAL; deployable true -> false (no environment runs a cell or mounts a declaration, so nothing revokes anything). Settled the assessor's open question: IncidentLog is in-memory and is not journaled to the hash chain. Added the capital corridor's journaled lifecycle and the qip-api refusal to edit journalled history, which are the slice that does preserve an audit trail through suspension and revocation."
+  },
+  {
+    "id": "RES-048",
+    "status": "PARTIAL",
+    "current": "Re-authorisation exists in three places; rotation in none. (a) The deployed API cannot lift a halt at all: DELETE /kill-switch refuses every standing bearer token because it attests nobody's presence (routes.rs:2385-2400), so a halt is lifted only by restarting the process, a deployment act (ADR 0065); tested by an_operator_can_halt_the_platform_and_no_bearer_token_can_clear_it (qip-api/tests/api.rs:1098). (b) qip_compliance::incident::IncidentLog::clear_* requires a fresh (<= 15 min, MAXIMUM_CREDENTIAL_AGE) OperatorCredential and a reason (clearing_without_a_fresh_credential_is_refused, incident_response.rs:100) but has no production caller. (c) A suspended capital corridor returns to Active only through Corridor::reactivate with a named Approver (corridor.rs:596), reached from qip-api's capital-fabric declaration. Nothing issues a new credential or invalidates an old one; API credentials expire and are replaced by an operator restart ('rotate it and restart', qip-api auth.rs:460-468).",
+    "evidence": [
+      "backend/crates/apps/qip-api/src/routes.rs:2385-2400 (kill-switch clear refused for a standing bearer token)",
+      "test an_operator_can_halt_the_platform_and_no_bearer_token_can_clear_it -- backend/crates/apps/qip-api/tests/api.rs:1098; ran 2026-09-25: ok",
+      "backend/crates/libs/qip-compliance/src/incident.rs (IncidentLog::clear_global/clear_scope/clear_cell; no production caller)",
+      "backend/crates/libs/qip-compliance/src/approval.rs:37 (MAXIMUM_CREDENTIAL_AGE = 15 min)",
+      "test clearing_without_a_fresh_credential_is_refused -- backend/crates/libs/qip-compliance/tests/incident_response.rs:100",
+      "backend/crates/services/qip-capital-fabric/src/corridor.rs:596 (reactivate requires an Approver)",
+      "backend/crates/apps/qip-api/src/auth.rs:460-468 (expired credential: 'rotate it and restart')"
+    ],
+    "gap": "The rotation half (issuing a new credential or secret and invalidating the old one on a compromise) does not exist, and re-authorisation is per halt or per corridor, not per adapter identity. Rotation acts on Secret Manager (MANAGED_SERVICE).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "AGENCY-052"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-api --test api an_operator_can_halt_the_platform_and_no_bearer_token_can_clear_it; cargo test -p qip-compliance --test incident_response clearing_without_a_fresh_credential_is_refused (ran 2026-09-25: ok)",
+    "work_item": "E13",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status and flags kept (PARTIAL). The cited IncidentLog::clear_* has no production caller; the reached, deployed re-authorisation is the qip-api kill-switch route, which refuses every standing token so only a restart lifts a halt. Evidence and verification now cite that and the corridor's approver-gated reactivation."
+  },
+  {
+    "id": "RES-049",
+    "status": "PARTIAL",
+    "current": "No channel adapters and no venue-adapter revocation exist (AGENCY-052/057 MISSING). For the one channel class this tree can revoke, capital-transfer corridors, the transfer gate admits an intent only along its own signed, Active corridor to the destination that corridor was signed for: a suspended corridor vetoes (corridor_and_gate.rs:353), an intent naming a destination other than its corridor's vetoes (:375), a revoked corridor can never leave Revoked (:1212), and a revoked destination is unusable forever and cannot be re-proposed (:1516); the enforcement-point attestations must come from independent identities that are not the trading identity (:549, :622). So an intent whose corridor was revoked cannot be completed through an unsigned or unapproved substitute. Reached from qip-api's capital-fabric declaration via Platform::decide_fabric; an admitted verdict carries no way to execute (ADR 0021).",
+    "evidence": [
+      "test a_suspended_corridor_vetoes_on_corridor_authority_with_an_alert -- backend/crates/services/qip-capital-fabric/tests/corridor_and_gate.rs:353",
+      "test an_intent_naming_a_different_destination_than_its_corridor_vetoes_on_corridor_authority -- corridor_and_gate.rs:375",
+      "test revoked_is_terminal_and_nothing_leaves_it -- corridor_and_gate.rs:1212",
+      "test a_revoked_destination_is_unusable_forever_and_cannot_be_re_proposed -- corridor_and_gate.rs:1516 (the four ran 2026-09-25: 'test result: ok. 4 passed')",
+      "tests an_intent_whose_enforcement_points_share_an_identity_vetoes_on_corridor_authority, an_intent_attested_by_the_trading_identity_vetoes_on_corridor_authority -- corridor_and_gate.rs:549,622",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:7559 (decide_fabric), backend/crates/apps/qip-api/src/fabric.rs (declaration feed)",
+      "docs/blueprint/assessment/AGENCY-b2.json AGENCY-052, AGENCY-057 (both MISSING)"
+    ],
+    "gap": "Nothing models an order-placing or communication adapter being revoked, so no property test covers every action class; the transfer gate runs only when a capital-fabric declaration is mounted, which no environment does; transfers are record-only.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AGENCY-052",
+      "AGENCY-057"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-capital-fabric --test corridor_and_gate a_suspended_corridor_vetoes_on_corridor_authority_with_an_alert an_intent_naming_a_different_destination_than_its_corridor_vetoes_on_corridor_authority revoked_is_terminal_and_nothing_leaves_it a_revoked_destination_is_unusable_forever_and_cannot_be_re_proposed (ran 2026-09-25: ok)",
+    "work_item": "E13",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: MISSING -> PARTIAL, implemented/tested/integrated true, deployable false. The assessor looked only for channel adapters; the capital-transfer gate already refuses completing an intent through anything but its own signed, active corridor and independent attesting identities, reached from qip-api."
+  },
+  {
+    "id": "RES-050",
+    "status": "PARTIAL",
+    "current": "No communication/conduct gate and no external-action engine exist (AGENCY-037 MISSING). One market-conduct rule exists and fails closed with no profitability input: qip_edge::Cell refuses a net that would trade against the cell's own resting order (gate self_trade, cell.rs:3668-3683; would_self_trade, cell.rs:4107-4116) before capacity or price is considered, and the check reads nothing about expected value. AGENCY-009's verified grade credits the same rule as the market-conduct check of the pre-action gate. It runs in Cell::work, reached from qip-edge-node's run_pass (pass.rs:203).",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:3668-3683 (self_trade refusal), :4107-4116 (would_self_trade)",
+      "test a_net_opposite_the_cell_s_own_resting_order_is_refused_as_a_self_trade -- backend/crates/edge/qip-edge/tests/pricing.rs:556; ran 2026-09-25: ok",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:203 (cell.work)",
+      "docs/blueprint/assessment/AGENCY-b2.json AGENCY-009 (PARTIAL: self_trade is its market-conduct check), AGENCY-037 (MISSING)",
+      "rg -i 'conduct.?gate' backend/crates --type rust -> qip-cli/src/blueprint.rs, qip-data-finder/src/robots.rs (both unrelated)"
+    ],
+    "gap": "No communication/conduct gate, no truthfulness, disclosure or manipulation checks, and no external action to gate. The one conduct rule guards paper orders only; no property test varies expected profit; not deployable (qip-edge-node runs nowhere).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AGENCY-037",
+      "AGENCY-009"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test pricing a_net_opposite_the_cell_s_own_resting_order_is_refused_as_a_self_trade (ran 2026-09-25: ok)",
+    "work_item": "E16",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "EXTERNAL_ACTION-flagged behaviour stays BLOCKED beyond a shadow form under ADR 0021 once the gate itself is built; the gate and its shadow-mode test are not blocked, they simply do not exist yet. verify: MISSING -> PARTIAL, implemented/tested/integrated true, deployable false. The requirement is the fail-closed form of AGENCY-009's gate, whose verified grade credits the cell's self_trade refusal as its market-conduct check; that rule blocks unconditionally and never reads expected value. The communication half remains wholly missing."
+  },
+  {
+    "id": "RES-051",
+    "status": "PARTIAL",
+    "current": "No conduct gate or plan object exists. Every refusal a cell makes, the self_trade conduct refusal included, goes through Cell::refuse, which records Decision::Refused { gate, reason } on the cell's append-only hash-chained journal (cell.rs:7486-7504); the self_trade reason names the instrument, venue and side, and the signals that formed the net are journaled separately as SignalRaised. The refused net intent itself (quantity, price, contributors) is not retained as one record.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:7486-7504 (Cell::refuse journals Decision::Refused)",
+      "backend/crates/edge/qip-edge/src/journal.rs:421-470 (Journal: append-only, hash-chained)",
+      "docs/blueprint/assessment/AGENCY-b2.json AGENCY-037 (MISSING)",
+      "rg -i 'blocked.?plan' backend/crates --type rust -> no hits"
+    ],
+    "gap": "No stored record holds the full blocked plan with each conduct check it failed, and no test asserts that a conduct refusal is retained on the journal (the self_trade test reads the WorkReport, not the journal). Not deployable (qip-edge-node runs nowhere).",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AGENCY-037"
+    ],
+    "blocked_by": "",
+    "verification": "No test demonstrates retention of a conduct-blocked plan.",
+    "work_item": "E16",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: MISSING -> PARTIAL, implemented/integrated true, tested/deployable false. Consistent with RES-050: the conduct refusal that exists is journaled with its reason, though not with the whole plan, and no test asserts it."
+  },
+  {
+    "id": "RES-052",
+    "status": "MISSING",
+    "current": "nothing. No planner exists to search for a truthful alternative or abstain after a conduct failure (AGENCY-037, AGENCY-009 both MISSING).",
+    "evidence": [
+      "docs/blueprint/assessment/AGENCY-b2.json AGENCY-037, AGENCY-009 (both MISSING)"
+    ],
+    "gap": "No conduct gate and no planner-level abstain/retry-with-alternative behaviour exist.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AGENCY-037",
+      "AGENCY-009"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E16",
+    "tier": "T3",
+    "size": "L",
+    "notes": "A shadow-only form (drafting and gating without ever calling a live channel) is buildable in-tree with no ADR-0099 conflict, per AGENCY-037's own note. verify: status kept MISSING. The one conduct refusal that exists (self_trade, RES-050) re-derives and re-refuses the same net on later passes until the resting order fills or expires; it neither searches for an alternative nor records an explicit abstention."
+  },
+  {
+    "id": "RES-053",
+    "status": "PARTIAL",
+    "current": "No intervention or side-effect monitoring exists. For trading strategies, a pilot's own declared kill conditions (realised loss, drawdown, consecutive losing sessions, cost overrun) fire automatically: qip_lifecycle::DemotionMonitor raises DemotionTrigger::KillConditionBreached and enforce demotes the strategy to a rung holding no capital with no approver (demotion.rs:370-498); a pilot without kill conditions does not pass its gate. Reached from the LEARN stage through CentralFactory::review (central/factory.rs:551-575), whose only input is cell-reported sessions.",
+    "evidence": [
+      "backend/crates/services/qip-lifecycle/src/demotion.rs:370-498 (DemotionMonitor, KillConditionBreached, enforce)",
+      "backend/crates/runtime/qip-kernel/src/central/factory.rs:551-575 (review -> monitor.enforce), central/learning.rs:423",
+      "test each_stated_kill_condition_fires_on_its_own_breach -- backend/crates/services/qip-lifecycle/tests/lifecycle.rs:1086; ran 2026-09-25: ok",
+      "test a_pilot_without_kill_conditions_or_a_bound_does_not_pass_its_gate -- backend/crates/services/qip-lifecycle/tests/lifecycle.rs:618",
+      "docs/blueprint/assessment/AGENCY-b2.json AGENCY-046 (MISSING), AGENCY-054 (PARTIAL on the same strategy mechanism)"
+    ],
+    "gap": "The declared actions are stops (demotion) only; no rollback, hedge or mitigation action is declared or emitted. Triggers are adverse direct outcomes on the strategy's own P&L and costs, not unpredicted side effects. No intervention plans exist. Not deployable: inputs come only from cells and execution_nodes = {}.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AGENCY-046"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-lifecycle --test lifecycle each_stated_kill_condition_fires_on_its_own_breach (ran 2026-09-25: ok)",
+    "work_item": "E16",
+    "tier": "T3",
+    "size": "M",
+    "notes": "verify: MISSING -> PARTIAL, implemented/tested/integrated true, deployable false. The strategy lifecycle fires a plan's own declared kill conditions automatically, the same mechanism AGENCY-054's verification credits; it is a stop, not a mitigation, and watches outcomes rather than side effects."
+  },
+  {
+    "id": "RES-054",
+    "status": "PARTIAL",
+    "current": "No intervention action policy exists. For trading strategies, the only action policies the platform has, authority falls automatically after adverse realised effects: DemotionMonitor::enforce (demotion.rs:484) demotes with no approver when live performance leaves its holdout band (DemotionTrigger::OutsideHoldoutBand, demotion.rs:172) or decays past the pilot baseline, and central learning ratchets the allocator's standard error up to the realised miss and never down (central/learning.rs:1-31, :651-668). Reached every LEARN stage (platform.rs:14140 review_strategies -> learn_from_cells -> central.learn -> factory.review). qip_contracts::degradation::DegradationState narrows sizing on staleness, a second, weaker instance.",
+    "evidence": [
+      "backend/crates/services/qip-lifecycle/src/demotion.rs:172 (OutsideHoldoutBand), :484 (enforce)",
+      "backend/crates/runtime/qip-kernel/src/central/learning.rs:1-31, :651-668 (automatic scale-down, no automatic scale-up)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14140 (stage_learn -> review_strategies)",
+      "test live_performance_outside_the_holdout_band_is_demoted_and_counted -- backend/crates/services/qip-lifecycle/tests/lifecycle.rs:2209; ran 2026-09-25: ok",
+      "test a_demotion_succeeds_with_no_approver_at_all -- backend/crates/services/qip-lifecycle/tests/lifecycle.rs:693",
+      "backend/crates/libs/qip-contracts/src/degradation.rs (DegradationState::sizing_multiplier)",
+      "docs/blueprint/assessment/AGENCY-b2.json AGENCY-054 (PARTIAL after verification, same mechanism)"
+    ],
+    "gap": "Stated over intervention action policies and side effects, which do not exist; the strategy monitor watches returns and costs, not side effects. Not deployable: its only input is cell-reported sessions and no environment runs a cell.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AGENCY-048",
+      "AGENCY-054"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-lifecycle --test lifecycle live_performance_outside_the_holdout_band_is_demoted_and_counted (ran 2026-09-25: ok)",
+    "work_item": "E16",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Mirrors AGENCY-054's own grading exactly. verify: MISSING -> PARTIAL, implemented/tested/integrated true, deployable false. The row said it mirrors AGENCY-054's grading; that row was upgraded on verification to PARTIAL for the strategy lifecycle's automatic demotion, which this requirement's check shape also matches."
+  },
+  {
+    "id": "RES-055",
+    "status": "MISSING",
+    "current": "nothing. No Episode-shaped record exists for an intervention's adverse side effect. qip_ai::memory::episode::Episode records a reasoned trading situation (instrument, regime, claim, causal in-edges) -- the closest existing outcome-memory precedent -- but carries none of this requirement's intervention/side-effect fields, and nothing constructs one from an adverse side effect because no intervention path exists.",
+    "evidence": [
+      "backend/crates/libs/qip-ai/src/memory/episode.rs (Episode)",
+      "docs/blueprint/assessment/AGENCY-b2.json AGENCY-050 (MISSING, same Episode precedent cited)"
+    ],
+    "gap": "No failure-episode record links an intervention to an observed adverse side effect, because no intervention path exists to observe one from.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AGENCY-048",
+      "AGENCY-050"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E16",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status kept MISSING. Nearest precedents, neither a failure episode: resolved Episodes carry the decision and the realised outcome with its surprise (a_resolved_episode_records_how_far_the_outcome_was_from_what_the_claim_expected, qip-kernel/tests/episodic.rs:280), and a demotion is a lifecycle LedgerEntry naming its trigger. Nothing marks an Episode as a failure or links an intervention to a side effect."
+  },
+  {
+    "id": "RES-056",
+    "status": "PARTIAL",
+    "current": "No intervention action policy or reuse gate exists. For trading strategies, a policy that tripped an automatic trigger cannot act with capital again until re-evaluated: every automatic trigger lands the strategy on a rung that holds no capital, and returning to capital requires passing each gate again with fresh evidence and a dual approval; a retired strategy must be re-proposed as a new candidate. Promotion is reached in production (qip-deepbrain evolution.rs:925; platform.rs:7111). Likewise a model card whose drift passes its threshold is refused until re-evaluated, with drift written in production by qip-deepbrain (learning.rs:1086).",
+    "evidence": [
+      "test every_automatic_trigger_lands_a_strategy_somewhere_that_holds_no_capital -- backend/crates/services/qip-lifecycle/tests/lifecycle.rs:1185",
+      "test promotion_to_a_capital_holding_stage_without_a_dual_approval_is_refused -- backend/crates/services/qip-lifecycle/tests/lifecycle.rs:407 (both ran 2026-09-25: ok)",
+      "test a_promotion_that_skips_a_rung_cannot_be_constructed -- lifecycle.rs:385; retirement_is_terminal_and_a_retired_strategy_must_be_re_proposed_as_a_new_candidate -- lifecycle.rs:734",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:925, backend/crates/runtime/qip-kernel/src/platform.rs:7111 (production promotion)",
+      "test a_drifted_model_is_refused_until_it_is_re_evaluated -- backend/crates/libs/qip-ai/tests/model_infrastructure.rs:567; backend/crates/apps/qip-deepbrain/src/learning.rs:1086",
+      "docs/blueprint/assessment/AGENCY-b2.json AGENCY-054 (PARTIAL after verification)"
+    ],
+    "gap": "Stated over intervention policies after a side effect, which do not exist. The demotion that would force re-evaluation reads only cell-reported sessions, so in a deployed process nothing demotes; not deployable.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AGENCY-054"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-lifecycle --test lifecycle every_automatic_trigger_lands_a_strategy_somewhere_that_holds_no_capital promotion_to_a_capital_holding_stage_without_a_dual_approval_is_refused (ran 2026-09-25: ok)",
+    "work_item": "E16",
+    "tier": "T2",
+    "size": "S",
+    "notes": "verify: MISSING -> PARTIAL, implemented/tested/integrated true, deployable false. The strategy lifecycle already refuses reuse of a demoted policy with capital until it re-passes its gates with fresh evidence and approval."
+  },
+  {
+    "id": "RES-057",
+    "status": "BLOCKED",
+    "current": "nothing. No RF3 three-zone quorum, no distributed broker, and no partition-leader election exist anywhere; the platform runs as single Cloud Run processes today (execution_nodes={} in every environment). The nearest analogue is qip_edge::policy::VerifiedPolicy, a signed control payload delivered over a point-to-point mesh, verified by HMAC under a monotonic sequence -- a single hop, no quorum.",
+    "evidence": [
+      "grep -rn 'quorum|\\bRF3\\b' backend/crates --include=*.rs -> no results",
+      "backend/crates/edge/qip-edge/src/policy.rs (VerifiedPolicy, sequence-based replay refusal, single mesh hop)",
+      "docs/blueprint/assessment/FABRIC-b2.json FABRIC-045 (BLOCKED, same C2 reason, same evidence)",
+      "docs/adr/0100-the-event-fabrics-first-build-is-an-in-tree-single-node-broker-and-a-separate-single-writer-ledger-on-std-tcp-with-producer-retained-durability.md §3 (RF1; in-tree replication with in-sync replicas and automatic failover rejected; 'Replication waits for C2's consensus record')"
+    ],
+    "gap": "RF3 replication and leader failover do not exist; there is no distributed broker to hold a quorum on.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-045"
+    ],
+    "blocked_by": "C2",
+    "verification": "No test exists. Would need chaos-killing the broker leading a partition and asserting a new leader is elected from an in-sync set in a different zone with no quorum-acknowledged record lost.",
+    "work_item": "E99",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "verify: status BLOCKED(C2) kept. Confirmed against ADR 0100 §3: cross-zone in-sync replicas and leader election are exactly the consensus the first build refuses to hand-roll, so the blocker is the reason."
+  },
+  {
+    "id": "RES-058",
+    "status": "MISSING",
+    "current": "nothing. No producer identity, epoch or fencing exists (FABRIC-058 MISSING), and there is no broker. ADR 0100 §3-4 places what this requirement needs in the event fabric's first in-tree build: a static leader epoch persisted and bumped at every broker start, and (producer_id, epoch) producer identity with same-epoch dedup by sequence and payload hash, a new epoch fencing the old one, and sequences carried across epochs 'so a restarted node neither duplicates nor loses'.",
+    "evidence": [
+      "rg -in 'producer.*epoch|fenc' backend/crates --type rust (excluding tests) -> no fencing-epoch hit",
+      "backend/crates/libs/qip-transport/src/mesh.rs (no producer-id/epoch field)",
+      "docs/adr/0100-...-producer-retained-durability.md §3 (static leader epoch bumped at every start), §4 (producer identity, dedup, fencing)",
+      "docs/blueprint/assessment/FABRIC-b3.json FABRIC-058 (MISSING, buildable without a new dependency)"
+    ],
+    "gap": "No producer epoch, fencing or retry idempotence exists. Only a failover to a different replica needs replication, which ADR 0100 §3 leaves to C2 (RES-057); retry-by-epoch, dedup and fencing, tested across a produce whose acknowledgement is interrupted by a broker restart under a bumped leader epoch, are buildable in-tree.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-015",
+      "FABRIC-058"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E03",
+    "tier": "T4",
+    "size": "L",
+    "notes": "The epoch-comparison logic alone (FABRIC-058) is buildable without a new dependency; what is C2-blocked is the broker failover this requirement's own verification method needs to inject. verify: BLOCKED(C2) -> MISSING, blocked_by cleared, work item E99 -> E03, depends_on FABRIC-045 -> FABRIC-015. The behaviour (epoch retry without loss or duplication, stale-epoch fencing) needs no refused crate and ADR 0100 §4 schedules it in the first build; only the cross-replica failover form waits on C2, and that is RES-057."
+  },
+  {
+    "id": "RES-059",
+    "status": "MISSING",
+    "current": "nothing. No consumer group or committed-offset concept exists, and there is no broker. ADR 0100 §4 puts consumer offsets in the ledger writer's durable state (balances, chain tails and consumer offsets in one DurableStore WriteBatch) and makes chain continuity per partition key, not a bare offset rule, the resume check.",
+    "evidence": [
+      "rg -n 'committed_offset|consumer group' backend --type rust -> no hits",
+      "docs/adr/0100-...-producer-retained-durability.md §4 (consumer offsets in one WriteBatch with balances and chain tails)",
+      "docs/blueprint/assessment/FABRIC-b2.json FABRIC-045 (BLOCKED C2: the RF3 half only)"
+    ],
+    "gap": "No committed-offset tracking exists. Resuming from committed offsets is buildable in-tree against the single-node broker and testable across a broker restart; only a failover to another replica needs RES-057's replication (C2).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-015"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E03",
+    "tier": "T4",
+    "size": "L",
+    "notes": "verify: BLOCKED(C2) -> MISSING, blocked_by cleared, work item E99 -> E03. Committed-offset resume needs no refused crate and ADR 0100 §4 designs it; C2 blocks only the cross-replica failover, which RES-057 carries."
+  },
+  {
+    "id": "RES-060",
+    "status": "MISSING",
+    "current": "nothing. No Fabric control topic exists to lose, so nothing stops control changes on its loss. Today control reaches cells over the centre-cell mesh as per-cell VerifiedPolicy frames applied under a monotonic sequence (qip-edge policy.rs), a replay guard with no all-or-nothing property: a policy reaches the cells that are reachable and not the others, by design (ADR 0008). ADR 0100 carries control as the P0 class of the first in-tree broker (RF1).",
+    "evidence": [
+      "grep -rn 'quorum' backend/crates --include=*.rs -> no results",
+      "backend/crates/edge/qip-edge/src/policy.rs (VerifiedPolicy sequence check)",
+      "docs/adr/0100-...-producer-retained-durability.md §3 (RF1), §5 (P0 control class)"
+    ],
+    "gap": "Nothing refuses a control change while the control partition is unavailable or prevents partial activation. With RF1 the in-tree form of 'quorum lost' is the broker's control partition being unavailable, which is buildable and testable without a refused crate; a true multi-replica quorum waits on RES-057 (C2).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-015"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E03",
+    "tier": "T4",
+    "size": "L",
+    "notes": "verify: BLOCKED(C2) -> MISSING, blocked_by cleared, work item E99 -> E03. Refusing control changes while the fabric cannot accept them needs no consensus crate; only the multi-replica quorum does. Noted that today's per-cell policy push has no all-or-nothing property."
+  },
+  {
+    "id": "RES-061",
+    "status": "PARTIAL",
+    "current": "qip_transport::spool::DurableSpool (spool.rs:109-197) is a real, bounded (message-count capacity, refuses rather than grows at capacity), persisted outbound spool over qip_core::kv::KeyValueStore. It is used on the central side only: qip_mesh::spine::CapitalDispatcher (spine.rs:277,303), opened per configured cell by qip-api's mesh (qip-api/src/mesh.rs:1119), holds signed capital grants until the cell acknowledges. The node that keeps trading does not spool: 'Nothing on the uplink is spooled' (qip-edge/src/mesh.rs:34), and the cell's hash-chained Journal is an unbounded in-memory Vec (journal.rs:421-470) flushed to local storage with no budget.",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/spool.rs:109-197 (DurableSpool, capacity, refuse-at-capacity)",
+      "backend/crates/services/qip-mesh/src/spine.rs:277,303 (CapitalDispatcher's DurableSpool)",
+      "backend/crates/apps/qip-api/src/mesh.rs:1119 (dispatcher opened per configured cell; the API serves no mesh in any environment, QIP_MESH_CELLS unset)",
+      "backend/crates/edge/qip-edge/src/mesh.rs:34 ('Nothing on the uplink is spooled')",
+      "backend/crates/edge/qip-edge/src/journal.rs:421-470 (Journal: unbounded Vec)",
+      "test a_full_spool_refuses_and_does_not_drop_what_it_already_holds -- backend/crates/libs/qip-transport/tests/spool.rs:208; ran 2026-09-25: ok"
+    ],
+    "gap": "The requirement's subject is the node cut off while it keeps trading; that node spools nothing, and its journal of critical decisions grows without a budget. The spool that exists is on the centre, bounded by message count rather than a disk-byte budget, and carries one payload class (capital grants). ADR 0100 §1 names the same segment type as the future edge spool.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-045"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-transport --test spool a_full_spool_refuses_and_does_not_drop_what_it_already_holds (ran 2026-09-25: ok)",
+    "work_item": "E03",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: status and flags kept (PARTIAL; deployable false because qip-api serves no mesh in any environment and no cell runs). Corrected 'current': the bounded spool is the centre's outbound grant spool; the trading node does not spool at all and its journal is unbounded, which is the half the requirement is about."
+  },
+  {
+    "id": "RES-062",
+    "status": "PARTIAL",
+    "current": "qip_edge::Cell derives a Freshness/DegradationState-driven narrowing (qip_contracts::degradation) that shrinks position sizing as the last-received policy slot goes stale, tested by qip-contracts's own narrowing/staleness property tests and by qip-edge. Cell::journal accumulates decisions in journal.rs, but Journal::new/record hold entries in an in-memory Vec with no capacity bound found.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:2036 (narrowing())",
+      "backend/crates/libs/qip-contracts/tests/contracts.rs:953,1059,1113,1286,1551 (narrowing/staleness property tests)",
+      "backend/crates/edge/qip-edge/src/journal.rs:421-470 (Journal::new/record, unbounded Vec)",
+      "docs/adr/0100-...-producer-retained-durability.md §6 (spool pressure as a reading-style halt wire that narrows before the budget is exhausted: the planned in-tree form)",
+      "docs/blueprint/assessment/FABRIC-b2.json FABRIC-054 (PARTIAL, identical reasoning and evidence)"
+    ],
+    "gap": "Narrowing triggers on policy staleness, not on the local spool/journal approaching a stated disk budget; no bounded-budget journal exists to narrow ahead of running out of.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-054"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-contracts an_unproduced_slot_is_stale_from_birth_and_narrows_like_staleness",
+    "work_item": "E04",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Mirrors FABRIC-054's own grading exactly, which this requirement's C is the failure-mode/quorum-loss framing of. verify: status and flags kept. Corrected the narrowing() anchor (cell.rs:2036) and added ADR 0100 §6, which designs exactly this trigger (spool pressure narrows, then halts new exposure, before the budget is exhausted) and is not built."
+  },
+  {
+    "id": "RES-063",
+    "status": "PARTIAL",
+    "current": "No fabric-topic cross-region mirroring exists. The adjacent regional-independence principle is implemented at the edge cell: Cell::apply_region_outlook / is_region_dark (cell.rs:1513, :1541) suspend only the cross-region legs that reach a dark region and leave home-venue trading unchanged, and a cell keeps running when its centre is unreachable. That independence is not latency-free: qip-edge-node runs the retrying centre exchange synchronously before each pass, so an unreachable centre delays the pass by the retry ladder until the breaker opens (FABRIC-003, INCORRECT after verification).",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:1513 (apply_region_outlook), :1541 (is_region_dark)",
+      "test a_dark_region_leaves_a_cell_whose_venues_are_all_at_home_trading_exactly_as_before -- backend/crates/edge/qip-edge/tests/cross_region.rs:1307; ran 2026-09-25: ok",
+      "test a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running -- backend/crates/apps/qip-edge-node/tests/mesh.rs:375",
+      "docs/blueprint/assessment/FABRIC-b1.json FABRIC-021 (PARTIAL), FABRIC-003 (INCORRECT: the centre exchange sits on the pass thread)"
+    ],
+    "gap": "The literal claim -- that a Fabric mirror between GCP regions is asynchronous and never blocks a local commit -- has nothing to test, because no such multi-region Fabric mirror exists; only the adjacent, already-proven regional-independence principle is in place.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-011",
+      "FABRIC-021"
+    ],
+    "blocked_by": "C8",
+    "verification": "cargo test -p qip-edge --test cross_region a_dark_region_leaves_a_cell_whose_venues_are_all_at_home_trading_exactly_as_before; cargo test -p qip-edge-node --test mesh a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running",
+    "work_item": "E11",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Mirrors FABRIC-021's own grading exactly. verify: status and flags kept. Replaced the cited suites region_table.rs (capital-share ledger) and dispersion.rs (fill-time dispersion), which do not test region loss, with the tests that do, as FABRIC-021's verification did; added FABRIC-003's finding that the centre exchange delays each pass. blocked_by C8 kept because ADR 0100 §1 records the mirror as BLOCKED(C8); FABRIC-021's verification cleared it on the argument that a localhost two-region test would do, and the two rows should be reconciled."
+  },
+  {
+    "id": "RES-064",
+    "status": "BLOCKED",
+    "current": "nothing. No cross-region Fabric mirror-lag series or MirrorCheckpoint contract exists, because no Fabric mirroring exists at all to measure lag on. The nearest adjacent mechanism is qip_contracts::degradation's Freshness/Slot staleness, exported as qip_edge_capability_freshness{capability} -- a lag concept, but for centre-to-cell policy freshness at one region, not for a cross-region Fabric stream.",
+    "evidence": [
+      "rg -i 'MirrorCheckpoint|mirror.?lag' backend/crates --type rust -> no hits",
+      "backend/crates/edge/qip-edge/src/telemetry.rs (qip_edge_capability_freshness gauge, a different measurement)",
+      "docs/blueprint/assessment/FABRIC-b2.json FABRIC-052, FABRIC-056 (BLOCKED/MISSING: no fabric-mirror topic-replication component exists)",
+      "docs/adr/0100-...-producer-retained-durability.md §1 ('fabric-mirror ... not built. Mirror: BLOCKED(C8)')",
+      "backend/crates/runtime/qip-kernel/src/central/darkness.rs (the centre's declared silence window per region: a bound on cell-to-centre silence, not a measured per-partition lag series)"
+    ],
+    "gap": "No mirror-lag series or MirrorCheckpoint exists for any cross-region Fabric stream, because no such stream exists (C8).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-052"
+    ],
+    "blocked_by": "C8",
+    "verification": "No test exists.",
+    "work_item": "E11",
+    "tier": "T3",
+    "size": "M",
+    "notes": "verify: status BLOCKED(C8) kept on ADR 0100 §1, which records the mirror as not built for C8. Neither analogue measures per-stream, per-partition mirror lag: the edge freshness gauge is centre-to-cell policy age, and the centre's ADR 0079 darkness window bounds silence without exporting a lag series. FABRIC-011's verification argued MISSING for the mirror on the localhost-test ground; flagged for the same reconciliation as RES-063."
+  },
+  {
+    "id": "RES-065",
+    "status": "PARTIAL",
+    "current": "No cross-region Fabric or quorum exists (execution_nodes = {} everywhere, no multi-region deployment). The adjacent centre-cell wire attempts no quorum and never waits indefinitely: an unreachable peer's delta is retried along a bounded ladder and then dead-lettered, and a circuit breaker makes later messages cost zero attempts. It does wait, though: the ladder runs on the cell's work-loop thread (the dead-letter test's own comment says so) and qip-edge-node runs the centre exchange synchronously before each pass (FABRIC-003, INCORRECT after verification), so a remote outage raises local pass latency by up to one ladder before the breaker opens. Cell::is_region_dark lets a cell proceed without a dark region.",
+    "evidence": [
+      "test a_delta_for_a_peer_that_is_not_listening_is_dead_lettered_rather_than_blocking_forever -- backend/crates/edge/qip-edge/tests/mesh.rs:601; ran 2026-09-25: ok",
+      "test a_second_delta_to_a_peer_that_is_down_is_refused_by_the_circuit_without_spending_a_ladder -- backend/crates/edge/qip-edge/tests/mesh.rs (next test)",
+      "backend/crates/edge/qip-edge/src/cell.rs:1541 (is_region_dark)",
+      "docs/blueprint/assessment/FABRIC-b1.json FABRIC-003 (INCORRECT: the retrying centre exchange runs before each pass), FABRIC-021 (PARTIAL)"
+    ],
+    "gap": "No cross-region deployment or Fabric mirror exists to prove never attempts a synchronous quorum. The adjacent wire proves bounded waiting, not independence from remote latency: the requirement's check (local produce-ack latency unchanged under added cross-region latency) would fail on today's edge node until ADR 0100 §6 moves the exchange off the decision thread.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-021"
+    ],
+    "blocked_by": "C8",
+    "verification": "cargo test -p qip-edge --test mesh a_delta_for_a_peer_that_is_not_listening_is_dead_lettered_rather_than_blocking_forever (ran 2026-09-25: ok)",
+    "work_item": "E11",
+    "tier": "T3",
+    "size": "M",
+    "notes": "verify: status and flags kept (PARTIAL). Fixed a wrong path: the cited test is in qip-edge/tests/mesh.rs:601, not qip-api/tests/mesh.rs. Corrected 'never blocks a local write on a remote acknowledgement': the ladder runs on the pass thread, so the wait is bounded, not absent (FABRIC-003)."
+  },
+  {
+    "id": "RES-066",
+    "status": "PARTIAL",
+    "current": "No cross-region Fabric mirror exists (ADR 0100 §1: Mirror BLOCKED(C8)). Over the centre-cell mesh that stands in for it, the global consumer already marks a silent region stale: CentralPlane derives a region dark when every cell of it has been silent past the operator's window (ADR 0079; central/darkness.rs; CentralPlane::dark_regions, plane.rs:1178), records the cell last heard from and when (RegionDarkness.last_heard_at), journals each dark/lit transition, freezes the region's share at its last lit value, and refuses grants into it. qip-api reads the window from its environment at the composition root (qip-api/src/main.rs:128-143) and the API serves no mesh in any environment.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/central/darkness.rs (RegionDarkness: last_heard_from, last_heard_at, window)",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:1178 (dark_regions), :1203 (region_transitions)",
+      "backend/crates/apps/qip-api/src/main.rs:128-143 (region_dark_after loaded at the composition root)",
+      "test a_region_silent_past_the_window_is_dark_on_the_next_read_and_not_before -- backend/crates/runtime/qip-kernel/tests/central.rs:6157 (asserts last_heard_from and last_heard_at)",
+      "test the_platform_journals_region_dark_from_the_act_stage_and_region_lit_at_the_report_that_cleared_it -- backend/crates/runtime/qip-kernel/tests/central.rs:6283 (both ran 2026-09-25: 'test result: ok. 2 passed')",
+      "docs/adr/0100-...-producer-retained-durability.md §1 (Mirror: BLOCKED(C8))"
+    ],
+    "gap": "The staleness is derived for cell reports on the mesh, not for mirrored Fabric streams, and it marks the region dark rather than flagging each derived state read from it. No mirror exists (C8). Not deployable: the API serves no mesh and no cell runs.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-011"
+    ],
+    "blocked_by": "C8",
+    "verification": "cargo test -p qip-kernel --test central a_region_silent_past_the_window_is_dark_on_the_next_read_and_not_before the_platform_journals_region_dark_from_the_act_stage_and_region_lit_at_the_report_that_cleared_it (ran 2026-09-25: ok)",
+    "work_item": "E11",
+    "tier": "T3",
+    "size": "M",
+    "notes": "verify: BLOCKED(C8) -> PARTIAL (blocked_by C8 kept for the mirror form), implemented/tested/integrated true, deployable false. The assessor missed ADR 0079's region darkness: the centre marks an unreachable region stale with the time it was last heard from, which is this requirement's check on the substitute wire."
+  }
+]

@@ -1,0 +1,1326 @@
+[
+  {
+    "id": "WORLD-001",
+    "domain": "WORLD",
+    "title": "Disagreement between world models is recorded, not collapsed",
+    "statement": "When world models disagree, the federation records the disagreement explicitly. Every competing model's view, including minority explanations, is kept alongside a measure of how far the views diverge. Disagreement is treated as information, and no layer collapses competing views into one consensus before evidence resolves them.",
+    "rationale": "A consensus reached by averaging hides the fact that the platform does not know. A recorded disagreement lets arbitration, research and risk act on that fact.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1 Executive Summary ('world-model populations may disagree and branch')"},
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Multi-world cognition"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 — arbitration layer that preserves disagreement"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('disagree') and World-model arbitration & epistemic control row ('preserve minority explanations')"},
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — World Model Arbitration Brain ('preserves useful disagreement')"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation ('Models may disagree; disagreement is information')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist ('disagreement and branch lineage are explicit')"},
+      {"doc": "H", "page": "L281", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'meta' ('preserves disagreement')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated sets of diverging model outputs, assert that the arbitration output keeps every member's view and a disagreement measure, and that no code path emits a merged view without that disagreement record attached."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "CONTRACT", "REASON"],
+    "notes": "Merged from eight extractions. M p3 has the most specific wording ('represented explicitly instead of collapsed prematurely') and is kept. M p8 adds 'minority explanations', and H labels the Meta / Arbitration Brain 'preserves disagreement'. The word 'prematurely' is carried by WORLD-041 (branches stay live until reality resolves them) and WORLD-037 (a weighted resolution for action that leaves this record intact). G p11's 'disagreement becomes research signal' is split out as WORLD-061. The ModelDisagreement contract fields are CONTRACT-023. P1: 'model-disagreement representation' is a master Phase 2 exit (M p41 §30)."
+  },
+  {
+    "id": "WORLD-002",
+    "domain": "WORLD",
+    "title": "World models can branch, and every branch records its lineage",
+    "statement": "A world model can branch into competing hypothesis branches. Each branch records its parent, the evidence or event that triggered it and when it was created, so the full branch lineage is explicit.",
+    "rationale": "A branch whose origin cannot be traced cannot be scored against the evidence that created it. The platform then cannot say afterwards why it believed what it believed.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1 Executive Summary ('world-model populations may disagree and branch')"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 — arbitration layer that preserves lineage"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('models can branch')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist ('branch lineage are explicit')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a window in which a triggering observation causes a branch, rebuild the branch tree from the event log alone, and assert that it matches the live tree, including each parent and trigger."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "CONTRACT"],
+    "notes": "Split from the M p2 sentence 'world-model populations may disagree and branch'. The disagreement half is WORLD-001. When arbitration decides to branch is WORLD-026, and how long branches stay live is WORLD-041. Spawning a whole new model population is a different act from branching a hypothesis inside one; it is WORLD-050. P1: the master Phase 2 exit establishes the initial federation (M p41)."
+  },
+  {
+    "id": "WORLD-003",
+    "domain": "WORLD",
+    "title": "The world model is a temporal entity, event and relationship graph",
+    "statement": "The world model is a temporal graph of entities, events and relationships. Its entities span companies, people, assets, supply chains, countries, products, venues, contracts, weather, logistics and markets. Every event and relationship carries the time it applies to.",
+    "rationale": "Cross-domain causal reasoning needs one typed structure in which a weather event, a shipping lane and an equity can be related. Without time on each edge, the graph cannot answer what was known at a given moment.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Cognitive ('maintains world ... models')"},
+      {"doc": "M", "page": "6", "section": "§3 Full Capability Map — World model row"},
+      {"doc": "M", "page": "42", "section": "§31 Capability Completeness Checklist ('World model ... exist')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Load one fixture entity of each of the eleven named types, with events and relationships at known instants, then assert that each is a typed node and that an as-of query at an earlier instant excludes facts that became true after it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA", "EVID"],
+    "notes": "M p6 has the specific entity list and is kept. M p3 and the M p42 checklist only require that a world model exists. The graph's content categories (temporal facts, causal edges, beliefs, confidence, contradictions) are WORLD-056, from G p2. Point-in-time correctness follows the data-and-streaming domain rule on bitemporal records. P1: 'world model' is a master Phase 2 exit (M p41)."
+  },
+  {
+    "id": "WORLD-004",
+    "domain": "WORLD",
+    "title": "A global causal model holds long-horizon, cross-domain causal structure",
+    "statement": "The federation includes a global causal model. It covers long-horizon entities, events and drivers, and the causal structure that crosses domains.",
+    "rationale": "Each domain model sees one slice. Links such as weather to shipping to commodity basis to FX exist only in a model whose scope is the whole.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Cognitive ('causal ... models')"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('global')"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — Global causal model"},
+      {"doc": "M", "page": "42", "section": "§31 Capability Completeness Checklist ('causal graph')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a history containing a planted cross-domain chain (weather, shipping, commodity basis, FX) and assert that the global causal model holds each directed edge of the chain, and that each edge cites the evidence behind it."
+    },
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["REASON", "EVID", "MODEL"],
+    "notes": "M p17 wording is kept. The example chain in the check is taken from §23's cross-domain synthesis row (M p28). MANAGED_SERVICE was removed because the statement names no store; placement is WORLD-052 and WORLD-059. NON_RUST and NEW_DEPENDENCY are kept because v11.6 §10 (M p18) lets the slow lane use whichever research ecosystem fits, which is ADR 0099 conflict C5 against ADR 0001 and ADR 0002. Causal-graph reasoning itself belongs to REASON."
+  },
+  {
+    "id": "WORLD-005",
+    "domain": "WORLD",
+    "title": "Episodic memory records the world, the belief, the action and what followed",
+    "statement": "Episodic memory keeps, for each episode, what the world looked like, what Algorik believed, what it did, and what followed.",
+    "rationale": "Learning from outcomes needs the world and the belief as they stood at decision time, not as they were revised later.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Cognitive ('episodic ... models')"},
+      {"doc": "M", "page": "17", "section": "§9.2 Memory & Self Model — Episodic memory"},
+      {"doc": "M", "page": "42", "section": "§31 Capability Completeness Checklist ('episodic ... memory')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "For a decision taken in a replayed cycle, retrieve its episode and assert three things: the world state and beliefs are those knowable at the decision instant; the action and outcomes are present; and the episode can be rebuilt from the event log alone."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT", "MODEL", "DATA"],
+    "notes": "MANAGED_SERVICE was removed because the statement names no placement. The knowledge stores the memory sits beside are WORLD-062 and WORLD-063. Episode fields are CONTRACT-017. P1: episodic memory is named in the master Phase 2 exit (M p41)."
+  },
+  {
+    "id": "WORLD-006",
+    "domain": "WORLD",
+    "title": "Semantic memory holds entities, relationships, definitions, policies and stable knowledge",
+    "statement": "Semantic memory holds entities, relationships, definitions, policies and other stable knowledge.",
+    "rationale": "Stable knowledge re-derived each time it is needed drifts between derivations. Held once, it can be versioned and cited.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Cognitive ('semantic ... models')"},
+      {"doc": "M", "page": "17", "section": "§9.2 Memory & Self Model — Semantic memory"},
+      {"doc": "M", "page": "42", "section": "§31 Capability Completeness Checklist ('semantic ... memory')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Write a definition and a policy for one entity and assert that both can be retrieved by entity with a version. Then change the definition and assert that a new version exists and the old one is still readable."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA", "GOV"],
+    "notes": "MANAGED_SERVICE was removed because the statement names no placement. This overlaps WORLD-003's entity graph: the graph holds timed world facts, and semantic memory adds definitions and policies. The versioning in the check is this catalogue's reading of 'stable knowledge'. P1: part of the master Phase 2 world model and memory."
+  },
+  {
+    "id": "WORLD-007",
+    "domain": "WORLD",
+    "title": "A self-model records Algorik's own capabilities, limits, health and authority",
+    "statement": "Algorik maintains a model of itself. It covers the platform's capabilities and capability boundaries, its authority, known weaknesses and failure states, blind spots, uncertainty, stale areas, model and data drift and health, operational health, and latency.",
+    "rationale": "A system that cannot say where it is weak or stale will answer confidently in exactly those areas.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Cognitive ('self models')"},
+      {"doc": "M", "page": "6", "section": "§3 Full Capability Map — Financial AGI core ('self-model')"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('self')"},
+      {"doc": "M", "page": "17", "section": "§9.2 Memory & Self Model — Self-model"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — Self/system models"},
+      {"doc": "M", "page": "42", "section": "§31 Capability Completeness Checklist ('self-model exist')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Make one data feed stale and degrade one model, then assert that the self-model marks both areas and that a question in either area is answered with that capability-boundary flag, not as if the area were healthy."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["OBS", "GOV", "MODEL"],
+    "notes": "§9.2's self-model and §9.3's self/system models describe the same thing and are merged, with the union as the statement. §9.3 adds latency and authority, and §9.2 adds stale areas and capability boundaries. NON_RUST, NEW_DEPENDENCY and MANAGED_SERVICE came in on the §9.3 extraction and were removed. The self-model's inputs are the platform's own telemetry, and nothing in it needs the research ecosystem or a named store. It depends on observability, which the observability rules file says has not yet been proven ingested. P2: no build phase names it, and it serves master Phase 8 autonomy 'under authority envelopes' (M p42)."
+  },
+  {
+    "id": "WORLD-008",
+    "domain": "WORLD",
+    "title": "Every belief and model output carries explicit uncertainty",
+    "statement": "Every world-model state, belief and arbitration output carries an explicit uncertainty or confidence. An output without one is refused, not given a default.",
+    "rationale": "A number with no stated uncertainty reads as certain, and whatever sizes a position from it inherits that false certainty.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Cognitive ('explicitly represents uncertainty')"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 — arbitration layer that preserves confidence"},
+      {"doc": "M", "page": "6", "section": "§3 Full Capability Map — Financial AGI core ('uncertainty')"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World-model arbitration & epistemic control row ('maintain uncertainty')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For arbitrary generated model outputs, assert that each emitted belief carries a confidence inside its declared range, and that constructing a belief without a confidence returns a refusal."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "CONTRACT"],
+    "notes": "'Refused, not given a default' applies the repository principle 'refuse rather than guess' to M's 'explicitly represents uncertainty'. It is this catalogue's reading, not blueprint text. ADR 0005 already treats confidence as arithmetic. The M p45 'uncertainty boundary' is the same requirement (see WORLD-055). P1: Phase 2 cognition."
+  },
+  {
+    "id": "WORLD-009",
+    "domain": "WORLD",
+    "title": "Contradictions are detected and recorded, not overwritten",
+    "statement": "When evidence, beliefs or models contradict each other, the contradiction is detected and recorded as an explicit object linking the conflicting items. Neither side is silently overwritten.",
+    "rationale": "A contradiction settled by last-write-wins erases the evidence that the world is ambiguous.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Cognitive ('explicitly represents ... contradiction')"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World-model arbitration & epistemic control row ('detect contradictions')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Feed two contradicting evidence items about one fact and assert that a contradiction record links both, and that both beliefs remain readable with their sources."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EVID", "REASON"],
+    "notes": "G p2 also lists contradictions among the knowledge graph's contents (WORLD-056). Scoring contradictions at the evidence level belongs to EVID. P1: Phase 2 cognition."
+  },
+  {
+    "id": "WORLD-010",
+    "domain": "WORLD",
+    "title": "A population of concurrent, specialised world models is maintained",
+    "statement": "The platform maintains a federation of many concurrent world models. They are specialised by domain, geography or region, horizon, abstraction level and hypothesis, and the population includes scenario and counterfactual models.",
+    "rationale": "Different questions need models at different scopes and horizons. One representation forced to serve all of them serves none of them well.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Multi-world cognition"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 — replace the single world/causal model with a World Model Federation"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — lead paragraph ('maintains a population of world models')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist ('federation of numerous domain, regional, horizon, scenario and counterfactual world models')"},
+      {"doc": "G", "page": "11", "section": "§11 Cognitive, Model and Quantum Compute Plane — World-model federation row ('Multiple competing models/graphs maintained')"},
+      {"doc": "H", "page": "L278", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'wm'"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Read the federation's registry during one cycle and assert that the live models differ along each of the five axes and that all of them produced state in that same cycle."
+    },
+    "policy_flags": ["MULTI_REGION", "COST"],
+    "secondary_domains": ["MODEL", "GCP"],
+    "notes": "M p17 has the most specific axes (domain, geography, horizon, abstraction level, hypothesis) and is kept. The model categories are WORLD-004, WORLD-007 and WORLD-013 to WORLD-021. H names eight domains (macro, company, supply chain, microstructure, event, capital, regional, counterfactual), a subset of M's eleven. The extracted claim that the federation runs 'exactly eight' is not supported by either PDF and was not carried. MANAGED_SERVICE and KUBERNETES came in on the G p11 and M p17 extractions and were removed, because placement is WORLD-052 and WORLD-059. MULTI_REGION is kept for the regional models. COST is kept because the population is standing compute. P1: 'initial World Model Federation' is a master Phase 2 exit (M p41)."
+  },
+  {
+    "id": "WORLD-011",
+    "domain": "WORLD",
+    "title": "No consumer depends on a single monolithic world model",
+    "statement": "Algorik does not depend on a single monolithic world model. No cognitive consumer takes its view of the world from one model alone, and withdrawing any one model leaves the federation still producing output.",
+    "rationale": "A single model is a single point of epistemic failure. When it is wrong, everything downstream is wrong in the same way.",
+    "kind": "prohibition",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 — 'Single world/causal model is the primary cognitive representation'"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation ('must not depend on a single monolithic world model')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist ('rather than one monolithic model')"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Withdraw each world model in turn during a replayed cycle and assert that arbitration still produces output marked with the reduced coverage, and that no consumer fails or silently substitutes a default."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "ARCH"],
+    "notes": "Kept separate from WORLD-010. WORLD-010 is proved by the models that exist; this one is proved by the absence of a single dependency. The second clause, 'withdrawing any one model', is this catalogue's test of 'must not depend'. P1: Phase 2 federation."
+  },
+  {
+    "id": "WORLD-012",
+    "domain": "WORLD",
+    "title": "The Financial AGI core orchestrates the specialist agents",
+    "statement": "The Financial AGI core orchestrates the specialist agents. It routes each question or research task to the specialists whose scope covers it and records which ones it consulted.",
+    "rationale": "A society of specialists with nobody routing work among them either duplicates effort or leaves questions with no owner.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "6", "section": "§3 Full Capability Map — Financial AGI core ('specialist-agent orchestration')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Pose a question spanning two specialist scopes and assert that both specialists are consulted and recorded, and that a question outside every registered scope is recorded as unrouted rather than sent to an arbitrary specialist."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["AGENCY", "REASON", "MODEL"],
+    "notes": "Split from the M p6 row. Its self-model and uncertainty parts are merged into WORLD-007 and WORLD-008. Its memory and counterfactual parts are covered by WORLD-005, WORLD-006, WORLD-038 and WORLD-039. Planning, research, tool use, hypothesis generation and causal reasoning are the scope of the AGENCY, REASON and MODEL domains and are not restated here; tool use under policy is WORLD-054. 'Records which ones it consulted' is this catalogue's reading of orchestration. P2: master Phase 8 adds the specialist-agent society (M p42)."
+  },
+  {
+    "id": "WORLD-013",
+    "domain": "WORLD",
+    "title": "Macro and geopolitical world models",
+    "statement": "The federation includes macro and geopolitical world models covering rates, policy, trade, conflict, sanctions, currencies and sovereign regimes.",
+    "rationale": "Rates, sanctions and shifts in sovereign regime move every asset class at once, and they need a model whose scope is exactly that.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('macro, geopolitical')"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — Macro/geopolitical models"},
+      {"doc": "H", "page": "L278", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'wm' ('Macro')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a recorded event in each of the seven named sub-domains and assert that the model's state for that sub-domain updates, stamped with the instant the event became knowable."
+    },
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["MODEL"],
+    "notes": "M p17 wording is kept. M p8 lists macro and geopolitical as two models, M p17 as one population, and H names only 'macro'. MANAGED_SERVICE was removed because no placement is named. NON_RUST and NEW_DEPENDENCY are kept for the same reason as WORLD-004 (ADR 0099 C5). The Macro/Geopolitical Brain that reasons over this model is WORLD-031. P1: economic and geopolitical data are master Phase 2 world inputs (M p10 §5)."
+  },
+  {
+    "id": "WORLD-014",
+    "domain": "WORLD",
+    "title": "Company and fundamental world models",
+    "statement": "The federation includes company and fundamental world models covering firms, financials, management actions, credit and capital structure.",
+    "rationale": "Firm-level drivers such as earnings, guidance and leverage are the most direct causal inputs to an equity or credit price.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('company')"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — Company/fundamental models"},
+      {"doc": "H", "page": "L278", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'wm' ('company')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a recorded earnings release and a capital-structure change for one firm and assert that the model's state for that firm updates on each, citing the evidence."
+    },
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["MODEL"],
+    "notes": "M p17 wording is kept. Flags are as for WORLD-004, with MANAGED_SERVICE removed. The Company/Fundamental Brain is WORLD-032. P1: company data is a master Phase 2 world input (M p10 §5)."
+  },
+  {
+    "id": "WORLD-015",
+    "domain": "WORLD",
+    "title": "Supply-chain and physical world models",
+    "statement": "The federation includes supply-chain and physical world models covering factories, commodities, inventories, logistics, products, weather and real-world constraints.",
+    "rationale": "Physical constraints such as a closed port or a failed harvest reach prices after a lag. The platform can only learn that lag if it models the physical world.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('supply-chain, physical')"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — Supply-chain/physical models"},
+      {"doc": "H", "page": "L278", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'wm' ('supply chain')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a recorded logistics disruption and assert that the model marks the affected route and the products and commodities that depend on it."
+    },
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["MODEL", "COMMERCE"],
+    "notes": "M p8 lists supply-chain and physical as two models, M p17 as one, and H names 'supply chain'. Flags are as for WORLD-004. The Supply Chain/Physical Brain is WORLD-033. P1: physical data is a master Phase 2 world input (M p10 §5), and Phase 7 physical commerce consumes it later."
+  },
+  {
+    "id": "WORLD-016",
+    "domain": "WORLD",
+    "title": "Market and microstructure world models",
+    "statement": "The federation includes market and microstructure world models covering liquidity, order flow, venues, lead/lag, impact, arbitrage and execution state.",
+    "rationale": "World beliefs matter only through how markets absorb them. The slow-lane view of liquidity and impact is what fusion and arbitrage research reason over.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('microstructure')"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — Market/microstructure models"},
+      {"doc": "H", "page": "L278", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'wm' ('microstructure')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a recorded tick window across two venues and assert that the model holds liquidity, order-flow, lead/lag and impact estimates for each venue, derived from that window."
+    },
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["TICK", "MODEL", "EXEC"],
+    "notes": "These are slow-lane representations for cognition. Hot-lane inference uses distilled reflex models, and no federation model sits on the reflex critical path (WORLD-053). Flags are as for WORLD-004. P1: master Phase 2 includes the Market Intelligence & Tick Learning Fabric (M p41)."
+  },
+  {
+    "id": "WORLD-017",
+    "domain": "WORLD",
+    "title": "Event and prediction world models",
+    "statement": "The federation includes event and prediction world models covering event trees, conditional probabilities, information arrival and resolution mechanics.",
+    "rationale": "An event's price impact depends on its probability, on what else it is conditional on and on how it resolves. That is structure, not a single number.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('event')"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — Event/prediction models"},
+      {"doc": "H", "page": "L278", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'wm' ('event')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated event trees, assert that the conditional probabilities at every node sum to one within a declared tolerance, that a tree violating this is refused, and that every leaf names its resolution mechanism."
+    },
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["EVENT", "MODEL"],
+    "notes": "M p17 wording is kept. Flags are as for WORLD-004. P2: event markets arrive in master Phase 7 (M p42), and the Event/Prediction Brain is EVENT-009 at P2, so the model is kept with its consumer."
+  },
+  {
+    "id": "WORLD-018",
+    "domain": "WORLD",
+    "title": "Portfolio, capital and liquidity world models",
+    "statement": "The federation includes portfolio, capital and liquidity world models covering exposures, collateral, funding, leverage, optionality and capital mobility.",
+    "rationale": "Whether an opportunity can be taken depends on where capital and collateral sit and how fast they can move.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('portfolio/capital')"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — Portfolio/capital/liquidity models"},
+      {"doc": "H", "page": "L278", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'wm' ('capital')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Seed a paper book with positions, collateral and funding in two corridors and assert that the model reports exposure, leverage, and how much capital can move between the corridors and how fast, in agreement with the paper ledger."
+    },
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["CAPITAL", "ASSET", "LEDGER"],
+    "notes": "M p8 says 'portfolio/capital' and H says 'capital'. The model is a belief about capital and never the ledger itself: financial truth stays in the ledger (G p10 §10). Flags are as for WORLD-004. P1: master Phase 3, multi-asset capital and risk (M p41)."
+  },
+  {
+    "id": "WORLD-019",
+    "domain": "WORLD",
+    "title": "Counterparty and network world models",
+    "statement": "The federation includes counterparty and network world models covering brokers, exchanges, bridges, custodians, settlement dependencies and contagion paths.",
+    "rationale": "Losses from a failed intermediary arrive through dependencies nobody traded, and only a network model can show the path.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('counterparty')"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — Counterparty/network models"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Mark one custodian in a fixture network as failed and assert that the model lists every venue, bridge and settlement dependency reachable from it as a contagion path."
+    },
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["RISK", "CAPITAL"],
+    "notes": "H does not name this model. Flags are as for WORLD-004. P1: master Phase 3 adds custody corridors and multiple asset classes (M p41)."
+  },
+  {
+    "id": "WORLD-020",
+    "domain": "WORLD",
+    "title": "Regional world models",
+    "statement": "The federation includes regional world models covering local language, regulation, venues, microstructure, logistics and information ecosystems.",
+    "rationale": "A region's markets react to information in their own language and under their own rules, and a global model averages that away.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('regional')"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — Regional world models"},
+      {"doc": "H", "page": "L278", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'wm' ('regional')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For two configured regions, assert that each regional model carries its own language, regulatory and venue scope, and that an event from one region's local-language sources updates that region's model."
+    },
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY", "MULTI_REGION"],
+    "secondary_domains": ["MODEL", "REFLEX"],
+    "notes": "M p17 wording is kept. MULTI_REGION is kept; MANAGED_SERVICE was removed as for WORLD-004. P1: master Phase 4 adds the Americas, Europe and APAC nodes (M p41)."
+  },
+  {
+    "id": "WORLD-021",
+    "domain": "WORLD",
+    "title": "Scenario and counterfactual world models",
+    "statement": "The federation includes scenario and counterfactual world models covering alternate futures, rejected actions, stress worlds and rare-regime branches.",
+    "rationale": "Risk and learning both need worlds that did not happen: the stress that may come and the action that was declined.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('scenario and counterfactual')"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — Scenario/counterfactual models"},
+      {"doc": "H", "page": "L278", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'wm' ('counterfactual')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a cycle containing a declined action and assert that a counterfactual branch exists for it, alongside at least one stress world, each with lineage to the state it branched from."
+    },
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["RISK", "AGENCY", "TICK"],
+    "notes": "M p8 lists scenario and counterfactual separately, and H names 'counterfactual'. Counterfactual memory, the stored estimate of what would have happened, is WORLD-039; these are the models that produce such estimates. Flags are as for WORLD-004. P1: master Phase 2's replay/digital twin (M p41)."
+  },
+  {
+    "id": "WORLD-022",
+    "domain": "WORLD",
+    "title": "World models or branches can merge, keeping both lineages",
+    "statement": "Two world models or branches can be merged into one, and the merged model records both parents.",
+    "rationale": "Branches that converge should stop costing twice, but a merge that forgets its parents erases why each one existed.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('merge')"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Merge two branches and assert that the result names both as parents and that each parent's history is still readable."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL"],
+    "notes": "Split from the M p8 lifecycle list (branch, disagree, merge, expire, be scored). When arbitration chooses to merge is WORLD-026. P1: Phase 2 federation."
+  },
+  {
+    "id": "WORLD-023",
+    "domain": "WORLD",
+    "title": "An expired world model stops contributing until renewed",
+    "statement": "A world model whose declared expiry has passed stops contributing to arbitration until it is renewed, and its exclusion is recorded as an expiry.",
+    "rationale": "A model past its expiry is a stale belief presented as current. Excluding it visibly is safer than using it quietly.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('expire')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated clocks and expiry instants, assert that arbitration includes a model exactly when the clock is before its expiry, and otherwise records an expiry exclusion."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL"],
+    "notes": "The expiry field itself belongs to the WORLD-040 contract (M p17). 'Until renewed' and 'recorded as an expiry' are this catalogue's reading of 'expire'. Retiring a whole model population is a separate Phase 9 act (EXPAND-062). P1: Phase 2 federation."
+  },
+  {
+    "id": "WORLD-024",
+    "domain": "WORLD",
+    "title": "Every world model is scored by predictive calibration",
+    "statement": "Each world model is scored by its predictive calibration, computed from its own forecasts against resolved outcomes. A model with no resolved forecasts is reported as unscored, not given a default score.",
+    "rationale": "Arbitration weights models by how reliable they have been. A score not computed from outcomes is an opinion about a model rather than a measurement of it.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World Model Federation row ('be scored by predictive calibration')"},
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — World Model Arbitration Brain ('tracks calibration')"},
+      {"doc": "G", "page": "11", "section": "§11 Cognitive, Model and Quantum Compute Plane — World-model federation row ('maintained and scored')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a window in which forecasts resolve and assert that each model's calibration score equals one recomputed independently from its forecasts and the outcomes, and that a model with none resolved reports unscored."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL"],
+    "notes": "MANAGED_SERVICE, KUBERNETES, MULTI_REGION and COST came in on the G p11 extraction and were removed here. They belong to placement (WORLD-052) and to the population (WORLD-010). 'Unscored, not a default' is this catalogue's application of 'refuse rather than guess'. P1: Phase 2 federation."
+  },
+  {
+    "id": "WORLD-025",
+    "domain": "WORLD",
+    "title": "Arbitration compares models on evidence fit, prediction, causal coherence and uncertainty",
+    "statement": "A World Model Arbitration layer compares competing world models and hypotheses on evidence fit, predictive performance (including calibration), causal coherence and uncertainty. It records the score on each of the four dimensions for each model.",
+    "rationale": "Choosing among models on one dimension rewards whichever model is best at that dimension's failure mode. Four recorded dimensions make the choice auditable.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World-model arbitration & epistemic control row ('compare competing model states/hypotheses ... score calibration/evidence fit')"},
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — World Model Arbitration Brain ('scores and reconciles')"},
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — lead paragraph (World Model Arbitration layer)"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Arbitrate between two fixture models that differ only in evidence fit and assert that all four dimension scores are recorded for both, and that the ranking follows the evidence-fit difference."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "REASON"],
+    "notes": "M p17 names the four dimensions and is kept; M p8 says 'score calibration/evidence fit'. M presents the World Model Arbitration Brain (§9.1) and the Meta Brain as two brains, while H draws a single 'Meta / Arbitration Brain' node. P1: Phase 2 federation."
+  },
+  {
+    "id": "WORLD-026",
+    "domain": "WORLD",
+    "title": "Arbitration decides to branch, merge, abstain or ask for more information",
+    "statement": "For each unresolved comparison, arbitration chooses one of four actions: branch, merge, abstain, or request more information. It records the action and the reason. Abstaining produces no arbitrated view, and requesting more information emits a data or research request.",
+    "rationale": "Without an explicit abstain, the layer must always produce an answer. Without a way to request more information, it can never reduce its own uncertainty.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — World-model arbitration & epistemic control row ('decide when to branch, merge, abstain or request more information')"},
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — World Model Arbitration Brain ('branch/merge/abstain/request-more-data actions')"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Construct four comparison states designed to produce each action and assert three things: each action is produced with a recorded reason; abstain emits no arbitrated view; and request-more-information emits a request."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REASON", "DATA"],
+    "notes": "M p8 says 'request more information' and M p16 says 'request-more-data'; the broader wording is kept. What each action must produce, in the statement's last sentence, is this catalogue's reading. P1: Phase 2 federation."
+  },
+  {
+    "id": "WORLD-027",
+    "domain": "WORLD",
+    "title": "World models, branches and arbitration run in the cognitive slow lane",
+    "statement": "Long-running world models, competing hypothesis branches, model-arbitration cycles, symbolic reasoners, ambient world models, generalist planners and specialist agents run in Lane 3, the Cognitive Slow lane, on time scales of minutes to days.",
+    "rationale": "Cognition that runs for minutes cannot sit in a lane that must answer in microseconds. The lane assignment keeps it from being called there.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "10", "section": "§4 Time-Lane Architecture — Lane 3 (Cognitive Slow)"},
+      {"doc": "M", "page": "42", "section": "§31 Capability Completeness Checklist ('Generalist/AGI-style planners and specialist agents can run in the slow lane')"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture-suite test asserts that every world-model, arbitration, symbolic-reasoner and specialist-agent component is registered to the cognitive slow lane and that none is registered to the reflex lane."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["AMBIENT", "REASON", "ARCH"],
+    "notes": "M p10 lists what Lane 3 hosts, and the M p42 checklist adds planners and specialist agents. The tool-use half of the M p42 item is WORLD-054. The hot-path prohibition itself is WORLD-053. P1: Phase 2 federation and reasoning services."
+  },
+  {
+    "id": "WORLD-028",
+    "domain": "WORLD",
+    "title": "World and market fusion feeds the World Model Federation",
+    "statement": "The output of World + Market Intelligence Fusion is an input to the World Model Federation.",
+    "rationale": "World beliefs that never see how markets actually reacted cannot learn which beliefs mattered.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — WORLD + MARKET INTELLIGENCE FUSION to WORLD MODEL FEDERATION"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Fuse a replayed world event with its tick window and assert that the resulting federation update cites the version of the fusion output."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "MODEL"],
+    "notes": "P1: world+market fusion is a master Phase 2 exit (M p41)."
+  },
+  {
+    "id": "WORLD-029",
+    "domain": "WORLD",
+    "title": "The federation feeds the symbolic and neuro-symbolic reasoning fabric",
+    "statement": "World Model Federation state is published to the Symbolic / Neuro-Symbolic Reasoning fabric as knowledge-class input.",
+    "rationale": "Symbolic reasoners check invariants and derive consequences. Without the federation's state, they reason over nothing current.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — WORLD MODEL FEDERATION <-> SYMBOLIC / NEURO-SYMBOLIC REASONING"},
+      {"doc": "H", "page": "L292", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, edge wm→sym (knowledge)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Update a federation model and assert that the reasoning fabric receives the new state as a knowledge-class message carrying the model version."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REASON"],
+    "notes": "Split from M p11's two-way arrow, whose return path is WORLD-030. Also split from H L292's extraction, which also feeds the ambient mesh (WORLD-066). P1: symbolic, temporal and causal reasoning services are a master Phase 2 exit (M p41)."
+  },
+  {
+    "id": "WORLD-030",
+    "domain": "WORLD",
+    "title": "Symbolic reasoning results flow back into the federation",
+    "statement": "Derivations, constraints and rejections produced by the Symbolic / Neuro-Symbolic Reasoning fabric flow back and update the World Model Federation.",
+    "rationale": "A reasoner that finds a model state breaking a constraint must be able to tell the model, or the violation persists.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — WORLD MODEL FEDERATION <-> SYMBOLIC / NEURO-SYMBOLIC REASONING"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Publish a model state that breaks a fixture constraint and assert that the reasoner's rejection reaches the federation and is recorded against that state."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REASON"],
+    "notes": "The return direction rests on M p11 alone. H view 05 draws no sym→wm edge; there the reasoner's output goes to the Meta / Arbitration Brain (sym→meta). The phrase 'derivations, constraints and rejections' is taken from §9.4's proof and derivation artifacts (M p18) and is this catalogue's reading of what flows back. P1 as WORLD-029."
+  },
+  {
+    "id": "WORLD-031",
+    "domain": "WORLD",
+    "title": "A Macro/Geopolitical Brain covers rates, policy, election facts, trade, conflict and regimes",
+    "statement": "A Macro/Geopolitical specialist brain covers rates, inflation, policy, elections and public-policy facts, trade, conflict, sanctions, and sovereign and currency regimes.",
+    "rationale": "Inside their scope, specialists answer better than a generalist, and the macro scope is where the largest cross-asset moves start.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Macro/Geopolitical Brain"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register the brain and assert that its declared scope contains each named topic and that a fixture question on each topic is routed to it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "AGENCY"],
+    "notes": "This is distinct from the macro/geopolitical world models (WORLD-013): the brain is an agent that reasons and researches, and the model is the state it reasons over. Its scope is 'elections/public policy facts', meaning facts about elections, not action on them. External communication is governed by the Communications & Conduct Brain (M p17). H L283 lists 'macro' in the society (WORLD-064). P2: master Phase 8 adds the specialist-agent society (M p42)."
+  },
+  {
+    "id": "WORLD-032",
+    "domain": "WORLD",
+    "title": "A Company/Fundamental Brain covers statements, earnings, corporate events, guidance and capital structure",
+    "statement": "A Company/Fundamental specialist brain covers financial statements, earnings, corporate events, management guidance, credit and capital structure.",
+    "rationale": "Reading statements and guidance well is a specialised skill, and the company world models (WORLD-014) depend on its output.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Company/Fundamental Brain"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register the brain and assert that its declared scope contains each named topic and that a fixture question on each topic is routed to it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "AGENCY"],
+    "notes": "This brain is distinct from WORLD-014. H L283 lists 'company' (WORLD-064). P2: specialist-agent society, master Phase 8."
+  },
+  {
+    "id": "WORLD-033",
+    "domain": "WORLD",
+    "title": "A Supply Chain/Physical Brain covers products, commodities, suppliers, logistics and shipping",
+    "statement": "A Supply Chain/Physical specialist brain covers products, commodities, suppliers, logistics, inventories, production constraints and shipping.",
+    "rationale": "Physical-world research needs sources and reasoning that financial specialists do not have.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Supply Chain/Physical Brain"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register the brain and assert that its declared scope contains each named topic and that a fixture question on each topic is routed to it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "COMMERCE"],
+    "notes": "This brain is distinct from WORLD-015. H L283 lists 'supply chain' (WORLD-064). P2: specialist-agent society, master Phase 8."
+  },
+  {
+    "id": "WORLD-034",
+    "domain": "WORLD",
+    "title": "A Crypto/On-chain Brain covers protocol state, token economics, bridges and on-chain flows",
+    "statement": "A Crypto/On-chain specialist brain covers protocol state, token economics, bridges, liquidity, smart contracts and on-chain flows.",
+    "rationale": "On-chain state is public but only readable by someone who understands the protocols, and bridge and contract risks have no off-chain equivalent.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Crypto/On-chain Brain"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register the brain and assert that its declared scope contains each named topic and that a fixture question on each topic is routed to it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "ASSET", "RISK"],
+    "notes": "H L283 lists 'crypto' (WORLD-064). Researching on-chain state is paper-safe. Acting on a chain is external action and is outside this requirement (ADR 0099 C1). P2: specialist-agent society, master Phase 8."
+  },
+  {
+    "id": "WORLD-035",
+    "domain": "WORLD",
+    "title": "The Meta Brain allocates research attention across brains",
+    "statement": "The Meta Brain allocates research attention across the specialist brains and models, and records each allocation.",
+    "rationale": "Research capacity is finite. Without an allocator, it goes to whichever brain asks loudest rather than to where uncertainty costs most.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Meta Brain ('Allocates research attention')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Give the Meta Brain two open questions of differing uncertainty and value and assert that it records an allocation for each, and that the allocation changes when the fixture values change."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPAND", "AMBIENT"],
+    "notes": "Split from the M p16 Meta Brain row. Per-regime reliability is WORLD-036, and resolving disagreements is WORLD-037. The Ambient Attention Brain (M p16) routes signals, which belongs to AMBIENT; this requirement is the research-attention budget. P2: master Phase 8 self-directed research campaigns (M p42)."
+  },
+  {
+    "id": "WORLD-036",
+    "domain": "WORLD",
+    "title": "The Meta Brain measures each brain's and model's reliability per regime",
+    "statement": "The Meta Brain measures, from resolved outcomes, how reliable each brain and model is in each market regime.",
+    "rationale": "A model that is reliable in calm markets and wrong in stressed ones has an average score that describes neither.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Meta Brain ('measures which brains/models are reliable in which regimes')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a history spanning two labelled regimes in which a fixture model is accurate in one and not the other, and assert that its recorded reliability differs by regime in that direction."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL"],
+    "notes": "'From resolved outcomes' ties this to WORLD-024's calibration. P1 rather than P2 because H draws Meta and Arbitration as one epistemic-control node, and the Phase 2 federation needs regime-weighted arbitration (WORLD-037). The Meta Brain's research-allocation role is the Phase 8 part (WORLD-035)."
+  },
+  {
+    "id": "WORLD-037",
+    "domain": "WORLD",
+    "title": "Disagreements are resolved by regime- and evidence-weighted arbitration that keeps the minority view",
+    "statement": "When brains or world models disagree, the Meta / Arbitration Brain resolves the disagreement for downstream use. It weights each view by its measured reliability in the current regime and by its evidence. The resolution does not delete the disagreement record or the minority views.",
+    "rationale": "Downstream stages need a usable answer, and the research desk needs to see what that answer overrode.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Meta Brain ('resolves disagreements')"},
+      {"doc": "H", "page": "L281", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'meta' ('Weights models by regime/evidence')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated disagreements, assert that the resolved weights depend only on regime reliability and evidence scores, and that every input view is still readable in the disagreement record after resolution."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "REASON"],
+    "notes": "M's 'resolves disagreements' and H's 'preserves disagreement' are reconciled here: the resolution is for action and leaves WORLD-001's record intact. That reconciliation is this catalogue's reading. P1 as WORLD-036."
+  },
+  {
+    "id": "WORLD-038",
+    "domain": "WORLD",
+    "title": "Procedural memory keeps research procedures, templates, adapters, playbooks and remediations",
+    "statement": "Procedural memory holds research procedures, strategy templates, data adapters, playbooks and remediation patterns. They are versioned so that later work can reuse them.",
+    "rationale": "A procedure that worked once and was not kept has to be rediscovered at full cost next time.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "17", "section": "§9.2 Memory & Self Model — Procedural memory"},
+      {"doc": "M", "page": "42", "section": "§31 Capability Completeness Checklist ('procedural memory')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Complete a fixture research procedure and a remediation, then assert that both are stored as versioned procedures and that a later task retrieves each and records that it reused them."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPAND", "OBS", "MODEL"],
+    "notes": "'Versioned so that later work can reuse them' is this catalogue's reading of 'memory'. P2: no Phase 2 exit names procedural memory. Its users are master Phase 8's self-directed research and the AIOps remediation it records (M p41)."
+  },
+  {
+    "id": "WORLD-039",
+    "domain": "WORLD",
+    "title": "Counterfactual memory records what would likely have happened under rejected actions",
+    "statement": "Counterfactual memory records, for rejected or alternate actions, what would likely have happened. Each record is marked as an estimate and names the method that produced it.",
+    "rationale": "Learning only from actions taken teaches the platform nothing about the ones it declined, which is half of every decision.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "17", "section": "§9.2 Memory & Self Model — Counterfactual memory"},
+      {"doc": "M", "page": "42", "section": "§31 Capability Completeness Checklist ('counterfactuals')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a cycle with a declined action and assert that a counterfactual record exists for it, labelled as an estimate with its method, and that it is never counted among observed outcomes."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["AGENCY", "MODEL", "TICK"],
+    "notes": "MANAGED_SERVICE was removed because no placement is named. H L250 describes the memory node as holding 'counterfactual outcomes'. 'Marked as an estimate' is this catalogue's addition, so the estimate cannot be read as an observed fact. The models that produce the estimates are WORLD-021. P1: M p2 has the platform learn 'from every action and non-action', and the master Phase 2 replay/digital twin produces the estimates."
+  },
+  {
+    "id": "WORLD-040",
+    "domain": "WORLD",
+    "title": "Every world model declares scope, evidence lineage, calibration, update cadence and expiry",
+    "statement": "Each world model declares its scope, evidence lineage, calibration, update cadence and expiry. A model declared without any one of the five is refused.",
+    "rationale": "A model with no declared scope gets used outside it, and one with no expiry is trusted forever.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation ('Each model has explicit scope, evidence lineage, calibration, update cadence and expiry')"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Construct a world-model specification missing each of the five fields in turn and assert that each is refused with a message naming the missing field."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT", "MODEL"],
+    "notes": "'Refused' is the repository's 'refuse rather than guess' applied to a declaration. Expiry enforcement is WORLD-023, calibration scoring is WORLD-024, and the versioning M p35 requires of world-model services is WORLD-052. P1 rather than P0: master Phase 0 lists canonical contracts, but this one is first exercised by the Phase 2 federation. The same reasoning puts CONTRACT-023 at P1."
+  },
+  {
+    "id": "WORLD-041",
+    "domain": "WORLD",
+    "title": "Competing branches stay live until reality resolves them",
+    "statement": "Arbitration can keep several competing branches live at once, updating each one, until observed outcomes resolve them. A branch that reality refutes is closed with its score recorded, not deleted.",
+    "rationale": "Collapsing early commits the platform to one story before the evidence exists, and deleting the losing branch loses the calibration data.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "17", "section": "§9.3 World Model Federation — lead paragraph ('can preserve multiple live branches until reality resolves them')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a window with two branches that predict opposite outcomes and assert that both are updated until the outcome instant, and that afterwards the refuted branch is closed with a recorded score and is still readable."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL"],
+    "notes": "M p10's 'competing hypothesis branches' in Lane 3 is the placement of the same thing (WORLD-027). 'Closed with its score recorded, not deleted' is this catalogue's reading, following the event-log rule that sealed history is never edited. P1: Phase 2 federation."
+  },
+  {
+    "id": "WORLD-042",
+    "domain": "WORLD",
+    "title": "Memory consolidation keeps memory growth bounded",
+    "statement": "Memory is consolidated periodically. Semantic, episodic, procedural, market and failure memories are summarised, compressed and deduplicated, so that stale detail does not pile up and total memory stays within a declared bound. Each consolidation produces a MemoryPack / EpisodeCluster with lineage to what it consolidated.",
+    "rationale": "Memory that only grows turns into unbounded noise, and bounded retention is a standing product decision.",
+    "kind": "nfr",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "27", "section": "§22 Continuous Learning & Evaluation Brain — Memory consolidation and compression"},
+      {"doc": "M", "page": "28", "section": "§23 Intelligence Expansion Engine — mechanism table, Memory expansion + consolidation row"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Run consolidation over a replayed store seeded with duplicate and stale episodes and assert that the store ends within its bound and that each MemoryPack / EpisodeCluster cites the episodes it replaced."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPAND", "DATA", "CONTRACT"],
+    "notes": "Merged with the consolidation half of the M p28 row. The growth half is WORLD-046, and preserving high-value episodes is WORLD-043. EXPAND-065 carries the same requirement from the M p43 checklist. P3: memory consolidation is a master Phase 9 exit (M p42)."
+  },
+  {
+    "id": "WORLD-043",
+    "domain": "WORLD",
+    "title": "Consolidation never discards a high-value episode or abstraction",
+    "statement": "Consolidation preserves high-value episodes and abstractions. Anything flagged high-value survives consolidation, either intact or as an abstraction that keeps lineage to it.",
+    "rationale": "A consolidation that meets its size bound by deleting the lessons worth keeping has made memory smaller and learning worse.",
+    "kind": "invariant",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "27", "section": "§22 Continuous Learning & Evaluation Brain — Memory consolidation and compression ('preserve high-value episodes and abstractions')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated stores where some episodes are flagged high-value, assert that after consolidation every flagged episode can be retrieved directly or through an abstraction that cites it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPAND"],
+    "notes": "Split from WORLD-042, because a store can meet its bound while losing what matters, and each property needs its own check. P3 as WORLD-042."
+  },
+  {
+    "id": "WORLD-044",
+    "domain": "WORLD",
+    "title": "Every material world event is paired with the market's multi-horizon reaction",
+    "statement": "Every material world event is paired with the observed multi-asset, tick-level market response over multiple horizons. The pairing is kept as a reaction episode that records whether markets ignored, anticipated or overreacted to the information.",
+    "rationale": "Knowing why a price might move is worth little without knowing how far and how fast markets moved when similar news arrived.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "27", "section": "§22 Continuous Learning & Evaluation Brain — World-market reaction loop"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a window containing a fixture material event and assert that a reaction episode pairs it with the tick response of each affected asset at every configured horizon, and that the episode carries a reaction class."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "MODEL"],
+    "notes": "Split from the M p27 bullet; the model update it feeds is WORLD-045. 'Material' needs a declared threshold, which the blueprint does not give. P1: world+market fusion and the Tick Lake are master Phase 2 exits (M p41)."
+  },
+  {
+    "id": "WORLD-045",
+    "domain": "WORLD",
+    "title": "Reaction episodes update the causal propagation models",
+    "statement": "Reaction episodes are used to update the causal propagation models, so that the predicted spread of information across assets and horizons moves toward what markets were observed to do.",
+    "rationale": "A causal model that is never corrected by observed propagation keeps its first guess about lag and size forever.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "27", "section": "§22 Continuous Learning & Evaluation Brain — World-market reaction loop ('these reaction episodes improve causal propagation models')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Feed reaction episodes in which markets consistently lag a fixture model's prediction, and assert that the updated model's predicted lag moves toward the observed one and that its version records the episodes used."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "REASON"],
+    "notes": "Split from the M p27 bullet; the pairing is WORLD-044. P1 as WORLD-044."
+  },
+  {
+    "id": "WORLD-046",
+    "domain": "WORLD",
+    "title": "Memory grows from experience, including market and failure memories",
+    "statement": "Semantic, episodic, procedural, market and failure memories grow from experience. Each resolved outcome, market reaction and failure is written to the memory it belongs to.",
+    "rationale": "Market and failure memories are the two kinds §9.2 does not name, and failures are among the experiences most worth remembering.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "28", "section": "§23 Intelligence Expansion Engine — mechanism table, Memory expansion + consolidation row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Drive a simulated order rejection and a market reaction and assert that a failure-memory entry and a market-memory entry are written, each with lineage to the event that triggered it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPAND"],
+    "notes": "Split from the M p28 row; consolidation is WORLD-042. The three §9.2 kinds are WORLD-005, WORLD-006 and WORLD-038, and this row adds market and failure memories. P3: §23 is the expansion engine, which the master build order puts in Phase 9 (M p42)."
+  },
+  {
+    "id": "WORLD-047",
+    "domain": "WORLD",
+    "title": "A domain with repeated unresolved questions can get a new specialist brain",
+    "statement": "When a domain repeatedly produces questions that no current brain resolves, the platform can create a new specialist agent or model for it. The new specialist is recorded as a BrainSpec / SpecialistPack, built in a sandbox, and enters service only after evaluation.",
+    "rationale": "A fixed roster of specialists leaves every new domain with no competent owner.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "28", "section": "§23 Intelligence Expansion Engine — mechanism table, Specialist-brain creation row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Feed questions in one fixture domain that no brain resolves until a threshold is passed, and assert that a BrainSpec is proposed, that the new specialist runs only in a sandbox, and that it is not registered for service without a passing evaluation."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPAND", "MODEL"],
+    "notes": "The authority-scope half of the row is WORLD-048. 'Built in a sandbox, entering service only after evaluation' comes from §23's introduction on the same page (every new capability is 'evaluated, sandboxed, lineage-tracked and promoted through explicit gates') and from the M p43 checklist. P3: sandboxed tool and agent creation is a master Phase 9 exit (M p42)."
+  },
+  {
+    "id": "WORLD-048",
+    "domain": "WORLD",
+    "title": "A new specialist brain has its own tools, corpus, evaluations and authority scope",
+    "statement": "A newly created specialist brain has its own declared tools, corpus, evaluations and authority scope. A specialist declared without any one of these is refused.",
+    "rationale": "A capability created without a bound on its authority is open-ended power. The declared scope keeps a new brain inside its envelope.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "28", "section": "§23 Intelligence Expansion Engine — mechanism table, Specialist-brain creation row ('with its own tools, corpus, evaluations and authority scope')"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Construct a BrainSpec missing each of tools, corpus, evaluations and authority scope in turn and assert that each is refused, and that a registered specialist's calls to tools outside its declared set are refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPAND", "GOV", "CONTRACT"],
+    "notes": "Two extractions of the same clause were merged. P0 even though creation is Phase 9 work: this is a safety invariant on authority, and EXPAND-053 (a specialist cannot be registered without a competency boundary) is P0 for the same reason. BrainSpec fields are CONTRACT-033."
+  },
+  {
+    "id": "WORLD-049",
+    "domain": "WORLD",
+    "title": "Brains and regional nodes share knowledge only as typed artifacts",
+    "statement": "Generalist cognition, specialist brains, evaluation agents and regional nodes share knowledge as typed artifacts (KnowledgeDelta / SharedEpisode), not as isolated chat or state, so that one component's discovery can improve the rest of the system.",
+    "rationale": "Knowledge passed as chat or shared state cannot be versioned, validated or replayed, and a discovery trapped in one component improves nothing else.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table, Collective/federated intelligence row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Have one specialist publish a discovery and assert that it reaches a second specialist and a regional cell as a typed KnowledgeDelta with lineage, and that an untyped payload is refused at the boundary."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["EXPAND", "CONTRACT", "MESH"],
+    "notes": "This is the same requirement as EXPAND-012 (P3) and CONTRACT-002 (P1). P1 follows CONTRACT-002: the typed-artifact rule governs sharing from the first Phase 2 exchange, although the regional half waits for Phase 4."
+  },
+  {
+    "id": "WORLD-050",
+    "domain": "WORLD",
+    "title": "The platform can spawn additional world-model populations",
+    "statement": "When one representation becomes insufficient, the platform can spawn additional domain, regional, horizon, scenario or counterfactual world models, recorded as a WorldModelSpec / WorldModelBranch.",
+    "rationale": "An open-ended world cannot be modelled by a population fixed at design time.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table, World-model population expansion row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Drive a model's unexplained residual past a declared insufficiency threshold and assert that a WorldModelSpec is proposed with its parent and triggering evidence recorded."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPAND", "MODEL"],
+    "notes": "This is the same requirement as EXPAND-018. The benchmark gate is WORLD-051. Spawning a population is different from branching a hypothesis inside one (WORLD-002). P3: governed spawning and retirement of world models is a master Phase 9 exit (M p42)."
+  },
+  {
+    "id": "WORLD-051",
+    "domain": "WORLD",
+    "title": "A spawned world model is kept only if a benchmark shows it adds value",
+    "statement": "Each spawned world model is benchmarked for the predictive or explanatory value it adds over the existing federation, and it is kept only if that value is shown.",
+    "rationale": "A model that adds nothing still adds cost and another voice to arbitration. ADR 0006's rule of measured benefit applies.",
+    "kind": "acceptance",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table, World-model population expansion row ('benchmark their incremental predictive/explanatory value')"}
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Spawn one branch that adds predictive value and one that duplicates an existing model, benchmark both against the federation on a declared held-out set, and assert that only the first is kept."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPAND", "MODEL"],
+    "notes": "Two extractions of the same M p29 clause were merged. This is the same requirement as EXPAND-019. 'Kept only if' reads 'benchmark their incremental value' as a promotion gate, given §23's rule that only measured improvements are promoted (M p43). P3 as WORLD-050."
+  },
+  {
+    "id": "WORLD-052",
+    "domain": "WORLD",
+    "title": "World-model services run as long-running, versioned services on GKE compute pools or agent workers",
+    "statement": "World Model Federation models run as long-running, versioned world-model services on GKE compute pools or agent workers. Each has its own domain-specific stores or graphs.",
+    "rationale": "Standing models need standing compute and state. A version per model lets arbitration, replay and audit say which model produced a belief.",
+    "kind": "placement",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, World Model Federation"},
+      {"doc": "G", "page": "11", "section": "§11 Cognitive, Model and Quantum Compute Plane — World-model federation row ('Spanner Graph + GKE/agent workers')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares each world-model service as a long-running workload with a version label and its own store, in the cognitive compute pool and outside the Reflex and Fabric projects."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE", "COST"],
+    "secondary_domains": ["GCP", "MODEL", "FINOPS"],
+    "notes": "M p35 is kept for 'long-running versioned ... domain-specific stores/graphs'. G p11 adds 'agent workers' and Spanner Graph, whose store half is WORLD-059. The hot-path half of the M p35 row is WORLD-053. GKE conflicts with ADR 0024 (Kubernetes retired for Cloud Run); that is ADR 0099 conflict C3. COST refers to ADR 0093's cost instruction. MULTI_REGION came in on the G p11 extraction and was removed, because nothing here places the services per region. P2: GCP Phase 8, Cognitive/AI (G p22)."
+  },
+  {
+    "id": "WORLD-053",
+    "domain": "WORLD",
+    "title": "No world model or world-graph query is on the reflex critical path",
+    "statement": "No World Model Federation model and no world-graph query sits on the reflex critical path. World-graph queries serve cognition, not hot execution.",
+    "rationale": "A reflex decision that waits on a slow-lane model or a remote graph query inherits that model's latency and outages.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, World Model Federation ('no single model is on the reflex critical path')"},
+      {"doc": "G", "page": "10", "section": "§9.2 Store/service table — Spanner Graph ('graph queries serve cognition, not hot execution')"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Stop every world-model service and the graph store, replay a window from venue event to paper order, and assert that the reflex cell's decisions match a run with them up and that its latency stays within its bound."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "ARCH", "EXEC"],
+    "notes": "M p35 and G p10 say the same thing from the compute side and the store side, and are merged. GCP §27 (p23) generalises it: no synchronous call to Spanner, AI or another region is allowed between a venue event and a local order. MANAGED_SERVICE came in on the G p10 extraction and was removed, because the prohibition holds whatever the store is. The structural complement to the chaos run is an architecture-suite check that no edge crate depends on a world-model crate. P0: the local fast path is a master Phase 1 exit and a standing safety boundary."
+  },
+  {
+    "id": "WORLD-054",
+    "domain": "WORLD",
+    "title": "Planners and specialist agents use tools only under policy",
+    "statement": "Generalist planners and specialist agents use tools only under policy. Every tool call is checked against the calling agent's policy before it runs, and a call the policy does not permit is refused.",
+    "rationale": "An agent whose tool calls are not checked has whatever authority its tools have, and here that includes paths close to capital.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "42", "section": "§31 Capability Completeness Checklist ('Generalist/AGI-style planners and specialist agents can ... use tools under policy')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Have a specialist agent request a tool its policy does not permit and assert that the call is refused and logged; then request a permitted tool and assert that the call carries the policy decision that allowed it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "AGENCY", "SEC"],
+    "notes": "Split from the M p42 checklist item; its lane half is merged into WORLD-027. 'Checked before it runs' is this catalogue's reading of 'under policy'. P0: a safety invariant that must hold from the first agent, although the agent society arrives in master Phase 8."
+  },
+  {
+    "id": "WORLD-055",
+    "domain": "WORLD",
+    "title": "Cognitive outputs reach action only through evaluation and authority boundaries",
+    "statement": "Outputs of world models, arbitration and specialist brains are advisory. They can affect an order, a capital movement or an external action only after crossing the same evidence, evaluation, authority and deterministic-control boundaries as any other model output.",
+    "rationale": "The blueprint's stated purpose for the multi-world architecture is to let reasoners compound while keeping evaluation and authority boundaries explicit. A confident model that could act directly would remove those boundaries.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "45", "section": "§32 Technology Reality Notes ('preserving explicit evaluation, uncertainty and authority boundaries')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Inject a maximum-confidence world-model output that implies a trade and assert that no order intent or action exists until it has passed evaluation and the authority gate, and that the architecture suite finds no world-model crate able to construct an order type."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "RISK", "AGENCY"],
+    "notes": "Derived from a statement of purpose (M p45); the uncertainty half is WORLD-008. 'The same ... boundaries as any other model output' is borrowed from §9.5's rule for ambient outputs (M p18). The neighbouring M p44-45 sentence calling the architecture 'a system-design target rather than a claim' is narrative and was dropped. P0: the paper-trading and authority boundaries are foundational."
+  },
+  {
+    "id": "WORLD-056",
+    "domain": "WORLD",
+    "title": "The knowledge graph holds entities, relationships, timed facts, causal edges, sources, beliefs, confidence and contradictions",
+    "statement": "The world knowledge graph stores entities, relationships, temporal facts, causal edges, source references, beliefs, confidence and contradictions.",
+    "rationale": "These are the compact forms of knowledge the pass-through rule allows to persist. A graph without source references or confidence cannot be audited or weighed.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "2", "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant — Knowledge Graph bullet"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Assert that the graph schema defines a node or edge kind for each of the eight categories, and that writing a belief without a confidence or a source reference is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA", "EVID"],
+    "notes": "Two extractions were merged. One cited G p3, but in the text rendering the bullet is on p2; p3 begins at the Cheap Knowledge Packs bullet. DATA-042 carries the same content list under the K1 tier. G names Spanner Graph as the store; that placement is WORLD-059, so MANAGED_SERVICE was removed from this contract, which does not depend on the store. The 'never copied documents' clause is split out as WORLD-057. M p3 §1.3 lists the same kinds of compact knowledge. P1: the world model is a master Phase 2 exit."
+  },
+  {
+    "id": "WORLD-057",
+    "domain": "WORLD",
+    "title": "The knowledge graph never stores copied documents",
+    "statement": "The knowledge graph never stores copies of source documents. It holds only the distilled knowledge and the references needed to fetch the source again.",
+    "rationale": "External world data passes through by rule. Keeping copies of third-party content breaks the licensing and privacy position and turns the store into a mirror of the web.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "2", "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant — Knowledge Graph bullet ('never copied documents')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated source payloads run through ingestion, assert that no graph record contains a verbatim span of the payload longer than a declared excerpt limit, and that a write carrying a payload body is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA", "GOV"],
+    "notes": "Split from WORLD-056. M p3 §1.3 states the platform-wide rule, and DATA-005 (only allow-listed compact knowledge types persist) is its DATA-domain form. MANAGED_SERVICE was removed because the invariant holds whatever the store is. P0: a licensing and correctness invariant that applies from the first ingestion."
+  },
+  {
+    "id": "WORLD-058",
+    "domain": "WORLD",
+    "title": "World-graph stores live in their own prod/world-model project, isolated from the ledger",
+    "statement": "Spanner Graph and the other world-model stores live in a dedicated prod/world-model project, a separate workload boundary from the ledger, so that graph and cognition query load cannot affect financial truth.",
+    "rationale": "A burst of cognition queries sharing an instance with the ledger would slow ledger commits. Separate projects make that coupling impossible rather than unlikely.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — prod/world-model"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog for This Platform — Spanner Graph ('in separate workload boundary')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan places the world-graph stores in prod/world-model and the ledger in prod/ledger, shares no Spanner instance or database between them, and grants world-model workers no role in the ledger project."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "LEDGER", "SEC"],
+    "notes": "Two other G passages say the same and were not extracted separately: G p10 §10 (separate databases or instances for the ledger and the world graph) and the G p23 §28 anti-pattern (one Spanner database for ledger, world graph and agent memory). Spanner is ADR 0099 conflict C4. P0: GCP Phase 0 creates the organisation, folders and projects (G p22)."
+  },
+  {
+    "id": "WORLD-059",
+    "domain": "WORLD",
+    "title": "Spanner Graph holds the world, causal and action-affordance graph",
+    "statement": "Spanner Graph holds the world, causal and action-affordance graph and its connected state.",
+    "rationale": "Keeping world, causal and affordance edges in one graph store lets cognition and agency move from a belief to a lever without a join across stores.",
+    "kind": "placement",
+    "priority": "P2",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 Store/service table — Spanner Graph"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog for This Platform — Spanner Graph"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares a Spanner Graph database in prod/world-model whose schema has node and edge kinds for world entities, causal edges and action affordances."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA", "GCP", "AGENCY"],
+    "notes": "H L244 labels this store tier K1, structured knowledge (DATA-042). Adopting Spanner Graph conflicts with ADR 0002 and ADR 0009; this is ADR 0099 conflict C4, and a storage decision record is needed before it is built. The writers are WORLD-060, and the isolation is WORLD-058. P2: Spanner Graph arrives in GCP Phase 8, Cognitive/AI (G p22)."
+  },
+  {
+    "id": "WORLD-060",
+    "domain": "WORLD",
+    "title": "Evidence and world-model workers write normalised entities and edges to the graph",
+    "statement": "Evidence and world-model workers write normalised entities and edges to Spanner Graph over gRPC/SQL/GQL, on a warm-path connection, to maintain the world, causal and action-affordance graph.",
+    "rationale": "Only normalised writes stop one entity from appearing as several nodes, and naming the writers keeps the graph's provenance traceable.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 Store/service table — Spanner Graph ('Evidence/world-model workers write normalized entities/edges')"},
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Evidence/World workers to Spanner Graph"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Submit two evidence items naming one entity under different spellings and assert that the workers write a single normalised node with two source references, on the warm path and never from a reflex process."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "NEW_DEPENDENCY"],
+    "secondary_domains": ["EVID", "DATA"],
+    "notes": "EVID-029 carries the evidence side. GCP §21.2 (p20) describes the same flow. The gRPC client is a new dependency (ADR 0099 conflicts C2 and C4). P2: GCP Phase 8."
+  },
+  {
+    "id": "WORLD-061",
+    "domain": "WORLD",
+    "title": "World-model disagreement becomes a research signal",
+    "statement": "Disagreement between world models becomes a research signal. A material disagreement generates a research task that cites the disagreement record.",
+    "rationale": "Where models disagree is where more evidence is worth most, so disagreement is the cheapest pointer to valuable research.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "G", "page": "11", "section": "§11 Cognitive, Model and Quantum Compute Plane — World-model federation row ('disagreement becomes research signal')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Create one disagreement above and one below the declared materiality threshold and assert that exactly one research task is generated, citing the first disagreement record."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["EXPAND", "AMBIENT"],
+    "notes": "Split from the G p11 row. Its population and scoring halves are WORLD-010 and WORLD-024, and its placement is WORLD-052. M p17's 'disagreement is information' stays with WORLD-001. The materiality threshold is this catalogue's addition; G gives none. COST is kept because generated research spends compute. MANAGED_SERVICE, KUBERNETES and MULTI_REGION were removed as placement flags. P2: self-directed research campaigns are a master Phase 8 exit (M p42)."
+  },
+  {
+    "id": "WORLD-062",
+    "domain": "WORLD",
+    "title": "The federation reads durable knowledge from the graph, fast state, knowledge packs, BigQuery and memory",
+    "statement": "The World Model Federation consumes knowledge-class input from Spanner Graph, Bigtable, GCS Knowledge Packs, BigQuery and Episodic/Semantic Memory.",
+    "rationale": "Each store holds a different tier of Algorik's knowledge: structured, fast, compact history, analytical and episodic. A federation that reads only one of them sees only that tier.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "H", "page": "L260", "section": "VIEWS.data — 04 · World Sensing, Tick History & Durable Knowledge, edges graph→world, bt→world, packs→world, memory→world (knowledge)"},
+      {"doc": "H", "page": "L292", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, edges kg→wm, analytics→wm (knowledge)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Seed a distinct fact in each of the five sources and assert that the federation's next state reflects all five, each citing the source tier it came from."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA"],
+    "notes": "Two views were merged. View 04 (data) draws edges from Spanner Graph, Bigtable, GCS Knowledge Packs and Episodic/Semantic Memory. View 05 (ai) draws them from Spanner Graph and a combined 'BigQuery / Knowledge Packs' node. BigQuery reaches the federation only in view 05; in view 04 it feeds training. The extraction's word 'independent' is not in H and was dropped. The raw citation L257-261 is narrowed to the line holding the edges, L260. Each named store is ADR 0099 conflict C4. P2: the stores arrive in GCP Phases 5 and 8 (G p22)."
+  },
+  {
+    "id": "WORLD-063",
+    "domain": "WORLD",
+    "title": "The federation writes its conclusions back into episodic and semantic memory",
+    "statement": "The World Model Federation writes its output back into Episodic/Semantic Memory. This is a feedback path separate from the knowledge the federation reads.",
+    "rationale": "Conclusions not kept in memory have to be re-derived, and a later episode cannot cite what the platform believed at the time.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "H", "page": "L261", "section": "VIEWS.data — 04 · World Sensing, Tick History & Durable Knowledge, edge world→memory (knowledge)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Run a federation update and assert that a memory record exists with lineage to the model version that produced it, marked as model-derived rather than as external evidence."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA"],
+    "notes": "Marking write-backs as model-derived is this catalogue's addition. Without it, the federation could read its own conclusions back through the memory→world edge (WORLD-062) as if they were independent evidence and reinforce itself. P1: episodic memory is a master Phase 2 exit (M p41)."
+  },
+  {
+    "id": "WORLD-064",
+    "domain": "WORLD",
+    "title": "The Specialist Brain Society includes at least ten domain experts",
+    "statement": "The Specialist Brain Society includes domain experts for at least macro, company, microstructure, event, supply chain, crypto, private markets, portfolio, capital and risk.",
+    "rationale": "The roster is where the society's coverage can be checked. A domain with no specialist has no one to answer for it.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "H", "page": "L283", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'special'"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Read the brain registry and assert that it holds a registered specialist for each of the ten named domains."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "RISK", "CAPITAL", "ASSET", "EVENT", "TICK"],
+    "notes": "The extraction said 'specifically ten', and that is not carried. M §9.1 (p16-17) lists seventeen brains, including the Adversarial, Meta, World Model Arbitration, Symbolic Reasoning, Ambient Attention, Causal Agency and Communications & Conduct Brains, and M p3 says no specialist roster is permanent, so ten is a floor. The brains whose scope was extracted into this domain are WORLD-031 to WORLD-037; the rest belong to the secondary domains listed. P2: specialist-agent society, master Phase 8 (M p42)."
+  },
+  {
+    "id": "WORLD-065",
+    "domain": "WORLD",
+    "title": "Specialist brains read tick and internal replay directly",
+    "statement": "The Specialist Brain Society consumes tick and internal replay data directly, as a data-class input that does not pass through the World Model Federation.",
+    "rationale": "Microstructure and execution specialists need the ticks themselves. A world-model summary has already discarded the queue and timing detail they learn from.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {"doc": "H", "page": "L292", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, edge ticks→special (data)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Run a specialist evaluation over a replay window and assert that it reads the window through the replay interface and cites the replay manifest, with no world-model service in the call path."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "MODEL"],
+    "notes": "The extraction's 'bypassing the World Model Federation' reflects H's topology: view 05 draws no edge from the federation to the specialists. H does not forbid specialists from also using federation-derived knowledge that reaches them by another route. P2: specialist-agent society, master Phase 8."
+  },
+  {
+    "id": "WORLD-066",
+    "domain": "WORLD",
+    "title": "The federation feeds the ambient proactive mesh",
+    "statement": "World Model Federation state is published to the Ambient Proactive Mesh as knowledge-class input.",
+    "rationale": "Ambient forecasts and surprise scores are measured against the world as the federation currently models it.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {"doc": "H", "page": "L292", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, edge wm→amb (knowledge)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Update a federation model and assert that the ambient mesh receives the new state as a knowledge-class message with the model version, and that its next surprise score is computed against that state."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["AMBIENT"],
+    "notes": "Split from the H L292 extraction, whose other half is WORLD-029. The same edge appears in view 04 (H L260, world→ambient) and in M p11's system path; neither was extracted here. AMBIENT-011 covers the typed return path. P2: the ambient mesh arrives in master Phase 8 (M p42)."
+  }
+]

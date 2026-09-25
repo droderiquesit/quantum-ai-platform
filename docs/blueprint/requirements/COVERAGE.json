@@ -1,0 +1,439 @@
+[
+  {
+    "id": "COVERAGE-001",
+    "domain": "COVERAGE",
+    "title": "Cash and FX instruments are registrable",
+    "statement": "The asset registry must represent the Cash/FX class - fiat currency balances, spot FX pairs, forward FX contracts carrying their value date, and cash equivalents - as instruments that positions, orders and valuations can reference.",
+    "rationale": "Every other class is priced, funded and settled in some currency. A platform that cannot name a currency balance or an FX forward as an instrument cannot state its own exposure, and the product identity requires operating across currencies (M p.2 §1.1).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Cash / FX row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register a fiat currency, a spot FX pair, an FX forward with a value date and a cash equivalent, and assert each round-trips through the registry contract and that a paper position in each is valued in the reporting currency."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["TREASURY", "LEDGER"],
+    "notes": "Split from the Cash / FX row of the §21 table, which states three independently verifiable things: the instruments (this item), currency conversion (COVERAGE-002) and funding (COVERAGE-003). Priority follows the phase exit that introduces multiple asset classes: master §30 Phase 3 'Asset registry ... multiple asset classes' (M p.41)."
+  },
+  {
+    "id": "COVERAGE-002",
+    "domain": "COVERAGE",
+    "title": "Currency conversion is booked as two legs at a recorded rate",
+    "statement": "The platform must support conversion between currencies: a conversion is represented as two linked legs, one in each currency, at a recorded rate and time, and a conversion without a rate is refused rather than defaulted.",
+    "rationale": "A conversion whose rate is not recorded cannot be reproduced from the log, and a defaulted rate is a caller bug that survives as a wrong balance in two currencies at once.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Cash / FX row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Book a paper conversion between two currencies and assert both legs exist in the ledger at the recorded rate with each balance moved by the right amount, then submit a conversion with no rate and assert it is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["TREASURY", "LEDGER"],
+    "notes": "Split from the Cash / FX row. In live form a conversion moves real money through the Capital Bank, which 'holds, routes, converts, collateralizes and finances capital' (M p.22 §13); that treasury-transfer side is refused by ADR 0021 and belongs to TREASURY. This requirement is met in paper form, so it carries no LIVE_CAPITAL flag."
+  },
+  {
+    "id": "COVERAGE-003",
+    "domain": "COVERAGE",
+    "title": "Cash funding behind each position is represented",
+    "statement": "The Cash/FX class must support funding: the cash allocated or borrowed to finance a position is represented with its currency, amount and cost, so that the funding behind any position can be read and is included in its valuation.",
+    "rationale": "A position whose funding is invisible looks cheaper than it is; carry and funding currency mismatch are real exposures that a valuation omitting them hides.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Cash / FX row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Open a paper position financed in a second currency and assert the funding balance, its currency and its accrued cost are recorded against the position and appear in the position's valuation."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CAPITAL", "TREASURY"],
+    "notes": "Split from the Cash / FX row. Related but distinct: secured funding through repo interfaces is COVERAGE-008 (rates row), and §13's 'FX funding, borrow/lend/repo/credit-line adapters where permitted' (M p.22) is the Capital Bank's adapter surface, owned by CAPITAL/TREASURY. Real funding transfers are treasury actions refused by ADR 0021; this item is the paper representation and carries no flag."
+  },
+  {
+    "id": "COVERAGE-004",
+    "domain": "COVERAGE",
+    "title": "Equities, ETFs, baskets and indices are registrable",
+    "statement": "The asset registry must represent listed equities, ETFs, baskets and indices as instruments; a basket or index references its constituents and their weights.",
+    "rationale": "Exposure taken through a basket or index cannot be decomposed, hedged or limit-checked against its constituents unless the registry knows what it contains.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Equities / ETFs / indices row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register a listed equity, an ETF, a basket and an index, and assert each round-trips through the registry and that the basket and the index resolve to their constituents with weights summing to one."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ASSET", "MARKETDATA"],
+    "notes": "Split from the Equities / ETFs / indices row; corporate actions are COVERAGE-005. The blueprint names baskets and indices without saying they carry constituents; the constituent reference is the interpretation that makes them usable for exposure, and is flagged here as such."
+  },
+  {
+    "id": "COVERAGE-005",
+    "domain": "COVERAGE",
+    "title": "Corporate actions adjust positions and history",
+    "statement": "The platform must process corporate actions on equity-class instruments (for example splits, dividends, mergers, symbol changes and delistings), adjusting positions, cost basis, ledger cash and price history so that exposure and returns remain correct across the event.",
+    "rationale": "An unprocessed split doubles or halves a position on paper, and a history that silently drops delisted or renamed instruments produces survivorship-biased backtests (M p.15 names corporate actions and delistings as things replay must not hide).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Equities / ETFs / indices row"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a fixed tape spanning a stock split and a cash dividend on a paper position and assert quantity, cost basis and ledger cash change by the event's terms and that two replays of the same tape produce identical adjusted positions."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ASSET", "LEDGER", "REPLAY"],
+    "notes": "Split from the Equities / ETFs / indices row. The Asset Brain owns corporate actions in the position lifecycle (M p.22 §12, and M p.6 'Asset management ... corporate actions'); M p.15 'No hidden survivorship: delisted instruments, venue outages, symbol changes, corporate actions' is the replay-side constraint. The example list of action types is illustrative; the blueprint says only 'corporate actions'."
+  },
+  {
+    "id": "COVERAGE-006",
+    "domain": "COVERAGE",
+    "title": "Government, corporate and credit debt instruments are registrable",
+    "statement": "The asset registry must represent government debt, corporate debt and credit instruments, carrying the terms that determine their cash flows (issuer, coupon, maturity and accrual convention).",
+    "rationale": "A bond without its terms cannot be valued, accrued or settled; the terms are the instrument.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Rates / fixed income / credit row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register a government bond, a corporate bond and a credit instrument and assert each round-trips with its terms and that the projected cash-flow schedule matches the coupon and maturity it was registered with."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ASSET", "RISK"],
+    "notes": "Split from the Rates / fixed income / credit row, which also states yield curves (COVERAGE-007) and repo/funding interfaces (COVERAGE-008). The list of terms is the minimum needed to project cash flows; the blueprint does not enumerate them."
+  },
+  {
+    "id": "COVERAGE-007",
+    "domain": "COVERAGE",
+    "title": "Yield curves are built and cited by valuations",
+    "statement": "The platform must build yield curves as market objects held with the as-of time they were built for, and every rates valuation must name the curve version it discounted with.",
+    "rationale": "Two valuations of the same bond on different curves disagree, and without the curve version neither can be reproduced or explained after the fact.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Rates / fixed income / credit row"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Build a curve from a fixed set of quotes and assert it reprices the input instruments within a stated tolerance and that a valuation produced from it records the curve's version and as-of time."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MARKETDATA", "RISK"],
+    "notes": "Split from the Rates / fixed income / credit row. M p.14 §8.1 lists 'FX and rates quotes' and 'futures curves' among market inputs, which is where the curve's quotes come from (MARKETDATA)."
+  },
+  {
+    "id": "COVERAGE-008",
+    "domain": "COVERAGE",
+    "title": "Repo and secured funding interfaces where a counterparty offers them",
+    "statement": "Where a venue or counterparty offers repo or other secured funding, the platform must provide an interface to it so that rates positions can be financed against collateral; where none is offered, a request to use one is refused.",
+    "rationale": "Repo is how fixed-income positions are financed; without it the rates class can be held only fully cash-funded, which misstates both return and funding risk.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Rates / fixed income / credit row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Drive the repo interface against a simulated counterparty and assert a repo opens with collateral, rate and term recorded, that a request with no repo-offering counterparty configured is refused, and that the interface cannot be constructed against a live counterparty."
+    },
+    "policy_flags": ["LIVE_CAPITAL"],
+    "secondary_domains": ["CAPITAL", "TREASURY", "EXECUTION"],
+    "notes": "Split from the Rates / fixed income / credit row. 'Where available' is read as: the interface exists only for a counterparty that offers one and refuses otherwise. LIVE_CAPITAL is added here although the raw item carried no flag: exercising the interface against a real counterparty borrows real money, which ADR 0021 refuses, so per ADR 0099 the live part is scored BLOCKED and the interface is built only against a simulated counterparty. Overlaps §13 'FX funding, borrow/lend/repo/credit-line adapters where permitted' (M p.22), owned by CAPITAL/TREASURY."
+  },
+  {
+    "id": "COVERAGE-009",
+    "domain": "COVERAGE",
+    "title": "Energy, metals, agricultural commodities and futures are registrable",
+    "statement": "The asset registry must represent energy, metals and agricultural commodities, including commodity futures identified by product, delivery location and delivery period where the contract specifies them.",
+    "rationale": "Two commodity contracts that differ only in delivery location or month are different exposures; a registry that collapses them makes every spread between them invisible.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Commodities row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register one energy, one metal and one agricultural commodity plus two futures on the same product differing only in delivery month, and assert all round-trip and the two futures resolve to distinct instruments."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ASSET", "MARKETDATA"],
+    "notes": "Split from the Commodities row, which also states spot/physical links (COVERAGE-010) and shipping/storage economics (COVERAGE-011)."
+  },
+  {
+    "id": "COVERAGE-010",
+    "domain": "COVERAGE",
+    "title": "Commodity futures link to their spot or physical underlying",
+    "statement": "Each commodity future must be linked to the spot or physical commodity it references, so that basis between futures and spot/physical prices can be computed and a physical holding can be related to its futures hedge.",
+    "rationale": "Basis and hedge effectiveness are the economics of a commodity position; without the link a physical holding and its hedge look like two unrelated exposures.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Commodities row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register a future and its physical underlying and assert the link resolves in both directions and that basis computed from a fixed pair of prices equals their difference."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["COMMERCE", "ARBITRAGE"],
+    "notes": "Split from the Commodities row. This is the modelling link only; taking or making physical delivery is an external action owned by COMMERCE and refused by ADR 0021, and is not claimed here."
+  },
+  {
+    "id": "COVERAGE-011",
+    "domain": "COVERAGE",
+    "title": "Commodity valuation includes shipping and storage economics",
+    "statement": "Commodity valuation and feasibility must include shipping and storage economics - transport, storage and insurance costs over the holding period - so that a spot/futures or cross-location spread is judged net of carry, and an opportunity whose carry costs are unknown is refused rather than costed at zero.",
+    "rationale": "A cash-and-carry or location spread that ignores carry reads as free money; a missing cost silently treated as zero is the most expensive default a feasibility check can have.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Commodities row"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Value a cash-and-carry opportunity with fixed storage and shipping costs and assert the net result equals the gross spread minus those costs, then remove the storage cost and assert the opportunity is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ARBITRAGE", "COMMERCE", "CAPITAL"],
+    "notes": "Split from the Commodities row. The arbitrage cost model (M p.24, 'transfer/bridge/logistics cost, tax/duty estimate, settlement risk') consumes these economics; that model belongs to ARBITRAGE."
+  },
+  {
+    "id": "COVERAGE-012",
+    "domain": "COVERAGE",
+    "title": "Options, futures, perpetuals and other derivative types are registrable",
+    "statement": "The asset registry must represent options, futures, perpetuals and other derivative types, each linked to its underlying and carrying the contract terms that define it (for example expiry, strike, multiplier, or the funding mechanics of a perpetual).",
+    "rationale": "A derivative not linked to its underlying cannot be hedged, aggregated or limit-checked against the exposure it actually creates.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Derivatives row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register an option, a future and a perpetual on the same underlying and assert each round-trips with its terms and resolves to that underlying."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ASSET", "RISK"],
+    "notes": "Split from the Derivatives row, which also states the 'permitted' qualifier (COVERAGE-013) and margin, greeks and settlement models (COVERAGE-014, -015, -016). Crypto derivatives (COVERAGE-017) reuse these types."
+  },
+  {
+    "id": "COVERAGE-013",
+    "domain": "COVERAGE",
+    "title": "A derivative type without permission is refused at order creation",
+    "statement": "A derivative type may be traded only when it is permitted for the trading entity and jurisdiction; a type without that permission remains available to research and simulation but is refused before an order object for it exists, and with no permissions configured every derivative type is refused.",
+    "rationale": "The blueprint admits only 'permitted' derivatives, and derivatives dealing is enabled only through appropriate entities and jurisdictional permissions (M p.22 §13). A gate that defaults open lets the registry's technical ability to represent an instrument become authority to trade it.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Derivatives row ('other permitted derivatives')"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Register a derivative type with no permission and assert an order for it is refused before an order object exists while the same instrument can still be simulated, then grant the permission and assert the same order is admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["COMPLIANCE", "RISK"],
+    "notes": "Split from the Derivatives row's 'permitted' qualifier because it is verifiable independently of representing the types. P0 because it is a fail-closed refusal invariant that must hold from the first derivative registration, before the class itself (P1) is complete. It is the derivatives instance of the §31 target 'Legal capability gates are separate from technical capability so the same brain can research more broadly than it can execute' (M p.43), which belongs to COMPLIANCE. The final check proves the gate admits a good value, not only that it refuses everything."
+  },
+  {
+    "id": "COVERAGE-014",
+    "domain": "COVERAGE",
+    "title": "Derivative positions carry a margin model",
+    "statement": "Derivative positions must carry a margin model - initial and maintenance margin under the applicable venue or clearing rules - so that the capital a derivative consumes is known before it is traded, and a position with no applicable margin rule is refused rather than margined at zero.",
+    "rationale": "Margin is the capital a derivative actually consumes; a position margined at zero passes every capital limit it should fail.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Derivatives row"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Compute margin for a fixed option and future position against a fixed rule set and assert initial and maintenance margin equal hand-computed values, then remove the rule and assert the position is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CAPITAL", "RISK"],
+    "notes": "Split from the Derivatives row ('margin/greeks/settlement models'). The Capital Brain's 'Cross-margin, collateral and encumbrance model' (M p.22 §13) is the portfolio-level consumer, owned by CAPITAL."
+  },
+  {
+    "id": "COVERAGE-015",
+    "domain": "COVERAGE",
+    "title": "Greeks are computed for option positions and aggregated per underlying",
+    "statement": "The platform must compute greeks (delta, gamma, vega, theta and rho) for option positions and aggregate them per underlying, so that derivative risk is measured in sensitivities and not in notional alone.",
+    "rationale": "Notional says almost nothing about an option's risk; limits written on notional let a short-gamma book look small.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Derivatives row"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated options, assert delta and gamma agree with finite-difference bumps of the pricing model within tolerance, and that aggregated delta per underlying equals the sum of the positions' deltas."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "MARKETDATA"],
+    "notes": "Split from the Derivatives row. M p.14 §8.1 lists 'Options chains, implied-volatility surfaces, Greeks' among market inputs and M p.22 lists 'greeks' in the market-risk family; this item is the platform's own computation, which those consume. The named set of greeks is the conventional one; the blueprint says only 'greeks'."
+  },
+  {
+    "id": "COVERAGE-016",
+    "domain": "COVERAGE",
+    "title": "Each derivative type carries a settlement model applied in the ledger",
+    "statement": "Each derivative type must carry a settlement model - expiry, exercise, cash versus physical settlement, and periodic funding for perpetuals - and derivative positions must be settled by that model in the ledger.",
+    "rationale": "A derivative that reaches expiry with no settlement model either vanishes from the books or stays open forever; both misstate the position and the cash.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Derivatives row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Carry a paper option to expiry both in and out of the money, a future to final settlement and a perpetual across a funding interval, and assert each posts exactly the ledger entries its settlement model dictates."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["LEDGER", "SETTLEMENT"],
+    "notes": "Split from the Derivatives row. Met in the paper ledger; physical delivery on settlement is an external action refused by ADR 0021 and belongs to SETTLEMENT/COMMERCE."
+  },
+  {
+    "id": "COVERAGE-017",
+    "domain": "COVERAGE",
+    "title": "Crypto spot, crypto derivatives and tokenized representations are registrable",
+    "statement": "The asset registry must represent crypto spot assets, crypto derivatives and tokenized representations of other assets; a tokenized representation references the asset it represents and the chain and token contract it lives on.",
+    "rationale": "A token and the asset it represents are one economic exposure in two forms; unless the registry links them, the platform double-counts or misses that exposure.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Crypto / tokenized row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register a crypto spot asset, a crypto perpetual and a tokenized representation of a registered bond, and assert each round-trips and the tokenized representation resolves to both the bond and its chain and token contract."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ASSET"],
+    "notes": "Split from the Crypto / tokenized row, which also states DEX/CEX venues (COVERAGE-018), bridges (COVERAGE-019) and on-chain settlement (COVERAGE-020). The raw item's LIVE_CAPITAL flag is removed here because representing an instrument in the registry needs no capital; it is kept on the three items that do. Crypto derivatives reuse the derivative types of COVERAGE-012 and are subject to COVERAGE-013."
+  },
+  {
+    "id": "COVERAGE-018",
+    "domain": "COVERAGE",
+    "title": "Crypto and tokenized instruments trade through CEX and DEX venue adapters",
+    "statement": "The platform must support trading crypto and tokenized instruments on centralised (CEX) and decentralised (DEX) venues, through a venue adapter of each type that reports orders and fills in the common execution contract.",
+    "rationale": "CEX and DEX venues differ in order model, fee model and failure modes (on-chain confirmation, slippage bounds); one adapter shape for both would hide the difference the execution path must price.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Crypto / tokenized row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Drive a paper order through a simulated CEX adapter and a simulated DEX adapter and assert both produce fills in the common execution contract, and that neither adapter can be constructed with any autonomy ceiling other than paper trading."
+    },
+    "policy_flags": ["LIVE_CAPITAL"],
+    "secondary_domains": ["EXECUTION"],
+    "notes": "Split from the Crypto / tokenized row; LIVE_CAPITAL kept from the raw item. Trading on a real CEX or DEX is live order submission, refused by ADR 0003/0021 and the three paper-trading layers, so per ADR 0099 the live part is scored BLOCKED and the adapters are built only against simulators. DEX state as a market input is M p.14 §8.1 ('decentralized venue state'), owned by MARKETDATA."
+  },
+  {
+    "id": "COVERAGE-019",
+    "domain": "COVERAGE",
+    "title": "Cross-chain bridges are supported with cost, delay and counterparty risk modelled",
+    "statement": "The platform must support moving tokenized assets between chains over bridges, modelling each bridge's fee, transfer delay and counterparty risk, and must not credit the destination balance before the modelled transfer completes.",
+    "rationale": "A bridge transfer is neither instant nor free nor riskless; an arbitrage that assumes all three is a loss the model cannot see, and bridges appear in the blueprint as a counterparty-risk class (M p.22) and a cost term (M p.24).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Crypto / tokenized row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Simulate a bridge transfer and assert the source balance is debited at once, the destination is credited only after the modelled delay, the modelled fee is booked, and that no path exists to issue a transfer on a real bridge."
+    },
+    "policy_flags": ["LIVE_CAPITAL"],
+    "secondary_domains": ["TREASURY", "CUSTODY", "RISK"],
+    "notes": "Split from the Crypto / tokenized row; LIVE_CAPITAL kept from the raw item. A real bridge transfer moves real assets on a public chain, refused by ADR 0021; per ADR 0099 the live part is scored BLOCKED and only the simulated form is built. The 'Crypto/On-chain Brain' that tracks bridge state (M p.16) and the counterparty model naming bridges (M p.22) belong to their own domains."
+  },
+  {
+    "id": "COVERAGE-020",
+    "domain": "COVERAGE",
+    "title": "On-chain settlement is reconciled against chain state",
+    "statement": "The platform must support on-chain settlement of crypto and tokenized trades, treating a trade as settled only once chain state confirms it and recording a reconciliation break when chain state and the ledger disagree.",
+    "rationale": "A ledger that marks a trade settled on submission rather than confirmation carries positions the platform does not own; the Asset Brain requires 'continuous reconciliation between economic exposure and legal/settled ownership' (M p.22 §12).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "26", "section": "§21 Asset & Market Coverage - class table, Crypto / tokenized row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a simulated chain, settle a paper trade and assert the ledger marks it settled only after the simulated confirmation, then diverge the simulated chain state and assert a reconciliation break is recorded."
+    },
+    "policy_flags": ["LIVE_CAPITAL"],
+    "secondary_domains": ["SETTLEMENT", "LEDGER", "CUSTODY"],
+    "notes": "Split from the Crypto / tokenized row; LIVE_CAPITAL kept from the raw item. Real on-chain settlement moves real assets and needs custody keys, refused by ADR 0021 (custody and settlement agents are listed in ADR 0099's boundary section); per ADR 0099 the live part is scored BLOCKED and only the simulated form is built."
+  },
+  {
+    "id": "COVERAGE-021",
+    "domain": "COVERAGE",
+    "title": "Private and illiquid investments are registrable and valued from dated marks",
+    "statement": "The asset registry must represent private equity, private credit, fund interests, real assets and other non-continuously priced investments, valued from dated marks rather than continuous quotes, with each mark's as-of time carried into every valuation that uses it.",
+    "rationale": "An illiquid asset valued as if it had a live price reports false precision and hides staleness; the age of the mark is part of the value.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "27", "section": "§21 Asset & Market Coverage - class table (continued), Private/illiquid row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register a private fund interest and a real asset each with a past-dated mark, and assert their valuations use that mark and report its as-of time and age, and that no continuous quote is synthesised for either."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ASSET", "CAPITAL"],
+    "notes": "Kept as one item: representing the class and valuing it from marks are one property, because 'non-continuously priced' is what defines the class. The lifecycle side - 'Illiquid/private mode with commitments, calls, marks, lockups and secondary-exit logic' (M p.22 §12) - is the Asset Brain's and belongs to ASSET. Subscribing to a real private fund is an external action and is not claimed here."
+  },
+  {
+    "id": "COVERAGE-022",
+    "domain": "COVERAGE",
+    "title": "One asset-class registry holds every major class family",
+    "statement": "A single asset-class registry must hold an entry for each major class family - liquid (the cash/FX, equity, rates, commodity and derivative classes of §21), event-driven, private/illiquid, tokenized and physical - and an instrument naming a class the registry does not hold is refused.",
+    "rationale": "Coverage that lives in scattered special cases cannot be enumerated, audited or extended; one registry is what lets the platform answer 'what can it hold' and refuse what it cannot.",
+    "kind": "acceptance",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist - 'All major liquid, event-driven, private/illiquid, tokenized and physical classes have an extensible registry'"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Enumerate the registry and assert every class row of the §21 table has an entry, then register an instrument naming an unregistered class and assert it is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ASSET", "PREDICTION", "COMMERCE"],
+    "notes": "Split from the §31 item, whose 'extensible' half is COVERAGE-023. The same target is stated at M p.2 §1.1 ('supports liquid, event-driven, illiquid, private, tokenized and physical assets through class-specific adapters and lifecycle engines') and the registry is the exit capability of master §30 Phase 3 ('Asset registry, Asset/Capital/Risk brains, treasury, custody corridors, multiple asset classes', M p.41), which sets P1. The §21 rows for Prediction/event (p.26), Physical products and Created markets/instruments (p.27) were not in this domain's input and presumably belong to PREDICTION, COMMERCE and market-creation requirements; their registry entries are counted here, and the event-driven and physical entries complete only with master Phase 7 (P2)."
+  },
+  {
+    "id": "COVERAGE-023",
+    "domain": "COVERAGE",
+    "title": "The asset-class registry is extensible without changing its consumers",
+    "statement": "The asset-class registry must be extensible: a new class is added as a versioned registry entry, with its class-specific adapters and lifecycle engine plugged in, without changing the code of the components that consume the registry, and instruments registered under an earlier version continue to resolve unchanged.",
+    "rationale": "A registry extended by editing every consumer is a hard-coded list with extra steps; the blueprint expects capabilities to grow without a new architecture each time (M p.27 §23).",
+    "kind": "acceptance",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist - 'All major liquid, event-driven, private/illiquid, tokenized and physical classes have an extensible registry'"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Add a test-only class in a new registry version and assert the valuation, risk and ledger paths accept an instrument of it with no code change to them, and that an instrument registered under the previous version still resolves to the same entry."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPANSION"],
+    "notes": "Split from the §31 item, whose coverage half is COVERAGE-022. The companion §31 target 'Source, ontology, memory, brain, tool, model, research and capability registries are versioned and extensible rather than hard-coded' (M p.43) states the same property for other registries and belongs to EXPANSION, as does §22's detection of 'unsupported asset classes' as a knowledge gap (M p.27)."
+  }
+]

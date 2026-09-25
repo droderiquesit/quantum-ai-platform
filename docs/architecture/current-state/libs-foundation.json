@@ -1,0 +1,300 @@
+[
+  {
+    "name": "qip-core",
+    "path": "backend/crates/libs/qip-core",
+    "kind": "lib",
+    "purpose": "The deterministic substrate every other crate is built on: fixed-point Decimal money, injected Clock/Rng (no ambient time or randomness), a typed Id per domain concept, a qip_core::error::Error with named constructors, and the `_FILE` secret-indirection helper every credential in the platform reads through.",
+    "key_contracts": [
+      "Context::{new,deterministic,rng_for} (backend/crates/libs/qip-core/src/lib.rs:49-98)",
+      "Decimal (fixed-point over i128) (src/decimal.rs)",
+      "Error::{invalid,not_found,denied,numeric,schema,io,unavailable,guard,timeout} (src/error.rs:34-61)",
+      "Hasher256, sha256, sha256_hex, hmac_sha256 (src/hash.rs)",
+      "IdGenerator + 18 typed ids (EventId, OrderId, PositionId, DecisionId, ...) (src/ids.rs)",
+      "KeyValueStore, KeyValueStoreExt trait ports (src/kv.rs)",
+      "Lineage, CorrelationId, CausationId, TraceId (src/lineage.rs)",
+      "Money, Currency (src/money.rs)",
+      "Rng trait, Xoshiro256 (src/rng.rs)",
+      "secret::from_environment / secret::resolve_from (src/secret.rs:47-79)",
+      "Clock trait, SystemClock, ManualClock, Timestamp, Duration (src/time.rs)",
+      "Config, ConfigError (src/config.rs)",
+      "testing::Property (property-based test harness) (src/testing.rs:14-63)"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Imported directly by every deployable binary's main.rs and by essentially every other crate in the workspace (62 Cargo.toml files depend on qip-core.workspace, confirmed by `grep -rl '^qip-core\\.workspace' crates/*/*/Cargo.toml`); e.g. backend/crates/apps/qip-api/src/main.rs, qip-fastbrain/src/main.rs, qip-deepbrain/src/main.rs, qip-edge-node/src/main.rs and qip-cli/src/main.rs all construct a Clock/Context and read secrets through it.",
+    "io_and_state": "No I/O of its own (a lib per the architecture boundary; enforced by the acceptance suite's architecture.rs). secret::from_environment reads process environment indirectly only insofar as the caller supplies the value via env(name) closures passed in by a composition root — the crate itself performs no std::env call. Clock/Rng are injected abstractions, not ambient I/O.",
+    "tests": {
+      "count": 89,
+      "notable": [
+        "sha256_matches_fips_180_4_vectors (tests/hashing.rs)",
+        "hmac_matches_rfc_4231_vectors (tests/hashing.rs)",
+        "an_empty_file_is_refused_rather_than_read_as_an_absent_credential (src/secret.rs tests)"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Foundational and stable: zero TODO/stub markers found in src (grep for TODO|FIXME|unimplemented!|todo!|stub found none), 89 tests including FIPS/RFC vectors, used pervasively across all 62 workspace crates that declare it.",
+    "blueprint_capabilities": ["ARCH", "CONTRACT", "TICK", "SEC", "EVID"],
+    "gaps_observed": [
+      "None found: no TODO/FIXME/unimplemented!/todo!/stub markers in backend/crates/libs/qip-core/src (verified by grep across all 13 files)."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-core/src/lib.rs:1-98",
+      "backend/crates/libs/qip-core/src/error.rs:12-61",
+      "backend/crates/libs/qip-core/src/secret.rs:47,55,79",
+      "backend/crates/libs/qip-core/tests/hashing.rs (6 #[test] fns, verified FIPS 180-4 / RFC 4231 vectors)",
+      "grep count: 89 '#[test]' in backend/crates/libs/qip-core (src + tests)",
+      "grep -rl '^qip-core\\.workspace' backend/crates/*/*/Cargo.toml → 62 files"
+    ]
+  },
+  {
+    "name": "qip-contracts",
+    "path": "backend/crates/libs/qip-contracts",
+    "kind": "lib",
+    "purpose": "The shared vocabulary between edge cells and the central plane — bitemporal Stamped facts, attributed Origin, the nine-deduction NetEdge cost decomposition, capital envelopes/grants, promotion gates, governance approvals, and the wire message/policy payload shapes both sides serialize.",
+    "key_contracts": [
+      "CapitalEnvelope, CapitalGrant, Utilisation (src/capital.rs)",
+      "AllocationMode, Capability, DegradationState, Freshness, StrategyClass (src/degradation.rs, 921 lines, largest module)",
+      "Deduction, DeductionKind, LegPlan, LegStep, NetEdge (src/edge.rs)",
+      "EDGE_GATES / DESK_GATES feasibility gate literals (src/feasibility.rs)",
+      "FeatureKey, FeatureValue, FeatureVector, Revision (src/feature.rs)",
+      "GateOutcome, GateStage, Promotion (src/gate.rs)",
+      "Approval, Control, Entitlement, Provenance, Severity, Usage (src/governance.rs)",
+      "Intent, NetIntent, NettingPolicy, net(), netting_ratio() (src/intent.rs)",
+      "BookSide, MarketMessage, MessageBody, TradeCondition (src/message.rs)",
+      "PolicyItem, PolicyPayload, Slot<T>, HaltCommand (src/policy.rs, 869 lines)",
+      "Conviction, Signal, SignalKind, StrategyId (src/signal.rs)",
+      "Stamped, Watermark (bitemporal pair) (src/time.rs)",
+      "Origin, VenueClass, VenueId, VenueStatus (src/venue.rs)"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "31 workspace Cargo.toml files depend on it including every apps/* binary except qip-web; direct non-test use confirmed in backend/crates/apps/qip-api/src/{web.rs,statement.rs,routes.rs,mesh.rs}, qip-deepbrain/src/{evolution.rs,discovery.rs,succession.rs,main.rs}, qip-edge-node/src/{feed.rs,arbitrage.rs,venue.rs,main.rs,cross_region.rs,reprice.rs,strategies.rs,gateway.rs}.",
+    "io_and_state": "No I/O (a lib). Pure types and validation logic — e.g. NetEdge refuses construction if its parts do not sum (per module doc), Stamped enforces valid-time <= known-time.",
+    "tests": {
+      "count": 90,
+      "notable": [
+        "a_fact_can_never_be_known_before_it_was_true (tests/contracts.rs)",
+        "a_net_edge_is_computed_from_its_parts_and_cannot_be_asserted (tests/contracts.rs)",
+        "every_gate_literal_is_distinct_and_carries_the_feasibility_prefix (tests/contracts.rs)"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "No stub/TODO markers in src; the only 'simulat*' hits are legitimate domain vocabulary (GateStage::Simulated, wire.rs's `simulated: bool` field on an order envelope). Depended on by 31 crates including the edge hot path and the central plane.",
+    "blueprint_capabilities": ["CONTRACT", "GOV", "CAPITAL", "RISK", "FABRIC"],
+    "gaps_observed": [
+      "None structural. gate.rs:15-19 documents GateStage::Researched/Simulated as legitimate lifecycle stages, not incomplete code."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/lib.rs:1-58",
+      "backend/crates/libs/qip-contracts/src/gate.rs:14-19",
+      "backend/crates/libs/qip-contracts/src/wire.rs:107",
+      "grep -rl '^qip-contracts\\.workspace' backend/crates/*/*/Cargo.toml → 31 files",
+      "backend/crates/apps/qip-edge-node/src/main.rs (qip_contracts import, non-test)"
+    ]
+  },
+  {
+    "name": "qip-events",
+    "path": "backend/crates/libs/qip-events",
+    "kind": "lib",
+    "purpose": "The typed, hash-chained event backbone: every payload declares a Topic and schema version through EventBody so publishing to the wrong topic fails to compile; EventBus dispatches breadth-first for deterministic replay; EventLog chains each record to its predecessor's hash so a truncated or edited audit trail is detectable.",
+    "key_contracts": [
+      "EventBus, HandlerOutcome, Subscription (src/bus.rs, 590 lines)",
+      "AnyEvent, Envelope<T>, EventBody trait (src/envelope.rs)",
+      "EventLog::{open,append,retained_anchor,with_durability} (src/log.rs, 1279 lines, hash-chained)",
+      "EventFilter, LogStats",
+      "SchemaDescriptor, SchemaRegistry (src/registry.rs)",
+      "FALLBACK_RETENTION, Retention, RetentionClass (src/retention.rs — bounded retention)",
+      "Topic, TopicGroup (src/topic.rs, 667 lines, every event topic name)"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "22 workspace crates depend on it; non-test use confirmed in backend/crates/apps/qip-api/src/{web.rs,mesh.rs,console.rs,stream.rs,routes.rs}, qip-cli/src/{replay.rs,demo/mod.rs}, qip-deepbrain/src/{discovery.rs,node.rs,campaign.rs,main.rs,evolution.rs} — e.g. EventLog is opened at start-up alongside ChainArchive in every central-plane binary.",
+    "io_and_state": "EventLog persists via the injected KeyValueStore/file backend from qip-storage or qip-core::kv; append() computes SHA-256 over sequence+previous_hash+canonical event (src/log.rs:135,679-712). No direct filesystem or network calls inside qip-events itself — durability is delegated to whatever store the caller wires in.",
+    "tests": {
+      "count": 60,
+      "notable": [
+        "envelopes_round_trip_through_type_erasure (tests/backbone.rs)",
+        "decision_relevant_topics_are_retained_permanently_and_never_dropped (tests/backbone.rs)",
+        "decoding_the_wrong_type_is_rejected (tests/backbone.rs)"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Hash-chained EventLog with crash-recovery tests (truncation, torn writes) in the sibling qip-storage engine test suite; wired into every central binary's composition root.",
+    "blueprint_capabilities": ["EVENT", "EVID", "LEDGER", "DATA"],
+    "gaps_observed": [
+      "None found: only 'simulat*' hits are the Topic::Simulate/SimulationStarted/SimulationCompleted enum variants (src/topic.rs:44,360-361), legitimate domain vocabulary, not stubs."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-events/src/lib.rs:1-28",
+      "backend/crates/libs/qip-events/src/log.rs:135-160,679-712",
+      "grep -rl '^qip-events\\.workspace' backend/crates/*/*/Cargo.toml → 22 files",
+      "backend/crates/apps/qip-deepbrain/src/main.rs (qip_events import, non-test)"
+    ]
+  },
+  {
+    "name": "qip-storage",
+    "path": "backend/crates/libs/qip-storage",
+    "kind": "lib",
+    "purpose": "Persistence ports (KeyValueStore, BlobStore) and their adapters: in-memory and file-per-document for tests/dev, an embedded write-ahead-log DurableStore engine for the one target this platform actually runs durably, a Redis/Memorystore RESP client as a cache only, and GCP Cloud Storage / BigQuery JSON REST adapters that speak through qip-transport's plaintext HTTP client behind a required TLS-terminating proxy.",
+    "key_contracts": [
+      "BlobStore trait, FileBlobStore, MemoryBlobStore (src/blob.rs)",
+      "ArchivedRecord, ChainArchive::{open,absorb,verify} (src/chain.rs)",
+      "Durability, DurableStore, EngineConfig, EngineStats, WriteBatch (src/engine/mod.rs, 906 lines, WAL + checkpoints + crash recovery)",
+      "gcp::{CloudStorageBlobStore, BigQueryWarehouse, GcpAccess, AccessToken, TokenSource, MetadataServerTokens} (src/gcp/*, 2397 lines)",
+      "FileKeyValueStore, KeyValueStore, MemoryKeyValueStore (src/kv.rs)",
+      "ManagedSettings (src/managed.rs)",
+      "StorageProvider, StorageTarget (9-way enum: Memory/File/Engine/BigQuery/CloudStorage/AlloyDb/Spanner/Bigtable/Memorystore) (src/provider.rs)",
+      "RedisConfig, RedisKeyValueStore, RedisLimits, RespValue (src/redis.rs, 2089 lines)",
+      "MemoryRepository, Record, Repository (src/repository.rs)",
+      "StorageSettings::{from_env,key_value,preflight,banner_lines} (src/settings.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events", "qip-transport"],
+    "reached_from_production": "partial",
+    "production_evidence": "StorageSettings + ChainArchive are wired at start-up in every central binary's main.rs (qip-api, qip-fastbrain, qip-deepbrain, qip-cli, qip-edge-node, all `use qip_storage::ChainArchive` + `qip_storage::settings::StorageSettings`), and StorageSettings::key_value() dispatches to Memory/File/Engine adapters, which ARE reached in production. BUT: Terraform's storage_target variable validates only {memory,file,engine} (infrastructure/terraform/variables.tf:376-382 `contains([\"memory\",\"file\",\"engine\"], var.storage_target)`), so the gcp/{storage,bigquery} and redis adapters, though fully implemented and unit-tested, are structurally unreachable from any deployed environment's configuration surface — confirmed no `grep -rl 'CloudStorageBlobStore\\|BigQueryWarehouse\\|RedisKeyValueStore\\|StorageProvider' backend/crates/apps/*/src` hits outside tests.",
+    "io_and_state": "fsio.rs flushes every write to the storage device before reporting success (src/fsio.rs). File/Engine adapters write to a local root path; Cloud Run workloads (qip-api/fastbrain/deepbrain) run with QIP_STORAGE_TARGET=memory in every gitops environment (infrastructure/gitops/envs/{dev,stage,prod}/*.yaml — confirmed dev/api.yaml:72-73 `QIP_STORAGE_TARGET: memory`), so central-plane state does not survive a Cloud Run restart today. Only infrastructure/terraform/modules/execution-node's startup script sets QIP_STORAGE_TARGET=engine, QIP_STORAGE_ROOT=/var/lib/qip/journal (infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:184-185), but no environment currently provisions an execution_node (execution_nodes = {} everywhere per the observability domain doc). gcp adapters reach the network only through qip_transport::HttpClient (plaintext HTTP/1.1, requires an external TLS-terminating proxy the adapter itself never assumes).",
+    "tests": {
+      "count": 148,
+      "notable": [
+        "an_acknowledged_write_survives_the_process_being_killed (tests/engine.rs)",
+        "truncating_the_log_at_every_byte_offset_recovers_a_prefix_consistent_state (tests/engine.rs)",
+        "absorbing_the_same_records_twice_writes_nothing_the_second_time (tests/chain.rs)"
+      ]
+    },
+    "status": ["exists", "partial", "hardened", "blueprint-compatible"],
+    "status_reason": "The three implemented-and-deployable targets (memory/file/engine) are hardened and reached from production; the six managed-target ports (gcp Cloud Storage/BigQuery implemented but Terraform-unreachable; AlloyDb/Spanner/Bigtable not even implemented, refusing construction by design) are code-complete or intentionally absent but never selected by any environment.",
+    "blueprint_capabilities": ["DATA", "LEDGER", "GCP", "EVID"],
+    "gaps_observed": [
+      "AlloyDb/Spanner/Bigtable are not implemented at all — StorageTarget::is_implemented() excludes them (src/provider.rs:62-72), required_configuration() names the missing PostgreSQL/gRPC client for each (src/provider.rs:192-260).",
+      "gcp::{CloudStorageBlobStore,BigQueryWarehouse} and redis::RedisKeyValueStore are fully implemented and unit-tested but never selectable in any deployed environment because Terraform's storage_target variable validation admits only memory|file|engine (infrastructure/terraform/variables.tf:376-382).",
+      "Every Cloud Run environment (dev/stage/prod) sets QIP_STORAGE_TARGET=memory, so the only durable target (engine) is reached solely by the execution-node startup script, and no environment currently provisions an execution node (infrastructure/environments/*/terraform.tfvars execution_nodes = {})."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/lib.rs:1-83",
+      "backend/crates/libs/qip-storage/src/provider.rs:14-35,62-72,125-135,192-260",
+      "backend/crates/libs/qip-storage/src/settings.rs:102-172,214-217",
+      "infrastructure/terraform/variables.tf:365-382",
+      "infrastructure/gitops/envs/dev/api.yaml:72-73",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:184-185",
+      "backend/crates/apps/qip-api/src/main.rs:35-36 (qip_storage::ChainArchive, qip_storage::settings::StorageSettings imports)"
+    ]
+  },
+  {
+    "name": "qip-transport",
+    "path": "backend/crates/libs/qip-transport",
+    "kind": "lib",
+    "purpose": "The in-tree streaming backbone that replaced Google Pub/Sub per ADR 0011: an HTTP/1.1 client on std::net::TcpStream with the same bounded-body/timeout discipline as the API server, and a mesh transport carrying qip_events::AnyEvent frames with bounded retry, backpressure, dead-lettering and at-least-once (never exactly-once) delivery — explicitly plaintext and unauthenticated, relying on VPC-level network isolation rather than any in-tree TLS or handshake.",
+    "key_contracts": [
+      "BreakerState, BreakerPolicy (src/breaker.rs, 785 lines, circuit breaker)",
+      "DeadLetter, DeadLetterReason, DeadLetterSink, MemoryDeadLetters (src/deadletter.rs)",
+      "TransportError (src/error.rs)",
+      "ClientLimits, HttpClient, HttpError, HttpRequest, HttpResponse, Method, Url (src/http.rs, 1465 lines)",
+      "Admission, Delivery, MeshConfig, MeshEndpoint, MeshInbox, MeshMessage, MeshPublisher, PollRequest/Response, RemoteSubscriber (src/mesh.rs, 1243 lines)",
+      "OutboundQueue, QueueStats (src/queue.rs — refuses with QueueFull, never drops)",
+      "RetryPolicy, Sleeper, ThreadSleeper, RecordingSleeper (src/retry.rs)",
+      "SpoolEntry, DurableDeadLetters (src/spool.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-events (dev-dependency only, for round-trip tests)"],
+    "reached_from_production": "yes",
+    "production_evidence": "17 workspace crates depend on it. Directly wired at start-up: backend/crates/apps/qip-api/src/main.rs:318-320 calls `qip_api::mesh::MeshBackbone::open(...)` from `MeshSettings::from_env()`; backend/crates/apps/qip-edge-node/src/mesh.rs constructs MeshLink over qip_transport::breaker::{BreakerState,BreakerPolicy} and ClientLimits/MeshConfig/RetryPolicy (lines 55-280). Also used by qip-brokers, qip-market-ingestion, qip-streaming, qip-training, qip-chain, qip-reasoning-engine, qip-data-finder services.",
+    "io_and_state": "http.rs opens raw std::net::TcpStream connections with explicit connect/read/write timeouts, one connection per request, one thread per publisher — no async runtime. No TLS: module doc (lib.rs:45-75) states production must add mutual TLS via a service-mesh sidecar, which is not implemented in this crate and not deployed. spool.rs persists an outbound backlog through an injected qip_core::KeyValueStore for durability across restarts.",
+    "tests": {
+      "count": 87,
+      "notable": [
+        "a_stream_envelope_crosses_the_mesh_and_arrives_verifiable (tests/mesh.rs)",
+        "a_lost_acknowledgement_produces_a_redelivery_that_the_receiver_detects (tests/mesh.rs)",
+        "the_retry_count_is_bounded_and_the_message_lands_in_the_dead_letter_log (tests/reliability.rs)"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible", "requires-migration"],
+    "status_reason": "Fully implemented and reached from production wiring at qip-api and qip-edge-node, with dedicated reliability/mesh/breaker/http_client test suites; the module's own documentation names the missing production requirement (mutual TLS) as an open item rather than a hidden gap.",
+    "blueprint_capabilities": ["MESH", "FABRIC", "RES", "SEC"],
+    "gaps_observed": [
+      "No TLS and no peer authentication by design; module doc states 'Production must add mutual TLS' via a service mesh sidecar, not yet present in any deployed manifest (backend/crates/libs/qip-transport/src/lib.rs:45-63).",
+      "Delivery is at-least-once only; every consumer of the transport must independently be idempotent (backend/crates/libs/qip-transport/src/lib.rs:30-43) — this is a documented architectural constraint, not a defect, but is a requirement any blueprint-driven consumer must satisfy."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/lib.rs:1-114",
+      "backend/crates/apps/qip-api/src/main.rs:318-320",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs:55-280",
+      "grep -rl '^qip-transport\\.workspace' backend/crates/*/*/Cargo.toml → 17 files"
+    ]
+  },
+  {
+    "name": "qip-observability",
+    "path": "backend/crates/libs/qip-observability",
+    "kind": "lib",
+    "purpose": "Traces, metrics, structured logs and SLOs with OpenTelemetry-compatible semantics (trace/span ids, span kinds, histogram buckets) implemented in-tree so the platform can report on itself even when no external collector is reachable; bundled as one Telemetry{metrics,tracer,logger} handed to every component.",
+    "key_contracts": [
+      "Telemetry::{new,silent} (src/lib.rs:23-47)",
+      "LogRecord, Logger, Severity (src/logs.rs)",
+      "Histogram, MetricKind, MetricValue, Metrics::{count,gauge,increment,observe_with,observe_latency_ms} (src/metrics.rs, 1236 lines)",
+      "Slo, SloStatus, SloWindow (src/slo.rs)",
+      "Span, SpanKind, SpanStatus, Tracer (src/trace.rs)"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "10 workspace crates depend on it; Telemetry is constructed and served in every central binary — backend/crates/apps/qip-api/src/routes.rs:79,1249 exposes `/metrics` via Prometheus text exposition (`scrape(&platform)`), and `Platform::` in qip-kernel records to it at 55 call sites (`grep -c 'metrics\\.\\(count\\|gauge\\|increment\\|observe[a-z_]*\\)\\(' backend/crates/runtime/qip-kernel/src/platform.rs` = 55).",
+    "io_and_state": "No network I/O of its own — metrics/traces/logs are held in-process (Metrics holds counters/gauges/histograms behind internal state; Histogram buckets observations). Exposition (Prometheus text, OTLP-shaped JSON) is rendered on demand by the calling app's HTTP handler, not pushed anywhere by this crate.",
+    "tests": {
+      "count": 32,
+      "notable": [
+        "a_counter_at_the_maximum_saturates_instead_of_wrapping_to_a_small_number (tests/telemetry.rs)",
+        "histograms_ignore_non_finite_observations (tests/telemetry.rs)",
+        "a_span_with_no_end_instant_omits_the_field_rather_than_claiming_it_ended_at_the_epoch (tests/telemetry.rs)"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "The library itself is complete, tested and reached from production recording sites and a live /metrics route; the platform-level gap is downstream of this crate — nothing has been proven to scrape any deployed process (infrastructure/terraform/variables.tf:1136-1158 workload_metrics_exist default = false), so recorded metrics exist but are not yet ingested by Cloud Monitoring anywhere.",
+    "blueprint_capabilities": ["OBS"],
+    "gaps_observed": [
+      "Emission and the /metrics route are proven, but ingestion is not: workload_metrics_exist defaults to false and every Cloud Monitoring alert policy in infrastructure/terraform/modules/observability is gated on it (infrastructure/terraform/variables.tf:1136-1158). This is an infrastructure-layer gap, not a defect in qip-observability itself."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-observability/src/lib.rs:1-47",
+      "backend/crates/apps/qip-api/src/routes.rs:79,1249",
+      "grep -c 'metrics\\.(count|gauge|increment|observe[a-z_]*)\\(' backend/crates/runtime/qip-kernel/src/platform.rs → 55 (measured 2026-09-25)",
+      "infrastructure/terraform/variables.tf:1136-1158",
+      "grep -rl '^qip-observability\\.workspace' backend/crates/*/*/Cargo.toml → 10 files"
+    ]
+  },
+  {
+    "name": "qip-confidential",
+    "path": "backend/crates/libs/qip-confidential",
+    "kind": "lib",
+    "purpose": "Statistical disclosure control for cross-cell aggregates — a cohort threshold, a per-cell monotone privacy budget, Laplace noise seeded from qip_core::Xoshiro256, and a pairwise differencing gate — so a console/research consumer can see an aggregate (mean gross notional, total realised loss) across regional cells without any single cell's book being recoverable. Explicitly NOT confidential computing: no enclave, no attestation, no encryption, no cryptographic protocol; the aggregator sees every raw contribution in memory, and the defence is entirely on the arithmetic of what leaves the gate.",
+    "key_contracts": [
+      "Budget, Epsilon, PrivacyLedger, SpendReport, SpentEpsilon (src/budget.rs)",
+      "CellId, CohortId, Contribution, ContributionSet (src/contribution.rs)",
+      "NoiseScale, Sensitivity, noise_for(), snap() (src/noise.rs — Laplace mechanism)",
+      "Bounds, Fingerprint, Query, Statistic (src/query.rs)",
+      "Policy, Release, ReleaseGate::release(), ReleaseId, ReleaseRecord (src/release.rs)",
+      "NOT_DEFENDED_AGAINST: [&str; 8] (src/lib.rs:181-191, the threat table as data)"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "Depended on by exactly one workspace crate, qip-kernel (grep -rl '^qip-confidential\\.workspace' backend/crates/*/*/Cargo.toml → 1 file: backend/crates/runtime/qip-kernel/Cargo.toml). qip-kernel's central/insights.rs wraps it as CellInsights, and Platform::new unconditionally constructs a CellInsights (backend/crates/runtime/qip-kernel/src/platform.rs:358,4441), so the gate IS built in every deployed process's composition path. But its two public query methods (CellInsights::mean_gross_notional, ::total_realised_loss) and the accessor Platform::insights_mut are never called anywhere outside backend/crates/runtime/qip-kernel/tests/insights.rs — confirmed by `grep -rn 'insights_mut\\|mean_gross_notional\\|total_realised_loss' backend/crates/apps backend/crates/runtime --include='*.rs'` matching only the definition sites and the test file; no apps/*/src route (console, API, CLI) references 'insight' at all.",
+    "io_and_state": "No I/O — pure in-process arithmetic over Decimal-derived f64 contributions. PrivacyLedger and ReleaseGate hold their state (spent epsilon per cell, release history) only in memory for the lifetime of the owning Platform; nothing here persists a ledger to disk, so budget spend does not survive a process restart.",
+    "tests": {
+      "count": 53,
+      "notable": [
+        "subtracting_two_nested_releases_would_hand_over_one_cell_and_is_therefore_refused (tests/differencing.rs)",
+        "a_cohort_at_the_threshold_is_released_and_one_cell_short_of_it_is_refused (tests/cohort_threshold.rs)",
+        "a_threshold_that_could_not_gate_anything_is_refused_when_the_policy_is_built (tests/cohort_threshold.rs)"
+      ]
+    },
+    "status": ["exists", "hardened", "unused", "blueprint-compatible"],
+    "status_reason": "The crate itself is fully implemented, extensively tested (53 tests including an explicit differencing-attack demonstration) and wired into Platform's constructor, but its module doc says plainly it was 'reachable from nothing' before qip-kernel's insights.rs wrapper, and that wrapper's own query methods still have zero production callers today — the gate is built every cycle but never asked a question outside tests.",
+    "blueprint_capabilities": ["SEC", "GOV"],
+    "gaps_observed": [
+      "CellInsights::mean_gross_notional and ::total_realised_loss (backend/crates/runtime/qip-kernel/src/central/insights.rs:75-109) are constructed via Platform::insights_mut (backend/crates/runtime/qip-kernel/src/platform.rs:5377) but that accessor has no caller in backend/crates/apps/**/src outside tests — no console route, API endpoint or CLI command surfaces a cross-cell insight.",
+      "PrivacyLedger's spend state is process-memory only; a restart resets every cell's spent epsilon with no persistence layer, which the crate's own doc does not claim to address (no [`qip_core::KeyValueStore`] usage anywhere in backend/crates/libs/qip-confidential/src)."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-confidential/src/lib.rs:1-191",
+      "backend/crates/runtime/qip-kernel/src/central/insights.rs:1-138",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:358,4441,5377",
+      "grep -rl '^qip-confidential\\.workspace' backend/crates/*/*/Cargo.toml → 1 file (qip-kernel only)",
+      "grep -rn 'insights_mut|mean_gross_notional|total_realised_loss' backend/crates/apps backend/crates/runtime → matches only definitions + backend/crates/runtime/qip-kernel/tests/insights.rs"
+    ]
+  }
+]

@@ -1683,3 +1683,33 @@ fn the_emptiness_claim_reader_fires_on_the_cell_that_disproved_itself_and_not_on
         "the parser refuses the exact command the row that has already been wrong once quoted"
     );
 }
+
+#[test]
+fn the_blueprint_views_are_what_their_sources_render_to() {
+    // The requirement catalogue, the traceability matrix and the current-state
+    // map are views of JSON sources (ADR 0099). A view edited by hand, or a
+    // source changed without re-rendering its view, is how a register starts
+    // saying something its sources do not. That is the failure that turned
+    // nineteen status documents into nineteen different answers before
+    // 2026-09-07. `qip blueprint render` fixes a stale view.
+    let root = repository_root();
+    let sources = qip_cli::blueprint::load(&root).expect("the blueprint sources load");
+
+    // The premise: the catalogue is the adopted blueprint, not a stub. A
+    // render of an empty catalogue would match an empty view and prove
+    // nothing.
+    assert!(
+        sources.requirements.len() > 1000,
+        "only {} requirements loaded; the catalogue is not the adopted blueprint",
+        sources.requirements.len()
+    );
+
+    let views = qip_cli::blueprint::render_views(&sources);
+    let stale = qip_cli::blueprint::stale(&root, &views);
+    assert!(
+        stale.is_empty(),
+        "these blueprint views differ from what their sources render to: {stale:?}. \
+         Run `cargo run -p qip-cli --bin qip -- blueprint render --root ..` from backend/ \
+         and commit the result; never edit a view by hand"
+    );
+}

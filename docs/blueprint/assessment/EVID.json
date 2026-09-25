@@ -1,0 +1,748 @@
+[
+  {
+    "id": "EVID-001",
+    "status": "PARTIAL",
+    "current": "qip_market_ingestion::connector::digest::FetchDigest (source_id, locator, sha256, bytes, retrieved_at, period_start/end, symbols, subjects, schema_version, topic) + qip_data_finder::reference::DataReference (adds origin, category, cost_estimate, availability) + qip_market_ingestion::connector::manifest::SourceManifest (per-source config: asset_class, region, protocol, auth) + qip_financial::manifest::SourceManifest (document manifest: source, locator, bytes, sha256, retrieved_at; SourceManifest::of refuses an empty source, locator or byte extent). ConnectorFeed (which digests every fetch) is opened by qip-api, qip-fastbrain and qip-deepbrain; Platform::record_reference (the ReferenceLedger) is called only from qip-deepbrain (campaign.rs, evolution.rs).",
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/connector/digest.rs:62-91",
+      "backend/crates/services/qip-data-finder/src/reference.rs:219-270",
+      "backend/crates/services/qip-market-ingestion/src/connector/manifest.rs:1-30",
+      "backend/crates/libs/qip-financial/src/manifest.rs:63-127 (SourceManifest::of refuses an empty source, locator or byte extent)",
+      "test: a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_and_the_metrics (backend/crates/runtime/qip-kernel/tests/references.rs:168)",
+      "test: a_content_hash_mismatch_on_re_fetch_is_detected (backend/crates/services/qip-data-finder/src/reference.rs:995, inline)",
+      "test: a_manifest_with_no_locator_is_refused_because_referencing_would_then_be_deleting (backend/crates/libs/qip-financial/src/manifest.rs:232, inline)"
+    ],
+    "gap": "No single manifest type carries all nine required fields. Present: source ref, provider identity, retrieval timestamp, content hash. Absent as named fields anywhere in the codebase: source-supplied version/etag (schema_version is this platform's own decode-shape version, not the vendor's), entitlement, geography, parser/parser-version lineage, and freshness/expiry metadata (only a scalar `availability: f64` exists, not an expiry instant).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test references -- a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_and_the_metrics; a new test is needed asserting a manifest constructor refused when entitlement/geography/parser-lineage/freshness is omitted.",
+    "work_item": "E08",
+    "tier": "T1",
+    "size": "M",
+    "notes": "qip_financial::quality::Provenance (licensing: LicensingClass, derived_from: Vec<String>) is a second, narrower provenance record used on SensedRecord itself; reconciling the three types (FetchDigest/DataReference/Provenance) into one EVID-001 manifest is the actual work, not a green-field build. verify: deployable true->false: market_data_connector and deepbrain_connector default to null (infrastructure/terraform/variables.tf:419,457) and are unset in all four environments (dev/terraform.tfvars:410 leaves it commented), so no deployed process fetches a world source and no FetchDigest-backed manifest is ever written from committed config. 'current' corrected: record_reference is reached only from qip-deepbrain, not all three roots; the assessor also missed qip_financial::manifest::SourceManifest (a fourth manifest type, with refusals), which still lacks entitlement, geography, parser lineage, etag and expiry. Status PARTIAL unchanged."
+  },
+  {
+    "id": "EVID-002",
+    "status": "PARTIAL",
+    "current": "qip_data_finder::reference::DataReference::verify/verify_against + qip_data_finder::ledger::ReferenceLedger::record (compares a re-fetch's SHA-256 against the stored reference's hash without ever retaining the original bytes). Held live on qip-kernel's Platform (references: ReferenceLedger field).",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/reference.rs:709-733 (verify, verify_against, compare_hash)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:377 (references: qip_data_finder::ledger::ReferenceLedger)",
+      "test: a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_and_the_metrics (backend/crates/runtime/qip-kernel/tests/references.rs:168)"
+    ],
+    "gap": "The hash-compare-on-re-fetch mechanism exists and is production-reached, but nothing in the tree is a 'historical reasoning' consumer that re-fetches a past claim's content on demand from its manifest; the existing caller is drift/revision detection on a currently-admitted source, not a historical query path. Also: qip_transport speaks plaintext HTTP/1.1 behind an egress proxy that is written but unapplied (infrastructure/terraform/modules/egress-proxy), so no deployed process has an outbound HTTPS re-fetch path yet.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-001"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test references; a new integration test is needed that runs a 'historical query' consumer with no payload copy anywhere and shows it re-fetches via the manifest and reports the hash comparison.",
+    "work_item": "E08",
+    "tier": "T1",
+    "size": "M",
+    "notes": "The blueprint's own note already flags the HTTPS/egress-proxy gap; scored here rather than re-derived."
+  },
+  {
+    "id": "EVID-003",
+    "status": "MISSING",
+    "current": "Nothing marks a manifest 'non-re-fetchable'. Knowledge survival holds by omission: qip_world_model::WorldModel and qip_data_finder::ledger::ReferenceLedger have no delete/evict path triggered by a failed re-fetch, so a fact once absorbed is never removed by a later fetch failure.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/ledger.rs:301-311 (LedgerOutcome: First | Unchanged | Revised(RevisionRecord) -- no NonFetchable/Unretrievable variant)",
+      "backend/crates/services/qip-world-model/src/world.rs (no delete method on WorldModel's graph/features)"
+    ],
+    "gap": "No LedgerOutcome (or equivalent) variant records 'no longer retrievable' with a timestamp and cause, so the requirement's explicit marker does not exist anywhere; only the negative property (nothing deletes knowledge) holds, and it holds because deletion was never built at all rather than because it was deliberately refused for this case.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-001",
+      "EVID-002"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Verification per the requirement: make a fixture source unretrievable, run a re-fetch attempt, assert every derived fact is intact, assert the manifest is marked non-re-fetchable with a timestamp and cause, and assert a later query surfaces the marker.",
+    "work_item": "E08",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status PARTIAL->MISSING: every flag was already false and the row's own gap says the marker, timestamp and cause do not exist; 'knowledge is never deleted on a failed re-fetch' holds only because no re-fetch-failure path exists at all, which is not an implementation of this requirement. Re-searched qip-data-finder, qip-financial::manifest and qip-kernel::references for an unretrievable/non-re-fetchable marker: none. Note also that ReferenceLedger and WorldModel working sets are count-bounded and evict by age, so 'the derived knowledge is kept' is not guaranteed either."
+  },
+  {
+    "id": "EVID-004",
+    "status": "PARTIAL",
+    "current": "qip_reasoning_engine::evidence::{Evidence, EvidenceSet, Stance, EvidencePosture} -- Evidence::weight() = reliability * diagnosticity per item; EvidenceSet::independent_weight (corroboration-like, origin-deduplicated), EvidenceSet::net_stance_disagreement/posture (contradiction-like), EvidenceSet::as_of (freshness/point-in-time gate). Reached from production in Platform::synthesise (REASON stage), backend/crates/runtime/qip-kernel/src/platform.rs:12284-12320.",
+    "evidence": [
+      "backend/crates/services/qip-reasoning-engine/src/evidence.rs:184-463",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12284-12320 (Platform::synthesise)",
+      "test: correlated_evidence_moves_a_belief_less_than_independent_evidence (backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:164)",
+      "test: contradicting_evidence_lowers_a_belief (reasoning.rs:195)",
+      "test: an_absence_of_evidence_and_a_conflict_of_evidence_do_not_size_the_same (reasoning.rs:848)"
+    ],
+    "gap": "The four named components (corroboration, contradiction, source quality, freshness) are not stored or exposed individually per evidence item as the requirement asks; corroboration and contradiction are Set-level derived statistics (independent_weight, net_stance_disagreement), not per-item fields, and there is no 'source quality' or 'freshness' component at all (EvidenceKind::reliability_ceiling is a per-kind ceiling, not a scored source-quality reading). Separately, qip_financial::quality::DataQuality carries exactly the single scalar 'confidence' the requirement forbids relying on -- it gates SENSE-stage record quality, not claim sizing, but its name and shape are the v10.1 anti-pattern the requirement was written to correct, and the two systems are not reconciled.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-reasoning-engine --test reasoning",
+    "work_item": "E08",
+    "tier": "T1",
+    "size": "M",
+    "notes": "Production only ever constructs a single-item EvidenceSet per anomaly today (Platform::synthesise builds `vec![Evidence::new(...)]`), so corroboration/contradiction across genuinely independent sources is exercised in unit tests but not yet in a live cycle. verify: status unchanged; gap widened with two findings the row missed. (1) The single-scalar anti-pattern is on a production belief path, not only on SENSE-stage quality: WorldModel::absorb_news (world.rs:569-580) records each primary entity's sentiment feature with confidence = NewsItem::evidential_weight() = source.reliability() * quality.score() * mean resolution confidence (qip-financial/src/intelligence.rs:164-171), one ingest-time scalar. (2) Evidence::with_reliability and with_diagnosticity (evidence.rs:233-241) clamp out-of-range inputs rather than refusing them, and Platform::synthesise clamps the detector confidence to [0.05, 0.95]. Adjacent substrate for the freshness component: qip_data_finder::freshness::LeadLedger measures per-source lead on every sensed record in Platform::observe (platform.rs:8623), but it is per source, not stored on an evidence item."
+  },
+  {
+    "id": "EVID-005",
+    "status": "PARTIAL",
+    "current": "qip_mesh::ports::GraphStore (add_edge/neighbours/reachable/nodes, all as-of) with MemoryGraph/FileGraph/MeshGraph adapters. Exercised end to end (entity -> object edge) only in backend/crates/tests/qip-acceptance/tests/truth_loop.rs. qip_financial::quality::Provenance::derived_from gives a narrower, flat record-to-record lineage link, used in narrative.rs for document revisions.",
+    "evidence": [
+      "backend/crates/services/qip-mesh/src/ports.rs:283-306",
+      "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:359-370 (graph.add_edge linking resolved entity to object)",
+      "backend/crates/libs/qip-financial/src/quality.rs:56-57 (derived_from)",
+      "backend/crates/services/qip-market-ingestion/src/narrative.rs:60,325"
+    ],
+    "gap": "qip-mesh's GraphStore/adapters (ports.rs, adapters.rs, provider.rs) have zero non-test call sites in crates/apps or crates/runtime/qip-kernel/src -- confirmed by docs/architecture/current-state/services-capital-exec.json's own grep. No composition root ever constructs MemoryGraph/FileGraph/MeshGraph. GraphStore is also generic (issuer/instrument/counterparty edges), not a provenance-specific API with corroborates/contradicts/updates-belief edge kinds as the requirement describes.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-001",
+      "EVID-013"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test truth_loop -- one_market_event_travels_all_seven_stages_of_the_truth_loop",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: tested true->false and e2e true->false: the cited truth_loop walk is a hand-assembled in-process sequence (the file says stage 4 'is the test's, not the platform's') and its only graph write is an entity->object 'issues' edge (truth_loop.rs:359-363). Nothing traverses from a belief to its evidence or manifests, which is the requirement's verification. ADR 0088 (belief carries evidence references) is recorded as 'nothing built'. Status PARTIAL unchanged: the generic GraphStore and Provenance::derived_from are the substrate, and Hypothesis carries an EvidenceSet with record_id/origin, which is a belief->evidence link but not to manifests."
+  },
+  {
+    "id": "EVID-006",
+    "status": "INCORRECT",
+    "current": "qip_reasoning_engine::evidence::EvidenceSet::independent_weight (evidence.rs:355-378): groups evidence by `origin`, counts the strongest item in full and discounts the rest by 0.15x, so N copies of one origin approach but never exceed roughly the weight of a single genuinely independent item.",
+    "evidence": [
+      "backend/crates/services/qip-reasoning-engine/src/evidence.rs:349-378",
+      "test: independent_weight_collapses_reports_from_one_origin (backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:301)",
+      "test: one_dissenting_origin_restated_five_times_is_still_one_dissent (reasoning.rs:1020)"
+    ],
+    "gap": "The implementation violates the invariant rather than approximating it. EvidenceSet::independent_weight counts the strongest item of an origin in full and every further copy at 0.15x, so N copies weigh w*(1 + 0.15*(N-1)): linear in N and unbounded, not 'approaching roughly one item' as this row previously said. Ten copies of one press release weigh 2.35 sources; about 7.7 copies outweigh two genuinely independent sources. The passing test one_dissenting_origin_restated_five_times_is_still_one_dissent asserts exactly this arithmetic (0.4*(1+4*0.15)=0.64, i.e. five restatements count as 1.6 dissents, reasoning.rs:1068-1072). The requirement says copies 'count as one source, not as many' and its property check says adding copies leaves the weight unchanged. Dependence is also detected only by exact equality of a caller-supplied `origin` string: syndications and rewrites that carry different origin labels are not recognised at all, and production (Platform::synthesise) sets origin to the detector name on a single-item set.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EVID-004"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-reasoning-engine --test reasoning -- independent_weight_collapses_reports_from_one_origin one_dissenting_origin_restated_five_times_is_still_one_dissent",
+    "work_item": "E08",
+    "tier": "T1",
+    "size": "S",
+    "notes": "A strict re-read of the property test would need to change independent_weight's discount to exactly 0 for a 2nd+ copy of the same origin, or the requirement's 'unchanged' wording needs to be read as 'bounded' rather than literal -- worth a design decision, not a design proposal here. verify: status PARTIAL->INCORRECT, tested true->false. The discount is a design that the requirement forbids (copies add weight), not a partial form of it, and the existing tests assert the forbidden arithmetic, so no test demonstrates the required property. Ran `cargo test -p qip-reasoning-engine --test reasoning one_dissenting_origin_restated_five_times_is_still_one_dissent` -> 'test result: ok. 1 passed; 0 failed' (it passes because it asserts 0.8 = 0.64/0.8, the copies-add-weight figure). Fixing it means CORRELATED_DISCOUNT = 0 plus rewritten tests, or an owner decision to read 'unchanged' as 'bounded' (still not what the code does, since it is unbounded)."
+  },
+  {
+    "id": "EVID-007",
+    "status": "PARTIAL",
+    "current": "Contradicting evidence is never deleted: qip_reasoning_engine::evidence::Stance::Contradicts items stay in the EvidenceSet and narrow (never zero out to the other side's benefit) the sized confidence via EvidenceSet::net_stance_disagreement / EvidencePosture::Conflicted.",
+    "evidence": [
+      "backend/crates/services/qip-reasoning-engine/src/evidence.rs:145-183 (Stance, EvidencePosture)",
+      "test: contradicting_evidence_lowers_a_belief (backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:195)",
+      "test: contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on (reasoning.rs:919)"
+    ],
+    "gap": "This is confidence-narrowing, not a contradiction engine that keeps 'each side as a competing hypothesis with its own supporting evidence.' There is exactly one qip_reasoning_engine::hypothesis::Hypothesis per synthesise() call; no rival Hypothesis object is created or retained for the contradicting side, and there is no queryable set of open contradictions anywhere in the tree.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EVID-004"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-reasoning-engine --test reasoning -- contradicting_evidence_lowers_a_belief contradiction_only_ever_narrows_the_confidence_a_position_is_sized_on",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "EVID-008",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [],
+    "gap": "No 'contradiction engine' exists as a first-class component (see EVID-007), so there is nothing to record a resolution against. `grep -rn 'resolved_against\\|ContradictionResolution' backend/crates` returns nothing.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-007"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "EVID-009",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [],
+    "gap": "No code checks or records TLS/domain identity, a signed release, a document hash, a chain proof, issuer identity, or source history as an authenticity signal on an evidence item. `rg -ni authenticity backend/crates -g'*.rs'` matches only unrelated network-authentication comments in qip-edge.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-013"
+    ],
+    "blocked_by": "C2",
+    "verification": "No test exists.",
+    "work_item": "E08",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Signed-release verification needs asymmetric signature verification, which ADR 0043 names as a gap no in-tree code may close (.claude/rules/architecture/00-boundaries.md); TLS/domain-identity checking needs the (written, unapplied) egress proxy to attest what this workspace's plaintext-HTTP client cannot observe itself."
+  },
+  {
+    "id": "EVID-010",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [],
+    "gap": "No component checks a claim against prior known state, event ordering, or a physically possible timeline and records the outcome on the evidence item. `rg -ni 'temporal.?consisten' backend/crates` returns nothing outside this assessment's own search.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-013"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "M",
+    "notes": "qip_world_model's bitemporal Fact::holds(valid_at, known_at) and qip_compliance::pit's PointInTime/LeakageDetector give this work a bitemporal substrate to build the check on, so it is not a green-field build. verify: status unchanged. One narrow timestamp check exists and was not cited: Evidence::validate refuses an item whose known_at precedes its valid_at (qip-reasoning-engine/src/evidence.rs:267-274), and MarketEventEnvelope::new refuses ingest before event time. Both are refusals of a malformed record, not a check of a claim against prior known state or event ordering, and neither records an outcome with the conflicting fact, so they do not make this PARTIAL."
+  },
+  {
+    "id": "EVID-011",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [],
+    "gap": "No component compares location, routing, shipping, weather or jurisdiction evidence for agreement. `rg -ni geospatial backend/crates -g'*.rs'` matches only an unrelated SourceCategory::PhysicalAndGeospatial classification label in qip-data-finder/qip-financial, which classifies a *source's subject matter*, not a per-claim consistency check.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-013"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "EVID-012",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [],
+    "gap": "No component detects or flags spam, coordinated manipulation, synthetic content, poisoned feeds, spoofing, or anomalous source behaviour at the evidence layer. `rg -ni 'poison|spoof|coordinated manipulation' backend/crates -g'*.rs'` (excluding unrelated Rust mutex-poisoning matches) returns nothing.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-013"
+    ],
+    "blocked_by": "C2",
+    "verification": "No test exists.",
+    "work_item": "E08",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "Synthetic-content detection realistically needs a trained classifier (NON_RUST/NEW_DEPENDENCY per the requirement's own flags); a rule-based subset (spam/spoofing heuristics, coordinated-timing detection) could be built in-tree without a new dependency and is the cheaper first slice."
+  },
+  {
+    "id": "EVID-013",
+    "status": "PARTIAL",
+    "current": "No unified EvidencePacket/Evidence-object type for world-source claims. Two partial analogues: (1) qip_financial::quality::Provenance{source, event_time, ingestion_time, upstream_id, licensing, derived_from} + DataQuality{completeness, confidence, validation_failures, issues, is_imputed}, attached to every SensedRecord at capture and reached from all three composition roots; (2) qip_reasoning_engine::evidence::Evidence{evidence_id, kind, stance, statement, record_id, origin, valid_at, known_at, reliability, diagnosticity}, built narrowly per detected anomaly in Platform::synthesise.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/quality.rs:43-58,110-123",
+      "backend/crates/services/qip-reasoning-engine/src/evidence.rs:184-223",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12308-12320"
+    ],
+    "gap": "Neither type is the EVID-013 contract: Provenance/DataQuality has no entities, no authenticity signals, no corroborates/contradicts links, no location; qip_reasoning_engine::Evidence has no entities, no location, no licence, and is constructed only for REASON-stage anomaly synthesis, not for 'every claim extracted from a world source.' No constructor anywhere refuses a claim missing these fields as the requirement demands.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-reasoning-engine --test reasoning (Evidence::validate); qip-financial has no `quality` test target (its tests/ holds cashflow, catalogue, costs, credit, ladder, object_model, valuation), so the previously cited `cargo test -p qip-financial --test quality` does not exist. A new unit test is needed proving a single EvidencePacket constructor refuses each mandatory field in turn.",
+    "work_item": "E02",
+    "tier": "T1",
+    "size": "M",
+    "notes": "M p37 section 27's EvidencePacket (claim, entities, time/location, source/provenance, licence, confidence, contradiction links, content hash) was noted in the requirement's own sourcing as the contract to reconcile the field lists against; that reconciliation is this gap. verify: verification command corrected (the cited qip-financial `quality` test target does not exist). Also: Provenance has all-pub fields and Provenance::new accepts an empty source and defaults licensing to Internal, so the 'refuse a claim missing a field' half has no foothold in that type. Status PARTIAL unchanged."
+  },
+  {
+    "id": "EVID-014",
+    "status": "INCORRECT",
+    "current": "The production path converts extracted text into world-model facts with no Evidence object between them. Platform::observe (platform.rs:8612) hands each SensedRecord::News straight to WorldModel::absorb_news (platform.rs:8751), which, from one vendor NewsItem, creates entity nodes, asserts a ConcernsEntity Fact weighted by the vendor's own mention.confidence, and records a sentiment feature whose confidence is NewsItem::evidential_weight() (world.rs:525-580). The NewsItem's entities, sentiment and headline are text extracted by the connector/narrative adapter (qip-market-ingestion/src/narrative.rs). No corroboration or evidence scoring stands between a single source and the fact.",
+    "evidence": [
+      "backend/crates/services/qip-world-model/src/world.rs:525-580 (absorb_news: entity nodes, Fact::new(ConcernsEntity, mention.confidence), sentiment feature)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8745-8752 (SensedRecord::News -> world.absorb_news, no evidence step)",
+      "backend/crates/libs/qip-financial/src/intelligence.rs:164-171 (evidential_weight: one scalar used as the fact's confidence)"
+    ],
+    "gap": "The requirement forbids exactly what production does: one extracted NewsItem becomes asserted graph facts and a belief-feeding sentiment feature, so a single source is treated as truth by default. There is no Evidence-object-only belief-update interface and no architecture test; the previous reading ('no code path takes raw text to a fact') took the connector's typed record for an evidence gate, but the requirement names 'scraped or extracted text', and a NewsItem is extracted text.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-013",
+      "EVID-019"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Per the requirement: an architecture test in qip-acceptance/tests/architecture.rs that the belief-update interface accepts only Evidence object references, and an acceptance run over a scraped fixture showing every belief cites Evidence objects. Today the second would fail on the absorb_news path.",
+    "work_item": "E02",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status PARTIAL->INCORRECT; implemented/integrated/deployable true->false (flags now describe the required behaviour, the Evidence-only gate, which does not exist; the forbidden direct path is what is integrated). Evidence line fixed: absorb_news is at world.rs:525, not 73-181."
+  },
+  {
+    "id": "EVID-015",
+    "status": "MISSING",
+    "current": "qip_investment_agents::review::AdversarialReviewer exists but is a different mechanism: a REASON-stage panel agent (AgentRole::Adversarial) that challenges another agent's investment thesis and cannot publish its own (chief.rs:292-293, manifests.rs:298-307). It does not search across sources/time for manipulation or source poisoning.",
+    "evidence": [
+      "backend/crates/agents/qip-investment-agents/src/review.rs:27-45",
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs:298-307"
+    ],
+    "gap": "No specialist looks for manipulation or source poisoning as a standing, cross-source search; the existing AdversarialReviewer only reviews one already-synthesised hypothesis per opportunity and reports no finding class matching this requirement.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-012"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E09",
+    "tier": "T3",
+    "size": "L",
+    "notes": "qip_agents::governance already enforces the structural precondition this specialist would need (an adversarial role owned independently of the research it reviews -- governance.rs:188-213), so a real Adversarial Brain would compose with, not replace, the existing AdversarialReviewer/AgentRole::Adversarial machinery."
+  },
+  {
+    "id": "EVID-016",
+    "status": "PARTIAL",
+    "current": "Model failure under a regime change is searched for as a standing, production-reached activity, though not by an 'Adversarial Brain' specialist. qip-deepbrain's LearningDesk keeps each registered model's training feature sample and, every learning round, compares the current window against it (largest population stability index across features), marks every card reading a drifted feature as degraded (qip_training::estimators::degraded_models), and records the drift score on the model card, where ModelCard::decision_eligibility refuses a drifted card. Regime boundaries are marked by qip-kernel's regime_transition.rs (per-subject regime key crossings, read in DECIDE). Reached from qip-deepbrain main -> node::run -> EvolutionEngine::maybe_learn -> LearningDesk.",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:1-45 (module doc: watch it age, degraded models, record_drift)",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:519-601 (EvolutionEngine::maybe_learn)",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:334-340 (node loop calls engine.maybe_learn)",
+      "backend/crates/runtime/qip-kernel/src/regime_transition.rs:1-45",
+      "test: a_model_whose_features_have_moved_records_drift_past_its_own_threshold (backend/crates/apps/qip-deepbrain/src/learning.rs:1827, inline)",
+      "test: a_model_the_desk_kept_no_sample_for_is_still_degraded_by_a_feature_it_reads (learning.rs:2064, inline)"
+    ],
+    "gap": "Not an adversarial specialist in a brain society, and findings are a drift score and degraded flag on a model card, not a finding that names the regime break and the degraded model together with its evidence. No replay test injects a known regime break with a degraded model and asserts named findings, nor that a stable period yields none (the requirement's verification). The evolution engine runs only with a feed (connector or replay tape), and no environment configures a connector.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-deepbrain --lib a_model_whose_features_have_moved_records_drift_past_its_own_threshold (ran: 'test result: ok. 1 passed; 0 failed'); the requirement's replay test (injected regime break + degraded model -> named findings; stable period -> none) does not exist.",
+    "work_item": "E09",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: status MISSING->PARTIAL (upgrade): the assessor missed qip-deepbrain's drift/degradation monitoring, which is a production-reached search for model failure under regime change with a passing named test. deployable left false because the learning round needs a feed that no committed environment configures (not confirmed otherwise)."
+  },
+  {
+    "id": "EVID-017",
+    "status": "PARTIAL",
+    "current": "qip-kernel's adversary_review (blueprint section 15.2 adversary monitor) answers one form of this: 'is a counterparty adapting to me?'. Per venue, it compares the platform's recent fills against its own earlier fills, each priced against the counterfactual twin on the same tape, and when the recent half is materially worse it records AdversaryPosture::Adapting as a finding in the hash-chained log and ships an AdversaryProfiles policy slot. It withdraws nothing (ADR 0062). Reached from the LEARN stage (Platform::stage_learn -> adversary_review::review, platform.rs:14107), which every run_cycle executes (qip-api routes.rs:2259, qip-cli), and qip-api's mesh.rs:997 builds the slot.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/adversary_review.rs:1-90 (module doc: what it answers and what it deliberately does not)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14107 (stage_learn calls adversary_review::review)",
+      "backend/crates/apps/qip-api/src/mesh.rs:997 (adversary_review::slot in a composition root)",
+      "test: a_venue_whose_recent_half_is_materially_worse_than_its_early_half_reads_adapting (backend/crates/runtime/qip-kernel/src/adversary_review.rs:782, inline)",
+      "test: a_venue_the_twin_says_is_filling_the_desk_badly_is_measured_and_put_on_the_record (backend/crates/tests/qip-acceptance/tests/adversary.rs:209)"
+    ],
+    "gap": "Detects one symptom (a venue's fill quality deteriorating against the platform) and cannot name the behaviour being exploited (predictable order placement, rebalancing cadence), which the requirement asks each finding to record. By its own doc it does not classify flow or measure crowding, and it is not an Adversarial Brain specialist. No simulator test injects an adversary strategy that trades against a known regular behaviour and asserts a finding naming it, with a clean run producing none (the requirement's e2e verification).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --lib adversary_review (ran: 'test result: ok. 14 passed; 0 failed'); cargo test -p qip-acceptance --test adversary (ran: 'test result: ok. 4 passed; 0 failed'). The requirement's simulator e2e test with an injected adversary does not exist.",
+    "work_item": "E09",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Verified only against the paper-trading simulator per the requirement; nothing here implies or should imply a live-order path (ADR 0003). verify: status MISSING->PARTIAL (upgrade): the assessor searched only for 'adversarial' and missed qip-kernel/src/adversary_review.rs and qip-acceptance/tests/adversary.rs. Paper-only: the monitor reads twin-priced simulated fills and changes no venue or order; the paper-trading boundary is untouched. deployable left false (not confirmed that a deployed cycle produces scored fills)."
+  },
+  {
+    "id": "EVID-018",
+    "status": "MISSING",
+    "current": "nothing",
+    "gap": "No EvidencePolicy/SourceScore versioned artefact exists anywhere. qip_data_finder::scoring::SourceScores (reliability, freshness, uniqueness, historical_value, cost_efficiency) is the closest analogue but scores a *source* for discovery/routing, is not versioned, and is never updated from realised trading/reasoning outcomes -- only from probe-observed availability.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/scoring.rs:19-52"
+    ],
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-006",
+      "EVID-024"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E08",
+    "tier": "T3",
+    "size": "L",
+    "notes": "P3 in the source blueprint (expansion engine, master Phase 9); depends structurally on EVID-024 (continuous rescoring) existing first."
+  },
+  {
+    "id": "EVID-019",
+    "status": "INCORRECT",
+    "current": "No Knowledge Delta Builder and no evidence-scoring stage exist. The production flow is connector -> SensedRecord -> Platform::observe -> WorldModel::absorb_* (platform.rs:8612-8760) with no Evidence/Provenance step, i.e. extraction reaches the knowledge store directly, which is the bypass the invariant forbids. The cited truth_loop walk is a hand-assembled in-process test whose stages are capture, quality/licence, identity, graph edge, evidence storage and world model; it has no evidence-scoring stage either.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8612-8760 (Platform::observe: records absorbed into WorldModel with no scoring gate)",
+      "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:264-471 (walk(): no evidence-scoring stage; stage 4 'is the test's, not the platform's')",
+      "backend/crates/tests/qip-acceptance/tests/e2e_live.rs:81-85 (IngestionService, the validation gate, 'is composed by nothing')"
+    ],
+    "gap": "`rg -ni 'knowledge.?delta' backend/crates` returns nothing -- there is no type that only Evidence/Provenance-scored input can construct. The ordering the test demonstrates is achieved because the test's own walk() function calls each stage in sequence by hand; no production composition root enforces that a record cannot reach WorldModel without first passing through a scoring gate (there is no scoring gate to pass through -- see EVID-004/009-012).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-013",
+      "EVID-004"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Per the requirement: an architecture test that only Evidence/Provenance can construct the Knowledge Delta Builder's input type, and an acceptance run observing Scout -> Parse -> Evidence -> Knowledge Delta in order.",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: status PARTIAL->INCORRECT; tested and e2e true->false. The truth_loop test demonstrates neither an evidence-scoring stage nor a Knowledge Delta Builder, so it does not demonstrate this invariant; and the production path is itself the forbidden bypass (same finding as EVID-014)."
+  },
+  {
+    "id": "EVID-020",
+    "status": "PARTIAL",
+    "current": "Structurally enforced: qip_market_ingestion::connector::digest::FetchDigest::of hashes the body but its struct never stores the body itself (only sha256, bytes length, locator, period, symbols/subjects); qip_data_finder::reference::DataReference likewise carries only content_hash, never bytes. No type in the connector runtime path retains raw vendor payload past ConnectorRuntime::ingest.",
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/connector/digest.rs:63-91 (FetchDigest fields carry sha256/bytes-length, not the body)",
+      "backend/crates/services/qip-data-finder/src/reference.rs:219-243 (DataReference fields carry content_hash, not bytes)"
+    ],
+    "gap": "No named test demonstrates the specific end-to-end invariant the requirement's own verification method asks for (a canary string fixture, processed end to end, found in no durable store/journal/log afterwards). `rg -ln canary backend/crates` finds only unrelated 'canary deployment' comments. The absence of a retained-body type is strong structural evidence but is not the acceptance-level proof the requirement specifies. The structural claim also has a deliberate exception the row missed: NewsItem (an EventBody on Topic::NewsReceived) keeps the vendor's headline and each EntityMention's surface text verbatim (qip-financial/src/intelligence.rs:121-148, 'The headline stays'), so a canary placed in a headline or entity name would survive into anything that journals or snapshots the record; the canary test has to cover those fields, and the requirement's 'no copy persists' needs an owner reading on whether a headline is payload.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No canary/discard test exists; needs a new acceptance test per the requirement's own method.",
+    "work_item": "E08",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status unchanged; gap widened with the NewsItem headline/entity-text retention exception."
+  },
+  {
+    "id": "EVID-021",
+    "status": "BLOCKED",
+    "current": "nothing -- no Evidence/Provenance workload of any kind is declared in Terraform (only infrastructure/terraform/modules/evidence, which is a GCS bucket for EVID-027, not a compute workload).",
+    "evidence": [
+      "infrastructure/terraform/modules/evidence/main.tf (bucket only, no compute)"
+    ],
+    "gap": "No GKE cluster exists in this repository's infrastructure at all (ADR 0024 retired Kubernetes for Cloud Run); Cloud Run is the only warm-service target, and no Cloud Run service named for Evidence/Provenance is declared either.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3",
+    "verification": "terraform plan showing an Evidence/Provenance workload; none exists to plan.",
+    "work_item": "E14",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Scored BLOCKED per ADR 0099's instruction: build only as far as the permitted (Cloud-Run-or-in-process) form until C3's runtime record decides whether warm services return to GKE."
+  },
+  {
+    "id": "EVID-022",
+    "status": "BLOCKED",
+    "current": "qip_mesh::ports::GraphStore trait with MemoryGraph/FileGraph in-tree adapters only (see EVID-005); qip_mesh::provider::MeshProvider's managed-service target for Spanner Graph returns Error::Unavailable naming the missing credential/project rather than connecting.",
+    "evidence": [
+      "backend/crates/services/qip-mesh/src/provider.rs (MeshProvider -- no Spanner-Graph-backed MeshTarget implemented)",
+      "docs/architecture/current-state/services-capital-exec.json: 'No managed-GCP-backed MeshTarget variant is implemented; MeshProvider returns qip_core::Error::Unavailable naming the missing credential/project for BigQuery/Bigtable/Spanner/etc.'"
+    ],
+    "gap": "Spanner Graph speaks gRPC, which this workspace's two-dependency policy (serde/serde_json only) cannot reach without a new dependency ADR; unlike BigQuery/GCS (plain JSON REST, already reachable -- see EVID-023/027), there is no REST path to Spanner Graph to fall back to.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-005"
+    ],
+    "blocked_by": "C4",
+    "verification": "No test exists; blocked pending a dependency record for a gRPC client.",
+    "work_item": "E14",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "verify: status unchanged (Spanner Graph is named in ADR 0099's C4 row, which is the real blocker). The gap's claim that there is no REST path to Spanner Graph was not verified by this review; Spanner exposes a JSON REST API (executeSql), so the blocker should be read as C4's storage record, not as a missing gRPC client."
+  },
+  {
+    "id": "EVID-023",
+    "status": "BLOCKED",
+    "current": "qip_storage::gcp::bigquery::BigQueryWarehouse is a real, in-tree, JSON-REST BigQuery client (no new dependency -- speaks HTTP via qip_transport) that streams rows and runs queries, but is never constructed anywhere outside qip-storage's own tests. Terraform provisions a BigQuery dataset (google_bigquery_dataset.research, infrastructure/terraform/modules/data/main.tf:85) for research generally, not scoped to evidence/source scoring.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/gcp/bigquery.rs:406-411",
+      "infrastructure/terraform/modules/data/main.tf:85",
+      "backend/crates/libs/qip-storage/tests/gcp.rs"
+    ],
+    "gap": "No evidence-scoring service exists to write anything (EVID-018/024), no dataset is scoped to evidence scoring, BigQueryWarehouse is constructed by no app, and enable_bigquery = false in all four environments (environments/*/terraform.tfvars), so even the generic research dataset is never created.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-018",
+      "EVID-024"
+    ],
+    "blocked_by": "C4",
+    "verification": "cargo test -p qip-storage --test gcp",
+    "work_item": "E14",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The in-tree JSON-REST client means a new crate is not needed, but ADR 0099's C4 row names BigQuery explicitly and requires 'a storage record per store'; that record, not a client dependency, is what placing evidence-scoring history in BigQuery waits on. The permitted in-tree form (scoring history on the event log) does not exist either, because the scoring does not. verify: status MISSING->BLOCKED (C4); implemented/tested true->false. The flags described a generic BigQuery client, not the required behaviour (evidence-scoring history written to BigQuery), and a MISSING row cannot carry implemented=true. The assessor's argument that C4 does not apply conflated the client with the store decision: C4 in ADR 0099 lists BigQuery and asks for a storage record, and every environment has BigQuery disabled."
+  },
+  {
+    "id": "EVID-024",
+    "status": "MISSING",
+    "current": "qip_data_finder::health::SourceHealth tracks availability/latency/staleness over an explicit observation window (not source *trust from corroboration/contradiction*), feeding replacement.rs's ranked-replacement logic. No 'trust score' derived from whether a source's claims were corroborated or contradicted exists.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/health.rs:1-80"
+    ],
+    "gap": "SourceHealth answers 'does the source answer, and how stale,' not 'has this source's content been corroborated or contradicted lately.' No same-pass rescoring of trust/confidence from evidence outcomes exists anywhere -- this is a distinct capability from source health monitoring, and it is not built.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-006",
+      "EVID-007"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: status unchanged. Adjacent and production-reached, but not this: qip_data_finder::freshness::LeadLedger rescores per-source lead in the same pass on every sensed record (Platform::observe, platform.rs:8623), and its own doc says it changes no source's score or routing, so it is freshness, not trust from corroboration or contradiction."
+  },
+  {
+    "id": "EVID-025",
+    "status": "PARTIAL",
+    "current": "qip_financial::quality::Provenance::new(source, event_time, ingestion_time) is a required (non-optional) constructor argument set on every SensedRecord at the point a connector decodes a fetched record, before it reaches any consumer -- demonstrated end to end in the truth_loop walk's stage 2.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/quality.rs:43-70",
+      "backend/crates/services/qip-market-ingestion/src/connector/envelope.rs:107-137 (MarketEventEnvelope::new builds Provenance from the connector manifest at capture)",
+      "test: the_envelope_keeps_event_time_ingest_time_and_knowable_time_apart (backend/crates/services/qip-market-ingestion/tests/connector_runtime.rs:759, asserts provenance().source)"
+    ],
+    "gap": "Source and provenance are structurally required by the constructor's type signature (you cannot omit the parameters), but nothing explicitly refuses a blank/malformed source string, and there is no single named 'publication' gate that checks presence before a record is routed onward -- the guarantee is a side effect of the type's shape, not an enforced refusal as the requirement specifically asks for.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-market-ingestion --test connector_runtime -- the_envelope_keeps_event_time_ingest_time_and_knowable_time_apart; no test refuses publication of an observation without provenance.",
+    "work_item": "E08",
+    "tier": "T0",
+    "size": "S",
+    "notes": "verify: e2e true->false and evidence replaced: the truth_loop walk builds RecordProvenance by hand inside the test, so it demonstrates the test attaching provenance, not a connector. The real capture-time attachment is MarketEventEnvelope::new, proven by a crate test. Also: Provenance fields are pub and Provenance::new accepts an empty source, and IngestionService (the publication gate) is composed by nothing, so the 'refused at publication' half is absent. Status PARTIAL unchanged."
+  },
+  {
+    "id": "EVID-026",
+    "status": "PARTIAL",
+    "current": "qip_streaming::{StreamEnvelope, DurableLogTransport} and qip_events::Topic/EventBus form an in-tree Rust event bus, not GCP Pub/Sub or Kafka. SensedRecord::publish_to (qip-market-ingestion/src/adapter.rs:313) can put an observation on an EventBus, but its only caller is IngestionService, which no binary composes. The kernel's DurableLogTransport::in_memory('kernel-journal') (platform.rs:4486) carries cycle journal entries stamped StreamRegion(HOME_REGION), not captured observations: production feeds call Platform::observe directly.",
+    "evidence": [
+      "backend/crates/services/qip-streaming/src/lib.rs:1-86",
+      "backend/crates/libs/qip-events/src/topic.rs:11-33",
+      "backend/crates/services/qip-market-ingestion/src/adapter.rs:313-336 (SensedRecord::publish_to)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4486 (kernel journal: cycle entries, not observations)",
+      "backend/crates/tests/qip-acceptance/tests/e2e_live.rs:81-85 ('IngestionService is composed by nothing')"
+    ],
+    "gap": "The principle (native Rust bus, not a managed pub/sub) is met, but there is no per-region partitioning or named-broker concept at all -- no regional deployment exists (execution_nodes = {} in every environment), so 'the region in which it was captured' names nothing deployed. The one production journal construction site is always in-memory, never the file-backed ::open variant, so nothing here is durable across a restart either.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-025"
+    ],
+    "blocked_by": "C8",
+    "verification": "cargo test -p qip-streaming --test transports; cargo test -p qip-streaming --test routing",
+    "work_item": "E03",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The full v11.6 Fabric (Tokio/QUIC/mTLS/prost/Raft, named brokers per region) is C2/C8-blocked; this row scores what the in-tree bus already does against the requirement's narrower ask (publish internally, not to Pub/Sub/Kafka). verify: integrated true->false: no composition root publishes a captured observation to any bus or journal; the cited kernel journal carries cycle entries. blocked_by C8 applies only to the per-region part; publishing observations to the in-tree fabric is buildable now (ADR 0100 decides an in-tree single-node broker). Status PARTIAL unchanged."
+  },
+  {
+    "id": "EVID-027",
+    "status": "PARTIAL",
+    "current": "Infrastructure: infrastructure/terraform/modules/evidence/main.tf provisions a real, KMS-encrypted, versioned, locked-retention, uniform-access, write-only (roles/storage.objectCreator) GCS bucket, unconditionally instantiated in infrastructure/terraform/main.tf:552 with deepbrain as writer and api as reader. Application: qip_mesh::ports::EvidenceStore (write-once put/get/receipt/keys, no delete/overwrite) with MemoryEvidence/FileEvidence/MeshEvidence adapters, and qip_storage::gcp::storage::CloudStorageBlobStore (a real, in-tree, JSON-REST GCS client, no new dependency).",
+    "evidence": [
+      "infrastructure/terraform/modules/evidence/main.tf:1-144",
+      "infrastructure/terraform/main.tf:552-582",
+      "backend/crates/services/qip-mesh/src/ports.rs:308-326",
+      "backend/crates/libs/qip-storage/src/gcp/storage.rs:174-193",
+      "test: the_evidence_written_by_the_loop_cannot_be_revised_afterwards (backend/crates/tests/qip-acceptance/tests/truth_loop.rs:848)"
+    ],
+    "gap": "Nothing wires CloudStorageBlobStore/MeshEvidence to the Terraform-provisioned bucket, and nothing in any app constructs an EvidenceStore at all outside tests (same finding as EVID-005). The write-once/no-delete contract is proven only against MemoryEvidence in an acceptance test, never against the real bucket. The requirement's own tension with EVID-020 (never the raw payload, only the derived observation) is not adjudicated by any code -- there is no writer to check it against.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-020",
+      "EVID-025"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test truth_loop -- the_evidence_written_by_the_loop_cannot_be_revised_afterwards; terraform plan for module.evidence has not been run in this assessment.",
+    "work_item": "E08",
+    "tier": "T1",
+    "size": "M",
+    "notes": "Not NEW_DEPENDENCY-blocked as the requirement's own flags assumed: CloudStorageBlobStore already exists in-tree over qip_transport. The remaining work is wiring, not a dependency decision. verify: e2e true->false: the cited acceptance test writes a hand-normalised record into MemoryEvidence inside the in-process truth_loop walk; it is neither a captured observation from a production path nor the bucket. deployable true->false: the locked, write-only bucket is provisionable (module.evidence, main.tf:552, retention_locked defaults true), but no process writes to it from committed config, so the required behaviour cannot run. Status PARTIAL unchanged."
+  },
+  {
+    "id": "EVID-028",
+    "status": "PARTIAL",
+    "current": "qip_entity_resolution::resolver::Resolver (Jaro-Winkler + token containment + identifier/country evidence) with Decision::{Linked, Created, Ambiguous}; reached from production via WorldModel::absorb_news, called from Platform::observe (platform.rs:8751) for every News record. But the production caller builds every mention as EntityRecord::new(..., EntityKind::Company, &mention.text, source, published_at) with no identifiers and no country (world.rs:529-536); EntityMention carries no kind (qip-financial/src/intelligence.rs:52-66).",
+    "evidence": [
+      "backend/crates/services/qip-entity-resolution/src/resolver.rs:49-104",
+      "backend/crates/services/qip-world-model/src/world.rs:525-537",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8745-8752",
+      "test: variant_spellings_collapse_onto_one_entity (backend/crates/services/qip-entity-resolution/tests/resolution.rs:140)",
+      "test: an_identifier_match_links_across_unrelated_names (resolution.rs:170)",
+      "test: a_country_mismatch_blocks_a_merge_on_a_similar_name (resolution.rs:217)",
+      "test: two_equally_good_candidates_are_ambiguous_however_high_they_score (resolution.rs:288)"
+    ],
+    "gap": "The resolver's disambiguation is unreachable from the production path. Every person, place, country or asset mention is resolved as a Company, so 'Jordan' the person and 'Jordan' the country (or two companies named 'Atlas Holdings') collapse onto one entity in production: the kind check (entities_of_different_kinds_never_match), the conflicting-identifier check (conflicting_identifiers_prevent_a_merge_despite_an_identical_name) and the country check all need inputs absorb_news never supplies. The requirement's second clause ('different entities that share a name are not merged') therefore holds only in the resolver's own tests. Tickers are linked only through an identifier match, which production never supplies; no transliteration fixture exists; and there is no generated (property) fixture set.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-entity-resolution --test resolution",
+    "work_item": "E08",
+    "tier": "T0",
+    "size": "S",
+    "notes": "The requirement's verification method asks for generated (property-based) fixture sets across aliases/tickers/transliterations; this repository's two-dependency policy has no property-test crate, so coverage is fixture-based rather than generated. The invariant itself (one entity, one id; distinct entities never merged) is demonstrated, which is why this is scored COMPLETE rather than PARTIAL. verify: status COMPLETE->PARTIAL. The cited tests pass (`cargo test -p qip-entity-resolution --test resolution` -> 'test result: ok. 22 passed; 0 failed') but they call Resolver::resolve directly with kinds, ISINs and countries; the composition-root path (Platform::observe -> absorb_news) hard-codes EntityKind::Company and passes no identifier or country, so the no-false-merge half of the requirement is not true of what runs. Also corrected the Decision variant names (Linked/Created/Ambiguous, not Matched/New). Fix: carry a kind and identifiers on EntityMention and a test driving absorb_news with same-name, different-kind mentions."
+  },
+  {
+    "id": "EVID-029",
+    "status": "BLOCKED",
+    "current": "qip_world_model writes to its own in-memory KnowledgeGraph (graph.rs), never to Spanner Graph -- there is no Spanner client in the workspace (see EVID-022).",
+    "evidence": [
+      "backend/crates/services/qip-world-model/src/graph.rs:1-40"
+    ],
+    "gap": "Same blocker as EVID-022: Spanner Graph needs gRPC, which this workspace cannot reach without a new-dependency ADR.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-022"
+    ],
+    "blocked_by": "C4",
+    "verification": "No test exists; blocked pending EVID-022's dependency record.",
+    "work_item": "E09",
+    "tier": "T4",
+    "size": "L",
+    "notes": "verify: the previous note said the in-memory WorldModel already enforces 'never a fact that did not pass through scoring' because there is no other writer. That is wrong: Platform::observe writes WorldModel directly from unscored SensedRecords (see EVID-014/EVID-019, now INCORRECT), so the permitted in-tree form of this requirement is not met either. Status BLOCKED (C4, Spanner Graph) unchanged; the gap's 'needs gRPC' should read as C4's storage record (Spanner also has a JSON REST API)."
+  },
+  {
+    "id": "EVID-030",
+    "status": "MISSING",
+    "current": "nothing -- no 'Fabric Broker A/B/C' naming or multi-broker regional concept exists anywhere in the tree.",
+    "evidence": [],
+    "gap": "`rg -ni 'broker.?a\\b' backend/crates -g'*.rs'` (excluding paper-brokerage-account comments in qip-data-finder) returns nothing. There is also no 'Evidence/World Model' service as a distinct component to publish from -- qip-world-model is an in-process library the kernel calls directly, not a service that publishes events at all.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-019",
+      "EVID-026"
+    ],
+    "blocked_by": "C8",
+    "verification": "No test exists.",
+    "work_item": "E03",
+    "tier": "T3",
+    "size": "M",
+    "notes": "Depends on the native multi-broker Fabric existing first (C2), and on qip-world-model becoming a publishing service rather than a library WorldModel::absorb_* the kernel calls in-process. verify: blocked_by C2->C8: ADR 0100 (accepted 2026-09-25) decides the fabric's first build is an in-tree single-node broker on std TCP, so publishing knowledge-class events to the fabric needs no refused crate. What remains outside the permitted form is 'Broker A' among several brokers per regional cell, which is ADR 0099's C8 (five brokers per region, execution_nodes = {}). No knowledge-class tag exists: qip-events has TopicGroup and RetentionClass, qip-streaming has RoutingClass. Status MISSING unchanged."
+  },
+  {
+    "id": "EVID-031",
+    "status": "MISSING",
+    "current": "nothing -- no 'Ambient/Causal Agents' component exists. `rg -ni ambient backend/crates -g'*.rs'` matches only unrelated 'no ambient clock/randomness' determinism-discipline comments across qip-core/qip-transport/qip-compliance.",
+    "evidence": [],
+    "gap": "Neither the Ambient Model Mesh nor a causal-agent publisher exists in any form, tested or otherwise.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVID-030"
+    ],
+    "blocked_by": "C8",
+    "verification": "No test exists.",
+    "work_item": "E09",
+    "tier": "T3",
+    "size": "M",
+    "notes": "P2 in the source blueprint (Ambient Model Mesh is master Phase 8); M p18 section 9.5 already requires ambient output to be advisory-only until promoted through the same evaluation/authority boundaries as any other model output, consistent with .claude/rules/domains/risk-and-execution.md's ban on an agent finding escalating autonomy. verify: blocked_by C2->C8 for the same reason as EVID-030 (ADR 0100 builds the broker in-tree; 'Broker A per regional cell' is C8). Re-searched for an ambient model mesh or surprise-detection agent: nothing beyond qip-cli's blueprint label list. Status MISSING unchanged."
+  }
+]

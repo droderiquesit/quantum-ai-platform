@@ -1,0 +1,799 @@
+[
+  {
+    "id": "OBS-001",
+    "domain": "OBS",
+    "title": "The platform observes itself as one graph across five signal classes",
+    "statement": "AIOps observes infrastructure, applications, data quality, model health and trading behaviour as one graph. Every signal is attached to the entities it concerns, and an entity shared by several signal classes is one node, not one per class.",
+    "rationale": "A fault that starts in one class usually shows up in another. A stale feed becomes a model-health drift and then a trading anomaly. With five separate views, an operator has to do that join by hand in the middle of the incident.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Operations/AIOps row ('self-observing platform')"},
+      {"doc": "M", "page": "41", "section": "§29 Autonomous Platform Operations / AIOps"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture emits one infrastructure, one application, one data-quality, one model-health and one trading-behaviour signal about the same instrument and deployment. In the resulting graph, all five are reachable from that instrument's single node."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "DATA"],
+    "notes": "M p7 lists 'self-observing platform' first among the Operations/AIOps capabilities. M p41 states it more specifically, and that wording is kept. The current-state inventory records qip-observability as metrics, a tracer and a logger bundled into one Telemetry value. It records no entity-keyed graph across them. Priority P2: the graph's consumer is the AIOps/SRE agent (GCP Phase 9, master Phase 8)."
+  },
+  {
+    "id": "OBS-002",
+    "domain": "OBS",
+    "title": "SLOs exist for the eight critical paths",
+    "statement": "SLOs are defined for market-data freshness, decision latency, order/fill integrity, ledger commit, reconciliation, model serving, data provenance and quantum job success.",
+    "rationale": "When these paths degrade silently, the result is a wrong decision or a wrong book. If nobody defined an SLO for a path, nobody can say its objective was missed.",
+    "kind": "slo",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Operations/AIOps row ('SLOs')"},
+      {"doc": "M", "page": "41", "section": "§29 Autonomous Platform Operations / AIOps"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The SLO catalogue holds one objective for each of the eight paths, each with a target, a window and a source series. An objective that no series feeds reports as unmeasured, not as met."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "LEDGER", "MODEL", "QUANTUM"],
+    "notes": "Mapping to G p15's per-component tables (OBS-031 to OBS-037):\n- market-data freshness ~ Reflex stale-book age and dropped feed messages\n- decision latency ~ Reflex market-event-to-decision p99/p99.9\n- ledger commit and reconciliation ~ the Ledger row\n- model serving ~ AI model package freshness\n- data provenance ~ Data lineage completeness\n- quantum job success ~ nearest is AI's quantum/classical benchmark delta, which measures benefit rather than job success\nOrder/fill integrity has no G p15 counterpart. This item stays separate from those tables because its subjects are cross-cutting paths, not components.\n\nPriority is P0 because the first five paths exist by GCP Phase 4. Model serving, data provenance and quantum job success can only be measured once their components land (P2, P1 and P2).\n\nIn-tree, qip_observability::slo declares 15 rows from an earlier blueprint's §49.1, and qip-kernel's blueprint_objectives evaluates them against observed series, reporting an unfed objective as unmeasured (current-state records delivery.json slo.rs and kernel-planes.json blueprint_objectives). Whether those rows cover these eight subjects is for scoring to establish; it is not assumed here."
+  },
+  {
+    "id": "OBS-003",
+    "domain": "OBS",
+    "title": "Anomaly detection runs over the platform's own telemetry",
+    "statement": "The platform runs anomaly detection over its own operational telemetry and raises each detected anomaly as a recorded signal that incident triage can consume.",
+    "rationale": "SLO alerts fire only where someone thought to set a threshold. Anomaly detection finds the degradation nobody predicted.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Operations/AIOps row ('anomaly detection')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A step change injected into a synthetic metric series, crossing no configured threshold, produces an anomaly signal naming that series and its window. The same series without the step produces no signal."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA"],
+    "notes": "Only the M p7 capability map states this. §29 (M p41) names 'data anomalies' as an input to the incident agent (OBS-004) but specifies no detector. Neither blueprint gives a method, a threshold or the signal classes covered."
+  },
+  {
+    "id": "OBS-004",
+    "domain": "OBS",
+    "title": "The incident agent correlates five sources into one timeline",
+    "statement": "An incident agent correlates telemetry, deployment changes (recent diffs), data anomalies, venue behaviour and model drift into a single timeline per incident.",
+    "rationale": "Here, most incidents will have a change as their cause: a deploy, a model promotion, a venue behaving differently. A timeline that puts the change next to the symptom makes the cause findable. Five tools on five clocks do not.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Operations/AIOps row ('incident triage')"},
+      {"doc": "M", "page": "41", "section": "§29 Autonomous Platform Operations / AIOps"},
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — AIOps bullet ('reads telemetry, compares ... recent diffs')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture incident has one event from each of the five sources inside its window and one event outside it. The agent's timeline contains exactly the five, in timestamp order, each attributed to its source."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CICD", "MODEL", "EXEC"],
+    "notes": "G p14 gives the reading of telemetry and recent diffs to the 'SRE agent'. M p41 calls the correlating role the 'incident agent'. They are treated as one role, and the diagram's 'SRE / Learning Agent' node (H L353) is the same role again. G p14's 'compares runbooks' belongs to the selection step and is covered by OBS-005. M p7's 'incident triage' is folded in here because this is the only place either blueprint says what triage does."
+  },
+  {
+    "id": "OBS-005",
+    "domain": "OBS",
+    "title": "Autonomous remediation acts only through pre-approved runbooks",
+    "statement": "Autonomous remediation may restart, roll back, scale (permitted services only), fail over, drain, quarantine or disable a capability. It may do so only by executing a pre-approved runbook that names the action, and any other action is refused.",
+    "rationale": "An agent that can take any action it reasons its way to is an operator nobody approved. The runbook is an approval given in advance, where it can be reviewed. Refusing everything outside it is what makes this autonomy bounded rather than just well-intentioned.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Operations/AIOps row ('auto-remediation')"},
+      {"doc": "M", "page": "41", "section": "§29 Autonomous Platform Operations / AIOps"},
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — AIOps bullet ('compares runbooks', 'scales permitted services', 'pre-approved rollback/restart/drain actions')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The agent is given an incident whose best action is in no runbook, such as deleting a topic. It does not execute that action and records a refusal naming the missing runbook. An action that a runbook does name executes."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CICD", "RES", "GOV"],
+    "notes": "The action list combines both sources. M p41 gives restart, rollback, scale, fail over, quarantine and disable. G p14 adds drain and limits scaling to 'permitted services'. G p14's 'compares runbooks' is the step that selects an action, so it is folded in here.\n\nG p12's SRE Agent hard boundary ('signed runbooks and approved actions') is CICD-025. Its wording is stricter (signed), and CICD-025 holds it.\n\nThe autonomous SRE agent lands in GCP Phase 9, but this is P0 because automatic rollback (OBS-006) is itself a remediation and arrives in GCP Phase 1. The M p43 completeness target is OBS-012.\n\n'Disable a capability' must never be read as enabling one. No runbook may relax a paper-trading layer."
+  },
+  {
+    "id": "OBS-006",
+    "domain": "OBS",
+    "title": "Rollouts are verified against their SLOs and roll back automatically on regression",
+    "statement": "Cloud Monitoring, Managed Service for Prometheus and replay comparators evaluate every rollout against its SLOs. A regression rolls the rollout back automatically, without waiting for a person.",
+    "rationale": "Deployment verification is what separates a canary from a slow full rollout. A regression that needs a person to notice it runs for as long as nobody is looking.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Operations/AIOps row ('deployment verification')"},
+      {"doc": "G", "page": "13", "section": "§14.2 Source-to-production flow, step 10"}
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "A deliberately degraded candidate is promoted in a non-production environment. The SLO comparator rolls it back without human action and records the rollback together with the SLO that failed."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["CICD", "REPLAY"],
+    "notes": "CICD-062 holds the gating half of G p13 step 10 ('rollouts are gated on SLOs'). This item holds the observability half: the comparators exist, and a regression triggers the rollback. Score the two together. The incident/task half of step 10 is OBS-007. G p22 §25's 'Bad model/package' game day is the test the blueprint names.\n\nBackend divergence: ADR 0028 adopted OpenObserve over OTLP in place of Managed Prometheus and Cloud Trace, so the comparators' metric source in this repository is not the one step 10 names. ADR 0099 does not list this divergence.\n\nThe in-tree Cloud Monitoring alert policies (infrastructure/terraform/modules/observability) are all gated on workload_metrics_exist, which is false everywhere. No in-tree series reaches Cloud Monitoring today."
+  },
+  {
+    "id": "OBS-007",
+    "domain": "OBS",
+    "title": "Regressions and incidents become tasks for the autonomous development loop",
+    "statement": "For every rollout regression or incident, the SRE/Learning agent reads the deployment and runtime outcomes from Observability. It opens an incident and a task, issue or pull request in the autonomous development loop, carrying the observed evidence and a proposed remediation or new test.",
+    "rationale": "A rollback fixes the symptom, but the cause is still in the code. Without a task, the next release ships it again.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Operations/AIOps row ('autonomous test loops')"},
+      {"doc": "G", "page": "13", "section": "§14.2 Source-to-production flow, step 10 ('creates an incident/task for the autonomous dev loop')"},
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — AIOps bullet ('opens incidents/PRs')"},
+      {"doc": "H", "page": "L364-366", "section": "§07 CI/CD, GitOps & Autonomous Development (edges obs->sreagent, sreagent->issue, sreagent->gh)"}
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "After an induced rollout regression, the development loop's intake holds an issue or task that links the rollout, the failed SLO and the evidence window. The agent opened it, not a person."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CICD"],
+    "notes": "CICD-064 holds the same G p13 step-10 sentence from the delivery side, and CICD-026 holds the Learning Agent's conversion of incidents into tasks. Score them together.\n\nM p7's 'autonomous test loops' is folded in here because the diagram's SRE/Learning node 'proposes remediations and new tests' (H L353). That is the only place either blueprint ties test generation to operations.\n\nThe G p13 and H raw items carried MANAGED_SERVICE. It was dropped here because the managed services in those sentences belong to OBS-006 and OBS-041.\n\nThe agent only opens issues and PRs. Merge and production deploy stay behind the normal gates (CICD-007)."
+  },
+  {
+    "id": "OBS-008",
+    "domain": "OBS",
+    "title": "OpenTelemetry instruments every component",
+    "statement": "Every component is instrumented with the OpenTelemetry SDK and exports its metrics, logs and traces through OpenTelemetry collectors.",
+    "rationale": "With one instrumentation model, a trace started in the API and a metric from the edge node can be joined without translation. The backend can also change without re-instrumenting anything.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Observability ('OpenTelemetry + OpenObserve/compatible stack')"},
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — Instrumentation bullet"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each deployable binary, started against a stub OTLP collector, delivers a metrics document and a traces document, and each validates against the OTLP JSON schema down to the leaf objects."
+    },
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["ARCH"],
+    "notes": "Backend: M p34 names 'OpenObserve/compatible'; G p14/p18 name Cloud Monitoring, Managed Prometheus, Cloud Logging and Cloud Trace (backend placements are OBS-017, OBS-020, OBS-023). ADR 0028 (accepted) adopted OpenObserve over OTLP. That matches M and diverges from G. ADR 0099's conflict register does not list the divergence, so ADR 0028 keeps its force until a record addresses it.\n\nSDK: NEW_DEPENDENCY because an OpenTelemetry Rust SDK is a crate outside the two permitted (conflict C2), and ADR 0026 rejected it. Instead, qip-observability encodes OTLP/JSON in-tree over serde_json (Snapshot::to_otlp_metrics, Tracer::export). An openobserve.rs drain in each of qip-api, qip-fastbrain and qip-deepbrain sends that encoding. This is an OTLP-conformant alternative to the SDK, not the SDK, and whether it satisfies 'SDK everywhere' is for scoring to decide.\n\nqip-edge-node does not export OTLP. It serves a Prometheus exposition on its health port."
+  },
+  {
+    "id": "OBS-009",
+    "domain": "OBS",
+    "title": "Every opportunity is traceable end to end",
+    "statement": "Each opportunity is traceable end to end across brain, model, risk, node, venue, ledger and learning loop. The trace is one chain linking the opportunity's origin to its ledger entry and to what the learning loop concluded from it.",
+    "rationale": "The product is being able to say precisely why the platform did what it did. A decision whose chain breaks at the venue or the ledger cannot be attributed, and one that stops before the learning loop cannot be scored.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Observability ('trace each end-to-end opportunity ...')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "In a replayed cycle, a lookup by one opportunity's correlation id returns a connected chain with no causation gap. The chain holds at least a brain/model decision, a risk verdict, a node order, a venue acknowledgement or simulated fill, a ledger entry and a learning-loop record."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EVID", "LEDGER", "REPLAY"],
+    "notes": "Two raw extractions of the same M p34 cell are merged here.\n\nThere is a tension with G p14, which samples distributed traces ('sampled correlation IDs', OBS-024), while M says 'each' opportunity. Read together: every opportunity carries a correlation chain in the event record, and only the distributed-trace view is sampled.\n\nIn-tree, qip_core::lineage::Lineage puts correlation_id, causation_id and an optional trace_id on every event, and qip-events' EventLog indexes events by correlation (by_correlation). Whether that chain reaches the ledger and the learning loop for every opportunity is for scoring to establish.\n\nFlags dropped: NEW_DEPENDENCY and MANAGED_SERVICE. The stack half of the M p34 cell is OBS-008, and this requirement names no service.\n\nThe venue link here is a simulated fill, because paper trading is absolute. Master Phase 1 exits with the node, risk, venue and ledger links. The brain, model and learning-loop links arrive with their components."
+  },
+  {
+    "id": "OBS-010",
+    "domain": "OBS",
+    "title": "Every action is traced from goal to attributed effect as one lineage graph",
+    "statement": "Action observability records GoalSpec -> InterventionPlan -> approvals -> ActionIntent -> external/internal effects -> EffectAttribution as one lineage graph per action.",
+    "rationale": "If an action's effect cannot be traced back to the goal and to the approvals that allowed it, nobody can be held to account for the action. If the effect is not attributed, the planner learns nothing from it.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "41", "section": "§29 Autonomous Platform Operations / AIOps"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying a shadow-mode intervention yields a graph with no orphan node. From the EffectAttribution node, the graph reaches through ActionIntent to every approval and the InterventionPlan, and back to exactly one GoalSpec."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["AGENCY", "EVID", "GOV"],
+    "notes": "Master Phase 10 (causal agency) begins shadow-only (M p42). Conflict C1 blocks external effects, so in this repository the graph can only be exercised for shadow or internal effects. The neighbouring §29 bullet on causal-policy drift shrinking autonomy is AGENCY-054."
+  },
+  {
+    "id": "OBS-011",
+    "domain": "OBS",
+    "title": "Communications channels are monitored for integrity and conduct",
+    "statement": "Communications/channel health covers identity integrity, delivery/reach metrics, provenance/disclosure checks, policy violations and anomalous coordination patterns.",
+    "rationale": "A channel that has been impersonated, publishes without disclosure, or is being used in a coordinated pattern is a conduct problem before it is an operations problem. It has to become visible as early as a latency regression does.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "41", "section": "§29 Autonomous Platform Operations / AIOps"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture channel has a mismatched identity, a post missing its disclosure, a policy-violating message and a burst of coordinated posts. Monitoring raises one health finding per category, and each names the channel."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["AGENCY", "COMPLIANCE"],
+    "notes": "Conflict C1 blocks public communications (ADR 0003 and the security rules), so in this repository channel health can only be built against simulated channels. Post-publication monitoring by the Conduct Brain is AGENCY-038, and the conduct gate itself is AGENCY-037."
+  },
+  {
+    "id": "OBS-012",
+    "domain": "OBS",
+    "title": "AIOps operates and remediates the platform autonomously within runbooks and safety envelopes",
+    "statement": "AIOps can operate and remediate the platform autonomously, within runbooks and safety envelopes.",
+    "rationale": "This is the completeness target for operations. The detection, triage, remediation and follow-up pieces should add up to a platform that recovers from routine faults without a person and never acts outside what was approved.",
+    "kind": "acceptance",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "In a scheduled non-production game day, routine faults are injected: a crashed service, a failed rollout, a lagging consumer. The SRE agent detects, triages and remediates each through a runbook with no human action. An injected fault that no runbook covers is escalated, not acted on."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CICD", "RES"],
+    "notes": "Kept separate from OBS-005. This item states that the capability exists, OBS-005 states the bound on it, and they are verified differently. Neither §29 nor §31 defines 'safety envelopes'. They are read here as master Phase 8's authority envelopes plus the paper-trading boundary, and no remediation may relax either."
+  },
+  {
+    "id": "OBS-013",
+    "domain": "OBS",
+    "title": "fabric-observe exports Fabric metrics, traces and health as native OTel",
+    "statement": "The Fabric's observability component, fabric-observe, exports Fabric metrics, traces and health natively as OpenTelemetry metrics.",
+    "rationale": "The broker's own state (quorum ack, partition lag, under-replication) decides whether the platform's record is durable. It has to reach the same telemetry path as every other component.",
+    "kind": "nfr",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7 Rust Fabric component rows — fabric-observe"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A three-broker test cluster exports publish-quorum latency, partition lag and broker health over OTLP to a stub collector. Each series is present with its broker and partition labels."
+    },
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["FABRIC"],
+    "notes": "ARCH-063 includes OTel in the GCP Phase 2 exit test. NEW_DEPENDENCY for the same reason as OBS-008 (conflict C2). The dependency-free alternative is the in-tree OTLP/JSON encoding in qip-observability. Whether an in-tree Fabric broker exists at all is scored under FABRIC."
+  },
+  {
+    "id": "OBS-014",
+    "domain": "OBS",
+    "title": "Fabric liveness is observed without depending on the Fabric's own topics",
+    "statement": "Fabric liveness is observed through a path that does not rely on the Fabric's own event topics, so a Fabric that cannot deliver events still reports its health.",
+    "rationale": "If a broker reports its liveness as an event on itself, it goes silent exactly when it is down, and silence reads as 'nothing to report'. The health path has to survive the failure it exists to report.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7 Rust Fabric component rows — fabric-observe ('fabric observability does not rely on its own event topics for liveness')"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Every Fabric topic is stalled: brokers are up, but no partition leader can accept an append. The out-of-band health path still reports each broker's state and the stall, and a monitor reading only that path detects it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "RES"],
+    "notes": "The raw extraction of this G p8 row kept only its first clause. This second clause is split out from the same source cell because it can be verified on its own. G p8 §7.2 says the same of the P4 telemetry class: 'direct OTel remains primary health path' (OBS-040). The parent row's NEW_DEPENDENCY flag was dropped because any out-of-band endpoint can provide an independent health path, such as the health port qip-edge-node already serves."
+  },
+  {
+    "id": "OBS-015",
+    "domain": "OBS",
+    "title": "Reflex and Fabric export telemetry asynchronously to regional collectors",
+    "statement": "Reflex and Fabric export their telemetry asynchronously to collectors in their own region.",
+    "rationale": "The hot path cannot wait for a collector. A collector in another region would add a WAN hop and a cross-region failure to every export.",
+    "kind": "nfr",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — Instrumentation bullet ('Reflex/Fabric export asynchronously to regional collectors')"}
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "With the regional collector's ingest paused, Reflex decision latency and Fabric publish-quorum latency stay within their SLOs, and the exporter's bounded queue drops or samples instead of growing. The configured collector endpoint is in the exporter's own region."
+    },
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["REFLEX", "FABRIC"],
+    "notes": "The diagram's regional-cell view labels the OTel Collectors node 'Async metrics/logs/traces' (H L173). ADR 0032 places a collector inside the VPC, speaking plaintext OTLP, with all three central roots draining to it.\n\nThe edge node serves a Prometheus exposition on its health port instead of exporting, so the Reflex half has no export path yet.\n\nThe in-tree drains (the openobserve.rs module in qip-api, qip-fastbrain and qip-deepbrain) run on their own thread with an explicit timeout, which is the asynchronous shape this item asks for."
+  },
+  {
+    "id": "OBS-016",
+    "domain": "OBS",
+    "title": "No observability call may block order processing or execution",
+    "statement": "No logging, metric, trace or telemetry-export call may block order processing or any other execution path.",
+    "rationale": "Telemetry exists to describe execution. If a slow log sink or an unreachable collector can delay an order, observability has become a dependency of the hot path, and its outages become trading outages.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — Instrumentation bullet ('no logging call may block order processing')"},
+      {"doc": "G", "page": "23", "section": "§28 Explicit Anti-Patterns ('Observability that blocks execution')"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "The log sink and the collector are made to block indefinitely. A Reflex cell keeps accepting, risk-checking and sending simulated orders at its benchmarked latency, and no order-path thread is found waiting on a telemetry call."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "EXEC"],
+    "notes": "G p14 states this for logging and order processing. G p23 widens it to all observability and all execution, and the wider form is kept. The other half of the G p23 anti-pattern is OBS-022.\n\nIn-tree, qip-edge's Cell records into a qip_observability metrics registry held behind a mutex. That is an in-memory write, not I/O. qip-edge-node renders its /metrics exposition on the thread that flushes the journal, not on the order path. Whether contention on the registry lock can delay Cell::work is for scoring to establish."
+  },
+  {
+    "id": "OBS-017",
+    "domain": "OBS",
+    "title": "Metrics are collected by Managed Service for Prometheus into Cloud Monitoring",
+    "statement": "Metrics are collected by Google Cloud Managed Service for Prometheus and are stored and queried in Cloud Monitoring.",
+    "rationale": "With one managed metrics store for every plane, SLOs, alerts and rollout comparators all read the same numbers, and nobody has to operate a Prometheus fleet.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — Metrics bullet"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog for This Platform — Cloud Monitoring and Managed Service for Prometheus rows"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "A plan for an environment with workloads shows a Managed Prometheus collection path (sidecar or collector) for every metrics-emitting workload, writing to the environment project's Cloud Monitoring."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP"],
+    "notes": "Three raw items are merged here: the placement half of the G p14 metrics bullet, a separate extraction of the same placement, and G p18's two catalogue rows. The diagram's CI/CD view names the same backend on its 'Observability / SLOs' node (H L361).\n\nDivergence: ADR 0028 (accepted) adopted OpenObserve over OTLP as the metrics, logs and traces backend, in place of Managed Prometheus. M p34 ('OpenObserve/compatible') agrees with ADR 0028 and G does not. ADR 0099 does not list the divergence.\n\nSeparately, modules/cloudrun declares the Managed Prometheus sidecar for Cloud Run but renders it only when metrics_collector_image_digest is set. That value is null everywhere, because the only published image fails the Trivy gate on an unfixed CRITICAL."
+  },
+  {
+    "id": "OBS-018",
+    "domain": "OBS",
+    "title": "Every service reports the four golden signals",
+    "statement": "Every service reports the golden signals: latency, traffic, errors and saturation.",
+    "rationale": "The golden signals are the minimum an operator needs to tell a slow service from an overloaded one or a failing one. They are the same for every service, so a gap is easy to spot and cheap to fix.",
+    "kind": "nfr",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — Metrics bullet ('Golden signals')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each deployable binary is driven with a fixed request mix that includes failures. Each exposes a latency histogram, a request counter, an error counter and a saturation gauge, and all four move under the drive."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from the G p14 metrics bullet, which also names the backend (OBS-017) and the domain metrics (OBS-019). G says only 'golden signals'; the four named here are the conventional SRE set. MANAGED_SERVICE was dropped because emitting the signals does not depend on where they are stored."
+  },
+  {
+    "id": "OBS-019",
+    "domain": "OBS",
+    "title": "The nine named domain metrics are emitted",
+    "statement": "Alongside the golden signals, the platform emits these domain metrics: decision p99, venue ack, Fabric quorum ack, partition lag, mirror lag, ledger commit, reconciliation breaks, model freshness and package activation.",
+    "rationale": "These numbers say whether the platform is doing its job, not just whether its processes are up. A service can be healthy while decisions are slow, the ledger lags, or a package never activated.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — Metrics bullet (domain metrics list)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A paper-trading run through one Reflex cell, the Fabric and the ledger writer produces a series for each metric whose component exists, each recorded at the seam where the fact becomes known. Mirror lag and model freshness are checked once their components exist."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "FABRIC", "LEDGER", "MODEL"],
+    "notes": "Priority is P0 because seven of the nine belong to GCP Phases 2-4. Mirror lag needs selective cross-region mirroring (GCP Phase 7), and model freshness needs the model lifecycle (GCP Phase 8).\n\nIn-tree, both planes already record reconciliation breaks (qip_edge_reconciliation_breaks_total, qip_central_reconciliation_breaks_total), and qip-kernel records stage durations. Fabric quorum ack and partition lag depend on the Fabric broker, which is scored under FABRIC. OBS-032 and OBS-034 turn several of these metrics into SLOs. MANAGED_SERVICE was dropped because emission does not depend on the backend."
+  },
+  {
+    "id": "OBS-020",
+    "domain": "OBS",
+    "title": "Application and control logs go to Cloud Logging",
+    "statement": "Application and control-plane logs are written to Cloud Logging.",
+    "rationale": "One managed log store per project, with IAM and retention handled for it, keeps the debugging and audit trail off hand-run infrastructure.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — Logs bullet ('Cloud Logging for application/control logs')"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog for This Platform — Cloud Logging row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every workload identity holds log-writer permission in its own project. Any log sink declared routes only to Cloud Logging buckets, and no workload is configured to ship application logs anywhere else."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP"],
+    "notes": "Split from the G p14 logs bullet. Sampling is OBS-021 and raw history is OBS-022. Cloud Run sends container stdout/stderr to Cloud Logging without configuration, so any Cloud Run workload meets the placement by default. ADR 0028 also sends logs to OpenObserve, so scoring should say which store is authoritative."
+  },
+  {
+    "id": "OBS-021",
+    "domain": "OBS",
+    "title": "High-rate paths sample their logs strictly",
+    "statement": "Logging on high-rate paths is strictly sampled, not emitted per event.",
+    "rationale": "A log line per tick or per order at hot-path rates is both a cost problem and a latency problem, and those lines hold nothing the Fabric journal does not already hold.",
+    "kind": "nfr",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — Logs bullet ('strict sampling on high-rate paths')"}
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "A Reflex cell is driven at its rated message rate for a fixed window. The log volume it produces is bounded by the configured sample rate, not proportional to the message count."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "FINOPS"],
+    "notes": "Neither blueprint defines a rate or threshold for 'high-rate'. Read this with OBS-016 (never block) and OBS-022 (raw history is not logged at all). MANAGED_SERVICE was dropped because sampling happens in the producer, whatever the backend. P0 because the first Reflex cell (GCP Phase 3) has high-rate paths and this protects them."
+  },
+  {
+    "id": "OBS-022",
+    "domain": "OBS",
+    "title": "Raw tick and decision history is kept in the Fabric and GCS, never in log ingestion",
+    "statement": "Raw tick and decision history is kept in the Fabric journal and the GCS archive. It is never emitted at tick rate into Cloud Logging or any other general-purpose log ingestion.",
+    "rationale": "Log ingestion is priced and retained for human debugging. At tick rate it costs more than the archive, samples away data a replay needs, and creates a second, lossy source of truth for the history.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — Logs bullet ('raw tick/decision history belongs in Fabric/GCS, not verbose log ingestion')"},
+      {"doc": "G", "page": "23", "section": "§28 Explicit Anti-Patterns ('emits raw tick rate directly into general-purpose log ingestion')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In a run at replay rate, log volume does not depend on tick count, while the journal holds every tick and decision. No code path writes a per-tick or per-decision record to a logger."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["TICK", "DATA", "FINOPS"],
+    "notes": "The second half of the G p23 anti-pattern is merged here; the first half is OBS-016. The boundaries rule also forbids 'a second source of truth for a fact the event log already holds'. Where the history is kept is for the TICK and FABRIC domains to hold. This item is only the prohibition on logging it."
+  },
+  {
+    "id": "OBS-023",
+    "domain": "OBS",
+    "title": "Warm and API workflows are traced in Cloud Trace",
+    "statement": "Distributed traces for warm-path and API workflows are recorded in Cloud Trace.",
+    "rationale": "In the warm services, latency hides between services, and request traces are where it shows. A managed trace store makes those traces queryable without anyone operating one.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — Traces bullet ('Cloud Trace for warm/API workflows')"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog for This Platform — Cloud Trace row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every warm/API workload identity holds trace-agent permission, and its configured trace exporter reaches Cloud Trace, directly or through the collector."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["API", "GCP"],
+    "notes": "ADR 0028 sends traces to OpenObserve instead, replacing ADR 0026's Cloud Trace recommendation. ADR 0099 does not list this divergence. The hot path is excluded by design (OBS-024, OBS-025). P1 because the warm services land in GCP Phase 6."
+  },
+  {
+    "id": "OBS-024",
+    "domain": "OBS",
+    "title": "Sampled trace correlation IDs are carried in Reflex and Fabric event metadata",
+    "statement": "For sampled traces, the correlation ID is carried into Reflex and Fabric event metadata, so a warm/API trace can be joined to the hot-path events it caused.",
+    "rationale": "The hot path cannot join a distributed trace, but it can carry the trace's ID. Without the ID, a trace ends at the Fabric boundary, and 'what did this request cause' has no answer.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — Traces bullet ('sampled correlation IDs bridge into Reflex/Fabric event metadata')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An API request carrying a sampled trace produces Reflex/Fabric events whose metadata holds that trace's ID. A lookup by that ID returns both the trace's spans and the events."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "REFLEX", "CONTRACT"],
+    "notes": "In-tree, qip_core::lineage::Lineage puts correlation_id, causation_id and an optional trace_id on every event, and qip-events' EventLog indexes events by correlation. That is the metadata this item asks for, carried on the in-tree log instead of a Fabric. MANAGED_SERVICE was dropped because this item is about event metadata, not Cloud Trace."
+  },
+  {
+    "id": "OBS-025",
+    "domain": "OBS",
+    "title": "Trace bridging never forces a distributed-trace network call on Reflex or Fabric",
+    "statement": "Bridging traces into Reflex and Fabric never requires a Reflex or Fabric component to make a distributed-trace network call. The correlation ID travels in event metadata only.",
+    "rationale": "Exporting a span from the hot path costs a network round trip per decision and brings its own failure modes. An ID in metadata costs bytes, not a call.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — Traces bullet ('without forcing distributed-trace network calls')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In a harness with no network route to any trace endpoint, a Reflex cell's decision path completes at its benchmarked latency and opens no socket to a trace endpoint."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "FABRIC"],
+    "notes": "Two raw items quoted the same clause. This complements OBS-016 (no blocking) and OBS-015 (asynchronous export): trace bridging is not an export at all. The traces-bullet extraction carried MANAGED_SERVICE, which was dropped because the requirement is a prohibition on the hot path and names no service."
+  },
+  {
+    "id": "OBS-026",
+    "domain": "OBS",
+    "title": "Network paths are observable through flow logs, connectivity tests, load-balancer telemetry and link metrics",
+    "statement": "Network observability uses VPC Flow Logs where appropriate, Connectivity Tests and Network Intelligence Center tooling, load-balancer telemetry, and Interconnect/VPN metrics.",
+    "rationale": "Latency and reachability failures between regions and venues are network failures first. Without flow and link telemetry, a missed arbitrage leg and a dropped peer link look the same.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — Network bullet"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog for This Platform — Network Intelligence Center / Connectivity Tests row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan enables flow logs on the subnets that carry Reflex, Fabric and mesh traffic, declares Connectivity Tests for the venue, mesh and collector paths, and enables logging on every load balancer."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET"],
+    "notes": "Interconnect/VPN metrics apply only once multi-region links exist (GCP Phase 7). 'Where appropriate' is not defined. Flow logs are charged per GB, so choosing which subnets get them is a FinOps decision."
+  },
+  {
+    "id": "OBS-027",
+    "domain": "OBS",
+    "title": "Every plane and every dependency has its own SLOs",
+    "statement": "SLOs are defined per plane and per dependency.",
+    "rationale": "A plane-level SLO says whether the plane is healthy. A dependency SLO says which neighbour it is waiting on. An incident needs both to reach the right owner.",
+    "kind": "slo",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — SLOs bullet ('per plane and dependency')"}
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every plane in the platform's plane list, and every declared dependency between planes, has at least one SLO with a target, a window and a source series."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ARCH"],
+    "notes": "G p15's table (OBS-031 to OBS-037) gives the per-plane examples. Neither blueprint lists dependency SLOs. P1 because the planes arrive across GCP Phases 2-7. Their own tables cover the Phase 1-4 planes at P0."
+  },
+  {
+    "id": "OBS-028",
+    "domain": "OBS",
+    "title": "Error budgets drive release policy",
+    "statement": "Each SLO carries an error budget, and the budget's state drives release policy for the plane it belongs to.",
+    "rationale": "Without a budget, whether to ship or to stabilise is argued case by case. With one, an exhausted budget holds releases to that plane mechanically, and a healthy budget allows them.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — SLOs bullet ('error budgets that drive release policy')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With a fixture plane's error budget exhausted, the release pipeline refuses a promotion to that plane and records the budget as the reason. With budget remaining, the same promotion proceeds."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CICD"],
+    "notes": "The policy itself is not specified: freeze, slow down, or fixes only. This is distinct from OBS-006, which reads a rollout's own SLOs during the rollout. This gate reads the plane's accumulated budget before a rollout starts."
+  },
+  {
+    "id": "OBS-029",
+    "domain": "OBS",
+    "title": "Fabric backlog and ledger reconciliation are product SLOs",
+    "statement": "Fabric backlog and ledger reconciliation are product SLOs, reported and owned with the product's objectives, not only as infrastructure metrics.",
+    "rationale": "A Fabric backlog is outcomes the ledger has not yet seen. A reconciliation break is a book that disagrees with the venue. Both are wrong answers to the desk, not slow servers, so they belong with the objectives the desk reads.",
+    "kind": "slo",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — SLOs bullet ('Fabric backlog and ledger reconciliation are product SLOs')"}
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The product SLO catalogue (the one the desk-facing console reports) contains an objective on Fabric consumer backlog and an objective on reconciliation mismatch age, each with a target and a source series."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "LEDGER"],
+    "notes": "One classification rule covers both metrics. They are kept together because the rule, not either metric, is the requirement. The component-level objectives are in OBS-032 (consumer lag, archive lag) and OBS-034 (reconciliation mismatch age, outcome-to-ledger lag).\n\nIn-tree, both planes record reconciliation breaks, and alert policies exist for edge and central reconciliation breaks. Every one of those policies is gated on workload_metrics_exist, which is false everywhere."
+  },
+  {
+    "id": "OBS-030",
+    "domain": "OBS",
+    "title": "Every autonomous remediation action is audited",
+    "statement": "Every rollback, restart, drain or scale action the SRE agent executes is recorded in an audit trail.",
+    "rationale": "If nobody can reconstruct an autonomous action afterwards, it cannot be told apart from an intrusion. The audit record is what lets a person review what the agent did and why.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§16 Observability, SRE and AIOps — AIOps bullet ('with audit')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "After the agent executes a runbook action in a fixture, an append-only audit record exists naming the runbook, the triggering incident, the target resource and the result. The agent's identity cannot modify or delete that record."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "SEC"],
+    "notes": "Split from the G p14 AIOps bullet. Diagnosis is OBS-004, the bound on actions is OBS-005, and opening incidents and PRs is OBS-007.\n\nOn GCP, Cloud Audit Logs (G p14 §15) capture the control-plane calls but not the agent's reasoning. The platform's hash-chained event log is where the rest belongs.\n\nAgents have read-only access to production telemetry by default (CICD-031). These actions are the exceptions that runbooks grant."
+  },
+  {
+    "id": "OBS-031",
+    "domain": "OBS",
+    "title": "Reflex SLOs: decision latency, venue round trip, book age, risk-gate latency, dropped feed messages",
+    "statement": "Reflex has SLOs on market-event-to-decision latency at p99 and p99.9, venue round-trip time, stale-book age, local risk-gate latency and dropped feed messages.",
+    "rationale": "These five are what make Reflex fast and safe. A slow decision misses the opportunity, and a stale book prices it wrong. A slow risk gate either delays every order or tempts someone to bypass it.",
+    "kind": "slo",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§16 SLO table (Component: Reflex)"}
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "A Reflex cell at rated load on a recorded feed reports all five series. Its p99/p99.9 decision latency comes from a histogram whose buckets are fine enough to resolve the target."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "MARKETDATA"],
+    "notes": "G gives these as 'examples' and sets no targets. In-tree, qip-edge publishes per-pass series (freshness, refusals, orders, netting) and qip-edge-node serves them. The node runs passes only with QIP_VENUE_FEED=simulated, and no execution node is deployed (execution_nodes = {} in every environment). Measured hot-path costs are in docs/performance/budgets.md. Here 'venue round-trip' is measured against the simulated venue."
+  },
+  {
+    "id": "OBS-032",
+    "domain": "OBS",
+    "title": "Fabric SLOs: quorum latency, availability, replication, consumer/mirror/archive lag, schema rejects",
+    "statement": "The Fabric has SLOs on publish-quorum latency at p99, broker availability, partition under-replication, consumer lag, mirror lag, archive lag and schema reject rate.",
+    "rationale": "Each is a way the platform's durable record can fall behind or become fragile without any service reporting an error.",
+    "kind": "slo",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§16 SLO table (Component: Fabric)"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "In a three-broker test cluster, stopping one broker moves the under-replication and availability series. Freezing a consumer moves consumer lag, and publishing an incompatible schema moves the reject rate. Each moves by the amount injected."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC"],
+    "notes": "Mirror lag applies from GCP Phase 7 (selective cross-region mirrors). G p22 §25's 'broker backpressure' and 'bad schema' game days exercise the consumer-lag and schema-reject objectives. Conflict C2 constrains how the Fabric is built."
+  },
+  {
+    "id": "OBS-033",
+    "domain": "OBS",
+    "title": "Warm-service SLOs: request latency and errors, saturation, pod disruption, circuit opens",
+    "statement": "Warm services on GKE have SLOs on request p99 latency and error rate, saturation, pod disruption and dependency circuit-breaker opens.",
+    "rationale": "These are the warm plane's golden signals plus its two characteristic failure modes: pods evicted from under it, and dependencies it has stopped calling.",
+    "kind": "slo",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§16 SLO table (Component: GKE)"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "In a test environment, killing a serving instance moves the disruption series and failing a dependency moves the circuit-open series. Request p99 and error rate are reported per service."
+    },
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["GCP", "API"],
+    "notes": "Conflict C3: ADR 0024 retired Kubernetes for Cloud Run, so in this repository the warm plane is Cloud Run. 'Pod disruption' has no direct counterpart there; the nearest is instance restarts. Request latency, error rate, saturation and circuit opens apply unchanged. KUBERNETES is kept because the source row names GKE. P1 because the regional service plane is GCP Phase 6."
+  },
+  {
+    "id": "OBS-034",
+    "domain": "OBS",
+    "title": "Ledger SLOs: commit latency, outcome-to-ledger lag, reconciliation mismatch age, abort rate",
+    "statement": "The ledger has SLOs on Spanner commit latency at p99, outcome-to-ledger lag, reconciliation mismatch age and transaction abort rate.",
+    "rationale": "The ledger is financial truth. Lag means the book is behind what happened, and a mismatch that keeps ageing is a break nobody resolved.",
+    "kind": "slo",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§16 SLO table (Component: Ledger)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Ledger writes are denied for a window (G p22 §25 'ledger outage'). Outcome-to-ledger lag rises during the window and returns to zero after idempotent catch-up. An injected unreconciled break makes mismatch age grow until it is resolved."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER"],
+    "notes": "Conflict C4: in this repository the ledger store is not Spanner (ADR 0089, file-backed log). 'Spanner commit p99' is read as the commit latency of whatever store holds the ledger. G p15 §17 says to monitor outcome-to-ledger backlog when the Spanner leader region fails. Reconciliation mismatch age is also a product SLO (OBS-029)."
+  },
+  {
+    "id": "OBS-035",
+    "domain": "OBS",
+    "title": "Data SLOs: archive delay, re-fetch health, Bigtable latency, knowledge and BigQuery freshness, lineage completeness",
+    "statement": "The data plane has SLOs on GCS retained-archive delay, source re-fetch health, Bigtable p99 latency, knowledge-delta freshness, BigQuery ingestion freshness and lineage completeness.",
+    "rationale": "Data that arrives late or without lineage produces backtests and beliefs nobody should trust, and none of these failures raises an error by itself.",
+    "kind": "slo",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§16 SLO table (Component: Data)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A data-plane fixture with a delayed archive upload, a failing source re-fetch and a record missing lineage moves the three corresponding series. Lineage completeness is reported as the share of records that have full lineage."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA", "EVID"],
+    "notes": "Conflict C4 covers Bigtable and BigQuery. Lineage completeness corresponds to M p41's 'data provenance' SLO (OBS-002). P1 because the data plane is GCP Phase 5."
+  },
+  {
+    "id": "OBS-036",
+    "domain": "OBS",
+    "title": "AI SLOs: package freshness, calibration drift, training queue, tool failures, quantum-classical delta",
+    "statement": "The AI plane has SLOs on model package freshness, calibration and drift, training/evaluation queue, agent tool failures and the quantum-versus-classical benchmark delta.",
+    "rationale": "A stale or miscalibrated model keeps answering confidently. The quantum-classical delta is the measured benefit ADR 0006 requires before a quantum method runs at all.",
+    "kind": "slo",
+    "priority": "P2",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§16 SLO table (Component: AI)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each of three faults moves its series: a model package held past its freshness bound, a calibration set with injected drift, and a quantum job run beside its classical baseline. The benchmark delta is reported with both arms."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "QUANTUM"],
+    "notes": "The quantum/classical delta is ADR 0006's classical baseline expressed as an objective. M p41's 'quantum job success' (OBS-002) is a different measure: it measures the job, not the benefit. P2 because the cognitive/AI plane is GCP Phase 8."
+  },
+  {
+    "id": "OBS-037",
+    "domain": "OBS",
+    "title": "Delivery SLOs: lead time, rollback rate, reproducibility, attestation coverage, config drift, autonomous PR outcomes",
+    "statement": "Delivery has SLOs on lead time, rollback rate, build reproducibility, attestation coverage, config drift and autonomous PR acceptance/rework rate.",
+    "rationale": "These say whether the path to production is fast, safe and truthful. A build that cannot be reproduced, or an image without attestation, is a supply-chain gap, and config drift is a production state nobody deployed.",
+    "kind": "slo",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§16 SLO table (Component: Delivery)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Delivery metrics computed from CI and deploy history report each objective. An unattested image in a test registry lowers attestation coverage, and a manual configuration change raises drift."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CICD"],
+    "notes": "P0 because the supply chain is GCP Phase 1. Autonomous PR acceptance/rework rate applies only from GCP Phase 9. Attestation coverage and build reproducibility are the measured form of the supply-chain controls held in CICD."
+  },
+  {
+    "id": "OBS-038",
+    "domain": "OBS",
+    "title": "SLOs and alert policies are defined in Cloud Monitoring",
+    "statement": "SLO definitions and alert policies are held in Cloud Monitoring.",
+    "rationale": "Alerts defined beside the metrics they read are evaluated by the same service that stores those metrics, and they keep working when any workload fails.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog for This Platform — Cloud Monitoring row ('Metrics/SLOs/alerts')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares a Cloud Monitoring SLO and an alert policy for each P0 objective. Each policy names a metric that a binary actually records outside tests."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP"],
+    "notes": "In-tree, infrastructure/terraform/modules/observability declares nine google_monitoring_alert_policy resources, each counted on workload_metrics_exist. That flag is false everywhere, because Cloud Monitoring refuses a policy naming a descriptor it has never ingested. No SLO resource is declared: a grep for google_monitoring_slo under infrastructure/terraform finds none.\n\nUnder ADR 0028, the metrics these policies would read go to OpenObserve. That divergence has to be resolved, because an alert in Cloud Monitoring cannot read a series that only reaches OpenObserve."
+  },
+  {
+    "id": "OBS-039",
+    "domain": "OBS",
+    "title": "Collectors forward to the backends asynchronously over OTLP or Google APIs",
+    "statement": "OpenTelemetry collectors forward telemetry to Cloud Monitoring, Managed Prometheus, Cloud Logging and Cloud Trace over OTLP or Google APIs, asynchronously. They sample and buffer so that a backend's slowness never reaches production workloads.",
+    "rationale": "The collector is the buffer between production and a backend the platform does not control. If it forwards synchronously or without a buffer, a backend incident becomes a production incident.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — OTel collectors row"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "The backend endpoint is made unreachable for a window. The collector buffers up to its bound and then samples or drops. Producers see no added latency or errors, and the buffered data arrives after the backend returns."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "NEW_DEPENDENCY"],
+    "secondary_domains": ["GCP", "NET"],
+    "notes": "ADR 0032 places the collector inside the VPC, speaking plaintext OTLP on a private address, and forwarding to OpenObserve (ADR 0028) instead of the four Google backends named here. NEW_DEPENDENCY covers two things: the collector, a third-party binary, and any OTel crate (conflict C2). The in-tree drains speak OTLP/JSON over the workspace's own HTTP client."
+  },
+  {
+    "id": "OBS-040",
+    "domain": "OBS",
+    "title": "OTel/AIOps telemetry enters the Fabric at QoS class P4",
+    "statement": "Telemetry events from the OTel collectors and AIOps agents are published into the regional Fabric at QoS class P4, the lowest priority.",
+    "rationale": "On the Fabric, telemetry can be consumed by AIOps like any other event stream. At the lowest class, it is the first thing sampled or dropped under pressure, before any control or outcome traffic.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "H", "page": "L178-184", "section": "§02 Regional Cell (edges) — otel->b1 'data'"},
+      {"doc": "H", "page": "L196-221", "section": "§03 Native Rust Event & Control Fabric (nodes/edges) — p_tel 'OTel / AIOps' labelled P4, edge p_tel->f3 'data'"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Under broker backpressure from a frozen sink, P4 telemetry is sampled or dropped oldest-first. Meanwhile, P0 control and P1 outcome publishes keep their quorum latency."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC"],
+    "notes": "The raw extraction of H L178-184 read the edge as collectors pulling from Broker A. In the diagram, e(a,b) runs from a to b, as every producer edge shows (node->b1, for example). So otel->b1 is collectors publishing into Broker A. That matches the Fabric view's producer edge p_tel->f3 into Broker C. The two views draw different brokers, which is a partition-placement detail, not a contract.\n\nG p8 §7.2 defines P4 Telemetry as 'best effort or RF2; sample/drop oldest under pressure; direct OTel remains primary health path'. G p8 §7.1 says low-priority telemetry is sampled or dropped before control or outcome traffic is starved. Those QoS mechanics are FABRIC's to hold.\n\nMANAGED_SERVICE from both raw items was dropped. The Fabric is the product's own Rust broker, and nothing on this edge is a managed service."
+  },
+  {
+    "id": "OBS-041",
+    "domain": "OBS",
+    "title": "Both promotion paths report their outcomes into Observability",
+    "statement": "Both Argo Rollouts (warm services) and the Reflex Package Controller (Reflex VMs) report deployment and runtime outcomes into the Observability/SLO system.",
+    "rationale": "Reflex packages are not rolled out as pods. A rollout gate that listens only to the Kubernetes path would never see a bad Reflex package, so both paths have to report into the one place that the gate and the SRE agent read.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "H", "page": "L364-366", "section": "§07 CI/CD, GitOps & Autonomous Development (edges roll->obs, pkg->obs)"}
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "In a test environment, one warm-service rollout and one Reflex package activation each produce an outcome record in the observability store. Each record is tagged with its artifact digest, cohort and result, and the rollout comparator reads it."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["CICD", "REFLEX"],
+    "notes": "Split from the H item. The SRE/Learning agent's consumption of these outcomes is OBS-007.\n\nConflict C3: Argo Rollouts assumes GKE, and ADR 0024 retired Kubernetes for Cloud Run. ADR 0036 brought Argo back on a control-plane cluster only, and ADR 0093 suspended that cluster.\n\nG p13 §14.2 step 9 says Reflex and the Fabric use component-specific drain/stage/epoch activation instead of pod canaries, which is why the package controller reports separately."
+  }
+]

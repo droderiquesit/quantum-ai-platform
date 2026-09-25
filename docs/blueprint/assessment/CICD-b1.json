@@ -1,0 +1,842 @@
+[
+  {
+    "id": "CICD-001",
+    "status": "PARTIAL",
+    "current": "ci.yml's fourteen jobs (format, lint, test [cargo test --workspace --all-features --no-fail-fast, which runs qip-acceptance's performance.rs, stress.rs, resilience.rs, paper_boundary.rs, security.rs, truth_loop.rs, acceptance.rs alongside unit tests], release-build, dependency-policy, security-audit, dependency-supply-chain, sbom, frontend-portal, frontend-landing, trivy, trunk, infrastructure, secrets); deploy.yml's gate job refuses to build/sign/ship unless ci.yml concluded success for the exact commit. backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_pipeline_gates_on_everything_it_claims_to, ::nothing_deploys_that_has_not_passed_the_test_suite, ::the_pipeline_fails_on_warnings.",
+    "evidence": [
+      ".github/workflows/ci.yml:9-11,27-393",
+      ".github/workflows/deploy.yml:91-262 (gate job: refuses unless ci concluded success for the exact commit)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3956 (the_pipeline_gates_on_everything_it_claims_to)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4193 (nothing_deploys_that_has_not_passed_the_test_suite)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3974 (the_pipeline_fails_on_warnings)"
+    ],
+    "gap": "No single named promotion policy tracks 'simulation', 'integration', 'security', 'performance' and 'paper-trading' as five distinct, independently-reported gate verdicts; the substance is folded into one blanket cargo test --workspace job plus separate scan jobs, and there is no environment-promotion stage beyond dev to refuse a promotion on (Kargo's chain past dev is unexercised, see CICD-009/CICD-022).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "CICD-009",
+      "CICD-022"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test infrastructure -- the_pipeline_gates_on_everything_it_claims_to nothing_deploys_that_has_not_passed_the_test_suite; a new acceptance test would need to assert a promotion policy structure naming all five gates by name and refusing on any missing/failing verdict.",
+    "work_item": "E01",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The five named dimensions are each covered somewhere (paper boundary: infrastructure.rs/acceptance.rs; performance: performance.rs's cost-budget tests; security: trivy/cargo-audit/cargo-deny; integration: qip-acceptance itself), but no artifact states the five-gate promotion precondition as such. verify: evidence corrected - deploy.yml:41-58 is the `on:` trigger block; the gate job is :91-262. Status PARTIAL kept. Added context: the_pipeline_gates_on_everything_it_claims_to is a bare `contains` over ci.yml text, not a five-verdict promotion policy; and main has no branch protection or ruleset (gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-09-25)), so a failing gate stops deploy.yml but does not stop a merge."
+  },
+  {
+    "id": "CICD-002",
+    "status": "BLOCKED",
+    "current": "GitHub (ci.yml/deploy.yml/infra.yml/vendor.yml/image.yml) and Artifact Registry (infrastructure/terraform/modules/registry) are real and applied in dev. Builds run on GitHub-hosted runners, not Cloud Build private pools (no google_cloudbuild_worker_pool or 'gcloud builds submit' reference anywhere in .github/workflows/ or infrastructure/terraform/). Argo CD and Kargo exist as vendored, digest-pinned manifests (infrastructure/gitops/argocd, infrastructure/gitops/kargo) but have never completed a bootstrap because the Argo CD image fails vendor.yml's CRITICAL scan gate (CVE-2025-68121) and the control-plane cluster is suspended (ADR 0093). Config Sync is absent (Config Connector, a different controller, manages GCP resources as CRDs instead). Argo Rollouts is absent from the tree entirely.",
+    "evidence": [
+      ".github/workflows/deploy.yml:263-593 (images job: build on a GitHub-hosted runner, no Cloud Build pool)",
+      "infrastructure/terraform/modules/registry/main.tf:19-91",
+      "infrastructure/gitops/bootstrap/README.md:1-96 (never completed a bootstrap)",
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:103-131 (cluster suspended, ADR 0093)",
+      "docs/adr/0099-...md (conflict register row C3)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4078 (the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it)",
+      "infrastructure/terraform/main.tf:529 (module \"registry\", instantiated unconditionally in the root dev applies)",
+      "scripts/deploy-frontends.sh:255,297 (gcloud run deploy algorik-portal / algorik-landing - a second deploy path)"
+    ],
+    "gap": "Cloud Build private pools are not used at all (GitHub Actions runners substitute); Config Sync is absent; Argo Rollouts is absent; Argo CD/Kargo have never reconciled anything in any environment because their cluster is suspended on a Trivy CRITICAL finding with no upstream fix. Two further gaps the row did not record: (1) the verification requires that 'no second build or deploy path exists beside them', and scripts/deploy-frontends.sh deploys the portal and landing with `gcloud run deploy` outside the named toolchain; (2) Cloud Build private pools are not a C3 item (C3 names GKE, Config Sync, Argo CD, Kargo, Argo Rollouts and Service Mesh), so that piece is MISSING rather than C3-blocked - its only hard blocker is external:billing.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3",
+    "verification": "infra.yml action=up against dev, watched for the GitOps bootstrap step to reach Synced/Healthy (currently fails at the Argo CD image scan per infrastructure/CLAUDE.md); no test currently asserts Cloud Build pool usage because none exists.",
+    "work_item": "E14",
+    "tier": "T3",
+    "size": "L",
+    "notes": "ADR 0099 C3 register row names the runtime record needed: whether warm services and the GitOps control plane return to GKE at all, weighed against ADR 0024's retirement of Kubernetes. verify: status BLOCKED/C3 kept (Config Sync, Argo CD, Kargo, Argo Rollouts are exactly C3's row). Flags set for the permitted form per the programme rule: GitHub Actions and Artifact Registry exist (implemented), the registry's immutable-tag/no-delete grant is tested at infrastructure.rs:4078 (tested), the registry module is instantiated in the root dev applies (integrated); deployable false because billing is disabled on dev and deploy.yml fails at image push (ADR 0099 C8 row). Evidence range for the images job corrected from :91-263 (that is the gate job) to :263-593."
+  },
+  {
+    "id": "CICD-003",
+    "status": "PARTIAL",
+    "current": "qip-registry Terraform module enforces immutable tags with CI push/no-delete IAM; Binary Authorization's project policy defaults to REQUIRE_ATTESTATION; deploy.yml builds, scans, pushes and signs every image by digest; every Dockerfile FROM is pinned by @sha256 digest; gitops.rs's is_digest_pinned() is applied across every catalogue entry, every environment manifest and every image override.",
+    "evidence": [
+      "infrastructure/terraform/modules/registry/main.tf:19-91 (immutable tags)",
+      "infrastructure/terraform/modules/binaryauthorization/main.tf:54-199 (REQUIRE_ATTESTATION default rule)",
+      "infrastructure/docker/Dockerfile:32 (FROM rust:1.94-alpine@sha256:...)",
+      "infrastructure/docker/portal.Dockerfile:17,24; infrastructure/docker/landing.Dockerfile:12,22 (digest-pinned FROM)",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:1068 (is_digest_pinned), used at :2367,:2949,:5096",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:2240 (every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held)",
+      ".github/workflows/ci.yml, deploy.yml, infra.yml, image.yml, vendor.yml (38 `uses:` lines, every one pinned by a movable tag: actions/checkout@v4, google-github-actions/auth@v2, setup-gcloud@v2, Swatinem/rust-cache@v2, hashicorp/setup-terraform@v3, actions/setup-node@v4, trunk-io/trunk-action@v1, actions/upload-artifact@v4)",
+      "docs/reports/security-baseline.md:25 (github-actions-mutable-action-tag, 45 findings: 'Real, medium ... v2.1 \u00a728 lists \"mutable latest tags\" as an anti-pattern ... Work item: pin every action to a full commit SHA')",
+      "infrastructure/gitops/envs/{test,stage,prod}/kustomization.yaml:23,26,29 and envs/dev/kustomization.yaml:45 (digest: TO-PIN)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2490 (every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy)",
+      "docs/adr/0093-...md (dev 'runs no workload at all' - admission has never evaluated an image)"
+    ],
+    "gap": "Three parts of the requirement are not held. (1) Package pins: every GitHub Actions `uses:` in the five workflows (38 references) is pinned by a movable tag (@v4/@v2/@v1), not a commit SHA; the repository's own docs/reports/security-baseline.md:25 scores this as a real finding against exactly this anti-pattern (G \u00a728 'mutable latest tags'), and no acceptance test guards action pins. (2) 'Every deployment reference names an immutable, signed artifact digest': qip-portal in dev and all three trading binaries in test/stage/prod still carry the `TO-PIN` placeholder - fail-closed (Argo CD cannot render it) and not a tag, but not a digest either. (3) 'Admission refuses a workload specified by tag' is held only statically (REQUIRE_ATTESTATION + ENFORCED_BLOCK_AND_AUDIT_LOG in Terraform; useDefault on every RunService; --binary-authorization=default in deploy-frontends.sh); dev runs no workload (ADR 0093), so admission has never been observed refusing anything.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test gitops -- every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held every_environment_awaiting_its_first_promotion_is_still_unpinned_and_dev_is_not; plus a new acceptance test asserting every `uses:` in .github/workflows names a 40-hex commit SHA, and an observed admission refusal of a tag-specified or unattested image once dev runs a workload.",
+    "work_item": "E01",
+    "tier": "T1",
+    "size": "S",
+    "notes": "e2e is false only because no environment past dev has ever been promoted through the (suspended) GitOps chain; the digest-only invariant itself is proven statically and holds today. verify: downgraded COMPLETE -> PARTIAL. The image/manifest half is genuinely and rigorously proven (gitops.rs digest walks, registry immutable tags, BinAuthz deny-by-default, digest-pinned Dockerfile FROMs - all re-checked), but the requirement also covers package pins and every GitHub Action is pinned by a mutable tag, which the repo's own security baseline lists as an open real finding; TO-PIN placeholders remain in four environments' manifests; and the admission-refusal half has never run against a workload."
+  },
+  {
+    "id": "CICD-004",
+    "status": "PARTIAL",
+    "current": "ADR 0036's design: Terraform owns what runs on (foundation), Argo CD/Kargo own what runs (workloads); a post-sync hook reads the serving Cloud Run revision's status.traffic and fails the sync unless it carries the manifest's digest, closing the original 'crash-looped on boot produced a green pipeline' gap. docs/operations/gitops-exceptions.md enumerates every path that is deliberately outside GitOps and why (execution nodes, frontends, the foundation itself, the controllers' own bootstrap, the GitHub App keys, OpenObserve's seeded credential).",
+    "evidence": [
+      "docs/operations/gitops-exceptions.md:1-60",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:4142 (a_promotion_names_who_verifies_it)",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:4288 (a_sync_that_fails_says_why_rather_than_reporting_healthy)",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:4342 (the_hook_that_proves_a_promotion_may_read_the_revision_it_proves)"
+    ],
+    "gap": "'Nothing under ADR 0036 is applied' (docs/operations/gitops-exceptions.md's own words) \u2014 the GitOps control plane is suspended, so no drift detection is actually running in any environment today; no periodic rebuild-from-zero game day exists anywhere in the repository (grep found none); scripts/deploy-frontends.sh and the execution-node rolling-replace remain script/console-adjacent paths outside GitOps, documented as exceptions rather than closed.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CICD-002",
+      "CICD-009"
+    ],
+    "blocked_by": "C3",
+    "verification": "A game day destroying dev's environment and rebuilding solely from Terraform+Git+artifacts, which cannot run today because the GitOps cluster is suspended; the design-level test is cargo test -p qip-acceptance --test gitops -- a_promotion_names_who_verifies_it a_sync_that_fails_says_why_rather_than_reporting_healthy.",
+    "work_item": "E14",
+    "tier": "T3",
+    "size": "M",
+    "notes": "The design and its unit-level proofs are real and mutation-tested; what's missing is a live cluster to run drift detection against, which is the same C3 blocker as CICD-002/009. verify: tested true -> false. The cited gitops.rs tests statically inspect the post-sync hook's manifests (who verifies a promotion, what a failed sync says); none demonstrates the requirement's property - that a console-only change is detected or that a rebuild from Terraform+Git reproduces running state - and no test enforces docs/operations/gitops-exceptions.md. blocked_by C3 left in place for the workload half, but the foundation half is not C3-blocked: infra.yml has no scheduled `terraform plan -detailed-exitcode` drift check and no rebuild game day, and both are buildable without Kubernetes."
+  },
+  {
+    "id": "CICD-005",
+    "status": "PARTIAL",
+    "current": "qip_kernel::model_serving::Platform::promote_model/model_manifest and qip_edge::Cell::check_models_promoted enforce digest equality: a cell only runs a strategy naming a model whose DistilledModel::digest() matches what the kernel promoted, journalled before the registry adopts it. Tested in backend/crates/runtime/qip-kernel/tests/serving.rs.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:1-36 (module doc: 'nothing here signs... a digest under the mesh envelope's HMAC proves the bytes and the sender, not who trained the model, ADR 0043')",
+      "backend/crates/edge/qip-edge/src/cell.rs:2579,2645 (check_models_promoted)",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs (a_promotion_is_journalled_before_the_registry_adopts_it_and_names_the_distillate_by_the_digest_a_cell_checks, an_artifact_whose_arity_disagrees_with_its_card_is_refused_before_anything_changes)",
+      "backend/crates/edge/qip-edge/src/cell.rs:2579 (the only load-path check, inside Cell - reached from qip-edge-node only)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:929 (promote_model is reached from qip-deepbrain)"
+    ],
+    "gap": "Digest equality is checked and tested, but no cryptographic signature verifies provenance \u2014 the module's own doc comment says so explicitly. No model ships through the Artifact-Registry/Binary-Authorization supply chain the way container images do, so the rule holds only within the training/serving loop, not as a 'signed package delivered through the supply chain' as required.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test serving -- a_promotion_is_journalled_before_the_registry_adopts_it_and_names_the_distillate_by_the_digest_a_cell_checks",
+    "work_item": "E13",
+    "tier": "T3",
+    "size": "M",
+    "notes": "Closing the gap needs asymmetric signing (ADR 0043 names this as one of three gaps no in-tree code may close) or a KMS-backed signature the way Binary Authorization signs container images. verify: deployable true -> false. The requirement is about load paths, and the only load-path digest check is Cell::check_models_promoted, which runs only in qip-edge-node; every environment has execution_nodes = {}. The promotion side is reached from qip-deepbrain, so integrated stays true. Status PARTIAL kept."
+  },
+  {
+    "id": "CICD-006",
+    "status": "PARTIAL",
+    "current": "scripts/check-secrets.sh (8 regexes, git grep over the tracked working tree) runs in ci.yml's secrets job with fetch-depth 0; gitleaks@8.30.0 runs via trunk-io/trunk-action; backend/crates/tests/qip-acceptance/tests/security.rs::no_secret_value_appears_in_any_committed_configuration and infrastructure.rs::no_secret_value_appears_in_the_terraform assert the same over their respective trees.",
+    "evidence": [
+      "scripts/check-secrets.sh:1-85",
+      ".github/workflows/ci.yml:393-399 (secrets job, fetch-depth 0)",
+      ".trunk/trunk.yaml:26-31 (gitleaks@8.30.0)",
+      "backend/crates/tests/qip-acceptance/tests/security.rs:952 (no_secret_value_appears_in_any_committed_configuration)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:48 (no_secret_value_appears_in_the_terraform)"
+    ],
+    "gap": "check-secrets.sh only greps the current working tree despite the fetch-depth:0 checkout, so a secret introduced and later removed in an earlier commit would not be caught; gitleaks via trunk lints the changed/working tree by default, not necessarily full repository history either \u2014 'a secret scanner run over the full history of every repository' is not demonstrated.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "./scripts/check-secrets.sh (exit 0, 'nothing found'); cargo test -p qip-acceptance --test security -- no_secret_value_appears_in_any_committed_configuration",
+    "work_item": "E01",
+    "tier": "T1",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "CICD-007",
+    "status": "PARTIAL",
+    "current": "Every change, agent-authored or human, reaches production only by the same route: a commit on a branch, ci.yml's fourteen-job gate, and deploy.yml's gate job which refuses to build unless the triggering ci run is this repo's own and succeeded for the exact commit. infrastructure.rs::production_is_never_deployed_automatically and ::the_infrastructure_workflow_cannot_touch_production hold the same shape for infra.yml. .claude/hooks/guard-dangerous-command.py blocks destructive shell patterns before any Bash call in any session, agent or human.",
+    "evidence": [
+      ".github/workflows/deploy.yml:91-262 (gate job verifies the triggering ci run)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4724 (production_is_never_deployed_automatically)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4340 (the_infrastructure_workflow_cannot_touch_production)",
+      ".claude/hooks/guard-dangerous-command.py:1-181",
+      "gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-09-25)",
+      ".github/workflows/deploy.yml:18-20 (expects a `prod` GitHub environment with required reviewers; none exists)"
+    ],
+    "gap": "No game-day test gives an agent a malicious instruction and confirms it cannot merge, promote or deploy around the gates (G \u00a725's acceptance criterion for this row). The merge boundary is now verified absent rather than unknown: main has no branch protection and no ruleset, so any identity with push access - including an agent session running under the owner's credentials - can push to main without review or a green ci run. deploy.yml still refuses to build unless ci succeeded for the commit, so the deploy boundary holds; but the `prod` GitHub environment with required reviewers that deploy.yml's header relies on does not exist (only `dev`, with no protection rules). chief-orchestrator's tool grant includes unrestricted Bash, and .claude/settings.json only ask-lists git push.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "CICD-011",
+      "CICD-021"
+    ],
+    "blocked_by": "",
+    "verification": "No existing test; would need an acceptance/game-day test simulating an agent identity attempting to bypass ci.yml/deploy.yml's gate jobs and asserting refusal, plus confirmation of GitHub branch-protection rules on main.",
+    "work_item": "E01",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The pipeline itself is real and gates every artifact that does reach deploy.yml; the unverified part is whether anything besides convention stops an agent session from merging directly. verify: gap rewritten with evidence read this session via gh api (the previous text said branch protection was unreadable). Evidence line for the gate job corrected from :41-58 (the `on:` block) to :91-262. Status PARTIAL and flags kept."
+  },
+  {
+    "id": "CICD-008",
+    "status": "INCORRECT",
+    "current": "nothing. The architecture is deliberately project-scoped rather than folder-scoped: infrastructure/terraform/modules/scc/ORGANISATION-SCOPED.md states there is no org_id variable and none is added, because 'a variable that exists so a module can claim organisation-level reach, in a repository that has no organisation-level anything else, would be the beginning of a shell rather than a capability.' modules/cicd (build/signing identity) and modules/registry (Artifact Registry) are instantiated inside each environment's own project (e.g. algorik-dev), not in a separate, isolated supply-chain-boundary project or folder.",
+    "evidence": [
+      "infrastructure/terraform/modules/scc/ORGANISATION-SCOPED.md:1-13",
+      "infrastructure/terraform/main.tf (module wiring \u2014 one project per environment, no folder resource anywhere)",
+      "infrastructure/terraform/modules/cicd/main.tf:17-306 (identity lives inside the environment project)",
+      "infrastructure/terraform/main.tf:515 (module \"cicd\"), :529 (module \"registry\"), :772 (module \"binary_authorization\" - the attestor's KMS signing key), :956 (module \"gitops_control_plane\") - all in var.project_id, i.e. algorik-dev",
+      "infrastructure/environments/dev/terraform.tfvars:36 (project_id = \"algorik-dev\"; test/stage/prod are \"unprovisioned\")"
+    ],
+    "gap": "No GCP folder hierarchy exists anywhere in the Terraform tree (confirmed: no google_folder resource in the codebase). Build, registry, signing and (nominally) GitOps live inside the same project as the workloads they build for, not in an isolated 'prod/engineering' boundary a compromised workload project cannot reach \u2014 the opposite of what the requirement asks for, and a deliberate, documented divergence rather than an oversight.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "grep -rn google_folder infrastructure/terraform/ (currently empty); a real implementation would need a new Terraform plan showing a prod/engineering folder created and every build/registry/signing resource moved into it.",
+    "work_item": "E14",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Not in ADR 0099's C1-C8 register \u2014 this is a standing architectural choice (project-scoped isolation) that has not been reconciled against the blueprint's folder model at all. verify: MISSING -> INCORRECT. The verification explicitly forbids 'any build pool, registry, signing key or GitOps controller in any workload project', and the tree does exactly that: the registry, the Binary Authorization attestor's KMS signing key and the GitOps control-plane module are all instantiated in the workload project algorik-dev. Closing this means moving existing resources, not only adding a folder, which MISSING understated. Evidence range for modules/cicd/main.tf corrected (the file is 306 lines)."
+  },
+  {
+    "id": "CICD-009",
+    "status": "BLOCKED",
+    "current": "infrastructure/gitops/argocd (one AppProject, one Application per environment; dev automated prune+selfHeal, others manual) and infrastructure/gitops/kargo (one Warehouse subscribed to dev's registry, four Stages, prod's own promotion template's only step is 'fail') exist as vendored, digest-pinned manifests. gitops.rs tests only_dev_syncs_automatically_and_it_prunes_and_heals, the_kargo_stages_chain_dev_to_test_to_stage_to_prod_from_one_warehouse and prod_is_promoted_by_nobody_until_an_adr_says_otherwise exercise the manifests statically.",
+    "evidence": [
+      "infrastructure/gitops/argocd/overlays/dev/application.yaml:1-34",
+      "infrastructure/gitops/kargo/base/stages.yaml:14-105",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:1568 (only_dev_syncs_automatically_and_it_prunes_and_heals)",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:1956 (the_kargo_stages_chain_dev_to_test_to_stage_to_prod_from_one_warehouse)",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:2030 (prod_is_promoted_by_nobody_until_an_adr_says_otherwise)"
+    ],
+    "gap": "The whole control plane is suspended (ADR 0093) and has never completed a bootstrap (Argo CD's image fails vendor.yml's CRITICAL gate, CVE-2025-68121), so no controller is reconciling anything in any environment today. Config Sync (the specific product named \u2014 cluster baseline/policies/CRDs) is entirely absent; Config Connector, a different controller with a different job, is what exists. Argo Rollouts is absent from the tree.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CICD-002"
+    ],
+    "blocked_by": "C3",
+    "verification": "cargo test -p qip-acceptance --test gitops -- only_dev_syncs_automatically_and_it_prunes_and_heals the_kargo_stages_chain_dev_to_test_to_stage_to_prod_from_one_warehouse; live reconciliation cannot be proven until the cluster is unsuspended per ADR 0093's condition (an Argo CD release that passes the scan gate).",
+    "work_item": "E14",
+    "tier": "T3",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "CICD-010",
+    "status": "PARTIAL",
+    "current": ".claude/agents/chief-orchestrator.md ('Planner' equivalent: reads the reconciliation matrix and git log, builds a dependency-aware task graph, assigns to specialist agents, holds TaskCreate/TaskUpdate/TaskList) plus .claude/skills/vision-to-plan/SKILL.md, which formalises the same loop with acceptance criteria and owners.",
+    "evidence": [
+      ".claude/agents/chief-orchestrator.md:1-38",
+      ".claude/skills/vision-to-plan/SKILL.md:1-24"
+    ],
+    "gap": "Not reached from any composition root \u2014 this is Claude Code harness configuration, not platform code, and reached_from_production is n/a per the current-state map's own record for .claude/agents. No test demonstrates 'given a scoped goal, the planner emits a plan in which each task is assigned to one of the four roles and traces back to the goal'; documentation.rs's the_documented_agent_count_matches_the_roster only checks the roster is documented consistently, not planning behaviour.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No existing test; the_documented_agent_count_matches_the_roster (backend/crates/tests/qip-acceptance/tests/documentation.rs) only verifies the roster's names and count.",
+    "work_item": "E00",
+    "tier": "T1",
+    "size": "S",
+    "notes": "This is the actual mechanism by which this very assessment task is being carried out \u2014 real and used daily, but process tooling, not platform runtime."
+  },
+  {
+    "id": "CICD-011",
+    "status": "MISSING",
+    "current": "nothing structurally enforces this. .claude/agents/chief-orchestrator.md grants tools: Read, Grep, Glob, Write, Edit, Bash, Agent, TaskCreate, TaskUpdate, TaskList \u2014 Bash is unrestricted, so nothing at the tool-permission layer prevents running git merge/push or a deploy command. .claude/settings.json's permissions.ask (not deny) lists git push, gcloud, kubectl and terraform apply, meaning each requires an interactive approval prompt rather than being structurally unavailable to that identity.",
+    "evidence": [
+      ".claude/agents/chief-orchestrator.md:4 (tools line, includes Bash)",
+      ".claude/settings.json (permissions.ask \u2014 git push, gcloud, kubectl, terraform apply are ask-listed, not denied)",
+      "gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-09-25)"
+    ],
+    "gap": "'No merge right on any protected branch, no write access to the environment repository, no deploy API permission' is not implemented at any identity or tooling layer found; the only control is an interactive approval prompt, which a human operator (not the platform) can grant. At the repository layer there is no merge right to withhold: main is unprotected and has no ruleset, so any identity that can push can put a change on main.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CICD-007"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; would need to show the orchestrator's own identity (whichever GitHub/GCP account it might act as) holding no merge or deploy permission at the platform/IAM layer.",
+    "work_item": "E00",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status MISSING confirmed and strengthened - branch protection and rulesets read via gh api this session are absent."
+  },
+  {
+    "id": "CICD-012",
+    "status": "PARTIAL",
+    "current": ".claude/agents/backend-engineer.md, frontend-engineer.md, data-ai-engineer.md, cloud-platform-engineer.md (each Read/Grep/Glob/Write/Edit/Bash) plus .claude/skills/implement-slice/SKILL.md, which directs an implementer to write the change and its tests together.",
+    "evidence": [
+      ".claude/agents/backend-engineer.md:1-5",
+      ".claude/skills/implement-slice/SKILL.md (per current-state delivery.json record 22, one of eight ~36-line skill playbooks)"
+    ],
+    "gap": "No test or recorded evidence in the repository demonstrates 'an agent-authored PR is on a branch the coder created, and contains both the change and tests that exercise the change' as a checked property; this is inferred from the working pattern (git log shows this session and prior ones committing code+tests together) rather than verified by name.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No existing test.",
+    "work_item": "E00",
+    "tier": "T1",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "CICD-013",
+    "status": "PARTIAL",
+    "current": ".claude/settings.json's permissions.deny (19 patterns: 17 Read, 2 Edit) blocks the Read and Edit tools from key material, state files, ~/.ssh, ~/.aws, ~/.config/gcloud and ~/.kube/config for this harness session, matching .claude/rules/01-security-and-safety.md's stated policy. The same file allow-lists Bash(cat:*), Bash(head:*) and Bash(tail:*), and whether the harness applies Read denies to shell reads was not verified here. No GCP service account scoped to an agent-execution sandbox exists anywhere in Terraform; agents run under whichever identity the operator's own session already has.",
+    "evidence": [
+      ".claude/settings.json (permissions.deny block)",
+      ".claude/rules/01-security-and-safety.md (deny-list rationale)",
+      "docs/adr/0098-...md decision 1 (the desktop, not a scoped cloud sandbox, is the worker fabric)"
+    ],
+    "gap": "This is a workstation file-read denylist, not 'scoped service accounts... sandboxed credentials that grant no access to production secrets' for ephemeral cloud workers \u2014 that concept (a distinct IAM identity per agent worker, confined to a sandbox project) does not exist in this repository at all. The cloud form is explicitly deferred by ADR 0098 pending a measured rung and an owner cost ceiling.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CICD-027",
+      "CICD-028"
+    ],
+    "blocked_by": "",
+    "verification": "No test; a game-day simulation would need a real scoped worker identity to attempt reading a production secret and be refused, which requires the deferred cloud fabric to exist first.",
+    "work_item": "E13",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: blocked_by C3 -> '' and work_item E99 -> E13. The requirement names no Kubernetes object; a scoped worker service account with no secretAccessor binding is a Terraform IAM resource the conflict register does not refuse, and it could front today's desktop workers by impersonation. What ADR 0098 decision 6 defers on an owner cost ceiling is the cloud worker fabric, not the identity. Deny-list count corrected from 16 to 19, and the Bash(cat:*) allow noted. Status PARTIAL kept."
+  },
+  {
+    "id": "CICD-014",
+    "status": "PARTIAL",
+    "current": "cargo test --workspace covers unit and integration tests; backend/crates/tests/qip-acceptance/tests/performance.rs (33 named cost-budget tests, e.g. book_apply_costs_what_the_budget_says) functions as a performance-baseline suite; truth_loop.rs's two_journeys_through_the_loop_produce_byte_identical_outcomes and resilience.rs cover replay/determinism ground. .claude/agents/test-engineer.md plus the test-change skill are the human/agent-invoked role.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/performance.rs (33 tests, module doc: the_execution_measurements_document_names_only_tests_this_file_holds_and_says_what_a_number_is_not)",
+      "backend/crates/tests/qip-acceptance/tests/truth_loop.rs (two_journeys_through_the_loop_produce_byte_identical_outcomes)",
+      ".claude/agents/test-engineer.md; .claude/skills/test-change/SKILL.md",
+      "backend/crates/libs/qip-core/src/rng.rs:10 (in-tree Rng); backend/crates/services/qip-streaming/tests/envelope_integrity.rs:13,116 (a randomized property test already built on it)"
+    ],
+    "gap": "No fuzz harness exists \u2014 the requirement's own policy_flags note a fuzzing crate (e.g. libfuzzer-sys) is outside ADR 0002's two-dependency policy and needs its own ADR first. No distinct 'model tests' category exists because no ML model ships in production yet. No single role or report packages all seven categories (unit/integration/property/fuzz/replay/performance/model) with a baseline comparison in one place \u2014 coverage is real but scattered across many files run under one blanket cargo test job.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test performance --no-fail-fast; cargo test -p qip-acceptance --test truth_loop -- two_journeys_through_the_loop_produce_byte_identical_outcomes",
+    "work_item": "E01",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Fuzzing specifically is blocked on a new dependency (C2-adjacent), not on Kubernetes. verify: blocked_by C2 -> ''. C2 applies only when the behaviour genuinely needs a refused crate; randomized property and fuzz-style input generation can be built on qip_core::Rng, which tests already use (envelope_integrity.rs). A coverage-guided libFuzzer harness would need a crate, but the requirement names fuzz tests, not a specific engine. Test count corrected: grep -c '#[test]' performance.rs prints 33, not 34."
+  },
+  {
+    "id": "CICD-015",
+    "status": "PARTIAL",
+    "current": "ci.yml's test and lint jobs are hard failures with -D warnings and no waiver flag; deploy.yml's gate job refuses to build unless ci concluded success for the exact commit, so a failing gate cannot be waived at deploy. Nothing enforces the merge half.",
+    "evidence": [
+      ".github/workflows/ci.yml (test job: cargo test --workspace --all-features --no-fail-fast; lint job: -D warnings)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3974 (the_pipeline_fails_on_warnings)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4193 (nothing_deploys_that_has_not_passed_the_test_suite)",
+      ".github/workflows/deploy.yml:91-262 (gate job)",
+      "gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-09-25)"
+    ],
+    "gap": "The requirement's check is that 'a PR whose risk or performance gate failed cannot merge', and it does not hold: main has no branch protection and no ruleset, so a red ci run blocks nothing at merge. Nor does anything stop the runner from waiving a gate inside its own change - no acceptance test refuses a new #[ignore], a `continue-on-error` in a workflow, or an edit that drops a job from ci.yml (the_pipeline_gates_on_everything_it_claims_to is a substring check that would miss a removed performance or risk suite).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "CICD-014"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test infrastructure -- nothing_deploys_that_has_not_passed_the_test_suite (deploy half only); the merge half needs required status checks on main and a test refusing #[ignore]/continue-on-error.",
+    "work_item": "E01",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: NEEDS-VALIDATION -> PARTIAL. NEEDS-VALIDATION presumed the behaviour was implemented and only untested; gh api shows main unprotected with no ruleset, so the merge half is not implemented at all. Only the deploy half holds, statically tested by nothing_deploys_that_has_not_passed_the_test_suite."
+  },
+  {
+    "id": "CICD-016",
+    "status": "PARTIAL",
+    "current": "cargo audit (security-audit job), cargo deny check (dependency-supply-chain job), trivy fs --severity CRITICAL,HIGH (trivy job), gitleaks via trunk (secret scan), cargo cyclonedx (sbom job); backend/crates/tests/qip-acceptance/tests/security.rs::the_threat_model_names_every_threat_and_states_what_does_not_stop_it proves a written threat model exists; .claude/agents/security-engineer.md plus the security-review skill are the review role.",
+    "evidence": [
+      ".github/workflows/ci.yml (security-audit, dependency-supply-chain, sbom, trivy jobs)",
+      "backend/crates/tests/qip-acceptance/tests/security.rs:1230 (the_threat_model_names_every_threat_and_states_what_does_not_stop_it)",
+      ".claude/agents/security-engineer.md:1-8"
+    ],
+    "gap": "No dedicated SAST tool exists (clippy is a linter, not a security analyser); no IaC-specific policy scanner exists beyond terraform fmt/validate (no tfsec/checkov equivalent); no single evidence artifact gives 'a result for each named check and a triage decision for every vulnerability found' per change \u2014 each CI job independently passes or fails the whole build rather than producing a structured, per-finding triage record.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "the security-audit/dependency-supply-chain/trivy/sbom jobs in .github/workflows/ci.yml; cargo test -p qip-acceptance --test security -- the_threat_model_names_every_threat_and_states_what_does_not_stop_it",
+    "work_item": "E01",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "CICD-017",
+    "status": "NEEDS-VALIDATION",
+    "current": "trivy job: --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed is a real, live severity threshold that fails the build; cargo audit --deny warnings and cargo deny check are similarly hard-failing.",
+    "evidence": [
+      ".github/workflows/ci.yml (trivy step: --severity CRITICAL,HIGH --exit-code 1)",
+      ".github/workflows/deploy.yml:483-487 (trivy image --severity CRITICAL,HIGH --exit-code 1 before signing and attesting - the promotion-stopping seam)",
+      ".github/workflows/vendor.yml:248-252 (CRITICAL --exit-code 1 on mirrored images)",
+      "backend/crates/tests/qip-acceptance/tests/egress.rs:1940 (one_image_the_critical_gate_refuses_fails_the_run_and_starves_no_other_line - static shape of the vendor gate, no seeded finding)"
+    ],
+    "gap": "No test seeds a finding at exactly the blocking severity and proves refusal, alongside one below the threshold and proves admission \u2014 the infrastructure domain rule itself names this pairing as 'what distinguishes a working gate from one that refuses everything,' and it was not found for this specific gate.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "CICD-016"
+    ],
+    "blocked_by": "",
+    "verification": "No existing test; vendor.yml's own severity behaviour (fails on Argo CD's CRITICAL CVE-2025-68121, per docs/DELIVERY-STATUS.md) is the closest real-world instance of the gate firing, but it was not deliberately seeded as a test case.",
+    "work_item": "E01",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status NEEDS-VALIDATION kept. Evidence extended: the gate that actually stops promotion is deploy.yml's image scan ahead of attestation (an unattested digest is refused by Binary Authorization), not only ci.yml's fs scan. egress.rs:1940 and gitops.rs:3528 check the gates' shape statically; neither seeds a finding at and below the threshold. All scans use --ignore-unfixed, so the effective blocking severity is 'fixable CRITICAL/HIGH', which a policy statement should say."
+  },
+  {
+    "id": "CICD-018",
+    "status": "PARTIAL",
+    "current": "backend/crates/tests/qip-acceptance/tests/architecture.rs (32 named tests) resolves the real dependency graph via cargo metadata and checks: no safety-critical engine reaches a language model, the execution engine is reachable from almost nothing, nothing outside a composition root holds an order manager, no edge cell can reach a language model or issue its own capital. Run as part of ci.yml's blocking test job on every push/PR.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs (module doc + 32 tests)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::no_safety_critical_engine_can_reach_a_language_model",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::nothing_outside_a_composition_root_holds_an_order_manager",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::cargo_resolves_every_manifest_form_that_defeated_a_hand_written_parser"
+    ],
+    "gap": "architecture.rs checks dependency rules and state/order-manager ownership well, but three named clauses have no check: (1) hot-path violations - nothing flags a blocking call added on the hot path, which the verification names explicitly (no test in qip-acceptance or any crate scans for one); (2) latency and failure invariants are not checked structurally before merge (performance.rs budgets are cost measurements, not an invariant check on a diff); (3) ADR conformance is not machine-checked (the_decision_core_named_by_adr_0009_is_the_set_actually_held_to_two covers one ADR). And because main is unprotected, a failing architecture test flags a PR but cannot stop its merge.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test architecture --no-fail-fast; plus a new check that refuses a blocking call (std::thread::sleep, a socket read without a timeout, a lock held across I/O) in the hot-path crates, and required status checks on main.",
+    "work_item": "E01",
+    "tier": "T1",
+    "size": "M",
+    "notes": "Implemented as a deterministic, CI-gated test suite rather than an LLM 'agent' role \u2014 the substance (dependency rules, hot-path/ownership boundaries checked before merge) is real and enforced; the specific 'conformance with ADRs' clause is closer to CICD-019. verify: downgraded COMPLETE -> PARTIAL. The 32 architecture.rs tests are real and CI-gated on push and pull_request, but they cover dependency and ownership rules only; the verification's third seeded case, 'adds a blocking call on the hot path', has no check anywhere in the tree, and the latency/failure-invariant and ADR-conformance clauses are unimplemented. The assessor's own note conceded the ADR clause."
+  },
+  {
+    "id": "CICD-019",
+    "status": "PARTIAL",
+    "current": ".claude/rules/architecture/00-boundaries.md itself is the demonstrated practice: every prior correction in that file cites the rule/ADR it changes by number (e.g. its own note about a mis-citation of ADR 0009, corrected and pointing at ADR 0043).",
+    "evidence": [
+      ".claude/rules/architecture/00-boundaries.md (the file's own dated self-corrections, each naming the ADR that resolves it)"
+    ],
+    "gap": "No automated check enforces this \u2014 nothing scans a diff to a rules/ADR file and requires an ADR-id citation before it can merge; the practice is observed by example in this repository's history, not machine-checked.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No existing test.",
+    "work_item": "E00",
+    "tier": "T1",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "CICD-020",
+    "status": "PARTIAL",
+    "current": ".claude/agents/code-reviewer.md: 'Independently review a diff for correctness, clarity and house standards. Must not review code it wrote.' tools: Read, Grep, Glob, Bash (no Write/Edit).",
+    "evidence": [
+      ".claude/agents/code-reviewer.md:1-8",
+      "gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-09-25)"
+    ],
+    "gap": "No CI gate or test requires a reviewer risk summary to exist before merge, or blocks merge until a requested change is addressed \u2014 invocation is at the orchestrator's discretion, not structurally required. The blocking half cannot hold at the repository layer either: main has no branch protection or ruleset, so no requested-changes review can block a merge.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CICD-021"
+    ],
+    "blocked_by": "",
+    "verification": "No existing test.",
+    "work_item": "E00",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status PARTIAL kept; gap extended with the branch-protection evidence read via gh api."
+  },
+  {
+    "id": "CICD-021",
+    "status": "PARTIAL",
+    "current": "code-reviewer.md and security-engineer.md both withhold the Write/Edit tools and state 'must not review its own implementation' / 'must not review code it wrote' in their frontmatter descriptions; both still hold Bash, which can write files, so the withholding is a convention signal rather than a structural control on modification. A subagent runs in its own context, which is the one piece of independence the harness actually provides.",
+    "evidence": [
+      ".claude/agents/code-reviewer.md:4 (tools: Read, Grep, Glob, Bash)",
+      ".claude/agents/security-engineer.md:4 (tools: Read, Grep, Glob, Bash)"
+    ],
+    "gap": "No agent frontmatter names a distinct model (no 'model:' field anywhere in .claude/agents/*.md), so 'a separate model from the primary coder' is not configured; no record captures, per PR, which identities/models/contexts reviewed vs. authored a change, so the inspection method this row names cannot be run today.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No existing test.",
+    "work_item": "E00",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: current corrected - the row called Write/Edit withholding 'a real, checkable structural control on self-modification', but both reviewer agents hold Bash, which writes files (sed -i, redirection). Status PARTIAL and flags kept. The previous note ('Write/Edit withholding is real evidence of contextual independence') was replaced because it restated the overstated claim."
+  },
+  {
+    "id": "CICD-022",
+    "status": "PARTIAL",
+    "current": "infrastructure/gitops/kargo/base/promotiontask.yaml is the Release Agent equivalent: clones the repository, edits envs/<stage>/kustomization.yaml by digest via kustomize-set-image, commits and pushes as a write-scoped GitHub App identity. gitops.rs::the_kargo_stages_chain_dev_to_test_to_stage_to_prod_from_one_warehouse and ::the_warehouse_subscribes_to_every_catalogue_binary_and_never_selects_by_semver exercise it statically.",
+    "evidence": [
+      "infrastructure/gitops/kargo/base/promotiontask.yaml",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:1820 (the_warehouse_subscribes_to_every_catalogue_binary_and_never_selects_by_semver)",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:1956"
+    ],
+    "gap": "Never executed in a live environment \u2014 the control-plane cluster it depends on is suspended (ADR 0093) and has never completed a bootstrap (see CICD-002/009). The Warehouse's registry/attestor pairing beyond dev is an open architecture question per infrastructure/gitops/kargo/README.md ('one registry+attestor for all environments, vs. one warehouse per environment').",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CICD-002",
+      "CICD-009"
+    ],
+    "blocked_by": "C3",
+    "verification": "cargo test -p qip-acceptance --test gitops -- the_kargo_stages_chain_dev_to_test_to_stage_to_prod_from_one_warehouse; live promotion cannot be proven until the cluster is unsuspended.",
+    "work_item": "E14",
+    "tier": "T3",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "CICD-023",
+    "status": "PARTIAL",
+    "current": "infrastructure.rs::the_infrastructure_workflow_cannot_touch_production and ::production_is_never_deployed_automatically; gitops.rs::the_pipeline_no_longer_moves_a_service_and_still_signs_attests_and_refuses_prod and ::the_prod_refusal_in_the_infrastructure_workflow_refuses_prod_when_it_is_run. docs/operations/gitops-exceptions.md: 'The bootstrap is the only kubectl in any workflow and applies pinned bytes only.'",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4340 (the_infrastructure_workflow_cannot_touch_production)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4724 (production_is_never_deployed_automatically)",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:3503, :3678",
+      "docs/operations/gitops-exceptions.md (Controllers' own bootstrap row)"
+    ],
+    "gap": "This holds structurally for the automated CI/CD pipeline itself (deploy.yml/infra.yml), which is tested. It does not hold for an interactive agent (or human) session: .claude/settings.json's permissions.ask (not deny) allows gcloud/kubectl/terraform apply against a live project after an interactive approval prompt, so nothing prevents a session from making a console-equivalent change by hand if a human approves it in the moment.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "CICD-022"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test infrastructure -- the_infrastructure_workflow_cannot_touch_production production_is_never_deployed_automatically",
+    "work_item": "E01",
+    "tier": "T1",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "CICD-024",
+    "status": "PARTIAL",
+    "current": "Pieces exist, none wired. qip_observability::slo declares \u00a749.1's objectives (blueprint_slos) and Slo::evaluate reports a missed target and the error budget consumed - reached from no composition root (no caller under backend/crates/apps/*/src). .claude/agents/sre-release-engineer.md is the diagnosis role ('diagnose CI and pipeline failures, and assess release readiness'). Rollback is a human re-dispatch of deploy.yml against an earlier attested commit (comments at deploy.yml:395 and :492).",
+    "evidence": [
+      "backend/crates/libs/qip-observability/src/slo.rs:123 (Slo::evaluate), :290 (blueprint_slos)",
+      "backend/crates/tests/qip-acceptance/tests/slo.rs:240 (a_missed_blueprint_target_is_actually_reported_as_missed)",
+      ".claude/agents/sre-release-engineer.md:1-5",
+      ".github/workflows/deploy.yml:395,492 (rollback-by-redispatch comments)"
+    ],
+    "gap": "No rollout is observed and no rollback is triggered automatically: SLO evaluation is library code reached only from tests, nothing scrapes any process and every alert policy is gated behind workload_metrics_exist=false (.claude/rules/domains/observability.md), Argo Rollouts is absent, and no bounded rollback is defined per component. The injected-regression integration check the requirement names cannot run.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test slo -- a_missed_blueprint_target_is_actually_reported_as_missed (SLO-miss arithmetic only); the requirement's own check - an injected SLO regression during a rollout producing a recorded diagnosis and a bounded rollback - has no test.",
+    "work_item": "E12",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: MISSING -> PARTIAL with evidence. The row said 'no automated observation of rollouts or SLOs exists at all', but qip_observability::slo evaluates SLOs and reports misses, tested at slo.rs:240; it is reached only from tests, which the status rules score PARTIAL. integrated/deployable stay false because no composition root calls it."
+  },
+  {
+    "id": "CICD-025",
+    "status": "MISSING",
+    "current": "nothing. No runbook files exist anywhere in the repository.",
+    "evidence": [
+      "(absence) find . -iname '*runbook*' returns no files under backend/, infrastructure/, docs/ops/, scripts/, or .claude/"
+    ],
+    "gap": "No remediation executor exists, signed or unsigned; the requirement is unmet because there is no automatic remediation of any kind to bound.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CICD-024"
+    ],
+    "blocked_by": "",
+    "verification": "No existing test.",
+    "work_item": "E12",
+    "tier": "T3",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "CICD-026",
+    "status": "PARTIAL",
+    "current": ".claude/skills/incident-diagnosis/SKILL.md drives root-causing a failing workflow/deployment/process to 'a root cause with the evidence that establishes it, and a fix or a precise handoff.' chief-orchestrator holds TaskCreate/TaskList.",
+    "evidence": [
+      ".claude/skills/incident-diagnosis/SKILL.md:1-24",
+      ".claude/agents/chief-orchestrator.md (TaskCreate/TaskUpdate/TaskList tools)"
+    ],
+    "gap": "No role in the 13-agent roster is named a Learning Agent (backend-engineer, chief-orchestrator, cloud-platform-engineer, code-reviewer, data-ai-engineer, frontend-engineer, product-manager, security-engineer, solution-architect, sre-release-engineer, technical-writer, test-engineer, ux-designer); no mechanism automatically opens a Blueprint/Issue/Goal item referencing an incident's evidence \u2014 incident-diagnosis hands back a diagnosis, it does not itself write a tracked backlog item.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CICD-024"
+    ],
+    "blocked_by": "",
+    "verification": "No existing test.",
+    "work_item": "E00",
+    "tier": "T1",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "CICD-027",
+    "status": "BLOCKED",
+    "current": "ADR 0098 decision 1: 'The owner's desktop is the worker fabric,' measured at a ceiling of 10 concurrent workers via scripts/worker-capacity.sh. No orchestration runs on the (suspended) management GKE cluster or on any managed agent runtime (e.g. Vertex AI Agent Engine) \u2014 none is provisioned.",
+    "evidence": [
+      "docs/adr/0098-the-development-factory-is-the-orchestration-policy-run-on-the-owners-desktop-with-claude-tiers-and-the-gcp-fabric-waits-on-a-measured-rung.md (decision 1, decision 6)",
+      "scripts/worker-capacity.sh:1-30"
+    ],
+    "gap": "This is the opposite placement of what's required, by a deliberate, recorded owner decision (ADR 0098), not an oversight. Decision 6 names the exact reopening conditions (ladder climbed to the desktop's ceiling with CPU binding and ready work queued, plus an owner cost ceiling) under which a Cloud Run Jobs fabric \u2014 not GKE \u2014 would be built next.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3",
+    "verification": "docs/adr/0098's own decision 6 conditions are the test: six completed tasks per rung recorded in the task log, per docs/plan/algorik-orchestration-policy.md \u00a72.",
+    "work_item": "E99",
+    "tier": "T4",
+    "size": "L",
+    "notes": "ADR 0098 also declines GKE specifically even once reopened, in favour of Cloud Run Jobs in a separate project \u2014 a further divergence from CICD-027's 'management GKE cluster' wording."
+  },
+  {
+    "id": "CICD-028",
+    "status": "MISSING",
+    "current": "No ephemeral GKE Jobs or Cloud Build workers exist (Cloud Build itself is unused \u2014 see CICD-002). docs/plan/algorik-orchestration-policy.md \u00a76 describes a desktop analogue: disjoint-path workers by default, an isolated worktree (created per task, at most one concurrently, ~700 MB each) when paths could overlap or a worker runs a destructive command, and branch-per-worker for shared-state rewrites, merged only by the orchestrator.",
+    "evidence": [
+      "docs/plan/algorik-orchestration-policy.md:210-222 (\u00a76 Isolation)"
+    ],
+    "gap": "The required form (ephemeral GKE Jobs/Cloud Build workers in namespaces or projects created and destroyed per task) does not exist. The desktop worktree mechanism is a different, non-cloud analogue; no test in this repository proves a worktree is actually removed after a task or that a later task cannot read an earlier one's state.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CICD-027"
+    ],
+    "blocked_by": "external:billing",
+    "verification": "No existing test.",
+    "work_item": "E99",
+    "tier": "T4",
+    "size": "L",
+    "notes": "verify: blocked_by C3 -> external:billing. The requirement admits 'ephemeral GKE Jobs or Cloud Build workers'; only the GKE route is C3. The Cloud Build route is not refused by the register, and what stands in its way is billing disabled on dev plus ADR 0098 decision 6's deferral of any cloud worker fabric pending an owner cost ceiling. Status MISSING confirmed: the worktree isolation in docs/plan/algorik-orchestration-policy.md \u00a76 is policy text, and no script in the tree creates or removes a per-task sandbox."
+  },
+  {
+    "id": "CICD-029",
+    "status": "MISSING",
+    "current": "nothing. infrastructure/egress/envoy.yaml confines the platform's own vendor calls (qip-market-ingestion etc.), not agent-worker network reach; no NetworkPolicy or egress allowlist scoped to an agent sandbox exists anywhere in the repository.",
+    "evidence": [
+      "(absence) no NetworkPolicy resource or agent-scoped egress rule found under infrastructure/ or .claude/"
+    ],
+    "gap": "No interim network confinement exists for agent sessions at all, cloud or desktop; the production form is additionally blocked on the suspended management cluster.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CICD-027"
+    ],
+    "blocked_by": "C3",
+    "verification": "No existing test.",
+    "work_item": "E99",
+    "tier": "T4",
+    "size": "L",
+    "notes": "This is one of the four boundaries G \u00a725's own agent-compromise game day names as needing to hold (secret, network, merge, prod-deploy) \u2014 of the four, only the secret boundary (CICD-013's settings.json deny-list) and a partial merge boundary (CICD-011's ask-list) have any implementation today."
+  },
+  {
+    "id": "CICD-030",
+    "status": "PARTIAL",
+    "current": "scripts/model-gateway.mjs refuses to start without ALGORIK_WORKER_MAX_CALLS (a mandatory call ceiling); scripts/worker-capacity.sh measures the sustainable concurrency and binds the ladder (\u00a72 of docs/plan/algorik-orchestration-policy.md: 8\u219216\u219232\u219264\u2192100, climbed only on a measured \u226510% verified-output-per-token gain over six tasks); \u00a78 names global/per-worker budgets and automatic pause at 80% of any budget or on a provider rate limit.",
+    "evidence": [
+      "docs/plan/algorik-orchestration-policy.md:239-266 (\u00a78 Budgets and automatic pause)",
+      "docs/plan/algorik-orchestration-policy.md:12-56 (\u00a71-2 capacity measurement and the ladder)",
+      "scripts/model-gateway.test.mjs (10 tests, 10 pass under node --test on 2026-09-25; every one passes ALGORIK_WORKER_MAX_CALLS=5 as a fixture and none asserts a missing/zero ceiling or an exhausted budget is refused)",
+      "scripts/model-gateway.mjs:163-166 (MAX_CALLS required), :300-301 (budget exhausted refusal) - untested"
+    ],
+    "gap": "The gateway's call ceiling exists in code (model-gateway.mjs:163-166, :300-301) but no test exercises it: all ten tests supply a valid budget as a fixture. The gateway has never routed a live call (no provider credential is present), so the quota protects nothing in practice. The concurrency ladder and the 80%-budget pause are policy text in docs/plan/algorik-orchestration-policy.md \u00a72 and \u00a78, enforced by no code; no test proves 'tasks launched beyond the concurrency quota are queued or refused'.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "node --test scripts/model-gateway.test.mjs (ran 2026-09-25: '# tests 10', '# pass 10', '# fail 0' - none covers the ceiling); a new test asserting configure() without ALGORIK_WORKER_MAX_CALLS reports the problem and a spent ledger refuses the call.",
+    "work_item": "E00",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: tested true -> false and integrated true -> false. The row claimed 'the gateway's fail-closed call-ceiling behaviour is genuinely tested'; it is not - I ran the suite and read every test, and the ceiling is only ever a fixture. The gateway is dev tooling reached from no composition root and has never carried a call. The evidence's 'eight tests' is ten. Status PARTIAL kept."
+  },
+  {
+    "id": "CICD-031",
+    "status": "MISSING",
+    "current": "nothing. No production telemetry surface scoped to platform agents exists to be read at all: .claude/rules/domains/observability.md documents that no Cloud Run service is currently scraped and every alert policy is gated behind workload_metrics_exist=false.",
+    "evidence": [
+      ".claude/rules/domains/observability.md (collection-gap section)"
+    ],
+    "gap": "The requirement presupposes a production telemetry surface that agents might over-reach into; none exists yet for this platform, so the default-read-only rule has nothing to be a default for. No IAM role scoped to 'agent, read-only, production monitoring' exists in Terraform.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No existing test.",
+    "work_item": "E12",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "CICD-032",
+    "status": "PARTIAL",
+    "current": "The acceptance suites construct real Platform/Cell instances against invented observations (acceptance.rs's module doc: 'a market observation from a synthetic venue'; e2e.rs: 'every observation in it is invented in this process'; e2e_live.rs drives loopback listeners); docs/plan/algorik-orchestration-policy.md \u00a74 gate 6 names data classes (risk/execution/capital/compliance/edge source) that never leave the machine for any external provider.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/acceptance.rs:3 ('from a synthetic venue')",
+      "backend/crates/tests/qip-acceptance/tests/e2e_live.rs:1-14",
+      "docs/plan/algorik-orchestration-policy.md:140-142 (\u00a74 gate 6)"
+    ],
+    "gap": "This is a description of how the test suite and the model-gateway data-classification gate work, not a scoped 'agent sandbox' data-provisioning policy with a recorded justification mechanism for any production-data exception; no such exception mechanism exists, though none is currently needed because the platform is paper-only and holds no live customer data.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Any qip-acceptance test run demonstrates fixture-only construction; docs/plan/algorik-orchestration-policy.md \u00a74 gate 6 is the data-classification text.",
+    "work_item": "E00",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: tested/integrated/deployable true -> false. No named test asserts anything about an agent sandbox's data sources or a recorded production-data justification; that the platform's own tests use synthetic data is a property of the test suite, not of a sandbox policy, and no composition root reaches a sandbox. The quoted module-doc text 'fixture data ... no live network or venue calls' appears in no acceptance file and was replaced with text that does. Status PARTIAL kept (paper-only, no production data exists to leak)."
+  },
+  {
+    "id": "CICD-033",
+    "status": "PARTIAL",
+    "current": "scripts/model-gateway.mjs is the one gateway script in the repository; its own doc comment forbids backend/ or frontend/ from importing it, so it is the only path anything in this repository could use to reach an external model provider. node scripts/model-gateway.mjs --probe lists resolved providers keylessly; the credential screen refuses (rather than scrubs) any credential-shaped payload before it would be sent. model-gateway.test.mjs (ten tests) covers credential screening, presets and an unknown preset name.",
+    "evidence": [
+      "scripts/model-gateway.mjs:1-35",
+      "docs/plan/algorik-orchestration-policy.md:86-152 (\u00a73-4)",
+      "scripts/model-gateway.test.mjs:1-139",
+      "scripts/model-gateway.mjs:69-75 (PROVIDERS holds one preset), :109-135 (custom base URL and model accepted)"
+    ],
+    "gap": "No network-level enforcement exists preventing a session from calling a model provider directly (e.g. via curl) instead of through the gateway \u2014 the gateway is the only script that is supposed to be used, by convention and by its own doc comment, not by egress control. In practice, the credential gate for the one chosen provider (Hugging Face) is not met (no token present per docs/plan/algorik-orchestration-policy.md \u00a74), so 'everything routes to Claude' today and the gateway has never actually routed a live call to a non-Anthropic model in this repository's history. Neither half of the verification holds even inside the gateway: configure() accepts any ALGORIK_WORKER_BASE_URL with any ALGORIK_WORKER_MODEL (only a preset *name* is checked, model-gateway.mjs:109-135, and the test at model-gateway.test.mjs:78 exercises exactly that custom path), so there is no approved-model list for a call to be refused against. And the harness's own calls to Claude never pass through the gateway at all.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CICD-034"
+    ],
+    "blocked_by": "",
+    "verification": "node --test scripts/model-gateway.test.mjs; node scripts/model-gateway.mjs --probe",
+    "work_item": "E00",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: tested true -> false. The ten gateway tests cover credential screening and preset/ambiguity handling, a different property; nothing tests 'a direct call fails at egress' or 'a call to an unapproved model is refused', and the second cannot pass because no approved-model list exists. 'Eight tests' corrected to ten. Status PARTIAL kept."
+  },
+  {
+    "id": "CICD-034",
+    "status": "MISSING",
+    "current": "nothing implements custody. scripts/model-gateway.mjs reads a provider key from a local file via ALGORIK_WORKER_API_KEY_FILE / HF_TOKEN_FILE, and falls back to an environment variable with a warning; the file is readable by the same OS user the agent session runs as. No provider credential exists today (policy \u00a74 gate 3 NOT MET).",
+    "evidence": [
+      "docs/plan/algorik-orchestration-policy.md:181-190 (What a credential must not do)",
+      "scripts/model-gateway.mjs:132-160 (_FILE preferred, environment accepted with a warning)"
+    ],
+    "gap": "No GCP Secret Manager involvement exists for this credential at all \u2014 it is dev tooling reading a local file or an environment variable, not a Cloud Run/GKE process mounting a Secret Manager CSI volume the way the platform's own venue credential does. The policy text itself still accepts an environment-variable path 'with a warning,' which is exactly the pattern .claude/rules/01-security-and-safety.md forbids for platform secrets ('a key in the environment is a key in /proc/<pid>/environ'). No agent identity is prevented from holding the credential structurally \u2014 the file-preference is a convention the script follows, not an access control.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CICD-033"
+    ],
+    "blocked_by": "",
+    "verification": "No existing test asserts Secret Manager custody for a model-provider credential; model-gateway.test.mjs tests the credential-screening behaviour, not custody.",
+    "work_item": "E13",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: PARTIAL -> MISSING. Neither clause holds: the credential is not in Secret Manager, and no control stops an agent from reading it (the gateway is invoked by the agent and reads a file the agent can read). The _FILE preference keeps the key out of /proc/<pid>/environ, which is hygiene, not custody. implemented was already false, which PARTIAL contradicted."
+  }
+]

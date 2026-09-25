@@ -1,0 +1,196 @@
+[
+  {
+    "item": "`Capability::WriteResearchMemory` is granted to the LearningAttribution agent but authorised nowhere, and the Desk's ResearchMemory is wired with `Gated::new` (a fixed, never-updated slot) rather than `Upstream::gate` (a live one) — so two of the eighteen governed agents read a research memory that is structurally permanent empty in every deployment",
+    "files": [
+      "backend/crates/libs/qip-agents/src/capability.rs:44",
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs:492",
+      "backend/crates/agents/qip-investment-agents/src/desk.rs:105",
+      "backend/crates/libs/qip-agents/src/runtime.rs:36-46",
+      "backend/crates/agents/qip-investment-agents/src/learning.rs:62,65-71",
+      "backend/crates/agents/qip-investment-agents/src/review.rs:60-73",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4271,4278-4291"
+    ],
+    "category": "risk-control-defect (a capability that cannot fire) / unfinished-migration",
+    "class": "B-refactor",
+    "why": "`Gated::new`'s own doc says a gate built this way 'shares its slot with nothing, so what it holds is fixed for its lifetime'; `Desk::new` builds `memory` this way over the empty `ResearchMemory::new()` platform.rs constructs, and no call site anywhere calls `ctx.authorise(Capability::WriteResearchMemory, ...)` (grep across crates/agents and crates/libs/qip-agents/src confirmed). `LearningAttribution::analyse` and `AdversarialReviewer` therefore always take the `agents.is_empty()` branch in a running deployment even though both pass their own hand-populated-memory tests. This is exactly the shape the repo's own rules name as the template to avoid: 'RiskState::expected_shortfall... a control that cannot fire reads as protection and is not' (.claude/rules/domains/risk-and-execution.md). Migrating `Desk::new` to `Upstream::gate` and adding one write call site (at the LEARN-stage seam that already updates `qip_ai::EpisodicMemory`) closes it without a rewrite.",
+    "blueprint_refs": [
+      "v11.6 title: 'durable knowledge memory'",
+      "v11.6 §23.2 'Registries That Prevent Intelligence From Becoming Fixed' (Memory Registry)",
+      "v11.6 §9 episodic memory"
+    ],
+    "risk": "high",
+    "suggested_epic": "E08"
+  },
+  {
+    "item": "Two independently-defined, identically-named `Episode` types with no shared trait or conversion between them: `qip_ai::memory::episode::Episode` (live, embedded, written every LEARN-stage pass) and `qip_agents::memory::Episode` (agent-research episode, only ever written in tests, per the item above)",
+    "files": [
+      "backend/crates/libs/qip-ai/src/memory/episode.rs:12-40",
+      "backend/crates/libs/qip-agents/src/memory.rs:1-35",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4271 (empty ResearchMemory::new())",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4516,11566 (EpisodicMemory constructed and remember()'d every cycle)"
+    ],
+    "category": "duplicated-schemas / competing-event-formats",
+    "class": "B-refactor",
+    "why": "Both types record 'what happened, what we believed, what followed' — the exact language `qip_ai::memory::episode`'s own module doc uses — but they encode it differently (a fixed 43-dimension feature vector for nearest-neighbour recall vs. free-text question/conclusion/evidence for lesson promotion), live in different crates one tier apart (qip-ai vs. qip-agents, both libs), and a maintainer adding an episode field has to know which of two same-named types they mean. `qip_agents::memory.rs`'s own doc already distinguishes 'episodic' from 'semantic' *within* ResearchMemory; it says nothing about the separate qip_ai type sharing its name. Left alone this is a readability/maintenance hazard today; once WriteResearchMemory (item above) is wired, it becomes two population mechanisms for two things both called 'Episode' with no cross-reference.",
+    "blueprint_refs": [
+      "v11.6 §23.2 Memory Registry ('prevent intelligence from becoming fixed')",
+      "v11.6 §9.3 World Model Federation (episodic memory as shared state)"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E08"
+  },
+  {
+    "item": "`qip_ai::language::RemoteModel` — a generic hosted-LanguageModel adapter whose `is_available()` is unconditionally `false` and which has zero callers outside its own crate's tests — duplicates, in effect, `qip_reasoning_engine::providers::huggingface::HuggingFaceModel` (ADR 0037), the adapter actually constructed in qip-deepbrain and reached from production",
+    "files": [
+      "backend/crates/libs/qip-ai/src/language.rs:454-535",
+      "backend/crates/services/qip-reasoning-engine/src/providers/huggingface.rs:250,487",
+      "backend/crates/apps/qip-deepbrain/src/language.rs:41,182-224",
+      "docs/adr/0037-hugging-face-is-the-first-hosted-language-model-provider.md"
+    ],
+    "category": "duplicate-systems / dead-code",
+    "class": "E-needs-evidence",
+    "why": "RemoteModel predates ADR 0037's decision; ADR 0037's Context section says exactly this ('RemoteModel, which reports itself unavailable by construction because this build had no credential path, no TLS client and no egress rule'), but does not say what should happen to RemoteModel once HuggingFaceModel existed and was wired in. HuggingFaceModel implements `LanguageModel` directly rather than through RemoteModel's `RemoteModelConfig`/credential-resolution shape, so the platform now carries two 'hosted model' constructs with no relationship. Evidence needed before touching either: an owner/architecture-review decision on whether RemoteModel is retired now that ADR 0037 settled on a specific provider, or kept as the generic multi-provider port a second vendor (e.g. Vertex) would implement against, in which case HuggingFaceModel should be migrated to implement it. Neither reading is free to assume.",
+    "blueprint_refs": [
+      "v11.6 §2 correction table row 'Rust-only machine learning' -> 'Rust-first execution, not Rust-only research'",
+      "v11.6 §9 cognitive core / specialist brains"
+    ],
+    "risk": "low",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "`PlatformConfig::quantum_enabled` defaults `false`; its only setter, `with_quantum()`, has zero callers anywhere in `crates/apps/**`, so the Quantum Foundry / QAOA path is reached only from qip-quantum's and qip-kernel's own tests in every deployed binary",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/config.rs:252,534,573-575",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4324-4326",
+      "backend/crates/runtime/qip-kernel/tests/solver_routing.rs:230-245"
+    ],
+    "category": "unfinished-migration / simulated-only-production-path",
+    "class": "B-refactor",
+    "why": "The code itself is real, hardened and tested (57 tests in qip-quantum, the kernel's own test comment names this exact gap: 'A deployment with no quantum provider configured — which is every deployment, quantum_enabled being off by default'). This is arguably correct-by-default under QUANT-002 ('a quantum path goes to production only on a benchmarked win'), but there is no lever anywhere in a composition root to turn it on once a benchmark does win — `with_quantum()` is unreachable dead API from any deployable binary today. The gap is not 'quantum is off' (that may be right); it is that nothing wires a benchmark-gated activation decision to the one flag that would turn it on.",
+    "blueprint_refs": [
+      "v11.6 §11 Quantum Foundry — Reality boundary ('Production use requires benchmarked improvement')",
+      "v11.6 §26 Platform & Deployment Architecture — Quantum row",
+      "GCP v2.1 §11 Cognitive, Model and Quantum Compute Plane — Quantum row"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "`qip-quantum`'s solver/benchmark family (`ClassicalSolver`, `QuantumInspiredSolver`, `IbmQuantumSolver`, `SolverBenchmark`, `ClassicalValidator` — ~1,700 lines) — the crate's actual ADR-0006 'always compute a classical baseline' machinery — has no caller outside its own tests and qip-optimization-engine's tests; production computes its classical baseline through an independent path (`qip_numerics::anneal`/`qip_numerics::qp` called directly from `ComputeRouter::solve_classical`)",
+    "files": [
+      "backend/crates/libs/qip-quantum/src/solver.rs:1-1029",
+      "backend/crates/libs/qip-quantum/src/benchmark.rs:1-27,109-208,462-479",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:290-330,399-438,528-624"
+    ],
+    "category": "duplicate-systems",
+    "class": "B-refactor",
+    "why": "ADR 0006 and CLAUDE.md principle 6 ('Bill what ran, not what was planned... two independent claims about the same fact will disagree, and the louder one will be wrong') describe exactly the risk here: two independently-written, independently-tested 'compute the classical answer and compare' implementations exist for the one workload family currently in production, and nothing keeps them in agreement if either changes. Production's own re-scoring (`ComputeRouter::score()`/`worst_violation()` against the real `PortfolioProblem`) is a real, tested guarantee — the gap is that it is a second implementation of the same guarantee `qip_quantum::benchmark::ClassicalValidator` already provides, not that either one is wrong today.",
+    "blueprint_refs": [
+      "v11.6 §11 Quantum Foundry — intro ('Every quantum workload has a classical baseline, a common objective and a promotion threshold')",
+      "v11.6 §31 Capability Completeness Checklist ('every result is benchmarked against classical baselines')",
+      "ADR 0006 (classical baseline always)"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "`qip_events::topic::Topic::SolverBenchmarked` ('optimization.benchmarked') is declared with match arms and constants but has zero production publishers, so no quantum-vs-classical comparison ever reaches the hash-chained event log",
+    "files": [
+      "backend/crates/libs/qip-events/src/topic.rs:119,281,366,460,590",
+      "backend/crates/libs/qip-quantum/src/benchmark.rs:1-27"
+    ],
+    "category": "deployment-ci-observability-gap / dead-code",
+    "class": "B-refactor",
+    "why": "The event type this topic names (`SolverBenchmark`) exists and is well-tested, but is never constructed in production (see the solver/benchmark item above), so the topic is a declared schema with nothing behind it — the same failure mode `.claude/rules/domains/observability.md` names for alert policies ('naming a metric... that nothing emits'). Wiring a publisher is contingent on resolving which classical-baseline path is canonical (the item above); listed separately because the two are independently checkable (`grep` for the topic literal vs. `grep` for solver.rs callers).",
+    "blueprint_refs": [
+      "v11.6 §11 Quantum Foundry — 'QuantumExperiment/Benchmark records per workload family and instance size'",
+      "ADR 0007 (exact attribution via the event log)"
+    ],
+    "risk": "low",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "`qip-quant`'s `factor.rs`/`strategy.rs` (`FactorLibrary`, `FactorDefinition`, the `Strategy` trait, `SignalWeightedStrategy` — ~570 lines) are reached only from the crate's own tests; the production portfolio-construction path is a hand-written `Agent` impl (`PortfolioConstruction`, `impl Agent for PortfolioConstruction` at construction.rs:48) that does not implement `qip_quant::strategy::Strategy` and does not use `FactorLibrary`",
+    "files": [
+      "backend/crates/quant/qip-quant/src/factor.rs:14-210",
+      "backend/crates/quant/qip-quant/src/strategy.rs:20-363",
+      "backend/crates/agents/qip-investment-agents/src/construction.rs:37,48"
+    ],
+    "category": "dead-code / tests-only-surface / incompatible-interfaces",
+    "class": "B-refactor",
+    "why": "This is not orphaned scaffolding to delete: v11.6's strategy factory ('takes strategies through generation, backtesting, simulation, stress testing, paper trading, promotion, decay and retirement' and 'sustains a population of thousands of strategies') is exactly the shape `Strategy`/`SignalWeightedStrategy` were built toward, and the repo's own assessment register already files this space under a named epic (`E10-strategy-factory-scale-benchmark`, docs/blueprint/assessment/MODEL-b1.json). Today it is a second, incompatible 'decide a portfolio' interface sitting beside the one production actually calls, with no adapter between them — worth evolving deliberately (adopt `Strategy` in `PortfolioConstruction`, or formally park the trait until the factory epic starts) rather than left to drift further apart the longer both exist unreconciled.",
+    "blueprint_refs": [
+      "v11.6 MODEL-011 (gated strategy lifecycle)",
+      "v11.6 MODEL-012 (strategy factory scale)"
+    ],
+    "risk": "low",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "`qip-investment-agents` (an `agents/`-tier crate the component catalogue classifies as `\"kind\": \"lib\"`) carries a `[dev-dependencies]` edge on `qip-reasoning-engine`, a `crates/services/` crate, to build its own integration tests — and `.claude/rules/architecture/00-boundaries.md`'s inward-dependency diagram names `libs`, `services`, `runtime`, `apps` and `edge` but never `crates/agents/`, so which side of 'a lib may not depend on a service' this crate sits on is undefined",
+    "files": [
+      "backend/crates/agents/qip-investment-agents/Cargo.toml:16-17",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:1559-1562,1686-1689",
+      ".claude/rules/architecture/00-boundaries.md"
+    ],
+    "category": "dependency-direction / documentation-gap",
+    "class": "E-needs-evidence",
+    "why": "The edge never reaches a compiled production binary (Cargo dev-dependencies are excluded from a `[dependencies]` build graph), so there is no runtime coupling risk today. What is missing is a stated rule: does the boundaries diagram's silence on `crates/agents/` mean it is a fifth first-class tier exempt from 'inward only', or an omission that should place it beside `libs/`? Either answer is cheap to write down and neither should be assumed by an agent editing this crate; a `services/`-tier production dependency landing here later, reasoned by analogy from this dev-only precedent, would be the kind of boundary erosion the rule exists to prevent.",
+    "blueprint_refs": [],
+    "risk": "low",
+    "suggested_epic": "E01"
+  },
+  {
+    "item": "`qip_quantum::provider::HostedProvider`/`HostedTransport` (the IBM Quantum adapter) is real, honestly gated and zero-callers-in-production; the isolated 'Quantum Gateway' trust zone GCP v2.1 names as the only permitted path to IBM Quantum is not provisioned in any environment, and the `qip-quantum-token` secret is declared but mounted nowhere",
+    "files": [
+      "backend/crates/libs/qip-quantum/src/provider.rs:104-105,219,288-292,438-446",
+      "infrastructure/terraform/main.tf:270",
+      "infrastructure/egress/envoy.yaml:339-358",
+      "infrastructure/environments/dev/terraform.tfvars:61"
+    ],
+    "category": "temporary-infrastructure / deployment-ci-observability-gap",
+    "class": "B-refactor",
+    "why": "Nothing here is a shortcut — the adapter refuses `https` by name rather than silently downgrading, and `envoy.yaml` already declares loopback listeners for both the current and legacy IBM Quantum endpoints ahead of a workload existing to use them. The gap is that GCP v2.1's placement (an 'optimisation' trust zone with controlled egress to the gateway) has never been added to any environment's `trust_zones`, so the secret that would flow to it (`qip-quantum-token`, created in `main.tf` but mounted nowhere) is provisioned for a workload placement that does not exist yet. Consistent with quantum being off by design (item above); this is its infrastructure half.",
+    "blueprint_refs": [
+      "v11.6 §26 Platform & Deployment Architecture — Quantum row ('IBM Quantum via isolated Quantum Gateway/Foundry')",
+      "GCP v2.1 §11 Cognitive, Model and Quantum Compute Plane — Quantum row",
+      "GCP v2.1 §20 Critical Service-to-Service Connection Matrix — Agent/Symbolic workers to IBM Quantum gateway"
+    ],
+    "risk": "low",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "`qip_ai::memory::store::EpisodicMemory` and `qip_agents`'s `BudgetLedger`/`AuditTrail`/`ResearchMemory` are all in-process-only: none has a call site persisting to `qip-storage`, so every learned episode, spend record, audit entry and lesson is lost on process restart",
+    "files": [
+      "backend/crates/libs/qip-ai/src/memory/store.rs:184-230",
+      "backend/crates/libs/qip-agents/src/budget.rs:159-260",
+      "backend/crates/libs/qip-agents/src/governance.rs:88-300",
+      "backend/crates/libs/qip-agents/src/memory.rs:135-253",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4271-4272,4516"
+    ],
+    "category": "scaling-limits / unfinished-migration",
+    "class": "E-needs-evidence",
+    "why": "This is the same class of gap the libs-foundation report already flags at the platform level ('central-plane state is ephemeral in every deployed environment... QIP_STORAGE_TARGET=memory everywhere'), so before this is worked as its own item it needs evidence on scope: does closing the central-plane durability gap (that report's item, `docs/reports/tech-debt/libs-foundation.json`) automatically carry these four types along, or do EpisodicMemory/BudgetLedger/AuditTrail/ResearchMemory need their own explicit write-through because nothing in `qip-kernel` currently attempts it for any of them (distinct from the storage-target question, which is about where an attempt goes, not whether one exists)? Filed here rather than folded into the platform-level item because the absence of an attempt is a fact about this crate group specifically.",
+    "blueprint_refs": [
+      "v11.6 title: 'durable knowledge memory'",
+      "v11.6 §23 'Memory consolidation and compression: preserve high-value episodes'",
+      "ADR 0099 C4 (storage record per store)"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E08"
+  },
+  {
+    "item": "`qip_quantum::statevector::MAX_QUBITS = 24` bounds the in-tree simulator and is enforced by refusal (`StateVector` construction errors above the limit) rather than by clamping or silent truncation",
+    "files": [
+      "backend/crates/libs/qip-quantum/src/statevector.rs:10,23,112-114"
+    ],
+    "category": "scaling-limits",
+    "class": "A-retain",
+    "why": "This is the target shape already: a documented, structural ceiling (16 GiB of amplitudes at 24 qubits) that fails closed with a message naming exactly why, matching CLAUDE.md principle 2 ('Refuse rather than guess... a value silently corrected is a caller bug that survives'). Included because the task asks scaling limits be found and judged, and this one is already correct — no work item follows from it.",
+    "blueprint_refs": [
+      "v11.6 §11 Quantum Foundry"
+    ],
+    "risk": "low",
+    "suggested_epic": "E10"
+  }
+]

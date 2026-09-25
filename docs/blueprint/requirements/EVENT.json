@@ -1,0 +1,575 @@
+[
+  {
+    "id": "EVENT-001",
+    "domain": "EVENT",
+    "title": "Event contracts are a research subject",
+    "statement": "The research plane must be able to research prediction/event contracts: form and evaluate event-contract hypotheses and pricing models over historical event contracts and their resolved outcomes.",
+    "rationale": "An event model that has never been scored against resolved outcomes is an opinion. Research over resolved contracts is how the platform can say whether its event probabilities were any good before it quotes or trades on them.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Prediction/event markets row ('Research, valuation, trading, market making and market creation for event contracts')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a research run over a fixture of historical event contracts and their resolutions twice, and assert the two runs are identical and reproducible from the event log, and that no outcome is read before the instant its resolution became knowable."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REPLAY",
+      "MODEL"
+    ],
+    "notes": "Split from the §3 row (M p7), which yields EVENT-001 to EVENT-008. The raw row carried LIVE_CAPITAL and EXTERNAL_ACTION. Both are removed here because research acts on nothing outside the platform and commits no capital. The point-in-time condition in the check is the house data rule (no point-in-time leakage), applied to resolutions. P2 because event markets are master Phase 7 (M p42 §30)."
+  },
+  {
+    "id": "EVENT-002",
+    "domain": "EVENT",
+    "title": "Event contracts are valued from the platform's own outcome beliefs",
+    "statement": "The platform must value (price) prediction/event contracts, deriving each contract's fair value from the estimated outcome distribution of the event it pays on (EVENT-010) and the contract's payout terms, and recording which distribution each valuation used.",
+    "rationale": "§19 makes event markets first-class because they convert world beliefs into directly tradable probability. A price not derived from the platform's own outcome belief breaks that link, and a price that does not cite its belief cannot be attributed afterwards.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Prediction/event markets row ('valuation')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society — Event/Prediction Brain row ('event-contract valuation')"
+      },
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('price contracts')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For a mutually exclusive and exhaustive set of outcome contracts on one event priced from one outcome distribution, assert each fair value lies within the contract's payout range, the fair values before fees sum to the payout, each moves monotonically with its outcome's probability, and every valuation record cites the distribution it was derived from."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "ASSET"
+    ],
+    "notes": "Merges the §3 verb 'valuation' (M p7), the Event/Prediction Brain's 'event-contract valuation' (M p16) and §19's 'price contracts' (M p25). The link to the outcome distribution follows §19's own sequence (estimate outcome distributions, then price contracts). Money is Decimal and probabilities may be f64, so the crossing point between the two must be stated where the price is formed (core-rust domain rule). The raw §3 row's LIVE_CAPITAL and EXTERNAL_ACTION flags are removed because valuing a contract commits no capital and acts on nothing outside."
+  },
+  {
+    "id": "EVENT-003",
+    "domain": "EVENT",
+    "title": "Event contracts are traded through an event-venue adapter",
+    "statement": "The platform must trade prediction/event contracts, taking positions in them through an event-venue adapter that reports orders and fills in the common execution contract and passes the same deterministic pre-trade limits as every other order.",
+    "rationale": "Execution is a venue mesh whose adapters expose a common capability contract (M p25 §18). An event venue outside that contract would bypass the pre-trade limits and reconciliation that every other order goes through.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Prediction/event markets row ('trading')"
+      },
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('trade')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Drive a paper order for an event contract through a simulated event-venue adapter, and assert the order is checked by the deterministic pre-trade limits before an order object exists, that it fills in the common execution contract, and that the adapter cannot be constructed with any autonomy ceiling other than paper trading."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "EXEC",
+      "RISK"
+    ],
+    "notes": "Flags kept. Trading on a real event venue is live order submission, which ADR 0003 and ADR 0021 refuse and which all three paper-trading layers block: Terraform's refusal in variables.tf, AutonomyLevel::deployable in the composition roots, and a Cell with no constructor taking a non-paper ceiling. Per ADR 0099 the live part is scored BLOCKED and the adapter is built only against a simulator. §18 lists 'event contracts' among the instruments the execution mesh supports (M p25); that sentence belongs to EXEC. The diagram (H) draws an external 'Physical / Event Venues' node ('Commerce/prediction/other permitted venues'). It was not in this domain's input, but it is where such an adapter would connect."
+  },
+  {
+    "id": "EVENT-004",
+    "domain": "EVENT",
+    "title": "Event contracts can be market-made, not only traded",
+    "statement": "The platform must be able to market-make prediction/event contracts, not only take positions in them. That means quoting two-sided markets in event contracts and managing the outcome inventory those quotes accumulate.",
+    "rationale": "Market making earns the spread and supplies liquidity that event markets often lack. It also accumulates inventory on outcomes that resolve all-or-nothing, so it carries a risk that taking positions does not, and it has to be a capability of its own.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Prediction/event markets row ('market making')"
+      },
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('market-make')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Run the quote engine on an event contract against a simulated event venue, and assert that it posts two-sided quotes within the contract's payout range, that the quotes skew as inventory in one outcome accumulates, and that quoting reserves capital and inventory from the same reservation fabric as other strategies."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "EXEC",
+      "CAPITAL"
+    ],
+    "notes": "Merges the §3 verb 'market making' (M p7), §19's 'market-make' (M p25) and a raw item that restated it as 'not merely trade them'. The generic quoting mechanics (dynamic fair value, spread, skew and size, quote-rate and cancel/replace budgets, and capital shared with arbitrage through one reservation fabric) are §18.1 (M p25) and belong to EXEC; this requirement applies them to event contracts. Flags kept: quoting on a real venue is live order submission, BLOCKED under ADR 0021 and built against a simulated venue only."
+  },
+  {
+    "id": "EVENT-005",
+    "domain": "EVENT",
+    "title": "New event markets can be created",
+    "statement": "The platform must be able to create new prediction/event markets. That covers defining an event contract with its resolution rules, listing it, seeding its initial liquidity and publishing its pricing rules.",
+    "rationale": "Creating a market makes the platform the origin of a contract other people trade. That brings resolution and liquidity obligations that trading someone else's contract does not.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Prediction/event markets row ('market creation for event contracts')"
+      },
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('where permitted - create new markets')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Run event-market creation against a simulated venue, and assert that the event definition, resolution rules, listing, seed liquidity and pricing rules of the created market are each recorded in the event log, and that the workflow cannot target anything but a simulated venue."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "EXEC",
+      "GOV"
+    ],
+    "notes": "Split: §19's 'where permitted' qualifier is a gate that can be verified on its own, so it is EVENT-016. §18.2 (M p25) defines market creation in general as 'a governed product workflow, not an unrestricted model action' that also seeds liquidity, publishes pricing rules and keeps checking that the market is still economically and legally valid. That text belongs to the market-factory requirements (EXEC/GOV) and applies here; it is where the listing, seeding and pricing-rule steps in this statement come from. ADR 0099 names market creation (§18.2) among the capabilities that need live capital or external action, so the flags are kept. It is scored BLOCKED under ADR 0021 and built only in simulation."
+  },
+  {
+    "id": "EVENT-006",
+    "domain": "EVENT",
+    "title": "Regulated wagering venues are a separate, isolated venue type",
+    "statement": "Sports and other wagering venues must be modelled as a separate regulated venue type, distinct from prediction/event-contract venues and from every other venue type. A wagering adapter must be reachable only through that type's own policy gates (EVENT-007, EVENT-008, EVENT-017) and never through generic or event-contract routing.",
+    "rationale": "Wagering is regulated differently from event-contract and securities trading: licensing is per jurisdiction, and there are age limits and product restrictions. If a wagering venue can be reached as an ordinary venue, a single routing decision can place a wager the entity or user is not permitted to place.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Prediction/event markets row ('regulated wagering adapters isolated by jurisdiction/eligibility policy')"
+      },
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('Sports or other wagering venues are treated as a separate regulated venue type')"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist — COMPLETE TARGET ('regulated wagering is isolated by eligibility/jurisdiction')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Register a simulated wagering venue. Assert its venue type is distinct from the event-contract type, that an order routed to it through the generic or event-contract routing path is refused before an order object exists, and that the same order sent through the wagering type's own path under a permitting policy is admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMPLIANCE",
+      "EXEC"
+    ],
+    "notes": "Merges the §3 row's wagering clause (M p7), two raw items from §19 (M p25) and the wagering half of the §31 COMPLETE TARGET (M p43); the target's other half is EVENT-013. The jurisdiction, eligibility and product controls can each be verified on their own, so they are split out as EVENT-007, EVENT-008 and EVENT-017. P0 because this is a fail-closed isolation invariant that must hold from the first wagering venue registration. It does not claim that wagering ships in the foundation phases; it is master Phase 7. The raw LIVE_CAPITAL and EXTERNAL_ACTION flags are removed because isolation can be fully met and proven against a simulated wagering venue. Keeping them would score the control BLOCKED under ADR 0099 and invite the path to be built before its gate. Placing a real wager is still live external action, which ADR 0003 and ADR 0021 refuse."
+  },
+  {
+    "id": "EVENT-007",
+    "domain": "EVENT",
+    "title": "Wagering is refused outside a permitting jurisdiction",
+    "statement": "Every action on a regulated wagering venue must pass a jurisdiction control before an order object exists. The action is admitted only when the venue's jurisdiction policy permits the acting entity's or user's jurisdiction, and when no jurisdiction policy is configured every wagering action is refused.",
+    "rationale": "Whether wagering is legal is decided per jurisdiction. A control that defaults to open turns the mere existence of an adapter into permission to use it.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Prediction/event markets row ('isolated by jurisdiction/eligibility policy')"
+      },
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('jurisdiction ... controls')"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist — COMPLETE TARGET ('isolated by eligibility/jurisdiction')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "With no jurisdiction policy configured, assert a paper wager is refused. With a policy that excludes the entity's jurisdiction, assert it is refused before an order object exists and the refusal names the jurisdiction. Then, with a policy that includes it, assert the same wager is admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMPLIANCE",
+      "RISK"
+    ],
+    "notes": "Split from the jurisdiction/eligibility isolation stated in the §3 row (M p7), §19 (M p25) and the §31 target (M p43). The fail-closed default comes from the house rule (Principle 3, fail closed), not from blueprint text. The last step of the check proves the gate admits a good value and does not simply refuse everything. Flags removed for the same reason as EVENT-006. EVENT-019 complements this: it applies per-entity legal availability to every event venue, not only wagering."
+  },
+  {
+    "id": "EVENT-008",
+    "domain": "EVENT",
+    "title": "Wagering is refused to an ineligible entity or user, including by age",
+    "statement": "Every action on a regulated wagering venue must pass an eligibility control, age included, before an order object exists. The action is admitted only when the acting entity or user is recorded as eligible for that venue; an entity or user with no eligibility record is refused.",
+    "rationale": "Eligibility and age are separate from jurisdiction. An entity in a permitted jurisdiction can still be ineligible, so passing the jurisdiction gate must not imply passing this one.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Prediction/event markets row ('isolated by jurisdiction/eligibility policy')"
+      },
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('age/eligibility ... controls')"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist — COMPLETE TARGET ('isolated by eligibility/jurisdiction')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "In a permitted jurisdiction, assert that a paper wager by an entity with no eligibility record is refused, that one by an entity recorded as ineligible (including being under the venue's age threshold) is refused before an order object exists, and that one by an eligible entity is admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMPLIANCE",
+      "SEC"
+    ],
+    "notes": "Split from the same sources as EVENT-007. 'Age/eligibility' is kept as one control because age is one eligibility criterion; the check tests age on its own. Flags removed for the same reason as EVENT-006. Under the privacy rule, no age or identity datum may appear in code, fixtures, logs or test names beyond what the control needs."
+  },
+  {
+    "id": "EVENT-009",
+    "domain": "EVENT",
+    "title": "An Event/Prediction Brain owns event cognition",
+    "statement": "The specialist brain society must include an Event/Prediction Brain that owns event probabilities, scenario trees, information-arrival modelling and event-contract valuation, so that each of those outputs is attributable to it.",
+    "rationale": "A specialist brain is how the society assigns responsibility for a domain. Without one, event beliefs are produced by whichever component happens to need them, and they cannot be attributed or evaluated as one model.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society — Event/Prediction Brain row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Run a cycle that contains an event contract, and assert the society's registry lists an Event/Prediction Brain and that the outcome distribution, scenario tree, information-arrival update and valuation recorded in the event log are each attributed to it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REASON",
+      "WORLD"
+    ],
+    "notes": "This is the component half of the §9.1 row. The four outputs it owns are EVENT-010 (probabilities), EVENT-011 (scenario trees), EVENT-012 (information arrival) and EVENT-002 (valuation). The world-model layer lists 'Event/prediction models - event trees, conditional probabilities, information arrival and resolution mechanics' (M p17). That line was not in this domain's input and belongs to WORLD. P2 because the specialist-agent society is master Phase 8 and event markets are Phase 7."
+  },
+  {
+    "id": "EVENT-010",
+    "domain": "EVENT",
+    "title": "Event outcome distributions are estimated",
+    "statement": "For each event it covers, the platform must estimate a probability distribution over the event's defined outcome set and record it with the instant of the latest evidence it used.",
+    "rationale": "Every event price, quote and scenario is derived from the outcome distribution. A distribution that does not cover exactly the contract's outcomes, or that cannot say what it knew and when, produces prices the platform cannot justify.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society — Event/Prediction Brain row ('event probabilities')"
+      },
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('estimate outcome distributions')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated events with two or more defined outcomes, assert that each estimated distribution is non-negative, sums to one, assigns probability to exactly the defined outcome set, and carries the instant of the latest evidence it used."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "MODEL"
+    ],
+    "notes": "Merges the Event/Prediction Brain's 'event probabilities' (M p16), §19's 'estimate outcome distributions' (M p25) and a raw item that restated the latter. §19's 'outcome distributions' wording is kept because it is more specific: it covers multi-outcome events, not only a single probability. The evidence instant follows the house bitemporal rule, so that a replay can ask what the platform believed at the time."
+  },
+  {
+    "id": "EVENT-011",
+    "domain": "EVENT",
+    "title": "Events are modelled as scenario trees",
+    "statement": "The platform must be able to represent an event as a scenario tree: branching intermediate developments with conditional probabilities, whose leaves map onto the event's defined outcomes.",
+    "rationale": "Many events resolve through intermediate steps, such as a primary before an election or a ruling before an appeal. A tree lets one intermediate development update every downstream outcome consistently, instead of each outcome being re-estimated on its own.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society — Event/Prediction Brain row ('scenario trees')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated scenario trees, assert that the conditional probabilities leaving every node sum to one, that every leaf maps to exactly one defined outcome, and that the products of the path probabilities reproduce the event's outcome distribution (EVENT-010)."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "From the §9.1 Event/Prediction Brain row. The world-model layer's 'event trees, conditional probabilities' (M p17) states the same modelling concern for WORLD."
+  },
+  {
+    "id": "EVENT-012",
+    "domain": "EVENT",
+    "title": "Event beliefs update on information arrival, point-in-time",
+    "statement": "The platform must model information arrival for events. When dated information relevant to an event arrives, the platform updates that event's outcome distribution as of the instant the information became knowable, and records which arrival caused which update.",
+    "rationale": "Event prices move on news. A model that cannot say which arrival moved a belief cannot be audited, and a model that applies information before it was knowable produces backtests nobody should trust.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society — Event/Prediction Brain row ('information arrival')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a dated sequence of information arrivals for one event twice, and assert that the resulting probability path is identical both times, that no update comes before the knowable instant of the arrival it cites, and that every update in the log names its arrival."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "MARKETDATA"
+    ],
+    "notes": "From the §9.1 row. 'Information arrival' is read as both the arrival process and the belief update it causes. The world-model layer's 'information arrival and resolution mechanics' (M p17) is WORLD's statement of the same concern. The point-in-time condition is the house data rule."
+  },
+  {
+    "id": "EVENT-013",
+    "domain": "EVENT",
+    "title": "Prediction/event is a first-class coverage class",
+    "statement": "Prediction/event (event contracts and probability markets) must be a first-class coverage class in the asset-class registry, with its own entry, adapter and lifecycle, including resolution. It must not be represented as a derivative or as any other class.",
+    "rationale": "§19 makes event markets first-class 'because they convert world beliefs into directly tradable probability'. An event contract forced into the derivatives class inherits margin and settlement semantics it does not have and loses the resolution semantics it does have.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('Prediction/event markets are first-class')"
+      },
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§21 Asset & Market Coverage — class table, Prediction/event row ('Event contracts and probability markets')"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist — COMPLETE TARGET ('Prediction/event markets are first-class')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Enumerate the asset-class registry and assert it holds a Prediction/event entry distinct from derivatives. Then register an event contract and assert it resolves to the event class's own adapter and lifecycle, including a resolution step that the other classes lack."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COVERAGE",
+      "ASSET"
+    ],
+    "notes": "Merges §19's opening sentence (M p25), the §21 class-table row (M p26) and the first half of the §31 COMPLETE TARGET 'Prediction/event markets are first-class; regulated wagering is isolated by eligibility/jurisdiction' (M p43); the second half is EVENT-006. §19's 'because' clause is used as the rationale. The raw LIVE_CAPITAL and EXTERNAL_ACTION flags are removed: registering and simulating a class needs neither, and trading the class is EVENT-003, which keeps both flags. The registry itself is COVERAGE-022, which lists the event-driven family; this requirement is the event entry in it. P2 because the §31 target is the exit of master Phase 7 (M p42)."
+  },
+  {
+    "id": "EVENT-014",
+    "domain": "EVENT",
+    "title": "Event definitions are ingested as bitemporal records",
+    "statement": "The platform must ingest event definitions (the event, its defined outcome set, the contract terms and the source of the definition) as bitemporal records, carrying both the instant each definition was true and the instant it became knowable.",
+    "rationale": "Resolution, outcome distributions and prices are all keyed on the definition. If definitions are not held point-in-time, a later edit to the terms rewrites what a past decision was priced against.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('ingest event definitions')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Ingest a fixture feed of event definitions, and assert that each is stored with its outcome set, contract terms, source, valid-time and knowable-time, that an amended definition is stored as a new record rather than overwriting the old one, and that a definition with no outcome set is refused with a message naming the missing field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MARKETDATA",
+      "DATA"
+    ],
+    "notes": "From §19 (M p25). The raw sentence carried LIVE_CAPITAL and EXTERNAL_ACTION, removed here because ingesting a definition commits no capital and acts on nothing outside. Bitemporal storage and refusing an incomplete record are house rules (data-and-streaming domain; Principle 2), not blueprint text. The licensing posture of any event data source must be evaluated in qip-data-finder before the source is used."
+  },
+  {
+    "id": "EVENT-015",
+    "domain": "EVENT",
+    "title": "Event source-of-truth rules are resolved before a contract is priced",
+    "statement": "For every ingested event definition the platform must resolve its source-of-truth rules: the named resolution source, the criteria that decide each outcome, and the resolution time. A contract whose rules are unresolved or ambiguous must not be priced or traded.",
+    "rationale": "An event contract pays on what its resolution source says, not on what happened. A price computed without knowing the source and criteria prices the wrong event, and the mismatch only shows up at settlement.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('resolve source-of-truth rules')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Assert that a definition naming a resolution source, per-outcome criteria and a resolution time is marked resolved and can be priced, and that definitions missing any one of the three are refused for pricing and trading with a message naming what is missing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MARKETDATA",
+      "SETTLEMENT"
+    ],
+    "notes": "Merges §19's 'resolve source-of-truth rules' (M p25) and a raw item that restated it as part of ingesting and pricing. The blueprint only says the rules are resolved; refusing to price when they are not applies Principle 2 (refuse rather than guess). The world model's 'resolution mechanics' (M p17) is WORLD's view of the same concern. The raw sentence's LIVE_CAPITAL and EXTERNAL_ACTION flags are removed because nothing here acts outside the platform."
+  },
+  {
+    "id": "EVENT-016",
+    "domain": "EVENT",
+    "title": "Event market creation is refused where venue or jurisdiction does not permit it",
+    "statement": "An event-market creation request must be admitted only where both the target venue and the jurisdiction permit market creation. Otherwise it is refused before any market object exists, and when no creation permission is configured every request is refused.",
+    "rationale": "Listing a contract where that is not permitted creates regulatory exposure the moment the market exists, whatever happens to it afterwards. The check therefore has to come before the market object is created.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('where permitted - create new markets')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "With no creation permission configured, assert a request is refused. For a venue or jurisdiction that does not permit creation, assert the request is refused before any market object exists. Then grant the permission and assert the same request is admitted against a simulated venue."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMPLIANCE",
+      "GOV",
+      "EXEC"
+    ],
+    "notes": "Split from §19's 'where permitted - create new markets' (M p25) because the gate can be verified independently of the creation capability (EVENT-005). The §3 'Market creation' row (M p7) states the same qualifier in general terms ('only where venue and jurisdiction permit'); it was not in this domain's input. P0 because this is a fail-closed invariant that must hold from the first creation request. It does not claim that market creation ships in the foundation phases. No flag, because the gate can be fully proven in simulation."
+  },
+  {
+    "id": "EVENT-017",
+    "domain": "EVENT",
+    "title": "Wagering is refused for a product the venue policy does not permit",
+    "statement": "Every action on a regulated wagering venue must pass a product control before an order object exists. It is admitted only for a wagering product that the venue's product policy permits for the acting entity or user; a product absent from the policy is refused.",
+    "rationale": "Wagering regulation restricts products as well as people and places, for example which sports, events or bet types are allowed. Passing the jurisdiction and eligibility checks says nothing about whether this particular product may be offered or taken.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('product controls')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "For an eligible entity in a permitted jurisdiction, assert that a paper wager on a product absent from the product policy is refused before an order object exists, and that a wager on a listed product is admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMPLIANCE"
+    ],
+    "notes": "Split from §19's 'jurisdiction, age/eligibility and product controls' (M p25). The §3 row and the §31 target name only jurisdiction and eligibility, so this control rests on §19 alone. Flags removed for the same reason as EVENT-006."
+  },
+  {
+    "id": "EVENT-018",
+    "domain": "EVENT",
+    "title": "Event pricing does not depend on venue availability",
+    "statement": "The core cognition must be able to price an event whether or not any venue offering it is legally available to the entity or user concerned. A venue's availability must not be an input to the event's price.",
+    "rationale": "Research and valuation may cover more than the platform can execute. If pricing required an available venue, the platform could not form beliefs about events it cannot trade, and its beliefs would move when a permission changed rather than when the world did.",
+    "kind": "invariant",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('the core cognition can price events without assuming every venue is legally available to every entity/user')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated events, assert that the price computed with every venue available to the entity is identical to the price computed with no venue available."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REASON",
+      "COMPLIANCE"
+    ],
+    "notes": "Split from the §19 clause (M p25). The clause's other half, that a price never implies availability, is EVENT-019. This is the event case of the §31 target that legal capability gates are kept separate from technical capability, so the same brain can research more broadly than it can execute (M p43); that target belongs to COMPLIANCE. P2 because this is a Phase 7 correctness property of cognition, not a safety control."
+  },
+  {
+    "id": "EVENT-019",
+    "domain": "EVENT",
+    "title": "A priced event is never assumed tradable by an entity or user",
+    "statement": "Whether an event venue is legally available must be decided per entity or user at the action gate, before an order object exists, and must never be inferred from the event having a price. An entity or user to whom no available venue offers the contract is refused, and so is one with no availability record.",
+    "rationale": "The blueprint's point is that not every venue is legally available to every entity or user. A pipeline that treats a priced event as tradable turns a research result into an order the entity may not lawfully place.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets ('without assuming every venue is legally available to every entity/user')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Price an event. Assert that an order for it by an entity with no availability record, or one to whom no offering venue is available, is refused before an order object exists, and that granting availability for one venue admits the same order routed only to that venue."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMPLIANCE",
+      "RISK",
+      "EXEC"
+    ],
+    "notes": "Split from the same §19 clause as EVENT-018. P0 because this is a fail-closed invariant on every event venue, wagering or not; the wagering controls (EVENT-007, EVENT-008, EVENT-017) are stricter cases of it. It does not claim that event trading ships in the foundation phases. No flag, because the gate can be proven in simulation."
+  }
+]

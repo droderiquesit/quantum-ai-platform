@@ -1,0 +1,1355 @@
+[
+  {
+    "id": "CONTRACT-001",
+    "domain": "CONTRACT",
+    "title": "Reflex cells receive model, strategy, belief, capital and risk packs",
+    "statement": "The slow cognitive system delivers each reflex cell's operating payload as five kinds of pack: model (ModelPack), strategy (StrategyPack), belief (compressed knowledge, as BeliefState), capital (the capital envelope, as CapitalGrant) and risk (policy, as RiskEnvelope).",
+    "rationale": "The reflex system reacts to local market state in microseconds to milliseconds without waiting for the global brain, so everything it needs from the slow system has to arrive ahead of time as a pack it already holds.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary — the two nervous systems"
+      },
+      {
+        "doc": "M",
+        "page": "11",
+        "section": "§5 End-to-End System Path — 'signed model + strategy + belief + capital + risk packs'"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A reflex cell activated with one pack of each of the five kinds completes a paper pass while the slow system is unreachable, and its activation interface accepts each of those five pack kinds."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "MODEL",
+      "CAPITAL",
+      "RISK"
+    ],
+    "notes": "M §1 says the reflex system receives 'compressed knowledge, models, policy and capital envelopes'. M §5's path diagram is more specific and its wording is kept: knowledge maps to belief and policy to risk. The mapping of each pack to a §27 contract is this catalogue's reading, not text in either source. The diagram's Reflex Package Builder names a different five (compact model, strategy, feature graph, risk envelope, config; CONTRACT-051). The two sets disagree on belief and capital versus feature graph and config, and neither source resolves it. Signing is split out to CONTRACT-004. P1 because the model, strategy and belief packs come from the master Phase 2 foundry. The capital and risk packs on their own are P0 as CONTRACT-013 and CONTRACT-014."
+  },
+  {
+    "id": "CONTRACT-002",
+    "domain": "CONTRACT",
+    "title": "Brains and cells share knowledge only as typed contract artifacts",
+    "statement": "Global cognition, specialist brains, evaluation agents and regional reflex cells exchange compressed knowledge, episodes, residuals, model lessons and opportunity outcomes only as typed contract artifacts, never as isolated chat transcripts or shared state.",
+    "rationale": "One component's discovery improves the whole system only if the others can consume it. Free text and private state cannot be validated, replayed or merged; a typed artifact can.",
+    "kind": "prohibition",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Collective intelligence fabric row"
+      },
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§23 Intelligence Expansion Engine — Collective/federated intelligence row"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test enumerates every inter-component channel and asserts that each carries a registered contract type. It fails on any channel whose payload is a free-text string or a handle to another component's mutable state."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "EXPANSION",
+      "MEMORY"
+    ],
+    "notes": "Merged from the §3 capability row and the §23 mechanism row. §23 supplies the explicit prohibition ('rather than isolated chat/state') and §3 the list of what is exchanged. The §23 row names KnowledgeDelta / SharedEpisode as its primary artifacts (KnowledgeDelta is CONTRACT-035). The lineage half of the §3 row is split out to CONTRACT-003. P1 because the first such exchange, episodes flowing from cells into the cognitive loop, arrives with master Phase 2. The full federation comes in Phase 9."
+  },
+  {
+    "id": "CONTRACT-003",
+    "domain": "CONTRACT",
+    "title": "Every exchanged knowledge artifact carries lineage",
+    "statement": "Every artifact exchanged between global cognition, specialist brains, evaluation agents and regional reflex cells carries lineage identifying the component that produced it and the inputs it was derived from.",
+    "rationale": "A consumer can weigh, trace or roll back a lesson learned elsewhere only through its lineage. Without lineage, a shared artifact is an assertion with no provenance.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Collective intelligence fabric row"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For arbitrary artifacts produced by each component, the lineage is non-empty and every reference in it resolves to a recorded producer and input in the event log."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID",
+      "FABRIC"
+    ],
+    "notes": "Split from the §3 row, which requires exchange 'through typed contracts and lineage'; the typed half is CONTRACT-002. Several §27 contracts name their own lineage field (OpportunityToken version lineage, AmbientSignal evidence lineage, ActionIntent audit lineage). This requirement is the cross-cutting rule those fields instantiate."
+  },
+  {
+    "id": "CONTRACT-004",
+    "domain": "CONTRACT",
+    "title": "Packs delivered to reflex cells are signed and verified before activation",
+    "statement": "Every pack the slow system delivers to a reflex cell is signed, and a reflex cell activates a pack only after its signature verifies.",
+    "rationale": "A pack is the authority a cell trades on. If its origin cannot be proven, whoever can write to the delivery path can grant that authority.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "11",
+        "section": "§5 End-to-End System Path — 'signed model + strategy + belief + capital + risk packs'"
+      },
+      {
+        "doc": "H",
+        "page": "L288",
+        "section": "05 · Cognitive / AGI / Quantum Plane — Reflex Package Builder node ('signed package')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A pack with a tampered payload, a missing signature or a signer outside the trust root is refused at activation, and the cell keeps running on the pack it had already activated."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "SUPPLY_CHAIN",
+      "SEC"
+    ],
+    "notes": "The verify-before-activate half comes from the diagram's Regional Cell view: its Reflex Package Agent 'downloads/verifies immutable model/policy/config package and atomic swaps' (H L160). Keeping the previous pack when one is refused follows M §26.1 (p37): 'a node continues under its last valid package'. P0 because it is a safety invariant: a cell must never run authority whose origin it cannot prove. The mechanism is still open. ADR 0043 lists asymmetric signing as a gap that no in-tree code may close, so the signature scheme needs a dependency or KMS record, but the requirement stands without one."
+  },
+  {
+    "id": "CONTRACT-005",
+    "domain": "CONTRACT",
+    "title": "Every extracted claim becomes an EvidencePacket",
+    "statement": "Every claim extracted from any source is represented as an evidence object (the EvidencePacket contract) before it can influence a belief, and no extraction path converts source text directly into a fact.",
+    "rationale": "No single source is 'truth'. A claim that bypasses the evidence object reaches beliefs with no provenance, license or confidence to weigh.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§7 Evidence, Provenance & Truth Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Running every registered extractor over a fixture corpus yields only EvidencePacket values. An architecture test finds no path from an extractor to BeliefState that does not pass through an EvidencePacket."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID",
+      "WORLD"
+    ],
+    "notes": "Split from the §7 sentence; its field list is CONTRACT-006. The 'rather than converting scraped text directly into facts' clause is the next sentence of §7 on the same page. P1: evidence/provenance is master Phase 2."
+  },
+  {
+    "id": "CONTRACT-006",
+    "domain": "CONTRACT",
+    "title": "EvidencePacket contract fields",
+    "statement": "An EvidencePacket carries: the claim; the entities it concerns; time; location; source identity and provenance; extraction method; authenticity signals; license; confidence; links to corroborating evidence and to contradicting evidence; and a content hash.",
+    "rationale": "These are the fields a belief update needs to weigh a claim rather than trust it: who said it, how it was extracted, whether it is authentic and licensed, and what else agrees or disagrees.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§7 Evidence, Provenance & Truth Fabric"
+      },
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — EvidencePacket"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing an EvidencePacket without any one of the listed fields is refused, and a content hash recomputed from the claim payload matches the stored hash."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": "§27 lists claim, entities, time/location, source/provenance, license, confidence, contradiction links and content hash. §7 adds extraction method, authenticity signals and corroborating links (not only contradicting ones), and names time and location separately. The statement is the union. The NEW_DEPENDENCY flag on the §7 extraction was removed: a field list needs no crate, and the content hash can be SHA-256, which ADR 0002 authorises in-tree."
+  },
+  {
+    "id": "CONTRACT-007",
+    "domain": "CONTRACT",
+    "title": "Only accepted models enter a Model Pack, signed, versioned and attested",
+    "statement": "A model is added to a Model Pack only after it has been accepted by validation (out-of-time, cross-regime, adversarial and in simulation/paper trading), and when it is added it is signed, versioned and attested.",
+    "rationale": "The Model Pack is what ships to nodes. A model that reaches it without passing the validation gate, or without a signature, version and attestation, cannot be traced to whatever approved it.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle — steps 5-6"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Model Pack builder refuses a model with no recorded validation pass, or one lacking a signature, version or attestation. An accepted model's pack entry carries all three."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "SUPPLY_CHAIN"
+    ],
+    "notes": "Split from the §10.1 steps 6-7 extraction; the export half is CONTRACT-008. The raw extraction said 'signed, versioned', but the source also says 'attested'. The pack's field list is CONTRACT-011. P1: model/strategy foundry is master Phase 2."
+  },
+  {
+    "id": "CONTRACT-008",
+    "domain": "CONTRACT",
+    "title": "Reflex-compatible models are exported in bounded runtime formats",
+    "statement": "Only a reflex-compatible model is distributed to reflex nodes, and only after it has been exported to a bounded runtime format.",
+    "rationale": "The hot path has fixed memory and latency budgets. An unbounded model format would let the slow lane's model size become the fast lane's latency.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle — step 7"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The distribution step refuses an artifact that is not in a declared bounded runtime format or that exceeds its declared memory and latency bounds, and a reflex node loads only artifacts that passed that step."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "REFLEX"
+    ],
+    "notes": "Split from the §10.1 steps 6-7 extraction. The source does not define the bounds. ModelPack's 'resource budget' field (CONTRACT-011) is the natural place to carry them. Related to the 'compact model' in the diagram's Reflex Package (CONTRACT-051)."
+  },
+  {
+    "id": "CONTRACT-009",
+    "domain": "CONTRACT",
+    "title": "Each intelligence-expansion mechanism emits its named typed artifact",
+    "statement": "Each of the twenty §23 expansion mechanisms records its output as the typed artifact the table names: SourceSpec/FeedPack; EvidencePolicy/SourceScore; MemoryPack/EpisodeCluster; OntologyPatch/GraphSchema; BrainSpec/SpecialistPack; CrossDomainHypothesis; TrainingCampaign; ScenarioPack/SyntheticEpisode; ModelPack lineage; ResearchCampaign/ExperimentPack; QuantumExperiment/Benchmark; ToolSpec/CapabilityPack; RegionalEpisode/ReflexDelta; KnowledgeDelta/SharedEpisode; Scorecard/GapSignal; CurriculumItem/ResearchQueue; TickCampaign/MicrostructureDelta; WorldModelSpec/WorldModelBranch; RulePack/ConstraintPack/TheoryDelta; AmbientSignal/AttentionEvent.",
+    "rationale": "§23 requires every new capability to be evaluated, sandboxed, lineage-tracked and promoted through explicit gates. If a mechanism's output is not a named type, the gate has nothing to evaluate and lineage has nothing to point at.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28-29",
+        "section": "§23 Intelligence Expansion Engine — mechanism table, 'Primary artifact' column"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A table-driven test lists the twenty mechanisms. For each it asserts that an artifact type is registered under the §23 name and that the mechanism's output function returns that type."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION"
+    ],
+    "notes": "Nine of these artifacts are also §27 contracts whose fields are defined elsewhere in this file: ModelPack (CONTRACT-011), MicrostructureDelta (-021), AmbientSignal (-025), AttentionEvent (-026), GapSignal (-031), CurriculumItem (-032), BrainSpec (-033), ToolSpec (-034) and KnowledgeDelta (-035). Neither blueprint gives fields for the rest, so their shape is an open design question. The table header starts on p27. Kept as one requirement because it is one table-driven check. P3: §23 is master Phase 9 (open-ended expansion)."
+  },
+  {
+    "id": "CONTRACT-010",
+    "domain": "CONTRACT",
+    "title": "BeliefState contract fields",
+    "statement": "A BeliefState carries: the proposition or distribution believed; the evidence set supporting it; the causal path; confidence; the type of uncertainty; and a TTL.",
+    "rationale": "When a source is found poisoned or stale, its evidence is quarantined and the beliefs depending on it are downweighted or invalidated (M §28). That can only happen to a belief that names its evidence and expires.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — BeliefState"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A BeliefState lacking any listed field, or with an empty evidence set, fails construction. One read after its TTL is refused as expired."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "EVID"
+    ],
+    "notes": "This is also the 'belief' pack delivered to reflex cells (CONTRACT-001). P1: world model is master Phase 2."
+  },
+  {
+    "id": "CONTRACT-011",
+    "domain": "CONTRACT",
+    "title": "ModelPack contract fields",
+    "statement": "A ModelPack carries: signed model artifacts; the features they consume; calibration; the universes they are allowed to be applied to; a resource budget; an expiry; and the rollback parent it replaces.",
+    "rationale": "A node holding a model has to know, without asking the centre, what the model may be applied to, what it may cost, when it stops being valid and what to fall back to.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — ModelPack"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A ModelPack missing any listed field or holding an unsigned artifact is refused at construction. A pack past its expiry is refused at activation, and applying a pack to an instrument outside its allowed universes is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "REFLEX"
+    ],
+    "notes": "The MANAGED_SERVICE flag on the raw extraction was removed. The contract is a type and names no managed service; where artifacts are stored (Vertex, Artifact Registry) is a MODEL or SUPPLY_CHAIN question. G §26 phase 8 ('signed model package lifecycle') places the lifecycle later than master Phase 2. The earlier phase is used, which makes this P1."
+  },
+  {
+    "id": "CONTRACT-012",
+    "domain": "CONTRACT",
+    "title": "StrategyPack contract fields",
+    "statement": "A StrategyPack carries: compiled strategies; their dependencies; the hypotheses they encode; the universes they trade; capacity; a performance envelope; and retirement rules.",
+    "rationale": "A strategy shipped without its hypothesis, capacity and retirement rules cannot be judged against what it claimed, and nothing says when to stop running it.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — StrategyPack"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing a StrategyPack without any one of the listed fields is refused, and a round trip through the Fabric schema preserves all of them."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "REFLEX"
+    ],
+    "notes": "P1: master Phase 2 model/strategy foundry."
+  },
+  {
+    "id": "CONTRACT-013",
+    "domain": "CONTRACT",
+    "title": "CapitalGrant contract fields",
+    "statement": "A CapitalGrant carries: the owner and mandate; the region and strategy it is granted to; an amount; the collateral class; permitted leverage; an expiry; and drawdown and liquidity constraints.",
+    "rationale": "Capital limits are checked before an order exists. A grant that omits expiry or drawdown limits is authority that never lapses.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — CapitalGrant"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A CapitalGrant missing any listed field, or with a non-positive amount or an expiry in the past, is refused at construction rather than clamped."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "RISK",
+      "REFLEX"
+    ],
+    "notes": "P0: the exit test for G §26 phase 4 (financial truth) names 'capital/risk envelope contracts'. The amount is money and must be Decimal, never f64 (core-rust rule). G §7.2 carries capital grants as P0 Critical Control traffic. Also the 'capital' pack of CONTRACT-001. Paper trading only: a grant allocates simulated capital, which needs no LIVE_CAPITAL flag."
+  },
+  {
+    "id": "CONTRACT-014",
+    "domain": "CONTRACT",
+    "title": "RiskEnvelope contract fields",
+    "statement": "A RiskEnvelope carries: hard limits; scenario limits; causal-driver limits; the model and data health it requires; and an emergency mode.",
+    "rationale": "Pre-trade risk is deterministic and local, and the envelope is the only way the centre's risk policy reaches a cell. Every class of limit and the emergency posture must therefore travel in it.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — RiskEnvelope"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing a RiskEnvelope without any listed field is refused. For each limit it carries, a test breaches that limit and shows it fires."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "REFLEX"
+    ],
+    "notes": "P0: master Phase 1 (deterministic risk) and G §26 phase 4 ('capital/risk envelope contracts'). This is the 'risk' pack of CONTRACT-001 and a component of the Reflex Package (CONTRACT-051). G §7.2 carries risk envelopes as P0 Critical Control traffic. The breach-per-limit check is there because a limit that cannot fire is a defect (risk-and-execution rule)."
+  },
+  {
+    "id": "CONTRACT-015",
+    "domain": "CONTRACT",
+    "title": "OpportunityToken contract fields",
+    "statement": "An OpportunityToken carries: the cycle/market ID; its legs; size; edge; a TTL; reservations; the execution policy; the unwind/hedge policy; and version lineage.",
+    "rationale": "Several cells execute a multi-leg opportunity, and the token is their one shared description of it. It has to carry what each leg reserves, when the opportunity expires and how to unwind a partial fill.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — OpportunityToken"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A token missing any listed field is refused. A token presented to a cell after its TTL is refused rather than executed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARBITRAGE",
+      "REFLEX"
+    ],
+    "notes": "P1: master Phase 4 ('opportunity tokens, distributed reservations, 2-5 leg cycles'). Under ADR 0003/0021 the token can be built and exercised in simulation and paper."
+  },
+  {
+    "id": "CONTRACT-016",
+    "domain": "CONTRACT",
+    "title": "LedgerEvent contract: immutable, attributed economic event",
+    "statement": "A LedgerEvent is an immutable economic event carrying debit and credit impacts, ownership, settlement state and the full attribution chain.",
+    "rationale": "Financial truth has to be replayable and attributable. A ledger record that can be edited after the fact, or that cannot name its cause, is not truth.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — LedgerEvent"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For arbitrary generated LedgerEvents, debits equal credits per asset and the attribution chain is non-empty and resolves. The ledger exposes no operation that alters an event once it is appended."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": "The balance check comes from M §15 (p23: 'append-only, event-sourced, double-entry multi-asset accounting system'), not from the §27 row itself. P0: the ledger is a master Phase 0 exit capability and G §26 phase 4. The hash-chained event log (00-enterprise-governance) already forbids editing sealed history."
+  },
+  {
+    "id": "CONTRACT-017",
+    "domain": "CONTRACT",
+    "title": "Episode contract fields",
+    "statement": "An Episode carries: the world state at the time; the beliefs held; the actions taken and the actions declined; outcomes over each horizon; the surprise measured; and counterfactuals.",
+    "rationale": "Learning from outcomes needs what was believed and what was declined as well as what was done. A record of actions alone cannot score a decision not to trade.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — Episode"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing an Episode without any listed field is refused. An Episode for a cycle that declined every action still carries those declines and their counterfactuals rather than an empty action list."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MEMORY",
+      "EVAL"
+    ],
+    "notes": "P1: episodic memory is master Phase 2. §23 names RegionalEpisode, SharedEpisode, SyntheticEpisode and EpisodeCluster as artifacts (CONTRACT-009). The sources do not say whether those are this contract or subtypes of it."
+  },
+  {
+    "id": "CONTRACT-018",
+    "domain": "CONTRACT",
+    "title": "MarketEvent contract fields",
+    "statement": "A MarketEvent is the canonical market event and carries: venue, instrument and event type; the source sequence number; exchange/event time; receive time; normalized time with its uncertainty; payload lineage and hash; and entitlement.",
+    "rationale": "Replay and cross-venue ordering are only as good as the times and sequence each event preserved. Entitlement decides who may see the event.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — MarketEvent"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For arbitrary MarketEvents, the normalized time carries a non-negative uncertainty and the payload hash recomputes from the payload. A gap in source sequence is detectable from consecutive events of one stream."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MARKETDATA",
+      "REPLAY"
+    ],
+    "notes": "P0: master Phase 1 makes canonical tick capture for the first market mandatory. Raw exchange and receive times are kept alongside the normalized time, not replaced by it. M §28 relies on this when clock synchronization degrades ('preserve raw timestamps, widen temporal uncertainty')."
+  },
+  {
+    "id": "CONTRACT-019",
+    "domain": "CONTRACT",
+    "title": "MarketStatePack contract fields",
+    "statement": "A MarketStatePack is a time-bounded reconstructed book, flow, liquidity or regime state, or a learned embedding of one, and carries integrity flags, feature lineage and its horizon.",
+    "rationale": "Fusion and models downstream consume market state second-hand. When the source had a sequence gap or a corrupt book, the integrity flags keep the contaminated state out of training and replay (M §28).",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — MarketStatePack"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A MarketStatePack built over an interval containing a sequence gap carries an integrity flag marking it. A pack missing its time bounds, lineage or horizon is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MARKETDATA",
+      "WORLD"
+    ],
+    "notes": "Book reconstruction for the first market is master Phase 1 (P0). The pack is P1 because, as an exchanged contract, it feeds world+market fusion, which is master Phase 2. The learned-embedding variant is Phase 2 as well."
+  },
+  {
+    "id": "CONTRACT-020",
+    "domain": "CONTRACT",
+    "title": "ReplayManifest contract fields",
+    "statement": "A ReplayManifest carries: the dataset partitions; the venue/instrument universe; the time window; the clock, latency, queue, fill and impact assumptions; the model versions; the random seeds; and reproducibility hashes.",
+    "rationale": "A replay whose assumptions and seeds are not pinned cannot be rerun, and a replay that cannot be rerun cannot explain a live incident.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — ReplayManifest"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Running the same ReplayManifest twice yields identical reproducibility hashes, and changing any one listed assumption or seed changes the hash."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REPLAY",
+      "MARKETDATA"
+    ],
+    "notes": "P0: master Phase 1 ('deterministic replay for that first market') and G §26 phase 3 ('replay and paper trading')."
+  },
+  {
+    "id": "CONTRACT-021",
+    "domain": "CONTRACT",
+    "title": "MicrostructureDelta contract fields",
+    "statement": "A MicrostructureDelta carries the observed live-versus-model residuals for fills, slippage, impact, liquidity, lead/lag or venue behavior, in a form that can trigger evaluation, retraining or curriculum work.",
+    "rationale": "The tick-learning loop reconciles live fills against replay assumptions. A residual has to be a typed artifact before it can open work; otherwise it only sits on a dashboard.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — MicrostructureDelta"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A simulated fill whose slippage departs from the replay model's prediction produces a MicrostructureDelta naming the kind and size of the residual, and that delta opens an evaluation task."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MARKETDATA",
+      "REPLAY",
+      "EVAL"
+    ],
+    "notes": "P1: master Phase 2 (Market Intelligence & Tick Learning Fabric). Phase 9 later drives curricula from the same residuals. Also the primary artifact of the §23 'Market-microstructure expansion' mechanism."
+  },
+  {
+    "id": "CONTRACT-022",
+    "domain": "CONTRACT",
+    "title": "WorldModelState contract fields",
+    "statement": "A WorldModelState carries: the model's identity, scope and horizon; entities and their state distributions; causal structure; evidence lineage; assumptions; confidence and calibration; the branch parent; update time; and expiry.",
+    "rationale": "The federation holds many competing world models. Each state has to say what it covers, what it assumes and when it lapses, so that arbitration compares like with like.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — WorldModelState"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A WorldModelState missing any listed field is refused, and a state read after its expiry is refused as expired."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "P1: master Phase 2 ('initial World Model Federation'). The branch parent anticipates the §23 WorldModelBranch artifact (Phase 9)."
+  },
+  {
+    "id": "CONTRACT-023",
+    "domain": "CONTRACT",
+    "title": "ModelDisagreement contract fields",
+    "statement": "A ModelDisagreement carries: the IDs of the competing models or hypotheses; the disputed propositions; the supporting evidence; calibration history; unresolved assumptions; and arbitration status.",
+    "rationale": "Disagreement between models is information to preserve, not something to average away. A typed record lets the arbitration brain weigh it and a later outcome settle it.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — ModelDisagreement"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing a ModelDisagreement with fewer than two competing model or hypothesis IDs, or without any listed field, is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "EVAL"
+    ],
+    "notes": "P1: master Phase 2 ('model-disagreement representation'). The diagram's Meta / Arbitration Brain 'preserves disagreement' (H L281)."
+  },
+  {
+    "id": "CONTRACT-024",
+    "domain": "CONTRACT",
+    "title": "SymbolicDerivation contract fields",
+    "statement": "A SymbolicDerivation carries: the goal or conclusion; the rules, constraints and graph paths used; evidence references; the solver or proof result; violated assumptions; uncertainty; and a machine-checkable trace.",
+    "rationale": "A symbolic conclusion beats a neural one only when it can be re-checked. The trace is what lets an independent checker confirm the derivation instead of trusting the solver.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "37",
+        "section": "§27 Core Contracts Between Brains — SymbolicDerivation"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A SymbolicDerivation without a machine-checkable trace or any other listed field is refused. Replaying its trace through an independent checker reproduces the stated conclusion."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "REASON"
+    ],
+    "notes": "P1: master Phase 2 ('symbolic/temporal/causal reasoning services'). NON_RUST is kept because the blueprints name Z3/OR-Tools as the solvers producing the result (ADR 0099 conflict C5). The contract type itself can be Rust; the conflict belongs to its producer."
+  },
+  {
+    "id": "CONTRACT-025",
+    "domain": "CONTRACT",
+    "title": "AmbientSignal contract fields",
+    "statement": "An AmbientSignal carries: the signal class; the observed deviation; the expected baseline; horizon; novelty/surprise; the entities and assets affected; urgency; suggested wake targets; evidence lineage; and expiry.",
+    "rationale": "Ambient models run continuously and wake others. A signal that does not state its baseline, urgency and expiry cannot be triaged, and one without lineage cannot be traced when it wakes the wrong specialist.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "38",
+        "section": "§27 Core Contracts Between Brains — AmbientSignal"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An AmbientSignal missing any listed field is refused, and one consumed after its expiry wakes nothing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AMBIENT"
+    ],
+    "notes": "P2: master Phase 8 (Ambient Model Mesh). Also a §23 primary artifact (Ambient proactive expansion)."
+  },
+  {
+    "id": "CONTRACT-026",
+    "domain": "CONTRACT",
+    "title": "AttentionEvent contract fields",
+    "statement": "An AttentionEvent carries: the reason a specialist, reflex or research activation was triggered; the ambient, world or symbolic models that originated it; a budget; a priority; an authority boundary; and a completion/feedback link.",
+    "rationale": "An activation spends compute and, when it targets a reflex cell, touches trading. It has to be budgeted, bounded in authority and closed out with feedback, so the router learns which signals were worth waking for.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "38",
+        "section": "§27 Core Contracts Between Brains — AttentionEvent"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An AttentionEvent missing any listed field is refused. The target refuses an activation that would exceed the event's budget or authority boundary."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AMBIENT",
+      "REFLEX"
+    ],
+    "notes": "P2: master Phase 8 (Attention Router). The authority boundary is where this contract meets the autonomy controls: under the risk-and-execution rule, an attention event can never escalate autonomy."
+  },
+  {
+    "id": "CONTRACT-027",
+    "domain": "CONTRACT",
+    "title": "GoalSpec contract fields",
+    "statement": "A GoalSpec carries: the desired state or distribution; target entities; horizon; utility/success metric; budget; risk and side-effect constraints; identity; jurisdiction; authority class; prohibited methods; and stop/rollback conditions.",
+    "rationale": "Agency starts from a goal. A goal with no prohibited methods, jurisdiction or stop conditions leaves the planner free to pursue it by any means.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "38",
+        "section": "§27 Core Contracts Between Brains — GoalSpec"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A GoalSpec missing any listed field, or with an empty set of stop/rollback conditions, is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": "P3: master Phase 10 (GoalSpec/action-affordance graph) and G §26 phase 10. v11.6 asks for Phase 10 to begin shadow-only. The type can be built now; the actions it would drive cannot (ADR 0021)."
+  },
+  {
+    "id": "CONTRACT-028",
+    "domain": "CONTRACT",
+    "title": "InterventionPlan contract fields",
+    "statement": "An InterventionPlan carries: the causal hypothesis; the controllable levers; ordered or conditional candidate actions; tool identities; the expected effect distribution; cost; timing; reversibility; the world-model simulations run; a no-action baseline; required approvals; and abort rules.",
+    "rationale": "An intervention has to beat doing nothing and has to be stoppable. A plan with no no-action baseline or abort rules can show neither.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "38",
+        "section": "§27 Core Contracts Between Brains — InterventionPlan"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An InterventionPlan missing its no-action baseline, its abort rules or any other listed field is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY",
+      "WORLD"
+    ],
+    "notes": "P3: master Phase 10 (Intervention Planner). A plan can be produced in shadow. Executing any of its candidate actions goes through ActionIntent (CONTRACT-029), which carries EXTERNAL_ACTION."
+  },
+  {
+    "id": "CONTRACT-029",
+    "domain": "CONTRACT",
+    "title": "ActionIntent contract fields",
+    "statement": "An ActionIntent represents exactly one authorized external or internal action and carries: the acting identity; the channel/tool; payload/parameters; factual/provenance references when the action is communicative; disclosure requirements; the policy decisions that authorized it; expiry/idempotency; and audit lineage.",
+    "rationale": "With one intent per action, each action is individually authorized, idempotent and auditable. A batched intent would authorize actions nobody reviewed one by one.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "38",
+        "section": "§27 Core Contracts Between Brains — ActionIntent"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An ActionIntent with no acting identity, policy decision or audit lineage is refused, and so is a communicative intent with no provenance references. Replaying an intent with the same idempotency key performs nothing a second time."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "AGENCY",
+      "SEC"
+    ],
+    "notes": "EXTERNAL_ACTION is kept. An ActionIntent on an external channel is the platform acting in the world, which ADR 0003/0021 and ADR 0099's paper-trading section refuse. For external channels it is scored BLOCKED, and it can be built only in its shadow form. P3: master Phase 10."
+  },
+  {
+    "id": "CONTRACT-030",
+    "domain": "CONTRACT",
+    "title": "EffectAttribution contract fields",
+    "statement": "An EffectAttribution carries: the goal, intervention and action IDs; observations across horizons; the control/counterfactual method; the estimated causal effect distribution; confounders; side effects; confidence/identifiability; and the world-model and action-policy updates that result.",
+    "rationale": "Agency is learned from measured effect, not from intent. An attribution that does not name its counterfactual method and confounders reports correlation as cause.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "38",
+        "section": "§27 Core Contracts Between Brains — EffectAttribution"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An EffectAttribution missing its counterfactual method, its confounders or any other listed field is refused, and every one references an existing goal, intervention and action."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY",
+      "EVAL"
+    ],
+    "notes": "P3: master Phase 10 (causal effect attribution)."
+  },
+  {
+    "id": "CONTRACT-031",
+    "domain": "CONTRACT",
+    "title": "GapSignal contract fields",
+    "statement": "A GapSignal carries: the observed surprise, uncertainty or failure; the affected domains; evidence; severity; economic/risk value; and a candidate gap class.",
+    "rationale": "The expansion loop turns ignorance into research work. A gap has to be classified and valued before a curriculum can rank it.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "38",
+        "section": "§27 Core Contracts Between Brains — GapSignal"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A GapSignal missing any listed field is refused. Its candidate gap class must be one of the §23.1 classes: data, ontology, causal, memory, model, tool, specialist, execution, or compute/quantum research opportunity."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "EVAL"
+    ],
+    "notes": "P3: master Phase 9. Also a §23 primary artifact (Self-evaluation: Scorecard / GapSignal). The gap-class list is from §23.1 step 2 (M p29)."
+  },
+  {
+    "id": "CONTRACT-032",
+    "domain": "CONTRACT",
+    "title": "CurriculumItem contract fields",
+    "statement": "A CurriculumItem carries: the research question; its expected information and economic value; the tools and data it requires; a budget; the owning agent or brain; the evaluation suite; and stop conditions.",
+    "rationale": "A self-generated research agenda has to be bounded. An item with no budget, owner or stop conditions is open-ended spend.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "38",
+        "section": "§27 Core Contracts Between Brains — CurriculumItem"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A CurriculumItem missing its budget, owner, evaluation suite, stop conditions or any other listed field is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION"
+    ],
+    "notes": "P3: master Phase 9 (Curriculum Engine)."
+  },
+  {
+    "id": "CONTRACT-033",
+    "domain": "CONTRACT",
+    "title": "BrainSpec contract fields",
+    "statement": "A BrainSpec carries: the competency domain; tools; source permissions; memory scope; model stack; evaluations; abstention rules; and an authority envelope.",
+    "rationale": "A specialist brain is defined by what it may read, use and decide. Abstention rules and an authority envelope stop a new specialist from acting outside its competence.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "38",
+        "section": "§27 Core Contracts Between Brains — BrainSpec"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A BrainSpec missing any listed field is refused. A brain instantiated from it is denied any tool or source the spec does not name."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "SEC"
+    ],
+    "notes": "P2 because master Phase 8 (specialist-agent society) is the first phase to need a spec per specialist. Phase 9's brain registry and governed spawning (P3) build on it."
+  },
+  {
+    "id": "CONTRACT-034",
+    "domain": "CONTRACT",
+    "title": "ToolSpec contract fields",
+    "statement": "A ToolSpec carries: capability; interface; permission scope; data handling; dependency/security provenance; sandbox tests; cost/latency; and allowed callers.",
+    "rationale": "A tool is new authority. Its permission scope, provenance and allowed callers have to be declared before anything can call it, and it has to pass its sandbox tests before it is trusted.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "38",
+        "section": "§27 Core Contracts Between Brains — ToolSpec"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A ToolSpec missing any listed field is refused, and a call from a caller outside its allowed callers is denied."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "SEC",
+      "SUPPLY_CHAIN"
+    ],
+    "notes": "P2: master Phase 8 ('broader tool use'). Phase 9 adds the tool registry and sandboxed tool creation. The dependency/security provenance field is where ADR 0002/0009's dependency policy reaches a tool: a tool that needs a crate needs a record."
+  },
+  {
+    "id": "CONTRACT-035",
+    "domain": "CONTRACT",
+    "title": "KnowledgeDelta contract fields",
+    "statement": "A KnowledgeDelta is a versioned update to ontology, world model or memory, carrying provenance, confidence, conflicts, the originating brain/region and a merge policy.",
+    "rationale": "Knowledge merged from many brains and regions has to say where it came from and how it merges. Otherwise two regions' lessons silently overwrite each other.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "38",
+        "section": "§27 Core Contracts Between Brains — KnowledgeDelta"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Applying two conflicting KnowledgeDeltas in either order under their merge policies yields the same resulting state or a recorded conflict, never a silent overwrite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "WORLD",
+      "MEMORY"
+    ],
+    "notes": "The delta is the §23 collective/federated artifact, which is Phase 9 (P3). World-model and memory updates across brains start earlier, with the cognitive plane in G §26 phase 8 (P2). The earlier phase is used."
+  },
+  {
+    "id": "CONTRACT-036",
+    "domain": "CONTRACT",
+    "title": "FabricEnvelope: the one internal event model's mandatory fields",
+    "statement": "The FabricEnvelope carries: stream namespace; schema ID and version (hash); region; partition; ordering key; producer ID, producer epoch and producer sequence; leader epoch; offset; event ID; idempotency key; source, receive and logical (HLC) timestamps; priority/QoS class; trace ID; payload hash / integrity checksum; provenance metadata; and auth context.",
+    "rationale": "Ordering, fencing, idempotency, replay and audit are all decided from envelope fields. For any field missing from the envelope, the Fabric cannot give the guarantee that depends on it.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "38",
+        "section": "§27 Core Contracts Between Brains — FabricEnvelope"
+      },
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 3, One internal event model"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For arbitrary envelopes, encoding then decoding preserves every listed field, and decoding a record with any mandatory field absent is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Merged from M §27 FabricEnvelope and G §2 Rule 3 (G was extracted twice). The field sets differ, so the statement is their union. Only M lists: stream namespace, partition, leader epoch, offset, receive timestamp, priority/QoS, idempotency key and auth context. Only G lists: event_id, ordering key and provenance metadata. Treated as equivalent: M's 'HLC timestamp' and G's 'logical timestamp'; M's 'payload hash' and G's 'integrity checksum'. M's 'producer ID/sequence' plus G's 'producer_epoch' become producer ID, epoch and sequence, as in G §7.1's frame header. G Rule 4 uses event IDs for idempotency, so event ID and idempotency key may be one value; the sources do not say, and both are listed. M §26.1 (p36) separately requires every record to carry source event time, receive time, region, partition, leader epoch, offset and HLC metadata, which agrees. The wire encoding is CONTRACT-048. The rule that every asynchronous event uses this envelope is CONTRACT-040. P0: a master Phase 0 fabric contract, and G §26 phase 2."
+  },
+  {
+    "id": "CONTRACT-037",
+    "domain": "CONTRACT",
+    "title": "StreamPolicy contract fields",
+    "statement": "A StreamPolicy carries: partition key; replication factor; ack policy; retention; durability/QoS class; byte and message limits; consumer lag threshold; mirroring policy; overload/shedding behavior; and entitlement.",
+    "rationale": "Durability is set per topic. Control, outcome, journal, research and telemetry streams need different acks, retention and shedding, and a stream created without a policy gets whatever the default happened to be.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "§27 Core Contracts Between Brains — StreamPolicy"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Creating a stream without a StreamPolicy, or with a policy missing any listed field, is refused. Under overload a telemetry-class stream sheds records and a control-class stream does not."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "P0: master Phase 0 ('Native Rust Event & Control Fabric contracts') and G §26 phase 2. The QoS classes a policy selects between are defined in G §7.2 (P0 Critical Control through P4 Telemetry), and per-topic durability is G Rule 6. The mirroring policy is first exercised in master Phase 4 / G phase 7."
+  },
+  {
+    "id": "CONTRACT-038",
+    "domain": "CONTRACT",
+    "title": "ControlPackAnnouncement contract fields",
+    "statement": "A ControlPackAnnouncement carries: the artifact kind; an immutable URI and digest; version; signer/attestation; target regions/nodes; an activation window; expiry; the rollback parent; and the acknowledgments required.",
+    "rationale": "Packages reach nodes by announcement over the Fabric. A node verifies the digest and signer, the activation window and required acknowledgments make a rollout observable, and the rollback parent is where a failed activation returns.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "§27 Core Contracts Between Brains — ControlPackAnnouncement"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "If the fetched artifact does not match the announced digest, or the signer is not trusted, the node refuses activation and sends no acknowledgment. An announcement received outside its activation window or after its expiry activates nothing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "REFLEX",
+      "SUPPLY_CHAIN"
+    ],
+    "notes": "MANAGED_SERVICE was removed from the raw extraction. The contract names a URI, not a store, and whether that URI resolves to Artifact Registry or GCS is for the SUPPLY_CHAIN requirements to decide. P0: it is a master Phase 0 fabric contract, and the diagram's Release / Package Controller publishes these announcements on P0 Critical Control (H L200)."
+  },
+  {
+    "id": "CONTRACT-039",
+    "domain": "CONTRACT",
+    "title": "MirrorCheckpoint contract fields",
+    "statement": "A MirrorCheckpoint carries: source and destination region; stream/partition; source epoch and offset; destination offset; lag; an integrity hash; and the time of the last successful mirror.",
+    "rationale": "Cross-region mirroring is asynchronous and must never block a local commit. The checkpoint tells a region how far behind its copy is and whether the copy is intact.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "§27 Core Contracts Between Brains — MirrorCheckpoint"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "After a partition is mirrored between two regions, the checkpoint's destination offset and integrity hash match the destination's records. Once the mirror stops, the reported lag and time since the last mirror both grow."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "FABRIC",
+      "REGION"
+    ],
+    "notes": "P1: master Phase 4 ('selective cross-region fabric mirroring') and G §26 phase 7. MULTI_REGION is kept."
+  },
+  {
+    "id": "CONTRACT-040",
+    "domain": "CONTRACT",
+    "title": "Every asynchronous event uses the one internal event model",
+    "statement": "Every asynchronous event the platform emits travels in the one internal event model, the FabricEnvelope of CONTRACT-036, and no asynchronous path publishes a payload without it.",
+    "rationale": "A single event model is what makes consumers idempotent, replay deterministic and traces joinable across services. Every additional model is another set of guarantees to prove.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 3, One internal event model"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test finds every asynchronous publication call site and asserts that each publishes through the envelope-constructing API, failing on any that sends a bare payload."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Split from G §2 Rule 3, which was extracted twice and merged; its field list is folded into CONTRACT-036. G §27's acceptance criterion that 'all internal async contracts use the Rust Fabric SDK/schema model' states the same rule at acceptance level."
+  },
+  {
+    "id": "CONTRACT-041",
+    "domain": "CONTRACT",
+    "title": "fabric-client passes payloads through zero-copy buffers",
+    "statement": "The fabric-client producer/consumer SDK is Rust-first and passes payloads through zero-copy buffers.",
+    "rationale": "The SDK is on every producer's path. Copying each payload at each layer costs latency and memory that the per-topic budgets then have to absorb.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric — fabric-client row"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "A benchmark of produce and consume through fabric-client counts payload copies and allocations per record, and shows none between the caller's buffer and the transport."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Split from the G §7 fabric-client row. P3 because it is an optimisation that correctness does not depend on. NEW_DEPENDENCY was removed for this half: std slices and reference-counted buffers are enough for zero-copy. The async-batching half keeps the flag (CONTRACT-043). M §26.1 (p36) adds that Rust-native zero-copy layouts in hot in-process structures must never leak unversioned memory formats onto the network."
+  },
+  {
+    "id": "CONTRACT-042",
+    "domain": "CONTRACT",
+    "title": "Producer sequence numbers make retries idempotent",
+    "statement": "fabric-client gives each record a per-partition producer sequence number. When a record is resent with a sequence number the partition has already accepted, it is acknowledged but not appended a second time.",
+    "rationale": "Delivery is at-least-once. Without an idempotent producer sequence, every network retry becomes a duplicate record that each consumer then has to catch.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric — fabric-client row ('idempotent producer sequence')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Under arbitrary interleavings of sends, lost acknowledgments and retries, each distinct producer sequence number appears exactly once in the partition log."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Split from the G §7 fabric-client row. M §26.1 (p36) says the same thing: 'idempotent producer IDs/sequence numbers and deterministic event IDs provide effectively-once processing with idempotent sinks'. Fencing stale producers by epoch is a separate requirement (CONTRACT-049). The transactional uniqueness financial sinks enforce themselves (G Rule 4) is a LEDGER requirement, not this one. NEW_DEPENDENCY was removed for this half."
+  },
+  {
+    "id": "CONTRACT-043",
+    "domain": "CONTRACT",
+    "title": "fabric-client batches records on the producer side",
+    "statement": "fabric-client batches records asynchronously on the producer side instead of making one network write per record.",
+    "rationale": "Journal and research streams are throughput-bound. Sending one record per write spends the transport budget on overhead.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric — fabric-client row ('async batching')"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "At a fixed record rate, the benchmark shows fewer transport writes than records and higher throughput than unbatched sends, while batching latency stays within the topic's QoS budget."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Split from the G §7 fabric-client row. P3 because it is an optimisation. NEW_DEPENDENCY is kept: in G's table, 'async' sits beside fabricd's 'Tokio async runtime', which ADR 0001/0011 and ADR 0099 conflict C2 refuse until a dependency record exists. Batching on a dedicated thread with a bounded queue would meet this requirement without a new dependency."
+  },
+  {
+    "id": "CONTRACT-044",
+    "domain": "CONTRACT",
+    "title": "Every producer declares an explicit acknowledgment profile",
+    "statement": "Every fabric-client producer declares an explicit acknowledgment profile, and no producer can be created with an implicit default.",
+    "rationale": "The ack profile is the durability guarantee: acknowledgment on leader receipt or on quorum. If it is left implicit, a control-plane producer can silently get telemetry durability.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric — fabric-client row ('explicit ack profile')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing a producer without naming an ack profile is refused or does not compile. A send reports acknowledgment only once the declared profile's condition is met."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Split from the G §7 fabric-client row. The per-stream ack policy is a StreamPolicy field (CONTRACT-037). The sources do not say how a producer's profile must relate to its stream's policy. NEW_DEPENDENCY was removed for this half."
+  },
+  {
+    "id": "CONTRACT-045",
+    "domain": "CONTRACT",
+    "title": "Fabric wire schema is Protobuf via prost with generated Rust types",
+    "statement": "fabric-schema defines the Fabric wire schema in Protobuf, encoded with prost, and generates from it the Rust types that producers and consumers use.",
+    "rationale": "Defining a schema once and compiling it into both sides removes the producer/consumer drift that hand-written codecs allow.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric — fabric-schema row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every Fabric topic's payload type is generated from a registered .proto schema, and no producer or consumer hand-encodes a Fabric payload."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Split from the G §7 fabric-schema row. M §26.1 (p36) says the same: 'versioned Protobuf via prost for contracts and compatibility'. NEW_DEPENDENCY is kept. ADR 0002/0009 refuse prost and Protobuf code generation until a wire-schema dependency record exists (ADR 0099 conflict C2). Until then this requirement is scored against the in-tree serde/serde_json schema model, and the gap is recorded."
+  },
+  {
+    "id": "CONTRACT-046",
+    "domain": "CONTRACT",
+    "title": "Registered schema IDs are immutable",
+    "statement": "Once registered, a schema ID always denotes the same schema, and registering different content under an existing ID is refused.",
+    "rationale": "Consumers decode by schema ID. If an ID's meaning can change, every archived record becomes ambiguous and replay stops being deterministic.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric — fabric-schema row ('immutable schema IDs')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Re-registering an existing schema ID with different content is refused. Re-registering identical content is accepted as a no-op."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "REPLAY"
+    ],
+    "notes": "Split from the G §7 fabric-schema row. NEW_DEPENDENCY was removed for this half, because an in-tree registry can hold the invariant."
+  },
+  {
+    "id": "CONTRACT-047",
+    "domain": "CONTRACT",
+    "title": "Schema compatibility gates reject incompatible versions",
+    "statement": "The schema registry runs a compatibility gate on every new schema version, and a version incompatible with the topic's compatibility policy is rejected before it can reach a production topic.",
+    "rationale": "An incompatible schema that reaches a production topic breaks every consumer that cannot decode it. The gate turns that production breakage into a refusal at registration.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric — fabric-schema row ('compatibility gates')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A schema version that removes a required field (breaking backward compatibility) is rejected by both the CI check and runtime registration, and a compatible additive change is admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "SUPPLY_CHAIN"
+    ],
+    "notes": "Split from the G §7 fabric-schema row. G §7.1 (p8) states the policy: 'backward/forward compatibility policy at CI and runtime registration; rejected incompatible schemas never reach production topics'. G §25 (p22) makes it a game-day drill ('Bad schema'). The diagram's Fabric Meta / Schema node lists 'schema compatibility' (H L164). NEW_DEPENDENCY was removed for this half. The check covers both halves, a refusal and an admission, so that a gate that refuses everything does not pass."
+  },
+  {
+    "id": "CONTRACT-048",
+    "domain": "CONTRACT",
+    "title": "Fabric frame header fields",
+    "statement": "Every Fabric frame header contains: magic/version; message type; schema ID/version; flags; partition; producer ID/epoch; sequence; event ID; source timestamp; logical timestamp; trace ID; payload length; and a CRC32C.",
+    "rationale": "Because magic, length and CRC can be validated before the payload is parsed, a broker can refuse a corrupt frame at the edge instead of journaling it.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.1 Wire, ordering and delivery semantics — Frame header"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For arbitrary frames, encoding and decoding round-trip every header field. Flipping any bit covered by the CRC32C is detected and refused, and a frame with a wrong magic/version or payload length is refused before its payload is read."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "The header is the wire encoding of part of the FabricEnvelope (CONTRACT-036). The envelope's other fields (namespace, region, receive time, QoS, auth context and so on) are not in the header, and the sources do not say where they travel. CRC32C is a table-driven checksum that needs no dependency. M §26.1 separately names BLAKE3 content hashes, which ADR 0099 conflict C2 lists as a dependency conflict. P0: G §26 phase 2 (Rust Fabric MVP)."
+  },
+  {
+    "id": "CONTRACT-049",
+    "domain": "CONTRACT",
+    "title": "Stale producers are fenced by epoch",
+    "statement": "A producer whose epoch is older than the current epoch registered for its producer ID is fenced, and every write it attempts after that is refused.",
+    "rationale": "After a failover, two instances can each believe they are the producer. Epoch fencing makes the stale one unable to write, so a zombie cannot interleave duplicates with its successor.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.1 Wire, ordering and delivery semantics — Delivery ('producer epoch/sequence prevents stale duplicate producers')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Starting a second producer with the same ID bumps the epoch. The first producer's next write is refused as fenced, and none of its later records appear in the partition."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Split from the G §7.1 Delivery extraction. Retry idempotency through the sequence number is CONTRACT-042, and offset replay is CONTRACT-050. G §7.2 requires producer fencing on P0 Critical Control topics, and the diagram lists producer fencing on the Fabric Meta / Schema node (H L164)."
+  },
+  {
+    "id": "CONTRACT-050",
+    "domain": "CONTRACT",
+    "title": "Per-partition offsets provide replay",
+    "statement": "Each partition assigns every appended record an increasing offset, and a consumer can re-read the partition from any retained offset and receive the same records in the same order.",
+    "rationale": "Sinks restart by offset without losing records, and replay reconstructs history the same way. Without stable offsets, a 'replay' is just a new run.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.1 Wire, ordering and delivery semantics — Delivery ('per-partition offsets provide replay')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Consuming a partition from offset N twice returns byte-identical records in the same order. A sink restarted from its committed offset neither skips a record nor reprocesses one it had committed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "REPLAY"
+    ],
+    "notes": "Split from the G §7.1 Delivery extraction. G §26 phase 2 names 'consumer offsets' in the Rust Fabric MVP exit test. Offsets increase within a partition because M §26.1 (p36) requires strict per-partition order."
+  },
+  {
+    "id": "CONTRACT-051",
+    "domain": "CONTRACT",
+    "title": "Reflex Package bundles model, strategy, feature graph, risk envelope and config",
+    "statement": "The Reflex Package Builder bundles a compact model, a strategy, a feature graph, a risk envelope and configuration into one Reflex Package, which is delivered to regional reflex cells.",
+    "rationale": "A cell must activate a consistent set: a model together with the strategy, features and risk envelope it was evaluated with. Shipped separately, a model can end up running against features or limits it was never tested with.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L288",
+        "section": "05 · Cognitive / AGI / Quantum Plane — Reflex Package Builder node"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A package built by the builder contains each of the five components, and activating a package with any component missing is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "MODEL",
+      "SUPPLY_CHAIN"
+    ],
+    "notes": "This requirement comes from the diagram alone: view 05, node 'Reflex Package Builder', subtitle 'signed package'. The raw extraction said 'exactly' five, which the diagram does not. The set disagrees with M §5's 'model + strategy + belief + capital + risk packs' (CONTRACT-001): the diagram has feature graph and config where the master has belief and capital. Signing is CONTRACT-004. The target node's subtitle, 'Atomic package activation' (H L289), and the Regional Cell view's Reflex Package Agent ('atomic swaps', H L160) imply that all five activate together. P1 because packages are built by the master Phase 2 foundry; G places the signed package lifecycle in phase 8."
+  }
+]

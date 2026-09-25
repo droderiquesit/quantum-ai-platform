@@ -1,0 +1,755 @@
+[
+  {
+    "id": "GCP-001",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/execution-node deploys a dedicated Compute Engine VM per node (no GKE/Cloud Run) — correct placement family for Rule 1. But `variable \"machine_type\"` (modules/execution-node/variables.tf:118-146) permits only c3-highcpu-8, c3-highcpu-22, c3d-highcpu-8, c3d-highcpu-16 (v10.1 §41.4), not the C4D/C4 class the requirement names. `execution_nodes = {}` in every environment (dev/test/stage/prod terraform.tfvars), so nothing is provisioned.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node/variables.tf:118-146 (machine_type validation, C3/C3D only)",
+      "infrastructure/terraform/modules/execution-node/main.tf:314 (machine_type = var.machine_type)",
+      "infrastructure/terraform/main.tf:659-661 (module.execution_node for_each = var.execution_nodes)",
+      "infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars (execution_nodes = {})",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:661 the_execution_node_has_no_external_address_and_no_container_runtime (dedicated VM, no container runtime, asserts the four C3/C3D shapes)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1572 the_boot_image_is_pinned_by_name_and_carries_what_the_nodes_template_requires (permitted machine_type set >= 4 and equal to the image workflow's dispatch options; no C4D/C4)"
+    ],
+    "gap": "Machine-class allowlist names C3/C3D, not C4D/C4; no Reflex VM is actually provisioned in any environment; G p23 says the exact machine still needs venue-level benchmarks (GCP-008) before it is fixed.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-008"
+    ],
+    "blocked_by": "external:billing",
+    "verification": "infrastructure.rs's machine_type assertions today prove only the C3/C3D set; a new infra-plan check would assert every execution-node instance uses a c4d-/c4- prefix and that no Reflex resource is a google_container_cluster workload or google_cloud_run_v2_service.",
+    "work_item": "E14-machine-class",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Placement pattern (dedicated CE VM, not GKE/Cloud Run) already matches the requirement; the remaining work is a machine-type allowlist edit plus the benchmark GCP-008 asks for, then an owner-approved, billed deployment (C8/external:billing). verify: integrated true->false. module.execution_node is for_each over var.execution_nodes (main.tf:659-661), and every environment sets {}, so no environment enables this placement. Under the infra definition, integrated means Terraform that an environment enables. Evidence now names the two tests (infrastructure.rs:661 and :1572). They prove the dedicated-VM/no-container-runtime half and the C3/C3D set, not C4D/C4. PARTIAL confirmed."
+  },
+  {
+    "id": "GCP-002",
+    "status": "BLOCKED",
+    "current": "Every warm binary (qip-api, qip-fastbrain, qip-deepbrain, qip-web) is a Cloud Run service defined in infrastructure/terraform/catalogue.tf and deployed by infrastructure/terraform/modules/cloudrun (ADR 0024). The only GKE cluster in the tree is `google_container_cluster.control_plane` (modules/gitops-control-plane/main.tf:131), a single-region Autopilot cluster running only Argo CD/Kargo/Config Sync reconcilers, not asset/risk/capital/evidence/replay/Fabric-sink/API/solver/agent workloads.",
+    "evidence": [
+      "infrastructure/terraform/catalogue.tf (workload catalogue -> modules/cloudrun)",
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:131-160 (the one GKE cluster, control-plane only)",
+      "infrastructure/environments/dev/terraform.tfvars:138 (gitops_enabled = true only in dev; test/stage/prod default false)"
+    ],
+    "gap": "No regional GKE Standard service plane exists anywhere; ADR 0024 placed every warm service on Cloud Run instead, which is the opposite of this requirement.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3",
+    "verification": "No test exists. A future infra-plan check would classify each catalogue.tf workload as stateful/long-running vs. stateless-burst and assert the former set are GKE workloads.",
+    "work_item": "E14-warm-services-gke",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "Direct contradiction of ADR 0024 (Kubernetes retired for Cloud Run). Needs the C3 runtime record before any migration starts, per ADR 0099's conflict register."
+  },
+  {
+    "id": "GCP-003",
+    "status": "INCORRECT",
+    "current": "ADR 0024 runs every warm binary — api, fastbrain, deepbrain, web, and any stateful/long-running service the platform has — on Cloud Run via modules/cloudrun, with no distinction between bursty/stateless and stateful/long-running workloads.",
+    "evidence": [
+      "infrastructure/terraform/catalogue.tf:390-415 (fastbrain on Cloud Run, min_instances = 1, always_on_justification: 'Runs the cycle on its own clock over one hash-chained log') and :492-510 (deepbrain, same shape): stateful, long-running services on Cloud Run",
+      "infrastructure/gitops/envs/{dev,test,stage,prod}/{fastbrain,deepbrain}.yaml (Config Connector RunService)",
+      "infrastructure/terraform/catalogue.tf (all warm workloads routed through modules/cloudrun uniformly)",
+      "infrastructure/terraform/modules/cloudrun/*.tf (one Cloud Run service definition path for every catalogue entry)",
+      "GCP.json GCP-003 notes: \"ADR 0024 runs every warm binary on Cloud Run, which goes beyond this allowance\""
+    ],
+    "gap": "The requirement forbids stateful/long-running services on Cloud Run; today's architecture places all of them there, which is the specific thing G p34/p17 rule out, not merely an absence of GKE.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-002"
+    ],
+    "blocked_by": "C3",
+    "verification": "No test asserts which Cloud Run services are stateless-appropriate. A workload register (per the requirement's own verification method) recording statelessness and rationale per Cloud Run service would need to be written and checked.",
+    "work_item": "E14-warm-services-gke",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Resolving this and GCP-002 is the same C3 runtime record; v2.1 itself allows Cloud Run 'where stateless burst/serverless economics are beneficial' (v11.6 §26), so the fix is selective, not wholesale. verify: implemented/integrated/deployable true->false. The flags score the required behaviour, that Cloud Run holds only stateless burst workloads, and that behaviour does not exist. What exists and deploys is the forbidden form, which the INCORRECT status already records. GCP-009 and GCP-024 in this file score INCORRECT the same way. INCORRECT confirmed against catalogue.tf's fastbrain/deepbrain always_on_justification."
+  },
+  {
+    "id": "GCP-004",
+    "status": "INCORRECT",
+    "current": "modules/data declares `resource \"google_spanner_instance\" \"global\"` with `config = \"regional-${var.region}\"` (modules/data/main.tf:326-331), a single-region Spanner configuration, gated off by `enable_spanner` (default false in every environment). No per-region ledger database exists either, so the 'no regional ledger' half is trivially true.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:326-331 (google_spanner_instance.global, config = regional-${var.region})",
+      "infrastructure/terraform/modules/data/variables.tf:116-124 (enable_spanner, default false)",
+      "No `multi-region` or `enable_spanner` reference anywhere under backend/crates/tests/qip-acceptance/tests/ or infrastructure/terraform/tests/"
+    ],
+    "gap": "The one Spanner resource that exists is regional, not multi-region, which is the opposite of what the requirement asks — a config value that must be corrected, not merely added; and it is behind an unenabled flag everywhere.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-027",
+      "LEDGER-028"
+    ],
+    "blocked_by": "C4",
+    "verification": "No test exists. An infra-plan check would assert exactly one ledger Spanner instance with a multi-region instance configuration and no per-region ledger database.",
+    "work_item": "E05-ledger-spanner",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Blocked on the C4 storage record (ADR 0002/0009 permit only serde/serde_json in-tree; ADR 0089 is a file-backed log). The ledger writer itself is LEDGER's own P0; this row is only the multi-region placement half."
+  },
+  {
+    "id": "GCP-005",
+    "status": "MISSING",
+    "current": "nothing. The platform's only 'control fabric' resource today is v10.1's Pub/Sub-backed control-fabric trust zone (modules/trust-zones/main.tf:47,89-96,582-610: google_pubsub_topic_iam_member fabric_publish/fabric_attach), not a Fabric broker. No Compute Engine broker VM, no per-zone spread, exists in Terraform anywhere.",
+    "evidence": [
+      "infrastructure/terraform/modules/trust-zones/main.tf:582-610 (Pub/Sub-based control-fabric, not broker VMs)",
+      "grep for `google_compute_instance` broker patterns in infrastructure/terraform/modules/ returns none outside modules/execution-node and modules/gitops-control-plane node pools"
+    ],
+    "gap": "No Fabric broker VM exists at all; the in-tree qip-events/qip-streaming libraries implement Fabric semantics in Rust but nothing runs them on dedicated, zone-spread Compute Engine instances.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "FABRIC-008"
+    ],
+    "blocked_by": "C2",
+    "verification": "No test exists. An infra-plan check would assert broker instances are C4D/C4-class Compute Engine VMs spanning three zones and are not a GKE or Cloud Run workload.",
+    "work_item": "E03-fabric-broker-vms",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "Blocked first on C2 (the Fabric's own transport/consensus dependency class — Tokio/QUIC/mTLS/Raft — is refused by ADR 0002/0009 until a dependency record exists per class), and then on C8 (cost/regions) for actual VM placement. verify: blocker narrowed, status unchanged. ADR 0100 (accepted 2026-09-25) decides a single-node in-tree broker (apps/qip-fabricd) on std TCP with no new crate. That binary is not built yet; no such crate exists under backend/crates/apps. So one broker on a dedicated VM is not C2-gated. The three-zone spread needs replicated brokers, which ADR 0100 section 3 defers to C2's consensus record, and the VM cost is C8. blocked_by C2 is kept for the three-zone half. Also fixed the malformed trust-zones line range (507-260) in current."
+  },
+  {
+    "id": "GCP-006",
+    "status": "MISSING",
+    "current": "nothing. No Network Connectivity Center resource of any kind exists in the tree; modules/connectivity provides only partner Interconnect (VLAN attachments, off by default, NOT-ORDERED.md) and a Private Google Access endpoint, which is a different mechanism from an NCC latency-mesh hub with route filters.",
+    "evidence": [
+      "infrastructure/terraform/modules/connectivity/main.tf:59-160 (Cloud Router, Interconnect attachment, Private Google Access endpoint — no NCC hub)",
+      "grep -rn 'google_network_connectivity' infrastructure/terraform returns nothing"
+    ],
+    "gap": "No latency NCC hub, no mirror-prefix export filters, and no Fabric broker to mirror from in the first place (GCP-005).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-005",
+      "GCP-025",
+      "FABRIC-011",
+      "FABRIC-052"
+    ],
+    "blocked_by": "C8",
+    "verification": "No test exists. An infra-plan check would assert the latency NCC hub's spoke export filters name only Fabric mirror and Reflex Mesh peer prefixes with no internet route.",
+    "work_item": "E03-fabric-broker-vms",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Cannot exist before GCP-005 (there is nothing to mirror) and GCP-025 (there is no NCC hub of any kind yet). verify: blocked_by C2->C8. An NCC hub with export filters is plain Terraform and needs no refused crate. What cannot be built is the cross-region mirror itself: ADR 0100 section 1 scores it 'Mirror: BLOCKED(C8)' (multi-region). A fresh grep for network_connectivity across infrastructure/ returned nothing. MISSING confirmed."
+  },
+  {
+    "id": "GCP-007",
+    "status": "MISSING",
+    "current": "Each environment (dev/test/stage/prod) declares exactly one `region` (infrastructure/terraform/variables.tf:30-34, default europe-west2; dev overrides to us-east4). There is no execution-region map with three entries spanning Americas/Europe/APAC anywhere in committed tfvars.",
+    "evidence": [
+      "infrastructure/terraform/variables.tf:30-34 (single `region` variable)",
+      "infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars (one region field each: us-east4 or europe-west2 — no Americas+Europe+APAC set)"
+    ],
+    "gap": "No production execution-region map exists at all; the environment model is one region per environment, not a multi-region execution-region list.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-008"
+    ],
+    "blocked_by": "C8",
+    "verification": "No test exists. An infra-plan check would assert a production execution-region map with exactly three entries in Americas/Europe/APAC GCP regions.",
+    "work_item": "E14-multi-region",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "ADR 0008's seven regional edge cells and prod's nine planned edge-cell locations are a different, larger concept than v2.1's three execution regions; mapping one to the other is C8 deployment-record work, and nothing is deployed today (execution_nodes = {})."
+  },
+  {
+    "id": "GCP-008",
+    "status": "PARTIAL",
+    "current": "A measurement-and-record precedent exists for the ADR 0008 edge-cell model: infrastructure/terraform/modules/connectivity/main.tf's header records that three of nine edge cells (chicago-1, newyork-1, dubai-1) sit ~400km/300km/380km from their venues because GCP has no region there, citing docs/operations/deploying-an-edge-cell.md and environments/prod/terraform.tfvars. No such record exists yet for the three v2.1 execution regions, and the recorded facts are distance only, not the full venue/market-data RTT, residency, machine-series, Interconnect and counterparty-proximity set the requirement asks for.",
+    "evidence": [
+      "infrastructure/terraform/modules/connectivity/main.tf:1-16 (distance rationale for chicago-1/newyork-1/dubai-1; partner Interconnect as the answer)",
+      "docs/operations/deploying-an-edge-cell.md:341-373 (cell -> region table with in-metro findings and the ~400/300/380 km gap; undated per region, no measured RTT, residency or machine-series finding)",
+      "infrastructure/environments/prod/terraform.tfvars (edge-cell location references)",
+      "docs/ops/execution-measurements.md (checked and rejected as an RTT record: in-process timings on a shared container, which say explicitly that they carry no venue latency)"
+    ],
+    "gap": "No dated selection record exists for the three v2.1 execution regions specifically, and even the existing edge-cell precedent lacks RTT, residency, machine-series and counterparty-proximity findings — only distance.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test exists. Verification is by inspection: each execution region's tfvars entry would need a dated selection record citing measured RTTs and the four other findings.",
+    "work_item": "E14-region-selection-record",
+    "tier": "T1",
+    "size": "M",
+    "notes": "This is process/documentation work, not blocked by any C1-C8 conflict — it can be written before any region is provisioned. verify: integrated true->false. A findings comment and a runbook table are not behaviour reached from a composition root, and not Terraform an environment enables. docs/ops/execution-measurements.md was checked as a possible RTT record and does not qualify. PARTIAL kept: distance and Interconnect findings exist for the edge-cell set, but not for any execution region."
+  },
+  {
+    "id": "GCP-009",
+    "status": "INCORRECT",
+    "current": "modules/network declares exactly one `google_compute_network \"vpc\"` per environment (modules/network/main.tf:35-46); modules/trust-zones carves thirteen subnets (public-edge, application-identity, ..., control-fabric, execution, ledger, wallet-read, treasury-write, management) out of that single VPC rather than declaring separate Reflex/Fabric/Service VPCs.",
+    "evidence": [
+      "infrastructure/terraform/modules/network/main.tf:1-46 (one VPC per environment, `auto_create_subnetworks = false`)",
+      "infrastructure/terraform/modules/trust-zones/main.tf:33-96 (thirteen trust-zone subnets on that one VPC, including 'execution' and 'control-fabric')"
+    ],
+    "gap": "A single shared VPC hosts what the requirement says must be three separate VPCs (Reflex, Fabric, Service); this is not an absence but an actively different, forbidden topology.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. An infra-plan check would assert three distinct google_compute_network resources per execution region for Reflex/Fabric/Service, with no Reflex or Fabric instance interfaced into the Service VPC.",
+    "work_item": "E14-vpc-separation",
+    "tier": "T2",
+    "size": "L",
+    "notes": "Direct instance of the GCP-024 anti-pattern (no single flat VPC) — this and GCP-024 should be closed by the same network redesign. verify: blocked_by C8->''. Three VPCs in one region cost nothing and need no second region. The requirement's own notes say the separation applies from the first region onwards, and GCP-024, the same redesign, already carries no blocker. INCORRECT confirmed: modules/network/main.tf:35 is the only google_compute_network in the tree."
+  },
+  {
+    "id": "GCP-010",
+    "status": "MISSING",
+    "current": "The only GKE cluster in Terraform is `google_container_cluster.control_plane` (modules/gitops-control-plane/main.tf:131), a single Autopilot cluster in `var.region`, created only when `gitops_enabled = true` (dev only). It hosts Argo CD/Kargo/Config Sync controllers, not a per-region service plane.",
+    "evidence": [
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:131-160",
+      "infrastructure/environments/dev/terraform.tfvars:138 (gitops_enabled = true only in dev)",
+      "infrastructure/environments/{test,stage,prod}/terraform.tfvars (gitops_enabled left at default false, per that file's own comment about ADR 0036)"
+    ],
+    "gap": "No regional service-plane GKE cluster exists; the one cluster that exists is a control-plane cluster with a different purpose and is single-environment.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-002",
+      "GCP-007"
+    ],
+    "blocked_by": "C3",
+    "verification": "No test exists. An infra-plan check would assert one regional GKE Standard cluster per execution region, none serving another region's workloads.",
+    "work_item": "E14-warm-services-gke",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Same C3 runtime record as GCP-002."
+  },
+  {
+    "id": "GCP-011",
+    "status": "PARTIAL",
+    "current": "modules/data declares `google_storage_bucket \"archive\"` at `location = var.region` (modules/data/main.tf:115-120), gated by `enable_cloud_storage` (default false in every environment). modules/evidence unconditionally declares `google_storage_bucket \"evidence\"` at `location = var.region` (modules/evidence/main.tf:58-64) for a different purpose (audit evidence, not Fabric segments). Neither is a Fabric archiver identity's landing bucket, because no Fabric archiver exists (GCP-005).",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:115-120 (regional archive bucket, off by default)",
+      "infrastructure/terraform/modules/data/variables.tf:65-76 (enable_cloud_storage, default false)",
+      "infrastructure/terraform/modules/evidence/main.tf:58-64 (regional evidence bucket, always created)",
+      "infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars (enable_cloud_storage = false in all four)",
+      "backend/crates/libs/qip-storage/src/gcp/storage.rs (CloudStorageBlobStore, a generic GCS BlobStore; no Fabric segment archiver uses it)"
+    ],
+    "gap": "The regional-bucket placement pattern exists and is proven elsewhere, but no bucket is wired to a Fabric archiver identity because there is no Fabric segment archiver to write it (depends on GCP-005).",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-005"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. An infra-plan check would assert each region's landing bucket is regional (not multi-region) and that region's Fabric archiver service account holds write access to it.",
+    "work_item": "E03-fabric-broker-vms",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The single-region GCS archive precedent (evidence bucket, always-on) shows the pattern is cheap to replicate once GCP-005 exists; not itself blocked by a C1-C8 conflict. verify: integrated true->false. The event-archive bucket (data/main.tf:115) is count = 0 in every environment. The evidence bucket is always created, but it holds audit evidence, not Fabric landing storage. No archiver identity or segment writer exists, and ADR 0100's qip-storage::segment archive is unbuilt. PARTIAL kept only for the dormant regional bucket declaration."
+  },
+  {
+    "id": "GCP-012",
+    "status": "PARTIAL",
+    "current": "Per the observability domain rule file: the execution node's startup script declares an in-region Ops Agent Prometheus receiver (startup.sh.tftpl:209-231) scraping qip-edge-node's own health port, which is in-region by construction. No Cloud Run service has a collector (the managed-Prometheus sidecar is refused on an unfixed CVE — vendor.yml run 11, CVE-2026-56854). Nothing is deployed: execution_nodes = {} everywhere. The three central composition roots carry an OTLP/JSON drain to OpenObserve (openobserve.rs), and dev declares an OpenObserve RunService in its region. The drain is gated on QIP_OPENOBSERVE_URL, which no environment sets, so no thread starts.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node startup.sh.tftpl:209-231 (Ops Agent Prometheus receiver)",
+      ".claude/rules/domains/observability.md (Cloud Run sidecar refused on CVE-2026-56854; NOT-SCRAPED.md)",
+      "infrastructure/environments/*/terraform.tfvars (execution_nodes = {})",
+      "backend/crates/apps/qip-{api,fastbrain,deepbrain}/src/openobserve.rs (drain gated on QIP_OPENOBSERVE_URL; module doc: 'wiring ahead of that, not an exporting path')",
+      "infrastructure/gitops/envs/dev/openobserve.yaml (OpenObserve RunService in dev's region)"
+    ],
+    "gap": "Only the execution-node half of the pattern exists and is unproven in a real deployment (no node deployed); the Cloud Run half has no collector at all, and multi-region collection (more than one region operating at once) has never been exercised.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-007"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Verification is infra-plan: a collector present in every execution region, with every workload exporting only to its own region's target.",
+    "work_item": "E12-per-region-collectors",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Not blocked by C1-C8 for the execution-node half (it's already written); the Cloud Run half is blocked externally by the unresolved sidecar CVE, per observability.md. verify: integrated true->false. The Ops Agent receiver lives in modules/execution-node, which no environment instantiates (execution_nodes = {}). The only in-tree exporter for the Cloud Run half (openobserve.rs in the three central roots) never starts, because no environment sets QIP_OPENOBSERVE_URL. Added that exporter and dev's OpenObserve RunService as evidence; the assessor had missed both. They do not change the status. PARTIAL kept."
+  },
+  {
+    "id": "GCP-013",
+    "status": "PARTIAL",
+    "current": "modules/trust-zones (main.tf:516-548) and modules/execution-node (main.tf:158-183) each declare a `google_compute_router_nat` with `nat_ip_allocate_option = \"AUTO_ONLY\"` (not reserved/static) and `source_subnetwork_ip_ranges_to_nat = \"LIST_OF_SUBNETWORKS\"`. modules/egress-proxy renders an Envoy sidecar (infrastructure/egress/envoy.yaml) with a plan-time gate asserting the bootstrap dials only named hosts — a domain-allowlist control, but not the GCP-managed Secure Web Proxy product. No workload has an external IP (per infrastructure.rs's `the_execution_node_has_no_external_address_and_no_container_runtime`, which covers only the execution node).",
+    "evidence": [
+      "infrastructure/terraform/modules/trust-zones/main.tf:516-548 (Cloud NAT, AUTO_ONLY, LIST_OF_SUBNETWORKS, logging ALL)",
+      "infrastructure/terraform/modules/execution-node/main.tf:158-183 (per-node Cloud NAT, AUTO_ONLY, off unless create_egress_nat)",
+      "infrastructure/terraform/main.tf:159-170,427 (dev's gitops_enabled generates management-zone GitHub egress, so dev's plan creates the trust-zone NAT)",
+      "infrastructure/terraform/modules/egress-proxy/main.tf:1-40 (Envoy domain-allowlist gate, not Secure Web Proxy)",
+      "backend/crates/tests/qip-acceptance/tests/egress.rs:506 the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named",
+      "backend/crates/tests/qip-acceptance/tests/egress.rs:1780 no_zone_or_node_has_an_egress_rule_that_bypasses_the_proxy",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:661 the_execution_node_has_no_external_address_and_no_container_runtime (execution node only)"
+    ],
+    "gap": "NAT addresses are auto-allocated, not the reserved static egress identities the requirement names; there is no Secure Web Proxy resource, only an in-tree Envoy allowlist; and everything is single-region so 'each execution region has its own' is unexercised.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "egress.rs::the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named and ::no_zone_or_node_has_an_egress_rule_that_bypasses_the_proxy prove the domain allow-list and that no zone/node egress rule bypasses it; infrastructure.rs::the_execution_node_has_no_external_address_and_no_container_runtime proves no external IP on the node. No test asserts NAT uses reserved static addresses (there are none: AUTO_ONLY) or that a managed Secure Web Proxy enforces the allow-list.",
+    "work_item": "E14-static-egress",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Closest-to-complete row in this domain: the security posture (no external IPs, domain-scoped egress, audited) is real, just implemented with Cloud NAT AUTO_ONLY + Envoy rather than reserved addresses + Secure Web Proxy. verify: evidence corrected. The cited no-external-address test is infrastructure.rs:661, not terraform_contract.rs:660; no such function exists in that file. It also covers only the execution node, which is not a crawler/agent/builder workload. tested stays true because egress.rs's domain-allow-list tests (:506, :1780) exercise the domain-control half. NAT line ranges corrected. PARTIAL confirmed: NAT is AUTO_ONLY, not reserved static, and there is no Secure Web Proxy."
+  },
+  {
+    "id": "GCP-014",
+    "status": "MISSING",
+    "current": "Nothing is placed as global/shared. Every service (identity, Artifact Registry, Vertex AI training/registry per modules/ai) is declared once per environment/project (modules/identity, modules/registry/main.tf:19, modules/ai/main.tf:95-166), because there is no org/folder/project hierarchy (GCP-016) to place a 'global' project inside. No Knowledge Catalog (Data Catalog/Dataplex) resource exists anywhere.",
+    "evidence": [
+      "infrastructure/terraform/modules/registry/main.tf:19-91 (Artifact Registry, per-environment, not a model registry)",
+      "infrastructure/terraform/modules/ai/main.tf:95-166 (Vertex AI metadata store/endpoint, per-environment)",
+      "grep -rn 'google_data_catalog\\|dataplex' infrastructure/terraform returns nothing"
+    ],
+    "gap": "No org/folder/project model exists to host a distinguishable global/shared project, so nothing can yet be 'placed once' as opposed to duplicated per environment; the Knowledge Catalog resource itself is absent.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016",
+      "MODEL-057",
+      "DATA-059"
+    ],
+    "blocked_by": "C4",
+    "verification": "No test exists. An infra-plan check would assert each of the five named services is declared once in a global/shared project and never duplicated per-region.",
+    "work_item": "E08-knowledge-catalog",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Knowledge Catalog is C4 (managed data service); the model registry's placement question is secondary to its contents (MODEL's own P2), which do not exist yet either."
+  },
+  {
+    "id": "GCP-015",
+    "status": "MISSING",
+    "current": "No `google_compute_reservation` or Compute Engine commitment resource exists anywhere in the tree. modules/execution-node provisions plain on-demand Compute Engine instances only.",
+    "evidence": [
+      "grep -rn 'google_compute_reservation\\|commitment' infrastructure/terraform returns nothing outside unrelated identifiers",
+      "infrastructure/terraform/modules/execution-node/main.tf (google_compute_instance, no reservation_affinity block)"
+    ],
+    "gap": "No reservation or commitment mechanism exists; this follows GCP-008's benchmark sizing, which itself is only partly done, and applies to production scale which the workflow currently refuses.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-001",
+      "GCP-008"
+    ],
+    "blocked_by": "C8",
+    "verification": "No test exists. An infra-plan check would assert every production Reflex/Fabric instance group consumes a specific reservation or is covered by a commitment sized to its instance count.",
+    "work_item": "E14-capacity-reservations",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Applies to production, which infra.yml and the deploy gate refuse without a human dispatch (ADR 0003/0021); ADR 0093's cost instruction and C8 both apply."
+  },
+  {
+    "id": "GCP-016",
+    "status": "MISSING",
+    "current": "Nothing. Each environment (dev/test/stage/prod) is exactly one flat GCP project (`var.project_id` in infrastructure/terraform/variables.tf); there is no `google_folder` or `google_organization` resource anywhere in the tree.",
+    "evidence": [
+      "grep -rn 'google_folder\\|google_organization\\|resource \\\"google_project\\\"' infrastructure/terraform (all *.tf) returns nothing",
+      "infrastructure/terraform/main.tf provider blocks scoped to the single var.project_id"
+    ],
+    "gap": "No org/folder hierarchy exists at all; folder creation needs organization-level administration the repository's governance rules keep out of scope until a task names it (00-enterprise-governance.md: 'do not modify machine-wide or organisation-managed configuration').",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test exists. An infra-plan check would assert the org/platform-foundation, prod and nonprod folders exist under one organization and every G section-4 project pattern is placed in its folder.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Foundational prerequisite for GCP-017 through GCP-023; prod is refused by the workflow (ADR 0003/0021), so only the nonprod tree (GCP-023) could actually be built and shown."
+  },
+  {
+    "id": "GCP-017",
+    "status": "MISSING",
+    "current": "modules/scc and modules/identity (SCC custom modules, IAM patterns, audit config) are declared inside each environment's single project (main.tf module blocks for scc/identity), not in a separate org/platform-foundation project, because no such project exists.",
+    "evidence": [
+      "infrastructure/terraform/modules/scc/main.tf:41-114 (SCC custom modules, per-environment project)",
+      "infrastructure/terraform/modules/identity/*.tf (IAM, per-environment project)"
+    ],
+    "gap": "No org/platform-foundation project exists to separate guardrails from application resources; this depends entirely on GCP-016.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T4",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "GCP-018",
+    "status": "MISSING",
+    "current": "No prod/network-core project exists; network authority (VPC, Cloud Router/Interconnect in modules/connectivity, firewall rules in modules/trust-zones) lives inside each environment's single project alongside every workload.",
+    "evidence": [
+      "infrastructure/terraform/modules/connectivity/*.tf and modules/trust-zones/*.tf both instantiated in the environment's single project via main.tf"
+    ],
+    "gap": "Depends entirely on GCP-016; no network-authority project separation exists.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T4",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "GCP-019",
+    "status": "MISSING",
+    "current": "modules/execution-node deploys into the environment's single project, not a dedicated prod/exec-<region> project.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node instantiated once per environment in main.tf, sharing var.project_id with every other module"
+    ],
+    "gap": "Depends on GCP-016; prod is refused by the workflow so this can only be shown in the nonprod mirror (GCP-023).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016",
+      "GCP-023"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T3",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "GCP-020",
+    "status": "MISSING",
+    "current": "No Fabric broker VMs exist at all (GCP-005), so there is nothing to place in a prod/fabric-<region> project; the concept of isolating Fabric from Reflex compute by project has no resource to isolate yet.",
+    "evidence": [
+      "grep -rn 'fabric' infrastructure/terraform (all *.tf) shows only the Pub/Sub-based trust-zone control-fabric, not broker VMs or journal disks"
+    ],
+    "gap": "Depends on both GCP-005 (broker VMs must exist) and GCP-016 (project hierarchy must exist).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-005",
+      "GCP-016",
+      "FABRIC-060"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E03-fabric-broker-vms",
+    "tier": "T3",
+    "size": "M",
+    "notes": "verify: blocked_by C2->''. ADR 0100 builds the first broker in-tree with no refused crate. The project boundary and the absence of cross-project IAM grants are Terraform. The real gate is GCP-016's org/folder administration, which is an owner action, not a C1-C8 conflict. MISSING confirmed: there is no google_project or google_folder resource anywhere."
+  },
+  {
+    "id": "GCP-021",
+    "status": "MISSING",
+    "current": "No dedicated prod/services-<region> project exists; the GKE service plane itself does not exist (GCP-002/GCP-010).",
+    "evidence": [
+      "infrastructure/terraform/modules/gitops-control-plane is the only GKE resource, and it is not a services project boundary"
+    ],
+    "gap": "Depends on GCP-002/GCP-010 (something must exist to place) and GCP-016 (a project boundary must exist to place it in).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-002",
+      "GCP-010",
+      "GCP-016"
+    ],
+    "blocked_by": "C3",
+    "verification": "No test exists.",
+    "work_item": "E14-warm-services-gke",
+    "tier": "T3",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "GCP-022",
+    "status": "MISSING",
+    "current": "No Redis is placed anywhere. `google_redis_instance \"cache\"` is declared in modules/data (main.tf:295-325) with count = 0 in every environment (enable_memorystore = false). It is declared in the environment's single project on the single VPC that also hosts modules/execution-node, so if it were enabled it would be reachable from the Reflex node's subnet. No prod/services-<region> project exists (GCP-016/GCP-021).",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:295-325 (google_redis_instance.cache)",
+      "infrastructure/terraform/modules/data/variables.tf:103-114 (enable_memorystore, default false)",
+      "infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars (enable_memorystore = false in all four)"
+    ],
+    "gap": "No services project exists to place Redis in. The only declaration is dormant, and if enabled it would share a project and VPC with the Reflex execution node, which is the opposite of this requirement. The plan check passes today only vacuously, because no plan contains a Redis instance.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-021"
+    ],
+    "blocked_by": "C4",
+    "verification": "No test exists. An infra-plan check would assert every google_redis_instance belongs to a prod/services-<region> project and is reachable only from the Service VPC.",
+    "work_item": "E14-warm-services-gke",
+    "tier": "T2",
+    "size": "S",
+    "notes": "verify: PARTIAL->MISSING, implemented/integrated true->false. The only google_redis_instance is count = 0 in every environment. It sits in the one project and one VPC that also host the execution-node module, so enabling it would violate this requirement rather than partly meet it. Memorystore itself remains C4."
+  },
+  {
+    "id": "GCP-023",
+    "status": "MISSING",
+    "current": "The repository has dev/test/stage/prod environments, each one flat project (infrastructure/environments/*/terraform.tfvars), not a nonprod/* folder mirroring the eight production project boundaries (foundation, network-core, per-region exec/fabric/services, shared projects) at lower scale.",
+    "evidence": [
+      "infrastructure/environments/{dev,test,stage}/terraform.tfvars (each a single project, no folder structure)"
+    ],
+    "gap": "Depends entirely on GCP-016 through GCP-022 existing in some form to have something to mirror at lower scale.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016",
+      "GCP-017",
+      "GCP-018",
+      "GCP-019",
+      "GCP-020",
+      "GCP-021"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "This is where the whole project-boundary model would first be built and shown, since prod itself is refused by the workflow."
+  },
+  {
+    "id": "GCP-024",
+    "status": "INCORRECT",
+    "current": "modules/network declares one `google_compute_network \"vpc\"` per environment (main.tf:35), and modules/trust-zones places all thirteen planes (public-edge through management, including execution and control-fabric) as subnets of that single VPC.",
+    "evidence": [
+      "infrastructure/terraform/modules/network/main.tf:35-46 (one VPC)",
+      "infrastructure/terraform/modules/trust-zones/main.tf:33-96 (thirteen zone subnets on that one VPC)"
+    ],
+    "gap": "This is the exact anti-pattern the requirement prohibits ('Using a single giant flat VPC', G p23) — an active violation, not an absence.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-009"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. An infra-plan check would assert no VPC hosts subnets for more than one of Reflex/Fabric/Service/Data/Engineering and that Reflex/Fabric VPCs have distinct network administrators.",
+    "work_item": "E14-vpc-separation",
+    "tier": "T2",
+    "size": "L",
+    "notes": "The largest network divergence in the current state, per the requirement's own consolidation notes; not blocked by a C1-C8 conflict, this is a from-scratch network redesign the repository can start on its own."
+  },
+  {
+    "id": "GCP-025",
+    "status": "MISSING",
+    "current": "No `google_network_connectivity_spoke` or NCC hub resource exists anywhere. modules/connectivity provides only partner Interconnect (off by default) and a Private Google Access endpoint.",
+    "evidence": [
+      "grep -rn 'google_network_connectivity' infrastructure/terraform returns nothing"
+    ],
+    "gap": "No NCC of any kind; this also requires GCP-009/GCP-024 to have separated VPCs before there is anything to connect through spokes.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-009",
+      "GCP-024"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. An infra-plan check would assert every inter-VPC path is an NCC spoke with explicit export filters and no google_compute_network_peering connects two plane VPCs.",
+    "work_item": "E14-vpc-separation",
+    "tier": "T2",
+    "size": "L",
+    "notes": "Not itself blocked by a C1-C8 conflict; it needs the VPC separation of GCP-009/GCP-024 to exist first."
+  },
+  {
+    "id": "GCP-026",
+    "status": "MISSING",
+    "current": "No Shared VPC (host/service project attachment) resource exists anywhere in the tree; every environment is one project with one VPC, so there is no host/service project relationship to bound.",
+    "evidence": [
+      "grep -rn 'shared_vpc\\|google_compute_shared_vpc' infrastructure/terraform returns nothing"
+    ],
+    "gap": "Vacuously unviolated (nothing exists to violate the constraint), but there is also no positive evidence of the permitted pattern, and it depends on the folder/project model of GCP-016 to have a 'domain/folder' to confine Shared VPC to.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T4",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "GCP-027",
+    "status": "MISSING",
+    "current": "No regional warm-service entry point exists because the warm services themselves are not on GKE (GCP-002). modules/public-edge provides the platform's actual entry (Cloud Armor + global external ALB in front of Cloud Run), not a regional GKE Gateway or internal ALB.",
+    "evidence": [
+      "infrastructure/terraform/modules/public-edge/main.tf (global external LB fronting Cloud Run services, not a regional internal entry)"
+    ],
+    "gap": "Entirely dependent on GCP-002/GCP-010 (regional GKE service plane) existing before a regional internal entry point to it can be built.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-002",
+      "GCP-010"
+    ],
+    "blocked_by": "C3",
+    "verification": "No test exists.",
+    "work_item": "E14-warm-services-gke",
+    "tier": "T3",
+    "size": "M",
+    "notes": "verify: fields unchanged. The regional internal ALB arm (an INTERNAL_MANAGED forwarding rule, for example a serverless NEG in front of Cloud Run) does not need C3; only the GKE Gateway arm does. A fresh grep found only EXTERNAL_MANAGED schemes (public-edge, iap-edge). The one GKE Gateway in the tree (infrastructure/gitops/bootstrap/gateway/base/gateway.yaml) is a global external gateway for the GitOps control plane, not a regional warm-service entry. MISSING confirmed. blocked_by C3 is kept because the requirement's own notes apply C3, but the ALB arm is buildable without it."
+  },
+  {
+    "id": "GCP-028",
+    "status": "MISSING",
+    "current": "No Cloud Service Mesh resource exists anywhere; there are no warm GKE services to mesh (GCP-002). Inter-service calls between Cloud Run workloads today rely on ADR 0009's refusal of in-tree TLS plus IAM-authenticated invocation, not a service mesh.",
+    "evidence": [
+      "grep -rn 'google_gke_hub_feature\\|servicemesh\\|asmcli' infrastructure/terraform returns nothing"
+    ],
+    "gap": "Depends on GCP-002/GCP-010 existing; also structurally requires the C2 in-tree-TLS refusal to be resolved by routing mTLS through managed infrastructure rather than an in-tree stack.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-002",
+      "GCP-010"
+    ],
+    "blocked_by": "C3",
+    "verification": "No test exists. Requirement's own verification is an integration test (plaintext call refused, policy-denied call refused, hung upstream cut off at timeout) in a nonprod cluster — none exists to run it in.",
+    "work_item": "E14-warm-services-gke",
+    "tier": "T3",
+    "size": "L",
+    "notes": "C2 also applies: ADR 0009 refuses in-tree TLS, so this control can only come from managed infrastructure, which is exactly what Cloud Service Mesh would be — but it needs the C3 cluster to attach to first."
+  },
+  {
+    "id": "GCP-029",
+    "status": "PARTIAL",
+    "current": "No mesh, Gateway or internal ALB exists in the Reflex/Fabric path. modules/execution-node runs no container runtime (so no mesh sidecar). Its only proxy is a loopback-bound Envoy egress unit that has no venue route. Its firewall permits egress only to the central plane, Google APIs and (outside shadow mode) its venues directly. No environment instantiates the module (execution_nodes = {}), and no Fabric broker exists, so the Fabric half has nothing to hold the property.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:661 the_execution_node_has_no_external_address_and_no_container_runtime",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1807 an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else",
+      "backend/crates/tests/qip-acceptance/tests/egress.rs:1635 neither_the_fast_path_nor_an_execution_node_can_reach_a_proxy_that_is_not_its_own",
+      "backend/crates/tests/qip-acceptance/tests/egress.rs:1680 the_proxy_offers_no_route_to_a_venue_and_cannot_carry_an_order",
+      "infrastructure/terraform/main.tf:659-661 (module.execution_node for_each = var.execution_nodes, empty everywhere)"
+    ],
+    "gap": "The prohibition holds only because the machinery it prohibits (mesh, GKE service plane, Fabric brokers) does not exist yet; no test directly asserts 'no Reflex/Fabric route passes through a Gateway/ALB/mesh proxy address' as its own property, since there is no such route to test today.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-001",
+      "GCP-005"
+    ],
+    "blocked_by": "",
+    "verification": "infrastructure.rs::the_execution_node_has_no_external_address_and_no_container_runtime (no container runtime, so no sidecar is possible), infrastructure.rs::an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else (no LB/proxy egress rule), and egress.rs::the_proxy_offers_no_route_to_a_venue_and_cannot_carry_an_order prove the Reflex-node half at module level. No test covers the Fabric half, because there is no broker. A plan-level test is needed once GCP-002/GCP-010/GCP-028 exist.",
+    "work_item": "E14-vpc-separation",
+    "tier": "T1",
+    "size": "S",
+    "notes": "This is the one row where 'nothing built yet' makes the prohibition trivially true; re-score once the warm-service mesh (GCP-028) exists, because a prohibition that has never coexisted with the thing it forbids is unproven, not satisfied. verify: NEEDS-VALIDATION->PARTIAL, integrated true->false. NEEDS-VALIDATION means reached but untested, and this row is the reverse: tests exist, but no environment instantiates modules/execution-node. The tests are now cited correctly: infrastructure.rs:661, not terraform_contract.rs:660, plus infrastructure.rs:1807 and egress.rs:1635/:1680 for the route half. The Fabric half has no broker to test."
+  },
+  {
+    "id": "GCP-030",
+    "status": "MISSING",
+    "current": "No NCC hub (star or otherwise) exists anywhere in the tree (see GCP-025). modules/connectivity's Private Google Access endpoint and Interconnect attachment are unrelated to a hybrid-inspection star hub for service/data/AI/management VPCs.",
+    "evidence": [
+      "grep -rn 'google_network_connectivity' infrastructure/terraform returns nothing"
+    ],
+    "gap": "No NCC hub of any topology exists; also depends on the GKE per-region clusters of GCP-010 and the VPC separation of GCP-009/GCP-024 to have spokes worth attaching.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-010",
+      "GCP-025"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. An infra-plan check would assert an NCC star hub routing through an inspection appliance/Cloud NGFW, with every service/data/AI/management VPC as an edge spoke and none also a latency-mesh spoke.",
+    "work_item": "E14-vpc-separation",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  }
+]

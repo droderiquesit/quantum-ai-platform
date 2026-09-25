@@ -1,0 +1,609 @@
+[
+  {
+    "id": "FINOPS-001",
+    "domain": "FINOPS",
+    "title": "Hot Reflex capacity is held under Compute Engine capacity reservations",
+    "statement": "Production Reflex capacity, the dedicated C4D/C4-class Compute Engine VMs of each regional Reflex cell, is backed by capacity reservations, so that a cell can recreate or replace a VM without depending on on-demand availability of its machine type in its zone.",
+    "rationale": "A Reflex VM that cannot be recreated because its zone has run out of the machine type is a cell that stays down at the moment it needs to recover. A reservation makes that capacity a held resource instead of a hope.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§3 Global Region and Failure-Domain Strategy — Capacity bullet ('reserve hot Reflex capacity with reservations/commitments')"
+      },
+      {
+        "doc": "G",
+        "page": "6",
+        "section": "§6 Regional Reflex Cell - Speed-Critical Execution — Compute bullet ('capacity reservations for production')"
+      },
+      {
+        "doc": "G",
+        "page": "17",
+        "section": "§19 Complete GCP Service Catalog for This Platform — Reservations / commitments row ('Guarantee production hot capacity')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "With an execution node declared, the plan contains a Compute Engine reservation for each zone and machine type the Reflex node group uses, sized to the group's target size, and the node instance template's reservation affinity consumes that specific reservation."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "REFLEX",
+      "GCP"
+    ],
+    "notes": "G p4 says 'reservations/commitments', and G p17's row both 'guarantees production hot capacity' and 'controls cost'. This requirement is the capacity guarantee. The cost half, committed-use discounts, is FINOPS-008, which G p21 defers until benchmark sizing is stable, so a reservation can exist before any commitment does. G p6 is the most specific wording and is kept. In-tree: modules/execution-node declares a managed instance group with no reservation affinity, no google_compute_reservation exists under infrastructure/, and execution_nodes = {} in every environment's tfvars, so there is nothing yet to reserve for. P1, not P0: the GCP phase 3 exit test is one cell trading paper, which does not need guaranteed capacity. Capacity that survives a zone or region loss is a phase 7 (multi-region, game-day failover) concern."
+  },
+  {
+    "id": "FINOPS-002",
+    "domain": "FINOPS",
+    "title": "Reflex capacity changes only by pre-provisioned shards, never by reactive autoscaling",
+    "statement": "Reflex capacity is added or removed only by deliberately provisioning venue/instrument-shard VMs ahead of need. No autoscaler changes Reflex capacity in reaction to load, including during a market burst.",
+    "rationale": "Reactive scale-up during a burst boots a cold VM, rebuilds books and caches and re-establishes venue sessions exactly when latency matters most. The capacity arrives after the burst it was for, and the churn is jitter on the decision loop.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§3 Global Region and Failure-Domain Strategy — Capacity bullet (hot Reflex capacity reserved, in contrast to autoscaled warm/data/AI components)"
+      },
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model — Reflex row ('pre-provisioning; no reactive autoscale during a market burst')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "No autoscaler, autoscaling policy or scheduled scaling resource in the plan targets any Reflex node group, and each group's size is a fixed value derived from the declared shard map."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "REFLEX",
+      "GCP"
+    ],
+    "notes": "G p4 implies this by contrast: hot Reflex capacity is reserved and only warm/data/AI components autoscale. G p16's Reflex row states it outright, and its wording is kept. The unit of scale, one venue/instrument shard per VM, is REFLEX's to specify and appears here only as the one permitted way capacity changes. P0 because it is a structural property of the GCP phase 3 Reflex cell, not a tuning choice made later. In-tree: modules/execution-node's instance group manager has target_size = var.node_count, and no autoscaler resource exists anywhere under infrastructure/. The property holds, though vacuously while execution_nodes = {}."
+  },
+  {
+    "id": "FINOPS-003",
+    "domain": "FINOPS",
+    "title": "Warm, data and AI components autoscale where scaling time fits the workload",
+    "statement": "Warm-path services, data services and AI workloads autoscale wherever the time needed to add capacity is compatible with how fast that workload's demand changes.",
+    "rationale": "Paying for peak capacity around the clock is justified only where latency or failure headroom requires it (FINOPS-001, FINOPS-004). Elsewhere, capacity that follows demand is cheaper, provided it arrives in time to be used.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§3 Global Region and Failure-Domain Strategy — Capacity bullet ('autoscale warm/data/AI components where scaling time is compatible with workload behavior')"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each warm, data and AI workload's documented scaling model states whether it autoscales and compares its measured scale-up time with its demand's rate of change, and every workload marked autoscaling has explicit minimum and maximum bounds in the plan."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "DATA",
+      "MODEL"
+    ],
+    "notes": "G p16 §18 gives per-subsystem instances of this rule: HPA/VPA and Cluster Autoscaler for warm and batch GKE workloads, managed autoscaling for Bigtable with hotspot-safe keys and for Spanner with a deliberately high floor, and separate BigQuery slot reservations for research, backtest and BI. Those rows belong to GCP, DATA and LEDGER and are not restated here. G p23 §27 requires every GCP workload to document its scaling model, which is where the compatibility judgement is recorded. Under ADR 0024 the warm binaries run on Cloud Run, so autoscaling there means min/max instances. infrastructure/terraform/catalogue.tf pins some services at min_instances = max_instances = 1. That is a fixed size, which this requirement admits only with a stated reason. modules/data already configures Bigtable autoscaling."
+  },
+  {
+    "id": "FINOPS-004",
+    "domain": "FINOPS",
+    "title": "Reflex and Fabric capacity carries deliberate latency and failure headroom",
+    "statement": "Reflex and Fabric capacity is intentionally sized above benchmark-measured peak load. The headroom keeps latency targets at peak and absorbs the loss of a zone, broker or VM, or planned maintenance, without shedding hot-path work.",
+    "rationale": "Hot-path capacity sized to average load fails exactly when it is needed: in a burst, or after a zone loss when the survivors inherit the load. G §23 calls the overprovisioning intentional so that a cost review does not trim it as waste.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model — Fabric row ('keep headroom for zone loss and maintenance')"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — Hot-path economics bullet ('intentionally overprovisioned for latency and failure headroom')"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "At benchmark peak load with one Fabric zone or one Reflex shard VM removed, the remaining capacity still meets the hot-path latency SLO, and Fabric acknowledges P0/P1 records without backpressure reaching Reflex."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "REFLEX",
+      "FABRIC",
+      "RES"
+    ],
+    "notes": "G p21 states the principle for Reflex and Fabric together. G p16's Fabric row is the more specific wording for Fabric and is folded in. Neither blueprint gives a headroom figure. The benchmark that sets it is the same one whose stability FINOPS-008 waits on. The correctness property this headroom protects is FABRIC's and is P0 there: a broker or zone can fail without losing quorum-acknowledged records (G p23 §27). Here, the capacity margin itself is P1."
+  },
+  {
+    "id": "FINOPS-005",
+    "domain": "FINOPS",
+    "title": "Agent and training families run under concurrency quotas with queue-aware scheduling",
+    "statement": "Each AI agent family and each model-training family has a concurrency quota. Jobs submitted beyond it are queued, not started, until the family has capacity again.",
+    "rationale": "Without a ceiling per family, one runaway family takes the shared GPU/TPU and model-API capacity, and every other family's work stalls behind it.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model — AI training row ('Queue and quota-aware scheduling')"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — AI economics bullet ('budget/concurrency quotas per agent/training family')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Submitting more jobs for one family than its quota leaves the excess queued and starts them as running jobs finish. No more than the quota ever runs at once, and other families' admission is unchanged."
+    },
+    "policy_flags": [
+      "COST",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "MODEL",
+      "AMBIENT",
+      "GCP"
+    ],
+    "notes": "Split from G p21's AI economics bullet, which also carries per-family spend budgets (FINOPS-015), Spot training (FINOPS-006) and benefit per dollar (FINOPS-016). G p16's AI training row supplies the queueing half. G p4 §4 separates AI quota from financial state at the project level (prod/ai), which is GCP's requirement. NON_RUST removed: the quota and its scheduler govern non-Rust training, but nothing requires them to be written in anything other than Rust."
+  },
+  {
+    "id": "FINOPS-006",
+    "domain": "FINOPS",
+    "title": "Training uses Spot/preemptible capacity only where interruption is safe",
+    "statement": "Training jobs run on Spot/preemptible capacity where an interruption is safe, and never where it is not. Each training family declares which it is.",
+    "rationale": "Spot capacity costs a fraction of on-demand, but only if a preempted job loses a checkpoint interval and not a result somebody is waiting on.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model — AI training row ('Spot where interruption is safe')"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — AI economics bullet ('Spot/preemptible training where safe')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Preempting a Spot training job mid-run leaves it resumable from its last checkpoint with its lineage intact, and no job from a family declared interruption-unsafe is ever scheduled onto Spot/preemptible capacity."
+    },
+    "policy_flags": [
+      "COST",
+      "MANAGED_SERVICE",
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "MODEL",
+      "GCP"
+    ],
+    "notes": "G p16 is the more specific wording ('where interruption is safe' rather than 'where safe'). It also adds 'fixed reserved capacity for critical retraining if justified'. That clause is conditional, so it is recorded here rather than as a requirement of its own. G p9 §8 separates batch/Spot GKE node pools, with taints and PriorityClasses so that research jobs cannot starve control workloads. That placement is GCP's. P3: this is a cost optimisation within the GCP phase 8 training plane. NON_RUST: training runs framework code on Vertex/Agent Platform or GPU pools, outside the Rust workspace (ADR 0001, ADR 0011). modules/execution-node sets preemptible = false. That is correct for Reflex and is not what this requirement governs."
+  },
+  {
+    "id": "FINOPS-007",
+    "domain": "FINOPS",
+    "title": "Autonomous agents can be throttled independently of the production runtime",
+    "statement": "The workers and build pools of autonomous development agents scale, and can be throttled down to zero, through their own controls. Throttling or stopping them changes nothing in the production runtime.",
+    "rationale": "An agent plane that shares capacity or controls with production cannot be reined in without touching production. The blueprint treats agents as a convenience, not an availability dependency, and the throttle has to match that.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model — Autonomous dev row ('Ephemeral workers and build private pools scale independently; concurrency quotas protect source APIs and budgets')"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — Autonomous-agent budget bullet ('can be throttled independently of production runtime')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Setting the autonomous agents' concurrency quota to zero stops new agent workers and builds, while the production runtime's health, cycle cadence and Fabric throughput stay within their baselines."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "DEVFACTORY",
+      "RES"
+    ],
+    "notes": "Split from G p21's autonomous-agent budget bullet. The budgets themselves are FINOPS-017. G p16 §17's degradation row states the same independence as a failure behaviour ('Autonomous dev plane: no autonomous changes; production keeps running ... agents are convenience, not availability dependency'), and that row is owned by RES. ADR 0098 records the development factory as it runs today, on the owner's desktop, with the GCP fabric deferred."
+  },
+  {
+    "id": "FINOPS-008",
+    "domain": "FINOPS",
+    "title": "Committed-use discounts on hot-path capacity wait for stable benchmark sizing",
+    "statement": "Committed-use commitments that lower the price of Reflex and Fabric hot-path capacity are entered only after benchmark sizing for that capacity is stable. Until then, hot-path capacity is paid for at on-demand rates.",
+    "rationale": "A multi-year commitment made against a size that is still moving either pays for capacity the shard no longer needs or leaves the real need uncovered. Either way, the commitment becomes the reason not to resize.",
+    "kind": "constraint",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "17",
+        "section": "§19 Complete GCP Service Catalog for This Platform — Reservations / commitments row ('Guarantee production hot capacity and control cost')"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — Hot-path economics bullet ('Optimize with committed use/reservations only after benchmark sizing is stable')"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every commitment in the infrastructure history was introduced by a change citing the benchmark sizing it covers, and that sizing had not changed across the benchmark runs that preceded the commitment."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "REFLEX",
+      "FABRIC"
+    ],
+    "notes": "G p4 §3 ('reserve hot Reflex capacity with reservations/commitments') and G p17 name commitments without a timing condition. G p21 adds the condition and is the more specific wording. Read together: the capacity guarantee (FINOPS-001) can come first, and the price commitment waits. Neither blueprint quantifies 'stable'. P3: this is a cost optimisation."
+  },
+  {
+    "id": "FINOPS-009",
+    "domain": "FINOPS",
+    "title": "Cloud Billing is exported to BigQuery",
+    "statement": "Cloud Billing export to BigQuery is enabled for the billing account that pays for the platform, into a dataset that is the source of every FinOps cost report.",
+    "rationale": "Invoices and console views cannot be joined to labels, strategies or models. A queryable export is the precondition for every attribution in FINOPS-012 and every anomaly job in FINOPS-018.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "18",
+        "section": "§19 Complete GCP Service Catalog for This Platform — Billing export / Budgets row ('FinOps and spend guardrails')"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — Cost domains bullet ('export billing to BigQuery')"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The billing account's BigQuery export is enabled into the platform's FinOps dataset, and that dataset holds cost rows for every platform project from the day after enablement."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "DATA"
+    ],
+    "notes": "G p18 names the service, and G p21 says where its data goes. The two are merged. In-tree: nothing under infrastructure/ configures billing export or a budget. As far as is known, the BigQuery export has no Terraform resource and is enabled in the console. If so, it is the kind of console dependency that G p22 §25's rebuild-from-zero game day requires to be written down rather than discovered."
+  },
+  {
+    "id": "FINOPS-010",
+    "domain": "FINOPS",
+    "title": "Cloud Billing budgets are declared as spend guardrails",
+    "statement": "Cloud Billing budgets with alert thresholds are declared in code for the platform's projects, so that spend past a threshold raises an alert instead of being discovered on the invoice.",
+    "rationale": "A spend guardrail that exists only in someone's console settings is not reviewed, not reproducible and not rebuilt with the environment.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "18",
+        "section": "§19 Complete GCP Service Catalog for This Platform — Billing export / Budgets row ('FinOps and spend guardrails')"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — Cost anomalies bullet ('Budgets + Monitoring/BQ anomaly jobs')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan contains a billing budget covering each environment's projects, with at least one threshold rule and a notification target wired to the anomaly path of FINOPS-018."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "OBS"
+    ],
+    "notes": "G p18 names Budgets as the guardrail. G p21's cost-anomalies bullet says what a budget alert must lead to (FINOPS-018) and what it must never do (FINOPS-019). A GCP budget alerts but does not cap spend. Any cap is an action somebody designs, and FINOPS-019 limits what that action may be. 'Declared in code' comes from the repository's infrastructure rules, not from the blueprint text. In-tree: no google_billing_budget exists."
+  },
+  {
+    "id": "FINOPS-011",
+    "domain": "FINOPS",
+    "title": "Every project and resource is labelled by plane, region, environment, owner and workload",
+    "statement": "Every project and every labelable resource carries labels for plane, region, environment, owner and workload.",
+    "rationale": "Billing export can attribute cost only along the dimensions the resources carry. An unlabelled resource is spend nobody can assign.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — Cost domains bullet ('label/tag every project/resource by plane, region, environment, owner and workload')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "An acceptance test over the plan fails if any project or labelable resource lacks a non-empty value for plane, region, environment, owner or workload."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "GOV"
+    ],
+    "notes": "Split from G p21's cost-domains bullet. The billing export is FINOPS-009, and the report by dimension is FINOPS-012. MANAGED_SERVICE removed: labelling is a property of every resource, not the use of a managed service. In-tree: local.labels in infrastructure/terraform/main.tf carries platform, environment, managed_by and live_capable. Of the five required keys, only environment is present."
+  },
+  {
+    "id": "FINOPS-012",
+    "domain": "FINOPS",
+    "title": "Cost is reported per strategy, model, data source and region where attributable",
+    "statement": "Cost from the billing export is reported per strategy, per model, per data source and per region wherever labels or usage records support the attribution. The remainder is reported as unattributed, not spread across the others.",
+    "rationale": "A research desk that cannot say what a strategy, a model or a data feed costs cannot judge whether it pays for itself. A figure spread by assumption is one nobody measured.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — Cost domains bullet ('report cost per strategy/model/data source/region where attribution is possible')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Over a billing-export fixture with labelled and unlabelled rows, the per-strategy, per-model, per-data-source and per-region totals plus the unattributed line sum exactly to the fixture's total, and no unlabelled row appears in an attributed line."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "MODEL",
+      "OBS"
+    ],
+    "notes": "'Where attribution is possible' is read as: attribute what the labels support and report the rest as unattributed. This follows CLAUDE.md principle 6, 'bill what ran, not what was planned'. The unattributed line is an interpretation, not blueprint text. M p27 §22 ('Data-source alpha attribution: did this source improve decisions after cost and delay?') consumes the per-data-source figure and belongs to the learning/evaluation domain. P2: attribution by strategy and model needs the GCP phase 8 cognitive/AI plane."
+  },
+  {
+    "id": "FINOPS-013",
+    "domain": "FINOPS",
+    "title": "Tick and journal retention is tiered across Fabric/Bigtable, GCS and BigQuery",
+    "statement": "Tick and journal history is retained in three tiers: high-value hot replay in Fabric and Bigtable, immutable historical segments in GCS, and research aggregates in BigQuery.",
+    "rationale": "Keeping all history in the hot tier pays hot-tier prices for data nobody replays at low latency, and keeping none there makes replay slow. The tiering puts each age and use of the data in the cheapest store that still serves it.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — Data retention bullet ('tier tick/journal retention: high-value hot replay in Fabric/Bigtable, immutable historical segments in GCS, research aggregates in BigQuery')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares bounded retention on the Fabric hot-replay topics and Bigtable tables, a GCS bucket for historical segments with a retention policy that prevents modification, and BigQuery datasets for research aggregates."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "TICK",
+      "REPLAY",
+      "FABRIC"
+    ],
+    "notes": "M p4 and G p3 §2 state the retention classes themselves, with tick/order-book data kept separate from Algorik's own financial and execution records. Those classes belong to DATA/TICK. G p10 §9's 'Tier T' bullet places retained history in GCS/Tick Lake and is the data plane's version of this tiering. COST added: §23 places this item under FinOps, and the raw item omitted the flag."
+  },
+  {
+    "id": "FINOPS-014",
+    "domain": "FINOPS",
+    "title": "Derived duplicates are not retained forever",
+    "statement": "Every derived copy of tick or journal data, such as features, re-encodings and intermediate replay or research outputs, carries a bounded retention or lifecycle rule. Only source history in its designated tier is kept long-term.",
+    "rationale": "A derived copy can be regenerated from the source history it came from. Keeping every copy forever grows storage cost without bound and adds a second record that can disagree with the first.",
+    "kind": "prohibition",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — Data retention bullet ('Do not retain every derived duplicate forever')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every BigQuery table or dataset, Bigtable table and GCS bucket in the plan that holds derived data has an expiration, garbage-collection policy or lifecycle delete rule. Only the declared source-history stores lack one."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "TICK",
+      "REPLAY"
+    ],
+    "notes": "Split from G p21's data-retention bullet, whose tier map is FINOPS-013. This matches the repository's standing decision on bounded retention (.claude/rules/10-product-direction.md) and the data-and-streaming rule against unbounded history. The blueprint defines neither 'derived' nor a retention period. This reading treats anything reproducible from retained source history as derived. G p21 §22 ('Fabric/GCS preserve source history') names the stores that are not derived. COST added, as for FINOPS-013."
+  },
+  {
+    "id": "FINOPS-015",
+    "domain": "FINOPS",
+    "title": "Each agent family and training family has its own spend budget",
+    "statement": "Each AI agent family and each model-training family has its own spend budget, and its spend is metered against it. A family that has exhausted its budget is admitted no further work in that period.",
+    "rationale": "With one shared AI budget, the most expensive family can spend everyone else's allowance, and the budget does not show which family did.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — AI economics bullet ('budget/concurrency quotas per agent/training family')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Driving one family's metered spend past its budget stops new work being admitted for that family only, while other families continue to be admitted."
+    },
+    "policy_flags": [
+      "COST",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "MODEL",
+      "AMBIENT"
+    ],
+    "notes": "Split from G p21's AI economics bullet. The concurrency half is FINOPS-005. 'Agent' here means the AI plane's agent families. Budgets for autonomous development agents are FINOPS-017. NON_RUST removed, for the reason given at FINOPS-005. AMBIENT's attention/resource budgets (M p44) protect the reflex from starvation rather than limit spend, and are a different control."
+  },
+  {
+    "id": "FINOPS-016",
+    "domain": "FINOPS",
+    "title": "Model benefit is benchmarked per dollar and per unit of latency",
+    "statement": "Every candidate model is benchmarked for the benefit it delivers against its baseline, per dollar of training and serving cost and against the latency it adds. The result is recorded with the model's evaluation.",
+    "rationale": "A model can be better yet cost more than its improvement is worth, or be too slow for the lane it serves. Either way it is a regression, and only a figure per dollar and per unit of latency shows that.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — AI economics bullet ('benchmark model benefit per dollar and latency')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A model package cannot be registered for promotion unless its evaluation record carries measured benefit against its baseline, the training and serving cost attributed to it, and its added latency."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "MODEL",
+      "EVAL"
+    ],
+    "notes": "This applies ADR 0006's rule to cost: that ADR requires a classical baseline every time and ships a quantum result only on a measured win. M p22 ('If quantum loses, the classical result ships', under the same objective, cost and latency constraints) is the master blueprint's version of the rule for the quantum path and is QUANTUM's. The dollar figure depends on FINOPS-009 and FINOPS-012. MANAGED_SERVICE and NON_RUST removed: the benchmark is an evaluation computation and needs neither."
+  },
+  {
+    "id": "FINOPS-017",
+    "domain": "FINOPS",
+    "title": "Autonomous agents have explicit daily and monthly model, build and tool budgets",
+    "statement": "Every autonomous agent operates under explicit daily and monthly budgets for model usage, build capacity and tool use. An agent that exhausts one of them is refused further use of that resource for the rest of the period.",
+    "rationale": "An agent loop with no ceiling spends until someone notices. Separate daily and monthly caps per resource bound both a runaway hour and a slow leak.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — Autonomous-agent budget bullet ('explicit daily/monthly model/build/tool budgets')"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§26 Recommended Build Order — Phase 9 Autonomous development row ('with sandbox and budget controls')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An agent that reaches its daily model budget has further model calls refused and journaled while its build and tool budgets are still metered separately. The refusal lifts at the next daily period only if the monthly budget still has room."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "DEVFACTORY",
+      "GOV"
+    ],
+    "notes": "G p22's phase 9 exit test names 'budget controls' without defining them. G p21 is the specific wording and is kept. ARCH-068 is that exit test. The concurrency quotas in the Autonomous dev row of G p16 §18 protect these budgets and are covered by FINOPS-007. The refusal clause reads 'budget' as a cap rather than a report, which the blueprint does not specify."
+  },
+  {
+    "id": "FINOPS-018",
+    "domain": "FINOPS",
+    "title": "Cost anomalies raise Fabric tasks or incidents",
+    "statement": "Budget alerts and Cloud Monitoring or BigQuery cost-anomaly jobs turn each detected anomaly into a Fabric task or incident. The task carries the anomaly's evidence: the project, the labels, the amount, and the threshold or baseline it breached.",
+    "rationale": "An anomaly that only reaches an inbox is lost to the audit trail. As a Fabric task it is journaled, attributable and replayable like every other decision input.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — Cost anomalies bullet ('Budgets + Monitoring/BQ anomaly jobs create Fabric/incident tasks')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Feeding a billing-export fixture that breaches a budget threshold or the anomaly job's baseline produces exactly one Fabric task or incident naming the project, labels and amount, and replaying the same input produces no second one."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NEW_DEPENDENCY",
+      "COST"
+    ],
+    "secondary_domains": [
+      "OBS",
+      "FABRIC"
+    ],
+    "notes": "Split from G p21's cost-anomalies bullet. The prohibition half is FINOPS-019. Budgets deliver programmatic notifications through Pub/Sub, and G p23 §27 keeps Pub/Sub out of core internal messaging, so the bridge from a budget notification to a Fabric task is an edge adapter, not an internal bus. NEW_DEPENDENCY: reading that notification or querying BigQuery from the Rust workspace needs a client that the two-dependency rule (ADR 0002, ADR 0009) does not permit today. The list of evidence fields interprets 'create Fabric/incident tasks'. COST added."
+  },
+  {
+    "id": "FINOPS-019",
+    "domain": "FINOPS",
+    "title": "No cost action automatically deletes production state",
+    "statement": "No automated cost response deletes production state, truncates it or shortens its retention. That covers budget actions, anomaly jobs, agents and scheduled scripts alike. A remedy that would remove state goes through the task of FINOPS-018 and is carried out only by a human-approved change.",
+    "rationale": "Production state includes the hash-chained event log, the ledger and tick history, which the platform exists to keep. A saving on storage can be recovered later. State deleted by an automated rule cannot.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§23 FinOps and Capacity Governance — Cost anomalies bullet ('never auto-delete production state as a cost action')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "No service account that runs a budget action, anomaly job or autonomous agent holds a role in the plan granting delete, truncate or retention-update permission on any production Spanner, Bigtable, BigQuery, GCS or Fabric resource, and no budget has a programmatic action other than notification."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "SEC",
+      "DATA",
+      "LEDGER",
+      "GOV"
+    ],
+    "notes": "Split from G p21's cost-anomalies bullet. Detection-to-task is FINOPS-018. P0 because this is a safety invariant: deleting production state destroys the record every decision is reproduced from. 'Shortens its retention' is included because a shortened lifecycle rule is a deferred delete. MANAGED_SERVICE and NEW_DEPENDENCY came with the raw item's detection half and are removed here. COST added. Consistent with .claude/rules/02-change-management.md (no irreversible operation without explicit approval) and with the guard hook's refusal of cloud-resource deletion."
+  }
+]

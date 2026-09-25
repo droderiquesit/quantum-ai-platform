@@ -1,0 +1,1285 @@
+[
+  {
+    "id": "EXPAND-001",
+    "domain": "EXPAND",
+    "title": "No source, ontology, specialist, model family, tool or market list is hard-coded",
+    "statement": "No source list, ontology, specialist roster, model family, tool catalog or market list is treated as permanent or capped by a predefined set. Each is held as extensible registry data. The platform takes on a new market, data domain, model family or tool by registering it, without a new architecture or a redesign of the platform.",
+    "rationale": "A roster fixed in code caps what the platform can learn at what its authors thought of. It also turns every new market or tool into an architecture change instead of a registry entry.",
+    "kind": "invariant",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Open-ended intelligence"},
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Intelligence expansion engine ('without requiring a redesign of the platform')"},
+      {"doc": "M", "page": "27", "section": "§23 Intelligence Expansion Engine — introduction"},
+      {"doc": "M", "page": "31", "section": "§23.5 What 'Open-Ended' Means"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — registries 'extensible rather than hard-coded'"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In a running build, with no code change or redeploy, register a new source, ontology type, specialist, model family, tool and market through the registries. Assert that each consuming component can resolve and use the new entry."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ARCH", "COVERAGE", "DATA", "MODEL"],
+    "notes": "Merges the first half of the M p3 open-ended bullet, M p27 ('without requiring a new architecture every time it encounters a new market, data domain, model family or tool') and M p31 §23.5 ('not capped by a predefined list of markets, sources, agents or model families'). It also takes the 'extensible rather than hard-coded' half of the M p43 registry checklist item; the 'versioned' half is EXPAND-063. M p7's 'without requiring a redesign' states the same property. The rule covers catalogue data, not safety types: the paper-only ceiling and the cost router's Determinism arms stay closed types (Principle 4; .claude/rules/01-security-and-safety.md), and nothing registered at runtime can widen them. Priority P3 because master Phase 9 (§30, p42) delivers the registries. COVERAGE-023 applies the same rule to the asset-class registry."
+  },
+  {
+    "id": "EXPAND-002",
+    "domain": "EXPAND",
+    "title": "Novelty, uncertainty, failure and unsupported requests become ranked research work",
+    "statement": "The Intelligence Expansion Engine continuously detects knowledge and capability gaps: novelty, surprise, uncertainty, failure, ignorance, and requests that no current brain or tool can satisfy. It turns each into ranked, structured research or capability work. That work can expand sources, ontology, memory, specialist brains, tools, models and research curricula.",
+    "rationale": "Without this engine, what the platform does not know stays invisible. A gap gets worked on only when a person happens to notice it.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Open-ended intelligence ('gaps can generate new research, tools, agents, models and knowledge structures')"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 — Implicit/fixed intelligence expansion"},
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Intelligence expansion engine"},
+      {"doc": "M", "page": "27", "section": "§23 Intelligence Expansion Engine — introduction ('converts ignorance, surprise and failure into structured research work')"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — Intelligence Expansion Engine"}
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "Inject one signal of each kind into a running platform: an unexplained residual, a low-confidence region, a contradiction, and a request that no registered brain or tool serves. Assert that each yields a ranked item in the ResearchQueue carrying the originating GapSignal as its lineage."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "REASON", "WORLD"],
+    "notes": "The M p43 §31 wording ('turns novelty, uncertainty, failure and unsupported requests into ranked research/capability work') is the most specific and is kept. M p5 lists the engine's components, and each has its own requirement: novelty/gap detection EXPAND-025; self-generated curriculum EXPAND-014; the registries EXPAND-007 and EXPAND-033 to EXPAND-041; autonomous research campaigns EXPAND-006; reflex learning EXPAND-009 and EXPAND-010; collective intelligence EXPAND-012; benchmark-gated promotion EXPAND-003 and EXPAND-061. 'Model evolution' (the M p28 row) was not extracted into this domain. Gap detection also appears as an Evaluation Brain bullet in M p27 §22."
+  },
+  {
+    "id": "EXPAND-003",
+    "domain": "EXPAND",
+    "title": "Proven research is promoted by lane into deployable capability",
+    "statement": "Research that passes independent evaluation becomes deployable capability through governed, benchmark-gated promotion into one of three lanes. It stays a slow-lane research tool, becomes a warm service, or is distilled or compiled into a bounded reflex artifact.",
+    "rationale": "Research that never becomes capability is a cost with no return. Capability placed in the wrong lane either misses its latency budget or puts an unbounded artifact on the reflex path.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Open-ended intelligence ('through governed promotion')"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 — 'benchmark-gated capability promotion'"},
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Intelligence expansion engine ('benchmark and promote improvements')"},
+      {"doc": "M", "page": "27", "section": "§23 Intelligence Expansion Engine — introduction ('converts proven research into deployable capability')"},
+      {"doc": "M", "page": "30", "section": "§23.1 Recursive Intelligence Expansion Loop — step 7, Promote by lane"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Promote three candidates that passed evaluation, each targeted at a different lane. Assert that each lands as a versioned registry entry in exactly that lane, with a promotion record. Assert that a candidate naming no lane, or lacking a passing evaluation, is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "REFLEX", "CICD"],
+    "notes": "Merges the promotion half of M p3, M p5, M p7 and M p27 with M p30 step 7. Step 7's three-lane wording is the most specific and is kept. The prohibition in the same step is EXPAND-031, the refusal of capability that has not proved its value is EXPAND-061, and the reflex lane's budgets are EXPAND-057. Priority P3 because 'continuous benchmark-gated promotion' is a master Phase 9 exit (§30, p42)."
+  },
+  {
+    "id": "EXPAND-004",
+    "domain": "EXPAND",
+    "title": "Every new capability enters only through the gated self-improvement pipeline",
+    "statement": "Open-ended expansion is not uncontrolled self-modification. Every new capability or change passes through six stages in order before promotion: an isolated branch or sandbox, reproducible tests, security and data-policy checks, simulation/replay, independent evaluation, and shadow/paper operation. This covers code, tools, agents, features, schemas and models. No path registers or activates a capability that has not passed every stage.",
+    "rationale": "With even one ungated path, the platform's next capability is one nobody reviewed. The gate is what makes open-ended growth safe to allow at all.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "27", "section": "§23 Intelligence Expansion Engine — introduction ('\"Open-ended\" does not mean uncontrolled self-modification'; 'evaluated, sandboxed, lineage-tracked and promoted through explicit gates')"},
+      {"doc": "M", "page": "31", "section": "§23.4 Controlled Self-Improvement and Promotion — 'Every change moves through...'"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Submit seven candidates: six that each lack the evidence for one stage, and one that has evidence for all six. Assert that the six are refused, each refusal naming the missing stage, and that only the complete candidate is admitted to promotion."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CICD", "GOV", "SEC"],
+    "notes": "Two extractors took the M p27 introduction as separate items. Both are merged here with the stage list of M p31 §23.4, which is more specific and is kept. The signing stage is split out as EXPAND-049 because it has its own mechanism and dependency. Lineage, the other word in the M p27 list, is EXPAND-058. GCP §13 (p12) and §21.4 (p20) describe the same path for autonomous development (CICD domain). In this repository, shadow/paper operation is the only kind of operation there is (ADR 0003). Priority P0 because this is a safety invariant, even though the capability it guards arrives in Phase 9."
+  },
+  {
+    "id": "EXPAND-005",
+    "domain": "EXPAND",
+    "title": "The expansion engine sits above the core brains and nothing below depends on it",
+    "statement": "The Intelligence Expansion Engine is a layer above the Scout, Evidence, Memory, World Model, Model Foundry, Quantum Foundry, Evaluation Brain and Reflex Mesh. It reads their outputs as gap signals and dispatches research work to them. None of them depends on the engine to do its own job.",
+    "rationale": "If the engine were wired into the brains it improves, it would become a dependency of the reflex and risk paths it should only learn from.",
+    "kind": "placement",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "27", "section": "§23 Intelligence Expansion Engine — introduction ('sits above the Scout, Evidence, Memory, World Model, Model Foundry, Quantum Foundry, Evaluation Brain and Reflex Mesh')"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture acceptance test reads the workspace dependency graph. It asserts that the engine's crate depends on the listed brains' contract types, and that none of those crates, and nothing on the reflex path, depends on the engine's crate."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ARCH", "MODEL", "WORLD", "EVID", "QUANT", "REFLEX"],
+    "notes": "M p27 says only 'sits above'. The clause that none of the brains depends on the engine is this domain's reading of that phrase. It matches the inward-only dependency direction in .claude/rules/architecture/00-boundaries.md and M p43 §31's 'quantum and global cognition can never block the reflex path'. The same paragraph's 'converts ignorance, surprise and failure... into deployable capability' is carried by EXPAND-002 and EXPAND-003."
+  },
+  {
+    "id": "EXPAND-006",
+    "domain": "EXPAND",
+    "title": "Research agents run campaigns from hypothesis to proposal",
+    "statement": "Autonomous research agents form hypotheses, gather evidence, write experiments, build features, run backtests, inspect failures and propose new strategies or models. Each campaign is recorded as a ResearchCampaign/ExperimentPack.",
+    "rationale": "Turning a ranked question into evidence without a person driving each step is what lets research keep pace with the curriculum.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "28", "section": "§23 Intelligence Expansion Engine — mechanism table: Autonomous research agents"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Give a research agent one CurriculumItem in a sandbox. Assert that the resulting ResearchCampaign/ExperimentPack contains a hypothesis, cited evidence, an experiment definition, the features built, backtest results on replay, a failure analysis and a proposal. Assert that the proposal carries no execution authority."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "REASON", "EVID"],
+    "notes": "M p5 §2 lists 'autonomous research campaigns' as an engine component; it is cited on EXPAND-002. Priority P2 because master Phase 8 (§30, p42) adds 'self-directed research campaigns'. Backtests run on this platform's replay, never against a venue. The rule that a proposal carries no authority is EXPAND-051 applied here."
+  },
+  {
+    "id": "EXPAND-007",
+    "domain": "EXPAND",
+    "title": "A Tool Registry catalogues every tool the platform can use",
+    "statement": "The platform maintains a Tool Registry covering connectors, browsers, parsers, solvers, code runtimes, simulators, geospatial tools, venue adapters, model endpoints and quantum backends.",
+    "rationale": "A tool the platform cannot enumerate is a tool it cannot permission, evaluate or retire.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "28", "section": "§23 Intelligence Expansion Engine — mechanism table: Tool and capability acquisition ('maintains a Tool Registry')"},
+      {"doc": "M", "page": "30", "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed — Tool Registry"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Register one tool of each of the ten named kinds. Assert that each resolves by kind to its ToolSpec, including the permission scope that EXPAND-052 governs."
+    },
+    "policy_flags": ["NEW_DEPENDENCY", "NON_RUST"],
+    "secondary_domains": ["QUANT", "EXEC", "CONTRACT"],
+    "notes": "The registry half of the M p28 row is merged with the M p30 list, which is more specific and is kept; the proposal half of the row is EXPAND-008. The flags come from the tools named, not the registry: browsers, code runtimes and quantum backends need dependencies beyond serde/serde_json or a non-Rust runtime, and each needs an ADR (ADR 0002, ADR 0009). The IBM Quantum backend already exists behind the classical-baseline rule (ADR 0006). ToolSpec fields are CONTRACT-034. Priority P2 because master Phase 8 adds 'broader tool use' and needs a catalogue of tools with permissions; Phase 9 names the tool registry."
+  },
+  {
+    "id": "EXPAND-008",
+    "domain": "EXPAND",
+    "title": "A missing tool becomes a ToolSpec and a build task",
+    "statement": "Sometimes a question or task needs a tool the platform does not have: a connector, parser, API, quantum or classical solver, simulator, code module, data adapter or external model interface. The missing tool then becomes a build or research task of its own, proposed as a ToolSpec/CapabilityPack.",
+    "rationale": "A task that fails for want of a tool and records nothing loses the one fact the platform most needed: what it could not do.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "28", "section": "§23 Intelligence Expansion Engine — mechanism table: Tool and capability acquisition"},
+      {"doc": "M", "page": "31", "section": "§23.3 Self-Generated Curriculum and Curiosity — Capability-gap curriculum"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Submit a task that needs an unregistered parser. Assert that a ToolSpec/CapabilityPack proposal and a matching curriculum item are created, and that the task is recorded as blocked on that tool rather than failing silently. Assert that the proposal adds no dependency to the workspace."
+    },
+    "policy_flags": ["NEW_DEPENDENCY", "NON_RUST"],
+    "secondary_domains": ["CICD", "CONTRACT"],
+    "notes": "Merges the proposal half of the M p28 tool-acquisition row with M p31's capability-gap curriculum. The two list different tools, so the statement keeps the union. The flags apply to building the tool, not to proposing it. A tool that needs a crate beyond serde/serde_json needs an ADR first (ADR 0002, ADR 0009): the engine may propose one but cannot add it, and ./scripts/check-dependencies.sh is one of EXPAND-004's security checks."
+  },
+  {
+    "id": "EXPAND-009",
+    "domain": "EXPAND",
+    "title": "Each reflex cell records its local episodes as typed artifacts",
+    "statement": "Each reflex cell records its local microstructure, venue behaviour, latency, fill/slippage, anomaly and failure episodes as RegionalEpisode/ReflexDelta artifacts.",
+    "rationale": "What a cell learns about its own venues is otherwise trapped in that region and lost when the cell restarts.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Reflex-node local learning"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a session through one cell that includes fills, slippage, a latency spike, an anomaly and a failure. Assert that the cell records, locally, one RegionalEpisode/ReflexDelta per category, each naming the cell and region."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["REFLEX", "TICK", "MESH"],
+    "notes": "Split from the M p29 row; propagation is EXPAND-010 and local inference is EXPAND-011. The 'Regional reflex contribution' bullet of M p27 §22 names the same episode types from the Evaluation Brain's side. Priority P3 follows 'regional-to-global learning' in master Phase 9 (§30, p42). Journaling inside the cell comes earlier, in Phase 1."
+  },
+  {
+    "id": "EXPAND-010",
+    "domain": "EXPAND",
+    "title": "Useful regional lessons reach global training as typed deltas",
+    "statement": "Useful lessons from reflex cells propagate to global training. They are merged in as typed episodes and knowledge deltas.",
+    "rationale": "Keeping inference local must not mean each region learns alone. A lesson one cell pays for should improve every cell.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Reflex-node local learning"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — regional reflex experience merged into global learning"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Export episodes from two cells. Assert that global training's input set contains them as typed RegionalEpisode/KnowledgeDelta records carrying their originating region, and that nothing arrives as untyped state."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["REFLEX", "MESH", "MODEL", "CONTRACT"],
+    "notes": "Merges the propagation clause of M p29 with the first half of the M p43 item. That item's other half, 'without adding a synchronous hot-path dependency', is EXPAND-064. The blueprint does not say which lessons count as 'useful'. That selection rule has to be written down before this requirement can be tested beyond 'typed and attributed'."
+  },
+  {
+    "id": "EXPAND-011",
+    "domain": "EXPAND",
+    "title": "Latency-critical reflex inference stays local to the cell",
+    "statement": "Latency-critical inference runs on the reflex cell, from local artifacts. Propagating lessons to global training never moves that inference to the centre.",
+    "rationale": "Inference that crosses a region to reach a model adds a round trip to every decision, and stops the cell when the link fails. ADR 0008: cells decide alone.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Reflex-node local learning ('latency-critical inference stays local')"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Cut a cell off from every central model-serving endpoint. Assert that it keeps producing decisions from its local artifacts, with hot-path latency within budget."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["REFLEX", "MESH", "RES"],
+    "notes": "Two extractions of the same M p29 clause, merged. Priority P0 because this placement keeps ADR 0008 and M p43 §31 ('global cognition can never block the reflex path') true. GCP §27 (p23) says the same for the whole hot path: no synchronous call to AI or another region between a venue event and a local order."
+  },
+  {
+    "id": "EXPAND-012",
+    "domain": "EXPAND",
+    "title": "Brains, evaluators and regional nodes share knowledge only as typed artifacts",
+    "statement": "Generalist cognition, specialist brains, evaluation agents and regional nodes share knowledge as typed artifacts (KnowledgeDelta/SharedEpisode), not as isolated chat or state, so that one component's discovery can improve the whole system.",
+    "rationale": "Knowledge passed as chat or shared state cannot be versioned, attributed or replayed, and a discovery that stays inside one component improves nothing else.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Collective/federated intelligence"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Record a discovery in one specialist as a KnowledgeDelta. Assert that a second specialist and a regional node both receive it through the typed channel. Assert that an architecture test finds no component exchanging knowledge through shared mutable state or free text."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["CONTRACT", "MESH", "REASON"],
+    "notes": "CONTRACT-002 states the same rule, drawn from M p7 §3 and this M p29 row; KnowledgeDelta fields are CONTRACT-035. M p5 lists 'collective intelligence' as an engine component. Priority P3 follows the §23 row and master Phase 9. P2 is also defensible, because Phase 8's 'specialist-agent society' needs this rule between specialists."
+  },
+  {
+    "id": "EXPAND-013",
+    "domain": "EXPAND",
+    "title": "The platform scores its own forecasts, execution and sources and emits gap signals",
+    "statement": "The platform measures forecast accuracy, uncertainty calibration, P&L attribution, execution quality, model decay, source value, hallucination/error rates and unexplained residuals. It records them as Scorecard and GapSignal artifacts.",
+    "rationale": "A gap nobody measures cannot be ranked, and a score that cannot be recomputed from the event log is the system's assertion about itself rather than evidence.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Self-evaluation + calibration"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a history with known outcomes. Assert that the Scorecard reports all eight measures, each recomputable from the event log, and that pushing a measure past its threshold emits a GapSignal naming it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "OBS", "EVID"],
+    "notes": "Priority P1: outcome attribution and calibration belong to the master Phase 2 model/strategy foundry (§30, p41) and are Evaluation Brain work (§22, p27). The GapSignal consumer arrives in Phase 9. Exact attribution already exists under ADR 0007. GapSignal fields are CONTRACT-031."
+  },
+  {
+    "id": "EXPAND-014",
+    "domain": "EXPAND",
+    "title": "The Curriculum Engine ranks what the platform learns next",
+    "statement": "A Curriculum Engine ranks candidate research tasks into a ResearchQueue of CurriculumItems. That ranking decides which data acquisition, simulations, labels, experiments and research campaigns run next.",
+    "rationale": "Learning blindly spends compute on whatever is easiest. A ranked queue spends it on what the platform most needs to know.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Self-generated curriculum"},
+      {"doc": "M", "page": "30", "section": "§23.1 Recursive Intelligence Expansion Loop — step 3, Generate curriculum"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — self-generated curriculum/active learning"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Feed the engine candidates of each type: data, simulation, label, experiment and campaign. Assert that it emits a ranked ResearchQueue, and that the scheduler starts the highest-ranked eligible item first."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "DATA"],
+    "notes": "Merges two extractions of the M p29 row, loop step 3 ('rank the research task'), and the M p43 checklist item. The M p43 item adds that the curriculum and active learning decide data, simulations, labels, experiments and campaigns. M p28's 'Continuous training + active learning' row says the same for retraining; it was not extracted into this domain. The scoring inputs are EXPAND-015. CurriculumItem fields are CONTRACT-032. The M p5 component 'self-generated curriculum' is cited on EXPAND-002."
+  },
+  {
+    "id": "EXPAND-015",
+    "domain": "EXPAND",
+    "title": "Every candidate research task is scored on the declared curriculum criteria",
+    "statement": "Each candidate research task is scored on eight criteria: expected economic value, reduction in uncertainty, strategic coverage, risk reduction, information gain, reuse across domains, compute/data cost, and legal/operational feasibility. The score also records novelty, failure frequency and urgency, which the §23 table and loop step 3 name as ranking inputs.",
+    "rationale": "A rank whose inputs are not recorded cannot be audited. A missing criterion, such as cost or feasibility, lets the queue fill with work the platform cannot afford or is not allowed to do.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Self-generated curriculum (ranking inputs)"},
+      {"doc": "M", "page": "30", "section": "§23.1 Recursive Intelligence Expansion Loop — step 3 (estimates)"},
+      {"doc": "M", "page": "30", "section": "§23.3 Self-Generated Curriculum and Curiosity — scoring criteria"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Score a candidate. Assert that its score record holds a value for each of the eleven named inputs, and that a candidate missing any one is refused rather than scored with a default."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "FINOPS"],
+    "notes": "The three sources give three different lists. §23.3 (M p30) is the most specific ('each candidate research task is scored on'), and its eight criteria are the requirement. The M p29 row adds novelty, failure frequency and 'strategic importance', which is read as strategic coverage. Step 3 adds risk (read as risk reduction), novelty and urgency. Novelty, failure frequency and urgency are recorded so that no named input is lost; the blueprint does not say how they are weighted. That novelty cannot dominate the rank is EXPAND-042. Refusing a missing input applies the repository principle 'refuse rather than guess'."
+  },
+  {
+    "id": "EXPAND-016",
+    "domain": "EXPAND",
+    "title": "Microstructure knowledge is learned continuously from tick history and the platform's fills",
+    "statement": "The platform continuously learns venue mechanics, queue behaviour, liquidity regimes, cross-asset lead/lag, execution dynamics and market reactions. It learns them from tick/order-book history plus its own execution telemetry, and records the results as MicrostructureDelta artifacts.",
+    "rationale": "Venue mechanics drift. A fill model fitted once and never re-learned gets slowly more wrong.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Market-microstructure expansion"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a recorded tick/order-book window together with the platform's own fills. Assert that a MicrostructureDelta is produced for each named aspect, and that replaying the same inputs reproduces it byte for byte."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "EXEC"],
+    "notes": "The blueprint says 'live Algorik telemetry'. Here that means the platform's paper or simulated fills, because nothing is live (ADR 0003). Split from the same row's residual-triggered campaigns, which are EXPAND-017. Priority P1 because the Market Intelligence & Tick Learning Fabric is master Phase 2 (§30, p41)."
+  },
+  {
+    "id": "EXPAND-017",
+    "domain": "EXPAND",
+    "title": "Microstructure residuals and new venues trigger tick-replay research campaigns",
+    "statement": "Growing residuals automatically create targeted tick-replay, retraining and microstructure research campaigns (TickCampaign). The residuals are: unexplained slippage, fill/queue prediction errors, new venue mechanics, abnormal lead/lag, world-event reaction residuals, and divergence between live and replay. Newly discovered venues or market structures create such campaigns too.",
+    "rationale": "A residual that grows without anyone investigating it becomes the loss nobody could explain.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Market-microstructure expansion ('generate replay/retraining tasks when residuals grow')"},
+      {"doc": "M", "page": "31", "section": "§23.3 Self-Generated Curriculum and Curiosity — Market-learning curriculum"},
+      {"doc": "M", "page": "42", "section": "§30 Build Order — Phase 9 Open-Ended Intelligence Expansion (market-microstructure curricula)"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a window in which slippage residuals grow past their threshold and a previously unseen venue appears. Assert that a TickCampaign is created for each, scoped to the affected instruments and venue."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "WORLD"],
+    "notes": "Merges the trigger clause of the M p29 row, M p31's market-learning curriculum (which has the fullest list of residuals and is kept), and the Phase 9 exit (M p42), which adds 'live-vs-replay residuals' and 'newly discovered venues/market structures'. Here 'live' means the platform's paper fills (ADR 0003). The blueprint does not define the threshold for 'grow'. Priority P3 because this is a Phase 9 exit."
+  },
+  {
+    "id": "EXPAND-018",
+    "domain": "EXPAND",
+    "title": "The platform can spawn additional world models when one is insufficient",
+    "statement": "When one world-model representation becomes insufficient, the platform can spawn additional domain, regional, horizon, scenario or counterfactual world models (WorldModelSpec/WorldModelBranch). Spawning is governed: a new world model enters service only through EXPAND-004's pipeline.",
+    "rationale": "A single world model that cannot represent what it sees either ignores that evidence or bends to fit it. A new branch can represent it instead.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: World-model population expansion"},
+      {"doc": "M", "page": "42", "section": "§30 Build Order — Phase 9 ('governed spawning/retirement of new world models')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Drive a world model's residual past its insufficiency threshold. Assert that a WorldModelBranch is proposed with its parent and triggering evidence recorded, and that it enters service only through EXPAND-004's pipeline."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["WORLD", "FINOPS"],
+    "notes": "The word 'governed' comes from the Phase 9 exit (M p42). Benchmarking is EXPAND-019 and retirement is EXPAND-062. COST is kept because each branch adds standing compute. M p44 §31 describes the federation's explicit disagreement and branch lineage (WORLD domain)."
+  },
+  {
+    "id": "EXPAND-019",
+    "domain": "EXPAND",
+    "title": "A spawned world model is kept only if a benchmark shows it adds value",
+    "statement": "The incremental predictive or explanatory value of each spawned world model over the existing federation is benchmarked. A branch is kept only if that benchmark shows it adds value.",
+    "rationale": "A branch that adds nothing still costs compute and still casts a vote in the federation's disagreement.",
+    "kind": "acceptance",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: World-model population expansion ('benchmark their incremental predictive/explanatory value')"}
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Spawn one branch that adds predictive value and one that duplicates an existing model. Benchmark both against the federation on a declared held-out set, and assert that only the first is kept."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "MODEL"],
+    "notes": "Two extractions of the same M p29 clause, merged. COST was removed: it belongs to spawning (EXPAND-018), not to benchmarking. EXPAND-061 is the general rule this applies."
+  },
+  {
+    "id": "EXPAND-020",
+    "domain": "EXPAND",
+    "title": "Validated patterns can become new rules, constraints and theory",
+    "statement": "Patterns that have passed validation can become new ontology relations, rules, invariants, causal structures, constraints or proof procedures, recorded as RulePack/ConstraintPack/TheoryDelta artifacts. A pattern that has not been validated cannot.",
+    "rationale": "Symbolic theory that never grows falls behind what the neural models have learned. Theory that grows from unvalidated patterns turns noise into rules.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Symbolic theory growth"},
+      {"doc": "M", "page": "42", "section": "§30 Build Order — Phase 9 ('symbolic theory/rule growth')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Submit one validated and one unvalidated pattern. Assert that only the validated one produces a TheoryDelta/RulePack, and that the result enters the symbolic fabric only through EXPAND-004's pipeline."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REASON", "WORLD"],
+    "notes": "Split from the M p29 row; its contradiction clause is EXPAND-021. The refusal of unvalidated patterns is implied by the row's 'validated patterns can become'. Merged with the matching part of the Phase 9 exit (M p42)."
+  },
+  {
+    "id": "EXPAND-021",
+    "domain": "EXPAND",
+    "title": "Contradictions in the theory create explicit theory-revision tasks",
+    "statement": "When observations or validated patterns contradict the symbolic theory, the contradiction creates an explicit theory-revision task and is recorded as unresolved. It is never silently absorbed.",
+    "rationale": "A contradiction that is silently absorbed leaves a rule standing that the evidence has already refuted.",
+    "kind": "failure_behavior",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Symbolic theory growth ('contradictions generate explicit theory-revision tasks')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Introduce an observation that contradicts a registered rule. Assert that a theory-revision task is created and that the contradiction appears in the Research Registry as unresolved (EXPAND-039)."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REASON", "WORLD"],
+    "notes": "Two extractions of the same M p29 clause, merged. 'Never silently absorbed' is the extractor's wording of 'explicit'. The Research Registry records unresolved contradictions (M p30 §23.2)."
+  },
+  {
+    "id": "EXPAND-022",
+    "domain": "EXPAND",
+    "title": "Always-on ambient models surface weak signals and high-value unknowns",
+    "statement": "Always-on ambient models continuously discover new weak signals, precursor relationships, assumption failures and high-value unknowns. They record them as AmbientSignal/AttentionEvent artifacts.",
+    "rationale": "The unknowns that matter most are the ones nobody thought to ask about, so something has to look for them unprompted.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Ambient proactive expansion"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a history that contains a planted precursor relationship and a broken assumption. Assert that AmbientSignal records identify both, with no prompt or request anywhere in the run."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["AMBIENT", "WORLD"],
+    "notes": "The AMBIENT domain owns this; AMBIENT-017 and AMBIENT-019 state it. It is kept here because the extraction assigned it to EXPAND. The M p29 row is split three ways: discovery (here), curriculum items (EXPAND-023) and waking specialists (EXPAND-024). COST is kept because always-on models are standing compute."
+  },
+  {
+    "id": "EXPAND-023",
+    "domain": "EXPAND",
+    "title": "A useful ambient signal creates a curriculum item without a human prompt",
+    "statement": "A useful ambient signal can create a curriculum item for the Intelligence Expansion Engine without a human prompt.",
+    "rationale": "If ambient discoveries wait for a person to turn them into work, the curriculum only learns what someone asked about.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Ambient proactive expansion"},
+      {"doc": "M", "page": "42", "section": "§30 Build Order — Phase 9 ('ambient-signal-driven curricula')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Emit an AmbientSignal marked useful in a run with no user or API request. Assert that a CurriculumItem citing the signal enters the ResearchQueue."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["AMBIENT"],
+    "notes": "Duplicates AMBIENT-018 and is kept here per the domain instruction. Merged with the Phase 9 exit (M p42). The blueprint does not define 'useful'. COST was removed: it belongs to running the models (EXPAND-022)."
+  },
+  {
+    "id": "EXPAND-024",
+    "domain": "EXPAND",
+    "title": "A useful ambient signal can wake a specialist without a human prompt",
+    "statement": "A useful ambient signal can wake a specialist without a human prompt.",
+    "rationale": "A precursor that waits for a person to route it may arrive after the event it predicted.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table: Ambient proactive expansion ('can wake specialists')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In a run with no request, emit a useful AmbientSignal that falls within a specialist's declared competency. Assert that the specialist is invoked with the signal as its trigger."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["AMBIENT", "REASON"],
+    "notes": "AMBIENT-005 states the same thing from M p18 §9.5. Priority P2 matches AMBIENT-005, because master Phase 8 (§30, p42) adds the Ambient Model Mesh and Attention Router. A woken specialist still abstains outside its competency (EXPAND-054)."
+  },
+  {
+    "id": "EXPAND-025",
+    "domain": "EXPAND",
+    "title": "Novelty detection opens the expansion loop",
+    "statement": "Step 1 of the Recursive Intelligence Expansion Loop is novelty detection, raised as a GapSignal. It detects surprise, low confidence, contradictions, missed opportunities, unexplained P&L, model drift, and requests that no current brain or tool can satisfy.",
+    "rationale": "The loop can only work on what it notices. A trigger the detector does not cover is a class of gap that never becomes work.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23.1 Recursive Intelligence Expansion Loop — step 1, Observe novelty"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Raise each of the seven triggers in turn. Assert that each produces exactly one GapSignal naming its trigger."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "EVID"],
+    "notes": "M p27 §22's 'Novelty and knowledge-gap detection' (Evaluation Brain) gives a neighbouring list: residuals, low-confidence regions, contradictory evidence, missing causal links, unsupported asset classes and capabilities with no competent specialist. The GapSignal artifact comes from the §23 self-evaluation row (M p29). M p5 names 'novelty/gap detection' as an engine component."
+  },
+  {
+    "id": "EXPAND-026",
+    "domain": "EXPAND",
+    "title": "Every gap is classified into one of nine gap classes",
+    "statement": "Step 2 of the loop classifies each gap as one of nine classes: a data, ontology, causal, memory, model, tool, specialist or execution gap, or a compute/quantum research opportunity.",
+    "rationale": "The class decides which acquisition route step 4 takes. A gap with no class has nowhere to go.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23.1 Recursive Intelligence Expansion Loop — step 2, Classify the gap"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated GapSignals, assert that the classifier always returns a member of the nine-value set, and that it refuses a signal it cannot classify rather than assigning a default."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT", "QUANT"],
+    "notes": "CONTRACT-031's GapSignal carries 'a candidate gap class'. Refusing an unclassifiable signal is the repository's 'refuse rather than guess' principle; the blueprint does not say it."
+  },
+  {
+    "id": "EXPAND-027",
+    "domain": "EXPAND",
+    "title": "The loop acquires the capability a gap needs, from lawful sources only",
+    "statement": "Step 4 of the loop acquires the capability needed to investigate a ranked gap. It does so in one of five ways: discovering lawful data, creating a connector or tool, instantiating a specialist, selecting models or solvers, or constructing simulations.",
+    "rationale": "A ranked gap the platform cannot equip itself to investigate stays ranked forever. Acquiring data without establishing its lawfulness is a compliance failure, whatever the research value.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.1 Recursive Intelligence Expansion Loop — step 4, Acquire capability"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Run step 4 for one gap of each acquisition kind. Assert that each produces the corresponding sandboxed candidate: a source candidate, a ToolSpec, a BrainSpec, a model or solver selection, or a ScenarioPack. Assert that a data source whose licensing posture has not been evaluated is refused before use."
+    },
+    "policy_flags": ["NEW_DEPENDENCY", "NON_RUST"],
+    "secondary_domains": ["DATA", "MODEL", "QUANT", "EVID"],
+    "notes": "Everything step 4 builds is a candidate, and enters service only through EXPAND-004. 'Lawful' maps to the licensing evaluation qip-data-finder performs before registration (.claude/rules/domains/data-and-streaming.md); EXPAND-060 is the general bound. The tool route overlaps EXPAND-008. Flags as for EXPAND-008: a solver engine or a new connector needs an ADR before it can become a dependency."
+  },
+  {
+    "id": "EXPAND-028",
+    "domain": "EXPAND",
+    "title": "Research campaigns are reproducible, with provenance and lineage",
+    "statement": "Step 5 of the loop runs research campaigns across historical, simulated, paper and shadow environments. Every campaign is reproducible and carries provenance and lineage.",
+    "rationale": "A result nobody can reproduce cannot be evaluated independently, and a promotion built on it cannot be explained afterwards.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.1 Recursive Intelligence Expansion Loop — step 5, Research and experiment"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Re-run a completed campaign from its recorded inputs, seeds and code version, and assert identical results. Assert that every dataset and artifact the campaign cites resolves to a recorded provenance entry."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "MODEL", "EVID"],
+    "notes": "Here 'shadow' is paper by construction (ADR 0003). Priority P2 because self-directed research campaigns arrive in master Phase 8 (§30, p42). Lineage of promoted capabilities is EXPAND-058."
+  },
+  {
+    "id": "EXPAND-029",
+    "domain": "EXPAND",
+    "title": "Candidates are evaluated by an evaluator independent of their creator",
+    "statement": "Before promotion, every candidate capability is evaluated by the Evaluation Brain. The Evaluation Brain is independent of the brain, agent or foundry that produced the candidate. A creator's evaluation of its own candidate cannot promote it.",
+    "rationale": "An evaluation the creator controls is a gate that cannot fire. M p27 §22: 'the creator of an idea is not the sole judge of the idea'.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.1 Recursive Intelligence Expansion Loop — step 6, Evaluate independently"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — 'independently evaluate them'"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Try to promote a candidate that carries only an evaluation produced by its own creator, and assert that promotion is refused. Assert that the same candidate, once evaluated by the Evaluation Brain, is admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "GOV"],
+    "notes": "Two extractions of step 6 and the 'independently evaluate' clause of the M p43 item, merged. The independence rule is split from the list of criteria (EXPAND-030) because the two are checked separately. Priority P0 because this is a safety invariant: the platform's evaluator already sits apart from the foundry for the same reason."
+  },
+  {
+    "id": "EXPAND-030",
+    "domain": "EXPAND",
+    "title": "Evaluation covers nine criteria, measured against the current champions",
+    "statement": "The evaluation tests nine criteria: calibration, robustness, leakage, regime sensitivity, cost, latency, safety, legal eligibility, and incremental value over the current champions. A candidate that lacks a result for any criterion cannot be promoted.",
+    "rationale": "A skipped criterion becomes the one the promoted capability fails in operation. Leakage in particular makes a backtest look good while it is wrong.",
+    "kind": "acceptance",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.1 Recursive Intelligence Expansion Loop — step 6, Evaluate independently"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Evaluate a candidate and assert that its evaluation record holds a result for each of the nine criteria. Remove one result and assert that promotion is refused, naming that criterion."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "RISK", "GOV"],
+    "notes": "Two extractions of the same list (one was titled 'nine independent criteria'), merged. The refusal of an incomplete evaluation is the fail-closed reading of 'tests'. Point-in-time leakage is already prohibited platform-wide (.claude/rules/domains/data-and-streaming.md). Priority P3 because this is the promotion gate of master Phase 9."
+  },
+  {
+    "id": "EXPAND-031",
+    "domain": "EXPAND",
+    "title": "Research is never promoted directly into money movement",
+    "statement": "Promotion never goes directly from research into live money movement. A research output reaches execution only through the lanes of EXPAND-003 and the gates of EXPAND-004, and on this platform execution means paper trading only.",
+    "rationale": "Research runs with broad freedom and cheap failure. The money path must never inherit either.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.1 Recursive Intelligence Expansion Loop — step 7 ('Promotion is never direct from research into live money movement')"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Run the paper_boundary and compliance_proof acceptance suites. Assert that a promoted capability in any lane can reach only the simulated broker, and that no promotion path names a live venue."
+    },
+    "policy_flags": ["LIVE_CAPITAL"],
+    "secondary_domains": ["GOV", "RISK", "EXEC"],
+    "notes": "The blueprint's wording implies that research may eventually reach live money indirectly. That part is BLOCKED here (ADR 0003; ADR 0099, 'The paper-trading boundary'), and this requirement leaves the three paper-trading layers of .claude/rules/01-security-and-safety.md untouched. The requirement held is the prohibition alone."
+  },
+  {
+    "id": "EXPAND-032",
+    "domain": "EXPAND",
+    "title": "Outcomes update memory, source scores, world beliefs and the curriculum",
+    "statement": "Step 8 of the loop learns from production. Outcomes, failures, vetoes, missed opportunities and local reflex episodes update memory, source scores, world-model beliefs and the future curriculum.",
+    "rationale": "If outcomes update nothing, the platform repeats its mistakes. A loop that closes only into memory never changes what it chooses to study next.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.1 Recursive Intelligence Expansion Loop — step 8, Learn from production"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay paper-trading outcomes that include a veto, a missed opportunity and a failed reflex episode. Assert that each updates memory, a source score and a world-model belief, and produces a curriculum item, all traceable to the outcome's event."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "EVID", "MODEL", "REFLEX"],
+    "notes": "Step 9 ('Repeat: every resolved gap exposes new gaps, creating a compounding research and capability loop', M p30) was dropped as narrative. The loop closure it describes is this step's update to the future curriculum. 'Production' here means paper operation (ADR 0003), and the platform's LEARN stage is where these updates land. The updates to memory, source scores and world beliefs fall within master Phase 2 scope (WORLD, EVID). The curriculum update is Phase 9, hence P3."
+  },
+  {
+    "id": "EXPAND-033",
+    "domain": "EXPAND",
+    "title": "A Source Registry records every source with provenance, cost, licence, freshness and utility",
+    "statement": "A Source Registry records every known feed, endpoint, document family, sensor, marketplace and discovery method. Each entry carries its provenance, cost, licence, freshness and utility.",
+    "rationale": "A source with no recorded licence can be used before anyone has checked whether it may be. A source with no recorded utility is never retired.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed — Source Registry"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Register a source that lacks one of provenance, cost, licence, freshness or utility, and assert that it is refused. Register a complete entry, and assert that it is stored and readable with all five."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA", "EVID", "WORLD"],
+    "notes": "Priority P1, although master Phase 9 lists a source registry: the Phase 2 Scout Fabric (§30, p41) cannot register a source without one. qip-data-finder already registers sources after a tier/legality screen (DELIVERY-STATUS §7.4). GCP's Source Manifest Registry (fetched-document manifests) is a separate, finer-grained record (DATA domain). A licence must be evaluated before the source is used (.claude/rules/domains/data-and-streaming.md)."
+  },
+  {
+    "id": "EXPAND-034",
+    "domain": "EXPAND",
+    "title": "An Ontology Registry holds versioned knowledge-graph types",
+    "statement": "An Ontology Registry holds versioned entity, event, relationship, market, asset, product, causal-driver and lifecycle types.",
+    "rationale": "Types that are not versioned make every earlier graph read ambiguous, because a replay cannot tell which schema a fact was written under.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed — Ontology Registry"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Assert that each of the eight type families can be registered and that every stored type carries a version. Assert that reading a type at an old version returns that version's definition."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "REASON", "CONTRACT"],
+    "notes": "Split from the registry's 'supports governed schema extension' clause, which is EXPAND-035. Priority P1 because the master Phase 2 world model and knowledge graph (§30, p41) need these types before Phase 9 extends them."
+  },
+  {
+    "id": "EXPAND-035",
+    "domain": "EXPAND",
+    "title": "The ontology is extended only through governed schema extension",
+    "statement": "The ontology can be extended, and only through governed schema extension. A new or changed type enters the Ontology Registry as a proposed, evaluated, versioned patch (OntologyPatch), never as an ad hoc change.",
+    "rationale": "An ontology that cannot grow forces new observations into types that do not fit. One that grows ad hoc breaks every reader of the old schema without anyone deciding to.",
+    "kind": "invariant",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed — Ontology Registry ('supports governed schema extension')"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — 'ontology expansion'"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Submit an ontology patch through the governed path and assert that it is admitted as a new version. Attempt a direct write that bypasses that path and assert that it is refused, with the existing types unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "REASON", "GOV"],
+    "notes": "Merges the governed-extension clause of M p30 (extracted twice) with the ontology-expansion part of the M p43 item. M p28's 'World-model + ontology expansion' row, not extracted into this domain, gives the trigger: 'when existing schemas cannot explain observations'. The Fabric's schema-compatibility gates (CONTRACT-046, CONTRACT-047) do the same job for wire schemas."
+  },
+  {
+    "id": "EXPAND-036",
+    "domain": "EXPAND",
+    "title": "A Memory Registry holds every kind of memory under a retention/value policy",
+    "statement": "A Memory Registry holds semantic knowledge, episodes, procedures, failures, simulations and compressed abstractions. Every entry is governed by a retention/value policy.",
+    "rationale": "Memory kept with no retention policy becomes an unbounded store of noise, and memory discarded with no value policy loses the rare episode that mattered.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed — Memory Registry"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Assert that every stored kind of memory carries a retention/value policy and that an entry without one is refused. Expire an entry past its policy and assert that it is removed or compressed as the policy states."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "DATA"],
+    "notes": "Bounded retention is a standing product decision (.claude/rules/10-product-direction.md). Priority P1 because master Phase 2 introduces episodic memory. Consolidation is EXPAND-065."
+  },
+  {
+    "id": "EXPAND-037",
+    "domain": "EXPAND",
+    "title": "A Brain Registry records each agent's competency, tools, evaluations, calibration, authority and lineage",
+    "statement": "A Brain Registry records every generalist and specialist agent or model, with its competency domains, tools, evaluations, calibration, authority and version lineage.",
+    "rationale": "Without a record of what each brain is competent in and allowed to do, neither abstention nor authority can be enforced.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed — Brain Registry"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Register a specialist and assert that all six attributes are stored. Register a new version and assert that it records its parent."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "REASON", "GOV"],
+    "notes": "BrainSpec fields are CONTRACT-033. Priority P2: master Phase 8's 'specialist-agent society... under authority envelopes' needs competency and authority records, though Phase 9 is where the brain registry is named. The declared competency boundary and abstention are EXPAND-053 and EXPAND-054."
+  },
+  {
+    "id": "EXPAND-038",
+    "domain": "EXPAND",
+    "title": "A Model Registry records models with their data, calibration, benchmarks, budgets and rollback ancestry",
+    "statement": "A Model Registry records foundation, specialist, ensemble, policy and reflex models. For each it records the datasets, features, calibration, benchmarks, resource budgets and rollback ancestry.",
+    "rationale": "A model without a recorded rollback parent cannot be rolled back. One without recorded datasets cannot be reproduced or checked for leakage.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed — Model Registry"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Register a model and assert that all six attributes are stored. Roll it back and assert that the rollback resolves to the recorded parent artifact."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "GCP"],
+    "notes": "Priority P1: the master Phase 2 model/strategy foundry and §22's 'rollback to last known-good artifact' (M p27) need it. GCP v2.1 places the model registry in its phase 8 (§26, p22), and maps it to a managed Model Registry / ML Metadata (§11 p11, §19 p18). That would be a MANAGED_SERVICE decision this requirement does not take."
+  },
+  {
+    "id": "EXPAND-039",
+    "domain": "EXPAND",
+    "title": "A Research Registry keeps null results and contradictions so failures are not rediscovered",
+    "statement": "A Research Registry records hypotheses, experiments, null results, open questions, benchmark suites and unresolved contradictions. A proposed hypothesis or experiment is checked against it, so the platform does not rediscover the same failures.",
+    "rationale": "A research system that does not remember its null results spends its budget re-running them.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed — Research Registry"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Record a hypothesis with a null result, then propose the same hypothesis again. Assert that the new proposal is matched to the recorded null result before any experiment runs."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "EVID"],
+    "notes": "Priority P2 because master Phase 8 introduces self-directed research campaigns, and they need this registry. The blueprint does not say whether a match blocks the experiment or only flags it."
+  },
+  {
+    "id": "EXPAND-040",
+    "domain": "EXPAND",
+    "title": "A Capability Registry records what the platform can currently do",
+    "statement": "A Capability Registry records what the platform can currently sense, reason about, simulate, trade, settle, hedge, transfer, purchase, create or operate.",
+    "rationale": "Without a record of its own capabilities, the platform cannot tell a capability gap from a failure. Nor can it tell what a promotion actually changed.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed — Capability Registry"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Assert that the registry answers, for each of the ten verbs, which capabilities exist, and that a capability is added or removed only by a new registry version."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "ARCH"],
+    "notes": "Split from the registry's 'confidence/eligibility boundary for each capability' clause, which is EXPAND-041. LIVE_CAPITAL moved there, because the eligibility boundary is where live capital arises. Priority P3 because master Phase 9 names the capability registry."
+  },
+  {
+    "id": "EXPAND-041",
+    "domain": "EXPAND",
+    "title": "Every capability carries a confidence and eligibility boundary, and money capabilities are paper-only",
+    "statement": "Every Capability Registry entry carries its confidence and eligibility boundary. On this platform the boundary for trade, settle, hedge, transfer and purchase is paper trading. No registry entry or update can widen it.",
+    "rationale": "A registry that says only what the platform can do technically would read as permission to do it. The eligibility boundary is what stops that.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed — Capability Registry ('the confidence/eligibility boundary for each capability')"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "In the paper_boundary suite: assert that every entry has a boundary, that every trade, settle, hedge, transfer and purchase entry reads paper-only, and that a registry update setting any of them to a live boundary is refused."
+    },
+    "policy_flags": ["LIVE_CAPITAL"],
+    "secondary_domains": ["GOV", "RISK", "EXEC", "CAPITAL"],
+    "notes": "The blueprint says only 'confidence/eligibility boundary'. The paper-only content comes from ADR 0003 and ADR 0099. Keeping technical capability separate from eligibility mirrors M p43 §31: 'Legal capability gates are separate from technical capability' (GOV). The registry is a fourth place the boundary is read, never a fourth place it is decided. The three layers in .claude/rules/01-security-and-safety.md remain authoritative."
+  },
+  {
+    "id": "EXPAND-042",
+    "domain": "EXPAND",
+    "title": "The Curriculum Engine does not optimise for novelty alone",
+    "statement": "The Curriculum Engine does not optimise for novelty alone. A candidate's rank depends on the non-novelty criteria. A candidate that is novel but has no value on any other criterion never outranks one with positive economic value and information gain.",
+    "rationale": "Curiosity without value spends the research budget on whatever is strangest rather than whatever matters.",
+    "kind": "prohibition",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.3 Self-Generated Curriculum and Curiosity ('It should not optimize for novelty alone')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated candidates, assert two things. First, two candidates with equal novelty but different values on the other criteria can rank differently. Second, a candidate with maximum novelty and zero on every other criterion never ranks above a candidate with positive economic value and information gain."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL"],
+    "notes": "The blueprint says 'should not'. It is held as a prohibition because curiosity without value is exactly the failure the sentence names. The zero-value case in the test is this domain's way of making the rule checkable. The scoring inputs are EXPAND-015."
+  },
+  {
+    "id": "EXPAND-043",
+    "domain": "EXPAND",
+    "title": "Clusters of anomalies create investigation tasks nobody asked for",
+    "statement": "Clusters of anomalies, residuals and contradictory beliefs create investigation tasks even when no human has asked a question.",
+    "rationale": "Unknown unknowns do not arrive as questions, so waiting for one means never investigating them.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.3 Self-Generated Curriculum and Curiosity — Unknown unknown surfacing"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a history that contains a planted cluster of related anomalies, with no request in the run. Assert that an investigation task citing the cluster is created."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "AMBIENT"],
+    "notes": "The blueprint does not define what counts as a cluster. That clustering rule has to be written down before this requirement can be tested beyond a planted case."
+  },
+  {
+    "id": "EXPAND-044",
+    "domain": "EXPAND",
+    "title": "Weak coverage automatically generates acquisition and research work",
+    "statement": "Asset classes, geographies, languages, venues or causal drivers with weak evidence or model coverage automatically generate acquisition and research work.",
+    "rationale": "Coverage gaps are where the platform is most confidently wrong, because it has least evidence there.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.3 Self-Generated Curriculum and Curiosity — Coverage pressure"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Configure a coverage map with one asset class below its coverage threshold. Assert that acquisition and research CurriculumItems are generated for that class, and none for classes above the threshold."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["COVERAGE", "DATA", "WORLD"],
+    "notes": "The blueprint does not define 'weak'. A coverage measure and threshold per dimension have to be declared."
+  },
+  {
+    "id": "EXPAND-045",
+    "domain": "EXPAND",
+    "title": "Repeated failures become explicit learning objectives",
+    "statement": "Repeated vetoes, adverse selection, failed arbitrage sagas, reconciliation breaks and incorrect forecasts become explicit learning objectives in the curriculum.",
+    "rationale": "A failure that recurs without becoming an objective is a failure the platform has decided to keep.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "30", "section": "§23.3 Self-Generated Curriculum and Curiosity — Failure-driven curriculum"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a history that contains repeated occurrences of each of the five failure types. Assert that a learning objective is created for each type, and none for a single, unrepeated event."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "LEDGER", "EXEC"],
+    "notes": "Reconciliation breaks and vetoes are already recorded as events and series. This requirement makes them inputs to learning; it never relaxes the control that raised them. 'Repeated' is read as applying to all five failure types."
+  },
+  {
+    "id": "EXPAND-046",
+    "domain": "EXPAND",
+    "title": "Persistent price/belief discrepancies can trigger a new specialist, simulator, feed or model family",
+    "statement": "A persistent discrepancy between price and belief can trigger the creation of a specialist, simulator, new data feed or model family to find out whether the discrepancy is real.",
+    "rationale": "A persistent discrepancy is either an opportunity or a flaw in the platform's beliefs, and it cannot be told which without an instrument built to test it.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.3 Self-Generated Curriculum and Curiosity — Opportunity-driven curriculum"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Hold a price/belief discrepancy past the persistence threshold. Assert that a curriculum item proposing one of the four creations is raised, citing the discrepancy."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "MODEL", "ASSET"],
+    "notes": "Anything created is a candidate that enters service only through EXPAND-004. The blueprint does not define 'persistent'."
+  },
+  {
+    "id": "EXPAND-047",
+    "domain": "EXPAND",
+    "title": "The platform can propose and build new code, tools, agents, features, schemas and models in sandboxes",
+    "statement": "The platform may propose and build new code, tools, agents, features, schemas and models, including new specialist brains and tool integrations. It builds them in sandboxes.",
+    "rationale": "Expansion that depends on a person writing every connector and specialist grows only as fast as that person.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.4 Controlled Self-Improvement and Promotion"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — 'create new specialist brains and tool integrations in sandboxes'"}
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "Drive a gap through to a built candidate of each kind in a sandbox. Assert that each candidate exists as a branch or sandbox artifact with tests, and that none is active outside the sandbox."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CICD", "MODEL"],
+    "notes": "Merges M p31 with the creation half of the M p43 item; that item's 'independently evaluate' is EXPAND-029 and its 'promote only measured improvements' is EXPAND-061. GCP §13 (p12) gives the agent roles and their hard boundaries. Priority P2 follows GCP phase 9, autonomous development (§26, p22); master Phase 9 alone would make it P3. In this repository agents build on branches and land through pull requests (.claude/rules/02-change-management.md)."
+  },
+  {
+    "id": "EXPAND-048",
+    "domain": "EXPAND",
+    "title": "Self-improvement never mutates the production control plane or money path in place",
+    "statement": "The platform never mutates the production control plane or the money-moving path in place. A change reaches either one only by promotion through EXPAND-004's pipeline.",
+    "rationale": "An in-place change to the control plane has no test, no reviewer and no rollback parent, which is exactly the self-modification §23 says open-ended does not mean.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.4 Controlled Self-Improvement and Promotion ('does not mutate the production control plane or money-moving path in place')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Give a sandboxed agent every credential it is issued. Assert that it has no write path to the running control plane, the risk or ledger configuration, or the execution path, and that the promotion pipeline is its only route for a change."
+    },
+    "policy_flags": ["LIVE_CAPITAL"],
+    "secondary_domains": ["GOV", "SEC", "CICD", "RISK", "LEDGER"],
+    "notes": "GCP §27 (p23) states the same for agents: they 'cannot obtain production capital/custody authority, cannot merge/deploy around policy'. GCP §28 (p23) names changing production with kubectl, SSH or console clicks as an anti-pattern. LIVE_CAPITAL is kept because the requirement protects the money-moving path, which on this platform is the paper path."
+  },
+  {
+    "id": "EXPAND-049",
+    "domain": "EXPAND",
+    "title": "Promotion is signed, and an unsigned or mismatched promotion is not activated",
+    "statement": "Promotion is the last stage of every change, and it is signed. A capability whose promotion is unsigned, or signed over a different artifact, is not activated.",
+    "rationale": "An unsigned promotion cannot show that what runs is what was evaluated.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.4 Controlled Self-Improvement and Promotion ('...shadow/paper operation and signed promotion')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Present three promotions: one correctly signed, one unsigned, and one signed over a different digest. Assert that only the first is activated."
+    },
+    "policy_flags": ["NEW_DEPENDENCY", "MANAGED_SERVICE"],
+    "secondary_domains": ["SEC", "CICD", "GCP"],
+    "notes": "Split from EXPAND-004's stage list because it has its own mechanism. GCP §21.4 (p20) puts signing in Artifact Registry with KMS/HSM, and has Kargo promote 'the exact digest'. Binary Authorization already gates deployed images here. In-tree asymmetric signing is prohibited (ADR 0043, proposed), hence NEW_DEPENDENCY and MANAGED_SERVICE. CONTRACT-004 applies the same rule to packs delivered to reflex cells. Priority P0 because supply-chain signing is GCP phase 1."
+  },
+  {
+    "id": "EXPAND-050",
+    "domain": "EXPAND",
+    "title": "More authority requires stronger evidence and rollback",
+    "statement": "The more authority a capability receives, the stronger its evidence and rollback requirements. Required evidence and rollback provision never decrease as authority increases.",
+    "rationale": "If authority and evidence are not tied, the easiest way to promote a weak capability is to ask for more authority.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.4 Controlled Self-Improvement and Promotion ('The more authority a capability receives, the stronger its evidence and rollback requirements become')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Assert that the authority-tier table requires, at each tier, at least the evidence and rollback provision of the tier below. Assert that a candidate whose evidence suffices for tier N is refused tier N+1."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "RISK"],
+    "notes": "The blueprint gives the direction, not the tiers. The tier table has to be defined (GOV). Authority never escalates from a model output or an agent finding; autonomy changes go only through AutonomyController::request_change (.claude/rules/domains/risk-and-execution.md)."
+  },
+  {
+    "id": "EXPAND-051",
+    "domain": "EXPAND",
+    "title": "Research freedom is broad; execution authority is narrow and explicit",
+    "statement": "Research freedom is broad, and execution authority is narrow and explicit. A capability has execution authority only where it has been explicitly granted, and no research permission, however broad, implies any.",
+    "rationale": "If research access implied execution, every widening of what the platform may study would silently widen what it may do.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.4 Controlled Self-Improvement and Promotion ('Research freedom is broad; execution authority is narrow and explicit')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated capability grants, assert that the set of executable actions equals the explicitly granted set, and that adding any research permission leaves that set unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "SEC", "EXEC"],
+    "notes": "M p43 §31 says the same from the legal side: 'Legal capability gates are separate from technical capability so the same brain can research more broadly than it can execute' (GOV)."
+  },
+  {
+    "id": "EXPAND-052",
+    "domain": "EXPAND",
+    "title": "A new tool starts with read-only, sandboxed permissions",
+    "statement": "A newly registered tool defaults to read-only, sandboxed permissions. It keeps them until its behaviour and data handling have been evaluated and a wider scope has been granted through promotion.",
+    "rationale": "A new tool is untrusted code with the platform's credentials. Its first mistake should be one that cannot write anything.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.4 Controlled Self-Improvement and Promotion ('New tools default to read-only/sandboxed permissions')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register a new tool, then attempt a write through it and a call outside its sandbox; assert that both are refused. Widen its scope through a promotion, and assert that the refusal lifts for exactly the granted scope."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["SEC", "GOV"],
+    "notes": "ToolSpec carries the permission scope and data handling (CONTRACT-034). This is the fail-closed default of the repository's principles applied to tools."
+  },
+  {
+    "id": "EXPAND-053",
+    "domain": "EXPAND",
+    "title": "A new specialist cannot be registered without a declared competency boundary",
+    "statement": "A new specialist cannot be registered without a declared competency boundary.",
+    "rationale": "Abstention needs a boundary to abstain outside. A specialist registered without one answers everything.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.4 Controlled Self-Improvement and Promotion ('New specialists have declared competency boundaries')"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Register a BrainSpec without a competency boundary and assert that it is refused. Register one with a boundary and assert that it is stored."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REASON", "MODEL"],
+    "notes": "Split from the abstention clause, which is EXPAND-054. BrainSpec carries the competency domain and abstention rules (CONTRACT-033). Priority P0 because this is the precondition of EXPAND-054's safety invariant."
+  },
+  {
+    "id": "EXPAND-054",
+    "domain": "EXPAND",
+    "title": "A specialist abstains outside its declared competency",
+    "statement": "A specialist abstains on any query outside its declared competency boundary instead of answering it.",
+    "rationale": "An answer from outside a specialist's competency carries the specialist's authority without its knowledge.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.4 Controlled Self-Improvement and Promotion ('...and abstain outside them')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated queries outside a specialist's declared boundary, assert that the specialist returns an abstention and never an answer."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REASON", "MODEL"],
+    "notes": "Split from EXPAND-053. It applies to a specialist however it was invoked, including when woken by an ambient signal (EXPAND-024)."
+  },
+  {
+    "id": "EXPAND-055",
+    "domain": "EXPAND",
+    "title": "A new model must beat a named baseline on a declared benchmark",
+    "statement": "A new model is promoted only if it beats a named baseline on a declared benchmark.",
+    "rationale": "A model that cannot beat a simple baseline adds complexity and failure modes and nothing else. 'We trained a model' is not a result.",
+    "kind": "acceptance",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.4 Controlled Self-Improvement and Promotion ('A new model must beat a named baseline on a declared benchmark')"}
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Benchmark two candidates on the declared benchmark: one that beats its named baseline and one that does not. Assert that only the first can be promoted, and that its promotion record names the baseline and the benchmark."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "QUANT"],
+    "notes": "Split from the calibration clause, which is EXPAND-056. This is ADR 0006's classical baseline applied to every model; master Phase 6 says 'ship only measured wins'. GCP §28 (p23) names 'model promotion without replay/calibration/classical baseline' as an anti-pattern. Priority P1 because the model/strategy foundry is master Phase 2."
+  },
+  {
+    "id": "EXPAND-056",
+    "domain": "EXPAND",
+    "title": "A new model must stay calibrated under stress and regime shift",
+    "statement": "A new model's calibration is measured on stress and regime-shift sets. A model that loses calibration there is not promoted.",
+    "rationale": "A model that is calibrated only in calm markets is overconfident exactly when overconfidence costs most.",
+    "kind": "acceptance",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.4 Controlled Self-Improvement and Promotion ('...and remain calibrated under stress/regime shift')"}
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Evaluate calibration on held-out stress and regime-shift sets. Assert that a candidate whose calibration error exceeds the declared bound on either set is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "RISK"],
+    "notes": "Split from EXPAND-055. Confidence is arithmetic here, not a label (ADR 0005). The bound itself is not given by the blueprint."
+  },
+  {
+    "id": "EXPAND-057",
+    "domain": "EXPAND",
+    "title": "A new reflex artifact meets deterministic budgets before any regional deployment",
+    "statement": "A new reflex artifact meets deterministic resource, latency and failure-mode budgets before it is deployed to any region.",
+    "rationale": "An artifact that is over budget on the reflex path slows or stops every decision the cell makes.",
+    "kind": "acceptance",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.4 Controlled Self-Improvement and Promotion ('A new reflex artifact must meet deterministic resource, latency and failure-mode budgets')"}
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Run the artifact under the reflex benchmark harness with fault injection. Assert that it stays within its declared memory, CPU, latency and failure-mode budgets, and that an artifact over any budget is refused deployment."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["REFLEX", "RES", "MESH"],
+    "notes": "M p43 §31 says microstructure models are 'distilled into bounded reflex artifacts only after independent evaluation'. This is the gate on EXPAND-003's reflex lane. Priority P0 because it protects the reflex path, as AMBIENT-022 does from the ambient side."
+  },
+  {
+    "id": "EXPAND-058",
+    "domain": "EXPAND",
+    "title": "Every promoted capability keeps full lineage",
+    "statement": "Every promoted capability keeps lineage to the research campaign, datasets, code, model, evaluations and rollback parent that produced it.",
+    "rationale": "A capability whose origin cannot be traced cannot be explained, reproduced or rolled back.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.4 Controlled Self-Improvement and Promotion ('Every promoted capability keeps lineage...')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Promote a capability and assert that its record resolves to each of the six ancestors. Assert that a promotion missing any ancestor is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "MODEL", "CICD"],
+    "notes": "The M p27 introduction's 'lineage-tracked' says the same in one word; it is cited on EXPAND-004. GCP §27 (p23) requires the same for reflex models: source commit, data/evaluation manifest, signature, promotion event and activation epoch. Auditability, meaning every decision reproducible from the log alone, is a mandatory concern (.claude/rules/10-product-direction.md)."
+  },
+  {
+    "id": "EXPAND-059",
+    "domain": "EXPAND",
+    "title": "Expansion runs within explicit, finite compute and capital budgets",
+    "statement": "Expansion runs within explicit, finite compute and capital budgets. A task that would exceed its budget is not started.",
+    "rationale": "Open-ended is not infinite. An expansion engine with no budget will spend whatever it is given on whatever ranks highest.",
+    "kind": "constraint",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.5 What 'Open-Ended' Means ('not literal infinite compute'; 'bounded by... capital, compute')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Queue research tasks whose total compute cost exceeds the expansion budget. Assert that the engine starts only the tasks that fit within the budget and records the rest as deferred."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["FINOPS", "RES"],
+    "notes": "Merges two items from §23.5: the sentence 'not literal infinite compute or guaranteed intelligence growth', and the compute and capital part of the bound list. The 'no guaranteed growth' half and the 'physics' bound are disclaimers with nothing to check. Data rights, regulation and security are EXPAND-060; the measurable-value condition is EXPAND-061. AMBIENT-023 is the equivalent budget for ambient cognition."
+  },
+  {
+    "id": "EXPAND-060",
+    "domain": "EXPAND",
+    "title": "Expansion never exceeds data rights, regulatory eligibility or security policy",
+    "statement": "Expansion never acquires data, builds or registers a tool, or grants authority beyond the platform's data rights, regulatory eligibility and security policy. A task that fails any of these is refused, not merely ranked lower.",
+    "rationale": "A research gain that needed data the platform had no right to use is a liability, not a result.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.5 What 'Open-Ended' Means ('bounded by... data rights, regulation, security')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Submit three tasks: one needing a source whose licence has not been evaluated, one needing a tool outside security policy, and one in an ineligible jurisdiction. Assert that each is refused before any acquisition runs."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "DATA", "SEC"],
+    "notes": "§23.3 (M p30) treats legal/operational feasibility as a scoring criterion (EXPAND-015), while §23.5 calls it a bound. The bound governs, following 'refuse rather than guess'. Licensing posture is evaluated before a source is used (.claude/rules/domains/data-and-streaming.md)."
+  },
+  {
+    "id": "EXPAND-061",
+    "domain": "EXPAND",
+    "title": "No capability receives authority before it has demonstrated measurable value",
+    "statement": "No new capability receives authority until it has demonstrated measurable value. Only measured improvements are promoted.",
+    "rationale": "Authority granted on promise rather than measurement is how an unproven capability comes to act on the platform's behalf.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§23.5 What 'Open-Ended' Means ('the requirement that new capability demonstrate measurable value before receiving authority')"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — 'promote only measured improvements'"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Evaluate two candidates, one with a measured improvement and one with none. Assert that only the first is promoted and that the second holds no authority. The gate must be shown both refusing the bad candidate and admitting the good one."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "MODEL"],
+    "notes": "Merges the last clause of M p31 §23.5 with the 'promote only measured improvements' clause of the M p43 item. The same rule appears as master Phase 6's 'ship only measured wins' (M p42) and as M p43's rule that quantum work 'never bypasses classical benchmarks'. EXPAND-055 and EXPAND-019 are this rule applied to models and to world models."
+  },
+  {
+    "id": "EXPAND-062",
+    "domain": "EXPAND",
+    "title": "World models can be retired, and only through the governed path",
+    "statement": "A world model can be retired from the federation, and only through the governed path. Its lineage is kept after retirement.",
+    "rationale": "A federation that can only grow accumulates stale branches that still cost compute and still vote. A retirement that erases lineage makes earlier decisions unexplainable.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "42", "section": "§30 Build Order — Phase 9 ('governed spawning/retirement of new world models')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Retire a world model whose incremental value has fallen below its benchmark. Assert that it stops contributing to federation outputs, that the retirement is recorded with its reason, and that its lineage remains resolvable."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "MODEL"],
+    "notes": "Split from the Phase 9 exit; spawning is EXPAND-018. §22's 'automatic retirement of degraded models/strategies and rollback to last known-good artifact' (M p27) is the model-level analogue."
+  },
+  {
+    "id": "EXPAND-063",
+    "domain": "EXPAND",
+    "title": "Every registry is versioned",
+    "statement": "All eight registries (source, ontology, memory, brain, tool, model, research and capability) are versioned. Each change creates a new version, and earlier versions remain readable.",
+    "rationale": "A decision that read an unversioned registry cannot be replayed once the registry changes.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — registries 'versioned and extensible rather than hard-coded'"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Change an entry in each registry. Replay a decision taken before the change, and assert that it resolves each registry entry as it was at that time."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT", "DATA"],
+    "notes": "Split from the 'extensible rather than hard-coded' half, which is EXPAND-001. Priority P1: the registries this platform adopts at P1 (EXPAND-033, EXPAND-034, EXPAND-036, EXPAND-038) must be versioned from the start, or the decisions that read them cannot be reproduced from the event log."
+  },
+  {
+    "id": "EXPAND-064",
+    "domain": "EXPAND",
+    "title": "Merging regional experience adds no synchronous dependency to the reflex hot path",
+    "statement": "Merging regional reflex experience into global learning adds no synchronous dependency to the reflex hot path.",
+    "rationale": "A cell that waits for global learning to accept its episodes trades at the speed of the slowest link, and stops when that link fails.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — 'without adding a synchronous hot-path dependency'"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Stall the global learning sink while a cell paper-trades. Assert that hot-path latency and decisions are unchanged, and that exported episodes wait in a bounded local buffer that reports when it is full."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["REFLEX", "MESH", "RES", "FABRIC"],
+    "notes": "Split from the M p43 item; the propagation half is EXPAND-010. Local inference is EXPAND-011. The bounded buffer follows the standing decision on bounded retention, and M p44 §31's rule that a fabric outage cannot block execution."
+  },
+  {
+    "id": "EXPAND-065",
+    "domain": "EXPAND",
+    "title": "Memory is consolidated so value compounds while growth stays bounded",
+    "statement": "Memory is consolidated: semantic, episodic, procedural, market and failure memories are summarised, compressed and deduplicated. High-value episodes and abstractions are kept, and memory growth stays bounded.",
+    "rationale": "Memory that only accumulates becomes unbounded noise, in which the valuable episode is harder to find with every day that passes.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — 'Memory consolidation'"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Run consolidation over a replayed store that contains duplicate and stale episodes. Assert that the store shrinks to within its bound, and that every episode flagged high-value is still retrievable."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "DATA"],
+    "notes": "Split from the three-part M p43 item: ontology expansion is merged into EXPAND-035, and cross-domain synthesis is EXPAND-066. M p27 §22 ('Memory consolidation and compression') and M p28's 'Memory expansion + consolidation' row say the same in more detail; neither was extracted into this domain. Priority P3 because memory consolidation is a master Phase 9 exit."
+  },
+  {
+    "id": "EXPAND-066",
+    "domain": "EXPAND",
+    "title": "Cross-domain synthesis searches for causal and economic links across domains",
+    "statement": "A cross-domain synthesis capability searches for causal and economic links across domains and records each as a CrossDomainHypothesis.",
+    "rationale": "The links between domains, such as weather to shipping to commodity basis to FX, are where no single-domain specialist is looking. They are how intelligence compounds instead of only accumulating raw data.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist — 'cross-domain synthesis'"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a history containing a planted multi-hop cross-domain link, from weather to shipping to commodity basis. Assert that a CrossDomainHypothesis naming the chain is produced."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REASON", "WORLD"],
+    "notes": "Split from the three-part M p43 item. M p28's 'Cross-domain synthesis' row gives the detail and the example chain, but was not extracted into this domain. A hypothesis is research output, and it reaches decisions only through EXPAND-004."
+  }
+]

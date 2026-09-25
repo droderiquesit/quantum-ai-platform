@@ -1,0 +1,1022 @@
+[
+  {
+    "id": "AGENCY-001",
+    "domain": "AGENCY",
+    "title": "Goals become bounded, policy-constrained action plans",
+    "statement": "The Causal Agency & Intervention Engine turns beliefs and desired outcomes into testable, policy-constrained causal action plans. Each plan stays within the budget, risk envelope and authority its goal declares. A plan's actions may span communications, capital, products, operations, research and permitted market actions.",
+    "rationale": "Prediction alone is incomplete agency (§24). A plan that is not held to its goal's declared limits is an unbounded grant of authority.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1 Executive Summary"},
+      {"doc": "M", "page": "6", "section": "§2 Corrections Required to v10.1 — row 'Prediction and planning do not explicitly model how Algorik can change outcomes'"},
+      {"doc": "M", "page": "31", "section": "§24 Causal Agency & Intervention Intelligence"}
+    ],
+    "verification": {"method": "integration", "check": "A GoalSpec with a declared budget and risk envelope yields an InterventionPlan whose summed cost and exposure stay inside both, and a goal reachable only by exceeding them yields no executable plan."},
+    "policy_flags": ["EXTERNAL_ACTION", "LIVE_CAPITAL"],
+    "secondary_domains": ["REASON", "GOV"],
+    "notes": "'Bounded' is read against the GoalSpec's budget, risk envelope and acting identity (§24.1, AGENCY-003). §1 names the six action domains, §2 adds 'policy-constrained planning' and §24 adds 'testable'. Capital and market actions can be built here only against the simulator. The paper-trading boundary (ADR 0003) scores their live form BLOCKED under ADR 0099."
+  },
+  {
+    "id": "AGENCY-002",
+    "domain": "AGENCY",
+    "title": "Attributed effects update world models and action policies",
+    "statement": "Observed action effects, recorded as EffectAttribution, feed back into the World Model Federation. They update world models, causal graphs, action policies and ambient and future-intervention priors, which closes the agency loop.",
+    "rationale": "The engine has to turn action results back into learned causal structure (§24). An effect that updates nothing leaves the next plan as uninformed as the last one.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1 Executive Summary"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Causal agency & intervention engine ('closed-loop causal attribution')"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Intervention learning & effect attribution"},
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — effect attribution → WORLD MODEL UPDATE"},
+      {"doc": "M", "page": "31", "section": "§24 Causal Agency & Intervention Intelligence"},
+      {"doc": "M", "page": "33", "section": "§24.7 Ambient Agency Loop"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {"method": "integration", "check": "An EffectAttribution for an executed simulated intervention produces versioned updates to the named world model, causal-graph edge and action policy, and each update cites the attribution's ID."},
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "AMBIENT", "MODEL"],
+    "notes": "§31 also names Action Outcome Memory as an input (AGENCY-050) and ambient priors as a target. §24.7 says 'future intervention priors'. The rule that updates come from measured effect and not from correlation is AGENCY-030. The EXTERNAL_ACTION and LIVE_CAPITAL flags on the merged §1 item were removed because updating a model takes no action."
+  },
+  {
+    "id": "AGENCY-003",
+    "domain": "AGENCY",
+    "title": "Desired outcomes are typed GoalSpecs with twelve required fields",
+    "statement": "A desired outcome is represented only as a typed GoalSpec, never as a free-form instruction. A GoalSpec is refused unless it declares all twelve fields: target state or distribution, entities affected, time horizon, success metric, acceptable uncertainty, budget, risk envelope, legal/jurisdictional boundary, identity that may act, prohibited side effects, prohibited methods, and stop/rollback conditions.",
+    "rationale": "A gate cannot check the boundary of a free-form wish. Typing the goal makes its budget, risk envelope, acting identity and rollback conditions part of the structure (principle 4).",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Causal agency"},
+      {"doc": "M", "page": "6", "section": "§2 Corrections Required to v10.1 — 'explicit goals'"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Causal agency & intervention engine ('desired-outcome models')"},
+      {"doc": "M", "page": "31", "section": "§24.1 Desired Outcomes, Utility and Constraints"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {"method": "unit", "check": "Constructing a GoalSpec with any one of the twelve fields absent is refused with an error naming that field, and the engine's planning entry point accepts no input type other than GoalSpec."},
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT", "GOV"],
+    "notes": "§24.1 lists eleven fields. §31 adds 'prohibited methods', which is kept as the more specific, and calls the side-effect field 'side-effect constraints'. The canonical-contract table (M p38, outside this extraction) also names utility and authority class. This is P0 because it is a canonical contract: master Phase 0's exit includes canonical types and contracts, while the engine that consumes it is Phase 10. The EXTERNAL_ACTION and LIVE_CAPITAL flags on the merged items were removed because a type declaration takes no action."
+  },
+  {
+    "id": "AGENCY-004",
+    "domain": "AGENCY",
+    "title": "Levers come only from variables the platform can control",
+    "statement": "For each GoalSpec the engine identifies the controllable causal levers that could move its target. It draws them only from variables that the action-affordance graph marks as controllable through a registered tool.",
+    "rationale": "A lever the platform cannot actually move is a correlation mistaken for control (§24.2).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Causal agency"},
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Causal Agency Brain ('controllable-variable discovery')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {"method": "property", "check": "For generated goals over generated graphs, every lever returned is a node marked controllable with at least one registered-tool edge, and observable-only variables never appear."},
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "REASON"],
+    "notes": "§9.1 also gives the Causal Agency Brain 'controllable-variable discovery'. A discovered variable has to enter the graph (AGENCY-012) before it can be a lever. The EXTERNAL_ACTION flag was removed because identifying a lever is cognition, not action."
+  },
+  {
+    "id": "AGENCY-005",
+    "domain": "AGENCY",
+    "title": "Every candidate set includes a no-action baseline",
+    "statement": "The Intervention Planner generates multiple candidate action sequences for each GoalSpec, and every candidate set includes an explicit no-action baseline.",
+    "rationale": "Without a no-action branch, nothing shows that an action beats doing nothing. It is the agency counterpart of ADR 0006's classical baseline.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Causal agency"},
+      {"doc": "M", "page": "6", "section": "§2 Corrections Required to v10.1 — 'counterfactual no-action baselines'"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Causal agency & intervention engine ('action generation')"},
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Causal Agency Brain ('intervention generation')"},
+      {"doc": "M", "page": "32", "section": "§24.3 Intervention Planner"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {"method": "property", "check": "For any accepted GoalSpec the candidate set has at least two members, exactly one of which is the no-action baseline, and a set without it is refused before simulation."},
+    "policy_flags": [],
+    "secondary_domains": ["REASON"],
+    "notes": "§2's 'counterfactual no-action baselines' is cited here for planning and in AGENCY-008 for attribution. The EXTERNAL_ACTION and LIVE_CAPITAL flags were removed because generating candidates takes no action."
+  },
+  {
+    "id": "AGENCY-006",
+    "domain": "AGENCY",
+    "title": "Every candidate is simulated across competing worlds",
+    "statement": "Each candidate intervention, the no-action baseline included, is simulated across competing world models, market/tick digital twins and scenario branches before it can be selected.",
+    "rationale": "A plan tested against one world model inherits that model's blind spots. The federation exists so that disagreement is visible before anything acts (§24.3).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Causal agency"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Causal agency & intervention engine ('simulation')"},
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Causal Agency Brain ('causal simulation')"},
+      {"doc": "M", "page": "32", "section": "§24.3 Intervention Planner"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {"method": "integration", "check": "A selected plan carries simulation results from at least two competing world-model branches and one market/tick twin run, and a candidate without them cannot be selected."},
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "TICK"],
+    "notes": "§31 says 'simulates them against competing world models'. §24.3's list (world models, digital twins, scenario branches) is kept as the more specific. GCP v2.1 runs intervention simulation and no-action branches on GKE Jobs and batch compute (G p11, placement table, outside this extraction). The EXTERNAL_ACTION flag was removed because simulating takes no action."
+  },
+  {
+    "id": "AGENCY-007",
+    "domain": "AGENCY",
+    "title": "Actions execute only through registered tools",
+    "statement": "Algorik acts only through registered, typed action tools. No component has any other path to perform an internal or external action.",
+    "rationale": "A tool registry is the one place where identity, permission and audit can be enforced. Any second path is an unaudited path (§24.4).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Causal agency ('executes only through authorized action surfaces')"},
+      {"doc": "M", "page": "6", "section": "§2 Corrections Required to v10.1 — 'authorized action tools'"},
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Causal Agency Brain ('execution orchestration through authorized tools')"},
+      {"doc": "M", "page": "32", "section": "§24.4 Authorized Action Surfaces"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {"method": "acceptance", "check": "An architecture test lists every crate able to write to a network, channel, venue or configuration target and asserts that each is reachable only through the tool registry, and a call to an unregistered tool is refused."},
+    "policy_flags": ["EXTERNAL_ACTION", "LIVE_CAPITAL"],
+    "secondary_domains": ["SEC", "GOV", "ARCH"],
+    "notes": "Split from §24.4's 'registered tools with explicit identities, permissions and audit'. The per-tool declarations are AGENCY-026 and the audit record is AGENCY-027."
+  },
+  {
+    "id": "AGENCY-008",
+    "domain": "AGENCY",
+    "title": "Effect is attributed against a no-action counterfactual",
+    "statement": "Every effect attribution states what would have happened without the action, as a no-action counterfactual or control. An outcome that would have happened anyway is then not credited to the action.",
+    "rationale": "§1.1 requires learning which actions changed outcomes 'versus what would have happened anyway'. An attribution with no counterfactual cannot tell those two cases apart.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Causal agency"},
+      {"doc": "M", "page": "6", "section": "§2 Corrections Required to v10.1 — 'counterfactual no-action baselines'"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Intervention learning & effect attribution"},
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — 'effect attribution / no-action counterfactual'"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Effect Attribution / Experiment Service"}
+    ],
+    "verification": {"method": "replay", "check": "Replaying a recorded episode in which the target moved by the same amount with and without the action yields an attributed effect interval that contains zero."},
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "MODEL"],
+    "notes": "§5 draws it as 'effect attribution / no-action counterfactual' ahead of the World Model Update, and §26 as 'synthetic/no-action controls'. The field that stores it is in AGENCY-050. The canonical EffectAttribution contract (M p38, outside this extraction) names a 'control/counterfactual method'. The EXTERNAL_ACTION flag on the merged §1.1 item was removed because attribution is analysis."
+  },
+  {
+    "id": "AGENCY-009",
+    "domain": "AGENCY",
+    "title": "External interventions pass a pre-action gate",
+    "statement": "Before any action that can move money, change an external system or communicate publicly executes, it is checked for acting identity, authority, truthfulness, provenance, disclosure, market-conduct rules, channel permissions, jurisdiction and feasibility. It does not execute unless every check passes.",
+    "rationale": "§1.2 holds external intervention to the same deterministic standard as money-moving controls. That lets the intelligence become more general without its blast radius becoming general too.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "4", "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"},
+      {"doc": "M", "page": "45", "section": "§33 Final Definition of Algorik"}
+    ],
+    "verification": {"method": "acceptance", "check": "For each of the nine checks, an otherwise valid ActionIntent that fails only that check is refused with no adapter invoked, and an intent that passes all nine is admitted, which proves the gate both fires and admits."},
+    "policy_flags": ["EXTERNAL_ACTION", "LIVE_CAPITAL"],
+    "secondary_domains": ["GOV", "SEC", "RISK"],
+    "notes": "§1.2 lists seven checks for external intervention. §33 adds authority and feasibility and widens the scope to anything that moves money or changes an external system; its audit and rollback clauses are AGENCY-027 and AGENCY-026. Two extracted items cited this p4 passage as '§1.3' because pdftotext prints §1.2's body after §1.3's bullets; both are merged here. AGENCY-037 is the communications-specific gate owned by the Conduct Brain. Live money movement stays BLOCKED by the paper boundary (ADR 0003), and the gate applies equally to simulated actions."
+  },
+  {
+    "id": "AGENCY-010",
+    "domain": "AGENCY",
+    "title": "No fabricated identities or deceptive influence campaigns",
+    "statement": "The platform never uses fabricated identities, sockpuppets, bots posing as independent people, fake consensus or astroturfing, false or misleading claims, undisclosed paid promotion, coordinated rumor manufacture, or any other deceptive technique to move prices or beliefs.",
+    "rationale": "Truthful identity and disclosure and anti-manipulation controls are architectural invariants of the causal-agency capability (M p1 status note, §1.2).",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "4", "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"},
+      {"doc": "M", "page": "33", "section": "§24.5 Communications Integrity & Anti-Manipulation Boundary"}
+    ],
+    "verification": {"method": "acceptance", "check": "Every registered communication and outreach tool is bound to exactly one registered, disclosed identity and refuses content without factual-support references or a required disclosure, and no tool can create or post as an identity absent from the registry."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["GOV", "SEC", "EVID"],
+    "notes": "§24.5's list is kept because it covers §1.2's shorter one (fabricated identities, fake consensus, deceptive content, undisclosed promotion, rumor engineering, 'other manipulative conduct to manufacture an outcome'). Split from the same sentences as AGENCY-011 because this half is verified on the communications path. No external communication tool exists yet, so the check fixes the registry's shape before one does. Two extracted items cited the p4 passage as '§1.3'; see AGENCY-009."
+  },
+  {
+    "id": "AGENCY-011",
+    "domain": "AGENCY",
+    "title": "No wash trading, spoofing or pump-and-dump",
+    "statement": "The platform never engages in wash trading or other wash activity, spoofing, pump-and-dump behaviour, or other manipulative market conduct to move prices or manufacture an outcome.",
+    "rationale": "This is the same §1.2/§24.5 boundary applied to the order path. A market action cannot be justified by the price impact it is meant to cause.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "4", "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"},
+      {"doc": "M", "page": "33", "section": "§24.5 Communications Integrity & Anti-Manipulation Boundary"}
+    ],
+    "verification": {"method": "acceptance", "check": "In the paper simulator, an order that would trade against the platform's own resting order is refused pre-trade, and a replayed place-then-cancel sequence that matches the declared spoofing pattern is detected and blocks the strategy that sent it."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["RISK", "EXEC", "REFLEX"],
+    "notes": "Split from AGENCY-010 because this half is verified on the order path (risk and execution), not the communications path. It is checked against simulated orders because a paper strategy that learns to spoof would carry that behaviour to any venue it later reached."
+  },
+  {
+    "id": "AGENCY-012",
+    "domain": "AGENCY",
+    "title": "Action-affordance graph records each lever's controls and authority",
+    "statement": "The World Model Federation holds an action-affordance graph. For each variable it records whether Algorik can observe it, whether Algorik can control it, which tools can affect it, expected latency and cost, causal paths to outcomes, known side effects, dependencies, and the authority required to use it.",
+    "rationale": "Levers, their side effects and the authority each one needs have to be data that a gate can read, not knowledge held inside a model (§24.2).",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "6", "section": "§2 Corrections Required to v10.1 — 'action-affordance graphs'"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Causal agency & intervention engine ('controllable-variable/affordance graph')"},
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Causal Agency Brain"},
+      {"doc": "M", "page": "32", "section": "§24.2 Action-Affordance & Causal Lever Graph"}
+    ],
+    "verification": {"method": "unit", "check": "Adding a tool-to-variable edge without latency and cost, side effects, dependencies or an authority requirement is refused, and a variable marked observable-only can hold no tool edge."},
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "CONTRACT"],
+    "notes": "Flags removed from the merged items: NEW_DEPENDENCY, because the graph is a record schema that serde already covers (learned effect-size estimation, which might need more, is AGENCY-044), and EXTERNAL_ACTION and LIVE_CAPITAL, because the graph takes no action. GCP v2.1 stores the world, causal and action-affordance graph in Spanner Graph (G p10, outside this extraction). P0 as a contract."
+  },
+  {
+    "id": "AGENCY-013",
+    "domain": "AGENCY",
+    "title": "Interventions are explicit structural causal chains",
+    "statement": "Each intervention is represented explicitly as a structural causal chain, do(action) → intermediate states → target outcome, with counterfactual branches where practical. Planning reasons over these chains with do-calculus (structural intervention reasoning).",
+    "rationale": "An intervention stated as a chain can be checked one link at a time, and a correlation cannot (§24.2).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "6", "section": "§2 Corrections Required to v10.1 — 'structural causal intervention models'"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Causal agency & intervention engine ('do-calculus/structural causal intervention reasoning')"},
+      {"doc": "M", "page": "32", "section": "§24.2 Action-Affordance & Causal Lever Graph"}
+    ],
+    "verification": {"method": "property", "check": "Every InterventionPlan carries a do(action) chain naming its intermediate states and target outcome, and on a synthetic causal model with a confounder the engine's interventional estimate matches the known ground truth where the observational estimate does not."},
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["REASON", "WORLD"],
+    "notes": "Flags are kept as risks. Identification and do-calculus machinery could arrive as a non-Rust stack (master §2 allows Python for research) or as a crate beyond serde/serde_json, and either would need an ADR (ADR 0002, ADR 0009). The EXTERNAL_ACTION and LIVE_CAPITAL flags on the merged §2/§3 items were removed because a representation takes no action."
+  },
+  {
+    "id": "AGENCY-014",
+    "domain": "AGENCY",
+    "title": "Every executed intervention gets an effect attribution",
+    "statement": "After every executed intervention, the Evaluation Brain estimates what changed because of the action and records the estimate as an EffectAttribution.",
+    "rationale": "Attribution after the action is what separates an agency loop from an open-loop actuator (§2, §24.6).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "6", "section": "§2 Corrections Required to v10.1 — 'post-action causal attribution'"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Causal agency & intervention engine ('closed-loop causal attribution')"},
+      {"doc": "M", "page": "33", "section": "§24.6 Experimentation and Causal Effect Attribution"}
+    ],
+    "verification": {"method": "integration", "check": "In a simulated episode, each executed ActionIntent has exactly one EffectAttribution referencing its goal, plan and action IDs once its declared horizons have elapsed."},
+    "policy_flags": [],
+    "secondary_domains": ["MODEL"],
+    "notes": "The EXTERNAL_ACTION and LIVE_CAPITAL flags on the merged §2/§3 items were removed because attribution is analysis."
+  },
+  {
+    "id": "AGENCY-015",
+    "domain": "AGENCY",
+    "title": "The platform learns which actions work, for whom and when",
+    "statement": "From Action Outcome Memory and EffectAttribution, the platform learns which lawful actions reliably change outcomes: for whom, under which regimes, with what delay and with what side effects. It also learns when not acting is the better intervention.",
+    "rationale": "The point of attribution is a better action policy next time, and that includes the policy of doing nothing (§24.8).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "6", "section": "§2 Corrections Required to v10.1 — 'which lawful actions reliably change what happens'"},
+      {"doc": "M", "page": "33", "section": "§24.8 What the System Learns About Agency"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {"method": "replay", "check": "Trained on a replayed history in which one action class has a measured positive effect in regime A and none in regime B, the learned policy selects that class in A and selects no-action in B."},
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "WORLD"],
+    "notes": "§2 phrases this as learning 'which lawful actions reliably change what happens', and §31 as 'which interventions work, where, when and with what side effects'."
+  },
+  {
+    "id": "AGENCY-016",
+    "domain": "AGENCY",
+    "title": "Plans may be parallel, sequential, conditional or adaptive",
+    "statement": "A candidate intervention can be a multi-step plan that is parallel, sequential, conditional or adaptive. For example: gather evidence first, act only if a condition is confirmed, and stop or switch strategy if a given response occurs.",
+    "rationale": "Real interventions are contingent. A plan that cannot express 'stop if C happens' cannot express its own rollback (§24.3).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Causal agency & intervention engine ('multi-step planning')"},
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Causal Agency Brain ('multi-step planning')"},
+      {"doc": "M", "page": "32", "section": "§24.3 Intervention Planner"}
+    ],
+    "verification": {"method": "unit", "check": "The InterventionPlan type represents each of the four structures, and in simulation a conditional step executes only when its recorded condition evaluates true."},
+    "policy_flags": [],
+    "secondary_domains": ["REASON"],
+    "notes": "The example is taken from §24.3. The EXTERNAL_ACTION and LIVE_CAPITAL flags on the merged §3/§9.1 items were removed because a plan's shape takes no action."
+  },
+  {
+    "id": "AGENCY-017",
+    "domain": "AGENCY",
+    "title": "An action executes only with its class's required authority",
+    "statement": "An intervention executes only after the authority that its action class requires has been obtained. An action whose required authority is missing does not execute.",
+    "rationale": "Action classes carry different blast radii. A single approval level for all of them would be too weak for the dangerous classes or too strong for the harmless ones (§24.7).",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Causal agency & intervention engine ('policy/authority gates')"},
+      {"doc": "M", "page": "33", "section": "§24.7 Ambient Agency Loop"}
+    ],
+    "verification": {"method": "acceptance", "check": "An ActionIntent of a class that requires governance-signed authority is refused when only lower authority is present, and is admitted once the signed authority is supplied."},
+    "policy_flags": ["EXTERNAL_ACTION", "LIVE_CAPITAL"],
+    "secondary_domains": ["GOV", "SEC"],
+    "notes": "Split from §24.7's routing sentence; the routing half is AGENCY-049. §25 (M p34, outside this extraction) adds that goal approval, plan approval and action execution are audited separately, and that sensitive intervention classes can require stronger approval. In this repository autonomy changes only through AutonomyController::request_change, which carries an authenticated operator identity."
+  },
+  {
+    "id": "AGENCY-018",
+    "domain": "AGENCY",
+    "title": "An Action Orchestrator executes plans through adapters and a policy service",
+    "statement": "A Causal Agency / Action Orchestrator executes approved plans. It is built from typed tool adapters, a policy/identity service and access to causal simulation.",
+    "rationale": "Execution needs one owner that holds the plan, the identity decision and the adapters together. If they are scattered, a step can run without the others (§26).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Causal agency & intervention engine ('execution orchestration')"},
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Causal Agency Brain ('execution orchestration through authorized tools')"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Causal Agency / Action Orchestrator"}
+    ],
+    "verification": {"method": "integration", "check": "Executing an approved plan in a test harness calls the policy/identity service before every adapter call, and a plan step that names an unregistered or untyped adapter is refused."},
+    "policy_flags": ["EXTERNAL_ACTION", "LIVE_CAPITAL"],
+    "secondary_domains": ["GOV", "SEC"],
+    "notes": "The orchestrator's durable action journal is AGENCY-027 and its deployment placement is AGENCY-051. The KUBERNETES flag on the merged §26 item belongs to the placement and was moved there."
+  },
+  {
+    "id": "AGENCY-019",
+    "domain": "AGENCY",
+    "title": "Publishing surface emits only attributable, lineage-backed content",
+    "statement": "The publishing and communications action surface publishes only attributable content (articles, research notes, disclosures, reports or posts) and only through authorized channels. Each item carries its source lineage, a passed factuality check, its applied disclosure policy and an immutable audit record.",
+    "rationale": "Publishing is the action surface most easily turned into manipulation. Lineage and a factuality check are what make a publication truthful and not merely effective (§24.4).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Authorized action surfaces ('truthful publishing/communications, authorized channel posting')"},
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — AUTHORIZED ACTION SURFACES: communication"},
+      {"doc": "M", "page": "32", "section": "§24.4 Authorized Action Surfaces — truthful publishing and communications"}
+    ],
+    "verification": {"method": "integration", "check": "The publishing adapter refuses a draft that lacks source lineage or a passed factuality check, and an admitted post is attributable to its registered identity and appears in the action journal."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["EVID", "GOV"],
+    "notes": "The LIVE_CAPITAL flag on the merged §3/§5 surface lists was removed because publishing moves no capital. External publication is BLOCKED in this repository until governance authorizes an external-action surface (ADR 0099)."
+  },
+  {
+    "id": "AGENCY-020",
+    "domain": "AGENCY",
+    "title": "Stakeholder outreach uses only approved identities and channels",
+    "statement": "Stakeholder outreach (messages, requests for information, customer, vendor or partner engagement, and negotiation) is sent only through approved identities and channels.",
+    "rationale": "Outreach speaks to people directly. An unapproved identity or channel is how a sockpuppet would start (§24.4, §24.5).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Authorized action surfaces ('stakeholder outreach')"},
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — AUTHORIZED ACTION SURFACES: outreach"},
+      {"doc": "M", "page": "32", "section": "§24.4 Authorized Action Surfaces — authorized stakeholder outreach"}
+    ],
+    "verification": {"method": "integration", "check": "An outreach request that names an identity or channel absent from the approved registry is refused, and one that names an approved pair is sent through the outreach adapter."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["GOV", "COMMERCE"],
+    "notes": "The LIVE_CAPITAL flag on the merged surface lists was removed because outreach moves no capital."
+  },
+  {
+    "id": "AGENCY-021",
+    "domain": "AGENCY",
+    "title": "Research actions acquire only lawful data and run permitted experiments",
+    "statement": "Research actions are available as action tools: acquiring lawful data, running surveys or experiments where permitted, requesting more evidence, launching simulations, and commissioning a specialist research campaign. Data acquisition and surveys run only where they are lawful or permitted.",
+    "rationale": "Gathering evidence is often the best first intervention (§24.3). It still reaches outside the platform, so it is bound by law and permission like any other action.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Authorized action surfaces ('research/data acquisition')"},
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — AUTHORIZED ACTION SURFACES: research"},
+      {"doc": "M", "page": "32", "section": "§24.4 Authorized Action Surfaces — research actions"}
+    ],
+    "verification": {"method": "integration", "check": "A data-acquisition action for a source with no evaluated lawful licence, or a survey in a jurisdiction marked not-permitted, is refused, while a simulation launch is admitted."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["DATA", "RES", "EVID"],
+    "notes": "Licensing posture is evaluated in qip-data-finder before any source is used (data-and-streaming rules). The LIVE_CAPITAL flag on the merged surface lists was removed because research moves no capital."
+  },
+  {
+    "id": "AGENCY-022",
+    "domain": "AGENCY",
+    "title": "Product and pricing actions touch only Algorik-controlled products",
+    "statement": "Product and pricing actions change only Algorik-controlled product configuration, pricing, availability or service behaviour, and only where governance permits.",
+    "rationale": "Pricing is a strong causal lever, and one that should never be pulled on something the platform does not own or has not been permitted to change (§24.4).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Authorized action surfaces ('product/pricing/configuration changes')"},
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — AUTHORIZED ACTION SURFACES: product"},
+      {"doc": "M", "page": "32", "section": "§24.4 Authorized Action Surfaces — product and pricing actions"}
+    ],
+    "verification": {"method": "integration", "check": "A pricing action on a product Algorik does not own, or one without a governance permission, is refused, and a permitted change is applied and journaled."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["COMMERCE", "GOV"],
+    "notes": "The LIVE_CAPITAL flag on the merged surface lists was removed because product configuration is not capital movement."
+  },
+  {
+    "id": "AGENCY-023",
+    "domain": "AGENCY",
+    "title": "Operational actions change only owned systems",
+    "statement": "Operational actions (routing, logistics, inventory, compute, deployment, scheduling, sourcing and other operational changes) are confined to systems Algorik owns.",
+    "rationale": "An operational lever on a system the platform does not own is an intrusion, not an intervention (§24.4).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Authorized action surfaces ('operational actions')"},
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — AUTHORIZED ACTION SURFACES: operations"},
+      {"doc": "M", "page": "32", "section": "§24.4 Authorized Action Surfaces — operational actions"}
+    ],
+    "verification": {"method": "integration", "check": "An operational action whose target system is not in the owned-system registry is refused."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["COMMERCE", "GCP"],
+    "notes": "The LIVE_CAPITAL flag on the merged surface lists was removed because operational changes move no capital."
+  },
+  {
+    "id": "AGENCY-024",
+    "domain": "AGENCY",
+    "title": "Capital and risk actions stay within signed authority envelopes",
+    "statement": "Capital and risk actions (allocate, hedge, rebalance, reserve liquidity, move collateral or reduce exposure) execute only within signed authority envelopes.",
+    "rationale": "Capital actions are the ones that move money. The deterministic envelope, not the plan's expected effect, decides what executes (§1.2, §24.4).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Authorized action surfaces ('capital/hedging/liquidity actions')"},
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — AUTHORIZED ACTION SURFACES: capital"},
+      {"doc": "M", "page": "32", "section": "§24.4 Authorized Action Surfaces — capital and risk actions"}
+    ],
+    "verification": {"method": "acceptance", "check": "A hedge or collateral move that exceeds its signed authority envelope is refused before any order or transfer object exists, and one inside the envelope executes against the simulator."},
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["CAPITAL", "RISK", "LEDGER"],
+    "notes": "Moving money or collateral outside simulation is BLOCKED by the paper boundary (ADR 0003, ADR 0099), so only the simulated form can be built. As an agency surface this is Phase 10 (P3). The capital engines it drives belong to earlier phases and to other domains."
+  },
+  {
+    "id": "AGENCY-025",
+    "domain": "AGENCY",
+    "title": "Market and commerce actions pass venue, jurisdiction and conduct controls",
+    "statement": "Market and product actions (quoting, providing liquidity, creating, listing or seeding permitted markets or instruments, and executing commerce or trading actions) apply only to permitted markets and instruments. They are subject to venue, jurisdiction and market-conduct controls.",
+    "rationale": "Creating or seeding a market is the most direct way to change an outcome, and the most direct way to manipulate one (§24.4, §24.5).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Authorized action surfaces ('commerce actions and permitted market/product creation')"},
+      {"doc": "M", "page": "32", "section": "§24.4 Authorized Action Surfaces — market/product actions"}
+    ],
+    "verification": {"method": "acceptance", "check": "In the paper simulator, a quote or listing on a venue or instrument not marked permitted for the acting entity's jurisdiction is refused, and every admitted one has passed the market-conduct checks."},
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["EXEC", "COMMERCE", "RISK"],
+    "notes": "The live form is BLOCKED by the paper boundary (ADR 0003, ADR 0099). Market making (master Phase 5) and market creation and commerce (Phase 7) are owned by other domains. This row is the agency surface over them (Phase 10)."
+  },
+  {
+    "id": "AGENCY-026",
+    "domain": "AGENCY",
+    "title": "Every action tool declares identity, scope, policy, limits and stop controls",
+    "statement": "Every action tool or adapter is registered with its own acting identity, permission scope, disclosure policy, jurisdiction and channel policy, rate limits, and rollback/stop controls. It cannot be invoked while any of these is undeclared.",
+    "rationale": "A tool whose limits are not declared cannot be gated. Declaring them per tool keeps one adapter's permissions from standing in for another's (§3, G §12).",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Authorized action surfaces ('typed tool with identity, scope, disclosure and audit policy')"},
+      {"doc": "M", "page": "32", "section": "§24.4 Authorized Action Surfaces"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Causal Agency / Action Orchestrator"},
+      {"doc": "M", "page": "45", "section": "§33 Final Definition of Algorik"},
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — Causal action adapters"}
+    ],
+    "verification": {"method": "unit", "check": "Registering a tool with any one of the six declarations missing is refused, and a tripped rate limit or stop control each refuses the next call to that adapter."},
+    "policy_flags": ["EXTERNAL_ACTION", "LIVE_CAPITAL"],
+    "secondary_domains": ["SEC", "GOV"],
+    "notes": "M §3 names identity, scope, disclosure and audit policy. G §12 is more specific (action identity, jurisdiction/channel policy, rate limits, immutable audit, rollback/stop controls) and is kept. M §26 adds disclosure/conduct policy for public and channel adapters, and M §33 adds rollback. Audit is AGENCY-027. M §25 (p34, outside this extraction) also requires a revocation path per tool. The KUBERNETES flag on the merged G §12 and §26 items belongs to the placements (AGENCY-051, AGENCY-057)."
+  },
+  {
+    "id": "AGENCY-027",
+    "domain": "AGENCY",
+    "title": "Every action is recorded in a durable, immutable action journal",
+    "statement": "Every action executed through any tool is recorded in a durable, immutable action journal, so that each internal or external action can be audited and replayed.",
+    "rationale": "A decision loop that cannot be replayed from its record is not attributable after the fact, which is this platform's stated business outcome.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Authorized action surfaces ('audit policy')"},
+      {"doc": "M", "page": "32", "section": "§24.4 Authorized Action Surfaces"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Causal Agency / Action Orchestrator ('durable action journal')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist ('audited action surface')"},
+      {"doc": "M", "page": "45", "section": "§33 Final Definition of Algorik"},
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — Causal action adapters ('immutable audit')"}
+    ],
+    "verification": {"method": "replay", "check": "Replaying the action journal reconstructs every executed ActionIntent with its acting identity and tool, and an attempt to rewrite a sealed journal record fails the hash-chain check."},
+    "policy_flags": ["EXTERNAL_ACTION", "LIVE_CAPITAL"],
+    "secondary_domains": ["LEDGER", "EVENT", "OBS", "GOV"],
+    "notes": "This fits the repository's hash-chained event log, where nothing may edit sealed history. §29 (M p41, outside this extraction) asks for action observability tracing GoalSpec → InterventionPlan → approvals → ActionIntent → effects → EffectAttribution as one lineage graph. The KUBERNETES flag on merged placement items was dropped."
+  },
+  {
+    "id": "AGENCY-028",
+    "domain": "AGENCY",
+    "title": "Effect is estimated by experiment or a defensible causal method",
+    "statement": "Causal effect is estimated with randomized or staged experiments where feasible, assigning treatment only where that is permissible. Otherwise it is estimated with defensible observational methods: matched controls, synthetic controls, difference-in-differences, instrumental or structural methods, Bayesian causal models, counterfactual world-model branches and explicit no-action baselines.",
+    "rationale": "An estimate is only as good as its identification strategy. Naming the admissible methods keeps an unexamined regression from standing in for an effect (§24.6).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Intervention learning & effect attribution"},
+      {"doc": "M", "page": "33", "section": "§24.6 Experimentation and Causal Effect Attribution"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Effect Attribution / Experiment Service"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {"method": "benchmark", "check": "On synthetic panels with known injected treatment effects, each implemented estimator's interval covers the true effect at its nominal rate, and experiment assignment is refused for an action class or jurisdiction marked non-experimentable."},
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["MODEL", "RES", "GOV"],
+    "notes": "§3 calls the observational family 'observational causal inference where experiments are impossible'. §24.6's list is kept as the more specific. §26 adds 'experiment assignment where permissible', and §31 says 'experiments or defensible observational methods'. Flags are kept because these estimators are the likeliest place for a non-Rust stack or a new crate to enter (ADR 0002, ADR 0009)."
+  },
+  {
+    "id": "AGENCY-029",
+    "domain": "AGENCY",
+    "title": "Effect is measured at multiple horizons",
+    "statement": "Intervention effect is measured at multiple horizons, and each horizon carries its own estimate and uncertainty. A communication, for example, may change knowledge immediately, behaviour later, and market or operational outcomes later still.",
+    "rationale": "A single measurement window credits fast effects and misses slow ones, or the reverse (§24.6).",
+    "kind": "nfr",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Intervention learning & effect attribution ('over multiple horizons')"},
+      {"doc": "M", "page": "33", "section": "§24.6 Experimentation and Causal Effect Attribution"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Effect Attribution / Experiment Service ('multi-horizon metrics')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {"method": "integration", "check": "An EffectAttribution for a simulated communication intervention carries a separate estimate, with uncertainty, for each horizon its GoalSpec declares."},
+    "policy_flags": [],
+    "secondary_domains": ["MODEL"],
+    "notes": ""
+  },
+  {
+    "id": "AGENCY-030",
+    "domain": "AGENCY",
+    "title": "Correlation is never recorded as causal certainty",
+    "statement": "Effect attribution records its uncertainty. Neither an EffectAttribution nor an update to causal graphs or action policies upgrades correlation into causal certainty without causal evidence.",
+    "rationale": "A correlation recorded as a cause becomes a lever the next plan will pull. That is the failure this whole engine exists to avoid (§24.6).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Intervention learning & effect attribution ('from measured effect rather than correlation alone')"},
+      {"doc": "M", "page": "33", "section": "§24.6 Experimentation and Causal Effect Attribution"}
+    ],
+    "verification": {"method": "property", "check": "For generated observational data with an unobserved confounder and no identifying strategy, the attribution is marked not identified and no causal-graph edge or action-policy weight is promoted from it."},
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "WORLD", "EVID"],
+    "notes": "The failure-mode table (M §28, p40, outside this extraction) says: when causal effect is not identifiable, do not claim the action caused the outcome, and do not scale autonomy from correlation alone. The autonomy half is AGENCY-056."
+  },
+  {
+    "id": "AGENCY-031",
+    "domain": "AGENCY",
+    "title": "Tactical interventions run in the warm lane",
+    "statement": "Lane 2 (Tactical/Warm, seconds to minutes) hosts bounded tactical interventions: authorized pricing and configuration changes, inventory and capital rebalancing, and pre-approved operational actions.",
+    "rationale": "Some interventions are needed faster than the cognitive lane plans, but they must stay off the reflex hot path and inside pre-approved classes (§4).",
+    "kind": "placement",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "9", "section": "§4 Time-Lane Architecture — Lane 2 (Tactical/Warm)"}
+    ],
+    "verification": {"method": "inspection", "check": "The tactical-intervention executor is deployed as a warm-lane service, and its registry admits only action classes marked authorized or pre-approved for Lane 2."},
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["CAPITAL", "GOV"],
+    "notes": "Capital rebalancing is simulated only in this repository (ADR 0003)."
+  },
+  {
+    "id": "AGENCY-032",
+    "domain": "AGENCY",
+    "title": "Intervention planning and attribution run in the cognitive slow lane",
+    "statement": "Causal intervention planning, communications and outreach planning, action simulation, experiment design and post-action effect attribution run in Lane 3 (Cognitive Slow, minutes to days), not on the reflex hot path.",
+    "rationale": "Planning and attribution are slow, model-heavy work. Putting them on the reflex path would make execution wait on cognition (§4).",
+    "kind": "placement",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "10", "section": "§4 Time-Lane Architecture — Lane 3 (Cognitive Slow)"}
+    ],
+    "verification": {"method": "inspection", "check": "Deployment definitions place the planning, simulation, experiment-design and attribution workloads in slow-lane compute, and no reflex or edge crate depends on them."},
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "ARCH"],
+    "notes": "The EXTERNAL_ACTION flag was removed because Lane 3 plans and attributes but does not act."
+  },
+  {
+    "id": "AGENCY-033",
+    "domain": "AGENCY",
+    "title": "Ambient models surface action opportunities to the engine",
+    "statement": "The Proactive Ambient Model Mesh feeds the Causal Agency engine. Ambient models can surface a DesiredOutcome candidate or ActionOpportunity on their own initiative when they detect a risk, opportunity, information gap or controllable causal lever.",
+    "rationale": "The ambient mesh sees opportunities before anyone asks. Surfacing them is the only way it contributes to agency, since it may not act itself (§24.7).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — PROACTIVE AMBIENT MODEL MESH → CAUSAL AGENCY / INTERVENTION ENGINE"},
+      {"doc": "M", "page": "33", "section": "§24.7 Ambient Agency Loop"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist ('may propose action opportunities')"}
+    ],
+    "verification": {"method": "integration", "check": "An injected ambient surprise on a controllable variable produces a DesiredOutcome candidate or ActionOpportunity record addressed to the engine, carrying the signal that triggered it."},
+    "policy_flags": [],
+    "secondary_domains": ["AMBIENT"],
+    "notes": "The diagram (H, VIEWS.ai view 05) draws no ambient → agency edge; it routes ambient output through the Meta/Arbitration Brain (see AGENCY-058). The prohibition on ambient models acting is AGENCY-040. The EXTERNAL_ACTION flag on the merged §31 item was removed because proposing takes no action."
+  },
+  {
+    "id": "AGENCY-034",
+    "domain": "AGENCY",
+    "title": "Agency stages run in a fixed order: simulate and gate before acting",
+    "statement": "The agency loop runs in a fixed order: observe → predict → specify desired state (GoalSpec) → identify controllable levers → generate candidate interventions → simulate against many worlds → verify authority and conduct → act → observe → attribute causal effect → update world models, action policies and intervention priors. No action executes before simulation and the authority/conduct gates, and no attribution comes before its action.",
+    "rationale": "An action that skipped simulation or the gates is exactly the unbounded intervention the engine exists to prevent. The order is the guarantee.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — 'goals -> causal levers -> candidate actions -> simulation -> authority/conduct gates'"},
+      {"doc": "M", "page": "33", "section": "§24.7 Ambient Agency Loop"},
+      {"doc": "H", "page": "L282", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane (node 'agency')"}
+    ],
+    "verification": {"method": "property", "check": "Over generated plans with injected stage failures, every executed action's recorded stage sequence follows the declared order, and an action whose simulation or gate stage is missing or failed is never executed."},
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "OBS"],
+    "notes": "§5 (goals → levers → candidates → simulation → authority/conduct gates) and the diagram node (goal → levers → action candidates → simulation → governed action → attribution) are both subsequences of §24.7's recursive loop, which is kept as the most specific."
+  },
+  {
+    "id": "AGENCY-035",
+    "domain": "AGENCY",
+    "title": "The Causal Agency Brain decomposes goals into GoalSpecs",
+    "statement": "The Causal Agency Brain decomposes goals into sub-goals, and emits each sub-goal as a GoalSpec.",
+    "rationale": "Large objectives have to be broken into parts that can each be planned, gated and attributed (§9.1).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Causal Agency Brain ('goal decomposition')"}
+    ],
+    "verification": {"method": "unit", "check": "Decomposing a composite goal yields child GoalSpecs, none of which declares a budget, risk envelope or acting identity outside its parent's."},
+    "policy_flags": [],
+    "secondary_domains": ["REASON"],
+    "notes": "The check's 'no looser than the parent' property is inferred from §24.1: wanting an outcome grants no permission (AGENCY-042), so decomposing it cannot grant any either. The EXTERNAL_ACTION flag on the merged §9.1 item was removed."
+  },
+  {
+    "id": "AGENCY-036",
+    "domain": "AGENCY",
+    "title": "Candidates are compared on nine declared axes",
+    "statement": "The planner compares simulated candidates, the no-action baseline included, on expected causal effect, confidence, cost, capital usage, time-to-effect, reversibility, legal eligibility, conduct risk and downside.",
+    "rationale": "Ranking on expected effect alone would favour the irreversible, the ineligible and the manipulative. Naming the axes makes those trade-offs explicit (§24.3).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Causal Agency Brain ('expected-effect/risk/cost comparison')"},
+      {"doc": "M", "page": "32", "section": "§24.3 Intervention Planner"}
+    ],
+    "verification": {"method": "unit", "check": "Each candidate's comparison record carries all nine axes, and a record missing any axis is refused before ranking."},
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "CAPITAL"],
+    "notes": "§9.1 gives the short form 'expected-effect/risk/cost comparison', and §24.3's nine axes are kept. Split from §24.3's simulation sentence (AGENCY-006). The EXTERNAL_ACTION flag on the merged §9.1 item was removed."
+  },
+  {
+    "id": "AGENCY-037",
+    "domain": "AGENCY",
+    "title": "The Conduct Brain gates every external communication",
+    "statement": "The Communications & Conduct Brain checks every proposed external communication for factual support, provenance, identity, required disclosures, audience and channel permissions, jurisdiction and market-conduct constraints. It blocks release unless all of them pass.",
+    "rationale": "External communication is the action most easily used to manufacture an outcome, so it gets a dedicated gate owned by a brain whose only job is conduct (§24.5).",
+    "kind": "security_control",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "17", "section": "§9.1 Specialist Brain Society — Communications & Conduct Brain"},
+      {"doc": "M", "page": "32", "section": "§24.5 Communications Integrity & Anti-Manipulation Boundary"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {"method": "acceptance", "check": "For each of the seven checks, a draft that fails only that check is blocked before any channel adapter is called, and a draft that passes all seven is released."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["GOV", "EVID", "SEC"],
+    "notes": "P3 because master Phase 10 lists the 'communications/conduct gate' among its exit capabilities. The platform-wide gate it specializes is AGENCY-009 (P0). The post-publication half of the §9.1 scope is AGENCY-038, and the pattern-level check is AGENCY-039. The failure-mode table (M §28, p40, outside this extraction) says a failed gate blocks the action, keeps the failed plan and its reasons, and searches for a truthful alternative or abstains, and that profitability never overrides conduct constraints."
+  },
+  {
+    "id": "AGENCY-038",
+    "domain": "AGENCY",
+    "title": "Published communications are monitored after release",
+    "statement": "The Communications & Conduct Brain monitors authorized external communications after publication.",
+    "rationale": "A check before release cannot see how an item is received, reshared or contradicted afterwards (§9.1).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "17", "section": "§9.1 Specialist Brain Society — Communications & Conduct Brain ('post-publication monitoring')"}
+    ],
+    "verification": {"method": "integration", "check": "A published item stays under monitoring after release, and a policy violation detected on it later raises a conduct event linked to the item's journal record."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["OBS", "GOV"],
+    "notes": "Split from the §9.1 scope row. §29 (M p41, outside this extraction) defines communications and channel health as identity integrity, delivery and reach metrics, provenance and disclosure checks, policy violations and anomalous coordination patterns."
+  },
+  {
+    "id": "AGENCY-039",
+    "domain": "AGENCY",
+    "title": "The Conduct Brain blocks manipulative influence patterns",
+    "statement": "Beyond checking each message, the Communications & Conduct Brain evaluates whether the proposed communication pattern as a whole could amount to deceptive coordination or market manipulation. It blocks deceptive or manipulative influence patterns.",
+    "rationale": "Manipulation can be built from messages that each pass on their own. Only a check on the pattern sees coordinated amplification (§24.5).",
+    "kind": "security_control",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "17", "section": "§9.1 Specialist Brain Society — Communications & Conduct Brain ('It blocks deceptive or manipulative influence patterns')"},
+      {"doc": "M", "page": "32", "section": "§24.5 Communications Integrity & Anti-Manipulation Boundary"}
+    ],
+    "verification": {"method": "acceptance", "check": "A sequence of individually compliant posts that together form coordinated same-message amplification across identities is blocked, while the same content as one attributable post is admitted."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["GOV", "SEC", "RISK"],
+    "notes": "This is how the Conduct Brain enforces the P0 prohibitions AGENCY-010 and AGENCY-011 on communications. It is P3 as a Phase 10 component."
+  },
+  {
+    "id": "AGENCY-040",
+    "domain": "AGENCY",
+    "title": "No model acts directly: every action goes through the engine",
+    "statement": "The Causal Agency engine sits between cognition and tool execution. No cognitive component, ambient models included, can cause an action directly, and there is no path from any model to an action except through the Agency Brain / Action Orchestrator and its simulation, authority and conduct gates.",
+    "rationale": "Ambient models run continuously, and continuous operation must not become continuous authority (§1.2). The gates only mean something if nothing can route around them.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "31", "section": "§24 Causal Agency & Intervention Intelligence"},
+      {"doc": "M", "page": "33", "section": "§24.7 Ambient Agency Loop"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Causal Agency / Action Orchestrator ('no direct path from ambient model to external action')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {"method": "acceptance", "check": "An architecture test asserts that no model, ambient or specialist crate depends on any action-adapter crate or adapter credential, so the orchestrator is the only route to an adapter."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["AMBIENT", "ARCH", "SEC"],
+    "notes": "§24.7 ('does not directly cause action') is wider than §26 and §31 ('external action'), and the wider wording is kept. The existing acceptance test an_agent_that_holds_a_language_model_cannot_touch_the_market (backend/crates/tests/qip-acceptance/tests/architecture.rs) already covers the market half for agent manifests. The KUBERNETES flag on the merged §26 item belongs to AGENCY-051."
+  },
+  {
+    "id": "AGENCY-041",
+    "domain": "AGENCY",
+    "title": "GoalSpec covers eight classes of objective",
+    "statement": "A GoalSpec can express financial, operational, research, product, liquidity, risk-reduction, information-acquisition and communications objectives.",
+    "rationale": "Agency is not only financial. A goal type limited to trading objectives would push other goals outside the gates (§24.1).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "31-32", "section": "§24.1 Desired Outcomes, Utility and Constraints"}
+    ],
+    "verification": {"method": "unit", "check": "A GoalSpec of each of the eight classes constructs and round-trips through serde unchanged."},
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT"],
+    "notes": ""
+  },
+  {
+    "id": "AGENCY-042",
+    "domain": "AGENCY",
+    "title": "Wanting an outcome grants no permission to act",
+    "statement": "Outcome preference is kept separate from action permission. Wanting an outcome never implies permission to use every causal lever that might achieve it, and a lever is usable only if the acting identity independently holds that lever's authority.",
+    "rationale": "If a goal carried its own permission, the value of the goal would decide the means. That is the path from an objective to manipulation (§24.1).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "32", "section": "§24.1 Desired Outcomes, Utility and Constraints"}
+    ],
+    "verification": {"method": "property", "check": "For generated GoalSpecs of arbitrarily high utility, the planner never emits a step that uses a lever whose recorded authority requirement the GoalSpec's acting identity does not hold."},
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "SEC"],
+    "notes": "§25 (M p33, outside this extraction) applies the same separation: a cognitive model may analyse an intervention that the acting identity is not permitted to perform."
+  },
+  {
+    "id": "AGENCY-043",
+    "domain": "AGENCY",
+    "title": "Hard constraints are symbolic and no learned estimate overrides them",
+    "statement": "Hard constraints on the action-affordance graph are enforced by symbolic reasoning. No learned effect estimate, however large, can relax or override one.",
+    "rationale": "A hard constraint that a large enough expected effect could buy out is not hard (§24.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "32", "section": "§24.2 Action-Affordance & Causal Lever Graph"}
+    ],
+    "verification": {"method": "property", "check": "For generated plans that violate a declared hard constraint, the planner refuses them for every value of the learned effect estimate, including values chosen to make the plan dominant."},
+    "policy_flags": [],
+    "secondary_domains": ["REASON", "RISK"],
+    "notes": "Split from the same sentence as AGENCY-044. This mirrors the repository's rule that deterministic pre-trade checks never route to a model (qip-cost-router's Determinism::Required). The NON_RUST and NEW_DEPENDENCY flags on the extracted item concerned learned estimation and were moved to AGENCY-044. Deterministic constraint checking needs neither."
+  },
+  {
+    "id": "AGENCY-044",
+    "domain": "AGENCY",
+    "title": "Learned models estimate effect sizes with uncertainty",
+    "statement": "Learned causal models estimate the uncertain effect sizes along the action-affordance graph's causal paths, and each estimate carries its uncertainty.",
+    "rationale": "Effect sizes are empirical and have to be learned, but an estimate without its uncertainty invites being treated as certain (§24.2).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "32", "section": "§24.2 Action-Affordance & Causal Lever Graph"}
+    ],
+    "verification": {"method": "benchmark", "check": "On a synthetic graph with known edge effects, the learned estimates' intervals cover the true effects at their nominal rate."},
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["MODEL", "WORLD"],
+    "notes": "Flags are kept: learned causal effect estimation is likely to be trained on a non-Rust stack or to need a crate beyond serde/serde_json, which would require an ADR (ADR 0002, ADR 0009)."
+  },
+  {
+    "id": "AGENCY-045",
+    "domain": "AGENCY",
+    "title": "The engine abstains when causal identification is weak",
+    "statement": "When causal identification of a lever's effect is weak, the engine abstains, gathers more evidence or proposes an experiment. It never acts on a correlation as though it were control.",
+    "rationale": "This is the platform's 'refuse rather than guess' principle applied to causation (§24.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "32", "section": "§24.2 Action-Affordance & Causal Lever Graph"}
+    ],
+    "verification": {"method": "property", "check": "For generated goals whose only candidate levers have identifiability below the declared threshold, the planner's output is always abstain, gather-evidence or an experiment proposal, and never an executable action."},
+    "policy_flags": [],
+    "secondary_domains": ["REASON", "MODEL"],
+    "notes": ""
+  },
+  {
+    "id": "AGENCY-046",
+    "domain": "AGENCY",
+    "title": "External communication is an audited intervention, never an exemption",
+    "statement": "External communication is an intervention action surface, planned, gated, audited and attributed like any other action. It is never exempt from evidence and conduct rules.",
+    "rationale": "Treating speech as outside the action model would give the platform one lever with no gate on it (§24.5).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "32", "section": "§24.5 Communications Integrity & Anti-Manipulation Boundary"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist ('External communication is an audited action surface')"}
+    ],
+    "verification": {"method": "acceptance", "check": "Every publishing and outreach adapter is reachable only through the orchestrator and the pre-action gate, and a communication without factual-support references is refused like any other failed intervention."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["GOV", "EVID"],
+    "notes": "§31's check list is merged into AGENCY-037, and its 'infeasible by policy' clause into AGENCY-047."
+  },
+  {
+    "id": "AGENCY-047",
+    "domain": "AGENCY",
+    "title": "A plan that depends on deception is infeasible",
+    "statement": "Any causal plan whose effect depends on deception or a manipulative influence method is infeasible by policy. It is never selected or executed, however large its expected effect.",
+    "rationale": "Deciding infeasibility at planning time means a deceptive plan never becomes something a gate has to catch (§24.5).",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "33", "section": "§24.5 Communications Integrity & Anti-Manipulation Boundary"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist ('deceptive/manipulative influence methods are infeasible by policy')"}
+    ],
+    "verification": {"method": "property", "check": "For generated plans that contain a deception-dependent step, the planner marks the plan infeasible and it never reaches the orchestrator, whatever its expected effect."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["GOV", "REASON"],
+    "notes": "'However large its expected effect' follows §25 (M p34) and §28 (M p40): public and market-facing actions cannot be justified by expected profit or desired price impact, and profitability never overrides conduct constraints. Both are outside this extraction."
+  },
+  {
+    "id": "AGENCY-048",
+    "domain": "AGENCY",
+    "title": "EffectAttribution keeps the causal chain, not just a KPI",
+    "statement": "The EffectAttribution object keeps the causal chain, confounders, competing explanations and the confidence or uncertainty of each effect estimate, not only a final KPI.",
+    "rationale": "A KPI alone cannot be re-examined when a confounder is discovered later. The chain and the competing explanations can (§24.6).",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "33", "section": "§24.6 Experimentation and Causal Effect Attribution"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Effect Attribution / Experiment Service ('uncertainty-aware EffectAttribution outputs')"}
+    ],
+    "verification": {"method": "unit", "check": "Constructing an EffectAttribution without a causal chain, a confounder list, a competing-explanations list or a confidence value is refused."},
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT", "MODEL"],
+    "notes": "The canonical-contract table (M p38, outside this extraction) also requires goal, intervention and action IDs, observations across horizons, the control or counterfactual method, side effects, identifiability, and world-model and action-policy updates. P0 as a contract."
+  },
+  {
+    "id": "AGENCY-049",
+    "domain": "AGENCY",
+    "title": "Ambient candidates reach the Agency Brain through the Attention Router",
+    "statement": "The Attention Router sends each ambient DesiredOutcome candidate or ActionOpportunity to the Agency Brain. The Agency Brain builds a GoalSpec and intervention candidates from it and runs simulation and the policy and conduct gates on them, as for any other goal.",
+    "rationale": "An ambient finding should enter the same pipeline as any goal, not a faster side door (§24.7).",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "33", "section": "§24.7 Ambient Agency Loop"}
+    ],
+    "verification": {"method": "integration", "check": "An ambient ActionOpportunity reaches the Agency Brain through the Attention Router and results in a GoalSpec and a simulated candidate set before any gate decision is recorded."},
+    "policy_flags": [],
+    "secondary_domains": ["AMBIENT"],
+    "notes": "Split from §24.7's routing sentence. Its closing clause, 'obtains whatever authority the action class requires', is AGENCY-017."
+  },
+  {
+    "id": "AGENCY-050",
+    "domain": "AGENCY",
+    "title": "Action Outcome Memory records nine fields per intervention",
+    "statement": "The platform maintains an Action Outcome Memory. Each record contains intervention context, audience/environment state, action sequence, causal hypothesis, predicted effect, actual observations, attribution confidence, side effects and the no-action counterfactual.",
+    "rationale": "Learning which actions work (AGENCY-015) needs the prediction, the observation and the counterfactual stored side by side (§24.8).",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "33", "section": "§24.8 What the System Learns About Agency"}
+    ],
+    "verification": {"method": "unit", "check": "An Action Outcome Memory record missing any of the nine fields is refused."},
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT", "WORLD", "MODEL"],
+    "notes": "P0 as a contract. The EXTERNAL_ACTION flag on one extracted item was removed because a memory record takes no action."
+  },
+  {
+    "id": "AGENCY-051",
+    "domain": "AGENCY",
+    "title": "The Action Orchestrator runs as warm services off the reflex path",
+    "statement": "The Causal Agency / Action Orchestrator runs as slow/warm services on GKE or Cloud Run, off the reflex hot path.",
+    "rationale": "Orchestrating interventions is not latency-critical, and it must never be something a reflex decision waits on (§26).",
+    "kind": "placement",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Causal Agency / Action Orchestrator"}
+    ],
+    "verification": {"method": "infra-plan", "check": "The Terraform plan deploys the orchestrator as a warm-lane service, and nothing on the execution node's order path calls it."},
+    "policy_flags": ["KUBERNETES", "EXTERNAL_ACTION"],
+    "secondary_domains": ["GCP"],
+    "notes": "ADR 0024 moved every warm platform binary to Cloud Run. The only GKE cluster in the repository is ADR 0036's control plane, which runs no trading binary. Cloud Run is therefore the admissible reading of 'GKE/Cloud Run' until a new record says otherwise."
+  },
+  {
+    "id": "AGENCY-052",
+    "domain": "AGENCY",
+    "title": "Public and channel adapters use segregated credentials",
+    "statement": "The Action Orchestrator's public and channel adapters use credentials segregated from every other platform credential. Each credential is readable only by the adapter that uses it.",
+    "rationale": "A shared credential would let a compromise of one channel speak with every identity the platform holds (§26).",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Causal Agency / Action Orchestrator ('segregated credentials')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "The plan grants each channel adapter's service account access to its own Secret Manager secret only, and no other workload identity can read it."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["SEC", "GCP"],
+    "notes": "This matches the repository rules that a credential is readable only where it can be used and that secrets reach a process as files. The failure-mode table (M §28, p40, outside this extraction) says that on compromise the adapter is revoked or quarantined and an unapproved identity is never substituted. The disclosure/conduct-policy clause of the same §26 cell is merged into AGENCY-026."
+  },
+  {
+    "id": "AGENCY-053",
+    "domain": "AGENCY",
+    "title": "Effect attribution runs as its own batch/stream service",
+    "statement": "Effect attribution runs as a separate Effect Attribution / Experiment Service made of batch/stream causal-evaluation workers joined to the episode and world-model stores.",
+    "rationale": "Attribution reads history at scale and must not share a process or identity with anything that acts (§26).",
+    "kind": "placement",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Effect Attribution / Experiment Service"}
+    ],
+    "verification": {"method": "infra-plan", "check": "The plan declares the attribution workers as batch/stream jobs with read access to the episode and world-model stores and no access to any action-adapter credential."},
+    "policy_flags": [],
+    "secondary_domains": ["GCP", "WORLD", "DATA"],
+    "notes": "The capabilities in the same §26 cell (experiment assignment, synthetic and no-action controls, multi-horizon metrics, uncertainty-aware outputs) are AGENCY-028, AGENCY-008, AGENCY-029 and AGENCY-048."
+  },
+  {
+    "id": "AGENCY-054",
+    "domain": "AGENCY",
+    "title": "Autonomy shrinks automatically when intervention effects drift",
+    "statement": "Causal-policy drift is monitored. When observed intervention effects depart from predicted uplift or side-effect assumptions, the autonomy of the affected action policy shrinks automatically.",
+    "rationale": "A policy whose effects no longer match its model is acting on a false belief. The safe default is less authority, not more (principle 3).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "41", "section": "§29 Autonomous Platform Operations / AIOps"}
+    ],
+    "verification": {"method": "acceptance", "check": "Feeding an action policy observed effects outside its predicted uplift interval, or an unpredicted side effect, lowers its autonomy level with no operator action, and in-range effects leave it unchanged."},
+    "policy_flags": [],
+    "secondary_domains": ["OBS", "GOV", "RISK"],
+    "notes": "Autonomy may shrink automatically but never widen from a model output (risk-and-execution rules). Widening is governed by AGENCY-056."
+  },
+  {
+    "id": "AGENCY-055",
+    "domain": "AGENCY",
+    "title": "Agency starts shadow-only, then narrow reversible actions",
+    "statement": "The Causal Agency & Intervention Engine starts shadow-only. It may then be allowed only narrow, reversible actions, and broader action authority comes only after that stage.",
+    "rationale": "Authority is widened on evidence, one reversible step at a time (§30, §23.4).",
+    "kind": "build_phase",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "42", "section": "§30 Build Order — Phase 10 Causal Agency & Intervention Intelligence"}
+    ],
+    "verification": {"method": "acceptance", "check": "The engine's default authority is shadow, in which no adapter call executes, and a request for an irreversible action class while at the narrow-reversible stage is refused."},
+    "policy_flags": ["EXTERNAL_ACTION", "LIVE_CAPITAL"],
+    "secondary_domains": ["GOV"],
+    "notes": "P0 even though it is Phase 10's rollout rule, because it is a fail-closed safety invariant on authority. In this repository the paper boundary (ADR 0003) keeps every capital and market action shadow or simulated at every stage."
+  },
+  {
+    "id": "AGENCY-056",
+    "domain": "AGENCY",
+    "title": "Only measured causal effect can widen agency autonomy",
+    "statement": "More autonomy for an intervention class requires identifiable causal structure and measured effects. Correlation or high predictive accuracy alone never grants it.",
+    "rationale": "A model can predict an outcome well without controlling it at all. Reliable agency is benchmark-gated on measured effect (§32).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist ('correlation alone cannot grant more autonomy')"},
+      {"doc": "M", "page": "45", "section": "§32 Technology Reality Notes (2026)"}
+    ],
+    "verification": {"method": "acceptance", "check": "A request to widen autonomy for an action class supported only by predictive-accuracy or correlational evidence is refused, while one carrying an identified EffectAttribution passes this precondition and still requires operator authority."},
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "MODEL"],
+    "notes": "Split from §31's intervention-learning checklist item; its estimation half is AGENCY-028 and AGENCY-029. In this repository autonomy changes only through AutonomyController::request_change with an authenticated operator. This requirement adds an evidence precondition and never an automatic escalation."
+  },
+  {
+    "id": "AGENCY-057",
+    "domain": "AGENCY",
+    "title": "Each action-adapter class runs as a separate service",
+    "statement": "Causal action adapters run as separate services, one per action class: publication, outreach, product/pricing, market creation and operational tools.",
+    "rationale": "Isolating adapter classes means one class's identity, credentials and reach cannot be used by another's process (G §12).",
+    "kind": "placement",
+    "priority": "P3",
+    "sources": [
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — Causal action adapters"}
+    ],
+    "verification": {"method": "infra-plan", "check": "The plan declares one service and one workload identity per adapter class, and no identity is bound to two classes."},
+    "policy_flags": ["EXTERNAL_ACTION", "KUBERNETES"],
+    "secondary_domains": ["GCP", "SEC"],
+    "notes": "G §12 says 'separate GKE services'. The repository runs warm binaries on Cloud Run and keeps GKE for ADR 0036's control plane only (ADR 0024), so the separation is the requirement and GKE is a conflicting detail. The per-adapter controls in the same bullet are AGENCY-026 and AGENCY-027. GCP phase 10 ('Quantum/agency expansion', G p22) is where causal agency adapters arrive."
+  },
+  {
+    "id": "AGENCY-058",
+    "domain": "AGENCY",
+    "title": "The engine takes knowledge from the Meta/Arbitration Brain and the specialists",
+    "statement": "The Causal Agency Engine receives knowledge input from both the Meta/Arbitration Brain and the Specialist Brain Society.",
+    "rationale": "Plans should be built on arbitrated world beliefs and domain expertise, not on one model's view (H, view 05).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "H", "page": "L292-293", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane (edges meta→agency, special→agency)"}
+    ],
+    "verification": {"method": "integration", "check": "The engine consumes world-model arbitration outputs and specialist findings as typed knowledge messages, and each InterventionPlan records which of them it used."},
+    "policy_flags": [],
+    "secondary_domains": ["REASON", "WORLD"],
+    "notes": "The same view draws an agency → Vertex Training edge (knowledge), which is not in this domain's extraction."
+  }
+]

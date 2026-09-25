@@ -1,0 +1,604 @@
+[
+  {
+    "id": "COMMERCE-001",
+    "domain": "COMMERCE",
+    "title": "Commerce & Physical Operations is a first-class plane, not a valuation class",
+    "statement": "The platform must have a Commerce & Physical Operations plane covering the physical-product lifecycle end to end (product discovery, purchasing, routing/logistics, shipping, insurance, inventory holding, listing/resale, returns, taxes/duties and marketplace settlement), replacing the v10.1 rule that physical assets are just another class, so that physical product purchase/resale has commerce, logistics and inventory capabilities and not just a price model.",
+    "rationale": "A price model can value a physical product but cannot buy, move, hold, insure or resell one. v11.6 lists 'Physical assets are just another class' as a v10.1 limitation to correct, and section 20 opens with '\"Physical\" must be more than a valuation class.'",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1, row 'Physical assets are just another class'"
+      },
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map, row 'Physical commerce'"
+      },
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage (intro)"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist, 'COMPLETE TARGET: Physical product purchase/resale has commerce, logistics and inventory capabilities'"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An acceptance test drives one simulated product from Product Scout discovery through SKU resolution, feasibility, a simulated purchase, logistics, an Inventory Ledger entry and a Resale Router listing, and fails if any stage is served only by a price/valuation model or is absent."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION",
+      "COST"
+    ],
+    "secondary_domains": [
+      "ASSET",
+      "COVERAGE"
+    ],
+    "notes": "Merged from four raw items: the M p5 §2 correction (extracted twice, once as the plane and once for its 'returns' scope), the M p7 §3 capability-map row, and the M p43 §31 checklist item, which is this requirement's acceptance form and sets the verification level. p7 is the more specific about lifecycle verbs (adds ship, insure and 'learn SKU-level economics'); p5 alone names returns and marketplace settlement. Scope items with no §20 component of their own are split out as COMMERCE-002 (returns), -003 (taxes/duties), -004 (marketplace settlement) and -005 (SKU-level economics learning); the rest map onto the §20 components COMMERCE-008 to -020. Lands in master Phase 7 (M p42 §30: 'physical product commerce and logistics adapters'). Under ADR 0099 and ADR 0021 every live purchase or sale is scored BLOCKED and the plane is built only in its shadow/simulated form; ADR 0099 names 'purchase executors for physical commerce (v11.6 §20)' explicitly. No passage in doc G or doc H mentions commerce, SKUs, resale or physical logistics (grep of both source texts on 2026-09-25), so every source here is doc M."
+  },
+  {
+    "id": "COMMERCE-002",
+    "domain": "COMMERCE",
+    "title": "Commerce plane handles product returns as a recorded flow",
+    "statement": "The Commerce & Physical Operations plane must handle product returns as a lifecycle flow, recording each return against the purchase or sale it reverses, so that a returned unit does not silently disappear from inventory or settlement.",
+    "rationale": "Returns are a named part of the plane's scope (§2) and a tracked attribute (§20). A return that is not a recorded flow leaves inventory and settlement disagreeing with the physical world, and the disagreement surfaces only at reconciliation.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1, row 'Physical assets are just another class' ('returns')"
+      },
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage (intro), '... storage and returns'"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a simulated marketplace, a sale followed by a buyer return produces a return record linked to the original sale, restores the unit with its recorded condition to the Inventory Ledger, and adjusts the sale's settlement; the test fails if either the ledger or the settlement is left unchanged."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": "Split out of COMMERCE-001 (raw M p5 §2 items, one of which was extracted specifically as 'Commerce plane must process returns'). Return risk as an estimate before purchase is COMMERCE-011; this requirement is the flow after a return happens. A real return moves real money and goods, so it is BLOCKED under ADR 0021 beyond its simulated form."
+  },
+  {
+    "id": "COMMERCE-003",
+    "domain": "COMMERCE",
+    "title": "Commerce plane determines and handles taxes and customs duties per transaction",
+    "statement": "The Commerce & Physical Operations plane must handle the taxes and customs duties owed on each commerce purchase, cross-border shipment and sale, with the amount determined per transaction rather than left to be discovered after settlement.",
+    "rationale": "Taxes and duties are named in the plane's scope in three places. An untracked duty turns an apparently profitable cross-border arbitrage into a loss that no earlier stage could have seen.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1, row 'Physical assets are just another class' ('taxes/duties')"
+      },
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map, row 'Physical commerce' ('handle duties/taxes')"
+      },
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage (intro), 'customs/duties, tax'"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For a fixture cross-border purchase and resale with known tax and duty schedules, the plane produces per-transaction tax and duty amounts that equal the fixture's expected Decimal figures exactly, and those amounts appear in the transaction's recorded cost."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV",
+      "LEDGER"
+    ],
+    "notes": "Split out of COMMERCE-001. Customs clearance as a logistics step is COMMERCE-016; duties as a component of landed cost are COMMERCE-011. This requirement is the tax/duty liability itself. The fees/taxes subledger (M p23 §15) belongs to LEDGER. Paying or filing is an external action and BLOCKED under ADR 0021; determination is buildable in paper form."
+  },
+  {
+    "id": "COMMERCE-004",
+    "domain": "COMMERCE",
+    "title": "Commerce sales are carried through to marketplace settlement",
+    "statement": "The Commerce & Physical Operations plane must settle marketplace sales, carrying each commerce sale through to settlement of its proceeds net of marketplace fees rather than treating it as complete when the listing sells.",
+    "rationale": "A sold listing is a claim on a marketplace, not cash. Treating the sale as final is billing what was planned rather than what settled.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1, row 'Physical assets are just another class' ('marketplace settlement')"
+      },
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map, row 'Physical commerce' ('settle')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a simulated marketplace, a sale produces a settlement record whose net proceeds equal the gross price minus the marketplace's fee schedule exactly (Decimal), and the sale is not reported as settled until that record exists."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "LEDGER",
+      "CAPITAL"
+    ],
+    "notes": "Split out of COMMERCE-001. Continuous external reconciliation with warehouses/marketplaces (M p23 §15) belongs to LEDGER; this requirement is the commerce plane producing the settlement that reconciliation checks. Real settlement is BLOCKED under ADR 0021 beyond its simulated form."
+  },
+  {
+    "id": "COMMERCE-005",
+    "domain": "COMMERCE",
+    "title": "Commerce plane learns SKU-level economics from completed cycles",
+    "statement": "The Commerce & Physical Operations plane must learn SKU-level economics from its completed commerce cycles, recording realised cost, resale price, time-to-sale and returns per resolved SKU so that later feasibility assessments for that SKU draw on realised rather than only estimated figures.",
+    "rationale": "The capability map ends the physical-commerce lifecycle with 'learn SKU-level economics'. Without it, feasibility keeps making the same estimate for a SKU however wrong the last one proved.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map, row 'Physical commerce' ('learn SKU-level economics')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying an event log of completed simulated purchase-resale cycles for one SKU reproduces the same SKU-level realised-economics record, and a feasibility assessment for that SKU made after the replay differs from one made before it by exactly the learned figures."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "Split out of COMMERCE-001 (raw M p7 §3 row). The raw row carried LIVE_CAPITAL, EXTERNAL_ACTION and COST; EXTERNAL_ACTION and COST were dropped because learning is internal and incurs no action outside the platform. LIVE_CAPITAL is kept because realised economics exist only for realised transactions; the shadow form can learn from observed sold-listing prices without owning a unit, and learning from simulated fills alone would be circular."
+  },
+  {
+    "id": "COMMERCE-006",
+    "domain": "COMMERCE",
+    "title": "Source Universe includes product, SKU, marketplace and resale data",
+    "statement": "The Source Universe must include product/SKU listings, inventories, prices, shipping estimates, marketplace fees, auction data and resale markets.",
+    "rationale": "Product Scout, Commerce Feasibility and the Resale Router compute on exactly these inputs; a commerce plane with no commerce sources discovers nothing.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.1 Source Universe"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A registry test enumerates the seven named commerce source kinds (SKU listings, inventories, prices, shipping estimates, marketplace fees, auction data, resale markets) and fails if any kind has no catalogued source whose licensing posture was evaluated before admission."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": "P2 rather than P1: the Scout Fabric that ingests sources arrives with the master Phase 2 cognitive data loop, but these seven kinds have no consumer before Phase 7. Marketplace and retailer data usually carries terms-of-service restrictions, so the data-and-streaming rule that licensing posture is evaluated in qip-data-finder before use applies here. The Source Registry that must list marketplaces (M p30 §23.2) belongs to DATA."
+  },
+  {
+    "id": "COMMERCE-007",
+    "domain": "COMMERCE",
+    "title": "Commerce operating layer tracks the full physical attribute set per unit",
+    "statement": "The commerce operating layer must track, for every unit it purchases or holds, SKU identity, condition, location, inventory state, shipping, insurance, customs/duties, tax, marketplace fees, payment/chargeback risk, storage and returns.",
+    "rationale": "'\"Physical\" must be more than a valuation class.' Each of these facts left untracked is a cost or a risk that no feasibility, ledger or resale decision can see.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage (intro)"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A property test over generated commerce records asserts that each of the twelve named attributes is present on every tracked unit, with absence represented explicitly, and that a record missing any of them is refused at construction rather than filled with a default."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "RISK"
+    ],
+    "notes": "The raw item carried LIVE_CAPITAL and EXTERNAL_ACTION. Both were removed: this is a record contract that is fully met for simulated units, and flagging it would score it BLOCKED under ADR 0099 when nothing in it needs live capital or external action. Condition, location, cost basis and ownership are also held per unit by the Inventory Ledger (COMMERCE-017); this requirement is the wider operating record that spans shipping, insurance, fees and chargeback risk."
+  },
+  {
+    "id": "COMMERCE-008",
+    "domain": "COMMERCE",
+    "title": "Product Scout finds price gaps, auctions, liquidations, wholesale listings and supply shocks",
+    "statement": "Product Scout must find price/availability differences, auctions, liquidations, wholesale listings and supply shocks.",
+    "rationale": "Each named surface is a distinct source of physical arbitrage opportunity. A scout that sees only retail price gaps misses the four the blueprint lists beside it.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage, domain table, Product Scout row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Fed fixture data containing one instance of each of the five named opportunity kinds, Product Scout emits one candidate per kind, typed by kind, and emits none for a fixture containing no price, availability or supply differences."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": "Merged two raw items from the same row: one extraction captured only price/availability differences, the other restored auctions, liquidations, wholesale listings and supply shocks. The row's full wording is kept."
+  },
+  {
+    "id": "COMMERCE-009",
+    "domain": "COMMERCE",
+    "title": "SKU/Entity Resolver maps equivalent products across retailers, marketplaces and regions",
+    "statement": "The SKU/Entity Resolver must map equivalent products across retailers, marketplaces and regions to one resolved product identity.",
+    "rationale": "A price difference between two listings is an opportunity only if the listings are the same product; without resolution every cross-venue or cross-region comparison is a guess.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage, domain table, SKU/Entity Resolver row"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Over fixture listings of one product under different retailer, marketplace and regional identifiers, resolution maps all of them to a single identity, and over generated listing sets the resolved mapping is symmetric and transitive."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": "Split from the raw SKU/Entity Resolver item, which stated two independently verifiable things: equivalence mapping (here) and variant/counterfeit detection (COMMERCE-010). MULTI_REGION stays with this half because the row names mapping across regions."
+  },
+  {
+    "id": "COMMERCE-010",
+    "domain": "COMMERCE",
+    "title": "SKU/Entity Resolver detects variants and counterfeits",
+    "statement": "The SKU/Entity Resolver must detect variants and counterfeits, and must not resolve either as equivalent to the genuine product.",
+    "rationale": "A variant or a counterfeit resolved as the genuine product makes a mispriced listing look like an arbitrage; buying on that basis is a loss the resolver created.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage, domain table, SKU/Entity Resolver row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Fixture listings of a genuine product, a variant of it and a known counterfeit resolve to three distinct identities, and the counterfeit carries an explicit counterfeit finding rather than a low-confidence equivalence."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID",
+      "RISK"
+    ],
+    "notes": "Split from the raw SKU/Entity Resolver item (see COMMERCE-009). Authenticity evidence overlaps the Evidence/Truth Fabric's 'cryptographic/source authenticity' (M p5 §2), hence EVID as a secondary domain."
+  },
+  {
+    "id": "COMMERCE-011",
+    "domain": "COMMERCE",
+    "title": "Commerce Feasibility computes landed cost, resale, time-to-sale, return risk, carry and capital lockup",
+    "statement": "Commerce Feasibility must compute, for each candidate, all-in landed cost, expected resale, time-to-sale, return risk, inventory carry and capital lockup.",
+    "rationale": "Landed cost against expected resale alone overstates every opportunity: time-to-sale, return risk, inventory carry and capital lockup are the costs a physical position carries that a financial one does not.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage, domain table, Commerce Feasibility row"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "For a fixture candidate with known purchase price, shipping, duty, fees, resale distribution and holding period, the assessment returns all six named figures, money as Decimal, equal to hand-computed values, and a candidate lacking an input any figure needs is refused rather than assessed with that figure omitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "RISK"
+    ],
+    "notes": "Merged two raw items from the same row: one extraction captured only landed cost and expected resale, the other restored the four missing fields. The row's full six-field wording is kept, and the six fields are held as one contract because they are the output of a single assessment."
+  },
+  {
+    "id": "COMMERCE-012",
+    "domain": "COMMERCE",
+    "title": "Purchase Executor buys through merchant/marketplace adapters",
+    "statement": "The Purchase Executor must execute purchases through merchant/marketplace adapters.",
+    "rationale": "Merchants and marketplaces differ in checkout, payment and confirmation semantics; an adapter per merchant keeps those differences out of the decision path.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage, domain table, Purchase Executor row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A purchase admitted by feasibility and by the controls in COMMERCE-013 to -015 is placed through a simulated merchant adapter and yields an acknowledged purchase record, and an architecture test asserts that no adapter targeting a real merchant or marketplace exists (ADR 0021)."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": "Merged two raw items on the Purchase Executor row and split into four: the adapter capability (here) and three controls, limits (COMMERCE-013), account controls (-014) and fraud safeguards (-015), each independently verifiable. ADR 0099 lists 'purchase executors for physical commerce (v11.6 §20)' among the capabilities it does not authorise; this requirement is scored BLOCKED with ADR 0021 as the reason and is built only as a simulated adapter. A task that appears to need a real merchant adapter must stop and ask (01-security-and-safety.md)."
+  },
+  {
+    "id": "COMMERCE-013",
+    "domain": "COMMERCE",
+    "title": "Purchase limits are checked before a purchase exists",
+    "statement": "Every purchase through a merchant/marketplace adapter must pass deterministic limits checked before the purchase is created, and a purchase that would breach a limit must be refused.",
+    "rationale": "This mirrors the platform's capital-protection rule that limits are checked before an order exists. An execution path without these controls is a control that reads as protection and is not.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage, domain table, Purchase Executor row ('with limits')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A candidate purchase over a per-purchase limit is refused with no purchase record created and no adapter call made, and a candidate under the limit is admitted; both halves are asserted so the test separates a working limit from one that refuses everything or cannot fire."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "CAPITAL"
+    ],
+    "notes": "Split from the merged Purchase Executor items (see COMMERCE-012). P0 as a capital-protection invariant: it is a precondition of any purchase path, simulated or otherwise, and extends the foundation-phase deterministic risk gate to a new action type. P0 does not claim that commerce ships in the foundation phases. The raw items carried LIVE_CAPITAL and EXTERNAL_ACTION; both were removed because the control is fully met and provable against the simulated adapter, and flagging it would score the control BLOCKED while inviting the path to be built before it."
+  },
+  {
+    "id": "COMMERCE-014",
+    "domain": "COMMERCE",
+    "title": "Merchant/marketplace accounts operate under account controls",
+    "statement": "The Purchase Executor must operate each merchant/marketplace account under account controls, so that every purchase is attributable to one controlled account and no account can purchase outside the authority granted to it.",
+    "rationale": "A purchase that cannot be attributed to a controlled account cannot be audited, and an account whose authority is unbounded makes every other purchase control advisory.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage, domain table, Purchase Executor row ('account controls')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A purchase attempted through an account lacking authority for it, or with a credential belonging to another identity class, is refused before any adapter call, and the same purchase through the correctly authorised account is admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC",
+      "GOV"
+    ],
+    "notes": "Split from the merged Purchase Executor items (see COMMERCE-012). Related but held elsewhere: M p33 §25 requires 'Separate identities and credentials for trading, custody/transfer, market creation, banking/financing and commerce purchasing', which belongs to GOV/SEC. P0 and flag removal on the same reasoning as COMMERCE-013: a precondition of any purchase path and fully provable against simulated accounts."
+  },
+  {
+    "id": "COMMERCE-015",
+    "domain": "COMMERCE",
+    "title": "The purchase path applies fraud safeguards before payment",
+    "statement": "The purchase path must apply fraud safeguards, refusing a purchase whose merchant, listing or payment is flagged as fraudulent before any payment is committed.",
+    "rationale": "Fraud on a physical purchase is discovered after the money has left, when the goods do not arrive or are not as listed; the safeguard only works if it fires before payment.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage, domain table, Purchase Executor row ('fraud safeguards')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture purchase against a merchant, listing or payment carrying a fraud finding is refused before any adapter call, and an otherwise identical purchase without the finding is admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC",
+      "RISK"
+    ],
+    "notes": "Split from the merged Purchase Executor items (see COMMERCE-012). The P0 invariant is the refusal before payment; the quality of fraud detection itself is a P2 capability and is not what this requirement asserts. Flags removed on the same reasoning as COMMERCE-013. Payment/chargeback risk as a tracked attribute is COMMERCE-007."
+  },
+  {
+    "id": "COMMERCE-016",
+    "domain": "COMMERCE",
+    "title": "Logistics Brain plans route, carrier, consolidation, warehouse, customs, insurance and delivery risk",
+    "statement": "The Logistics Brain must handle route, carrier, consolidation, warehouse, customs, insurance and delivery risk for purchased units.",
+    "rationale": "Moving a physical unit is where most of its cost and risk sits after purchase. A logistics layer that only routes leaves carrier choice, consolidation, customs and insurance to be improvised per shipment.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage, domain table, Logistics Brain row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For a fixture cross-border shipment the Logistics Brain's plan names a route, carrier, consolidation decision, warehouse, customs step, insurance decision and delivery-risk estimate, and a plan missing any of the seven is refused rather than executed."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Merged two raw items from the same row: one extraction captured only routing and delivery risk, the other restored carrier, consolidation, warehouse, customs and insurance. The row's full wording is kept. Also covers 'route', 'ship' and 'insure' from the M p7 §3 capability-map row (cited on COMMERCE-001). Booking a carrier or buying insurance is an external action, BLOCKED under ADR 0021 beyond planning and simulation. WORLD because the Supply Chain/Physical Brain and the physical world models also reason about logistics."
+  },
+  {
+    "id": "COMMERCE-017",
+    "domain": "COMMERCE",
+    "title": "Inventory Ledger records each unit's condition, location, cost basis and ownership",
+    "statement": "The Inventory Ledger must record each physical unit with its condition, location, cost basis and ownership.",
+    "rationale": "Cost basis is the accounting fact every realised resale margin is measured against, and ownership separates inventory the platform holds from inventory it has merely located.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage, domain table, Inventory Ledger row"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying the event log for a sequence of simulated purchases, moves and sales reproduces, unit for unit, the same condition, location, cost basis (Decimal) and owner as the ledger that recorded them."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": "Merged two raw items from the same row (one omitted cost basis and reservations), then split: reservations are a concurrency invariant, not a recorded attribute, and are COMMERCE-018. The raw item's LIVE_CAPITAL flag was removed because recording units is fully met for simulated units and moves no capital. That the ledger is authoritative and double-entry across physical inventory (M p43 §31) and the physical inventory/commerce subledger (M p23 §15) belong to LEDGER."
+  },
+  {
+    "id": "COMMERCE-018",
+    "domain": "COMMERCE",
+    "title": "Reserved inventory cannot be reserved or sold twice",
+    "statement": "The Inventory Ledger must support reservations of physical units such that a reserved unit cannot be reserved again or sold to another buyer until its reservation is released.",
+    "rationale": "Reservations stop the platform from double-selling stock it has already committed. A unit sold twice is a failed delivery and a chargeback the ledger said could not happen.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage, domain table, Inventory Ledger row ('reservations')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Under generated interleavings of reserve, release and sell operations on the same units, no unit is ever held by two live reservations or sold while reserved to a different reservation, and every refused operation leaves the ledger unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "CAPITAL"
+    ],
+    "notes": "Split from the merged Inventory Ledger items (see COMMERCE-017). P0 as a correctness invariant of ledger/financial truth; like COMMERCE-013 it is a precondition rather than a scheduling claim. The one reservation fabric shared by capital and inventory across arbitrage and market making (M p25 §18.1) belongs to CAPITAL; this requirement is its commerce-side guarantee."
+  },
+  {
+    "id": "COMMERCE-019",
+    "domain": "COMMERCE",
+    "title": "Resale Router chooses the resale venue",
+    "statement": "The Resale Router must choose the resale venue for each unit: marketplace, auction or direct.",
+    "rationale": "The same unit nets different proceeds, fees and time-to-sale on different venues; the venue choice is part of the trade, not an afterthought.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage, domain table, Resale Router row"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "For fixture units whose fees, expected price and time-to-sale differ by venue, the router selects one of the three venue types, records the figures it compared as its rationale, and makes the same choice when the event log is replayed."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": "Split from the raw Resale Router item, which stated two independently verifiable things: venue choice (here) and pricing/repricing (COMMERCE-020). Listing on a real venue is BLOCKED under ADR 0021 beyond its simulated form."
+  },
+  {
+    "id": "COMMERCE-020",
+    "domain": "COMMERCE",
+    "title": "Resale Router prices and reprices listed inventory",
+    "statement": "The Resale Router must price inventory it lists and reprice it while the unit remains unsold.",
+    "rationale": "A physical listing priced once goes stale as the market moves and carry accrues; repricing is how time-to-sale and capital lockup are managed after purchase.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§20 Physical Commerce & Product Arbitrage, domain table, Resale Router row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a simulated marketplace a listed unit receives an initial price; when the fixture market price moves or a time-to-sale threshold elapses, a new price is published and recorded; and a unit already sold is never repriced."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": "Split from the raw Resale Router item (see COMMERCE-019). Publishing a price on a real venue is BLOCKED under ADR 0021 beyond its simulated form."
+  },
+  {
+    "id": "COMMERCE-021",
+    "domain": "COMMERCE",
+    "title": "Physical products are a supported coverage class",
+    "statement": "Physical products must be a supported coverage class whose support model spans SKU-level commerce, auctions, collectibles, wholesale/retail arbitrage and inventory.",
+    "rationale": "The coverage table is where a class is declared supported; physical products must be declared with a support model that reaches the commerce plane, not only a valuation.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§21 Asset & Market Coverage, class table, row 'Physical products'"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The coverage registry holds a Physical products class whose support model names each of the five sub-forms, and an acceptance test fails if any sub-form maps to no commerce component (COMMERCE-008 to -020) and only to a valuation model."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "COVERAGE",
+      "ASSET"
+    ],
+    "notes": "The extensible registry across all physical classes (M p43 §31, 'All major liquid, event-driven, private/illiquid, tokenized and physical classes have an extensible registry') belongs to COVERAGE. Registering the class is buildable in paper form; trading in it is BLOCKED under ADR 0021, which is why both flags are kept."
+  }
+]

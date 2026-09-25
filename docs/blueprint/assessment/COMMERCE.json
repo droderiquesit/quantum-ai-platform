@@ -1,0 +1,513 @@
+[
+  {
+    "id": "COMMERCE-001",
+    "status": "PARTIAL",
+    "current": "Only one sliver of the eleven-stage lifecycle exists in code: qip_financial::physical::{PhysicalArbitrage, LandedCost, LogisticsTerms} (backend/crates/libs/qip-financial/src/physical.rs:260,356,244) prices a consignment's landed cost and delivered-price arbitrage margin. Everything else the plane needs -- Product Scout, SKU/Entity Resolver, Purchase Executor, Logistics Brain as a planner, Inventory Ledger, Resale Router, and a Physical products coverage-class registration -- has no implementation at all (see COMMERCE-005 to -021). physical.rs itself has zero cross-crate callers (`grep -rl PhysicalArbitrage backend/crates` returns only its own src/tests).",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/physical.rs:1-49 (module doc: 'this module has no production caller and no default anything')",
+      "backend/crates/libs/qip-financial/src/physical.rs:260,356,244 LandedCost/PhysicalArbitrage/LogisticsTerms",
+      "backend/crates/libs/qip-financial/src/physical.rs:882 a_gross_spread_that_looks_profitable_is_negative_once_the_goods_are_landed (embedded test)",
+      "rg -il 'scout|sku|purchase_executor|inventory_ledger|resale_router' backend/crates --type rust -- no matches for any of these five names"
+    ],
+    "gap": "No Product Scout, SKU/Entity Resolver, Purchase Executor, Inventory Ledger or Resale Router exists in any form, simulated or real; the Logistics Brain has no planner, only a cost calculator; the one piece that exists (landed-cost pricing) is unreached dead code with no production caller.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-008",
+      "COMMERCE-011",
+      "COMMERCE-012",
+      "COMMERCE-017",
+      "COMMERCE-019"
+    ],
+    "blocked_by": "",
+    "verification": "No acceptance test exists (rg -l 'physical' backend/crates/tests/qip-acceptance/tests/ -i returns nothing). cargo test -p qip-financial physical:: exercises only the pricing arithmetic; the end-to-end acceptance test COMMERCE-001's own verification names (discovery through resale listing) has nothing downstream of discovery to drive.",
+    "work_item": "E17-commerce-plane",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "This is the umbrella row for COMMERCE-002 through COMMERCE-021; its status and gap are the sum of theirs. Live purchase/sale anywhere in the lifecycle stays structurally BLOCKED by ADR 0021/C1 regardless of how much of the paper/simulated pipeline gets built; that boundary is not what is missing today -- the paper pipeline itself is."
+  },
+  {
+    "id": "COMMERCE-002",
+    "status": "MISSING",
+    "current": "Nothing records a return as an event. The only 'returns' concept in the codebase is qip_financial::physical::Returns (backend/crates/libs/qip-financial/src/physical.rs:227-237) -- a statistical rate (fraction returned, cost per unit, recovery rate) folded into LandedCost as a pre-purchase cost estimate, not a record of an actual return reversing a specific sale.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/physical.rs:226-237 (Returns: rate/cost_per_unit/recovery_rate -- an estimation input, not an event)",
+      "rg -il 'inventoryledger|inventory_ledger|resalerouter|resale_router' backend/crates --type rust -- no matches, so there is no ledger to restore a returned unit to and no settlement to adjust"
+    ],
+    "gap": "No return-record type linking a return to the sale it reverses, no restoration of the unit (with its condition) to an Inventory Ledger, and no settlement adjustment -- because neither the ledger (COMMERCE-017) nor marketplace settlement (COMMERCE-004) exists yet to receive the update.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-004",
+      "COMMERCE-017"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. The requirement's own check (a sale, a buyer return, a linked return record, a restored ledger entry, an adjusted settlement) needs COMMERCE-004 and COMMERCE-017 built first.",
+    "work_item": "E17-returns-flow",
+    "tier": "T2",
+    "size": "M",
+    "notes": "A real return moves real money and goods, so the flow's live form stays BLOCKED under ADR 0021/C1; its paper form is simply unbuilt today."
+  },
+  {
+    "id": "COMMERCE-003",
+    "status": "PARTIAL",
+    "current": "qip_financial::physical::{Customs, LogisticsTerms::cost} determines duty per transaction: Customs.duty_rate (backend/crates/libs/qip-financial/src/physical.rs:129-138) is applied to the declared value of what actually reaches the border (not what shipped) in LogisticsTerms::cost (physical.rs:551-562), and the resulting duty is a named component of LandedCost (physical.rs:282,603-618). No broader sales/VAT tax figure is modelled -- only customs duty.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/physical.rs:129-138 (Customs: duty_rate/clearance_fee/clearance_days)",
+      "backend/crates/libs/qip-financial/src/physical.rs:551-562 (duty computed on at-border quantity, not shipped quantity)",
+      "backend/crates/libs/qip-financial/src/physical.rs:849-879 duty_is_charged_on_what_reaches_the_border_and_not_on_what_was_shipped (embedded test)"
+    ],
+    "gap": "Duty determination exists and is correctly computed, but is unreached from any production caller (zero cross-crate callers), covers only customs duty and not a general per-transaction sales-tax figure, and no fixture-exact acceptance test compares the output against a known tax/duty schedule as the requirement's verification asks.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial physical:: duty_is_charged_on_what_reaches_the_border_and_not_on_what_was_shipped -- proves the duty arithmetic in isolation; no integration/fixture test against a committed tax/duty schedule exists.",
+    "work_item": "E17-tax-duty-wiring",
+    "tier": "T2",
+    "size": "S",
+    "notes": "Paying or filing the duty is an external action and stays BLOCKED under ADR 0021/C1; determining the amount -- what this requirement actually asks for -- is already computed correctly, just unintegrated."
+  },
+  {
+    "id": "COMMERCE-004",
+    "status": "PARTIAL",
+    "current": "qip_financial::physical::{MarketplaceFees, LogisticsTerms::arbitrage, PhysicalArbitrage::margin} compute net-of-fee proceeds arithmetic: the ad valorem fee is charged on proceeds in LogisticsTerms::arbitrage (backend/crates/libs/qip-financial/src/physical.rs:628-653), folded into LandedCost.marketplace, and PhysicalArbitrage::margin (physical.rs:365-370) is proceeds minus total landed cost including that fee. There is no settlement record type, and nothing gates a sale from being 'reported as settled' before one exists.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/physical.rs:215-224 (MarketplaceFees: ad_valorem/per_unit/per_consignment)",
+      "backend/crates/libs/qip-financial/src/physical.rs:624-653 (LogisticsTerms::arbitrage charges the ad valorem fee on proceeds)",
+      "backend/crates/libs/qip-financial/src/physical.rs:882-949 a_gross_spread_that_looks_profitable_is_negative_once_the_goods_are_landed -- its only fee assertion is deal.cost.marketplace.is_positive() (physical.rs:939), which the per-unit and per-consignment fees satisfy on their own; no test pins the ad valorem fee or compares net proceeds to a fee schedule"
+    ],
+    "gap": "Fee-net proceeds are computed as pure arithmetic, but no settlement record exists, nothing links a sale to it, and nothing refuses to call a sale settled before that record exists -- there is no marketplace sale event for it to attach to in the first place.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-019"
+    ],
+    "blocked_by": "",
+    "verification": "No test demonstrates the fee arithmetic: deleting the ad valorem fee on proceeds (physical.rs:643) leaves every physical:: test passing. No settlement-record test exists because no settlement-record type exists.",
+    "work_item": "E17-marketplace-settlement",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Real settlement against a real marketplace stays BLOCKED under ADR 0021/C1 beyond its simulated form; the simulated form itself has not been built. verify: tested true->false. Mutations were run in an isolated scratch copy of backend/ (never the shared tree); baseline `cargo test -p qip-financial --lib physical::` printed 'test result: ok. 11 passed; 0 failed', and the copy was restored and cmp-identical to the tree afterwards. Replacing `cost.marketplace += Self::mul(\"the marketplace ad valorem fee\", proceeds, ...)` in LogisticsTerms::arbitrage (physical.rs:643) with a discarded binding still printed 'test result: ok. 11 passed; 0 failed', so the ad valorem fee-on-proceeds this row cites as its implemented sliver is exercised by no test. Status stays PARTIAL (implemented, unreached, untested); not NEEDS-VALIDATION, because nothing reaches it from a composition root."
+  },
+  {
+    "id": "COMMERCE-005",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il 'sku' backend/crates --type rust -- no matches anywhere in the workspace",
+      "rg -il 'commerce' backend/crates --type rust -i -- only backend/crates/apps/qip-cli/src/blueprint.rs, the blueprint-register renderer, which names the COMMERCE domain in a label string and implements no commerce logic"
+    ],
+    "gap": "No SKU concept, no completed-cycle record, and no learning loop exists; there is nothing for a feasibility assessment to draw realised figures from.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-011",
+      "COMMERCE-019"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; nothing implements this requirement.",
+    "work_item": "E17-sku-economics-learning",
+    "tier": "T3",
+    "size": "M",
+    "notes": "The shadow form (learning from observed sold-listing prices without owning a unit) is not blocked by ADR 0021; only learning from a real, owned position's realised economics is."
+  },
+  {
+    "id": "COMMERCE-006",
+    "status": "MISSING",
+    "current": "The only related scaffolding is generic and pre-existing: qip_data_finder::category::ContentSignal::ProductListingOrAuction maps to the general-purpose SourceCategory::Marketplace bucket used by the deep-web discovery classifier's §7.6.1 vocabulary (backend/crates/services/qip-data-finder/src/category.rs:208,244), which is one coarse category shared with every kind of marketplace content, not a catalogue of the seven specific commerce source kinds §6.1 names. The shipped connector registry carries seven sources total and none is commerce-related.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/category.rs:208,244,344-345 (ProductListingOrAuction -> Marketplace mapping and its test every_mapped_signal_classifies_into_its_own_table_row)",
+      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:50-58 (KNOWN_SOURCES: Coinbase, Frankfurter, ECB, NY Fed, NWS weather, Kalshi, Alpaca -- none is a SKU listing, inventory, shipping-estimate, marketplace-fee, auction-data or resale-market source)",
+      "backend/crates/services/qip-market-ingestion/src/connectors/manifests/{coinbase-spot-ticker.json:35,alpaca-daily-bars.json:48,kalshi-markets.json:33} carry category \"marketplace\" for financial venues, not product marketplaces; data/datasets/source-candidates.json has no product, listing, auction, shipping, resale or SKU entry"
+    ],
+    "gap": "No source of any of the seven named commerce kinds (SKU listings, inventories, prices, shipping estimates, marketplace fees, auction data, resale markets) is catalogued anywhere; the existing 'Marketplace' bucket is a general discovery-classification label, not a source registry entry with an evaluated licensing posture.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No registry test enumerating the seven commerce source kinds exists; cargo test -p qip-data-finder category:: proves only the unrelated general classification mapping.",
+    "work_item": "E17-commerce-source-universe",
+    "tier": "T2",
+    "size": "M",
+    "notes": "No LIVE_CAPITAL/EXTERNAL_ACTION flag on the raw requirement -- cataloguing sources is pure data work, not blocked by anything in ADR 0099's conflict register. verify: status unchanged (MISSING confirmed). Added evidence so the existing \"marketplace\" category on three connector manifests is not mistaken for commerce coverage: it labels exchanges, and the candidate dataset holds no commerce source kind."
+  },
+  {
+    "id": "COMMERCE-007",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il 'inventoryledger|inventory_ledger' backend/crates --type rust -- no matches",
+      "backend/crates/libs/qip-financial/src/physical.rs:260-288 (LandedCost) tracks duty/clearance/storage/marketplace/returns as consignment-level cost components, not as a per-unit record naming SKU identity, condition, location, inventory state, insurance, payment/chargeback risk"
+    ],
+    "gap": "No record type tracks the twelve named attributes (SKU identity, condition, location, inventory state, shipping, insurance, customs/duties, tax, marketplace fees, payment/chargeback risk, storage, returns) per unit, with absence explicit and construction refusing an incomplete record; the closest analogue, LandedCost, is a consignment-level cost breakdown with no insurance or chargeback-risk field at all.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No property test exists; nothing implements the record type it would exercise.",
+    "work_item": "E17-physical-unit-record-contract",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Overlaps but is wider than the Inventory Ledger's own per-unit fields (COMMERCE-017, condition/location/cost-basis/ownership); this requirement additionally needs shipping, insurance, fees and chargeback risk, none of which exist in any form today, including insurance, which is not modelled anywhere in the codebase for physical goods."
+  },
+  {
+    "id": "COMMERCE-008",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il 'scout' backend/crates --type rust -- only backend/crates/apps/qip-cli/src/blueprint.rs, which names 'Scout fabric' in a domain-label string for the traceability-matrix renderer and implements no discovery logic",
+      "backend/crates/services/qip-opportunity-engine/src/detector.rs:17-47 (AnomalyKind, the DISCOVER stage's detectors: price move, volatility, volume, structural break, regime, correlation, liquidity, fundamental/macro surprise, sentiment, alt-data divergence, catalyst, unexplained move -- none is an auction, liquidation, wholesale listing, supply shock or cross-retailer price/availability gap); every 'auction' hit in backend (qip-orderbook, qip-protocols itch/sbe) is an exchange opening/closing auction"
+    ],
+    "gap": "No Product Scout exists in any form; none of the five named opportunity kinds (price/availability gaps, auctions, liquidations, wholesale listings, supply shocks) is detected by anything in the workspace.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-006"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; nothing implements this requirement.",
+    "work_item": "E17-product-scout",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: status unchanged (MISSING confirmed). Searched for product scout, liquidation, wholesale, supply shock and auction under several spellings across backend/, infrastructure/, frontend/ and .github/; added the opportunity engine as the nearest existing detector framework, which has none of the five kinds."
+  },
+  {
+    "id": "COMMERCE-009",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il '\\bsku\\b' backend/crates --type rust -i -- no matches anywhere in the workspace",
+      "backend/crates/services/qip-entity-resolution/src/entity.rs:12-25 (EntityKind: Company, Person, Country, Sector, Industry, Commodity, Currency, Index, Venue, CentralBank, Regulator, Fund -- no Product/SKU kind; the crate resolves financial entities from filings, wires and identifiers and is the in-tree pattern a SKU resolver would extend, not an implementation of one)"
+    ],
+    "gap": "No SKU/Entity Resolver exists; nothing maps equivalent listings across retailers, marketplaces or regions to one resolved identity.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-008"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; nothing implements this requirement.",
+    "work_item": "E17-sku-entity-resolver",
+    "tier": "T3",
+    "size": "M",
+    "notes": "verify: status unchanged (MISSING confirmed). The assessor's evidence omitted qip-entity-resolution, which exists and could be misread as covering this; it has no product kind and no retailer/marketplace/region listing model."
+  },
+  {
+    "id": "COMMERCE-010",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il 'counterfeit' backend/crates --type rust -- no matches anywhere in the workspace",
+      "backend/crates/services/qip-entity-resolution/src/lib.rs:9-15 (the financial-entity resolver's uncertain case is Decision::Ambiguous, held for review -- a low-confidence hold, which is exactly what the requirement says a counterfeit must not be reduced to; there is no counterfeit or variant finding type)"
+    ],
+    "gap": "No counterfeit or variant detection exists at all; there is no resolver for it to guard.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-009"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; nothing implements this requirement.",
+    "work_item": "E17-sku-counterfeit-detection",
+    "tier": "T3",
+    "size": "M",
+    "notes": "Overlaps EVID's cryptographic/source-authenticity work as a secondary domain; no authenticity-evidence machinery for physical goods exists in either domain today. verify: status unchanged (MISSING confirmed). Added qip-entity-resolution's Ambiguous decision as evidence that the nearest existing machinery is a confidence hold, not a counterfeit finding."
+  },
+  {
+    "id": "COMMERCE-011",
+    "status": "PARTIAL",
+    "current": "qip_financial::physical::{LandedCost, PhysicalArbitrage, LogisticsTerms::cost/arbitrage} (backend/crates/libs/qip-financial/src/physical.rs:260,356,525,628) computes one of the six required figures -- all-in landed cost, as LandedCost::total() (physical.rs:292-300) -- and reports its components separately (goods/freight/duty/clearance/storage/marketplace/returns) rather than rolled into one number. It does not compute expected resale (sale_price is a caller-supplied argument, not an estimate), time-to-sale, return risk as an output, inventory carry as a distinct figure, or capital lockup; it takes a return *rate* as an input, not as computed risk. LandedCost also carries elapsed_days (departure to sale, summed from declared legs, clearance days and a declared storage_days), storage (charged on units still on hand) and returns (handling net of recovery, from a declared rate): these are input-driven cost-side analogues of time-to-sale, inventory carry and return risk, not the estimated figures the requirement names, and nothing computes capital lockup.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/physical.rs:290-352 (LandedCost::total/per_delivered_unit/per_sold_unit/describe)",
+      "backend/crates/libs/qip-financial/src/physical.rs:628-653 (LogisticsTerms::arbitrage takes sale_price as an argument, so resale is not estimated by this code)",
+      "backend/crates/libs/qip-financial/src/physical.rs:934-941 (the six landed-cost components asserted separately, embedded test)"
+    ],
+    "gap": "Only all-in landed cost is computed as a named figure, and its total is not pinned by any test (see verify note); expected resale, an estimated time-to-sale, return risk, inventory carry and capital lockup are absent as estimated outputs (elapsed_days/storage/returns are declared-input cost components, not estimates), there is no single assessment type returning all six together, and no refusal when an input one of the six needs is missing.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-008",
+      "COMMERCE-009"
+    ],
+    "blocked_by": "",
+    "verification": "Individual components are pinned elsewhere (freight == 700 and elapsed_days == 23 in a_route_that_does_not_join_up_is_refused_and_a_route_that_does_is_costed; storage == 1000 in storage_is_charged_on_what_is_still_on_hand_and_never_on_what_has_spoiled; the duty base in duty_is_charged_on_what_reaches_the_border_and_not_on_what_was_shipped), but the all-in total LandedCost::total() is exercised only through viability comparisons and no test compares it to a hand-computed value; no test exists for the other five figures.",
+    "work_item": "E17-commerce-feasibility-assessment",
+    "tier": "T2",
+    "size": "M",
+    "notes": "No LIVE_CAPITAL/EXTERNAL_ACTION flags on the raw requirement -- this is pure computation and nothing in it is blocked by ADR 0099's conflict register. verify: tested true->false. Mutations were run in an isolated scratch copy of backend/ (never the shared tree); baseline `cargo test -p qip-financial --lib physical::` printed 'test result: ok. 11 passed; 0 failed', and the copy was restored and cmp-identical to the tree afterwards. Deleting `+ self.duty` from LandedCost::total() (physical.rs:295) still printed 'test result: ok. 11 passed; 0 failed' -- the 'all-in' property of the one figure this row claims is not demonstrated, since a component can be dropped from the sum undetected. Also corrected 'current'/'gap' to record that elapsed_days, storage and returns exist as declared-input cost components (partial analogues, not estimates). Status stays PARTIAL."
+  },
+  {
+    "id": "COMMERCE-012",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il 'purchaseexecutor|purchase_executor' backend/crates --type rust -- no matches anywhere in the workspace",
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs:235 ('physical logistics and freight are outside scope', the commodities analyst's own stated limitation)"
+    ],
+    "gap": "No Purchase Executor and no merchant/marketplace adapter of any kind exists -- not a real one and not a simulated one. There is nothing for COMMERCE-013 to -015's controls to gate.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-011"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; nothing implements this requirement, simulated or otherwise.",
+    "work_item": "E17-purchase-executor-simulated",
+    "tier": "T3",
+    "size": "L",
+    "notes": "A real merchant/marketplace adapter is structurally refused under ADR 0021/C1 and named explicitly in ADR 0099's conflict register ('purchase executors for physical commerce'); a simulated adapter is not blocked by that register but has not been built either, so this is scored MISSING rather than BLOCKED -- nothing in-tree is refused by a conflict here, there is simply nothing built yet (the same reasoning the ASSET domain's assessment applies to ASSET-014's overlapping inventory-ledger gap)."
+  },
+  {
+    "id": "COMMERCE-013",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il 'purchase_executor' backend/crates --type rust -- no matches; there is no purchase path for a limit to gate"
+    ],
+    "gap": "No purchase path exists, so no deterministic pre-purchase limit check exists either. The platform's existing capital-protection pattern (limits checked before an order exists, e.g. qip_capital::reservation::ReservationLedger) has no commerce-purchase counterpart.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-012"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; nothing implements this requirement.",
+    "work_item": "E17-purchase-limits-gate",
+    "tier": "T2",
+    "size": "S",
+    "notes": "P0 as a capital-protection invariant, but scoring is MISSING rather than BLOCKED: the control is fully buildable and provable against a simulated adapter once COMMERCE-012 exists; nothing about it is refused by ADR 0099's conflict register."
+  },
+  {
+    "id": "COMMERCE-014",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il 'purchase_executor' backend/crates --type rust -- no matches; there is no merchant/marketplace account concept to control"
+    ],
+    "gap": "No merchant/marketplace account model, no authority scoping, and no attribution of a purchase to a controlled account exists.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-012"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; nothing implements this requirement.",
+    "work_item": "E17-purchase-account-controls",
+    "tier": "T2",
+    "size": "S",
+    "notes": "P0 as a precondition of any purchase path, same reasoning as COMMERCE-013: buildable and provable against simulated accounts, not blocked by the conflict register."
+  },
+  {
+    "id": "COMMERCE-015",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il 'purchase_executor|chargeback' backend/crates --type rust -- no matches; there is no purchase path and no fraud-finding concept for physical purchases"
+    ],
+    "gap": "No fraud-safeguard check exists on any purchase path, because no purchase path exists.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-012"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; nothing implements this requirement.",
+    "work_item": "E17-purchase-fraud-safeguards",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P0 as a precondition (the refusal-before-payment invariant); fraud-detection quality itself is out of scope for this row and is P2 elsewhere."
+  },
+  {
+    "id": "COMMERCE-016",
+    "status": "PARTIAL",
+    "current": "qip_financial::physical::LogisticsTerms (backend/crates/libs/qip-financial/src/physical.rs:244-256) names a route of Legs, each with a TransportMode (physical.rs:74-91) and transit days, plus Customs (duty/clearance fee/clearance days) and per-unit/per-day storage. This is a cost calculator over a caller-declared route, not a planner: it has no carrier field (only a transport mode), no consolidation decision, no named warehouse entity, and no insurance component or delivery-risk estimate at all.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/physical.rs:93-125 (Leg/TransportMode: route and mode only, no carrier identity)",
+      "backend/crates/libs/qip-financial/src/physical.rs:127-138 (Customs: the only 'customs step' modelled)",
+      "rg -il 'insurance' backend/crates --type rust -- only unrelated data-retention/campaign code and metaphorical comment usage in qip-kernel; no insurance cost or decision exists for physical goods anywhere"
+    ],
+    "gap": "No carrier choice, no consolidation decision, no named warehouse, no insurance decision and no delivery-risk estimate exist; LogisticsTerms costs a route the caller already fully specified rather than planning one, and nothing refuses an incomplete plan because there is no plan type, only a cost function.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-012"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial physical:: a_route_that_does_not_join_up_is_refused_and_a_route_that_does_is_costed proves the route/customs/storage cost arithmetic; no test exists for carrier, consolidation, warehouse, insurance or delivery risk because none of them is modelled.",
+    "work_item": "E17-logistics-brain-plan",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Booking a real carrier or buying real insurance is an external action, BLOCKED under ADR 0021/C1 beyond planning and simulation; the plan itself, which is what the requirement actually asks for, is mostly unbuilt rather than blocked."
+  },
+  {
+    "id": "COMMERCE-017",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il 'inventoryledger|inventory_ledger' backend/crates --type rust -- no matches anywhere in the workspace",
+      "backend/crates/libs/qip-financial/src/physical.rs (LandedCost/PhysicalArbitrage) holds route-level cost economics, no unit-level condition/location/cost-basis/ownership fields at all"
+    ],
+    "gap": "No Inventory Ledger exists; nothing records a physical unit's condition, location, cost basis or ownership.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-012",
+      "COMMERCE-016"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; nothing implements this requirement.",
+    "work_item": "E17-physical-inventory-ledger",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Same underlying gap the ASSET domain's assessment records as ASSET-014 (same work_item name, deliberately) and ASSET-015 (physical.rs's unintegrated pricing economics); this row is the commerce-side view of it."
+  },
+  {
+    "id": "COMMERCE-018",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il 'inventory_ledger' backend/crates --type rust -- no matches; there is no inventory ledger to reserve against",
+      "backend/crates/services/qip-capital/src/reservation.rs (ReservationLedger, capital reservation only -- holds money between check and trade, not physical units) confirms the platform's existing reservation-fabric pattern has no commerce-inventory counterpart"
+    ],
+    "gap": "No reservation mechanism exists over physical units; there is no ledger for one to guard against a double sale.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-017"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; nothing implements this requirement.",
+    "work_item": "E17-inventory-reservations",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P0 as a correctness invariant, same category as ReservationLedger's capital-side guarantee (qip-capital), which is the pattern to extend rather than reinvent."
+  },
+  {
+    "id": "COMMERCE-019",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il 'resalerouter|resale_router' backend/crates --type rust -- no matches; rg -n 'resale' backend/crates --type rust matches only two comments in physical.rs's Returns doc, not a router"
+    ],
+    "gap": "No Resale Router exists; nothing chooses a resale venue for a unit.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-017"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; nothing implements this requirement.",
+    "work_item": "E17-resale-router-venue-choice",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Listing on a real venue stays BLOCKED under ADR 0021/C1 beyond its simulated form; the simulated form has not been built."
+  },
+  {
+    "id": "COMMERCE-020",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "rg -il 'resale_router' backend/crates --type rust -- no matches; there is no listed-inventory concept for a repricing loop to act on"
+    ],
+    "gap": "No pricing or repricing of listed inventory exists.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-019"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; nothing implements this requirement.",
+    "work_item": "E17-resale-router-repricing",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Publishing a price on a real venue stays BLOCKED under ADR 0021/C1 beyond its simulated form."
+  },
+  {
+    "id": "COMMERCE-021",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/asset_class.rs:13-27 (AssetClass enum: 13 variants -- Equity, FixedIncome, Credit, Rates, ForeignExchange, Commodity, Derivative, DigitalAsset, Fund, PrivateMarket, RealAsset, Cash, StructuredProduct -- no Physical variant)",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:29-48 (registers nine of the thirteen AssetClass variants; none is a physical-products class, and RealAssetDetails (qip-financial/src/extensions.rs:817-827) models real estate -- property_type/location/cap-rate/occupancy -- not SKU commerce)",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:585-589 (the RealAsset record cites §16.1 'Unlocks: real estate, art, collectibles' under ValuationEngine::IlliquidValuation -- collectibles are reachable only through a valuation engine, which is precisely the mapping the requirement's check fails on)"
+    ],
+    "gap": "No 'Physical products' coverage class exists in AssetClass, the asset_class_registry, or anywhere else; there is no support-model record naming SKU-level commerce, auctions, collectibles, wholesale/retail arbitrage or inventory as sub-forms.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COMMERCE-008",
+      "COMMERCE-011",
+      "COMMERCE-017"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; grep -n 'Physical' backend/crates/libs/qip-financial/src/asset_class.rs returns nothing.",
+    "work_item": "E17-physical-coverage-class",
+    "tier": "T2",
+    "size": "S",
+    "notes": "Registering the class is buildable in paper form once its five sub-forms have something to point at (COMMERCE-008 to -020); trading in it stays BLOCKED under ADR 0021/C1, which is why the requirement keeps both LIVE_CAPITAL and EXTERNAL_ACTION flags even though registration itself is not blocked. verify: status unchanged (MISSING confirmed). Added the registry's RealAsset/IlliquidValuation record, the only place collectibles appear, as evidence that the one sub-form the tree mentions maps to a valuation model and no commerce component."
+  }
+]

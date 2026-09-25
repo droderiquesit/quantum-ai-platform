@@ -1,0 +1,583 @@
+[
+  {
+    "id": "MODEL-049",
+    "status": "PARTIAL",
+    "current": "Two of the eight measures are already consolidated per component, the rest are scattered. qip_learning_engine::self_model::SelfModel (backend/crates/services/qip-learning-engine/src/self_model.rs:337) is a bounded per-component record (detector, analyst, rung, strategy family) carrying accuracy, hit rate and mean Brier score -- forecast accuracy and uncertainty calibration together -- charged by the kernel's LEARN stage (qip-kernel/src/platform.rs:8467 self_model.absorb) and read back by REASON through origin_factors (platform.rs:8480), in every central binary that composes Platform. qip-deepbrain's learning round records each model's PSI drift against a threshold (qip-deepbrain/src/learning.rs:1074-1087, above_threshold) and degrades the registry card via record_drift: a threshold-crossing signal for one measure (model decay), printed on the cycle line, not a GapSignal record. The other measures live apart: P&L attribution in qip_learning_engine::attribution (attribution.rs), calibration/drift in qip_ai::evaluation, streaming drift in qip_training::estimators. No Scorecard or GapSignal record type exists anywhere.",
+    "evidence": [
+      "backend/crates/services/qip-learning-engine/src/self_model.rs:337 (pub struct SelfModel; accuracy/hit_rate/mean_brier at :320-333)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8467,8480 (LEARN stage absorbs evaluations into SelfModel; REASON reads origin_factors)",
+      "backend/crates/services/qip-learning-engine/tests/self_model.rs:91 a_component_that_is_always_wrong_estimates_near_zero_and_one_always_right_near_one",
+      "backend/crates/services/qip-learning-engine/tests/self_model.rs:216 absorbing_an_evaluation_charges_every_named_component_and_skips_an_inconclusive_one",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:1074-1087 (PSI drift vs threshold, record_drift)",
+      "backend/crates/services/qip-learning-engine/src/attribution.rs:48 (struct Attribution)",
+      "backend/crates/libs/qip-ai/src/evaluation.rs:1-60 (CalibrationBin, PredictionOutcome)",
+      "rg -in \"scorecard|gapsignal|gap_signal\" -g '*.rs' backend -- only doc-comment prose about an unrelated 'corridor policy scorecard', no type"
+    ],
+    "gap": "Only forecast accuracy and calibration are consolidated (per component, in SelfModel). P&L attribution, execution quality, model decay, source value, hallucination/error rates and unexplained residuals are not in any consolidated per-model record; no Scorecard or GapSignal record type exists; nothing is published under those names; and no threshold breach emits a GapSignal (the PSI drift threshold only prints a line and degrades one registry card). The Curriculum Engine this requirement feeds has no input.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-learning-engine --test self_model (the two-measure consolidation); rg -in 'struct Scorecard|struct GapSignal' backend returns nothing -- the integration test asserting a Scorecard carries all eight measures and a threshold breach emits a GapSignal remains to be written",
+    "work_item": "E16",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: upgraded MISSING -> PARTIAL. The assessor missed qip_learning_engine::self_model::SelfModel, a bounded per-component record consolidating two of the eight measures (accuracy and Brier calibration), charged from qip-kernel's LEARN stage in every central binary and tested in qip-learning-engine/tests/self_model.rs; and the deep brain's PSI drift threshold, a threshold signal for model decay. 'Some of the behaviour exists' is PARTIAL by the status definitions; the Scorecard/GapSignal records themselves still do not exist, so the work item stands. deployable follows this file's convention for code reached from the Cloud Run binaries. | P3 in the blueprint (master Phase 9 consolidation). The individual measures it would consolidate are each independently tested; the consolidation itself is untested because it does not exist."
+  },
+  {
+    "id": "MODEL-050",
+    "status": "BLOCKED",
+    "current": "infrastructure/terraform/modules/ai declares a KMS key, a versioned GCS staging bucket, a Vertex AI Metadata Store and a Vertex AI serving Endpoint, all gated by var.enable_vertex_ai (default false in dev/test/stage/prod). No google_vertex_ai custom-training-job or pipeline resource with a GPU/TPU/CPU machine type exists anywhere in the tree. The real training path is qip_training::local::LocalTrainer (backend/crates/services/qip-training/src/local.rs) — in-process ridge regression and gradient-boosted stumps — which needs none of this infrastructure. The Rust-side port also exists: qip_training::vertex::VertexAiProvider renders a Vertex custom job with a machine_type and optional accelerator (backend/crates/services/qip-training/src/vertex.rs:115-175,1165-1176) and is tested against a fake transport (qip-training/tests/vertex.rs), with zero production callers. The permitted in-tree form, LocalTrainer, is called from qip-deepbrain's learning round (qip-deepbrain/src/learning.rs:1316), reached from main.rs through node::run and EvolutionEngine.",
+    "evidence": [
+      "infrastructure/terraform/modules/ai/main.tf:29-217",
+      "infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars: enable_vertex_ai = false",
+      "backend/crates/services/qip-training/src/vertex.rs (VertexAiProvider; tests-only, zero production callers)",
+      "backend/crates/services/qip-training/src/local.rs (the real, deployed training path)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:1316 (LocalTrainer::new() in the learning round)",
+      "backend/crates/services/qip-training/tests/training.rs:385 boosted_stumps_learn_a_shape_a_line_cannot",
+      "backend/crates/services/qip-training/src/vertex.rs:115-175 (VertexWorkload machine_type/accelerator; tests-only)"
+    ],
+    "gap": "No terraform resource actually declares a Vertex custom training job or pipeline with a GPU/TPU/CPU machine type; the module only provisions supporting storage/metadata/serving scaffolding, and even that is off by default in every environment.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C4",
+    "verification": "grep -rn 'resource \"google_vertex_ai' infrastructure/terraform — only google_vertex_ai_metadata_store and google_vertex_ai_endpoint exist, no training/pipeline resource",
+    "work_item": "E10",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "verify: flags set for the permitted form, per the BLOCKED rule -- in-process training (LocalTrainer) is implemented, tested (qip-training/tests/training.rs) and reached from qip-deepbrain's learning round; the assessor left every flag false while its own note said the permitted form covers local training. Status and blocker unchanged: Vertex custom training/pipelines on GPU/TPU is C4 (plus COST), no google_vertex_ai training/pipeline resource exists, and every environment sets enable_vertex_ai = false, so deployable stays false for the placement this requirement is about. | modules/ai's own doc comment states the intent plainly: provisioning gives 'somewhere for a training job to run', not the ability to submit one. Permitted form already covers local training (see current)."
+  },
+  {
+    "id": "MODEL-051",
+    "status": "PARTIAL",
+    "current": "Gate -> registry -> cell exists for models (ADR 0083), and the node refuses a plan file the signed payload does not name, but there is no Reflex Package Builder and no GitOps step. (1) Models: qip-deepbrain's learning round fits with LocalTrainer, registers the fit and promotes through Platform::promote_model (backend/crates/runtime/qip-kernel/src/model_serving.rs), which refuses a card without a passing evaluation, journals a ModelPromotion record before the registry adopts it, and returns the digest-named artifact; qip-api ships every promoted distillate's digest in the signed policy payload's trained_models slot (qip-api/src/mesh.rs:973); Cell::check_models_promoted (qip-edge/src/cell.rs:2579,2645-2681) refuses to deploy any plan carrying an inline model the manifest does not name at its own digest. (2) Plans: qip-edge-node's StrategyInstaller (qip-edge-node/src/strategies.rs:235-310, constructed in main.rs:583) reads the compiled plan from a node-local file (QIP_STRATEGY_PLAN_PATH) and deploys nothing unless its bytes digest to the PlanDigest the verified, fresh payload names, so a copied or edited file is refused. But the centre never produces the compiled_plan slot (qip-api/tests/mesh.rs:2324-2327 asserts it ships unproduced), so in a real deployment the plan half deploys nothing. No PackageBuilder/ReflexPackage type exists.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:1-40,240-262 (promote_model: evaluation-gated, journalled ModelPromotion)",
+      "backend/crates/apps/qip-api/src/mesh.rs:973 (payload.trained_models = models)",
+      "backend/crates/edge/qip-edge/src/cell.rs:2579,2645-2681 (check_models_promoted refuses an unpromoted inline model)",
+      "backend/crates/edge/qip-edge/tests/model_manifest.rs:113,158,213 (manifest refusal and admission tests)",
+      "backend/crates/apps/qip-edge-node/src/strategies.rs:235-310 (StrategyInstaller; digest check against the signed PlanDigest)",
+      "backend/crates/apps/qip-edge-node/tests/strategies.rs:366 a_plan_whose_bytes_are_not_the_ones_the_payload_names_deploys_nothing",
+      "backend/crates/apps/qip-api/tests/mesh.rs:2324-2327 (compiled_plan slot ships unproduced from the centre)",
+      "rg -in 'package.?builder|reflexpackage' -g '*.rs' backend -- no hits"
+    ],
+    "gap": "No Reflex Package Builder and no GitOps-driven distribution: the plan file reaches the node out of band and is checked only against a PlanDigest the centre never produces today; the cell checks that an inline model was promoted (named in the manifest) but not that the plan was built by a builder, and nothing records or checks a package's producer. Not deployable: execution_nodes = {} in every environment.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-068"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test model_manifest; cargo test -p qip-edge-node --test strategies a_plan_whose_bytes_are_not_the_ones_the_payload_names_deploys_nothing; a test that a node refuses a package the builder did not produce awaits the builder",
+    "work_item": "E04",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "verify: upgraded MISSING -> PARTIAL. The assessor was right that no builder exists, but missed ADR 0083's promote -> trained_models manifest -> Cell::check_models_promoted chain (tested in qip-edge/tests/model_manifest.rs) and the node's refusal of a plan file whose digest the signed payload does not name (qip-edge-node/tests/strategies.rs:366). Those cover the requirement's 'not registered/not promoted' and 'placed any other way' refusals for inline models and plans; the builder link and GitOps are missing, and the centre never produces the plan digest. | execution_nodes = {} in every environment (no qip-edge-node deployed anywhere), so even a built pipeline would not be deployable today."
+  },
+  {
+    "id": "MODEL-052",
+    "status": "PARTIAL",
+    "current": "qip_ai::registry::ModelRegistry::promote_artifact produces a digest-named PublishedArtifact (backend/crates/libs/qip-ai/src/registry.rs:292-338, tested at backend/crates/libs/qip-ai/tests/model_infrastructure.rs:824-925). qip-deepbrain's composition root writes it via write_model_artifact (backend/crates/apps/qip-deepbrain/src/main.rs:636-647,858-876) into config.storage.key_value('model-artifacts'). infrastructure/terraform/modules/data declares a versioned, KMS-encrypted GCS bucket google_storage_bucket.artifacts named '<prefix>-model-artifacts' (main.tf:166-185). The bucket is count-gated on enable_cloud_storage, which is false in dev, test, stage and prod, so no environment provisions it.",
+    "evidence": [
+      "backend/crates/libs/qip-ai/src/registry.rs:107-118,292-338",
+      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs:824,895,925 (promote_artifact tests)",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:636-647,858-876",
+      "infrastructure/terraform/modules/data/main.tf:166-185",
+      "backend/crates/libs/qip-storage/src/provider.rs:333-372 (key_value() refuses StorageTarget::CloudStorage; doc at :25 names 'model artifacts' as blob content)",
+      "infrastructure/environments/{dev:253,test:107,stage:107,prod:110}/terraform.tfvars: enable_cloud_storage = false"
+    ],
+    "gap": "write_model_artifact calls StorageProvider::key_value(), but key_value() explicitly refuses StorageTarget::CloudStorage for this exact content and directs callers to StorageProvider::blobs() instead (provider.rs:363-370). Under a CloudStorage-configured deployment this write would fail with Error::invalid; today it only works under Memory/File/Engine targets. There is also no fetch/read counterpart anywhere (grep for 'model_artifacts\\.' outside the write site returns nothing), so 'the package manager and nodes fetch them from there' is unimplemented.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-ai --test model_infrastructure a_version_cannot_be_re_promoted_with_different_bytes_under_the_same_reference; write_model_artifact itself has no dedicated test",
+    "work_item": "E10",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status and flags kept. Added that google_storage_bucket.artifacts is gated by enable_cloud_storage = false in all four environments, which the row omitted; it reinforces deployable = false. Confirmed key_value() refuses StorageTarget::CloudStorage (provider.rs:363-370) and that no production path reads an artifact back. | The write-path/storage-type mismatch is a small, well-scoped bug: switch the call site to .blobs()."
+  },
+  {
+    "id": "MODEL-053",
+    "status": "PARTIAL",
+    "current": "The ADR 0100 Fabric is not built, but the centre-to-cell control channel it succeeds (the ADR 0011 in-tree mesh carrying the signed PolicyPayload) already holds the digest-only half of this contract for models and plans. qip_contracts::policy::ModelManifest is a name->digest map documented 'Weights never travel this fabric' and PlanDigest carries only a digest and a strategy count ('the plan itself ships elsewhere'), both #[serde(deny_unknown_fields)] (backend/crates/libs/qip-contracts/src/policy.rs:263-280). qip-api fills trained_models from Platform::model_manifest (qip-api/src/mesh.rs:973), and qip-api/tests/mesh.rs:2533 asserts the slot names the promoted distillate by its digest. There is no availability or activation message type, no schema registry, and no consumer-group/offset concept in qip-events.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/policy.rs:263-280 (ModelManifest and PlanDigest, digest-only, deny_unknown_fields)",
+      "backend/crates/apps/qip-api/src/mesh.rs:973 (trained_models shipped from the API composition root)",
+      "backend/crates/apps/qip-api/tests/mesh.rs:2533 the_trained_models_slot_ships_unproduced_until_a_distillate_is_promoted_and_then_names_it_by_the_cells_digest",
+      "backend/crates/libs/qip-events/src/log.rs:164-184 (EventLog is in-process, not a broker)",
+      "rg -in 'struct.*Activation|enum.*Activation' -g '*.rs' backend -- no hits"
+    ],
+    "gap": "No Fabric yet (ADR 0100 decided, unbuilt); no availability or activation messages; no schema registry that rejects a message carrying package bytes -- today the only refusal is the serde shape of two structs, the digest values are unvalidated strings, and no test asserts that a manifest carrying bytes is refused.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-api --test mesh the_trained_models_slot_ships_unproduced_until_a_distillate_is_promoted_and_then_names_it_by_the_cells_digest; a schema-registry test rejecting a message carrying package bytes awaits the Fabric MVP",
+    "work_item": "E03",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: upgraded MISSING -> PARTIAL. The assessor searched qip-events for Activation types and consumer offsets and missed the policy payload's ModelManifest/PlanDigest, which carry models and plans by digest only on the existing centre->cell channel, are shipped from qip-api's composition root, and are tested. Not deployable: no cell exists to receive them (execution_nodes = {}). | An in-tree broker/journal is permitted (E03 is explicitly in-tree); only the Tokio/QUIC/prost/gRPC stack is refused (C2)."
+  },
+  {
+    "id": "MODEL-054",
+    "status": "MISSING",
+    "current": "Every environment uses a single var.project_id for every workload — infrastructure/terraform/main.tf passes project_id = var.project_id into every module block including module \"ai\" (main.tf:623-638), and the same project holds the ledger, capital and custody modules. No prod/ai (or any per-domain) GCP project or folder separation exists in the Terraform tree.",
+    "evidence": [
+      "infrastructure/terraform/main.tf: project_id = var.project_id repeated across every module block (lines 74,192,215,232,395,417,502,521,535,558,592,634,...)",
+      "rg -in 'prod.?ai|prod_ai' -g '*.tf' infrastructure — no hits"
+    ],
+    "gap": "There is no separate AI project and therefore no IAM boundary to check; an AI-plane identity and a financial-state identity currently live in the same project by construction.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "grep -rn 'project_id' infrastructure/terraform/main.tf — one project_id feeds every module; a real plan with a second project would be the test",
+    "work_item": "E14",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "This is GCP org/folder-model work, not refused by ADR 0099's conflict register directly, but a large restructuring (new project, new IAM boundary, re-plumbed Terraform providers) touching every environment."
+  },
+  {
+    "id": "MODEL-055",
+    "status": "PARTIAL",
+    "current": "The only deployed training path, qip_training::local::LocalTrainer (backend/crates/services/qip-training/src/local.rs), depends only on qip-core/qip-numerics/qip-ai/qip-strategy/qip-quant/qip-transport (backend/crates/services/qip-training/Cargo.toml) — no dependency on qip-world-model at all. qip-deepbrain's evolution/succession loops do draw on qip_simulation_engine's Backtester/CompiledHarness (Market Replay) as scoring/training input (backend/crates/apps/qip-deepbrain/src/evolution.rs:53-56).",
+    "evidence": [
+      "backend/crates/services/qip-training/Cargo.toml:1-20 (no qip-world-model dependency)",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:53-56",
+      "rg -in 'qip_world_model|WorldModel' -g '*.rs' backend/crates/services/qip-training/src — no hits",
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs:1-66 (each learning window is a fetch campaign whose manifest is journalled as ResearchCampaignClosed)",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:1112 the_cycle_drives_the_learning_desk_and_not_merely_the_search (#[cfg(test)])"
+    ],
+    "gap": "World Model Federation knowledge (the Spanner-Graph-backed store) is not an input to any training path — qip-training has no dependency on qip-world-model at all. BigQuery/Bigtable derived datasets are unused (both C4-blocked, adapters gated off). Only tick-history-shaped local data and simulation/replay output currently reach training; the 'world knowledge' input the requirement names is entirely absent.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "grep -rn qip_world_model backend/crates/services/qip-training/src — no hits; add world-knowledge input and a lineage test asserting a trained specialist references at least one world-knowledge input",
+    "work_item": "E10",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status and flags kept. Added the test that backs tested = true (node.rs:1112, a learning round fits on bar history) and the campaign manifest (campaign.rs), which is the nearest thing to the 'training campaign manifest' the check names. It references one input kind, bar/tick history; world knowledge, BigQuery, Bigtable and GCS lake inputs are absent, as the row says. | GCS/BQ/Bigtable-sourced inputs are C4-blocked; the missing world-knowledge wiring itself is not blocked, just unbuilt."
+  },
+  {
+    "id": "MODEL-056",
+    "status": "PARTIAL",
+    "current": "qip_lifecycle::evidence::DatasetManifest (backend/crates/services/qip-lifecycle/src/evidence.rs:345-358) pins a training/simulation dataset by a SHA-256 content_hash over its canonical bar encoding, plus bar count and first/last timestamps, and refuses a manifest describing nothing or carrying an uncomputed hash (tested: a_dataset_manifest_refuses_to_describe_nothing_or_to_carry_a_hash_nobody_computed, qip-lifecycle/tests/lifecycle.rs:3232). qip_training::dataset::TrainingDataset (backend/crates/services/qip-training/src/dataset.rs) has no equivalent hash/snapshot-id field. The deep brain's local-model path has a partial pin too: each learning window is fetched through a campaign whose reference is compared hash to hash on the platform's ledger and whose manifest is journalled as ResearchCampaignClosed (qip-deepbrain/src/campaign.rs:44-66). But the trained model's card records only dataset_name(subject) = 'bars:<subject>' (learning.rs:276), a live-series name rather than a snapshot identity.",
+    "evidence": [
+      "backend/crates/services/qip-lifecycle/src/evidence.rs:345-358",
+      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:3232",
+      "rg -in 'hash|digest|snapshot' -g '*.rs' backend/crates/services/qip-training/src/dataset.rs — no hits",
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs:44-66 (hash-verified reference, journalled campaign manifest)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:276 (dataset_name is a subject name, not a snapshot id)"
+    ],
+    "gap": "The pinned-snapshot discipline exists for the strategy-evolution/backtest path (DatasetManifest) but not for qip_training's own local-model TrainingDataset, and neither is backed by an actual GCS/BQ/Bigtable versioned snapshot (both C4-blocked) — 'snapshot' here is an in-tree content hash over recorded bars, not a store-level pin.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-lifecycle --test lifecycle a_dataset_manifest_refuses_to_describe_nothing_or_to_carry_a_hash_nobody_computed",
+    "work_item": "E10",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status and flags kept. Added the deep brain's campaign manifest, which pins the learning window in the log, and the finding that the model card does not link to it -- so 'every trained model records the identities of the snapshots it was trained on' still fails for the local-model path, and nothing refuses a job pointed at a live series. | Extend the same content-hash discipline to qip_training::dataset::TrainingDataset to close the gap for local-model training specifically."
+  },
+  {
+    "id": "MODEL-057",
+    "status": "PARTIAL",
+    "current": "qip_ai::registry::ModelRegistry (backend/crates/libs/qip-ai/src/registry.rs) holds ModelCard{version, evaluations: Vec<EvaluationRecord>, training_datasets, features, stage, artifact_digest}. ModelRegistry::production_version(name) acts as a single 'production' alias per model name. promote()/promote_artifact() record deployment time and, for promote_artifact, the artifact digest, refusing promotion without a passing evaluation and refusing a digest change under the same reference. Tested: a_model_needs_a_passing_evaluation_before_promotion, a_stale_evaluation_expires (model_infrastructure.rs:523,583), a_version_cannot_be_re_promoted_with_different_bytes_under_the_same_reference (:895).",
+    "evidence": [
+      "backend/crates/libs/qip-ai/src/registry.rs:56-96,220-338",
+      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs:523,583,895",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:66-110 (ModelPromotion journalled to the event log: reference, artifact_digest, distilled digest, displaced; no operator)",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs:171 a_promotion_is_journalled_before_the_registry_adopts_it_and_names_the_distillate_by_the_digest_a_cell_checks"
+    ],
+    "gap": "promote()/promote_artifact() take no operator identity, so 'moving an alias records who moved it' is unimplemented — nothing on ModelCard captures who promoted it beyond the evaluation record already attached. Only one alias slot exists (ModelStage::Production per name), not a general multi-alias system.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-ai --test model_infrastructure a_model_needs_a_passing_evaluation_before_promotion",
+    "work_item": "E10",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status and flags kept. Added that promotion evidence is journalled as a ModelPromotion record in the event log rather than held beside the version in the registry, and that it carries no operator identity either, which confirms the 'who moved it' gap."
+  },
+  {
+    "id": "MODEL-058",
+    "status": "COMPLETE",
+    "current": "backend/crates/edge/qip-edge/Cargo.toml carries zero dependency, direct or transitive, on qip-ai/qip-reasoning-engine/qip-agents. Structural, not merely behavioural: no code path from Cell::work can reach a language model.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/Cargo.toml (dependency list has no qip-ai/qip-reasoning-engine/qip-agents)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:714-754 (no_edge_cell_can_reach_a_language_model)",
+      "backend/crates/apps/qip-edge-node/tests/mesh.rs:375 a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs:333 a_policy_going_stale_narrows_the_cell_to_the_floor_and_the_gauges_move_with_it",
+      "backend/crates/tests/qip-acceptance/tests/stress.rs:1318 a_cell_cut_off_from_the_centre_spends_only_its_grant_and_then_stops",
+      "backend/crates/libs/qip-contracts/src/degradation.rs:1-50 (losing a cognitive capability narrows sizing, never halts)"
+    ],
+    "gap": "The specified verification method is 'chaos' (a running cell continuing under an unreachable AI plane, with a measured latency distribution); nothing that strong has been run because no cell is deployed anywhere (execution_nodes = {} in every environment). The structural guarantee that makes such a chaos test unnecessary in principle is proven instead.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test architecture no_edge_cell_can_reach_a_language_model",
+    "work_item": "E04",
+    "tier": "T0",
+    "size": "S",
+    "notes": "verify: kept COMPLETE after trying to refute it. The architecture test includes qip-edge-node and proves no edge crate can reach qip-ai, with a vacuity anchor; the behavioural clauses are covered by named tests the row did not cite and are now in evidence -- the cell keeps running and keeps its deployed strategy with the centre unreachable (qip-edge-node/tests/mesh.rs:375), and stale cognitive policy narrows sizing to the floor rather than halting (qip-edge/tests/telemetry.rs:333). Reached from qip-edge-node's main (mesh tick; Cell::work under the simulated feed). Not done: the chaos method with a measured latency distribution, and 'packages' in the builder sense (MODEL-051); deployable and e2e stay false because no node exists. | The structural half is done and stronger than a chaos test; a live chaos game-day needs a deployed cell, which is separately blocked by execution_nodes = {}."
+  },
+  {
+    "id": "MODEL-059",
+    "status": "BLOCKED",
+    "current": "No alternate AI region and no regional failover: one region per environment (us-east4 in dev), one project_id feeds every module. The permitted single-region form covers the retry half only. The deep brain's promotions are rebuilt from the hash-chained log on restart (qip-kernel/tests/serving.rs:224 a_restarted_platform_resumes_its_promotions_from_the_log_alone), and its language-model FallbackChain (qip-ai/src/language.rs:536-583, assembled in qip-deepbrain/src/language.rs) falls through a failing provider to the deterministic model (qip-ai/tests/model_infrastructure.rs:453).",
+    "evidence": [
+      "infrastructure/terraform/main.tf (single region/project per environment throughout)",
+      "infrastructure/environments/dev/terraform.tfvars:61-84 (every trust zone in us-east4)",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs:224 a_restarted_platform_resumes_its_promotions_from_the_log_alone",
+      "backend/crates/libs/qip-ai/src/language.rs:536-583 (FallbackChain)",
+      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs:453 the_fallback_chain_uses_the_local_model_when_the_hosted_one_is_absent",
+      "docs/adr/0099-*.md conflict register row C8 (multi-region; owner cost ceiling; billing disabled on dev)"
+    ],
+    "gap": "There is no second AI region to fail over to and no failover logic; the requirement's game day (training and research resume in the alternate region within RTO) cannot be run. Restart-from-log and provider fallback are single-region resilience, not regional failover.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-050",
+      "MODEL-054"
+    ],
+    "blocked_by": "C8",
+    "verification": "grep -rn 'region' infrastructure/environments/*/terraform.tfvars — one region per environment, no alternate",
+    "work_item": "E14",
+    "tier": "T4",
+    "size": "L",
+    "notes": "verify: MISSING -> BLOCKED (C8). The unmet half, failover to an alternate AI region, needs a second region, which ADR 0099's C8 (multi-region, owner cost ceiling) leaves refused and which the dev project's disabled billing blocks externally; the AI plane's managed placement is also C4 (MODEL-050). Per the BLOCKED rule the permitted single-region form is recorded and flagged: restart-from-log resume and language-model fallback exist, are tested and are reached from qip-deepbrain. | Presupposes MODEL-050's training placement and MODEL-054's project separation exist first."
+  },
+  {
+    "id": "MODEL-060",
+    "status": "BLOCKED",
+    "current": "nothing. qip_training::vertex::VertexAiProvider (tests-only, no production caller) has no queue/quota-aware scheduling logic even in the port; qip_training::local::LocalTrainer runs synchronously in-process with no queueing at all, so there is no accelerator quota to schedule against.",
+    "evidence": [
+      "backend/crates/services/qip-training/src/vertex.rs (no scheduling/queue logic)",
+      "backend/crates/services/qip-training/src/local.rs (synchronous, in-process)"
+    ],
+    "gap": "No GPU/TPU worker scheduling exists because no managed training runs at all.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-050"
+    ],
+    "blocked_by": "C4",
+    "verification": "n/a — no scheduling surface exists to test",
+    "work_item": "E10",
+    "tier": "T4",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "MODEL-061",
+    "status": "BLOCKED",
+    "current": "nothing. No Spot/preemptible concept anywhere in the workspace (grep for 'Spot' or 'preemptible' across qip-training and infrastructure/terraform/modules/ai returns nothing).",
+    "evidence": [
+      "rg -in 'spot|preempt' -g '*.rs' backend/crates/services/qip-training — no hits",
+      "rg -in 'spot|preempt' -g '*.tf' infrastructure/terraform/modules/ai — no hits"
+    ],
+    "gap": "No training job runs on managed capacity at all, so there is nothing to mark interruption-safe or place on Spot.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-050",
+      "MODEL-060"
+    ],
+    "blocked_by": "C4",
+    "verification": "n/a",
+    "work_item": "E10",
+    "tier": "T4",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "MODEL-062",
+    "status": "BLOCKED",
+    "current": "nothing. Same absence as MODEL-060/061 — no managed training capacity exists to reserve.",
+    "evidence": [
+      "infrastructure/terraform/modules/ai/main.tf (no reserved-capacity resource)"
+    ],
+    "gap": "No reserved-capacity mechanism, and therefore no justification record to check.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-050",
+      "MODEL-060"
+    ],
+    "blocked_by": "C4",
+    "verification": "n/a",
+    "work_item": "E10",
+    "tier": "T3",
+    "size": "S",
+    "notes": "Cheap once Vertex training exists at all — it is an inspection/policy check, not new infrastructure."
+  },
+  {
+    "id": "MODEL-063",
+    "status": "PARTIAL",
+    "current": "Private Google API routing is declared platform-wide and is not specific to training. Every trust-zone subnet sets private_ip_google_access = true (infrastructure/terraform/modules/trust-zones/main.tf:208), dev declares a 'cognition' zone among others (environments/dev/terraform.tfvars:61-84), the network module's private DNS zone CNAMEs *.googleapis.com to the restricted VIP (modules/network/main.tf:70-121), and zone egress to Google APIs is one firewall rule on var.google_apis_range (trust-zones/main.tf:333). The acceptance test no_zone_or_node_has_an_egress_rule_that_bypasses_the_proxy (qip-acceptance/tests/egress.rs:1780) asserts every egress allow rule is one of the permitted shapes, the restricted Google API range among them. No training pipeline exists to use any of it. (The previously cited modules/network/main.tf:141 is the portal's console_egress subnet, count-gated on console_egress_cidr, not a training path.)",
+    "evidence": [
+      "infrastructure/terraform/modules/trust-zones/main.tf:208 (private_ip_google_access on every zone subnet)",
+      "infrastructure/terraform/modules/trust-zones/main.tf:333 (egress to var.google_apis_range)",
+      "infrastructure/terraform/modules/network/main.tf:70-121 (googleapis.com private zone -> restricted VIP 199.36.153.8/30)",
+      "infrastructure/environments/dev/terraform.tfvars:61-84 (trust_zones declared in dev)",
+      "backend/crates/tests/qip-acceptance/tests/egress.rs:1780 no_zone_or_node_has_an_egress_rule_that_bypasses_the_proxy"
+    ],
+    "gap": "The network property is declared but unexercised — no training pipeline exists that reaches any store, so there is no traffic to prove routes privately. BigQuery/Bigtable/Spanner-Graph access from a training pipeline (the specific stores named) is separately C4-blocked.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-050",
+      "MODEL-055"
+    ],
+    "blocked_by": "C4",
+    "verification": "cargo test -p qip-acceptance --test egress no_zone_or_node_has_an_egress_rule_that_bypasses_the_proxy; a real plan with a training pipeline in a zone is still needed to show its route to the stores is the restricted VIP",
+    "work_item": "E14",
+    "tier": "T3",
+    "size": "S",
+    "notes": "verify: status and blocker kept (PARTIAL; the named stores BigQuery/Bigtable/Spanner Graph are C4). Corrected the evidence: network/main.tf:141 is the portal's console_egress subnet, not a training path; the real controls are the trust-zone subnets' private Google access, the restricted-VIP DNS zone and the Google-API egress rule. Set integrated = true (dev's tfvars enable the zones) and tested = true (egress.rs:1780 constrains every egress rule). deployable stays false: no training pipeline exists to route."
+  },
+  {
+    "id": "MODEL-064",
+    "status": "PARTIAL",
+    "current": "Roughly 2.5 of 5 links exist, in different crates with no type joining them: a data/evaluation manifest via qip_lifecycle::evidence::DatasetManifest (SHA-256 content-hash pinned, see MODEL-056); a promotion event via ModelRegistry::promote/promote_artifact (backend/crates/libs/qip-ai/src/registry.rs:277-338); an artifact_digest (registry.rs:88-96) explicitly documented as 'a digest and not a signature... ADR 0043'.",
+    "evidence": [
+      "backend/crates/libs/qip-ai/src/registry.rs:88-96,277-338",
+      "backend/crates/services/qip-lifecycle/src/evidence.rs:345-358",
+      "rg -in 'source_commit|git_commit|commit_hash|commit_sha' backend — no hits",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:66-110 (ModelPromotion: the promotion event, journalled to the hash-chained log)",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs:171 a_promotion_is_journalled_before_the_registry_adopts_it_and_names_the_distillate_by_the_digest_a_cell_checks"
+    ],
+    "gap": "Source commit is not tracked anywhere. The asymmetric-signature link is absent by the workspace's own two-dependency/no-in-tree-asymmetric-crypto constraint (ADR 0043, named in this requirement's own notes). 'Activation epoch' has no registry-level concept (qip-edge's Cell::policy_sequence() is an unrelated per-cell epoch for strategy plans, not a model/policy registry field). No single query assembles the five links.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-035",
+      "MODEL-057"
+    ],
+    "blocked_by": "",
+    "verification": "grep -rn 'source_commit\\|activation_epoch' backend — no hits; a trace-query test would need to exist once the type does",
+    "work_item": "E10",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: status and flags kept. Added the concrete promotion-event link, the ModelPromotion record journalled in the event log with its test. Confirmed rg for source_commit|git_commit|commit_sha|activation_epoch|activated_at across backend returns nothing, so the source-commit and activation-epoch links are absent and the signature link is the ADR 0043 gap. | The signature half of this gap is architectural (ADR 0043), not simply unbuilt; source-commit and activation-epoch tracking are unbuilt and cheaper to close."
+  },
+  {
+    "id": "MODEL-065",
+    "status": "PARTIAL",
+    "current": "Two gates exist and neither is the seven-check gate. The strategy gate, qip_lifecycle (attempt_promotion/GateStage, backend/crates/services/qip-lifecycle/src/{ledger.rs,gates.rs}), records named checks -- cross-validation/leakage, deflated_sharpe_above_selection and deflated_sharpe_credible at Holdout (gates.rs:224-241,365-373) -- and requires an Approval for capital-holding rungs (authority); it is reached through qip_evolution::promotion::{advance,advance_challenger} from qip-deepbrain's succession.rs. The model gate, Platform::promote_model (qip-kernel/src/model_serving.rs), refuses a card without a passing evaluation and the deep brain's learning round fits a classical baseline class beside the challenger and compares a candidate with the incumbent on the same held-out rows (qip-deepbrain/src/learning.rs:93-112,177,1316-1330) -- the benchmark check. (The ComputeRouter classical baseline the row cited runs at DECIDE-time sizing, not at promotion.)",
+    "evidence": [
+      "backend/crates/services/qip-lifecycle/src/gates.rs:224-241,365-373",
+      "backend/crates/services/qip-evolution/src/promotion.rs:20-70",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:1-40 (promote_model)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:93-112,177,1316-1330 (baseline class and incumbent comparison)"
+    ],
+    "gap": "The gate is a strategy-lifecycle gate (Candidate->Holdout->Paper->Shadow->Pilot->Scaled), not the model/policy 'Evaluation/Promotion Gate' the requirement names. There is no explicit named 'safety' check or 'risk-envelope compatibility' check at promotion time (risk checks run at decision time in the risk engine, not as a promotion precondition), and no test asserts, per each of the seven checks individually, that a candidate failing only that one is refused and the gate names it.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-lifecycle --test lifecycle (deflated-sharpe/leakage gate tests); no per-check refusal-naming test exists",
+    "work_item": "E10",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status and flags kept. Corrected the evidence: qip_optimization_engine's ComputeRouter baseline is a sizing-time computation reached from PortfolioConstructor, not a promotion check, so it does not support the 'benchmark' item; the promotion-time benchmark is the deep brain's baseline class and incumbent comparison on the model path. Safety and risk-envelope compatibility checks and the per-check refusal tests remain missing."
+  },
+  {
+    "id": "MODEL-066",
+    "status": "MISSING",
+    "current": "qip-deepbrain's evolution/learning loop reads directly from the in-process EventLog it owns (backend/crates/apps/qip-deepbrain/src/main.rs:598-604, comment: 'the log the archive below seals'), not as a registered consumer group of a separate Fabric process. qip-events has no consumer-group/offset type at all.",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/main.rs:598-604",
+      "rg -in 'ConsumerGroup|committed_offset' -g '*.rs' backend/crates/libs/qip-events/src — no hits"
+    ],
+    "gap": "There is no Fabric broker to be a consumer of (see MODEL-053), so 'asynchronous, replayable consumer with committed offsets' has nothing to attach to.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "n/a until a Fabric MVP exists",
+    "work_item": "E03",
+    "tier": "T3",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "MODEL-067",
+    "status": "PARTIAL",
+    "current": "Structurally the two paths are separate: qip_optimization_engine::router::ComputeRouter::solve (backend/crates/services/qip-optimization-engine/src/router.rs) is called only from qip-portfolio-engine's PortfolioConstructor::size (a DECIDE-stage sizing decision) and never from qip_evolution::promotion (the only production model/strategy promotion path, which takes Candidate/StrategyEvidence/Approval — no quantum-derived type exists). No deploy candidate anywhere in the workspace can be constructed from a QaoaResult/RoutingDecision.",
+    "evidence": [
+      "backend/crates/services/qip-optimization-engine/src/router.rs:196-290",
+      "backend/crates/services/qip-portfolio-engine/src/construction.rs:19-20,159,163,343,366",
+      "backend/crates/services/qip-evolution/src/promotion.rs:20-70 (Candidate/StrategyEvidence/Approval only)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:872-880,987 nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver (qip-lifecycle is in NO_SOLVER_AUTHORITY)",
+      "backend/crates/services/qip-lifecycle/Cargo.toml:27-31 (qip-optimization-engine deliberately not a dependency)"
+    ],
+    "gap": "The refusal half holds by absence: the strategy gate (qip-lifecycle) cannot reach qip-quantum, which an architecture test proves, and no deploy-candidate type can be built from a quantum result. But the model gate (Platform::promote_model) lives in qip-kernel, which does reach qip-quantum, and no test covers it; no candidate records its producer, so the gate cannot refuse 'a candidate whose producer is the quantum gateway' as the check requires; and no path exists for a quantum-informed candidate to arrive with its classical-baseline comparison attached.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test architecture nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver (strategy gate only); a test constructing a quantum-derived candidate and asserting both gates refuse it by producer still needs a producer field to exist",
+    "work_item": "E10",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: NEEDS-VALIDATION -> PARTIAL, tested -> true. A named test does cover part of it -- architecture.rs:987 puts qip-lifecycle in NO_SOLVER_AUTHORITY and proves it cannot reach qip-quantum -- so 'no test demonstrates it' was wrong. But the requirement is not wholly implemented: candidates carry no producer to refuse on, the kernel's model gate is uncovered, and the quantum-informed-with-baseline acceptance path does not exist. | Accidental-by-construction today; worth an explicit test since the safety argument currently rests on nobody having wired a path that could violate it."
+  },
+  {
+    "id": "MODEL-068",
+    "status": "PARTIAL",
+    "current": "One of the four package types is registered: qip_ai::registry::ModelRegistry stores ModelCards (backend/crates/libs/qip-ai/src/registry.rs:56-96,229) with a PublishedArtifact per promotion (registry.rs:107), held by qip-deepbrain's learning desk and promoted through the kernel. There is no package-kind discriminator and no policy, feature or risk package type in any registry, so nothing refuses a fifth kind -- register(card) accepts any ModelCard. (qip_ai::serving::ModelFormat's four variants are model encodings, not package kinds.)",
+    "evidence": [
+      "backend/crates/libs/qip-ai/src/registry.rs:56-96,220-233 (ModelCard; register takes any card)",
+      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs:523,618 (model cards register and promote)",
+      "rg -n 'enum.*Package' backend/crates/libs/qip-ai/src -- no hits"
+    ],
+    "gap": "Policy, feature and risk packages have no registry type, there is no package-kind enum, and no refusal of an unknown kind exists -- the invariant's discriminating half is absent.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-ai --test model_infrastructure a_model_needs_a_passing_evaluation_before_promotion (the model kind only); a unit test registering all four kinds and refusing a fifth awaits the discriminator",
+    "work_item": "E10",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: upgraded MISSING -> PARTIAL. The model kind, one of the four, does register, is tested and is reached from qip-deepbrain, so 'nothing implements it' overstated the absence; the type discriminator, the other three kinds and the refusal of unknown kinds are all missing. deployable follows this file's convention for the deep brain's registry (MODEL-057)."
+  },
+  {
+    "id": "MODEL-069",
+    "status": "MISSING",
+    "current": "nothing. No 'Specialist Brain Society' concept exists (grep for SpecialistBrainSociety across backend returns nothing). qip-investment-agents' 18-agent organisation (chief::Organisation) is a decision-time REASON-stage dispatch, not a knowledge source wired into any training pipeline.",
+    "evidence": [
+      "rg -in 'SpecialistBrainSociety' -g '*.rs' backend — no hits",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs:113-260 (decision-time dispatch only)"
+    ],
+    "gap": "No specialist-knowledge output type exists, and qip-training has no dependency on qip-investment-agents at all.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-050"
+    ],
+    "blocked_by": "",
+    "verification": "n/a — no such edge exists",
+    "work_item": "E09",
+    "tier": "T3",
+    "size": "M",
+    "notes": "P2 in the blueprint (master Phase 8, specialist-agent society)."
+  },
+  {
+    "id": "MODEL-070",
+    "status": "MISSING",
+    "current": "nothing. No 'Causal Agency Engine' or agency-outcome type exists (grep for AgencyEngine|CausalAgency across backend returns nothing). qip-investment-agents::reasoning::CausalAnalyst is a REASON-stage panel member, not a shadow-mode agency engine, and produces no training-pipeline input.",
+    "evidence": [
+      "rg -in 'AgencyEngine|CausalAgency' -g '*.rs' backend — no hits"
+    ],
+    "gap": "No agency engine exists in any mode, shadow or otherwise, so there is no intervention-outcome record to feed training.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-050"
+    ],
+    "blocked_by": "",
+    "verification": "n/a — no such component exists",
+    "work_item": "E16",
+    "tier": "T4",
+    "size": "L",
+    "notes": "P3 in the blueprint (master Phase 10); the agency engine is specified to start shadow-only."
+  },
+  {
+    "id": "MODEL-071",
+    "status": "MISSING",
+    "current": "nothing. No component classifies a LEARN-stage finding as a platform defect or produces an engineering work item from one. ADR 0098 (the development factory) records the orchestration policy for how engineering work is run but does not wire evaluation output into it.",
+    "evidence": [
+      "docs/adr/0098-the-development-factory-is-the-orchestration-policy-run-on-the-owners-desktop-with-claude-tiers-and-the-gcp-fabric-waits-on-a-measured-rung.md (orchestration policy only, no evaluation-finding intake)",
+      "rg -in 'GapSignal' backend — no hits (see MODEL-049)"
+    ],
+    "gap": "There is no finding-to-work-item translation of any kind, so 'the platform found a failure in itself' currently produces no artifact for engineering to act on.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MODEL-049"
+    ],
+    "blocked_by": "",
+    "verification": "n/a — no such component exists",
+    "work_item": "E16",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Depends on MODEL-049's GapSignal existing first, since that is the natural trigger for a platform-defect classification."
+  }
+]

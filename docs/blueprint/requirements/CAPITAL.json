@@ -1,0 +1,1042 @@
+[
+  {
+    "id": "CAPITAL-001",
+    "domain": "CAPITAL",
+    "title": "Capital Brain plans funding",
+    "statement": "The Capital Brain decides the funding of deployable capital: how much capital each strategy and region requires, and which source (the platform's own capital or a permitted financing adapter) funds it.",
+    "rationale": "Funding appears in both the capability map and the Capital Brain's scope. A grant or placement that does not name where its capital comes from can be issued against money that does not exist.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Given grant and placement requirements and a set of available balances, the funding plan names a source for every requirement, the sources sum exactly to the requirement, and a requirement no available source can meet is refused rather than partially funded."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": "Merges 'Funding' from the §3 capital-management row with 'funding' from the §9.1 Capital Brain row. The Capital Bank's side of funding is CAPITAL-014 (internal funding) and CAPITAL-015 to CAPITAL-018 (financing adapters). LIVE_CAPITAL and MULTI_REGION from the §3 row were removed: a funding decision is computed over balances and can be met entirely on paper capital. The cross-region aspect is carried by CAPITAL-007."
+  },
+  {
+    "id": "CAPITAL-002",
+    "domain": "CAPITAL",
+    "title": "Liquidity ladder",
+    "statement": "The Capital Brain maintains a liquidity ladder that places every cash and liquid-asset balance, inflow, outflow and encumbrance in the time bucket at which it becomes available or falls due.",
+    "rationale": "A total cash figure says nothing about when the cash can be used. A commitment sized against money that settles or unlocks later than the commitment needs it fails at the moment it is exercised.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated books, the ladder's buckets sum to total liquidity, and no balance appears in a bucket earlier than its settlement or unlock time."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "RISK"
+    ],
+    "notes": "Merges 'liquidity ladder' (§3 row), 'Liquidity' (§9.1 Capital Brain row) and the first half of the §13 bullet 'Liquidity ladder and withdrawal/reserve forecasts'. The forecast half is split out as CAPITAL-023: the ladder is present state, the forecast is a prediction scored afterwards, and either can exist without the other. LIVE_CAPITAL and MULTI_REGION from the §3 row were removed because the ladder is a computation over balances and holds on paper capital."
+  },
+  {
+    "id": "CAPITAL-003",
+    "domain": "CAPITAL",
+    "title": "Cross-margin, collateral and encumbrance model",
+    "statement": "The Capital Brain maintains one cross-margin, collateral and encumbrance model. It records which asset backs which obligation, the margin each venue and margin regime requires net of permitted cross-margin offsets, and which assets are encumbered and therefore unavailable for any other use.",
+    "rationale": "Collateral counted twice, once as posted margin and once as free capital, is the usual way a book gets over-committed without any single limit being breached.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated obligation graphs, an asset encumbered against one obligation is never counted as available collateral or deployable capital for another, and cross-margin offsets are applied only between positions whose regime permits them."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "LEDGER"
+    ],
+    "notes": "Merges 'collateral' and 'margin' (§3 capital-management row), 'collateral' (§9.1) and the §13 bullet 'Cross-margin, collateral and encumbrance model'. The §13 wording is the most specific and is kept. Holding and posting collateral belong to the Capital Bank (CAPITAL-010, CAPITAL-011). LIVE_CAPITAL (§3 row and the §13 extraction) and MULTI_REGION (§3, §9.1) were removed because a model is a computation and can be met on paper capital. Candidate home per docs/architecture/current-state/services-capital-exec.json: qip-capital's collateral.rs (cross-venue collateral graph, LiquidationCascade)."
+  },
+  {
+    "id": "CAPITAL-004",
+    "domain": "CAPITAL",
+    "title": "Capital Brain sets leverage",
+    "statement": "The Capital Brain decides the leverage deployed capital may carry, per strategy and region, as an explicit recorded decision. The capital it allocates never implies leverage above that decision.",
+    "rationale": "No limit can be set against leverage that no component decided. It shows up only after positions have already created it.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each leverage decision is recorded in the event log per strategy and region, and an allocation whose implied leverage exceeds the recorded decision is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": "Merges 'leverage' from the §3 capital-management row and the §9.1 Capital Brain row. Enforcing leverage at order time belongs to the deterministic risk gate (RISK). LIVE_CAPITAL and MULTI_REGION were removed because the decision can be met on paper capital."
+  },
+  {
+    "id": "CAPITAL-005",
+    "domain": "CAPITAL",
+    "title": "Uncommitted liquidity floor",
+    "statement": "The Capital Brain sets how much liquidity must remain uncommitted. No capital grant, placement or yield routing may commit liquidity below that floor: a commitment that would breach it is refused, not reduced to fit.",
+    "rationale": "The cash buffer is what meets withdrawals, margin calls and failed settlements. If commitments can wear it down one at a time, it does not work as a floor.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Across generated sequences of grants, placements and yield routes, committed liquidity plus the floor never exceeds total liquidity at any step, and the commitment that would cross the floor is refused with the floor named in the refusal."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": "Merges 'cash buffers' (§3 capital-management row) with 'how much liquidity must remain uncommitted' from the §13 opening sentence. The §13 wording is kept. 'Refused, not reduced' applies the house rule against clamping. LIVE_CAPITAL and MULTI_REGION (§3 row) were removed: the floor holds the same way on paper capital, and flagging it would score a capital-protection control as BLOCKED."
+  },
+  {
+    "id": "CAPITAL-006",
+    "domain": "CAPITAL",
+    "title": "Capital deploys only under a grant",
+    "statement": "The Capital Brain issues capital grants to strategies and regions. A strategy or region deploys capital only under a grant it currently holds, and every commitment names the grant it draws on.",
+    "rationale": "A grant is the unit of authority that a reflex cell and the risk gate can check locally without asking the centre. Capital committed outside a grant is capital nobody authorised and nobody can attribute.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      },
+      {
+        "doc": "H",
+        "page": "view 03",
+        "section": "03 · Native Rust Event & Control Fabric"
+      },
+      {
+        "doc": "H",
+        "page": "view 08",
+        "section": "08 · End-to-End Operating Flow"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A strategy or region with no current grant commits no capital, and every commitment in the event log cites the grant it drew on, so replaying the log reproduces each grant's utilisation."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "RISK",
+      "REFLEX",
+      "FABRIC",
+      "LEDGER"
+    ],
+    "notes": "Merges 'capital grants' from the §3 capital-management row and the §9.1 Capital Brain row with the issuance half of the §13 bullet 'Capital grants to strategies/regions with expiry, capacity and drawdown limits'. The three bounds are split out as CAPITAL-024 to CAPITAL-026. The H citations were added during consolidation. View 03 lists capital grants among the control events GKE services produce onto the Fabric. View 08 routes them Capital/Risk/Strategy -> Rust Fabric -> Regional Reflex Cells. This is P0 because GCP §26 (p22) Phase 4, financial truth, lists capital/risk envelope contracts. Two related G passages are not in the raw set and are probably owned by the FABRIC and LEDGER domains: G §7.2 (p8) classes 'capital grant' as P0 Critical Control (signed payload, RF3 quorum, never intentionally dropped), and G §1 (p2) places capital grants in Spanner financial truth. LIVE_CAPITAL (§3 row) was removed because a grant governs paper capital the same way. Candidate home per current-state: qip-capital's signed CapitalEnvelope."
+  },
+  {
+    "id": "CAPITAL-007",
+    "domain": "CAPITAL",
+    "title": "Capital Brain decides cross-region placement",
+    "statement": "The Capital Brain decides where deployable capital should be held, by region, venue and custodian, and records each placement decision to the event log together with the inputs it was made on.",
+    "rationale": "Capital held in the wrong region cannot be used when the opportunity appears. A placement that cannot be reproduced cannot be audited or scored.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying the event log from a placement decision's recorded inputs reproduces the same placement for every region, venue and custodian."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "MESH"
+    ],
+    "notes": "Merges 'cross-region placement' (§3 row), 'placement' (§9.1) and 'where deployable capital should be' (§13 opening sentence). The movement that carries out a placement is treasury rebalancing and transfer (CAPITAL-020, CAPITAL-029). Pre-positioning for arbitrage and market making is CAPITAL-027 and CAPITAL-028. LIVE_CAPITAL was removed because the decision can be met on paper capital. M §4 (p9) places capital placement in Lane 2, tactical/warm."
+  },
+  {
+    "id": "CAPITAL-008",
+    "domain": "CAPITAL",
+    "title": "Capital Brain decides compounding",
+    "statement": "Realised returns become deployable capital only through a recorded compounding decision by the Capital Brain, which decides whether and where they are redeployed.",
+    "rationale": "A profit that silently enlarges deployable capital increases exposure without anyone deciding it should. Every grant sized before the increase cannot see it.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Realised P&L credited to the ledger leaves deployable capital unchanged until a compounding decision is recorded, after which deployable capital changes by exactly the amount that decision names."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": "Merges 'compounding' from the §3 capital-management row and the §9.1 Capital Brain row. LIVE_CAPITAL and MULTI_REGION were removed because the decision can be met on paper capital."
+  },
+  {
+    "id": "CAPITAL-009",
+    "domain": "CAPITAL",
+    "title": "Idle-cash yield routing",
+    "statement": "The Capital Bank routes idle cash into cash, stable-value assets and short-duration instruments to earn yield.",
+    "rationale": "Uncommitted capital that earns nothing is a cost. Routing it into instruments that settle later than the ladder needs it is a liquidity failure, which is why routing sits below the floor (CAPITAL-005) and on the ladder (CAPITAL-002).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a simulated custodian, idle cash above the uncommitted floor is routed only into permitted instrument classes, and each routed amount appears on the liquidity ladder at the instrument's realisation horizon."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [],
+    "notes": "Merges 'idle-cash optimization' (§3 capital-management row, p6), 'yield routing' (§3 treasury/capital-bank row, p7) and the §13 bullet 'Cash, stable-value assets, short-duration instruments and idle-cash yield routing'. The §13 instrument list is the most specific and is kept. It is P3 because the source calls it an optimisation. LIVE_CAPITAL is kept: buying real instruments needs live capital, so this is scored BLOCKED under ADR 0099 and built only in simulated form. MULTI_REGION was removed because nothing in it is regional."
+  },
+  {
+    "id": "CAPITAL-010",
+    "domain": "CAPITAL",
+    "title": "Capital Bank holds cash and collateral",
+    "statement": "The Capital Bank holds the platform's cash and collateral, keeping balances by custodian, venue and currency.",
+    "rationale": "The Brain decides and the Bank holds. Without a single holder of cash and collateral, a decision has no definite place to take effect.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against simulated custodians, every cash and collateral balance the Capital Brain plans against is read from the Capital Bank by custodian, venue and currency, and equals the ledger's figure after replay."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": "Merges 'cash and collateral fabric' (§3 treasury/capital-bank row) with 'holds' from the §13 sentence 'The Capital Bank is the treasury/funding fabric that holds, routes, converts, collateralizes and finances capital'. The other four verbs are CAPITAL-011 to CAPITAL-014. The ledger remains the record (no second source of truth, .claude/rules/architecture/00-boundaries.md), which is why the check compares against it. LIVE_CAPITAL is kept because real custody holds real money: under ADR 0099 this is BLOCKED beyond its simulated-custodian form. MULTI_REGION (§3 row) was removed because it is not inherent to holding."
+  },
+  {
+    "id": "CAPITAL-011",
+    "domain": "CAPITAL",
+    "title": "Capital Bank posts and recalls collateral",
+    "statement": "The Capital Bank posts collateral against margin and financing obligations and recalls it when the obligation is released, as the collateral model directs.",
+    "rationale": "Posting is where the collateral model's encumbrance becomes real at a venue. A posting the model does not know about leaves collateral counted as free while a venue holds it.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a simulated venue, posted collateral is marked encumbered in the collateral model from the moment it is posted, and becomes available again only when the venue confirms its release."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "EXEC",
+      "LEDGER"
+    ],
+    "notes": "Split out from the §13 verb 'collateralizes' and the collateral half of 'cash and collateral fabric' in §3. The model itself is CAPITAL-003. LIVE_CAPITAL is kept because posting real collateral at a venue needs live capital: BLOCKED under ADR 0099 beyond simulation."
+  },
+  {
+    "id": "CAPITAL-012",
+    "domain": "CAPITAL",
+    "title": "Custody corridors",
+    "statement": "The Capital Bank maintains custody corridors: defined routes between custodians, venues and regions, each naming its source, destination and asset. Cash and collateral move along these corridors.",
+    "rationale": "If capital can move between any two accounts, it can move to the wrong one. Corridors turn the permitted routes into a set that can be listed and reviewed.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      },
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§30 Build Order — Phase 3 Multi-Asset + Capital/Risk"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Phase 3 exit check: a corridor registry exists, every corridor names its source custodian, destination and asset, and a simulated movement of cash between two custodians is routed along a registered corridor and journaled."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "LEDGER",
+      "SEC"
+    ],
+    "notes": "Merges 'custody corridors' (§3 treasury/capital-bank row), 'routes' from the §13 Capital Bank sentence, and the §30 Phase 3 exit row. Phase 3's exit also names the asset registry, the Asset/Capital/Risk brains, treasury and multiple asset classes. The Capital Brain and treasury parts are covered by the other CAPITAL items; the rest belong to other domains. The signed-corridor constraint on autonomous transfers is CAPITAL-030. LIVE_CAPITAL is kept because real custody routes move real money: BLOCKED under ADR 0099 beyond simulation. Candidate home per current-state: qip-capital-fabric's corridor, custody and destination registry."
+  },
+  {
+    "id": "CAPITAL-013",
+    "domain": "CAPITAL",
+    "title": "Capital Bank converts currency",
+    "statement": "The Capital Bank converts capital between currencies, so that a placement or grant is funded in the currency it requires.",
+    "rationale": "A book spread across regions and venues holds and owes money in several currencies. A treasury that cannot convert leaves capital stuck in whatever currency it happens to be in.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a simulated FX counterparty, a conversion debits one currency and credits the other at the recorded rate, and the ledger balances in both currencies afterwards."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "EXEC",
+      "LEDGER"
+    ],
+    "notes": "Merges 'FX conversion' (§3 treasury/capital-bank row) with 'converts' from the §13 Capital Bank sentence. It is distinct from FX funding (CAPITAL-015): conversion exchanges one currency for another outright, while funding borrows a currency. LIVE_CAPITAL is kept because conversion with a real counterparty needs live capital. MULTI_REGION (§3 row) was removed because it is not inherent to conversion."
+  },
+  {
+    "id": "CAPITAL-014",
+    "domain": "CAPITAL",
+    "title": "Capital Bank provides internal funding",
+    "statement": "The Capital Bank funds strategies and regions from the platform's own capital. The ledger carries each internal funding as an obligation until it is repaid.",
+    "rationale": "Internal funding that is not recorded as an obligation is a gift between books. Attribution then credits the borrowing book with returns earned on capital it never paid for.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every internal funding event produces a balanced obligation in the ledger between the funding and the funded book, and the obligation is extinguished only by a recorded repayment."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": "Merges 'internal funding' (§3 treasury/capital-bank row) with the internal sense of 'finances' in the §13 Capital Bank sentence. External financing is CAPITAL-015 to CAPITAL-018. LIVE_CAPITAL and MULTI_REGION (§3 row) were removed: internal funding moves capital between the platform's own books and can be met entirely on paper capital."
+  },
+  {
+    "id": "CAPITAL-015",
+    "domain": "CAPITAL",
+    "title": "FX funding adapter",
+    "statement": "The Capital Bank provides an FX funding adapter, through which the platform borrows a currency it does not hold to fund positions in that currency.",
+    "rationale": "Funding a foreign-currency position by outright conversion adds currency exposure that a funding leg would avoid.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a sandbox counterparty, the adapter opens and closes an FX funding leg, and the resulting obligation appears in the ledger for its full term."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "EXEC",
+      "LEDGER"
+    ],
+    "notes": "Split out from the §13 bullet 'FX funding, borrow/lend/repo/credit-line adapters where permitted', read together with 'financing/credit interfaces where licensed' in the §3 treasury/capital-bank row. Each adapter deals with a different class of counterparty and can be verified on its own (CAPITAL-015 to CAPITAL-018). The 'where permitted' condition is CAPITAL-019. Both flags are kept because funding with a real counterparty needs live capital and external action: BLOCKED under ADR 0099, and built at most against a sandbox. MULTI_REGION (§3 row) was removed."
+  },
+  {
+    "id": "CAPITAL-016",
+    "domain": "CAPITAL",
+    "title": "Borrow/lend adapter",
+    "statement": "The Capital Bank provides a borrow/lend adapter for borrowing and lending cash or securities with a counterparty.",
+    "rationale": "Borrow/lend is a funding mechanism distinct from a credit line: borrowing securities is what makes a short sale deliverable, and lending idle securities is a funding source of its own.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a sandbox counterparty, a borrow and a loan each open and close, and each open leg is an obligation in the ledger and an encumbrance in the collateral model."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "EXEC",
+      "LEDGER"
+    ],
+    "notes": "Split out from the §13 adapters bullet (see CAPITAL-015). It also absorbs part of a separate raw extraction, 'Capital Bank provides borrow/lend/repo adapters'; the rest of that extraction went into CAPITAL-017. Flags are kept for the same reason as CAPITAL-015."
+  },
+  {
+    "id": "CAPITAL-017",
+    "domain": "CAPITAL",
+    "title": "Repo adapter",
+    "statement": "The Capital Bank provides a repo adapter for financing against collateral through repurchase agreements.",
+    "rationale": "Repo finances a position against collateral the platform holds, at a cost and term a credit line does not offer, and it encumbers that collateral for the term.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a sandbox counterparty, a repo opens and closes, the collateral is encumbered in the collateral model for exactly the repo's term, and the repurchase obligation appears in the ledger."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "EXEC",
+      "LEDGER"
+    ],
+    "notes": "Split out from the §13 adapters bullet (see CAPITAL-015), together with the repo part of the separate raw 'borrow/lend/repo adapters' extraction. Flags are kept for the same reason as CAPITAL-015."
+  },
+  {
+    "id": "CAPITAL-018",
+    "domain": "CAPITAL",
+    "title": "Credit-line adapter",
+    "statement": "The Capital Bank provides a credit-line adapter for drawing on and repaying committed credit facilities.",
+    "rationale": "A credit line is committed liquidity that the ladder counts as available funding, and its drawn balance is an obligation. Neither is visible without the adapter.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a sandbox facility, a draw and a repayment each post the matching obligation in the ledger, and the undrawn amount appears on the liquidity ladder as available funding."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "EXEC",
+      "LEDGER"
+    ],
+    "notes": "Split out from the §13 adapters bullet (see CAPITAL-015). Flags are kept for the same reason as CAPITAL-015."
+  },
+  {
+    "id": "CAPITAL-019",
+    "domain": "CAPITAL",
+    "title": "Financing enabled only where licensed",
+    "statement": "Every regulated financing function of the Capital Bank is enabled only through a legal entity, counterparty and jurisdiction whose recorded permission covers it. This covers FX funding, borrow/lend, repo and credit lines, and any deposit-taking, lending to third parties, brokerage or derivatives dealing. Without that permission the function is refused.",
+    "rationale": "Running a treasury function in a jurisdiction that does not permit it is a regulatory breach whatever it earns. Licensing is checked before use, not after.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For every combination of financing function, legal entity and jurisdiction with no recorded permission, the call is refused before any counterparty is contacted. With an empty permission registry, every financing function refuses."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV",
+      "SEC"
+    ],
+    "notes": "Merges 'where licensed' (§3 treasury/capital-bank row) and 'where permitted' (§13 adapters bullet) with the list of regulated functions in the §13 opening paragraph: 'Deposit-taking, lending to third parties, brokerage, derivatives dealing and similar regulated functions are enabled only through appropriate legal entities, counterparties and jurisdictional permissions'. That sentence is the most specific wording and is kept, although it was not in the raw extraction itself. LIVE_CAPITAL, EXTERNAL_ACTION and MULTI_REGION were removed: the requirement is a refusal, which holds without live capital, and under the paper-trading boundary it must refuse everything. Flagging it would score a compliance control as BLOCKED and hide whether it exists. It follows .claude/rules/10-product-direction.md, which requires licensing posture to be checked before use."
+  },
+  {
+    "id": "CAPITAL-020",
+    "domain": "CAPITAL",
+    "title": "Treasury rebalancing",
+    "statement": "When actual holdings drift from the placement the Capital Brain has decided, the Capital Bank rebalances treasury holdings across custodians, venues, currencies and regions back toward that placement.",
+    "rationale": "Fills, settlements and multi-leg cycles leave inventory wherever it happened to land, not where it was planned. Without rebalancing, the next placement decision starts from a position nobody chose.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "After injected drift between actual holdings and the decided placement, the Bank produces rebalancing transfers that bring every holding back within tolerance of the placement, each routed along a custody corridor."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "LEDGER",
+      "MESH"
+    ],
+    "notes": "From 'treasury rebalancing' in the §3 treasury/capital-bank row. Two passages outside the raw set support it: M §17.2 (p25), step 8 ('inventory drift becomes a treasury/capital rebalancing task'), and M §4 (p9), which puts treasury moves in Lane 2. LIVE_CAPITAL is kept because moving real holdings needs live capital: BLOCKED under ADR 0099 beyond simulation."
+  },
+  {
+    "id": "CAPITAL-021",
+    "domain": "CAPITAL",
+    "title": "Every unit of deployable capital has one assigned use",
+    "statement": "The Capital Brain assigns every unit of deployable capital exactly one use at a time: committed under a grant, posted as collateral, held in the uncommitted reserve, or routed to idle-cash yield.",
+    "rationale": "The source makes the Capital Brain responsible for deciding what capital should be doing. Capital with no assigned use is unmanaged, and capital with two uses is counted twice.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "At every step of a replayed session, deployable capital divides exactly into assigned uses, with no unassigned remainder and no amount assigned twice."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": "Split out from the §13 opening sentence ('decides where deployable capital should be, what it should be doing, and how much liquidity must remain uncommitted'). 'Where' is CAPITAL-007 and 'how much uncommitted' is CAPITAL-005. The list of uses is taken from §13's own bullets."
+  },
+  {
+    "id": "CAPITAL-022",
+    "domain": "CAPITAL",
+    "title": "Capital Brain decides; controlled services write",
+    "statement": "The Capital Brain produces only recommendations and grants. It never moves capital or writes authoritative capital state itself. Moving capital belongs to the Capital Bank, and authoritative capital state (balances, grants, obligations) is written only through controlled services.",
+    "rationale": "A wrong or compromised model that can write balances or move money directly turns a recommendation into an action with no gate in between. This split mirrors the Risk Brain / Risk Gate split in M §14.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      },
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test asserts that the Capital Brain's component depends on no ledger-writer, custody or transfer-executing type, and emits only recommendation and grant events."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "ARCH",
+      "SEC"
+    ],
+    "notes": "M §13 states the division of roles: the Brain decides, and the Bank holds, routes, converts, collateralizes and finances. G §8 is more specific ('writes authoritative state through controlled services') and its wording is kept. G's KUBERNETES flag moved to CAPITAL-032, where the placement is, because it does not apply to the write path. LIVE_CAPITAL (from the raw §13 Capital Bank extraction) was removed because the separation holds on paper capital. A related passage not in the raw set is G §27 (p23): 'Autonomous agents cannot obtain production capital/custody authority'."
+  },
+  {
+    "id": "CAPITAL-023",
+    "domain": "CAPITAL",
+    "title": "Withdrawal and reserve forecasts",
+    "statement": "The Capital Brain forecasts withdrawals and reserve requirements across the liquidity ladder's time horizons.",
+    "rationale": "The floor in CAPITAL-005 is only as good as the forecast it is set from. A reserve sized on today's balances alone is sized for yesterday's withdrawals.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "In replay, each forecast is reproduced using only inputs knowable at its forecast time, and is scored against the withdrawals and reserve needs that actually occurred."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": "Split out from the §13 bullet 'Liquidity ladder and withdrawal/reserve forecasts'. The ladder is CAPITAL-002."
+  },
+  {
+    "id": "CAPITAL-024",
+    "domain": "CAPITAL",
+    "title": "Every grant expires",
+    "statement": "Every capital grant carries an expiry, and an expired grant authorises no new commitment.",
+    "rationale": "A grant without an expiry outlives the conditions it was sized for. A cell cut off from the centre, which keeps working on its own (ADR 0008), would otherwise trade on it indefinitely.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated grants and clock sequences, no commitment is accepted against a grant at or after its expiry, and a grant issued without an expiry is refused at issuance."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "REFLEX"
+    ],
+    "notes": "Split out from the §13 bullet 'Capital grants to strategies/regions with expiry, capacity and drawdown limits'. The bullet became issuance (CAPITAL-006) plus one invariant per bound, because each bound fails differently and is tested separately. MULTI_REGION was removed because the bound applies to a grant whatever its scope. A related passage not in the raw set: G §22 (p21) lets a cell continue within its cached capital/risk envelope during a Spanner outage only until a ledger-lag threshold."
+  },
+  {
+    "id": "CAPITAL-025",
+    "domain": "CAPITAL",
+    "title": "Every grant has a capacity limit",
+    "statement": "Every capital grant carries a capacity limit on how much capital may be committed under it at once. A commitment that would exceed the limit is refused, not reduced to fit.",
+    "rationale": "A grant limited only by time and drawdown can still be unlimited in size. Capacity is the limit on how much can be deployed at all.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated commitment sequences, the capital committed under a grant never exceeds its capacity, and a commitment that would exceed it is refused whole rather than partially admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "REFLEX"
+    ],
+    "notes": "Merges the capacity part of the §13 grant bullet with a separate raw extraction that stated the capacity limit on its own. LIVE_CAPITAL (from that extraction) and MULTI_REGION were removed: the limit holds the same way on paper capital, and flagging it would score a capital-protection control as BLOCKED. 'Not reduced to fit' applies the house rule against clamping."
+  },
+  {
+    "id": "CAPITAL-026",
+    "domain": "CAPITAL",
+    "title": "Every grant has a drawdown limit",
+    "statement": "Every capital grant carries a drawdown limit. Once losses under the grant reach it, the grant authorises no new commitment.",
+    "rationale": "The drawdown limit stops a failing strategy or region from compounding its losses before a person or the Risk Brain has looked at it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "When losses under a grant are driven to its drawdown limit, the next commitment against it is refused, and the breach is recorded in the event log with the grant and the loss that reached the limit."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "REFLEX"
+    ],
+    "notes": "Split out from the §13 grant bullet (see CAPITAL-024). MULTI_REGION was removed. The limit must be able to fire: .claude/rules/domains/risk-and-execution.md calls a limit that cannot fire a defect, so the check drives losses to the limit instead of inspecting its configuration."
+  },
+  {
+    "id": "CAPITAL-027",
+    "domain": "CAPITAL",
+    "title": "Pre-position capital for cross-region arbitrage",
+    "statement": "The Capital Brain pre-positions capital across regions ahead of arbitrage, so that when a cycle fires, each leg's venue already holds the capital that leg needs.",
+    "rationale": "If a leg of a cross-region cycle has to wait for a transfer before it can fill, the opportunity is gone by the time the capital arrives.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "In a replayed multi-region arbitrage cycle, every leg executes against capital already held at its venue, and no leg waits on a treasury transfer."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "ARBITRAGE",
+      "MESH"
+    ],
+    "notes": "Split out from the §13 bullet 'Cross-region pre-positioning for arbitrage and market making'. Arbitrage and market making size pre-positioned capital differently and are verified separately (CAPITAL-028). It is P2 because §30 Phase 5 (3-20 leg arbitrage + market making, p42) lists pre-positioned inventory as an exit capability. All three flags are kept: carrying out a pre-position moves real capital to real venues. The pre-positioning decision can be built in paper form; the move is BLOCKED under ADR 0099. A related passage not in the raw set: M §28 (p39), 'Custody/treasury unavailable: trading constrained to available settled capital; no new transfer dependence'. Candidate home per current-state: qip-capital-fabric's plan.rs."
+  },
+  {
+    "id": "CAPITAL-028",
+    "domain": "CAPITAL",
+    "title": "Pre-position capital for market making",
+    "statement": "The Capital Brain pre-positions capital across regions for market making, sized to each market-making venue's continuous quoting and inventory obligations rather than to discrete arbitrage legs.",
+    "rationale": "Continuous market-making obligations have a different liquidity profile from arbitrage. Capital pre-positioned only for arbitrage would under-provision them.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "In a replayed market-making session, the capital pre-positioned at each venue covers the quoted size on both sides and the inventory band for the configured horizon, with no transfer during the session."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "EXEC",
+      "MESH"
+    ],
+    "notes": "Merges the market-making half of the §13 pre-positioning bullet with a separate raw extraction that stated it on its own. EXTERNAL_ACTION (from the bullet) is kept alongside LIVE_CAPITAL and MULTI_REGION, for the same reason as CAPITAL-027. It is P2 by §30 Phase 5."
+  },
+  {
+    "id": "CAPITAL-029",
+    "domain": "CAPITAL",
+    "title": "Autonomous treasury transfer",
+    "statement": "The Capital Bank executes a treasury transfer autonomously, without per-transfer human approval, when the transfer lies inside a signed corridor and within its hard caps.",
+    "rationale": "Pre-positioning and rebalancing at the pace the warm lane decides them cannot wait for a person to approve each transfer. The corridor and the caps are what make taking that person out acceptable.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a simulated custodian, a transfer inside a signed corridor and under its caps completes without human approval, and is journaled with the corridor and caps it was checked against."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "SEC",
+      "LEDGER"
+    ],
+    "notes": "Split out from the §13 bullet 'Autonomous treasury transfer inside signed corridors and hard caps' into the capability (here) and its two limits (CAPITAL-030, CAPITAL-031), so that the limits can be built and verified while the capability stays blocked. ADR 0099 names this bullet explicitly as not authorised: it is BLOCKED under ADR 0021 and conflict C1, and built only in simulated form. It is P1 because §13 is delivered in §30 Phase 3; it is blocked regardless. Candidate home per current-state: qip-capital-fabric's TransferGate and FabricJournal."
+  },
+  {
+    "id": "CAPITAL-030",
+    "domain": "CAPITAL",
+    "title": "Autonomous transfers only inside signed corridors",
+    "statement": "An autonomous treasury transfer executes only inside a signed corridor. A transfer whose route matches no corridor, or whose corridor signature does not verify, is refused.",
+    "rationale": "Anyone who can write the configuration can widen an unsigned corridor. The signature makes the set of permitted routes a decision that someone is accountable for.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated transfers, every transfer on a route outside the signed corridor set, or on a corridor whose signature has been altered, is refused, and a transfer on a validly signed corridor passes this check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "Split out from the §13 treasury-transfer bullet (see CAPITAL-029). LIVE_CAPITAL and EXTERNAL_ACTION were removed: the requirement is a refusal, it holds over simulated transfers, and it has to exist before the capability could ever be considered. Flagging it would score the control as BLOCKED. A signed corridor needs a signature scheme. .claude/rules/architecture/00-boundaries.md lists asymmetric signing as a gap no in-tree code may close (ADR 0043, proposed), so the choice of scheme belongs to that record."
+  },
+  {
+    "id": "CAPITAL-031",
+    "domain": "CAPITAL",
+    "title": "Autonomous transfers only within hard caps",
+    "statement": "An autonomous treasury transfer never exceeds any hard cap that applies to it. A transfer that would exceed one is refused, not reduced to fit.",
+    "rationale": "Caps limit the worst case of a corridor that is valid but misused. Without them, a corridor controls where money goes but not how much.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated transfer sequences, no executed transfer exceeds any hard cap that applies to it, a transfer that would exceed one is refused rather than reduced, and a transfer under every cap passes this check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC",
+      "RISK"
+    ],
+    "notes": "Split out from the §13 treasury-transfer bullet (see CAPITAL-029). Flags were removed for the same reason as CAPITAL-030. 'Hard' is read here as not relaxable at run time: under the house fail-closed principle, a configuration that would raise a cap stops the process rather than being applied."
+  },
+  {
+    "id": "CAPITAL-032",
+    "domain": "CAPITAL",
+    "title": "Capital/Treasury Brain placed on Regional GKE",
+    "statement": "The Capital/Treasury Brain runs as a warm regional service on Regional GKE Standard.",
+    "rationale": "G §8 groups the warm brains on the regional service plane, where they scale independently of the reflex cells.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      },
+      {
+        "doc": "H",
+        "page": "view 02",
+        "section": "02 · Regional Cell"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "For each region, a Terraform plan shows the Capital/Treasury Brain workload scheduled on that region's Regional GKE Standard cluster."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "From G §8's placement table. Its other two clauses are CAPITAL-033 (warm, off the hot path) and CAPITAL-022 (authoritative writes through controlled services). The H citation was added during consolidation: view 02 draws 'Capital / Treasury' as a k8s service reached over the service mesh. This placement conflicts with standing decisions recorded in ADR 0099. Under C3, ADR 0024 retired Kubernetes for Cloud Run and ADR 0093 suspended the control-plane cluster. Under C7, ADR 0091 composes five binaries from library crates. The placement has no force until a runtime record decides it. It is P1 because GCP §26 Phase 6 (regional service plane) is where it lands."
+  },
+  {
+    "id": "CAPITAL-033",
+    "domain": "CAPITAL",
+    "title": "Capital/Treasury Brain is never on the reflex hot path",
+    "statement": "The Capital/Treasury Brain works in the warm lane and is never a synchronous dependency of a reflex cell's order path. Cells receive its grants as asynchronous control events, and when the Brain is unavailable they keep trading within the grants they already hold.",
+    "rationale": "A capital service on the hot path would place any warm-lane outage between every order and its venue. Under ADR 0008, cells decide on their own within their envelope.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      },
+      {
+        "doc": "H",
+        "page": "view 02",
+        "section": "02 · Regional Cell"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With the Capital/Treasury Brain stopped, a reflex cell keeps placing orders within its existing grant and receives no new grant. When the Brain returns, the cell resumes receiving grants, and no order waited on the Brain at any point."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "RES"
+    ],
+    "notes": "From 'Warm capital recommendations/grants' in G §8. The H citation was added during consolidation: in view 02 the Capital/Treasury service exchanges data and control only with the Fabric brokers and has no edge to the reflex node. Two passages outside the raw set support it: G §22 (p21), where losing GKE regional services means cells 'continue local execution; no new warm policy/capital intelligence', and M §4 (p9), Lane 2. KUBERNETES is not carried because the invariant holds whatever the runtime. It is P0 as a correctness invariant of the local fast path that master Phase 1 and GCP Phase 3 (one Reflex cell) establish."
+  }
+]

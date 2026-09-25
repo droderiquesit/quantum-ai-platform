@@ -37,7 +37,12 @@ is the point:
 
 ## What must not happen
 
-- No service reads the environment. No lib performs I/O.
+- No service reads the environment. No lib performs I/O — with one named
+  exception. `qip-transport` is the in-tree protocol stack. It owns the
+  HTTP/1.1 client and, since ADR 0100, the server moved out of `qip-api`, so
+  it opens sockets in both directions. That exception is the whole of it: it
+  is not a precedent for a second lib opening a socket, and ADR 0100's "What
+  would make this wrong" says so.
 - No new async runtime. Blocking I/O with explicit timeouts is a decision
   (ADR 0001, ADR 0011), not an omission.
 - No hand-rolled protocol stack or asymmetric primitive. ADR 0009's actual

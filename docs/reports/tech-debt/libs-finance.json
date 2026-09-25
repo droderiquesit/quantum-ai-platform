@@ -1,0 +1,138 @@
+[
+  {
+    "item": "TransactionCostModel::estimate() panics on an unpriceable model inside a Result-returning production caller, instead of the caller using the safe checked_estimate() twin",
+    "files": [
+      "backend/crates/libs/qip-financial/src/costs.rs:465",
+      "backend/crates/libs/qip-financial/src/costs.rs:468",
+      "backend/crates/services/qip-capital-fabric/src/transfer.rs:441",
+      "backend/crates/services/qip-capital-fabric/src/transfer.rs:472"
+    ],
+    "category": "incompatible interfaces / production-path safety violation",
+    "class": "B-refactor",
+    "why": "costs.rs:465-469 `pub fn estimate` matches `checked_estimate`'s Err arm with `panic!(\"{refusal}\")` (confirmed at line 468, not inside any #[cfg(test)] module). TransferCostModel::price (transfer.rs:441, a Result<TransferCost>-returning function that otherwise refuses every invalid input explicitly, e.g. a negative amount or non-finite opportunity rate) calls `self.fx.estimate(amount, participation)` at transfer.rs:472. The one finite-check made beforehand covers `participation`, not the configured bps rates on `self.fx` or an oversized notional -- both of which `checked_estimate` can still refuse -- so a bad reference-data rate reaching this path aborts the process under `panic = \"abort\"` rather than returning a refusal transfer.rs's caller could handle. This is the exact case core-rust.md prohibits ('todo!()/unimplemented!()/panic!() in a Result-returning function') and the exact failure CLAUDE.md principle 3 names ('a configuration that would relax [a safety default] stops the process rather than lowering it' -- here a bad config *does* stop the process, but as an uncontrolled abort with no refusal recorded in the event log, not as a deliberate refusal). Fix is small and does not require a redesign: swap the call site to `checked_estimate` and propagate the Result, or delete the panicking convenience wrapper now that its own doc comment says prefer checked_estimate 'anywhere the refusal can be handled.'",
+    "blueprint_refs": [],
+    "risk": "high",
+    "suggested_epic": "E06"
+  },
+  {
+    "item": "qip-financial::physical.rs (1072 lines, LandedCost/PhysicalArbitrage/LogisticsTerms/Customs/Spoilage/MarketplaceFees/Returns) has zero production or cross-crate callers anywhere in the workspace",
+    "files": [
+      "backend/crates/libs/qip-financial/src/physical.rs:129-138",
+      "backend/crates/libs/qip-financial/src/physical.rs:244-256",
+      "backend/crates/libs/qip-financial/src/physical.rs:260-356",
+      "backend/crates/libs/qip-financial/src/physical.rs:551-562",
+      "backend/crates/libs/qip-financial/src/physical.rs:628-653",
+      "backend/crates/libs/qip-financial/src/physical.rs:669"
+    ],
+    "category": "dead code / unfinished migration (built ahead of its caller)",
+    "class": "B-refactor",
+    "why": "`grep -rl PhysicalArbitrage backend/crates` outside qip-financial's own src/tests returns nothing -- confirmed. This is NOT unplanned orphan code: blueprint v11.6 Section 20 ('Physical Commerce & Product Arbitrage') names a full commerce operating layer -- Product Scout, SKU/Entity Resolver, Commerce Feasibility ('All-in landed cost, expected resale, time-to-sale, return risk'), Purchase Executor, Logistics Brain, Inventory Ledger, Resale Router -- and lists 'Physical product purchase/resale has commerce, logistics and inventory capabilities, not just a price model' as a COMPLETE TARGET item. docs/blueprint/assessment/COMMERCE.json's COMMERCE-001/007/011/016/017/019 and ASSET-014/015, LEDGER-009/025 and EXEC-019 all name this exact module as the landed-cost starting point the E17 commerce-plane epic builds Product Scout/SKU Resolver/Purchase Executor/Inventory Ledger/Resale Router on top of. Deleting it would discard correctly priced, mutation-tested landed-cost/arbitrage arithmetic that a standing plan intends to wire in; classing it D would violate the instruction against deleting anything a plan covers. The debt is real (1072 lines nothing reaches), but the fix is wiring a caller (Commerce Feasibility assessment, per COMMERCE-011), not rewriting or removing the module.",
+    "blueprint_refs": [
+      "v11.6 §20 Physical Commerce & Product Arbitrage",
+      "v11.6 p.43 COMPLETE TARGET: physical product purchase/resale commerce capabilities"
+    ],
+    "risk": "low",
+    "suggested_epic": "E17"
+  },
+  {
+    "item": "qip-compliance::signing::SigningKey is symmetric HMAC-SHA256; the capital-approval and artifact-provenance controls it signs have no asymmetric signing, identity binding, key rotation/revocation or countersigned timestamping",
+    "files": [
+      "backend/crates/libs/qip-compliance/src/signing.rs:1-30",
+      "backend/crates/libs/qip-compliance/src/signing.rs:40",
+      "backend/crates/libs/qip-compliance/src/plane.rs:53",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:934"
+    ],
+    "category": "security shortcuts",
+    "class": "B-refactor",
+    "why": "signing.rs's own module doc (lines 1-30, read in full) states the gap plainly: HMAC is symmetric, so 'whoever can verify can also sign,' and lists four missing production requirements verbatim -- asymmetric signing, identity binding, key rotation/revocation, countersigned timestamping -- ending 'None of those are in this build.' This is not a hidden shortcut: `ControlStatus.caveats` (plane.rs:53) surfaces it on every generated ComplianceReport rather than claiming full compliance, and ADR 0043 ('The cryptography this platform has, and the three gaps no crate closes', status: proposed) names this as one of exactly three gaps no in-tree crate may close, alongside a CSPRNG and anchoring the event-log chain. docs/blueprint/assessment/GOV-012, CONTRACT-b1, SEC-b2, MODEL-b3 and REFLEX-b1 all independently confirm the same finding against the same file and agree the fix needs either a new dependency class (a fresh ADR under the two-dependency policy) or routing through Cloud KMS (GCP v2.1 §21.4), not an in-tree rewrite -- the module's own key-id field is already carried forward for exactly that migration ('so that when asymmetric signing arrives, existing records say which key they were made under'). Evolvable, not a contradiction requiring replacement of the whole control -- the HMAC layer stays as an integrity check alongside a future asymmetric signature, per its own design.",
+    "blueprint_refs": [
+      "ADR 0043 (proposed) -- three cryptography gaps",
+      "GCP v2.1 §21.4 KMS-backed signing route"
+    ],
+    "risk": "high",
+    "suggested_epic": "E13"
+  },
+  {
+    "item": "qip-market::corporate_action::adjust_prices() has no production caller; qip-kernel's Platform::apply_corporate_action independently reimplements the identical per-bar price-adjustment loop inline",
+    "files": [
+      "backend/crates/libs/qip-market/src/corporate_action.rs:294",
+      "backend/crates/libs/qip-market/tests/structure.rs:486",
+      "backend/crates/libs/qip-market/tests/structure.rs:579",
+      "backend/crates/libs/qip-market/tests/structure.rs:629",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9607-9657"
+    ],
+    "category": "duplicate systems",
+    "class": "B-refactor",
+    "why": "`grep -rn 'adjust_prices(' backend/crates` outside qip-market's own src and tests/structure.rs returns nothing -- the function is exercised only by its own three tests. Platform::apply_corporate_action (platform.rs:9607-9657, read in full) does not call it; it instead walks `bar_history` itself and calls `CorporateAction::price_adjustment_factor` and `quantity_adjustment_factor` directly, duplicating the same per-bar adjustment logic a second time in a different crate. Two independent implementations of one fact is exactly the pattern CLAUDE.md principle 6 warns will one day disagree ('Two independent claims about the same fact will disagree, and the louder one will be wrong'); today they happen to agree because both were built from the same factor methods, but nothing enforces that they stay in sync, and only the kernel's copy is covered by the production-path test in COVERAGE-005/platform.rs:25601+. Low risk today, but it is the textbook second-source-of-truth case the architecture rules name.",
+    "blueprint_refs": [],
+    "risk": "low",
+    "suggested_epic": "E05"
+  },
+  {
+    "item": "FutureDetails.underlying_object_id is a bare, unvalidated String with no resolution against the Universe and no futures-to-spot/physical basis computation anywhere in the workspace",
+    "files": [
+      "backend/crates/libs/qip-financial/src/extensions.rs:403-412"
+    ],
+    "category": "placeholders",
+    "class": "B-refactor",
+    "why": "extensions.rs:403-412 (read in full) defines `FutureDetails` with `pub underlying_object_id: String` -- a free-form string with no `ObjectId` typing, no constructor-time validation, and no lookup against `qip_financial::universe::Universe` anywhere in the crate. `grep -rin basis backend/crates/libs/qip-financial backend/crates/services` turns up only unrelated hits (cost basis, scoring basis); no futures-price-minus-spot-price computation exists in production or test code. The blueprint's Commodities domain explicitly requires 'futures, spot/physical links' and 'basis' as a named measure (also surfaced independently in docs/blueprint/assessment/COVERAGE.json's COVERAGE-010, work item E05-commodity-future-spot-link, and RISK-008's 'gap and basis are not named as distinct measures anywhere in qip-risk'). This is a structural placeholder in the sense CLAUDE.md principle 4 names -- a guarantee the type system should hold (a future is linked to a real, resolvable spot/physical instrument) is instead asserted by nothing, held only by whatever string a caller happens to write.",
+    "blueprint_refs": [
+      "v11.6 Commodities: 'Energy, metals, agriculture, futures, spot/physical links'"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E05"
+  },
+  {
+    "item": "qip-portfolio's Position/Portfolio carry no funding-currency/amount/accrued-cost record; qip-financial::costs::TransactionCostModel only prices a securities-lending borrow rate, not cash funding behind a position held in a second currency",
+    "files": [
+      "backend/crates/libs/qip-portfolio/src/position.rs:40",
+      "backend/crates/libs/qip-portfolio/src/portfolio.rs:46",
+      "backend/crates/libs/qip-financial/src/costs.rs:230",
+      "backend/crates/libs/qip-financial/src/costs.rs:279-346"
+    ],
+    "category": "placeholders / incompatible interfaces",
+    "class": "B-refactor",
+    "why": "`grep -in funding backend/crates/libs/qip-portfolio/src/position.rs backend/crates/libs/qip-portfolio/src/portfolio.rs` returns no match -- confirmed. costs.rs's only borrow-adjacent field is `short_borrow_bps_annual` (costs.rs:230, used at :279-346), which prices a stock-loan short, not cash financing behind a long position denominated in a currency other than the book's base. A position financed in a second currency is therefore invisible to valuation: nothing carries its financing currency, amount or accrued cost. Confirmed independently in docs/blueprint/assessment/COVERAGE.json's COVERAGE-003 (work item E05-position-funding-record, tier T1): 'a position financed in a second currency has no representation and its funding is invisible to valuation.' Not a defect in existing code -- the existing borrow-rate modelling is correct for what it covers -- but a missing type the ASSET/LEDGER domain needs and qip-financial/qip-portfolio are the natural place to add it, alongside the FX and funding-curve machinery `qip-capital-fabric::TransferCostModel` already builds on top of this crate.",
+    "blueprint_refs": [
+      "v11.6 (multi-currency position financing, COVERAGE-003)"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E05"
+  },
+  {
+    "item": "qip-financial::ladder (asset-liquidation depth of existing holdings) and qip-financial::cashflow (capital-call/commitment forecasting) are two separate, partial liquidity-over-time models that never compose into one treasury cash-flow ladder bucketing future inflows, outflows and encumbrances by the date they fall due",
+    "files": [
+      "backend/crates/libs/qip-financial/src/ladder.rs:44-250",
+      "backend/crates/libs/qip-financial/src/ladder.rs:493",
+      "backend/crates/libs/qip-financial/src/cashflow.rs:200-300",
+      "backend/crates/libs/qip-financial/src/cashflow.rs:1107",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:6626-6650"
+    ],
+    "category": "duplicate systems / incompatible interfaces",
+    "class": "B-refactor",
+    "why": "`LiquidityLadder` (ladder.rs:493, built every cycle at platform.rs:6626-6650 via Platform::liquidity_ladder/funding_ladder) buckets *existing holdings* by liquidation cost/horizon; its own module doc says it 'describes depth, it never reaches for it.' `CashflowForecast`/`Commitment` (cashflow.rs) separately forecast *future* capital calls and drawdowns, and cashflow.rs:1107's `Commitment::unscheduled` constructor is explicitly documented as 'a commitment whose call timing is not yet modelled' -- an honest, tested refusal rather than a defect, but it is also the reason the two systems cannot be joined today: neither carries the other's time axis. Confirmed independently in docs/blueprint/assessment/CAPITAL.json's CAPITAL-002 (work item E07-treasury-cashflow-ladder, tier T3): 'there is no treasury cash-flow ladder anywhere in qip-capital or qip-capital-fabric.' Both existing pieces are individually hardened and well-tested (35 + 37 tests respectively per docs/architecture/current-state/libs-finance.json); the gap is that nothing unifies them into the single time-bucketed view a treasury desk needs.",
+    "blueprint_refs": [
+      "v11.6 (treasury cash-flow ladder requirement, CAPITAL-002)"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "qip-risk's VaR/expected-shortfall/factor risk measurement never reads qip_financial::risk_profile::Greeks; an options or otherwise convex position's pre-trade risk figures are computed as if the position were linear",
+    "files": [
+      "backend/crates/libs/qip-risk/src/metrics.rs:24",
+      "backend/crates/libs/qip-risk/src/metrics.rs:37",
+      "backend/crates/libs/qip-risk/src/metrics.rs:52",
+      "backend/crates/libs/qip-risk/src/factor.rs:17",
+      "backend/crates/libs/qip-financial/src/risk_profile.rs:10"
+    ],
+    "category": "incorrect coupling / missing coverage on a production sign-off path",
+    "class": "B-refactor",
+    "why": "`grep -n 'Greeks\\|delta\\|gamma\\|vega' backend/crates/libs/qip-risk/src/metrics.rs backend/crates/libs/qip-risk/src/factor.rs` returns nothing -- confirmed. `Greeks` (risk_profile.rs:10) exists and is consumed in production, but only by `hedge_review.rs` for hedge sizing, not by `qip-risk::metrics`'s historical_var/parametric_var/expected_shortfall or `qip-risk::factor`'s FactorRisk/RiskDecomposition, which are what `RiskState` feeds into the pre-trade `LimitSet` that gates order sign-off every DECIDE-stage cycle. An options book's VaR/ES is therefore priced on notional/price exposure alone, with delta/gamma/vega convexity invisible to the same limit checks the risk-and-execution domain rule calls load-bearing. Confirmed independently in docs/blueprint/assessment/RISK.json's RISK-008 (PARTIAL, work item E07): 'gap' and 'basis' are not named as distinct measures anywhere in qip-risk, and qip_financial::risk_profile::Greeks is never read by qip-risk's measurement.' This is the same shape of problem CLAUDE.md names for RiskState::expected_shortfall before it was fixed: a limit computed from an incomplete input reads as protection for an options book without being one.",
+    "blueprint_refs": [
+      "v11.6 RISK-008 (gap/basis, Greeks-aware risk measurement)"
+    ],
+    "risk": "high",
+    "suggested_epic": "E07"
+  }
+]

@@ -1,0 +1,1173 @@
+[
+  {
+    "id": "GCP-001",
+    "domain": "GCP",
+    "title": "Reflex Cells run on dedicated Compute Engine C4D/C4-class VMs",
+    "statement": "Every Reflex Cell runs on dedicated Compute Engine VMs of the C4D/C4 class in its execution region. No Reflex Cell runs as a GKE or Cloud Run workload.",
+    "rationale": "The hot path needs the lowest jitter and direct venue sessions. A shared or serverless runtime adds scheduling noise and dependencies that Rule 1 keeps out of the path between tick and order.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Regional Reflex Cells row"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Compute Engine C4D/C4-class row"},
+      {"doc": "H", "page": "L106", "section": "VIEWS.global — 01 · Global Platform Topology, node 'am_reflex' ('C4/C4D/C3D')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every Reflex instance or instance group in the plan uses a C4D/C4-class machine type in its own region, and no Reflex workload appears as a GKE Deployment or a Cloud Run service."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["REFLEX"],
+    "notes": "Split from the raw G p17 dedicated-compute item. Its other halves are the Fabric VMs (GCP-005), reservations (GCP-015), Hyperdisk journals (GCP-034), Local SSD (GCP-035) and Shielded VM (GCP-059). The M p34 and H citations were added during consolidation. The three sources name different machine families: M p34 says C3/C3D, G p17 says C4D/C4, and H says C4/C4D/C3D. G's wording is kept because v2.1 governs placement (ADR 0099), and G p23 §29 says the exact machine still needs venue-level benchmarks. In the tree, modules/execution-node validates machine_type against C3/C3D high-CPU shapes only (v10.1 §41.4). That is a divergence to score. Placement on Compute Engine rather than a cluster already agrees with ADR 0024. MANAGED_SERVICE was dropped because these are plain VMs. Deployment is blocked on C8: execution_nodes = {} in every environment, and the dev project has no billing. In this platform a Reflex VM runs the simulated venue feed only (ADR 0003, ADR 0021). Priority P0 because GCP Phase 3 (One Reflex Cell) needs it."
+  },
+  {
+    "id": "GCP-002",
+    "domain": "GCP",
+    "title": "Stateful and long-running warm services run on regional GKE Standard",
+    "statement": "Stateful and long-running warm platform services run on GKE Standard regional clusters. These are asset, risk and capital, evidence, replay, Fabric sinks, internal APIs, package distribution, solvers and agents.",
+    "rationale": "Warm services need elastic capacity, and they fail independently of the Reflex and Fabric planes. Placing them by lane rather than on one runtime is the correction M §26 makes.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Warm services row"},
+      {"doc": "G", "page": "2", "section": "§1 Executive Architecture — plane table, Regional Service Plane row"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — GKE Standard regional clusters row"},
+      {"doc": "H", "page": "L109", "section": "VIEWS.global — 01 · Global Platform Topology, node 'am_gke' ('Asset/Capital/Risk/Evidence/World-model services'; repeated at L113 and L117)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every service that the workload register classifies as stateful or long-running is a workload on a regional GKE Standard cluster in the plan, and none of them is a Cloud Run service."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["ASSET", "RISK", "CAPITAL", "EVID", "FABRIC"],
+    "notes": "Merges two identical M p34 extractions, two identical G p2 extractions and the GKE half of the G p17 compute-plane item. G p2 names the services and the Standard mode, and G p17 adds solvers, agents and sinks, so their wording is kept. M p34 supplies the stateful/long-running criterion. The Cloud Run half of M p34 is GCP-003. The per-region cluster count is GCP-010, which is why MULTI_REGION was dropped here. Conflicts C3 and C7 apply. ADR 0024 retired Kubernetes for Cloud Run, ADR 0036 confines Argo to a control-plane cluster, ADR 0093 suspended that cluster, and ADR 0091 composes five binaries rather than one service per brain. Today the only GKE cluster in Terraform is the GitOps control plane. Priority P1 because this is GCP Phase 6 (regional service plane)."
+  },
+  {
+    "id": "GCP-003",
+    "domain": "GCP",
+    "title": "Cloud Run hosts only stateless burst workloads",
+    "statement": "Cloud Run hosts only stateless warm workloads, such as bursty web, webhook and control jobs, and only where serverless economics are beneficial and the cold-start and latency profile is acceptable. No stateful or long-running platform service runs on Cloud Run.",
+    "rationale": "Scale-to-zero pays off only for work that holds no state and tolerates a cold start. A stateful service on Cloud Run either loses state between instances or pays for pinned instances without the benefit.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Warm services row"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Cloud Run row"}
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "For every Cloud Run service in the plan, the workload register records it as stateless and holding no authoritative state, and says why its economics and latency profile suit serverless."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["API"],
+    "notes": "The Cloud Run half of the two M p34 extractions, merged with the Cloud Run half of the G p17 compute-plane item. M's condition ('serverless economics are beneficial') and G's ('where latency profile allows') are conjunctive, so both are kept. KUBERNETES was dropped from this half. The G p9 §8 'Burst stateless endpoints' row is held as API-009, and its 'not for venue execution' clause as API-010. ADR 0024 runs every warm binary on Cloud Run, which goes beyond this allowance. That divergence is scored under C3, and ADR 0099 says C3's resolving record must weigh this very sentence."
+  },
+  {
+    "id": "GCP-004",
+    "domain": "GCP",
+    "title": "The ledger is one multi-region deployment shared by all regions",
+    "statement": "The ledger is a single strongly consistent, multi-region transactional deployment (Cloud Spanner in a multi-region instance configuration) that every execution region shares. No execution region holds a ledger of its own.",
+    "rationale": "Financial truth has to be one fact everywhere. Separate regional ledgers would need reconciling with each other, and each would be a second source of truth.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Global ledger row"},
+      {"doc": "G", "page": "4", "section": "§3 Global Region and Failure-Domain Strategy — Global/shared bullet ('multi-region ledger')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares exactly one ledger Spanner instance with a multi-region instance configuration and declares no per-region ledger database."
+    },
+    "policy_flags": ["MULTI_REGION", "MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER"],
+    "notes": "Split from the raw G p4 global/shared item. The rest of that item is GCP-014. The M p34 citation was added during consolidation. M says 'Cloud Spanner or equivalent', and G p2 and G p17 name Spanner Enterprise Plus. M's same row also calls for an append-only object/event archive, which belongs to LEDGER and DATA. Conflict C4 applies (ADR 0002/0009 in-tree storage; ADR 0089 file-backed log). modules/data declares google_spanner_instance 'global' off by default, with config 'regional-${var.region}'. That is regional, not multi-region, which is a divergence. Priority P1: the ledger writer itself is GCP Phase 4 and is held at P0 in LEDGER, but the multi-region placement comes with GCP Phase 7."
+  },
+  {
+    "id": "GCP-005",
+    "domain": "GCP",
+    "title": "Fabric brokers run on dedicated Compute Engine VMs across three zones",
+    "statement": "In each region, Fabric broker and controller nodes run on dedicated Compute Engine C4D/C4-class VMs spread across three zones. They do not run on GKE or Cloud Run.",
+    "rationale": "Brokers hold replicated journals and a quorum. They need stable identities, disks and zone spread. A pod scheduler that reschedules them reactively would move quorum members at the worst time.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Native event/control fabric row"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Compute Engine C4D/C4-class row"},
+      {"doc": "H", "page": "L108", "section": "VIEWS.global — 01 · Global Platform Topology, node 'am_fabric' ('3+ brokers')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The Fabric broker instances in the plan are C4D/C4-class Compute Engine VMs covering three distinct zones of their region, and no broker runs as a GKE or Cloud Run workload."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["FABRIC"],
+    "notes": "The Fabric half of the raw G p17 dedicated-compute item. The M p34 and H citations were added during consolidation. M gives the three-zone spread, and G gives the machine class. G p8 §7.3 sets five brokers per production region, which is a FABRIC requirement, and its cost is C8. The Fabric's own transport and consensus stack is C2. No broker VM exists today, and Fabric semantics are in-tree libraries. MANAGED_SERVICE was dropped because these are plain VMs. Priority P0 because GCP Phase 2 (Rust Fabric MVP) exits on three brokers in one region."
+  },
+  {
+    "id": "GCP-006",
+    "domain": "GCP",
+    "title": "Cross-region Fabric mirroring travels only over private networking through the latency NCC hub",
+    "statement": "Selective cross-region Fabric mirror traffic travels over Google private networking and never over the public internet. It reaches peer regions only through the narrow mirror prefixes that the latency NCC mesh hub explicitly exports.",
+    "rationale": "Exporting only the peer prefixes keeps the cross-region path private and narrow. A remote region can reach the mirror endpoints and nothing else.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Native Rust Event & Control Fabric — Protocol and semantics, Cross-region behavior"},
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Latency mesh row"},
+      {"doc": "G", "page": "8", "section": "§7.3 Fabric placement on GCP — IP identity bullet"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The latency NCC hub's spoke export filters include only the Fabric mirror and Reflex Mesh peer prefixes, and each region's mirror endpoints have internal addresses only, with no route to them through an internet gateway."
+    },
+    "policy_flags": ["MULTI_REGION", "MANAGED_SERVICE"],
+    "secondary_domains": ["FABRIC", "NET", "MESH"],
+    "notes": "Merges the M p36 extraction with the mirror half of the G §7.3 extraction. The other half of that extraction (no public broker endpoints) is GCP-036. M says only 'Google private networking'. G p8 is more specific (prefixes exported through the latency NCC hub) and is kept. The G p5 latency-mesh row, added during consolidation, says only peer endpoints and ports are exported. The raw extraction cited G p9, but the IP identity bullet is on page 8 of the text, so the citation was corrected. The asynchronous, never-block-on-remote-ack half of M p36 is a FABRIC requirement. There is no NCC in Terraform today. Priority P1: master Phase 4 (selective cross-region fabric mirroring) and GCP Phase 7 (NCC latency mesh; selective Fabric mirrors)."
+  },
+  {
+    "id": "GCP-007",
+    "domain": "GCP",
+    "title": "Start with three execution regions: Americas, Europe and APAC",
+    "statement": "The platform starts with three execution regions, one each in the Americas, Europe and APAC.",
+    "rationale": "Three regions cover the three trading time zones and give each region peers to fail over research and control work to, without committing to more dedicated capacity than the benchmarks justify.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "3", "section": "§3 Global Region and Failure-Domain Strategy — opening paragraph"},
+      {"doc": "H", "page": "L93", "section": "VIEWS.global — 01 · Global Platform Topology, zones AMERICAS, EUROPE, APAC (L93-95)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The production execution-region map in committed tfvars has exactly three entries, whose GCP regions lie in the Americas, Europe and APAC."
+    },
+    "policy_flags": ["MULTI_REGION", "COST"],
+    "secondary_domains": ["REFLEX", "FABRIC"],
+    "notes": "Split from the raw G p3 item. How each region is chosen is GCP-008. The H citation was added during consolidation. COST was added because C8 ties the three regions to an owner cost ceiling before any deployment record. The repository models more regional edge cells than the three execution regions v2.1 starts with: ADR 0008 decided seven, and environments/prod/terraform.tfvars refers to nine planned locations. How cells map to execution regions is for the C8 deployment record. Nothing is deployed: execution_nodes = {} in every environment. Priority P1 because this is GCP Phase 7 (multi-region)."
+  },
+  {
+    "id": "GCP-008",
+    "domain": "GCP",
+    "title": "Exact execution regions are chosen by recorded measurement",
+    "statement": "The exact GCP region for each execution region is chosen by measurement and the result recorded. The measurements are venue RTT, market-data RTT, legal residency, available machine series, Interconnect options and proximity to counterparties. Region names in the diagrams are logical, not a hard-coded preference.",
+    "rationale": "GCP regional execution is fast cloud trading, not colocation. The distance to a venue is a measured fact that decides whether a cell is worth running where it is.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 10, Cloud latency has physics"},
+      {"doc": "G", "page": "3", "section": "§3 Global Region and Failure-Domain Strategy — opening paragraph"}
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each execution region in committed configuration has a dated selection record. The record gives the measured venue and market-data RTTs and the residency, machine-series, Interconnect and counterparty-proximity findings that chose the region."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["REFLEX", "COMPLIANCE", "NET"],
+    "notes": "Merges the selection half of the raw G p3 item with the separate criteria extraction. The criteria list is the more specific wording and is kept. The Rule 10 citation was added during consolidation because it says venue-specific benchmarks decide region and topology. The header of modules/connectivity records three cells placed 300 to 400 km from their venues because GCP has no region there. That is exactly the finding this requirement asks to be recorded per region. The first region (GCP Phase 3) should be chosen the same way, but the three-region set is P1."
+  },
+  {
+    "id": "GCP-009",
+    "domain": "GCP",
+    "title": "Each execution region has separate Reflex, Fabric and Service VPCs",
+    "statement": "Each execution region has three separate VPC networks: a Reflex VPC, a Fabric VPC and a Service VPC. They are not subnets of one shared network.",
+    "rationale": "Separate networks keep a routing, firewall or change mistake in one plane from reaching the others, and they let the Reflex network be governed on its own terms.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "3", "section": "§3 Global Region and Failure-Domain Strategy — Per execution region bullet"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — VPC row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "For each execution region the plan declares three distinct google_compute_network resources for Reflex, Fabric and Service, and no Reflex or Fabric instance has an interface in the Service VPC."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["NET", "SEC", "REFLEX", "FABRIC"],
+    "notes": "Two identical extractions of the G p3 per-region bullet listed six resources. They were split into the VPCs (here), the GKE cluster (GCP-010), landing storage (GCP-011), observability collectors (GCP-012) and controlled egress (GCP-013). The Data and Engineering networks in the G p17 VPC row are GCP-051. KUBERNETES and MANAGED_SERVICE were dropped because this half concerns only VPC networks. Today modules/network declares one VPC and modules/trust-zones separates planes by subnet, which diverges from this requirement. Priority P0 because GCP Phase 0 delivers NCC/VPC, and the separation applies from the first region onwards."
+  },
+  {
+    "id": "GCP-010",
+    "domain": "GCP",
+    "title": "One regional GKE cluster per execution region, never a single global cluster",
+    "statement": "Each execution region has its own regional GKE Standard cluster for its service plane. No single GKE cluster serves the platform globally.",
+    "rationale": "A global cluster is one control plane whose loss or misconfiguration takes every region's warm services down together. That breaks 'regions fail independently' (G Rule 5).",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "3", "section": "§3 Global Region and Failure-Domain Strategy — Per execution region bullet ('Service VPC/GKE cluster')"},
+      {"doc": "G", "page": "23", "section": "§28 Explicit Anti-Patterns — 'Using a single GKE cluster globally'"},
+      {"doc": "H", "page": "L109", "section": "VIEWS.global — 01 · Global Platform Topology, one 'Regional GKE' node per region (L109, L113, L117)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares one regional GKE cluster per execution region, each located in that region, and no cluster serves workloads registered to another region."
+    },
+    "policy_flags": ["KUBERNETES", "MULTI_REGION"],
+    "secondary_domains": ["RES"],
+    "notes": "Merges the GKE-cluster part of the G p3 per-region bullet with the GKE half of the G p23 anti-pattern. The anti-pattern's VPC half is GCP-024. The H citation was added during consolidation. Subject to conflict C3. Priority P1 because this is GCP Phases 6 and 7."
+  },
+  {
+    "id": "GCP-011",
+    "domain": "GCP",
+    "title": "Each execution region has its own regional landing storage",
+    "statement": "Each execution region has its own regional landing storage: Cloud Storage buckets located in that region. The region's sealed Fabric segments are written there before being copied onward to durable archive locations under the lifecycle policy.",
+    "rationale": "Landing in-region keeps archival independent of other regions and lets residency policy decide what, if anything, leaves the region.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "3", "section": "§3 Global Region and Failure-Domain Strategy — Per execution region bullet ('regional landing storage')"},
+      {"doc": "G", "page": "9", "section": "§7.3 Fabric placement on GCP — Archival bullet"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "For each execution region the plan declares a Cloud Storage landing bucket whose location is that region and not a multi-region, and that region's Fabric archiver identity holds write access to it."
+    },
+    "policy_flags": ["MULTI_REGION", "MANAGED_SERVICE"],
+    "secondary_domains": ["DATA", "FABRIC"],
+    "notes": "Split from the G p3 per-region bullet (two identical extractions). The G p9 Archival citation was added during consolidation because it names 'regional GCS landing buckets' and says onward copy follows residency policy. modules/data declares Cloud Storage off by default, in the single region of each environment. Priority P1 because this is GCP Phases 5 and 7. The single-region GCS archive of GCP Phase 2 (P0) lands in that region's bucket."
+  },
+  {
+    "id": "GCP-012",
+    "domain": "GCP",
+    "title": "Each execution region has its own observability collectors",
+    "statement": "Each execution region runs its own observability collectors. Telemetry from its Reflex, Fabric and service workloads is collected in-region, not by a collector in another region.",
+    "rationale": "If collection depended on another region, a cross-region outage would blind operators to the one region still trading.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "3", "section": "§3 Global Region and Failure-Domain Strategy — Per execution region bullet ('regional observability collectors')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "For each execution region the plan places a collector (Ops Agent receiver or OpenTelemetry collector) in that region, and every Reflex, Fabric and service workload scrapes to or exports to a target in its own region."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["OBS"],
+    "notes": "Split from the G p3 per-region bullet (two identical extractions). KUBERNETES and MANAGED_SERVICE were dropped because collectors can be self-run. According to the observability rule, the execution node's startup script declares an Ops Agent Prometheus receiver, which is in-region by construction. No Cloud Run service has a collector, because the managed-Prometheus sidecar is refused on an unfixed CVE. Nothing is deployed. Priority P1 because this is GCP Phase 7 (multi-region)."
+  },
+  {
+    "id": "GCP-013",
+    "domain": "GCP",
+    "title": "Each execution region has its own controlled internet egress",
+    "statement": "Each execution region has its own controlled internet egress. Crawlers, agents and builders reach the internet only through Cloud NAT or Secure Web Proxy, with static egress identities, audit and domain controls.",
+    "rationale": "Uncontrolled egress is how a compromised crawler or agent exfiltrates data or reaches an endpoint nobody approved. Static identities and domain controls make every outbound call attributable.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "3", "section": "§3 Global Region and Failure-Domain Strategy — Per execution region bullet ('controlled egress')"},
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Controlled Internet egress row"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Cloud NAT row and Secure Web Proxy row"},
+      {"doc": "H", "page": "L315", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'swp' (Secure Web Proxy / NAT)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "In each region the only default-internet routes from crawler, agent and build subnets lead to a Cloud NAT gateway with reserved static addresses, or to a Secure Web Proxy with a domain allow-list and logging. Those workloads have no external IPs."
+    },
+    "policy_flags": ["MULTI_REGION", "MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "SEC", "WORLD"],
+    "notes": "Merges the egress part of the G p3 per-region bullet (two identical extractions) with the Cloud NAT and Secure Web Proxy rows of the G p17 network catalogue item. The G p5 and H citations were added during consolidation. G p5's row adds that Reflex venue egress is governed separately, and G p23 §28 forbids routing Reflex traffic through Secure Web Proxy or Cloud NAT chains without benchmarked necessity. Those constrain REFLEX and NET and are not restated here. In the tree, modules/egress-proxy renders an Envoy sidecar and two Cloud NAT gateways are declared. Nothing is applied. Priority P0 because controlled egress is a GCP Phase 0 network foundation and a security control."
+  },
+  {
+    "id": "GCP-014",
+    "domain": "GCP",
+    "title": "Management, research, registry, catalog and identity services are global or shared",
+    "statement": "The management/build plane, global research data, the model registry, the Knowledge Catalog and the identity/security services are global or shared across execution regions. None of them is instantiated once per region.",
+    "rationale": "These services hold one version of a fact the whole platform uses: which artifact is signed, which model is registered, who an identity is. Copies per region would have to be kept in agreement.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§3 Global Region and Failure-Domain Strategy — Global/shared bullet"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Each of the five named services is declared once, in a global or shared project, and none of them appears in any prod/exec-, prod/fabric- or prod/services-<region> project."
+    },
+    "policy_flags": ["MULTI_REGION", "MANAGED_SERVICE"],
+    "secondary_domains": ["SUPPLY_CHAIN", "DATA", "MODEL", "SEC"],
+    "notes": "Split from the raw G p4 global/shared item. Its multi-region ledger is GCP-004. The Knowledge Catalog is subject to C4. The model registry's contents are master Phase 8 (P2), but where the registry is placed is decided when the regions are. Priority P1 because shared placement starts to matter at GCP Phase 7 (multi-region)."
+  },
+  {
+    "id": "GCP-015",
+    "domain": "GCP",
+    "title": "Hot Reflex and Fabric capacity is guaranteed by reservations or commitments",
+    "statement": "Production hot capacity for Reflex and Fabric is guaranteed with Compute Engine reservations or commitments, not left to on-demand availability.",
+    "rationale": "Reflex does not autoscale reactively during a market burst. If a replacement VM cannot be obtained when needed, the cell stays down.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§3 Global Region and Failure-Domain Strategy — Capacity bullet"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Reservations / commitments row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every production Reflex and Fabric instance group in the plan consumes a specific reservation, or is covered by a commitment, sized to its instance count."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["REFLEX", "FABRIC", "FINOPS"],
+    "notes": "The reservations half of the raw G p17 dedicated-compute item. The G p4 Capacity citation was added during consolidation because it says specifically that the hot Reflex capacity is reserved. G p21 §23 says to optimise with committed use or reservations only after benchmark sizing is stable, so this follows GCP-008. MANAGED_SERVICE was dropped. This applies to production, which the workflow refuses, and ADR 0093's cost instruction and C8 apply. Priority P1 because it becomes relevant at production scale (GCP Phase 7)."
+  },
+  {
+    "id": "GCP-016",
+    "domain": "GCP",
+    "title": "Resources are organised as an organization, folder and project hierarchy for blast-radius isolation",
+    "statement": "The platform's GCP resources are organised in an organization > folder > project hierarchy. There is an org/platform-foundation, and there are prod/* and nonprod/* folders with one project per plane and, for the execution planes, per region. Each project is a blast-radius boundary.",
+    "rationale": "IAM, quota, billing and policy all attach to projects and folders. A hierarchy is what makes a mistake or a compromise in one plane unable to reach another.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — table"},
+      {"doc": "G", "page": "16", "section": "§19 Complete GCP Service Catalog — Cloud Resource Manager / Folders / Projects row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares the org/platform-foundation, prod and nonprod folders under one organization, places every G §4 project pattern in its folder, and creates no workload resource outside a project in that tree."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["SEC", "GOV"],
+    "notes": "From the raw G p16 catalogue item. The G p4 §4 table citation was added because its rows are GCP-017 to GCP-023. Today each environment is one project, and Terraform has no google_folder. Creating folders needs an organization and org-level administration, which the owner holds and the repository does not. The governance rules keep that out of scope until a task names it. prod projects are refused by the workflow, so only the nonprod tree can be built. The prod/ledger, prod/world-model, prod/data, prod/ai and prod/engineering rows were not extracted into this domain and are held by LEDGER, WORLD, DATA, MODEL and SUPPLY_CHAIN. Priority P0 because GCP Phase 0 exits on 'Org/folders/projects'."
+  },
+  {
+    "id": "GCP-017",
+    "domain": "GCP",
+    "title": "org/platform-foundation holds the central guardrails",
+    "statement": "An org/platform-foundation project holds the central guardrails, separately from any application project: Organization Policy, IAM/PAM patterns, audit log sinks, Security Command Center and billing exports.",
+    "rationale": "A guardrail that an application project can edit is one the application can turn off. Keeping them apart makes them non-bypassable from the workloads they constrain.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — org/platform-foundation row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan places the org policies, audit sinks, SCC configuration and billing export in org/platform-foundation, and no application project's identities hold a role that can modify them."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["SEC", "GOV", "FINOPS"],
+    "notes": "Today modules/scc and modules/identity sit inside each environment's single project, so the separation does not exist yet. Priority P0 because this is GCP Phase 0 (IAM/PAM, audit/SCC)."
+  },
+  {
+    "id": "GCP-018",
+    "domain": "GCP",
+    "title": "prod/network-core holds network authority, separate from workloads",
+    "statement": "A prod/network-core project holds network authority, separately from every workload project: NCC hubs, shared DNS, hybrid connectivity, firewall policy and PSC endpoints.",
+    "rationale": "If a workload project could change routes or firewall policy, a compromised or misconfigured workload could reshape the network around itself.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — prod/network-core row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "NCC hubs, shared DNS zones, Interconnect, VPN and Cloud Router resources, hierarchical firewall policies and PSC endpoints are declared in prod/network-core, and no workload project's service account holds a network-admin role on it."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "SEC"],
+    "notes": "Merges two extractions of the same row. The resource list comes from the second, more specific one. The nonprod mirror is GCP-023. Priority P0 because GCP Phase 0 delivers NCC/VPC/DNS/firewalls."
+  },
+  {
+    "id": "GCP-019",
+    "domain": "GCP",
+    "title": "prod/exec-<region> isolates the Reflex VPC and VMs",
+    "statement": "Each execution region's Reflex VPC and C4D/C4 Reflex VMs are placed in a dedicated prod/exec-<region> project.",
+    "rationale": "Latency-critical execution gets the smallest blast radius: nothing else shares its project, quota or IAM.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — prod/exec-<region> row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "For each region there is one prod/exec-<region> project containing the Reflex VPC and Reflex instances, and no Fabric, GKE or data resource is declared in it."
+    },
+    "policy_flags": ["MULTI_REGION", "COST"],
+    "secondary_domains": ["REFLEX"],
+    "notes": "prod is refused by infra.yml and the deploy gate (ADR 0003, ADR 0021), so the nonprod mirror (GCP-023) is where this boundary can be built and shown. Today modules/execution-node deploys into the environment's single project. Priority P0 because this is the GCP Phase 0 project model for the GCP Phase 3 Reflex cell."
+  },
+  {
+    "id": "GCP-020",
+    "domain": "GCP",
+    "title": "prod/fabric-<region> isolates the Fabric so messaging cannot reconfigure trading compute",
+    "statement": "Each execution region's Fabric VPC, broker VMs, journal disks and archiver identities are placed in a dedicated prod/fabric-<region> project. No identity in that project can reconfigure the Reflex compute in prod/exec-<region>.",
+    "rationale": "A messaging failure or a compromised broker identity must not be able to reconfigure trading compute. A project boundary with no cross-grant enforces that.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — prod/fabric-<region> row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Each region's prod/fabric-<region> project holds the Fabric VPC, broker instances, journal disks and archiver service accounts, and IAM on prod/exec-<region> grants none of those identities any compute or network write role."
+    },
+    "policy_flags": ["MULTI_REGION", "COST"],
+    "secondary_domains": ["FABRIC", "SEC"],
+    "notes": "G's reason ('messaging failure cannot directly reconfigure trading compute') is made checkable as the absence of a cross-project grant. Priority P0 because this is the GCP Phase 0 project model for the GCP Phase 2 Fabric MVP."
+  },
+  {
+    "id": "GCP-021",
+    "domain": "GCP",
+    "title": "prod/services-<region> hosts the warm services apart from Reflex and Fabric",
+    "statement": "Each execution region's regional GKE Standard cluster, regional APIs and Fabric sinks are placed in a dedicated prod/services-<region> project, so warm services scale independently of Reflex and Fabric.",
+    "rationale": "Quota and scaling pressure attach to a project. Warm-service autoscaling in its own project cannot take capacity or quota from the Reflex and Fabric planes.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — prod/services-<region> row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Each region's GKE cluster, API and sink workloads are declared in prod/services-<region>, and no Reflex or Fabric resource shares that project."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE", "MULTI_REGION"],
+    "secondary_domains": ["API", "FABRIC"],
+    "notes": "Merges two extractions of the same row. The Redis placement, which the second extraction singled out, is split out as GCP-022. Conflict C3 applies to the GKE contents. Priority P0 for the project boundary, which GCP Phase 0 creates. What it holds arrives in GCP Phase 6."
+  },
+  {
+    "id": "GCP-022",
+    "domain": "GCP",
+    "title": "Redis lives only in the warm-services project",
+    "statement": "Redis (Memorystore) is placed in prod/services-<region> with the warm services, and in no Reflex or Fabric project.",
+    "rationale": "Rule 1 keeps Redis out of the path between tick and order. Placing it only with the warm services means a Reflex or Fabric process has no network path on which to come to depend on it.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — prod/services-<region> row ('Redis')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every google_redis_instance in the plan belongs to a prod/services-<region> project (or its nonprod mirror) and is reachable only from the Service VPC, never from a Reflex or Fabric VPC."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA", "REFLEX"],
+    "notes": "Split from the prod/services-<region> row, which both extractions stated, one singling out Redis. KUBERNETES was dropped. G p3 Rule 1 excludes Redis from the hot path, and G p23 §28 forbids Redis as position or capital truth or as a required risk-gate dependency. Those are REFLEX and RISK requirements; this one says only where Redis may live. G p17 describes Memorystore as ephemeral cache, rate and coordination hints. Subject to C4 (Memorystore). modules/data declares google_redis_instance 'cache' off by default, in the environment's single project. Priority P1 because this is GCP Phase 6 ('Redis cache')."
+  },
+  {
+    "id": "GCP-023",
+    "domain": "GCP",
+    "title": "nonprod mirrors production's project boundaries at lower scale",
+    "statement": "The nonprod/* folders mirror production's logical project boundaries at lower scale, with no access to production. The boundaries are foundation, network-core, the per-region exec, fabric and services projects, and the shared projects.",
+    "rationale": "Parity of architecture without production access means a boundary bug is found where it cannot touch production.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — nonprod/* row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "For every prod project pattern in G §4 the plan declares a nonprod counterpart with the same resource kinds at lower scale, and no nonprod identity holds any role on a prod project."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GOV", "SEC"],
+    "notes": "G p21 §24 lists dev, integration, replay, paper and staging as the non-production environments. The repository has dev, test, stage and prod environments, each a single project, and prod is refused. Here nonprod is the only tree that may be built, which makes this row the place where GCP-016 to GCP-022 are first shown. Priority P0 because this is GCP Phase 0."
+  },
+  {
+    "id": "GCP-024",
+    "domain": "GCP",
+    "title": "No single flat VPC, and the Reflex and Fabric networks stay independently governable",
+    "statement": "No single flat or Shared VPC spans the platform's planes. The Reflex and Fabric networks stay independently governable, each administered from its own project, so that a change to one network cannot re-route another plane.",
+    "rationale": "A single giant VPC is easy at first, but it widens the blast radius of routing and change: one firewall or route edit reaches every plane.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — 'Why not one giant Shared VPC?' box"},
+      {"doc": "G", "page": "23", "section": "§28 Explicit Anti-Patterns — 'a single giant flat VPC'"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "No VPC in the plan hosts subnets for more than one of the Reflex, Fabric, Service, Data and Engineering planes, and the Reflex and Fabric VPCs are owned by projects whose network administrators are distinct."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["NET", "REFLEX", "FABRIC"],
+    "notes": "Merges the G p4 box's prohibition and governability sentence with the VPC half of the G p23 anti-pattern. The box's other two statements are GCP-025 (NCC connects the VPCs) and GCP-026 (Shared VPC scope), and the anti-pattern's GKE half is GCP-010. KUBERNETES and MANAGED_SERVICE were dropped because the prohibition is met by absence. Today there is one VPC with trust zones as subnets (modules/network, modules/trust-zones), which is the largest network divergence in the current state. Priority P0 because this is GCP Phase 0."
+  },
+  {
+    "id": "GCP-025",
+    "domain": "GCP",
+    "title": "Separated VPCs connect through NCC VPC spokes with route filters",
+    "statement": "The separated VPCs are connected through Network Connectivity Center VPC spokes with route filters (export include and exclude ranges), not by peering meshes or by merging networks. Routes are orchestrated centrally without flattening the networks.",
+    "rationale": "Spokes with route filters give one place where inter-plane reachability is declared and reviewed. Pairwise peering scatters that decision across every network.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — 'Why not one giant Shared VPC?' box ('v2 uses NCC to connect intentionally separated VPCs')"},
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — VPC-to-VPC row"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Network Connectivity Center row"},
+      {"doc": "H", "page": "L118", "section": "VIEWS.global — 01 · Global Platform Topology, node 'ncc' ('Global private network topology')"},
+      {"doc": "H", "page": "L329", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, edge svpc -> ncc (data)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every inter-VPC path in the plan is a google_network_connectivity_spoke on an NCC hub with explicit export include/exclude ranges, and no google_compute_network_peering connects two plane VPCs."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "MULTI_REGION"],
+    "secondary_domains": ["NET"],
+    "notes": "Merges the NCC sentence of the G p4 box, the G p5 VPC-to-VPC row, the NCC row of the G p17 network catalogue item, and the Shared VPC -> NCC edge of the raw H item. The NCC -> PSC edge of that H item is in GCP-033. The H L118 citation was added during consolidation. MULTI_REGION is kept because the hub is global and joins VPCs across regions. There is no NCC resource in Terraform today. Priority P0 because GCP Phase 0 delivers NCC/VPC."
+  },
+  {
+    "id": "GCP-026",
+    "domain": "GCP",
+    "title": "Shared VPC is confined to a single domain or folder",
+    "statement": "Shared VPC is used only inside a single domain or folder, where centralised subnet ownership is useful. It provides host/service project segmentation within that domain and never spans domains.",
+    "rationale": "Inside a domain, one team owning the subnets is convenient. Across domains it recreates the flat network that GCP-024 forbids.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — 'Why not one giant Shared VPC?' box ('Shared VPC may still be used inside a domain/folder')"},
+      {"doc": "H", "page": "L311", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'svpc' ('Host/service project segmentation')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every Shared VPC host project in the plan attaches only service projects from its own folder, and no Shared VPC hosts subnets used by both Reflex and Fabric workloads."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["NET", "GOV"],
+    "notes": "The blueprint states this as a permission ('may still be used'), so the checkable content is its bound. Merged with the Shared VPC node of the raw H item. That item's NCC edges are GCP-025 and GCP-033. MANAGED_SERVICE and MULTI_REGION were dropped: Shared VPC is a VPC feature, and a single-domain Shared VPC does not span regions by definition. Priority P0 because this is GCP Phase 0."
+  },
+  {
+    "id": "GCP-027",
+    "domain": "GCP",
+    "title": "Regional warm services are entered through GKE Gateway or a regional internal load balancer",
+    "statement": "Regional warm services are entered through the GKE Gateway API or a regional internal Application Load Balancer.",
+    "rationale": "A single internal entry per region is where service policy, timeouts and identity are applied. A warm service reachable around it inherits none of them.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Regional services row"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Cloud Load Balancing row ('regional internal ingress')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every regional entry to a warm service in the plan is a GKE Gateway or an INTERNAL_MANAGED regional forwarding rule, and no warm service exposes an external address or a node port."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["API", "NET"],
+    "notes": "The G p5 Regional services row states three things, split here into this entry, mTLS through the mesh (GCP-028) and the prohibition on the Reflex path (GCP-029). The regional-ingress half of the Cloud LB row from the G p17 public-edge item is merged here. Its global-edge half is GCP-053. API-007 states the same entry from the G p9 §8 Internal APIs row, and the two should be scored together. Conflict C3 applies. Priority P1 because this is GCP Phase 6."
+  },
+  {
+    "id": "GCP-028",
+    "domain": "GCP",
+    "title": "Cloud Service Mesh gives warm GKE services mTLS, policy, retries and timeouts",
+    "statement": "Warm GKE services communicate through Cloud Service Mesh, which enforces mTLS, service policy, retries and timeouts between them.",
+    "rationale": "East-west calls between warm services need authenticated identity and bounded failure behaviour. The mesh supplies both without an in-tree TLS stack.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Regional services row"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Cloud Service Mesh row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In a nonprod cluster, a plaintext call between two meshed warm services is refused, a call denied by service policy is refused, and a hung upstream is cut off at the configured timeout after the configured number of retries."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["SEC", "API"],
+    "notes": "Merges the mesh clause of the G p5 Regional services row with the Cloud Service Mesh half of the G p17 compute-plane item. G p9 §8's Service mesh bullet adds circuit breaking. API-008 holds mTLS at internal API entry. Conflict C3 applies (Cloud Service Mesh), and C2 means the control has to come from managed infrastructure because in-tree TLS is refused by ADR 0009. Priority P1 because this is GCP Phase 6."
+  },
+  {
+    "id": "GCP-029",
+    "domain": "GCP",
+    "title": "The regional services path and the mesh are never inserted in the Reflex or Fabric path",
+    "statement": "The regional services path (GKE Gateway, internal Application Load Balancer and Cloud Service Mesh) is never inserted in the Reflex path, and no Reflex or Fabric traffic passes through mesh sidecars.",
+    "rationale": "Rule 1 allows nothing between tick and order except local memory, local risk, session state and the venue adapter. A proxy hop adds latency, jitter and a dependency that can stop execution.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Regional services row ('never inserted in Reflex path')"},
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Service mesh bullet"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Cloud Service Mesh row ('for warm GKE services only')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "No Reflex or Fabric instance in the plan is a mesh member or runs a sidecar, and no route from a Reflex VM to a venue or to a Fabric broker passes through a Gateway, internal load balancer or mesh proxy address."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "FABRIC", "NET"],
+    "notes": "Merges the prohibition in the G p5 Regional services row with the 'warm GKE services only' scope of the G p17 Cloud Service Mesh row. The G p9 citation was added during consolidation because it names Fabric as well as Reflex. G p3 Rule 1 and G p23 §28 state the same invariant from the REFLEX side. Flags were dropped because the prohibition is met by absence, as with API-010. Priority P0 as a hot-path invariant that protects the GCP Phase 3 Reflex cell."
+  },
+  {
+    "id": "GCP-030",
+    "domain": "GCP",
+    "title": "Service, data, AI and management VPCs attach to an inspected NCC star hub",
+    "statement": "The service-plane, data, AI and management VPCs, including each region's GKE cluster network, attach to an NCC star (hybrid-inspection) hub whose traffic passes centralised inspection. That hub is separate from the latency mesh hub used by Reflex and Fabric.",
+    "rationale": "Warm, data and AI traffic benefits from central inspection, and the Reflex and Fabric paths cannot afford it. Two hubs let each class of traffic get the treatment it needs.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Service/data hub row"},
+      {"doc": "H", "page": "L133", "section": "VIEWS.global — 01 · Global Platform Topology, edges am_gke/eu_gke/ap_gke -> ncc (control)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares an NCC hub with star topology whose centre routes through an inspection appliance or Cloud NGFW, and every service, data, AI and management VPC is an edge spoke of it and of no latency-mesh hub."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "KUBERNETES", "MULTI_REGION"],
+    "secondary_domains": ["NET", "SEC"],
+    "notes": "Merges the G p5 row with the H item that draws each Regional GKE connecting to NCC over a control-class edge. KUBERNETES is kept because the row names GKE connectivity, and the GKE spokes are subject to C3. Priority P0 because GCP Phase 0 delivers NCC. The GKE spokes themselves arrive with GCP Phase 6, and the latency mesh hub with GCP Phase 7."
+  },
+  {
+    "id": "GCP-031",
+    "domain": "GCP",
+    "title": "Private providers connect over Cloud Interconnect with Cloud Router",
+    "statement": "Private market-data, venue and custody providers are connected over Dedicated or Partner Cloud Interconnect with Cloud Router (dynamic BGP), wherever the counterparty supports private hybrid connectivity.",
+    "rationale": "A private circuit avoids the generic internet and proxy path for counterparties that offer one, which gives predictable latency and no public exposure.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Market/custody connectivity row"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Cloud Router row and Dedicated/Partner Cloud Interconnect row"},
+      {"doc": "H", "page": "L118", "section": "VIEWS.global — 01 · Global Platform Topology, node 'ncc' ('Interconnect/VPN attachments')"},
+      {"doc": "H", "page": "L312", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'ncc' ('Regional VPCs, Interconnect and VPN')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "For each provider recorded as supporting private connectivity, the plan declares an Interconnect VLAN attachment on a Cloud Router with a BGP session, attached to the network-core NCC hub as a hybrid spoke."
+    },
+    "policy_flags": ["COST", "MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "MARKETDATA"],
+    "notes": "Split from the G p5 Market/custody row. Its HA VPN fallback is GCP-032. Merged with the Cloud Router and Interconnect rows of the G p17 network catalogue item. The H citations were added during consolidation. The same G p5 row says latency-sensitive venue traffic may take a direct internet path rather than a generic proxy, which belongs to REFLEX and NET. MULTI_REGION was dropped because an attachment belongs to one metro. The custody arm needs live custody and is BLOCKED under ADR 0021, but LIVE_CAPITAL is not flagged because the market-data arm is buildable on paper. modules/connectivity declares a partner attachment off by default and records in NOT-ORDERED.md that no circuit exists. Priority P1 because it applies only once a private provider is onboarded; GCP Phase 0's exit list does not name it."
+  },
+  {
+    "id": "GCP-032",
+    "domain": "GCP",
+    "title": "HA VPN is the fallback for private provider connectivity",
+    "statement": "HA VPN provides fallback hybrid connectivity to private providers when their Interconnect path is unavailable.",
+    "rationale": "A single circuit is a single point of failure for a counterparty link. An encrypted internet fallback keeps the link up, at worse latency, while the circuit is repaired.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Market/custody connectivity row ('HA VPN as fallback')"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — HA VPN row"},
+      {"doc": "H", "page": "L312", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'ncc' ('Regional VPCs, Interconnect and VPN')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every provider connected by Interconnect also has an HA VPN gateway with two tunnels and BGP sessions on the same Cloud Router, with route priorities that prefer the Interconnect path."
+    },
+    "policy_flags": ["COST", "MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "RES"],
+    "notes": "Split from the G p5 Market/custody row and merged with the HA VPN row of the G p17 network catalogue item. The H citation was added during consolidation. MULTI_REGION was dropped. Terraform has no HA VPN today. Priority P1, as for GCP-031."
+  },
+  {
+    "id": "GCP-033",
+    "domain": "GCP",
+    "title": "Google API traffic stays private through Private Google Access or PSC",
+    "statement": "Traffic to Google APIs and managed services, including Spanner, Cloud Storage, Bigtable and Artifact Registry, stays on private paths through Private Google Access or Private Service Connect endpoints wherever the service supports it.",
+    "rationale": "Once API traffic is private, workloads need no external address or NAT route to reach their own dependencies, which removes an exfiltration path and a public dependency.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Google APIs row"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Private Service Connect row and Private Google Access row"},
+      {"doc": "H", "page": "L313", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'psc' ('Private managed-service endpoints where supported')"},
+      {"doc": "H", "page": "L329", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, edge ncc -> psc (data)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every subnet in the plan either has private_ip_google_access enabled or resolves googleapis.com to a PSC endpoint, and no workload needs an external IP or NAT route to reach a Google API."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "SEC"],
+    "notes": "Merges the G p5 row, the PSC and PGA rows of the G p17 network catalogue item, and the NCC -> PSC edge of the raw H item. The H L313 node citation was added during consolidation. The PSC endpoints are held in network-core (GCP-018) and reach spokes through NCC. MULTI_REGION was dropped. Today private_ip_google_access = true on the network, trust-zones, execution-node and image-bake subnets, and modules/connectivity declares a PSC endpoint for Google APIs that is off by default. The VPC Service Controls -> PSC edge (H L329) belongs to SEC. Priority P0 because this is GCP Phase 0."
+  },
+  {
+    "id": "GCP-034",
+    "domain": "GCP",
+    "title": "Fabric broker journals live on persistent Hyperdisk",
+    "statement": "Fabric broker journals are stored on persistent Hyperdisk volumes sized for sustained append and read throughput.",
+    "rationale": "A journal has to survive a VM restart and sustain the append rate. Persistent, provisioned-throughput disks give both.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.3 Fabric placement on GCP — Journal disks bullet"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Hyperdisk row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every Fabric broker instance in the plan attaches a Hyperdisk journal volume (not Local SSD), with provisioned throughput and IOPS taken from the broker sizing benchmark."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["FABRIC"],
+    "notes": "The Hyperdisk half of the raw G p17 dedicated-compute item. The G p8 citation was added during consolidation because it states the sizing rule. The G p4 prod/fabric row also lists journal disks (GCP-020). MANAGED_SERVICE was dropped because this is block storage for a VM. Priority P0 because this is the GCP Phase 2 RF3 journal."
+  },
+  {
+    "id": "GCP-035",
+    "domain": "GCP",
+    "title": "Local SSD holds only scratch, cache and transient data",
+    "statement": "Local SSD is used only for Reflex scratch and cache and for optional Fabric transient acceleration. No record's durability depends on a single local device, because durability comes from the replicated journal.",
+    "rationale": "Local SSD is lost when its VM stops. A record whose only copy is there is lost with it.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.3 Fabric placement on GCP — Journal disks bullet ('Durability derives from replicated journal, not one local device')"},
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Local SSD row"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Destroy a broker VM together with its Local SSD in a three-zone test cluster. Every quorum-acknowledged record is still served by the surviving replicas, and the replacement broker rebuilds from them."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "REFLEX"],
+    "notes": "The Local SSD half of the raw G p17 dedicated-compute item. The G p8 citation was added during consolidation because it is the sentence that makes this a correctness constraint rather than a hardware preference. MANAGED_SERVICE and COST were dropped because the constraint concerns durability, not spend. Priority P0 as a durability invariant of the GCP Phase 2 Fabric MVP."
+  },
+  {
+    "id": "GCP-036",
+    "domain": "GCP",
+    "title": "Fabric brokers have stable internal addresses and no public endpoint",
+    "statement": "Fabric brokers have stable internal IP addresses and no public endpoints.",
+    "rationale": "A broker reachable from the internet exposes the platform's internal nervous system. Stable internal addresses also keep the bootstrap records valid across restarts.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.3 Fabric placement on GCP — IP identity bullet"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every Fabric broker instance in the plan has a reserved static internal address and no access_config (external IP), and no load balancer or forwarding rule exposes it externally."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "SEC"],
+    "notes": "Split from the raw G §7.3 extraction. Its cross-region mirror half is GCP-006. The page was corrected from 9 to 8, where the bullet sits in the text. MULTI_REGION was dropped because it does not apply to broker addressing. Priority P0 because this is GCP Phase 2."
+  },
+  {
+    "id": "GCP-037",
+    "domain": "GCP",
+    "title": "Service-plane GKE clusters are regional GKE Standard clusters",
+    "statement": "Service-plane GKE clusters are GKE Standard regional clusters. Their control plane is replicated across zones and survives the loss of one zone.",
+    "rationale": "A zonal cluster's control plane dies with its zone, and nothing can then be rescheduled.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Cluster type bullet"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every service-plane google_container_cluster in the plan has a region, not a zone, as its location and runs in Standard rather than Autopilot mode."
+    },
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["RES"],
+    "notes": "Split from the raw G p9 item. The node-pool half is GCP-038. G p4 §3's zonal-failure bullet and G p23 §29 ('recommended production availability mode') say the same thing. The zone-loss behaviour this produces is GCP-042. Conflict C3 applies. Priority P1 because this is GCP Phase 6."
+  },
+  {
+    "id": "GCP-038",
+    "domain": "GCP",
+    "title": "GKE node pools span multiple zones",
+    "statement": "Every node pool of a service-plane GKE cluster spans multiple zones of its region.",
+    "rationale": "A regional control plane with a single-zone node pool still loses every workload on that pool when its zone goes.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Cluster type bullet ('node pools span multiple zones')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every node pool in the plan lists at least two zones in node_locations, or inherits the regional cluster's zones, so that no pool is single-zone."
+    },
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["RES"],
+    "notes": "Split from the raw G p9 item. The control-plane half is GCP-037. Priority P1 because this is GCP Phase 6."
+  },
+  {
+    "id": "GCP-039",
+    "domain": "GCP",
+    "title": "GKE has separate general, compute, memory, GPU and batch/Spot node pools",
+    "statement": "Service-plane GKE clusters have separate general, compute, memory, GPU and batch/Spot node pools.",
+    "rationale": "Workloads with different shapes and interruption tolerance share hardware badly. Separate pools let solvers, sinks, training and control each get the machines they need.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Node pools bullet"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Each service-plane cluster declares distinct general, compute-optimized, memory-optimized, GPU and batch node pools, and the batch pool uses Spot VMs."
+    },
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["MODEL", "FINOPS"],
+    "notes": "Split from the raw G p9 item. The scheduling-isolation half is GCP-040. G p9's placement table assigns Fabric sinks to dedicated pools and solvers to compute-optimized pools. The GPU pool serves GCP Phase 8 workloads, but the pool set is GCP Phase 6, hence P1. Subject to C3."
+  },
+  {
+    "id": "GCP-040",
+    "domain": "GCP",
+    "title": "Research jobs cannot starve control workloads",
+    "statement": "Taints, tolerations and PriorityClasses keep research and batch jobs off control workloads' capacity, so a research burst cannot starve a control workload of scheduling.",
+    "rationale": "Research demand is bursty and unbounded, and control workloads carry the platform's decisions. Without scheduling isolation, the first can quietly stop the second.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Node pools bullet ('Taints/tolerations and PriorityClasses')"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "In a nonprod cluster, flood the research/batch queue beyond cluster capacity. Control-workload pods keep scheduling and are never preempted by research pods, which carry a lower PriorityClass and tolerate only the batch pool's taint."
+    },
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["RES", "MODEL"],
+    "notes": "Split from the raw G p9 item. The pool set is GCP-039. The equivalent protection for the ambient mesh is AMBIENT-022. Priority P1 because this is GCP Phase 6."
+  },
+  {
+    "id": "GCP-041",
+    "domain": "GCP",
+    "title": "On loss of one zone, Fabric RF3 partitions keep quorum",
+    "statement": "When one GCP zone is lost, Fabric RF3 partitions keep quorum and continue accepting and serving quorum-acknowledged records.",
+    "rationale": "RF3 across three zones exists precisely so that a zone is a survivable failure. If a zone loss costs quorum, the replication buys nothing.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — One GCP zone row"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Stop every broker in one zone of a three-zone RF3 test cluster. Producers continue after leaders move, and no quorum-acknowledged P0, P1 or P2 record is lost."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "RES"],
+    "notes": "Split from the raw G p15 One GCP zone item, whose other parts are GCP-042 to GCP-044. MANAGED_SERVICE and KUBERNETES were dropped because they do not apply to the Fabric. G p23 §27's acceptance criterion ('A Fabric broker/zone can fail without losing quorum-acknowledged P0/P1/P2 records or stopping Reflex execution') is this requirement's acceptance form and is held in FABRIC. G p22 §25 schedules it as the monthly zonal-failure game day. Priority P0 because GCP Phase 2 exits on chaos tests before application adoption."
+  },
+  {
+    "id": "GCP-042",
+    "domain": "GCP",
+    "title": "On loss of one zone, the regional GKE cluster keeps serving",
+    "statement": "When one GCP zone is lost, the regional GKE cluster keeps its control plane and continues serving warm workloads from the surviving zones.",
+    "rationale": "This is the behaviour that GCP-037 and GCP-038 configure for. Only a zone-loss exercise shows the configuration delivers it.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — One GCP zone row"}
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "In the monthly zonal-failure game day, drain one zone of a nonprod regional cluster. The API server stays reachable, and warm services keep meeting their SLOs from the remaining zones."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["RES"],
+    "notes": "Split from the raw G p15 One GCP zone item. The recovery cell ('automated managed-service recovery') describes how GKE recovers and is not separately checkable. Subject to C3. Priority P1 because this is GCP Phase 6."
+  },
+  {
+    "id": "GCP-043",
+    "domain": "GCP",
+    "title": "On loss of the primary zone, the Reflex standby can be promoted",
+    "statement": "When the Reflex primary's zone is lost, the standby Reflex in another zone can be promoted, subject to the same fencing and venue-session checks as any failover.",
+    "rationale": "A Reflex shard with no standby in another zone is down for as long as its zone is. Promotion without fencing would risk two actives on one shard.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — One GCP zone row ('Reflex can promote standby if primary zone lost')"}
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Take down the Reflex primary's zone in a nonprod cell. The fenced standby in another zone is promoted only after the liveness, fencing and session checks pass, and exactly one Reflex holds the shard afterwards."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "RES"],
+    "notes": "Split from the raw G p15 One GCP zone item. The rule that the standby remains fenced until the failover criteria are met is REFLEX's (the G p15 Reflex process/VM row). MANAGED_SERVICE and KUBERNETES were dropped. In this platform the venue sessions are simulated (ADR 0003). Priority P1 because standby promotion is exercised with GCP Phase 7 game-day failover, beyond the one-cell MVP."
+  },
+  {
+    "id": "GCP-044",
+    "domain": "GCP",
+    "title": "Fabric partition replicas are verified before zone maintenance",
+    "statement": "Before planned zone or broker maintenance, Fabric partition replicas are verified healthy and in sync. Maintenance does not proceed while any affected partition would lose quorum.",
+    "rationale": "Planned maintenance on an already under-replicated partition turns a routine operation into the loss of quorum-acknowledged records.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — One GCP zone row, Recovery/target ('verify partition replicas before maintenance')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A zone-maintenance drain is refused while any partition with a replica in that zone is under-replicated, and it proceeds once every such partition has an in-sync quorum outside the zone."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "RES"],
+    "notes": "Split from the raw G p15 One GCP zone item. The G p9 §7.3 upgrade rule ('never upgrade enough replicas simultaneously to lose quorum') is the FABRIC counterpart. Priority P0 because it protects the durability of the GCP Phase 2 RF3 journal."
+  },
+  {
+    "id": "GCP-045",
+    "domain": "GCP",
+    "title": "When the regional GKE plane is lost, Reflex keeps executing",
+    "statement": "When a region's GKE service plane is lost, that region's Reflex keeps executing under its local policy. It receives no new warm policy or capital intelligence until the plane returns.",
+    "rationale": "Rule 1 and Rule 5 make the Reflex independent of warm services. This is the failure that proves they have not become a hidden dependency.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Regional GKE row"},
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — GKE regional services row"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With the regional service plane unreachable, a nonprod Reflex cell keeps processing simulated market events and producing paper orders within its cached envelope, and it records that its warm policy is stale."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "RES"],
+    "notes": "Split from the raw G p15 Regional GKE item, whose other parts are GCP-046 to GCP-048. The G p21 citation was added during consolidation because it says the same from the Reflex side ('Continue local execution; no new warm policy/capital intelligence'). KUBERNETES, MULTI_REGION and MANAGED_SERVICE were dropped because the requirement is met by the Reflex not depending on them. Paper orders against the simulated venue only (ADR 0003). Priority P0 as the hot-path independence invariant."
+  },
+  {
+    "id": "GCP-046",
+    "domain": "GCP",
+    "title": "When the regional GKE plane is lost, the Fabric keeps journaling",
+    "statement": "When a region's GKE service plane is lost, that region's Fabric keeps journaling. Events produced while the service plane is down are retained, so consumers can replay them when it returns.",
+    "rationale": "If journaling stopped with the consumers, the period of the outage would be missing from the record that replay and the ledger depend on.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Regional GKE row"},
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — GKE regional services row ('Fabric keeps journaling')"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With every GKE consumer in a region stopped, the Fabric brokers keep accepting and retaining records, and restarted consumers replay from their last committed offsets with no gap."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "RES"],
+    "notes": "Split from the raw G p15 Regional GKE item. The G p21 citation was added during consolidation. Flags were dropped because this is the Fabric's independence from GKE. Priority P0 because it is a durability invariant of the GCP Phase 2 Fabric."
+  },
+  {
+    "id": "GCP-047",
+    "domain": "GCP",
+    "title": "Eligible warm functions fail over to global or other-region services",
+    "statement": "When a region's GKE service plane is lost, global or other-region services take over its research and control workload, and eligible APIs are served from another region.",
+    "rationale": "Regions fail independently. Losing one region's warm plane should cost only the functions that cannot move, not every function it hosted.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Regional GKE row"},
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — GKE regional services row ('other-region/global services may cover eligible functions')"}
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "In the quarterly regional-loss game day, remove one region's GKE cluster. Research and control jobs resume in another region or globally, and each API the workload register marks eligible answers from another region."
+    },
+    "policy_flags": ["KUBERNETES", "MULTI_REGION", "MANAGED_SERVICE"],
+    "secondary_domains": ["API", "RES"],
+    "notes": "Split from the raw G p15 Regional GKE item, merging its expected-behaviour clause (research/control workload) with its recovery clause (eligible APIs), because one failover exercise checks both. The G p21 citation was added during consolidation. Which APIs are eligible is left to the workload register that G p23 §27 requires. Priority P1 because this is GCP Phase 7 (multi-region, game-day failover)."
+  },
+  {
+    "id": "GCP-048",
+    "domain": "GCP",
+    "title": "A lost regional GKE cluster is rebuilt from Terraform and GitOps alone",
+    "statement": "A lost regional GKE cluster is rebuilt entirely from Terraform, Config Sync and Argo desired state in Git, with no undocumented console step.",
+    "rationale": "A cluster that can be rebuilt only with a console step nobody wrote down cannot be rebuilt under pressure, and it is not what Git says it is.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Regional GKE row, Recovery/target"},
+      {"doc": "G", "page": "22", "section": "§25 Resilience Testing and Game Days — Rebuild from zero bullet"}
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "The periodic rebuild-from-zero exercise destroys a nonprod regional cluster and recreates it only from Terraform and GitOps. The rebuilt cluster reaches the same reconciled state, and no manual step is logged."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["SUPPLY_CHAIN", "RES"],
+    "notes": "Split from the raw G p15 Regional GKE item. The G p22 citation was added during consolidation because it is the exercise that proves this. MULTI_REGION was dropped because rebuilding is per cluster. Conflict C3 applies to Config Sync and Argo (ADR 0036 confines Argo to a control-plane cluster; ADR 0093 suspended it). Priority P1 because this is GCP Phase 6."
+  },
+  {
+    "id": "GCP-049",
+    "domain": "GCP",
+    "title": "GKE services autoscale pods on HPA/VPA with custom lag and queue metrics",
+    "statement": "GKE services scale their pods with HPA or VPA, driven by resource use and by custom lag and queue metrics.",
+    "rationale": "CPU alone misses a consumer that has fallen behind. Lag and queue depth are the signals that say a warm service needs more replicas.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "16", "section": "§18 Scaling and Performance Model — GKE services row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In a nonprod cluster, raising a service's lag or queue metric above its target scales the service's replicas up, and the metric is emitted by the service's own code."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["OBS"],
+    "notes": "Split from the raw G p16 item. The node-level half is GCP-050. ASSET-019 states the same for the Asset brain. The observability rule forbids scaling on a metric nothing emits, which is why the check requires the emitting code. MANAGED_SERVICE is kept because custom metrics reach HPA through Cloud Monitoring. Priority P1 because this is GCP Phase 6."
+  },
+  {
+    "id": "GCP-050",
+    "domain": "GCP",
+    "title": "Cluster Autoscaler scales warm and batch node pools",
+    "statement": "Warm and batch node pools scale with Cluster Autoscaler.",
+    "rationale": "Pod autoscaling needs nodes to land on, and batch demand comes and goes. Autoscaled pools follow demand without holding peak capacity all the time.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "16", "section": "§18 Scaling and Performance Model — GKE services row ('Cluster Autoscaler for warm/batch workloads')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every warm and batch node pool in the plan has autoscaling enabled with explicit minimum and maximum node counts."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["FINOPS"],
+    "notes": "Split from the raw G p16 item. The same §18 table says Reflex and Fabric scale intentionally and never reactively, so Cluster Autoscaler must not govern them. That is a REFLEX and FABRIC requirement. Priority P1 because this is GCP Phase 6."
+  },
+  {
+    "id": "GCP-051",
+    "domain": "GCP",
+    "title": "Data and Engineering networks are isolated VPCs",
+    "statement": "The Data and Engineering planes have their own isolated VPC networks, separate from the Reflex, Fabric and Service networks.",
+    "rationale": "The build plane and the data plane carry different trust. A compromised builder or an analytics workload should not share a network with anything else.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — VPC row ('Isolated Reflex/Fabric/Service/Data/Engineering networks')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares a Data VPC and an Engineering VPC. Neither hosts subnets for Reflex, Fabric or Service workloads, and each joins other networks only as an NCC spoke."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["NET", "DATA", "SUPPLY_CHAIN"],
+    "notes": "Split from the VPC row of the G p17 network catalogue item. Its Reflex/Fabric/Service half is merged into GCP-009. The prod/data and prod/engineering project rows (G p4) belong to DATA and SUPPLY_CHAIN. MANAGED_SERVICE and MULTI_REGION were dropped because these are shared VPC networks, not managed services. Priority P0 because GCP Phase 0 delivers NCC/VPC, and GCP Phase 1 needs the engineering network for private build pools."
+  },
+  {
+    "id": "GCP-052",
+    "domain": "GCP",
+    "title": "Cloud DNS provides public and private zones, including Fabric bootstrap SRV",
+    "statement": "Cloud DNS provides the platform's public and private zones, including the SRV records that Fabric clients bootstrap from. Service Directory may additionally serve internal endpoint discovery.",
+    "rationale": "Discovery by name keeps clients working when an endpoint moves. Serving it from managed private zones keeps the internal topology off the public internet.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Cloud DNS row and Service Directory row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares private Cloud DNS zones visible to each plane's VPC, including a zone that publishes the Fabric bootstrap SRV records, and public zones for the edge hostnames."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "FABRIC"],
+    "notes": "Split from the G p17 network catalogue item. The shared DNS is held in network-core (GCP-018). G p8 §7.3's Discovery bullet is FABRIC's more specific statement of the SRV bootstrap. Service Directory is optional in G, so it is not a verified obligation. Today modules/dns-zone and three google_dns_managed_zone resources exist, and none carries Fabric SRV records. Priority P0 because GCP Phase 0 delivers DNS."
+  },
+  {
+    "id": "GCP-053",
+    "domain": "GCP",
+    "title": "The public edge is a GCP-managed global external load balancer on anycast",
+    "statement": "The public edge is a GCP-managed global external load balancer on a global anycast address.",
+    "rationale": "A managed anycast edge puts high availability and nearest-point-of-presence routing in Google's infrastructure, rather than in a regional front end that fails with its region.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Cloud Load Balancing row ('Global edge')"},
+      {"doc": "H", "page": "L100", "section": "VIEWS.global — 01 · Global Platform Topology, node 'glb' ({runtime:'GCP managed', ha:'global anycast'})"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The public hostname resolves to one reserved global address on a global external managed forwarding rule, and no regional external load balancer serves the public surface."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "MULTI_REGION"],
+    "secondary_domains": ["API", "NET"],
+    "notes": "Merges the global-edge half of the G p17 Cloud Load Balancing row with the H node metadata. The row's regional-internal half is GCP-027. API-001 carries the whole ordered chain (DNS, LB, Armor, CDN and Certificate Manager). This entry is the managed global anycast placement. Today modules/public-edge declares global forwarding rules. Priority P1 as for API-001 (GCP Phase 6)."
+  },
+  {
+    "id": "GCP-054",
+    "domain": "GCP",
+    "title": "Cloud Armor applies WAF, DDoS and rate control at the edge",
+    "statement": "Cloud Armor applies WAF, DDoS and rate-control policy to the public edge.",
+    "rationale": "Every public request passes the edge, so it is the one place where abuse can be filtered before it reaches any backend.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Cloud Armor row"},
+      {"doc": "H", "page": "L101", "section": "VIEWS.global — 01 · Global Platform Topology, node 'armor' ('WAF / DDoS')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every backend service behind the global external load balancer has a Cloud Armor policy attached that includes WAF rules and a rate-limiting rule."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["SEC", "API"],
+    "notes": "Split from the G p17 public-edge item. The H citation was added during consolidation. API-001 holds Armor's position in the edge chain. Priority P1 as for API-001."
+  },
+  {
+    "id": "GCP-055",
+    "domain": "GCP",
+    "title": "Cloud CDN serves public static assets",
+    "statement": "Public static assets are served through Cloud CDN.",
+    "rationale": "Caching static content at the edge takes load off the origin and shortens load times for distant users.",
+    "kind": "placement",
+    "priority": "P3",
+    "sources": [
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Cloud CDN row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The backend that serves the portal's static assets has Cloud CDN enabled with an explicit cache mode."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["FRONTEND", "API"],
+    "notes": "Split from the G p17 public-edge item. Priority P3 because acceleration is an optimisation. API-001 carries the chain, CDN included, at P1."
+  },
+  {
+    "id": "GCP-056",
+    "domain": "GCP",
+    "title": "Certificate Manager issues the public TLS certificates",
+    "statement": "Public TLS certificates for the edge are issued and managed by Certificate Manager.",
+    "rationale": "One managed certificate authority for the edge gives renewal and rotation that nobody has to remember.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Certificate Manager row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The edge's HTTPS proxy references Certificate Manager certificates through a certificate map, not classic managed or self-managed SSL certificates."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["SEC", "API"],
+    "notes": "Split from the G p17 public-edge item. As API-001 records, modules/public-edge uses google_compute_managed_ssl_certificate rather than Certificate Manager. That is a divergence to score. Priority P1 as for API-001."
+  },
+  {
+    "id": "GCP-057",
+    "domain": "GCP",
+    "title": "Administrative interfaces are reachable only through IAP",
+    "statement": "Administrative interfaces are reachable only through Identity-Aware Proxy.",
+    "rationale": "An admin surface on a public address is a credential-guessing target. IAP puts an authenticated identity check in front of it.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — IAP row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every admin surface in the plan, including consoles and SSH to VMs, sits behind an IAP-enabled backend or IAP TCP forwarding, and no firewall rule admits SSH or RDP from 0.0.0.0/0."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["SEC"],
+    "notes": "Split from the G p17 public-edge item. The G p5 Admin access row adds workforce identity, PAM and 'no public SSH/RDP'. Those belong to SEC. modules/iap-edge and modules/iap-run exist today. Priority P0 because this is GCP Phase 0 (IAM/PAM)."
+  },
+  {
+    "id": "GCP-058",
+    "domain": "GCP",
+    "title": "Network segmentation is enforced with Cloud NGFW hierarchical firewall policies",
+    "statement": "Segmentation between the platform's networks is enforced with Cloud NGFW hierarchical firewall policies attached at organization or folder level, in addition to per-network rules.",
+    "rationale": "A policy attached above the project cannot be loosened by a project owner. That keeps segmentation independent of the workloads it separates.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Cloud NGFW / hierarchical firewall policies row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares hierarchical firewall policies associated with the organization or the prod and nonprod folders that deny inter-plane traffic by default and allow only named flows."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["SEC", "NET"],
+    "notes": "Split from the G p17 network catalogue item. The G p4 prod/network-core row puts 'firewall policy' there (GCP-018). Today Terraform declares 21 VPC-level google_compute_firewall rules and no hierarchical policy, which needs an organization or folder (see GCP-016). Priority P0 because GCP Phase 0 delivers firewalls."
+  },
+  {
+    "id": "GCP-059",
+    "domain": "GCP",
+    "title": "Reflex and Fabric VMs run as Shielded VMs",
+    "statement": "VM-based critical services, meaning Reflex and Fabric, run as Shielded VMs with secure boot, vTPM and integrity monitoring.",
+    "rationale": "The hot path and the journal run on VMs rather than on an admission-controlled cluster. Boot integrity is what stops a tampered image from running there.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "17", "section": "§19 Complete GCP Service Catalog — Shielded VM row"},
+      {"doc": "H", "page": "L324", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'shield' ('Reflex/Fabric compute hardening where compatible')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every Reflex and Fabric instance template in the plan enables secure boot, vTPM and integrity monitoring."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["SEC", "SUPPLY_CHAIN", "REFLEX", "FABRIC"],
+    "notes": "The Shielded VM half of the raw G p17 dedicated-compute item. The H citation was added during consolidation. H also names Confidential VM 'where compatible', which is not made an obligation here. MANAGED_SERVICE and COST were dropped because this is a VM setting at no extra cost. modules/execution-node already sets enable_secure_boot, enable_vtpm and enable_integrity_monitoring to true, and no Fabric VM exists yet. Priority P0 because it is a security control on the GCP Phase 2 and Phase 3 compute."
+  }
+]

@@ -158,6 +158,7 @@ qip-quant = { path = "crates/quant/qip-quant" }
 qip-kernel = { path = "crates/runtime/qip-kernel" }
 qip-web = { path = "crates/apps/qip-web" }
 qip-api = { path = "crates/apps/qip-api" }
+qip-cli = { path = "crates/apps/qip-cli" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -1,0 +1,257 @@
+[
+  {
+    "item": "Four @algorik/* packages (api-client, charts, testing, ui) are pure re-export shims with zero consumers, and each points backward at the app: a shared package importing from `../../../portal/src/**` rather than the portal importing from the package — the inverse of the lib-depended-on-by-app direction the workspace otherwise holds",
+    "files": [
+      "frontend/packages/api-client/src/index.ts:1-23",
+      "frontend/packages/charts/src/index.ts:1-12",
+      "frontend/packages/testing/src/index.ts:1-9",
+      "frontend/packages/ui/src/index.ts:1-31",
+      "frontend/portal/next.config.ts:22-34"
+    ],
+    "category": "dependency-direction-violation / dead-code",
+    "class": "B-refactor",
+    "why": "grep '@algorik/(ui|api-client|charts|testing)' across frontend/portal/src and frontend/landing returns 0 hits; the portal's own 57+ consumer files import components/data/*, components/viz/primitives and lib/* directly via relative @/ paths. Each package's own doc comment names this as a deliberate, unfinished migration rather than an accident: @algorik/ui's says outright 'the components themselves currently live in the portal... re-exporting rather than moving is deliberate... the day the files move here, no consumer changes an import.' Until that move happens, these four packages are backwards by the workspace's own dependency rule (libs are depended on, they do not depend on an app) and add build cost (transpilePackages entries, four extra workspace resolutions) for zero present benefit. Evolve toward the stated target: move the implementation files into the packages and repoint the portal's own imports, rather than leaving the shim as a permanent middle state.",
+    "blueprint_refs": [
+      "ADR 0016 (one repository, four domains)",
+      "architecture/00-boundaries.md (dependencies point inward only; nothing may depend on an app)"
+    ],
+    "risk": "low",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "@algorik/analytics and @algorik/shared-types are complete, independent implementations with zero call sites anywhere in the workspace and no near-term consumer named by any ADR or blueprint requirement",
+    "files": [
+      "frontend/packages/analytics/src/index.ts:1-89",
+      "frontend/packages/shared-types/src/index.ts:1-22",
+      "frontend/portal/next.config.ts:22-34",
+      "frontend/portal/package.json:17-27"
+    ],
+    "category": "dead-code",
+    "class": "D-delete",
+    "why": "grep '@algorik/(analytics|shared-types)' across frontend/portal/src and frontend/landing returns 0 hits for both. Neither is reached from production, and no standing ADR or blueprint requirement keeps either deliberately: analytics' own doc comment describes a privacy-aware abstraction admitting no vendor SDK at all, so nothing currently needs it to exist in code before it is used; shared-types' own doc comment records having already deleted one prior unused export set (readConfig/describeProblems/AlgorikConfig) after an identical zero-importer search, which is the package's own established precedent for exactly this trim. Delete both, and their next.config.ts transpilePackages and package.json entries, rather than carrying two unused dependency-tree members indefinitely.",
+    "blueprint_refs": [
+      "ADR 0002/0009 (two dependencies; a workspace package still carries a name and a build cost to maintain even with none)"
+    ],
+    "risk": "low",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "@algorik/feature-flags — seven typed, always-false-by-default flags with zero call sites; every capability it would gate is currently either always-on or entirely absent rather than flag-controlled, but two of the seven (passkeys, googleSignIn) name work the programme already tracks as near-term",
+    "files": [
+      "frontend/packages/feature-flags/src/index.ts:1-69",
+      "docs/blueprint/assessment/API.json (API-012 work_item E15-customer-mfa-passkeys, API-011 work_item E15-identity-platform-wiring)"
+    ],
+    "category": "dead-code / unfinished-migration",
+    "class": "E-needs-evidence",
+    "why": "grep '@algorik/feature-flags' across frontend/portal/src and frontend/landing returns 0 hits. Unlike analytics/shared-types above, this package is not obviously orphaned: passkeys and googleSignIn are exactly the capabilities ADR 0038 (proposed) and the blueprint assessment's API-012/API-015 items name as pending identity-plane work, and the identity-platform wiring gap recorded elsewhere in this report is the precondition for most of the other five flags to mean anything (enterpriseSso, kycOnboarding, developerPortal). Needs evidence: confirm with the owner whether ADR 0038 and the identity-platform wiring item are scheduled next; if so this package is pre-built scaffolding worth keeping, if not it should be retired alongside analytics and shared-types.",
+    "blueprint_refs": [
+      "GCP v2.1 §12 (Customer identity: Identity Platform for customer/application identities; strong MFA/passkeys where supported)",
+      "ADR 0038 (passkeys, proposed)"
+    ],
+    "risk": "low",
+    "suggested_epic": "E15"
+  },
+  {
+    "item": "The portal's (marketing) route group and frontend/landing are two independently hand-editable copies of the same eleven-to-twelve public pages, including the platform's one required paper-trading disclosure, and the surface the tree's own README names as the eventual sole owner has no deployment path in Terraform, GitOps or deploy.yml at all",
+    "files": [
+      "frontend/landing/README.md:16-52",
+      "frontend/portal/src/app/(marketing)/welcome/page.tsx:1-30",
+      "frontend/portal/src/app/(marketing)/legal/risk-disclosures/page.tsx",
+      "frontend/portal/src/proxy.ts:26-33",
+      "infrastructure/environments/dev/terraform.tfvars:451,472-482",
+      ".github/workflows/ci.yml:196-208 (landing is linted/built/tested; deploy.yml never builds a landing image)"
+    ],
+    "category": "duplicate-systems / unfinished-migration / deployment-ci-observability-gap",
+    "class": "B-refactor",
+    "why": "frontend/landing/README.md:44-52 states plainly that its marketing copy — including /legal/risk-disclosures ('Simulated ≠ live; no live order is submitted') — is taken 'word for word' from the portal's (marketing) group today, calls this 'a holding position, not a design: the duplication is real and one of the two must go,' and names the portal's group as the one that should become redirects to this app; that change has not been made (no redirect exists under the portal's (marketing) tree). The surface the README says should become the sole owner is itself not deployed anywhere: infrastructure/environments/dev/terraform.tfvars pre-authorizes an Identity Platform domain for a landing hostname that has never been created, and its own comment states 'frontend/landing and frontend/portal exist in the tree and are in no catalogue, no image matrix and no manifest.' Until one surface is made the redirect target, an edit to the risk-disclosure wording lands in whichever app someone happened to open, and the other silently keeps stating something different.",
+    "blueprint_refs": [
+      "GCP v2.1 §12 (Edge, Portal, API and Causal Action Plane — public edge: Cloud DNS + global external Application Load Balancer + Cloud Armor + Cloud CDN)"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "Identity Platform is enabled and its outputs computed at the Terraform layer, but no GitOps manifest wires them into the deployed portal container, so the deployment runs on the file-backed development identity store today — directly contradicting that store's own doc comment ('Nothing deployed reaches this file'), and the deployment's own comment pins Cloud Run to a single instance as the workaround rather than closing the gap",
+    "files": [
+      "infrastructure/gitops/envs/dev/portal.yaml:94-107,122-153",
+      "infrastructure/terraform/outputs.tf:294-297",
+      "infrastructure/terraform/modules/identity/outputs.tf:1-17",
+      "infrastructure/environments/dev/terraform.tfvars:451",
+      "frontend/portal/src/lib/server/identity-store.ts:12-18",
+      "frontend/portal/src/lib/server/identity.ts:142-143"
+    ],
+    "category": "incompatible-interfaces / hard-coded-configuration / scaling-limits",
+    "class": "B-refactor",
+    "why": "Terraform sets enable_identity_platform = true for dev, and module.identity's frontend_environment output — surfaced again as the root output identity_frontend_environment — names exactly the two variables the portal needs (ALGORIK_IDENTITY_PROJECT_ID, ALGORIK_AUTHORIZED_DOMAINS). No GitOps manifest consumes either: portal.yaml's env: list (lines 122-153) carries neither variable nor ALGORIK_IDENTITY_API_KEY, and the manifest's own comment (lines 96-106) says so directly — 'No Identity Platform key reaches this deployment... identity.ts falls back to its own on-disk account store.' identity-store.ts's doc comment states the opposite in the present tense, four lines from the code the manifest is contradicting: 'Nothing deployed reaches this file.' The manifest and the blueprint assessment's own independent finding (API-011: 'the deployed portal, if it ran today, would authenticate customers against a per-instance file store rather than Identity Platform') agree with each other and against the code comment. The manifest works around the consequence instead of closing it: maxInstanceCount is pinned to 1 specifically because the on-disk store is per-instance and in-memory, with the comment naming 'raising it is the same change as wiring Identity Platform, and neither is done here' — a named scaling limit standing in for the wiring gap rather than the gap being closed. This is the same defect class (an account store that does not survive a second Cloud Run instance) the identity-store.ts comment says was already fixed once for sessions.",
+    "blueprint_refs": [
+      "GCP v2.1 §12 (Customer identity: Identity Platform for customer/application identities)",
+      "ADR 0099 (v11.6/GCP v2.1 adoption)"
+    ],
+    "risk": "high",
+    "suggested_epic": "E15"
+  },
+  {
+    "item": "identity.ts's one-time-code HMAC key silently falls back to a hardcoded literal string instead of refusing, when session.ts's own fail-closed refusal (used for cookies) is not repeated here",
+    "files": [
+      "frontend/portal/src/lib/server/identity.ts:103-110",
+      "frontend/portal/src/lib/server/session.ts:129-162"
+    ],
+    "category": "security-shortcuts / risk-control-defect (silent correction of an invalid input)",
+    "class": "B-refactor",
+    "why": "codeHash(), which keys the HMAC for every email-verification and password-reset one-time code, resolves its signing key as `configuredSessionSecret() ?? \"algorik-development\"` — a literal, publicly-readable string in this repository. configuredSessionSecret() can legitimately return null in production: the production refusal ('ALGORIK_SESSION_SECRET must be set in production') lives inside the separate signingKey() function in session.ts, guarded by an explicit NODE_ENV === \"production\" check that codeHash() does not call and does not repeat. If the mounted session-secret file is ever absent or empty on a production-postured deployment, sign-up and password-reset codes are silently HMAC'd against a key anyone can read from source, instead of the process refusing to issue or verify a code — the opposite of the fail-closed default (CLAUDE.md Principle 3) and of signingKey()'s own behaviour in the same file family. The function's own comment documents that this exact bug class already happened once, for the cookie signer ('this fell back to the development key in a production deployment whose secret was a file'); the fix there was resolving the secret through the _FILE-aware helper, but the literal fallback string itself was never replaced with a refusal, so the same failure mode remains open for every one-time code the identity service issues. No test exercises this branch: grep -rn 'algorik-development|codeHash' frontend/portal/tests returns nothing.",
+    "blueprint_refs": [
+      "GCP v2.1 §15 (Security and Trust Architecture)",
+      ".claude/rules/01-security-and-safety.md (Secrets)"
+    ],
+    "risk": "high",
+    "suggested_epic": "E13"
+  },
+  {
+    "item": "useTreasury.ts's INFLOW_ROUTES names two operator routes the console deliberately never adds to the gateway's write allowlist, because the backend refuses both today for want of a per-person credential this platform cannot yet issue — honestly rendered, but blocked on an ADR still in Proposed status",
+    "files": [
+      "frontend/portal/src/lib/hooks/useTreasury.ts:194-227",
+      "docs/adr/0076-a-per-person-operator-identity-is-the-consoles-asserted-subject-and-a-two-person-rule-needs-a-credential-this-platform-cannot-issue.md:1-15"
+    ],
+    "category": "incompatible-interfaces",
+    "class": "E-needs-evidence",
+    "why": "The console names two operator routes (declare/cancel an expected inflow, ADR 0085 §4) it deliberately keeps out of REST's declaresWrite allowlist, because the backend refuses both in fact for every credential the console can hold: the routes date the operator by Principal::authentication_instant, which a standing bearer token cannot carry (ADR 0065, ADR 0075), and only a per-person credential (ADR 0076) can satisfy the check. The page already renders this as the contract's own stated refusal rather than a form nobody could submit, so there is no live risk today. What is open is the precondition: ADR 0076's own header reads 'Status: Proposed,' not Accepted, so the frontend change this would unblock (turning INFLOW_ROUTES from text into a working form, and adding the two routes to REST) has no accepted design to build against. Needs evidence: confirm with the owner whether ADR 0076 is being taken to Accepted, and on what schedule, before scoping this as frontend work.",
+    "blueprint_refs": [
+      "v11.6 §13 (Capital Brain & Capital Bank)",
+      "v11.6 §15 (Ledger, Accounting & State of Truth)",
+      "ADR 0076 (Proposed)"
+    ],
+    "risk": "low",
+    "suggested_epic": "E15"
+  },
+  {
+    "item": "The platform's REST response shapes exist in three independently hand-maintained forms — Rust routes.rs, TypeScript types.ts, and a JS test-fixture server — with no shared schema and no automated equivalence check, and the browser-side client accepts each answer with a compile-time-only type assertion",
+    "files": [
+      "frontend/portal/src/lib/api/types.ts:1-16",
+      "frontend/portal/src/lib/api/client.ts:241",
+      "backend/crates/apps/qip-api/src/routes.rs",
+      "frontend/portal/tests/support/upstream-stub.mjs:1-40"
+    ],
+    "category": "duplicated-schemas / missing-tests-on-production-path",
+    "class": "B-refactor",
+    "why": "types.ts's own doc comment says its 669 lines are 'transcribed from the handler table in backend/crates/apps/qip-api/src/routes.rs, field for field' — a person reading the Rust and typing the TypeScript by hand, with no codegen and (per ADR 0002/0009) no schema-generation dependency available to either side. client.ts:241 then hands every caller `data: body as D` — a TypeScript type assertion with zero runtime validation, so a field renamed or retyped on the Rust side produces no error on the browser side, only a wrong or undefined value reaching a risk-desk panel. Compounding it, tests/support/upstream-stub.mjs is a third, independently hand-written fixture server standing in for qip-api in two Playwright suites, and most other specs intercept at the browser boundary with their own per-file page.route fixtures — further independent copies of the same shapes. The module holding client.ts/endpoints.ts carries zero direct unit tests. Closing this does not require a new dependency: the repository's own convention of a text-parsing contract test (api_boundary.rs already parses routes.rs's route table this way) could instead assert that each field types.ts declares for a route is present in the corresponding Rust struct, catching a rename without adding a schema library to either language.",
+    "blueprint_refs": [
+      "GCP v2.1 §12 (API boundary: public API exposes portfolio/ledger-derived views... never direct Spanner tables)",
+      "ADR 0002/0009 (two dependencies)"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E02"
+  },
+  {
+    "item": "@algorik/design-tokens, the single source of truth for the portal's colour system, is never imported as a TypeScript module — it is consumed by a script that regex-parses its source text as a string",
+    "files": [
+      "frontend/scripts/generate-theme-css.mjs:25-36",
+      "frontend/packages/design-tokens/src/index.ts:82-155",
+      "frontend/portal/src/app/globals.css:24,33"
+    ],
+    "category": "hard-coded-configuration",
+    "class": "B-refactor",
+    "why": "grep 'from \"@algorik/design-tokens\"' across the workspace returns 0 hits. generate-theme-css.mjs instead opens the package's .ts source as text and matches `export const {name}: ColorScale = {...}` with a regular expression, by its own comment, 'rather than add a compiler to read it.' The generator's own drift check (npm run tokens:check, run in CI) is real coverage and is why this is scored B rather than higher — it keeps the emitted CSS from silently diverging from what was committed. But the source of truth for the whole colour system is read by a hand-rolled parser instead of the type system the package otherwise exists to provide: a syntactically valid TypeScript change a compiler would accept (a computed key, a spread, a multi-line value) can defeat the regex silently until the next tokens:check run catches the drift after the fact rather than at the edit.",
+    "blueprint_refs": [
+      "ADR 0015 (licensed templates are the visual source of truth)"
+    ],
+    "risk": "low",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "Two independent 'no false marketing claim' mechanisms exist for a trading-adjacent public site, and neither covers the one surface the other is knowingly copied from",
+    "files": [
+      "frontend/packages/brand/src/index.tsx:189-207",
+      "frontend/landing/lib/claims.mjs:1-40",
+      "frontend/landing/tests/claims.spec.mjs",
+      "frontend/portal/src/app/(marketing)"
+    ],
+    "category": "duplicate-systems / dead-code",
+    "class": "B-refactor",
+    "why": "@algorik/brand's auditCopy() is a regex denylist ('guaranteed return', 'quantum advantage', 'risk-free', 'fully autonomous live trading', ...) with zero callers anywhere in the workspace (grep auditCopy: definition only) and no test asserting it ever runs. frontend/landing/lib/claims.mjs is a different, actively enforced mechanism: every quantity on the landing site must carry a data-claim-status, a component throws on an unrecognised status, and tests/claims.spec.mjs sweeps the rendered DOM of every page for one. Neither mechanism reaches frontend/portal/src/app/(marketing) — the group the landing's own README names as the word-for-word source its copy is taken from today (see the duplication finding above) — so the one surface whose text the other is derived from carries zero automated protection against a forbidden phrase or an unlabelled figure reaching it first.",
+    "blueprint_refs": [
+      "GCP v2.1 §15 (Security and Trust Architecture)",
+      "frontend/landing/README.md:89-114 (claim-status labelling requirement)"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E16"
+  },
+  {
+    "item": "The portal renders financial series through two independent chart implementations at once — hand-drawn SVG primitives and a Chart.js wrapper — a cost ADR 0015 already named and scoped, but whose completion nothing currently tracks",
+    "files": [
+      "frontend/portal/src/components/viz/primitives.tsx:1-13",
+      "frontend/portal/src/components/viz/ChartJs.tsx",
+      "docs/adr/0015-licensed-templates-are-the-visual-source-of-truth.md"
+    ],
+    "category": "duplicate-systems",
+    "class": "B-refactor",
+    "why": "components/viz/primitives.tsx (Sparkline/AreaChart/Gauge/Bars/Heatmap, no dependency) and components/viz/ChartJs.tsx (the one place the licensed template's Chart.js is used) coexist by design, not by accident: ADR 0015 names this directly as a cost of adopting the SignalAIX template — 'the in-house chart primitives remain for pages not yet ported; two chart systems coexist until the port completes.' It already has an ADR, a stated cause and a stated end state (one system). It is listed here because the port has not completed and nothing currently names which pages still need it, so the ADR's own exit condition has no tracked completion criterion.",
+    "blueprint_refs": [
+      "ADR 0015 (licensed templates are the visual source of truth)"
+    ],
+    "risk": "low",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "frontend/landing ships a real runtime dependency (swiper) that ADR 0015 — the record that admitted the template's one other runtime dependency, chart.js, by name — never names or reviews",
+    "files": [
+      "frontend/landing/package.json:9-19",
+      "frontend/landing/components/sections/home1/Banner.js:1-15",
+      "frontend/landing/app/layout.js:4-6"
+    ],
+    "category": "dependency-governance-gap",
+    "class": "E-needs-evidence",
+    "why": "ADR 0015's 'Runtime dependency admitted: chart.js' paragraph states the admission was 'recorded here per the frontend dependency rule' because the template's charts pull it in. swiper (^12.1.2), the template's home-page carousel library, is a real dependency of the same app (imported in Banner.js and layout.js, with its own CSS) but appears in no equivalent committed review. 00-enterprise-governance.md requires every package.json addition be reviewed with its transitive tree as part of the change, the same as Cargo.toml. Needs evidence: confirm with the owner whether swiper was a deliberate, reviewed admission that should be named in ADR 0015 the way chart.js is, or whether it should be replaced with a dependency-free carousel before landing is ever deployed.",
+    "blueprint_refs": [
+      "ADR 0015 (licensed templates are the visual source of truth)",
+      "00-enterprise-governance.md (Dependencies and licensing)"
+    ],
+    "risk": "low",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "lib/sim (seeded deterministic simulation) has zero current page consumers, but this is the correct state of the approved mechanism, not abandoned code",
+    "files": [
+      "frontend/portal/src/lib/sim/index.ts:1-9",
+      "frontend/portal/src/components/data/Simulated.tsx",
+      "frontend/portal/CLAUDE.md"
+    ],
+    "category": "unfinished-migration / simulated-only-production-path (absent, by design)",
+    "class": "A-retain",
+    "why": "lib/sim is built exactly to portal/CLAUDE.md's own rule: 'simulated data is deterministic and labelled, or it does not exist... under SimulatedBanner.' Every current (portal) page reads real qip-api data instead (grep 'SimulatedBanner|SimChip' under src/app: 0 hits) — meaning there is currently no page anywhere showing simulated data as if it were real, which is the exact failure this rule exists to prevent. Zero callers today reflects that nothing currently needs it, not that it is broken or orphaned; it remains the approved fallback for the day a page's subsystem has no platform surface yet. Retain as-is.",
+    "blueprint_refs": [],
+    "risk": "low",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "endpoints.ts's NOT_YET_SERVED table — eleven backend routes the platform does not yet serve, each named, cited to the exact routes.rs behaviour that is missing, and rendered per-page as a distinguishable named absence rather than an empty panel or synthetic data",
+    "files": [
+      "frontend/portal/src/lib/api/endpoints.ts:153-300",
+      "frontend/portal/src/components/data/States.tsx",
+      "frontend/portal/src/lib/api/client.ts:20-56"
+    ],
+    "category": "missing-tests-on-production-path (mitigated by design) / incorrect-coupling (topology assembly)",
+    "class": "A-retain",
+    "why": "Positions, cash, data-sources/health, compliance, compliance/attestations, kill-switch/history, topology, account/me, ledger/users/{user}, and the three explanation routes are each named with the reason no route answers them, and rendered through one component per ApiOutcome kind (MissingEndpointBlock, DeniedBlock, UnreachableBlock, ...) rather than collapsing to a generic error or a fabricated value — directly implementing client.ts's own stated design intent. One of the eleven, topology, is assembled client-side from four separate reads (/system, /mesh, /regions, /agents) rather than one backend document — a mild form of incorrect coupling (a page doing aggregation a backend route should do) — but it is disclosed and deliberate, not accidental: endpoints.ts's own comment states 'the platform serves no single topology document.' This pattern is the standard the rest of this report's findings are measured against; the gaps it names are backend work, not frontend debt.",
+    "blueprint_refs": [
+      "GCP v2.1 §12 (Edge, Portal, API and Causal Action Plane — API boundary)"
+    ],
+    "risk": "low",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "frontend/mobile holds one README and no code, by design — the mobile channel is the portal installed as a PWA, a standing decision, not an unstarted feature",
+    "files": [
+      "frontend/mobile/README.md:1-31",
+      "frontend/portal/src/app/manifest.ts:16-49",
+      "frontend/portal/tests/mobile.spec.ts"
+    ],
+    "category": "placeholders",
+    "class": "A-retain",
+    "why": "find frontend/mobile -type f returns only README.md; the actual mobile behaviour (manifest.ts, public/sw.js, AppShell's off-canvas nav, InstallApp.tsx) is implemented and tested inside frontend/portal (tests/mobile.spec.ts, run against the Pixel 7 viewport). mobile-as-PWA is a decision this repository already made and keeps deliberately: ADR 0015's supersession note states 'its package structure, mobile-as-PWA and no-second-router decisions stand' about ADR 0014. The directory's own README states it becomes non-empty only 'when the desk decides to list in a store' — a placeholder with a plan and a citation, not a gap.",
+    "blueprint_refs": [
+      "ADR 0014 (mobile-as-PWA, standing per ADR 0015)"
+    ],
+    "risk": "low",
+    "suggested_epic": "E00"
+  }
+]

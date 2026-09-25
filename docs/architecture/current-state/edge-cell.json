@@ -1,0 +1,684 @@
+[
+  {
+    "name": "qip-edge",
+    "path": "backend/crates/edge/qip-edge",
+    "kind": "edge",
+    "purpose": "A regional edge cell: the hot execution path (book, strategies, order state, capital ledger) assembled into one `Cell` type that decides without asking the centre, per ADR 0008. `Cell::on_bytes`/`Cell::work` touch memory and arithmetic only; `Cell::flush` is the one call that may block, draining a hash-chained journal to a `Mirror`.",
+    "key_contracts": [
+      "cell::Cell (the aggregate: book, strategies, capital, journal, metrics)",
+      "cell::Cell::work / on_bytes / flush / deploy / withdraw / apply_policy / apply_halt",
+      "cell::Placer trait (the only order-sending seam; is_simulated() stamps every order)",
+      "cell::WorkReport / ExecutionReport / OpenOrder / ConfirmedFill",
+      "cell::{GATE_LIVE_VENUE, GATE_QUOTE_BUDGET, GATE_DISPOSITION, ... } (13 named refusal gates)",
+      "envelope::VerifiedEnvelope / policy::VerifiedPolicy / policy::VerifiedHalt (only-verified-construction types)",
+      "mesh::{CellUplink, PolicyDownlink, CapitalDownlink} (state up / capital+policy down)",
+      "journal::{Journal, Mirror, FileMirror, MemoryMirror} (hash-chained decision record)",
+      "reservation::RegionTable / RegionAllocation (the region capital ledger, ADR-tracked gap B12 now closed)",
+      "telemetry::CellMetrics (the edge's Prometheus-shaped series)"
+    ],
+    "workspace_deps": [
+      "qip-core", "qip-contracts", "qip-protocols", "qip-sequencing", "qip-orderbook",
+      "qip-feature-dag", "qip-strategy", "qip-arbitrage", "qip-routing", "qip-execution-engine",
+      "qip-risk-engine", "qip-events", "qip-transport", "qip-observability"
+    ],
+    "reached_from_production": "partial",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/{pass.rs,feed.rs,mesh.rs,halt.rs,main.rs,strategies.rs,reprice.rs,gateway.rs,arbitrage.rs,dark.rs,share.rs,cross_region.rs,lib.rs} call nearly every public `Cell` method in non-test code, and backend/crates/apps/qip-cli/src/demo/mod.rs:101-104 constructs a `Cell` in the `qip demo --live` subcommand of the `qip-cli` deployable binary. But `qip-edge-node` is never deployed: `execution_nodes = {}` in every environment (infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars), and the demo subcommand explicitly trades against loopback doubles it bound itself, not a venue. `qip-api`'s Cargo.toml lists `qip-edge` only under `[dev-dependencies]` (crates/apps/qip-api/Cargo.toml:50) and every `qip_edge::` mention in its src/ is inside a doc comment (crates/apps/qip-api/src/mesh.rs:724,981,1007) -- zero functional use.",
+    "io_and_state": "The hot path (on_bytes/work) is memory-only by design (src/lib.rs:16-19). Two deliberate I/O seams: journal::FileMirror::ship appends JSON lines to a file via std::fs::OpenOptions (src/journal.rs:627-643), called only from Cell::flush; and mesh::CellUplink/PolicyDownlink/CapitalDownlink hold a live qip_transport::MeshPublisher (src/mesh.rs:424,451) that performs socket I/O for state-up/capital-down traffic. No book/feature/watermark state is persisted across restarts by design (books rebuild from the feed; see qip-edge-node/src/main.rs doc comment).",
+    "tests": {
+      "count": 315,
+      "notable": [
+        "a_cell_handed_a_live_class_gateway_places_nothing_and_names_the_gate (tests/paper_boundary.rs:203)",
+        "a_figure_the_cell_cannot_evaluate_refuses_under_a_named_gate_and_sends_nothing (tests/unevaluated.rs:293)",
+        "the_journal_chain_catches_an_edited_decision (tests/cell.rs)"
+      ]
+    },
+    "status": ["exists", "hardened", "requires-migration"],
+    "status_reason": "Extensively tested (315 #[test] functions) and reached from a deployable binary's non-test code, but that binary is deployed nowhere (execution_nodes = {} everywhere) so no live process runs this crate's hot path today; a 9,040-line single-file Cell (src/cell.rs) is the crate's dominant, unsegmented module.",
+    "blueprint_capabilities": ["REFLEX", "EXEC", "RISK", "CAPITAL", "MESH", "EVID", "OBS", "SEC", "RES"],
+    "gaps_observed": [
+      "qip-execution-engine is a declared dependency (Cargo.toml:39) that zero source files in this crate actually import (grep for `qip_execution_engine::` in src/*.rs returns nothing) -- kept only, per its own comment (Cargo.toml:32-38), to satisfy an architecture test's vacuity guard ('the cell reaches qip-execution-engine'), not because the cell uses it.",
+      "backend/crates/apps/qip-edge-node's binary that consumes this crate's Cell::work hot path is never instantiated by Terraform: execution_nodes = {} in infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars.",
+      "src/cell.rs is 9,040 lines -- 45% of the crate's src -- and holds essentially the whole cycle (pricing, netting, crossing, disposition, halts, mesh state-delta, journal writes) as one type; no sub-module boundary inside the file."
+    ],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/lib.rs:1-30",
+      "backend/crates/edge/qip-edge/Cargo.toml:1-56",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:169-227",
+      "backend/crates/apps/qip-cli/src/demo/mod.rs:101-104",
+      "backend/crates/apps/qip-api/Cargo.toml:44-50",
+      "infrastructure/environments/prod/terraform.tfvars:51",
+      "infrastructure/environments/dev/terraform.tfvars:227"
+    ]
+  },
+  {
+    "name": "qip-edge::cell",
+    "path": "backend/crates/edge/qip-edge/src/cell.rs",
+    "kind": "edge",
+    "purpose": "Defines the `Cell` aggregate itself: book state, deployed strategies, capital (per-strategy envelopes plus the region ledger), the journal, metrics, and the whole per-pass cycle -- signal to intent, feasibility, pricing, netting/crossing, decomposition, passive-first dispatch, dispersion admission, disposition/rebalance, mesh state-delta production, halt handling, and reconciliation. Every other module in the crate is either a policy `Cell` consults or a fact it verifies before applying.",
+    "key_contracts": [
+      "struct Cell (1,003-7,846) -- the aggregate",
+      "Cell::new / with_venue / with_feasibility / with_settlement / with_region_allocation / with_arbitrage",
+      "Cell::deploy / deploy_with_pricing / withdraw (strategy lifecycle against capital)",
+      "Cell::on_bytes (feed ingestion, memory-only) / Cell::work (the per-pass cycle, returns WorkReport)",
+      "Cell::apply_halt / apply_policy / apply_polled_halt / renew_capital",
+      "Cell::withdraw_expired / mass_cancel / confirm_execution_reports",
+      "Cell::state_delta (produces CellStateDelta for the mesh uplink)",
+      "Cell::flush (the one blocking call, drains the journal to a Mirror)",
+      "trait Placer (8051) -- the only order-sending seam; is_simulated() stamps every order",
+      "13 named GATE_* refusal-reason constants (68-281)",
+      "struct WorkReport / DispositionLine / DispositionVerdict / RoutedCycle / PlacedOrder / ExecutionReport / OpenOrder / ConfirmedFill"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-protocols", "qip-sequencing", "qip-orderbook", "qip-feature-dag", "qip-strategy", "qip-arbitrage", "qip-routing", "qip-risk-engine"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/pass.rs:169,203,224,227 calls Cell::withdraw_expired, Cell::work, Cell::observe_drop_copy, Cell::reconcile on every simulated-feed pass; main.rs:852 calls Cell::flush; lib.rs:150 calls Cell::new. Also constructed by backend/crates/apps/qip-cli/src/demo/mod.rs:101 (qip demo --live).",
+    "io_and_state": "No I/O inside on_bytes/work (memory + arithmetic only, per module doc 16-19); Cell::flush is the sole blocking call, delegating to a caller-supplied Mirror. Holds all cell state in-process: book, open orders (bounded by MAX_OPEN_ORDERS=256, line 915), fills, capital envelopes, region ledger, journal.",
+    "tests": {
+      "count": 15,
+      "notable": [
+        "the_send_seam_refuses_a_live_class_venue_and_the_gateway_is_never_called (8473)",
+        "a_cross_is_priced_at_the_book_mid_and_not_at_a_price_either_side_chose (8328)",
+        "the_polled_wire_and_the_kill_switch_release_each_other_never (9015)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "Every GATE_* refusal is exercised by a dedicated test (tests/paper_boundary.rs, tests/quoting.rs, tests/release.rs, tests/cross_region.rs); the paper-trading boundary's Placer seam is proven to refuse a live-class venue before a gateway call is made (src/cell.rs:3864, tests/paper_boundary.rs:203-278).",
+    "blueprint_capabilities": ["REFLEX", "EXEC", "RISK", "CAPITAL", "SEC", "MESH", "OBS"],
+    "gaps_observed": [
+      "Single 9,040-line file holding the whole cycle; five `#[allow(clippy::too_many_arguments)]` suppressions (lines 3841, 6132, 6441, 6646, 8066) mark functions whose parameter lists clippy's own lint flags.",
+      "Two `#[allow(clippy::panic_in_result_fn)]` suppressions on test modules (8167, 8901) -- confined to #[cfg(test)], not production code."
+    ],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:68-281",
+      "backend/crates/edge/qip-edge/src/cell.rs:1003,1191,2838,7823,8051",
+      "backend/crates/edge/qip-edge/src/cell.rs:3864 (metrics.refusal(GATE_LIVE_VENUE) inside Cell::send)",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:169-227"
+    ]
+  },
+  {
+    "name": "qip-edge::arbitrage",
+    "path": "backend/crates/edge/qip-edge/src/arbitrage.rs",
+    "kind": "edge",
+    "purpose": "Holds the arbitrage scanner, its whitelist and its capital as one thing `Cell` can be handed and consult each pass, closing a gap the module doc names explicitly: 'a placement audit found the scanner constructed by no composition root' before this module existed.",
+    "key_contracts": [
+      "struct ArbitrageDesk (68) -- graph, whitelist, capital cap held by a Cell",
+      "struct EdgeRefresh (93) -- which graph edges moved this pass, for the re-quote count"
+    ],
+    "workspace_deps": ["qip-arbitrage", "qip-contracts", "qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/arbitrage.rs uses qip_edge::arbitrage/cell types (ArbitrageInstaller); Cell::install_arbitrage/with_arbitrage (src/cell.rs:1353,1367) are called from that installer, which pass.rs wires into the per-pass cycle.",
+    "io_and_state": "No I/O; holds the compiled graph and whitelist in memory as part of Cell.",
+    "tests": {
+      "count": 0,
+      "notable": ["Covered entirely via integration tests in tests/arbitrage.rs (12 tests) rather than inline unit tests"]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "12 integration tests in tests/arbitrage.rs cover cycle admission, cap refusal, break handling and re-quote counting; no inline #[cfg(test)] module.",
+    "blueprint_capabilities": ["EXEC", "RISK", "CAPITAL"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/arbitrage.rs:1-93",
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs (12 #[test])",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs"
+    ]
+  },
+  {
+    "name": "qip-edge::decomposition",
+    "path": "backend/crates/edge/qip-edge/src/decomposition.rs",
+    "kind": "edge",
+    "purpose": "Implements blueprint §32.1's third mechanism: after one leg of an arbitrage cycle fills short, a partial fill at or above the minimum viable fraction completes at reduced size rather than unwinding, computed cell-locally with no timer or dispatch thread.",
+    "key_contracts": [
+      "struct DecompositionPolicy (78) / DEFAULT_MINIMUM_VIABLE_FRACTION (94, 50%)",
+      "enum Completion (138) -- Whole | Reduced(fraction) | Abandoned",
+      "enum LegSize (183)",
+      "struct Decomposition (198) -- per-cycle state machine tracking what later legs should send"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "Used internally by Cell::work via `use crate::decomposition::{Decomposition, DecompositionPolicy, LegSize}` (src/cell.rs:14) and constructed at src/cell.rs:6036; Cell::work is called from qip-edge-node's pass.rs:203 in non-test code. No qip-edge-node file imports `qip_edge::decomposition` directly -- it is reached only transitively through Cell.",
+    "io_and_state": "No I/O; pure in-memory fraction arithmetic per cycle.",
+    "tests": {
+      "count": 9,
+      "notable": [
+        "a_leg_that_filled_short_sizes_every_later_leg_to_what_it_actually_completed (399)",
+        "the_fraction_a_cycle_completes_at_only_ever_falls_across_its_legs (418)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "9 inline tests plus 5 integration tests in tests/decomposition.rs; reached only transitively through Cell::work, never imported directly by an app.",
+    "blueprint_capabilities": ["EXEC", "RISK"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/decomposition.rs:1-11,78-198",
+      "backend/crates/edge/qip-edge/src/cell.rs:14,6036",
+      "backend/crates/edge/qip-edge/tests/decomposition.rs (5 #[test])"
+    ]
+  },
+  {
+    "name": "qip-edge::dispersion",
+    "path": "backend/crates/edge/qip-edge/src/dispersion.rs",
+    "kind": "edge",
+    "purpose": "Holds two of §32.1's five anti-dispersion mechanisms: pre-trade dispersion-aware admission (bounding worst-case unwind cost) and a fill-time tracking window per venue, plus (since ADR 0084) a release schedule so multi-leg cycles are released to minimize the observed spread.",
+    "key_contracts": [
+      "struct DispersionPolicy (52) / DEFAULT_DISPERSION_BOUND=250ms / DEFAULT_MIN_SAMPLES=3 / DEFAULT_WINDOW=64",
+      "enum DispersionVerdict (140)",
+      "struct FillTimes (181) -- rolling per-venue fill-time samples",
+      "struct ReleaseSchedule (405) -- ADR 0084's per-leg release ordering",
+      "struct VenueFillTimeState (442) -- published state, feeds telemetry"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/gateway.rs imports qip_edge::dispersion; Cell::work consults it internally for the passive/decomposition/release cycle.",
+    "io_and_state": "No I/O; bounded rolling window (DEFAULT_WINDOW=64 samples) held in memory per venue.",
+    "tests": {
+      "count": 9,
+      "notable": [
+        "a_pair_of_venues_a_bound_apart_is_inside_it_and_one_nanosecond_further_is_not (481)",
+        "the_window_forgets_the_oldest_fill_and_the_median_follows_the_venue_that_recovered (553)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "9 inline tests plus 4 integration tests (tests/dispersion.rs) and 3 in tests/release.rs for the ADR 0084 release-schedule addition.",
+    "blueprint_capabilities": ["EXEC", "RISK"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/dispersion.rs:1-64,181,405,442",
+      "backend/crates/apps/qip-edge-node/src/gateway.rs",
+      "backend/crates/edge/qip-edge/tests/dispersion.rs, tests/release.rs"
+    ]
+  },
+  {
+    "name": "qip-edge::dropcopy",
+    "path": "backend/crates/edge/qip-edge/src/dropcopy.rs",
+    "kind": "edge",
+    "purpose": "Independent trade truth: reconciles the cell's own fill record against a venue's separately-delivered drop copy, and halts the cell on any mismatch since a divergence means every downstream number is computed against a fiction.",
+    "key_contracts": [
+      "struct DropCopyFill (21) / struct CellFill (36)",
+      "enum Discrepancy (45) -- the ways the two records can disagree",
+      "MAX_FILLS_PER_ORDER=256 (112) / MAX_SETTLED_ORDERS=4,096 (121) -- bounded retention",
+      "struct DropCopyReconciler (162)"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/reprice.rs and gateway.rs import qip_edge::dropcopy; Cell::observe_drop_copy/reconcile (src/cell.rs:7787,7798) are called from pass.rs:224,227.",
+    "io_and_state": "No I/O; bounded in-memory reconciliation ledger (MAX_SETTLED_ORDERS caps retention).",
+    "tests": {
+      "count": 0,
+      "notable": ["Covered via tests/fills.rs (6 tests) and tests/failure_isolation.rs (7 tests) rather than inline"]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "No inline tests, but 6 tests in tests/fills.rs and 7 in tests/failure_isolation.rs exercise every Discrepancy arm including redelivery dedup and past-size booking that halts the cell.",
+    "blueprint_capabilities": ["LEDGER", "RISK", "RES"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/dropcopy.rs:1-162",
+      "backend/crates/edge/qip-edge/src/cell.rs:7787,7798",
+      "backend/crates/edge/qip-edge/tests/fills.rs, tests/failure_isolation.rs"
+    ]
+  },
+  {
+    "name": "qip-edge::envelope",
+    "path": "backend/crates/edge/qip-edge/src/envelope.rs",
+    "kind": "edge",
+    "purpose": "The evidence that a capital envelope was actually approved: `CapitalEnvelope::new` is public so an unsigned one can be built anywhere in the workspace, and `VerifiedEnvelope`'s private inner value with signature-recomputing construction is what makes the cell's capital checks trustworthy.",
+    "key_contracts": [
+      "struct VerifiedEnvelope (25) -- private inner, only constructed by verifying a signature",
+      "fn sign_payload(key, payload) -> String (153)"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/strategies.rs and arbitrage.rs import qip_edge::envelope; VerifiedEnvelope flows through Cell::deploy/renew_capital, called from strategies.rs:366 and mesh.rs:400 in non-test code.",
+    "io_and_state": "No I/O; HMAC signature check only (via qip_core::hmac_sha256, ADR 0002's in-tree hashing).",
+    "tests": {
+      "count": 1,
+      "notable": ["Covered mainly via tests/cell.rs's 5 paper-boundary/signature tests (an_unsigned_envelope_cannot_become_a_verified_one, tampering_with_any_bound_invalidates_the_signature, a_cell_with_no_key_refuses_to_verify_anything, an_expired_envelope_stops_the_cell_rather_than_letting_it_continue)"]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "Signature tampering, wrong-cell addressing, missing key, and expiry are each a dedicated test in tests/cell.rs.",
+    "blueprint_capabilities": ["CAPITAL", "SEC"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/envelope.rs:1-153",
+      "backend/crates/edge/qip-edge/tests/cell.rs (an_unsigned_envelope_cannot_become_a_verified_one, tampering_with_any_bound_invalidates_the_signature)"
+    ]
+  },
+  {
+    "name": "qip-edge::feasibility",
+    "path": "backend/crates/edge/qip-edge/src/feasibility.rs",
+    "kind": "edge",
+    "purpose": "Blueprint §18.1's feasibility gate, checked ahead of profitability: can an order of this size actually be expressed on this venue's minimum, lot/tick grid, and fee floor, before anything asks whether the trade is a good idea.",
+    "key_contracts": [
+      "9 GATE_* constants re-exported from qip_contracts::feasibility (88-96): MINIMUM_QUANTITY, MINIMUM_NOTIONAL, LOT, TICK, DEPTH, FEE_FLOOR, GAS_FLOOR, CONSTRAINT, WITHDRAWN_VENUE",
+      "struct Granularity (100) / struct VenueModel (154) / struct Infeasible (262)",
+      "fn tick_for / fn assess (329,355) -- the per-order gate",
+      "fn fixed_cost_fraction / fn assess_cycle_cost (478,523) -- the arbitrage-cycle variant"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "Used internally by Cell (src/cell.rs:18, feasibility::assess/assess_cycle_cost at 5665,7245), called from Cell::work, which pass.rs:203 invokes. qip-api/src/mesh.rs references qip_edge::feasibility::assess and qip_edge::feasibility::effective only in doc comments (lines 724,981), describing what the *centre's* payload production expects the cell to do -- not a functional dependency.",
+    "io_and_state": "No I/O; pure gate arithmetic against per-venue configuration held on Cell.",
+    "tests": {
+      "count": 15,
+      "notable": [
+        "a_size_below_the_minimum_quantity_is_refused_and_one_at_it_is_admitted (600)",
+        "a_size_off_the_lot_grid_is_refused_rather_than_rounded (613)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "15 inline tests plus 5 integration tests (tests/feasibility.rs); every gate constant has a refusal test naming it.",
+    "blueprint_capabilities": ["RISK", "EXEC"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/feasibility.rs:1-11,88-96,329,355,478,523",
+      "backend/crates/apps/qip-api/src/mesh.rs:724,981 (doc-comment references only)",
+      "backend/crates/edge/qip-edge/tests/feasibility.rs (5 #[test])"
+    ]
+  },
+  {
+    "name": "qip-edge::journal",
+    "path": "backend/crates/edge/qip-edge/src/journal.rs",
+    "kind": "edge",
+    "purpose": "The cell's local hash-chained decision record and the asynchronous mirror that ships it to durable storage, kept deliberately off the hot path: nothing here writes to a file during on_bytes or work, only Cell::flush blocks.",
+    "key_contracts": [
+      "enum Decision (25) -- every kind of thing a cell journals, decisions and refusals alike",
+      "struct JournalEntry (414) / struct Journal (428) -- the hash chain",
+      "struct MirrorBatch (520)",
+      "trait Mirror (569) -- fn ship(&mut self, MirrorBatch) -> Result<()>",
+      "struct MemoryMirror (581) / struct FileMirror (617) -- appends JSON lines via std::fs::OpenOptions",
+      "fn ship(journal, mirror, cell, watermarks, now) (652) -- free fn, drain+ship, testable without a whole Cell"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/mirror.rs imports qip_edge::journal; Cell::flush (src/cell.rs:7823) is called from main.rs:852 in non-test code.",
+    "io_and_state": "FileMirror performs the crate's only disk I/O: appends a JSON-serialized MirrorBatch per line via std::fs::OpenOptions::new().create(true).append(true) (src/journal.rs:632-641), invoked only from Cell::flush.",
+    "tests": {
+      "count": 0,
+      "notable": ["Covered via tests/cell.rs (the_journal_chain_catches_an_edited_decision, mirror_batches_chain_onto_each_other_across_flushes, a_flush_with_nothing_pending_ships_no_batch)"]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "No inline #[cfg(test)] module; hash-chain tamper detection and batch-chaining-across-flushes are proven in tests/cell.rs instead.",
+    "blueprint_capabilities": ["EVID", "LEDGER"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/journal.rs:1-11,414,428,569,617,627-643,652",
+      "backend/crates/edge/qip-edge/tests/cell.rs (the_journal_chain_catches_an_edited_decision)"
+    ]
+  },
+  {
+    "name": "qip-edge::mesh",
+    "path": "backend/crates/edge/qip-edge/src/mesh.rs",
+    "kind": "edge",
+    "purpose": "The cell's half of the ADR 0011 mesh spine over qip-transport: pushes the cell's own state up (aggregate exposure no single cell can compute) and receives signed capital envelopes and policy/halt payloads down, since a cell that cannot be granted capital stops trading when its grant expires.",
+    "key_contracts": [
+      "struct CellStateDelta (201) / DeltaOrder (113) / DeltaRefusal (154) / StrategyUtilisation (144)",
+      "struct CellUplink (420) -- holds a live qip_transport::MeshPublisher",
+      "struct PolicyDownlink (993) / CapitalDownlink (669) -- verify-then-apply payload receivers",
+      "enum Dispatch (368) / struct UplinkStats (403) / DownlinkStats (632)",
+      "struct PolicyPayloadTopic / HaltTopic / CapitalGrantTopic (911,936,1201) -- unit-struct topic markers"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core", "qip-events", "qip-transport"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/mesh.rs and telemetry.rs import qip_edge::mesh directly; PolicyDownlink::poll/CellUplink usage drives cell.apply_halt/apply_policy/renew_capital calls at qip-edge-node/src/mesh.rs:400-435 in non-test code. backend/crates/apps/qip-cli/src/demo/mod.rs:102 also imports it.",
+    "io_and_state": "Performs real network I/O: holds a live qip_transport::MeshPublisher (src/mesh.rs:424, constructed 451) for uplink delivery with retry/circuit-breaker/dead-letter semantics from qip-transport.",
+    "tests": {
+      "count": 2,
+      "notable": [
+        "a_delta_for_a_peer_that_is_not_listening_is_dead_lettered_rather_than_blocking_forever (tests/mesh.rs)",
+        "a_downlink_that_cannot_verify_anything_refuses_to_exist (tests/mesh.rs)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "2 inline tests plus 10 integration tests in tests/mesh.rs covering dead-letter, circuit breaker, envelope re-verification-on-arrival, and duplicate-grant idempotency.",
+    "blueprint_capabilities": ["MESH", "CAPITAL", "GOV", "RES"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/mesh.rs:1-11,201,420,424,451,669,993",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs:400-435",
+      "backend/crates/edge/qip-edge/tests/mesh.rs (10 #[test])"
+    ]
+  },
+  {
+    "name": "qip-edge::mirror",
+    "path": "backend/crates/edge/qip-edge/src/mirror.rs",
+    "kind": "edge",
+    "purpose": "What this cell knows about the cross-region mirrors it takes part in (blueprint §31.1) -- inventory targets and reference prices arrive on the policy payload's tenth slot, but the dislocation band is deliberately not shipped over the wire and must be configured locally, feeding §33.1's path-3 extension.",
+    "key_contracts": [
+      "struct MirroredInstrument (52)",
+      "struct MirrorArrangement (123) -- the local config: band, threshold, which instrument mirrors which"
+    ],
+    "workspace_deps": ["qip-core", "qip-routing"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/cross_region.rs (CrossRegionMirror) imports qip_edge::mirror; Cell::install_mirror (src/cell.rs:1467) is reachable from qip-edge-node/src/main.rs's CrossRegionMirror wiring.",
+    "io_and_state": "No I/O; local configuration held on Cell, consulted against qip_routing::mirror::{DistributedReference, InventoryBand} types.",
+    "tests": {
+      "count": 6,
+      "notable": [
+        "a_round_trip_nobody_measured_is_refused_rather_than_defaulted (252)",
+        "a_threshold_of_zero_is_refused_because_every_tick_would_be_a_dislocation (238)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "6 inline tests plus 22 integration tests in tests/cross_region.rs (the largest single test file at 1,828 lines), covering path-3/path-4 assignment, dark-region suspension, and refusal-at-installation for malformed bands.",
+    "blueprint_capabilities": ["EXEC", "RISK", "MESH"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/mirror.rs:1-15,52,123",
+      "backend/crates/edge/qip-edge/src/cell.rs:1467",
+      "backend/crates/edge/qip-edge/tests/cross_region.rs (22 #[test])"
+    ]
+  },
+  {
+    "name": "qip-edge::passive",
+    "path": "backend/crates/edge/qip-edge/src/passive.rs",
+    "kind": "edge",
+    "purpose": "Blueprint §32.1's second anti-dispersion mechanism: rest the slow leg of a cycle alone and wait for its fill before crossing the fast legs, which removes the slow venue from the exposure window rather than merely shortening it.",
+    "key_contracts": [
+      "enum PassiveChoice (78) -- Rest{...} | Whole(reason)",
+      "enum WholeReason (96)",
+      "enum PassiveOutcome (158)",
+      "fn choose(...) (203) -- the decision function"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "Used internally by Cell (src/cell.rs:22, passive::choose at 6038), called from Cell::work, reached from pass.rs:203. No app imports qip_edge::passive directly -- reached only transitively through Cell.",
+    "io_and_state": "No I/O; pure decision logic over the cell's own book state.",
+    "tests": {
+      "count": 9,
+      "notable": [
+        "a_resting_leg_that_half_filled_and_then_expired_stops_the_cell_rather_than_crossing_a_stale_price",
+        "a_gateway_that_cannot_withdraw_an_order_is_never_given_a_resting_leg"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "9 inline tests plus 9 integration tests in tests/passive.rs.",
+    "blueprint_capabilities": ["EXEC", "RISK"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/passive.rs:1-15,78,203",
+      "backend/crates/edge/qip-edge/src/cell.rs:22,6038",
+      "backend/crates/edge/qip-edge/tests/passive.rs (9 #[test])"
+    ]
+  },
+  {
+    "name": "qip-edge::policy",
+    "path": "backend/crates/edge/qip-edge/src/policy.rs",
+    "kind": "edge",
+    "purpose": "The same verified-construction pattern as envelope.rs applied to the centre's policy payloads: VerifiedPolicy/VerifiedHalt can only be built by recomputing the MAC against the cell's own key and checking the payload names this cell, so an unsigned or misaddressed payload cannot reach Cell::apply_policy.",
+    "key_contracts": [
+      "struct VerifiedPolicy (28) -- fn verify(payload, key, expected_cell, now) checks MAC + address, not freshness",
+      "struct VerifiedHalt (94)"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "Constructed inside mesh::PolicyDownlink::poll (reached from qip-edge-node/src/mesh.rs:415 `self.policy.poll(now)`), whose batch.verified/batch.halts feed Cell::apply_policy/apply_halt at mesh.rs:423,428 in non-test code. No app imports qip_edge::policy by name directly.",
+    "io_and_state": "No I/O; HMAC verification only (qip_core::hmac_sha256).",
+    "tests": {
+      "count": 0,
+      "notable": ["Covered via tests/cell.rs (a_policy_payload_verifies_only_with_the_right_key_cell_and_bytes) and tests/whitelist.rs (a_payload_signed_before_the_structured_whitelist_existed_still_verifies)"]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "No inline tests; verification correctness proven end-to-end via tests/cell.rs and tests/whitelist.rs (backward-compatible signing).",
+    "blueprint_capabilities": ["GOV", "SEC", "MESH"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/policy.rs:1-16,28,94",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs:415-431",
+      "backend/crates/edge/qip-edge/tests/whitelist.rs"
+    ]
+  },
+  {
+    "name": "qip-edge::priority",
+    "path": "backend/crates/edge/qip-edge/src/priority.rs",
+    "kind": "edge",
+    "purpose": "Blueprint §29.2's second quoting control: which resting quote gets a requote message first when the venue's message budget cannot fund every candidate this pass -- ranked by expected value of the update rather than by the incidental order of open-order ids.",
+    "key_contracts": [
+      "fn worth(remaining, behind_by) -> Option<Decimal> (63)",
+      "struct Candidate (72)",
+      "fn allocate(candidates: Vec<Candidate>) -> Vec<Candidate> (101)"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/reprice.rs:72 imports qip_edge::priority::{Candidate, allocate, worth} and calls allocate() at line 441 inside its own Self::allocate wrapper, invoked from the node's per-pass reprice loop.",
+    "io_and_state": "No I/O; pure sort/ranking function.",
+    "tests": {
+      "count": 4,
+      "notable": [
+        "a_small_drift_on_a_large_order_outranks_a_large_drift_on_a_small_one (129)",
+        "two_updates_worth_the_same_are_allocated_in_the_same_sequence_every_time (184)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "4 inline tests covering ranking determinism and tie-breaking; consumed directly by qip-edge-node/src/reprice.rs.",
+    "blueprint_capabilities": ["EXEC"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/priority.rs:1-16,63,72,101",
+      "backend/crates/apps/qip-edge-node/src/reprice.rs:72,396-441"
+    ]
+  },
+  {
+    "name": "qip-edge::quoting",
+    "path": "backend/crates/edge/qip-edge/src/quoting.rs",
+    "kind": "edge",
+    "purpose": "Blueprint §29.2's per-venue message budget: token-bucket rate limiting plus a message-to-trade ratio floor, so the cell exhausts its budget deliberately on its own arithmetic rather than being disconnected by a venue at a moment it did not choose.",
+    "key_contracts": [
+      "enum MessageKind (54) / struct RateLimits (79) -- 7 DEFAULT_* tunables (92-103)",
+      "REQUOTE_MESSAGES=2 (287) -- a requote costs cancel+replace",
+      "enum Depletion (307) / enum Admission (374)",
+      "struct QuoteBudget (483) -- the per-venue token bucket",
+      "struct VenueBudgetState (715) -- published snapshot",
+      "fn refill_interval(limits) -> Duration (727)"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "No app imports qip_edge::quoting by path, but its public types (Admission) and Cell's quote_budget/quote_depletion/requote_fundable/spend_requote methods (src/cell.rs:7719-7776) are called directly from backend/crates/apps/qip-edge-node/src/reprice.rs:537,575,607 in non-test code.",
+    "io_and_state": "No I/O; in-memory token bucket per venue, refilled by elapsed time on each call.",
+    "tests": {
+      "count": 10,
+      "notable": [
+        "the_bucket_refills_at_the_configured_rate_and_never_past_its_capacity (794)",
+        "a_sub_token_interval_accrues_rather_than_rounding_away (825)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "10 inline tests plus 8 integration tests (tests/quoting.rs) covering reserve funding for cancels vs. placements, mass-cancel charting, and message-to-trade ratio counting only real fills.",
+    "blueprint_capabilities": ["EXEC", "RISK"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/quoting.rs:1-16,483,715,727",
+      "backend/crates/edge/qip-edge/src/cell.rs:7719-7776",
+      "backend/crates/apps/qip-edge-node/src/reprice.rs:537,575,607",
+      "backend/crates/edge/qip-edge/tests/quoting.rs (8 #[test])"
+    ]
+  },
+  {
+    "name": "qip-edge::region",
+    "path": "backend/crates/edge/qip-edge/src/region.rs",
+    "kind": "edge",
+    "purpose": "Tracks which other regions have gone dark as this cell has been told (§36.3): a cell whose peer has gone dark keeps trading locally but must suspend any §31.1 mirror whose other side is nobody, since a cell cannot determine this fact for itself.",
+    "key_contracts": [
+      "MAX_DARK_REGIONS=64 (48) -- bounded retention",
+      "enum DarkSource (57)",
+      "enum RegionOutlook (77)"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/dark.rs (DarkRegionWire) and main.rs import qip_edge::region; Cell::apply_region_outlook/is_region_dark (src/cell.rs:1513,1541) are called from the node's dark-region wiring.",
+    "io_and_state": "No I/O in this module; the wire that reads dark-region facts (DarkRegionWire) lives in qip-edge-node, not here.",
+    "tests": {
+      "count": 10,
+      "notable": [
+        "an_unreadable_wire_darkens_every_region_except_the_cells_own (304)",
+        "a_region_id_with_surrounding_whitespace_is_refused_rather_than_trimmed (292)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "10 inline tests plus telemetry.rs integration tests proving the darkened-region gauge moves.",
+    "blueprint_capabilities": ["RES", "MESH", "RISK"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/region.rs:1-13,48,57,77",
+      "backend/crates/edge/qip-edge/src/cell.rs:1513,1541",
+      "backend/crates/apps/qip-edge-node/src/dark.rs"
+    ]
+  },
+  {
+    "name": "qip-edge::reservation",
+    "path": "backend/crates/edge/qip-edge/src/reservation.rs",
+    "kind": "edge",
+    "purpose": "Closes completion-plan item B12 / traceability row F6: the single capital amount one region may commit in total, held between the feasibility check and the order, so seven cells deciding alone (ADR 0008) while partitioned cannot each spend to their own per-strategy total against a budget the centre already promised elsewhere.",
+    "key_contracts": [
+      "struct RegionAllocation (121) -- per-cell hold/release ledger",
+      "struct Rebase (150)",
+      "struct RegionTable (522) -- the shared table multiple cells/processes read against a region grant"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/allocation.rs imports qip_edge::reservation (RegionCapital); Cell::with_region_allocation/with_region_table/region_allocation_free (src/cell.rs:1275,1306,1313) are wired from the node's allocation module in non-test code.",
+    "io_and_state": "No I/O; in-memory ledger, sweep-based hold return each pass.",
+    "tests": {
+      "count": 15,
+      "notable": [
+        "a_second_hold_against_the_same_capital_is_refused_whole_rather_than_reduced (633)",
+        "one_cells_sweep_leaves_another_cells_holds_standing (730)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "15 inline tests plus 8 integration tests (tests/reservation.rs) and 10 more in tests/region_table.rs proving cross-cell/cross-process bounds and replay-sequence refusal.",
+    "blueprint_capabilities": ["CAPITAL", "RISK"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/reservation.rs:1-13,121,150,522",
+      "backend/crates/apps/qip-edge-node/src/allocation.rs",
+      "backend/crates/edge/qip-edge/tests/reservation.rs (8 #[test]), tests/region_table.rs (10 #[test])"
+    ]
+  },
+  {
+    "name": "qip-edge::resume",
+    "path": "backend/crates/edge/qip-edge/src/resume.rs",
+    "kind": "edge",
+    "purpose": "Blueprint §36.3's node-crash discipline: a restarted cell rebuilds its books from the feed but knows nothing about orders the dead process left resting at a venue, so it must reconcile against every venue's own account before resuming any new order.",
+    "key_contracts": [
+      "MAX_ACCOUNT_ORDERS = crate::cell::MAX_OPEN_ORDERS (51)",
+      "struct VenueAccount (59) -- one venue's answer to 'what do you hold for me'",
+      "struct ResumeDiscipline (146) -- armed once, satisfied only once every configured venue has answered"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/gateway.rs imports qip_edge::resume; Cell::require_reconciliation_before_resuming/observe_venue_account (src/cell.rs:1586,1638) are the entry points the node's resume wiring calls before the first pass.",
+    "io_and_state": "No I/O; in-memory discipline gate, bounded by MAX_ACCOUNT_ORDERS.",
+    "tests": {
+      "count": 5,
+      "notable": [
+        "a_discipline_is_satisfied_only_once_every_venue_has_answered (251)",
+        "arming_the_discipline_twice_is_refused_so_the_venues_that_answered_are_not_forgotten"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "5 inline tests plus 7 integration tests in tests/failure_isolation.rs covering unexplained venue orders, quantity mismatches, and out-of-window account offers.",
+    "blueprint_capabilities": ["RES", "RISK"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/resume.rs:1-13,51,59,146",
+      "backend/crates/edge/qip-edge/src/cell.rs:1586,1638",
+      "backend/crates/edge/qip-edge/tests/failure_isolation.rs (7 #[test])"
+    ]
+  },
+  {
+    "name": "qip-edge::seam",
+    "path": "backend/crates/edge/qip-edge/src/seam.rs",
+    "kind": "edge",
+    "purpose": "The two joins qip-strategy and qip-arbitrage deliberately left to their composer: an exhaustive value-kind mapping between qip-feature-dag's and qip-strategy's separate tags, and CellLiquidity, the point where qip-arbitrage's abstract LiquiditySource is finally backed by the cell's real order book.",
+    "key_contracts": [
+      "const fn value_type(kind: ValueKind) -> Type (29)",
+      "const fn value_kind(value_type: Type) -> ValueKind (39)",
+      "struct CellLiquidity (60) -- serves depth from the cell's real, possibly-stale book"
+    ],
+    "workspace_deps": ["qip-arbitrage", "qip-contracts", "qip-core", "qip-feature-dag", "qip-orderbook", "qip-strategy"],
+    "reached_from_production": "yes",
+    "production_evidence": "Used internally by Cell only (src/cell.rs:28, CellLiquidity::new at 1204); Cell::liquidity() (1852) exposes it. No app imports qip_edge::seam directly -- reached only transitively through Cell::work's pricing path.",
+    "io_and_state": "No I/O; reads the cell's own in-memory book, refusing depth from a stale or unreachable venue.",
+    "tests": {
+      "count": 0,
+      "notable": ["Covered via tests/cell.rs: the_value_kind_mapping_is_total_and_round_trips, the_real_book_never_offers_more_liquidity_than_it_holds, a_stale_book_supplies_no_depth_at_all, an_unreachable_venue_supplies_no_depth_even_with_a_full_book"]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "No inline tests, but tests/cell.rs proves the value-kind mapping is exhaustive/total and that CellLiquidity never over-reports depth from a stale or unreachable book.",
+    "blueprint_capabilities": ["EXEC", "ASSET"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/seam.rs:1-15,29,39,60",
+      "backend/crates/edge/qip-edge/src/cell.rs:28,1204,1852",
+      "backend/crates/edge/qip-edge/tests/cell.rs (the_value_kind_mapping_is_total_and_round_trips)"
+    ]
+  },
+  {
+    "name": "qip-edge::settlement",
+    "path": "backend/crates/edge/qip-edge/src/settlement.rs",
+    "kind": "edge",
+    "purpose": "Blueprint §56.2 rule 21 / §32.2: whether a leg's funding is actually usable when that leg fires. The region ledger checks capital gross at intent time, but a multi-leg cycle spends leg-one's proceeds to fund leg two, and whether that asset has settled by then is a question about time, not money, which this module answers per venue's settlement convention.",
+    "key_contracts": [
+      "GATE_SETTLEMENT = 'settlement_reservation' (54)",
+      "enum SettlementConvention (62) -- Instant | TPlusN(days) etc.",
+      "struct SettlementTerms (105)",
+      "enum LegFunding (302) / struct Projection (320) / struct Unfunded (328)",
+      "fn project(...) (381) -- computes when a leg's proceeds become usable"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/feed.rs imports qip_edge::settlement; Cell::install_settlement/unprojected_settlement_venues (src/cell.rs:599,1330) are called from the node's venue wiring, and the unprojected-venues count feeds telemetry's EDGE_SETTLEMENT_UNPROJECTED gauge on every pass including a halted one.",
+    "io_and_state": "No I/O; date arithmetic only (e.g. Friday T+1 lands on Monday, not Saturday).",
+    "tests": {
+      "count": 10,
+      "notable": [
+        "a_friday_t_plus_one_lands_on_monday_not_saturday (437)",
+        "a_fill_after_the_cutoff_is_dated_to_the_next_settlement_day (448)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "10 inline tests plus 2 integration tests (tests/settlement.rs) including the venue-with-no-terms case that gauges rather than silently trades unjudged.",
+    "blueprint_capabilities": ["RISK", "CAPITAL"],
+    "gaps_observed": [
+      "GATE_SETTLEMENT refusals go through Cell::refuse (src/settlement.rs:54; per docs/ops observability notes this is one of the gates that does NOT get a WorkReport-based refusal count the way most gates do -- verify against the current CellMetrics wiring before relying on the count.)"
+    ],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/settlement.rs:1-13,54,105,381",
+      "backend/crates/edge/qip-edge/src/cell.rs:599,1330",
+      "backend/crates/edge/qip-edge/tests/settlement.rs (2 #[test])"
+    ]
+  },
+  {
+    "name": "qip-edge::telemetry",
+    "path": "backend/crates/edge/qip-edge/src/telemetry.rs",
+    "kind": "edge",
+    "purpose": "The cell's metric seam: CellMetrics holds an Arc<qip_observability::Metrics> handed to it by the composition root (never one it reaches for itself), and records the facts a cell knows that no operator could otherwise see -- halt state, region-share application, quote-budget depletion, dark regions, fill-time dispersion, and settlement projection gaps.",
+    "key_contracts": [
+      "19 named metric-name constants (72-359): EDGE_FILLS_CONFIRMED, EDGE_ORDERS_EXPIRED, EDGE_REGION_SHARE_BOUND/APPLIED, EDGE_QUOTE_BUDGET_TOKENS, EDGE_ORDERS_MASS_CANCELLED, EDGE_REGIONS_DARK, EDGE_SETTLEMENT_UNPROJECTED, etc.",
+      "enum RegionShareOutcome (122) -- applied|rederived|refused_lower_sequence|withheld",
+      "enum AdversaryPostureLabel (300)",
+      "struct CellMetrics (381) -- the registry handle"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core", "qip-observability"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/main.rs and reprice.rs import qip_edge::telemetry; Cell::with_metrics (src/cell.rs:1254) wires CellMetrics in, and metrics.refusal(...) is called directly from 5 sites in cell.rs (3864 GATE_LIVE_VENUE in Cell::send, 4245 & 7770 GATE_QUOTE_BUDGET, 4426 GATE_RELEASE_LATE, 7495 the generic Cell::refuse). The registry is served as Prometheus exposition on qip-edge-node's health port, but that binary is never deployed (execution_nodes = {} in every environment), so no process currently scrapes it.",
+    "io_and_state": "No I/O directly; writes into a BTreeMap-backed Metrics registry (qip-observability, no I/O of its own) that qip-edge-node serves over HTTP on its health port -- a capability that exists in code but reaches no deployed process today.",
+    "tests": {
+      "count": 3,
+      "notable": [
+        "only_the_capabilities_a_payload_feeds_are_published_and_each_reports_even_when_absent (1075)",
+        "the_netting_ratio_lands_in_a_bucket_that_separates_no_netting_from_some (1123)"
+      ]
+    },
+    "status": ["exists", "hardened", "requires-migration"],
+    "status_reason": "3 inline tests plus 17 integration tests (tests/telemetry.rs, the crate's second-largest test file) prove every series moves on the event it names; the gap is deployment, not emission -- the code that would let anyone scrape this is real but qip-edge-node runs nowhere.",
+    "blueprint_capabilities": ["OBS"],
+    "gaps_observed": [
+      "qip-edge-node's health-port Prometheus exposition (which serves this registry) is not currently scraped by any deployed process, since execution_nodes = {} in every Terraform environment -- confirmed in this crate's own dependents, not fixable here."
+    ],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/telemetry.rs:1-25,72-359,381",
+      "backend/crates/edge/qip-edge/src/cell.rs:3864,4245,4426,7495,7770",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs (17 #[test])",
+      "infrastructure/environments/prod/terraform.tfvars:51"
+    ]
+  }
+]

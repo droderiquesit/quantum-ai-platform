@@ -1,0 +1,709 @@
+[
+  {
+    "name": "qip-market-ingestion",
+    "path": "backend/crates/services/qip-market-ingestion",
+    "kind": "service",
+    "purpose": "The SENSE stage: provider-adapter traits plus seven real, shipped connectors, a connector runtime (rate limit, backoff, dedup, checkpoint, quarantine, journal, contract harness), and a synthetic/replay fallback because no licensed live feed is subscribed to in this build (src/lib.rs:1-27).",
+    "key_contracts": [
+      "trait DataAdapter / MarketDataAdapter / NewsAdapter / FundamentalsAdapter / MacroAdapter / AlternativeDataAdapter (src/adapter.rs)",
+      "enum SensedRecord, struct SourceDescriptor { production_requirement: Option<String> } (src/adapter.rs:354)",
+      "trait SourceConnector (src/connector/mod.rs:139)",
+      "struct ConnectorRuntime, RuntimeConfig (src/connector/runtime.rs)",
+      "struct ConnectorFeed, fn shipped_class(source_id), fn shipped_manifest(source_id) (src/connector_feed.rs)",
+      "struct Tape, TapeFeed, TapeDocument, TapeObservation, SCHEMA_VERSION (src/tape.rs)",
+      "struct ReplayAdapter::open/write/from_records/as_recorded_from (src/replay.rs)",
+      "struct RestMarketDataAdapter, RestFeedConfig (src/rest.rs)",
+      "struct NarrativeAdapter, NarrativeFeedConfig (src/narrative.rs)",
+      "struct DepthFeedAdapter, DepthFeedConfig (src/depth.rs)",
+      "struct AlternativeFeedAdapter, AlternativeFeedConfig (src/alternative.rs)",
+      "struct SyntheticEnvironment::demo, EnvironmentConfig (src/synthetic/mod.rs)",
+      "struct IngestionService, SensedBatch (src/service.rs)",
+      "connectors: CoinbaseTickerConnector, FrankfurterRatesConnector, EcbKeyRatesConnector, NyFedEffrConnector, NwsStationObservationsConnector, KalshiMarketsConnector, AlpacaBarsConnector"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-events", "qip-financial", "qip-market", "qip-observability", "qip-transport", "qip-contracts", "qip-orderbook", "qip-sequencing", "(dev) qip-storage"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-deepbrain/src/main.rs:359-460 constructs the feed from a tape, a replay path, or synthetic (in that priority); qip-api/src/feed.rs:407 and qip-fastbrain/src/feed.rs:271 call ConnectorFeed::open(source_id, base_url, ...) to run a real shipped connector over qip-transport; qip-api/src/registration_views.rs:416-419 surfaces shipped_manifest() for the 4 connectors with registration UI; qip-fastbrain/src/main.rs:43 and qip-api/src/main.rs:31 construct StreamJournal directly.",
+    "io_and_state": "Network: qip_transport::http (blocking, plaintext HTTP/1.1 through an egress proxy, no TLS in-process) for the 7 shipped connectors and for rest/narrative/depth/alternative when configured with a base_url. Clock: caller-supplied Timestamp only (poll(until) pull model), no internal clock reads outside tests. State: StreamJournal/StreamLedger persist through qip_core::kv::KeyValueStore (a port; adapter chosen by the deployment, MemoryKeyValueStore in dev-deps/tests), Tape reads/writes a JSON document file directly (src/tape.rs).",
+    "tests": {
+      "count": 249,
+      "notable": [
+        "a_stale_checkpoint_forces_a_rebuild_rather_than_a_silent_apply (book_depth.rs area, connector runtime gap-detection family)",
+        "connector_contract.rs — proves every shipped connector against ContractHarness",
+        "restart.rs — journal replay/checkpoint survives a process restart"
+      ]
+    },
+    "status": ["exists", "hardened", "partial"],
+    "status_reason": "The connector framework and 7 shipped connectors are tested and reached from production; the vendor-facing rest/narrative/depth/alternative adapters are complete but ship with no configured vendor (production_requirement always Some(...)) and default deployment falls back to a synthetic environment (main.rs:434-460) when no tape/replay path is set.",
+    "blueprint_capabilities": ["DATA", "TICK", "EVID"],
+    "gaps_observed": [
+      "No licensed live feed is subscribed to in this build; default node startup (no --tape/--replay) always uses SyntheticEnvironment (crates/apps/qip-deepbrain/src/main.rs:434-460).",
+      "rest.rs, narrative.rs, depth.rs, alternative.rs adapters always report a non-None SourceDescriptor::production_requirement (src/rest.rs:676, src/narrative.rs:1095, src/depth.rs:1147, src/alternative.rs:844) — unconfigured for any real vendor in this repository."
+    ],
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/lib.rs:1-94",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:354-460",
+      "backend/crates/apps/qip-api/src/feed.rs:407",
+      "backend/crates/apps/qip-fastbrain/src/feed.rs:271",
+      "backend/crates/apps/qip-api/src/registration_views.rs:416-419"
+    ]
+  },
+  {
+    "name": "qip-market-ingestion::connector (framework)",
+    "path": "backend/crates/services/qip-market-ingestion/src/connector/",
+    "kind": "service",
+    "purpose": "The shared runtime every shipped connector runs inside: rate limiting, backoff, dedup window, checkpoint/cursor, quarantine, a fetch digest, schema validation, a durable stream journal/ledger, and a contract test harness (src/connector/mod.rs:70-139).",
+    "key_contracts": [
+      "trait SourceConnector (mod.rs:139)",
+      "struct ConnectorRuntime, RuntimeConfig (runtime.rs, 853 lines)",
+      "struct RateLimiter, Admission (ratelimit.rs)",
+      "struct BackoffLadder, FailureKind, RetryDecision (backoff.rs)",
+      "struct DedupWindow, EventFingerprint, Novelty (dedup.rs)",
+      "struct Checkpoint, Cursor, CursorPosition (checkpoint.rs)",
+      "struct Quarantine, QuarantineReason, QuarantinedEvent (quarantine.rs)",
+      "struct StreamJournal, StreamLedger, InstantSpan (journal.rs, 574 lines)",
+      "struct SourceManifest, SecretRef (manifest.rs, 989 lines)",
+      "struct SourceTransport (transport.rs)",
+      "struct SchemaGuard, SchemaOutcome, SchemaViolation (validate.rs)",
+      "struct ContractHarness, ContractCheck, ContractReport (harness.rs)",
+      "struct SourceEmulator, RecordedExchange (emulator.rs)",
+      "struct FeedHeartbeat, Liveness (heartbeat.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events", "qip-financial", "qip-transport", "qip-observability"],
+    "reached_from_production": "yes",
+    "production_evidence": "ConnectorFeed::open (connector_feed.rs) is called from qip-api/src/feed.rs:407 and qip-fastbrain/src/feed.rs:271, which internally builds a ConnectorRuntime over SourceTransport; qip-fastbrain/src/main.rs:43 and qip-api/src/main.rs:31 construct StreamJournal directly for the node's journal.",
+    "io_and_state": "No direct socket I/O in this module (SourceTransport wraps qip-transport, held by the caller); StreamJournal/StreamLedger persist through the qip_core::kv::KeyValueStore port.",
+    "tests": {
+      "count": 105,
+      "notable": [
+        "connector_contract.rs::* — every shipped connector proven against ContractHarness",
+        "connector_runtime.rs — 43 tests over admission, backoff, quarantine and checkpoint interplay",
+        "restart.rs — checkpoint/journal survive a simulated process restart"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "Zero TODO/stub markers found; 0 inline #[test] (all coverage lives in crate-contract tests/), reached from all three composition roots (api, fastbrain, deepbrain).",
+    "blueprint_capabilities": ["DATA", "TICK", "EVID"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/connector/mod.rs:70-139",
+      "backend/crates/apps/qip-api/src/feed.rs:407",
+      "backend/crates/apps/qip-fastbrain/src/feed.rs:271"
+    ]
+  },
+  {
+    "name": "qip-market-ingestion::connectors (shipped adapters)",
+    "path": "backend/crates/services/qip-market-ingestion/src/connectors/",
+    "kind": "service",
+    "purpose": "Seven concrete, real (non-synthetic) source connectors implementing SourceConnector: Coinbase ticker, Frankfurter FX rates, ECB key rates, NY Fed EFFR, NWS station observations, Kalshi markets, Alpaca bars (src/connectors/mod.rs:87-101).",
+    "key_contracts": [
+      "CoinbaseTickerConnector::SOURCE_ID / ::VENUE / ::new / ::shipped_manifest",
+      "FrankfurterRatesConnector::SOURCE_ID / ::shipped_manifest",
+      "EcbKeyRatesConnector::SOURCE_ID",
+      "NyFedEffrConnector::SOURCE_ID / REFERENCE_RATE_NOTICE",
+      "NwsStationObservationsConnector::SOURCE_ID",
+      "KalshiMarketsConnector::SOURCE_ID",
+      "AlpacaBarsConnector::SOURCE_ID"
+    ],
+    "workspace_deps": ["qip-core", "qip-events", "qip-financial", "qip-transport", "qip-contracts"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-api/src/registration_views.rs:416-419 (registration UI listing shipped manifests, non-test); qip-deepbrain/src/connectors.rs:335 constructs CoinbaseTickerConnector::shipped_manifest() in non-test code; ConnectorFeed::open(source_id, ...) in qip-api/qip-fastbrain feed.rs resolves any of these 7 SOURCE_IDs to a live connector over qip-transport at runtime when a deployment supplies source_id+base_url config.",
+    "io_and_state": "Network via qip_transport::http through a reviewed egress route per connector; no TLS in-process (ADR 0060 pattern).",
+    "tests": {
+      "count": 62,
+      "notable": [
+        "the_placeholder_page_decodes_into_one_event_per_symbol_per_session (alpaca_bars.rs:489)",
+        "hostile_rate_table.rs — malformed vendor payloads refused rather than guessed",
+        "connector_feed_frankfurter.rs, ecb_key_rates.rs, nyfed_effr.rs — per-connector contract proofs"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "35 inline unit tests plus 27 dedicated integration tests; each connector is wired to shipped_class/shipped_manifest and reachable from registration_views.rs and ConnectorFeed::open in all three composition roots. No mock/synthetic fallback inside these adapters themselves.",
+    "blueprint_capabilities": ["DATA", "TICK"],
+    "gaps_observed": [
+      "Only 7 real venues/vendors are shipped; no equities-exchange, options, or broad news-wire connector exists in this crate."
+    ],
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/connectors/mod.rs:87-101",
+      "backend/crates/apps/qip-api/src/registration_views.rs:416-419",
+      "backend/crates/apps/qip-deepbrain/src/connectors.rs:335"
+    ]
+  },
+  {
+    "name": "qip-market-ingestion::synthetic + tape/replay dataflow",
+    "path": "backend/crates/services/qip-market-ingestion/src/{synthetic/,adapter.rs,service.rs,tape.rs,replay.rs,connector_feed.rs}",
+    "kind": "service",
+    "purpose": "The always-available data path: a stochastic-volatility/regime-switching synthetic market generator (synthetic/) plus a recorded-tape reader/writer (tape.rs) and a raw-record replay adapter (replay.rs), all stamped LicensingClass::Synthetic so the object model refuses them as a production decision input (src/lib.rs:10-17).",
+    "key_contracts": [
+      "SyntheticEnvironment::demo, EnvironmentConfig (synthetic/mod.rs)",
+      "ScriptedEvent, ScriptedEventKind, SyntheticInstrument",
+      "struct Tape::open, TapeFeed::new, TapeDocument, TapeObservation, SCHEMA_VERSION (tape.rs)",
+      "struct ReplayAdapter::open/write/from_records/as_recorded_from/recorded_from (replay.rs)",
+      "struct IngestionService, IngestionStats, SensedBatch (service.rs)",
+      "fn shipped_manifest / shipped_class (connector_feed.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-market", "qip-financial", "qip-events"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-deepbrain/src/main.rs:365-457 and node.rs:1020-1224 select between Tape, ReplayAdapter, and SyntheticEnvironment as the live feed; qip-fastbrain/src/node.rs:586 writes a replay file via ReplayAdapter::write; qip-fastbrain/src/feed.rs uses Tape/TapeFeed/SyntheticEnvironment directly.",
+    "io_and_state": "Tape reads/writes a JSON file at a caller-given path (tape.rs); ReplayAdapter reads/writes a recorded-events file; SyntheticEnvironment is pure in-memory generation seeded by platform.config().seed and the caller's clock.",
+    "tests": {
+      "count": 22,
+      "notable": [
+        "sense.rs (33 tests, tests/ dir) — proves the SENSE stage end to end over tape+synthetic",
+        "a replay that names no `# recorded-from:` source reports Restricted and every learning round is refused (documented at qip-deepbrain/src/main.rs:403-411)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "Fully implemented and the default production path in the absence of a real connector; every record is stamped Synthetic and refused as a production decision input by the licensing type, which is the documented, deliberate design rather than a gap.",
+    "blueprint_capabilities": ["DATA", "TICK"],
+    "gaps_observed": [
+      "The replay path's reference-data source is empty (no listings) when no tape is used, so campaign backtests over pure replay always refuse with \"no fill\" (crates/apps/qip-deepbrain/src/main.rs:417-427, comment)."
+    ],
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/main.rs:340-460",
+      "backend/crates/apps/qip-fastbrain/src/node.rs:586",
+      "backend/crates/services/qip-market-ingestion/src/tape.rs:1-100"
+    ]
+  },
+  {
+    "name": "qip-market-ingestion::rest/narrative/depth/alternative (vendor adapters)",
+    "path": "backend/crates/services/qip-market-ingestion/src/{rest.rs,narrative.rs,depth.rs,alternative.rs}",
+    "kind": "service",
+    "purpose": "Four adapters that make a real socket call to a market-data, document, order-book-depth and alternative-data vendor respectively, decode the vendor payload, and refuse to poll until configured — none has a synthetic fallback because a plausible-looking stand-in would be indistinguishable downstream from a working feed (src/lib.rs:19-56).",
+    "key_contracts": [
+      "RestMarketDataAdapter::new, RestFeedConfig, RestInstrument (rest.rs)",
+      "NarrativeAdapter::new, NarrativeFeedConfig, NarrativeSubject, Revision (narrative.rs)",
+      "DepthFeedAdapter::new, DepthFeedConfig, DepthInstrument (depth.rs) — the only one of the four holding book state, rebuilding on a sequence gap via qip_sequencing / qip_orderbook",
+      "AlternativeFeedAdapter::new, AlternativeFeedConfig, AlternativeSubject (alternative.rs)",
+      "impl DataAdapter for each, with production_requirement always Some(...)"
+    ],
+    "workspace_deps": ["qip-core", "qip-market", "qip-financial", "qip-transport", "qip-sequencing", "qip-orderbook", "qip-contracts"],
+    "reached_from_production": "partial",
+    "production_evidence": "qip-cli/src/demo/mod.rs:117-123 constructs all four adapter types (demo/CLI, non-test but not a deployed service binary); qip-fastbrain/src/feed.rs:57 imports RestMarketDataAdapter and constructs it when settings name a REST source_id (feed.rs:229/248 gate by shipped_class first, so these 4 vendor adapters are reached only for a source_id not in the 7 shipped connectors, which none of the shipped catalogue currently is).",
+    "io_and_state": "Network via qip_transport::http, one connection per request, explicit timeouts. depth.rs is the only stateful one — it holds a live order book and forces a rebuild on any sequencing gap rather than applying silently.",
+    "tests": {
+      "count": 210,
+      "notable": [
+        "book_depth.rs (50 tests) — sequence-gap rebuild, crossed-book handling, divergence withholding",
+        "narrative_feed.rs (46 tests) — filed-vs-covering instant discipline, licensing-class refusal on missing class",
+        "alternative_data.rs (49 tests) — three-instant discipline (captured/processed/published), unstated data-quality refusal"
+      ]
+    },
+    "status": ["exists", "partial"],
+    "status_reason": "Implementation and tests are complete and hardened; every instance still reports a non-empty production_requirement because no vendor credentials/base_url for any of the four is configured anywhere in this repository, so in a real deployment they remain unconfigured until an operator supplies one.",
+    "blueprint_capabilities": ["DATA", "TICK", "EVID"],
+    "gaps_observed": [
+      "No vendor is actually configured for rest/narrative/depth/alternative anywhere in the tree (src/rest.rs:676, src/narrative.rs:1095, src/depth.rs:1147, src/alternative.rs:844 always set production_requirement)."
+    ],
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/rest.rs:662-710",
+      "backend/crates/services/qip-market-ingestion/src/depth.rs:1138-1179",
+      "backend/crates/apps/qip-cli/src/demo/mod.rs:117-123"
+    ]
+  },
+
+  {
+    "name": "qip-data-finder",
+    "path": "backend/crates/services/qip-data-finder",
+    "kind": "service",
+    "purpose": "The autonomous data-source lifecycle: discover, classify, probe, assess legality, score, route, register, monitor, detect drift, find a replacement, and produce a RegistrationDecision per source — the piece the platform's own audit named as the single largest Layer-1 gap before this crate existed (src/lib.rs:1-8).",
+    "key_contracts": [
+      "struct DataFinder::assess, FinderConfig (finder.rs)",
+      "fn admit / admit_from / admit_registered / admit_from_registered, struct AdmittedSource, CatalogueEntry, LicensingDecision (admission.rs)",
+      "fn catalogue() -> Vec<CatalogueEntry> (admission.rs:376)",
+      "struct RegistrationRecord::new, RegistrationRegistry, RegistrationRequirement (registration.rs)",
+      "enum Legality { Permitted, Forbidden, Unknown }, fn Legality::and (legal.rs:28-92)",
+      "struct SourceTier::classify, DeepWebAdapter::admissible (tier.rs)",
+      "fn personal_data::screen -> PersonalDataScreen (personal_data.rs:349)",
+      "struct RegistrationDecision::new/registered, Reasoning, DecisionOutcome (decision.rs)",
+      "trait SourceProbe { robots, head, sample }, struct InMemoryProbe, NetworkProbe::through (probe.rs)",
+      "struct FetchCampaign, CampaignManifest, ResearchCache, fn assess_concentration (campaign.rs)",
+      "struct ReferenceLedger, RevisionRecord (ledger.rs)",
+      "struct LeadLedger, SourceLeadSummary (freshness.rs)",
+      "struct FallbackSeries::bounded (retention.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-financial", "qip-events", "qip-mesh", "qip-market-ingestion", "qip-market", "qip-numerics", "qip-transport"],
+    "reached_from_production": "yes",
+    "production_evidence": "crates/apps/qip-deepbrain/src/discovery.rs (whole module, 'A production caller for source discovery') wraps Platform::assess_sources -> DataFinder::assess and is wired in at qip-deepbrain/src/main.rs:508 (evolution.with_discovery(DiscoveryDesk::new(...))); qip-kernel/src/platform.rs:15946-15952 defines assess_sources calling self.data_finder.assess(...); qip-api/src/main.rs:644 and qip-fastbrain/src/feed.rs call admission::catalogue()/admission::admit*/StandingAdmission for every registered/shipped source before a poll is allowed.",
+    "io_and_state": "NetworkProbe (probe.rs:403-528) performs real blocking HTTP GET/HEAD via qip_transport::http, restricted to plaintext http:// loopback egress routes (refuses https by construction, ADR 0060); InMemoryProbe does no I/O and is test/demo-only. State (RegistrationRegistry, ReferenceLedger, FallbackSeries, LeadLedger, StandingAdmission) is held in-memory inside qip-kernel's Platform; nothing in this crate itself opens a persistent store.",
+    "tests": {
+      "count": 111,
+      "notable": [
+        "legality.rs (27 tests) — Legality::and never collects on Unknown",
+        "a_desk_on_cadence_reaches_the_platforms_assess_sources (qip-deepbrain/src/discovery.rs:321, proves the production wiring itself)",
+        "tiers.rs (19 tests) — dark-web tier refuses every access mode by name"
+      ]
+    },
+    "status": ["exists", "hardened", "partial"],
+    "status_reason": "The five structural guarantees in the module doc (unknown-not-permitted, legality-not-a-score, claim-not-evidence, no-registration-without-legality, tier-not-assumed) are compiler/type-enforced and tested; discovery is reached from production via DiscoveryDesk. The CRAWL stage (seeding, link-following, domain expansion) the blueprint's §7.4 describes does not exist — candidates are a stated, committed list, never discovered autonomously.",
+    "blueprint_capabilities": ["DATA", "GOV", "COVERAGE", "EVID"],
+    "gaps_observed": [
+      "No CRAWL implementation: `grep -rn 'follow_links|expand_from|fn crawl(' src/` returns nothing; discovery.rs (deepbrain) documents this explicitly and does not add it.",
+      "src/lib.rs:64-69 and src/probe.rs:14-20 both still describe NetworkProbe as reporting Error::Unavailable naming what production must supply; the current NetworkProbe (added under ADR 0060) actually opens a real socket over qip_transport and only returns Unavailable on a genuine failed request — the module doc is stale relative to the implementation."
+    ],
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/lib.rs:1-96",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:1-51",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:508",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:15946-15952"
+    ]
+  },
+  {
+    "name": "qip-data-finder::probe",
+    "path": "backend/crates/services/qip-data-finder/src/probe.rs",
+    "kind": "service",
+    "purpose": "The one port through which the finder touches the outside world: robots.txt fetch, HEAD, and a payload sample, each latency-timed by the probe itself so a scripted test can't leak the harness's own speed (src/probe.rs:1-20).",
+    "key_contracts": [
+      "trait SourceProbe { fn robots, fn head, fn sample }",
+      "struct InMemoryProbe::new (scripted, no I/O)",
+      "struct NetworkProbe::through(base_url, user_agent) -> Result<Self> (probe.rs:418, refuses https and any non-http scheme by construction)",
+      "struct HeadResponse, PayloadSample, RobotsFetch, SampleManifest"
+    ],
+    "workspace_deps": ["qip-core", "qip-transport"],
+    "reached_from_production": "yes",
+    "production_evidence": "crates/apps/qip-deepbrain/src/discovery.rs:181 constructs NetworkProbe::through(&entry.egress_route, DISCOVERY_USER_AGENT) in non-test code, one probe per candidate entry per assessment pass.",
+    "io_and_state": "Blocking HTTP GET/HEAD via qip_transport::http::HttpClient; refuses to construct against an https:// base URL (no TLS stack in-process; the egress proxy originates TLS upstream) and refuses an empty user agent.",
+    "tests": { "count": 0, "notable": ["Exercised indirectly through tiers.rs, legality.rs and discovery.rs's own DiscoveryDesk test, not through dedicated probe unit tests."] },
+    "status": ["exists", "hardened"],
+    "status_reason": "Real network implementation, reached from production discovery.rs; carries no credential by design so Registered/Licensed access modes stay unreachable through this probe.",
+    "blueprint_capabilities": ["DATA", "GOV"],
+    "gaps_observed": [
+      "NetworkProbe carries no credential, so tier.rs's Registered and Licensed AccessMode variants can never be satisfied through this probe (documented at probe.rs:398-401)."
+    ],
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/probe.rs:403-528",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:181"
+    ]
+  },
+  {
+    "name": "qip-data-finder::admission+registration (gate)",
+    "path": "backend/crates/services/qip-data-finder/src/{admission.rs,registration.rs}",
+    "kind": "service",
+    "purpose": "The two-gate door every ingestion poll must pass through: registration.rs refuses a keyed source with no named operator; admission.rs combines a catalogue entry's licensing class with (if required) that registration into a single AdmittedSource or refuses (admission.rs:76-844).",
+    "key_contracts": [
+      "fn admit, admit_from, admit_registered, admit_from_registered (admission.rs:659-711)",
+      "fn catalogue() -> Result<Vec<CatalogueEntry>> (admission.rs:376)",
+      "fn refusals() -> Vec<RefusedSource> (admission.rs:561)",
+      "struct AdmittedSource, LicensingDecision::describe (admission.rs)",
+      "struct RegistrationRecord::new (refuses a blank operator) (registration.rs:169)",
+      "enum RegistrationRequirement (Keyless | ...), RegistrationStanding (registration.rs)",
+      "struct RegistrationRegistry (registration.rs:265)"
+    ],
+    "workspace_deps": ["qip-core", "qip-financial", "qip-market-ingestion"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-api/src/main.rs:644 calls admission::catalogue(); qip-fastbrain/src/feed.rs:49-305 calls admission::{admit_registered, AdmittedSource::from_decision, LicensingDecision} on every configured feed before it is allowed to poll; qip-api/src/registration_views.rs:81-83 surfaces RegistrationRecord/RegistrationStanding via the API.",
+    "io_and_state": "No I/O; pure decision logic over in-memory catalogue/registry data supplied by the caller.",
+    "tests": { "count": 39, "notable": ["registration_is_not_ingestion.rs — a registered source still cannot poll without a separate admission", "lifecycle.rs — full admit -> monitor -> drift -> replace sequence"] },
+    "status": ["exists", "hardened"],
+    "status_reason": "Both gates are reached on every feed startup in qip-api and qip-fastbrain; RegistrationRecord has exactly one constructor and it refuses a blank operator, which is compiler/runtime enforced.",
+    "blueprint_capabilities": ["GOV", "DATA"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/admission.rs:659-844",
+      "backend/crates/apps/qip-fastbrain/src/feed.rs:49-305",
+      "backend/crates/apps/qip-api/src/main.rs:644"
+    ]
+  },
+  {
+    "name": "qip-data-finder::legal+robots+tier+category+personal_data (compliance)",
+    "path": "backend/crates/services/qip-data-finder/src/{legal.rs,robots.rs,tier.rs,category.rs,personal_data.rs}",
+    "kind": "service",
+    "purpose": "The refusal logic that decides whether a source may be collected at all: three-valued Legality that never collects on Unknown, robots.txt precedence, web-tier classification (with the dark web permanently inadmissible), category approval, and a personal-data screen keyed on observed fields (not the candidate's own self-description).",
+    "key_contracts": [
+      "enum Legality { Permitted, Forbidden, Unknown }, fn and (legal.rs:28-92, least-permissive combinator)",
+      "fn Legality::require_permitted (legal.rs:109)",
+      "struct RobotsPolicy::parse, enum PathVerdict (robots.rs)",
+      "enum SourceTier, fn classify(evidence) -> Result<Self> (tier.rs:52-117)",
+      "struct DeepWebAdapter::admissible (tier.rs) — refuses every dark-web access mode by name",
+      "fn category::classify(signal) -> Result<SourceCategory> (category.rs:181)",
+      "enum PersonalDataScreen, fn screen(schema) -> PersonalDataScreen (personal_data.rs:147-349)"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-financial"],
+    "reached_from_production": "yes",
+    "production_evidence": "Reached transitively through DataFinder::assess (finder.rs), itself called from Platform::assess_sources, itself called from qip-deepbrain's DiscoveryDesk (main.rs:508); LicensingPosture/SourceLicense are also imported directly in qip-api/src/registration_views.rs:82 and qip-deepbrain/src/discovery.rs:208.",
+    "io_and_state": "No I/O; pure classification over probe-supplied evidence.",
+    "tests": { "count": 62, "notable": ["legality.rs::* — Legality::and never collects on an Unknown leg (27 tests)", "tiers.rs — dark-web hosts refuse every AccessMode including Rendering and Bulk without a named DiscoveryEnclave", "personal_data.rs — a payload with no observable fields screens NotScreened, not Clear"] },
+    "status": ["exists", "hardened"],
+    "status_reason": "Structural guarantees named in the crate's own module doc (unknown-not-permitted, tier-not-assumed) hold by type construction, and both are exercised from production through DataFinder::assess.",
+    "blueprint_capabilities": ["GOV", "SEC", "DATA"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/legal.rs:28-125",
+      "backend/crates/services/qip-data-finder/src/tier.rs:52-267",
+      "backend/crates/services/qip-data-finder/src/personal_data.rs:147-349"
+    ]
+  },
+  {
+    "name": "qip-data-finder::finder+scoring+health+decision+endpoint (orchestrator)",
+    "path": "backend/crates/services/qip-data-finder/src/{finder.rs,scoring.rs,health.rs,decision.rs,endpoint.rs}",
+    "kind": "service",
+    "purpose": "Runs the full per-source lifecycle over a candidate (probe -> classify -> assess legality -> score -> route) and produces a reasoned RegistrationDecision; scoring.rs's Routing type has private fields and one constructor so a perfect score on a forbidden source still routes to rejection (src/lib.rs:17-20).",
+    "key_contracts": [
+      "struct DataFinder::assess, FinderConfig::new/with_category_approval/with_registration/with_host_rules/with_credential_reference/with_discovery_enclave (finder.rs)",
+      "struct MonitorOutcome (finder.rs)",
+      "struct Routing (private fields, one constructor), RoutingClass, SourceScores (scoring.rs)",
+      "struct SourceHealth, HealthObservation, ObservationOutcome (health.rs)",
+      "struct RegistrationDecision::new/registered (refuses empty reasoning), enum DecisionOutcome, LifecycleStage (decision.rs)",
+      "struct SourceEndpoint, enum AccessMechanism, AuthRequirement, Scheme (endpoint.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-financial"],
+    "reached_from_production": "yes",
+    "production_evidence": "Platform::assess_sources (qip-kernel/src/platform.rs:15946-15952) calls self.data_finder.assess(candidates, probe, now), itself invoked from DiscoveryDesk::maybe_run at qip-deepbrain/src/discovery.rs:173/182, wired in at main.rs:508.",
+    "io_and_state": "No I/O of its own; consumes probe evidence and produces decisions in memory.",
+    "tests": { "count": 17, "notable": ["scoring_and_routing.rs — a 1.0-scoring forbidden source is still rejected, never routed", "probe_port.rs — the finder never calls a probe method its own config didn't authorize"] },
+    "status": ["exists", "hardened"],
+    "status_reason": "0 inline tests (all coverage in tests/), fully reached from the production DiscoveryDesk path; RegistrationDecision has exactly two constructors and both refuse empty reasoning.",
+    "blueprint_capabilities": ["DATA", "GOV", "COVERAGE"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/finder.rs:40-169",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:15946-15952",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:173-182"
+    ]
+  },
+  {
+    "name": "qip-data-finder::campaign+reference+ledger+freshness+retention+replacement (lifecycle/monitoring)",
+    "path": "backend/crates/services/qip-data-finder/src/{campaign.rs,reference.rs,ledger.rs,freshness.rs,retention.rs,replacement.rs}",
+    "kind": "service",
+    "purpose": "Post-registration lifecycle: a bounded research cache and concentration check over a fetch campaign (campaign.rs), the point-in-time reference-data model (reference.rs), a revision ledger (ledger.rs), a per-source freshness/lead-time ledger (freshness.rs), a bounded fallback series (retention.rs), and ranked replacement candidates when a source degrades (replacement.rs).",
+    "key_contracts": [
+      "struct FetchCampaign, CampaignManifest, ResearchCache, CacheBound::new, SketchedStatistic, fn assess_concentration -> ConcentrationVerdict (campaign.rs)",
+      "struct DataPeriod::new/instant/contains/overlaps, DataReference, enum SourceOrigin, RevisionCheck (reference.rs)",
+      "struct ReferenceLedger, RevisionRecord, LedgerOutcome, struct ExtentKey (ledger.rs)",
+      "struct LeadLedger::new/observe, SourceLeadSummary, enum LeadOutcome (freshness.rs)",
+      "struct FallbackSeries::bounded, enum RetainOutcome, Retention, RetentionClass (retention.rs)",
+      "struct RankedReplacement, PartialCandidate, enum ReplacementOutcome (replacement.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-financial", "qip-market", "qip-numerics", "qip-mesh", "qip-market-ingestion"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:377 holds references: qip_data_finder::ledger::ReferenceLedger; :396 fallback: qip_data_finder::retention::FallbackSeries::bounded(); :411/4449 source_leads: qip_data_finder::freshness::LeadLedger::new(); :15916 source_lead_ranking() -> Vec<SourceLeadSummary>; qip-deepbrain/src/campaign.rs and evolution.rs construct CampaignManifest/FetchCampaign/DataReference directly for the learning loop.",
+    "io_and_state": "No I/O; ResearchCache and FallbackSeries are explicitly bounded in-memory structures (CacheBound::new refuses an unbounded TTL/entry count), consistent with the crate-wide bounded-retention rule.",
+    "tests": { "count": 43, "notable": ["schema_drift.rs — a source that changes shape mid-stream is caught, not silently absorbed", "replacement.rs — a ranked replacement never outranks a source with worse legality regardless of score"] },
+    "status": ["exists", "hardened"],
+    "status_reason": "All six modules are held as live fields on qip-kernel's Platform struct and updated every cycle; CacheBound/FallbackSeries enforce bounded retention structurally.",
+    "blueprint_capabilities": ["DATA", "COVERAGE", "FINOPS"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:371-411",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4447-4449",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:15916"
+    ]
+  },
+  {
+    "name": "qip-data-finder::catalogue+ingestion+coverage+quality+schema+source (data model)",
+    "path": "backend/crates/services/qip-data-finder/src/{catalogue.rs,ingestion.rs,coverage.rs,quality.rs,schema.rs,source.rs}",
+    "kind": "service",
+    "purpose": "Supporting value types: the candidate catalogue file format (catalogue.rs), an ingestion plan builder (ingestion.rs), coverage-gap/update-frequency modeling (coverage.rs), source cost/quality (quality.rs), schema + drift severity (schema.rs), and the SourceCandidate/Source distinction the crate's third structural guarantee rests on (source.rs).",
+    "key_contracts": [
+      "fn catalogue::load(text, now) -> Result<Vec<CandidateEntry>>, struct CandidateEntry (catalogue.rs)",
+      "fn ingestion::plan_for/descriptor_for, struct IngestionPlan (ingestion.rs)",
+      "struct SourceCoverage, CoverageGap, CoverageMatch, enum UpdateFrequency (coverage.rs)",
+      "struct SourceCost, SourceQuality (quality.rs)",
+      "struct SourceSchema, SchemaDrift, enum DriftSeverity, FieldRetype (schema.rs)",
+      "struct SourceCandidate, Source, SourceIdentity, SourceLineage (source.rs) — Source cannot be built without probe::ProbeEvidence"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-financial"],
+    "reached_from_production": "yes",
+    "production_evidence": "crates/apps/qip-deepbrain/src/main.rs:1059-1083 calls qip_data_finder::catalogue::load(text, now) directly on the committed candidate-catalogue file at startup, feeding DiscoveryDesk::new.",
+    "io_and_state": "No I/O of its own; catalogue::load parses a string the caller has already read from a committed file.",
+    "tests": { "count": 6, "notable": ["candidate_catalogue.rs — a catalogue entry with no egress_route is refused at load, not admitted with an empty route"] },
+    "status": ["exists"],
+    "status_reason": "0 inline tests, thin value-type layer exercised through catalogue load at deepbrain startup and through finder.rs's own test suite.",
+    "blueprint_capabilities": ["DATA", "COVERAGE"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/main.rs:1059-1083",
+      "backend/crates/services/qip-data-finder/src/source.rs:1-50"
+    ]
+  },
+
+  {
+    "name": "qip-streaming",
+    "path": "backend/crates/services/qip-streaming",
+    "kind": "service",
+    "purpose": "The universal event envelope every sensed record wears, plus the transport ports behind it — a real durable log transport, an in-memory local queue, a routing/tiering layer that refuses to send a venue-critical event down a durable (i.e. slower) path, and two unreached transports (an in-tree peer mesh and a GCP Pub/Sub port) (src/lib.rs:1-55).",
+    "key_contracts": [
+      "struct StreamEnvelope::seal, EventFacts, Freshness (envelope.rs)",
+      "trait Publisher, Subscriber { fn poll(until) }, struct PublishReceipt, TransportDescriptor (ports.rs)",
+      "struct DurableLogTransport::in_memory/open (durable.rs:45-57)",
+      "struct LocalQueue, LocalQueueStats (local.rs)",
+      "enum RoutingClass, fn check (routing.rs) — refuses venue-critical + durable combination at construction",
+      "struct TieredPublisher, RoutedCounts (tiered.rs)",
+      "struct SequenceCoordinator, SequencedEnvelopes, StreamReset (sequencing.rs, composes qip-sequencing)",
+      "struct StreamProcessor, ProcessingPolicy, BatchOutcome, Rejection (processing.rs)",
+      "struct MeshTransport::connect (mesh.rs) — an in-tree ADR 0011 peer transport",
+      "struct PubSubTransport, PubSubBinding (pubsub.rs) — a GCP port, returns Error::Unavailable until wired",
+      "enum EnvelopeWire, SchemaCompatibility, ENVELOPE_SCHEMA_VERSION (schema.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-events", "qip-financial", "qip-market", "qip-sequencing", "qip-transport"],
+    "reached_from_production": "partial",
+    "production_evidence": "qip-kernel/src/platform.rs:195-198 imports DurableLogTransport, EventFacts/StreamEnvelope, Publisher and constructs journal: DurableLogTransport::in_memory(\"kernel-journal\") at platform.rs:4486 — the only construction site of the Platform struct's journal field (private, no setter). qip-cli/src/replay.rs:68 uses StreamEnvelope::decode directly.",
+    "io_and_state": "DurableLogTransport wraps qip_events::EventLog and can be file-backed via ::open(name, path), but the sole production construction site (platform.rs:4486) always uses ::in_memory — the kernel's own stream journal is never persisted to disk in the code paths found. MeshTransport (network, peer gRPC-shaped) and PubSubTransport (GCP, explicitly Error::Unavailable until configured) are implemented but never constructed outside qip-streaming's own tests/registry.rs helper.",
+    "tests": {
+      "count": 68,
+      "notable": [
+        "transports.rs (12 tests) — DurableLogTransport and LocalQueue proven interchangeable behind Publisher/Subscriber",
+        "routing.rs (8 tests) — a venue-critical event routed durable is refused at construction, not at publish",
+        "envelope_integrity.rs (13 tests) — a payload hash that disagrees with its payload is refused"
+      ]
+    },
+    "status": ["exists", "hardened", "partial"],
+    "status_reason": "The envelope, durable transport, routing and sequencing composition are reached from production and tested; MeshTransport and PubSubTransport are real, tested implementations that no app or runtime code currently constructs, and the one production journal construction site is always in-memory rather than the file-backed ::open variant the type also offers.",
+    "blueprint_capabilities": ["EVENT", "DATA", "MESH"],
+    "gaps_observed": [
+      "qip-kernel/src/platform.rs:4486 always constructs DurableLogTransport::in_memory(\"kernel-journal\") — the only construction site of the private `journal` field, with no setter anywhere in the crate — so the hash-chained kernel journal this platform's own governance rules call load-bearing has no on-disk persistence in the code paths this search found.",
+      "MeshTransport (mesh.rs) and PubSubTransport (pubsub.rs) are never constructed outside qip-streaming's own registry.rs helper and tests; `grep -rn MeshTransport|PubSubTransport backend/crates/apps backend/crates/runtime --include=*.rs` (excluding tests) returns nothing."
+    ],
+    "evidence": [
+      "backend/crates/services/qip-streaming/src/lib.rs:1-86",
+      "backend/crates/services/qip-streaming/src/durable.rs:32-90",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:623",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4486",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:16161"
+    ]
+  },
+
+  {
+    "name": "qip-entity-resolution",
+    "path": "backend/crates/services/qip-entity-resolution",
+    "kind": "service",
+    "purpose": "Identity resolution across providers into canonical entities: name-similarity matching (Jaro-Winkler + token containment) with explainable MatchEvidence, and a Resolver that refuses to guess — an unsure match becomes Decision::Ambiguous and is held for review rather than silently merged (src/lib.rs:1-15).",
+    "key_contracts": [
+      "struct Resolver::new/resolve/score_candidates/merge/insert/get/unreliable (resolver.rs)",
+      "enum Decision { Matched, New, Ambiguous, ... }, fn entity_id/is_ambiguous/rationale (resolver.rs:49-104)",
+      "struct ResolverConfig, ResolutionReport::automation_rate (resolver.rs)",
+      "fn seed_reference_entities(resolver, context) (resolver.rs:515)",
+      "struct Entity::new/with_identifiers/with_country/with_attribute/add_alias/absorb/is_reliable (entity.rs)",
+      "struct EntityRecord::new, enum EntityKind (entity.rs)",
+      "fn normalise_name, jaro, jaro_winkler, token_containment, name_similarity (matching.rs)",
+      "struct MatchEvidence::new/is_disconfirming (matching.rs:255)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events", "qip-financial"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-world-model/src/world.rs:8-9 imports Entity/EntityKind/EntityRecord/Resolver; WorldModel::absorb_news (world.rs:525-537) calls self.resolver.resolve(&record, context) for every news-item entity mention; qip-kernel/src/platform.rs:8751 calls self.world.update(|world| world.absorb_news(&item, context)) inside the record-absorption loop reached from Platform::observe in the SENSE stage.",
+    "io_and_state": "No I/O; a pure in-memory resolver keyed by EntityId, holding aliases/attributes accumulated via Entity::absorb.",
+    "tests": { "count": 0, "notable": ["Coverage lives entirely in tests/resolution.rs (crate-contract tests, not inline #[test])."] },
+    "status": ["exists", "hardened"],
+    "status_reason": "No TODO/stub markers found; the whole resolve path is reached every cycle a News record is absorbed, via world.rs -> platform.rs:8751. Only add_entity/resolver() themselves are never called directly outside world.rs and tests — the crate's functionality is exercised through absorb_news, not through direct graph-population calls.",
+    "blueprint_capabilities": ["WORLD", "DATA", "EVID"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/services/qip-entity-resolution/src/lib.rs:1-24",
+      "backend/crates/services/qip-world-model/src/world.rs:525-547",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8745-8752"
+    ]
+  },
+
+  {
+    "name": "qip-world-model",
+    "path": "backend/crates/services/qip-world-model",
+    "kind": "service",
+    "purpose": "The UNDERSTAND stage: a bitemporal knowledge graph (valid-time vs. known-time kept separately), a causal layer over it kept structurally distinct from the plain relationship graph, and a point-in-time feature store (src/lib.rs:1-17).",
+    "key_contracts": [
+      "struct WorldModel::new/graph/causal/features/resolver/add_entity/absorb_news/absorb_bar/absorb_fundamental (world.rs)",
+      "const MATERIAL_FUNDAMENTAL_SURPRISE: f64 = 0.05, CAUSAL_SUPPORT_RETAINED: usize = 512 (world.rs:50-69)",
+      "struct CausalEdge, CausalGraph, enum Mechanism, EdgeStanding, ConditionStanding, struct Retirement, RETIREMENT_CONSECUTIVE_FAILURES = 3 (causal.rs)",
+      "struct FalsificationPass, Falsifier, TrialLedger, enum Verdict, HypothesisSource, SOURCES: [HypothesisSource; 7] (falsification.rs)",
+      "fn second_order_exposure, instruments_exposed_to, hidden_concentration, unheld_dependencies, MAX_EXPOSURE_HOPS = 2 (exposure.rs)",
+      "struct LiquidityTopology, DepthObservation, VenueDepth, Concentration (liquidity.rs)",
+      "fn establish_temporal_precedence, establish_temporal_precedence_controlling_for (granger.rs)",
+      "struct ConfounderSet, MAX_CONFOUNDERS = 8 (confounder.rs)",
+      "struct KnowledgeGraph, Node, NodeKind, Fact::holds/holds_now (graph.rs)",
+      "struct ResolutionSourceClaim (resolution_source.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-numerics", "qip-events", "qip-financial", "qip-market", "qip-ai", "qip-entity-resolution"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:806 holds `world: Upstream<WorldModel>` as the single live instance (with a comment recording that before this it was a WorldModel::new() copy nothing ever wrote to, so no running binary had ever produced an order); platform.rs absorbs bars/quotes/books/news into it every cycle (e.g. :8751 absorb_news, :8956-8957 self.liquidity.absorb via absorb_depth) and reads it back through second_order_exposure (:10017-10024) and causal_review (:10038-10060), both reached from the LEARN stage per Platform::learn_from/evaluate_alternatives.",
+    "io_and_state": "No I/O; entirely in-memory, held as the single Upstream<WorldModel> field on qip-kernel's Platform and mutated only between cycles in Platform::observe (per the field's own doc comment).",
+    "tests": {
+      "count": 140,
+      "notable": [
+        "understanding.rs (56 tests) — end-to-end UNDERSTAND stage proofs",
+        "falsification.rs (16 tests) — a hypothesis with no wired source cannot be marked Established",
+        "liquidity.rs (18 tests) — venue depth concentration math"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "No TODO/stub markers in src/; reached from production via the single live Upstream<WorldModel> instance the kernel writes to every cycle and reads from in the LEARN stage.",
+    "blueprint_capabilities": ["WORLD", "REASON", "EVID"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/services/qip-world-model/src/lib.rs:1-58",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:793-806",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8745-8752",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8956-8957"
+    ]
+  },
+  {
+    "name": "qip-world-model::world (core graph API)",
+    "path": "backend/crates/services/qip-world-model/src/world.rs",
+    "kind": "service",
+    "purpose": "The WorldModel struct itself: owns the KnowledgeGraph, CausalGraph, FeatureStore and entity Resolver, and the absorb_* methods (absorb_news, and bar/fundamental absorption) that turn a SensedRecord into graph nodes, facts and features (src/world.rs:73-181).",
+    "key_contracts": [
+      "struct WorldModel::new (world.rs:93)",
+      "fn graph/graph_mut/causal/features/features_mut/resolver (accessors, world.rs:181-205)",
+      "fn add_entity (world.rs:214)",
+      "fn absorb_news(&mut self, item, context) -> Vec<String> (world.rs:525)",
+      "fn causal_support/retain_causal_support (world.rs:511-522, bounded at CAUSAL_SUPPORT_RETAINED=512)"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-entity-resolution", "qip-financial", "qip-market"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:8751 self.world.update(|world| world.absorb_news(&item, context)) inside the SENSE-stage absorption loop.",
+    "io_and_state": "No I/O; in-memory only, bounded causal-support retention (evicts oldest past 512 entries).",
+    "tests": { "count": 0, "notable": ["Covered by tests/understanding.rs's 56 tests rather than an inline module."] },
+    "status": ["exists", "hardened"],
+    "status_reason": "Directly reached every cycle a News record arrives; add_entity/resolver() are public but called only by absorb_news itself in production, never directly by a caller outside world.rs and tests.",
+    "blueprint_capabilities": ["WORLD", "DATA"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/services/qip-world-model/src/world.rs:73-568", "backend/crates/runtime/qip-kernel/src/platform.rs:8751"]
+  },
+  {
+    "name": "qip-world-model::causal (causal graph)",
+    "path": "backend/crates/services/qip-world-model/src/causal.rs",
+    "kind": "service",
+    "purpose": "The causal layer kept structurally separate from the plain relationship graph: a CausalEdge carries a Mechanism, lag, strength and evidence, with a standing (Established/Suggestive/...) that retires after RETIREMENT_CONSECUTIVE_FAILURES=3 consecutive falsification failures (src/causal.rs:52-343).",
+    "key_contracts": [
+      "struct CausalEdge (causal.rs:169)",
+      "enum Mechanism::as_str/describe/preserves_sign (causal.rs:66-159)",
+      "enum EdgeStanding, ConditionStanding (causal.rs:296-342)",
+      "struct FailureRun, Retirement, RETIREMENT_CONSECUTIVE_FAILURES: usize = 3 (causal.rs:52-275)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:19224/20581 construct qip_world_model::causal::CausalEdge::new(..., Mechanism::DiscountRate, ...) directly in non-test code; :11309 reads edge.standing() == EdgeStanding::Established.",
+    "io_and_state": "No I/O; pure in-memory causal graph.",
+    "tests": { "count": 20, "notable": ["retirement.rs (10 tests) — an edge retires only after 3 consecutive failures, not 1 or 2", "conditions.rs (10 tests) — ConditionStanding transitions"] },
+    "status": ["exists", "hardened"],
+    "status_reason": "CausalEdge is constructed directly in production code (platform.rs) as a second, real writer of the causal graph beside the granger.rs discovery path.",
+    "blueprint_capabilities": ["WORLD", "REASON"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/services/qip-world-model/src/causal.rs:52-343", "backend/crates/runtime/qip-kernel/src/platform.rs:19224", "backend/crates/runtime/qip-kernel/src/platform.rs:20581"]
+  },
+  {
+    "name": "qip-world-model::falsification",
+    "path": "backend/crates/services/qip-world-model/src/falsification.rs",
+    "kind": "service",
+    "purpose": "Tracks which of 7 blueprint hypothesis sources are actually wired, and holds a TrialLedger that runs a rolling statistic against held-out data to produce a Verdict per causal edge, refusing to call an edge Established from a source that was never wired (src/falsification.rs:90-234).",
+    "key_contracts": [
+      "enum HypothesisSource, const SOURCES: [HypothesisSource; 7], BLUEPRINT_SOURCES: usize = 6 (falsification.rs:90-124)",
+      "enum SourceStanding::is_wired/proposed (falsification.rs:157-172)",
+      "struct SourceCensus::new/declare/record (falsification.rs:187-234)",
+      "struct FalsificationPass, Falsifier, TrialLedger, HeldOut, Breach, Inadmissible, LeakageTally",
+      "fn rolling_statistic"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics"],
+    "reached_from_production": "yes",
+    "production_evidence": "Called from qip-kernel's LEARN-stage evaluation path per the crate's own reachability (Platform::evaluate_alternatives / causal_review composition documented at platform.rs:10028-10038); qip-kernel/src/falsification.rs (runtime module) composes this crate's types directly.",
+    "io_and_state": "No I/O; in-memory ledger of held-out trials.",
+    "tests": { "count": 16, "notable": ["falsification.rs (16 tests, tests/) — a hypothesis whose source was never declared cannot reach Established"] },
+    "status": ["exists", "hardened"],
+    "status_reason": "Reached from qip-kernel's own falsification.rs runtime module (non-test), which is itself part of the LEARN stage.",
+    "blueprint_capabilities": ["REASON", "EVID"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/services/qip-world-model/src/falsification.rs:90-234", "backend/crates/runtime/qip-kernel/src/falsification.rs"]
+  },
+  {
+    "name": "qip-world-model::exposure+liquidity",
+    "path": "backend/crates/services/qip-world-model/src/{exposure.rs,liquidity.rs}",
+    "kind": "service",
+    "purpose": "exposure.rs answers 'what else moves if I hold this' by walking the causal graph up to MAX_EXPOSURE_HOPS=2 from held positions; liquidity.rs tracks per-instrument, per-venue depth/spread/staleness so sizing decisions see real book concentration rather than a single quoted size (src/exposure.rs:39-265, src/liquidity.rs:71-237).",
+    "key_contracts": [
+      "fn second_order_exposure, instruments_exposed_to, hidden_concentration, unheld_dependencies (exposure.rs)",
+      "const MAX_EXPOSURE_HOPS: usize = 2, MAX_EXPOSURE_RESULTS: usize = 256, MAX_CONCENTRATION_POSITIONS: usize = 256 (exposure.rs:39-60)",
+      "struct SecondOrderReview, SharedDriver, ConcentrationReport::is_clean (exposure.rs)",
+      "struct LiquidityTopology, DepthObservation::new/from_book, VenueDepth::accepts_orders, Concentration::effective_venues (liquidity.rs)",
+      "const DEFAULT_MAX_STALENESS: Duration = 5 min, HISTORY_PER_VENUE: usize = 256 (liquidity.rs:71-88)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-contracts"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:10017-10024 fn second_order_exposure calls qip_world_model::exposure::second_order_exposure directly; :4575 liquidity: LiquidityTopology::default(); :8956-8957 self.liquidity.absorb(observation, known_at) inside absorb_depth, reached from the quote/book absorption arms of the SENSE loop (:8712-8737).",
+    "io_and_state": "No I/O; both bounded in-memory (MAX_EXPOSURE_RESULTS, HISTORY_PER_VENUE caps).",
+    "tests": { "count": 30, "notable": ["second_order.rs (7 tests) — exposure walk stops at 2 hops, not 3", "liquidity.rs (18 tests) — a stale venue (past DEFAULT_MAX_STALENESS) is excluded from Concentration"] },
+    "status": ["exists", "hardened"],
+    "status_reason": "Both reached from the SENSE (liquidity) and portfolio-review (exposure) paths in platform.rs every cycle.",
+    "blueprint_capabilities": ["RISK", "WORLD"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/runtime/qip-kernel/src/platform.rs:10004-10024", "backend/crates/runtime/qip-kernel/src/platform.rs:8700-8737", "backend/crates/runtime/qip-kernel/src/platform.rs:8956-8957"]
+  },
+  {
+    "name": "qip-world-model::granger+confounder (causal discovery)",
+    "path": "backend/crates/services/qip-world-model/src/{granger.rs,confounder.rs}",
+    "kind": "service",
+    "purpose": "Statistical causal-edge discovery: Granger-style temporal precedence testing with a fixed lag/alpha/min-effect/confidence-ceiling policy (granger.rs), and a bounded confounder set (max 8) an edge must be checked against before being trusted (confounder.rs).",
+    "key_contracts": [
+      "fn establish_temporal_precedence, establish_temporal_precedence_controlling_for (granger.rs:151-210)",
+      "const TEMPORAL_PRECEDENCE_LAG=1, _MIN_OBSERVATIONS=60, _ALPHA=0.01, _MIN_EFFECT=0.02, _CONFIDENCE_CEILING=0.5 (granger.rs:44-104)",
+      "struct Confounder::observed/unobserved, enum ConfounderStanding, struct ConfounderSet, const MAX_CONFOUNDERS: usize = 8 (confounder.rs:61-207)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:10043-10060 cites qip_world_model::granger as the basis for causal_review's bar-interval discipline and (per the noise-bar comment at :1065) reuses the same significance bar in the writer that produces new CausalEdges; qip-kernel/src/causal_review.rs and central/causal.rs compose these types directly (non-test files, per earlier grep).",
+    "io_and_state": "No I/O; operates over in-memory return-history series the caller supplies.",
+    "tests": { "count": 11, "notable": ["granger.rs (6 tests) — precedence below TEMPORAL_PRECEDENCE_MIN_OBSERVATIONS refuses rather than guesses", "confounders.rs (5 tests) — a 9th confounder is refused, not silently dropped"] },
+    "status": ["exists", "hardened"],
+    "status_reason": "Reached from qip-kernel's causal_review.rs and central/causal.rs (both non-test files).",
+    "blueprint_capabilities": ["REASON", "EVID"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/services/qip-world-model/src/granger.rs:44-210", "backend/crates/runtime/qip-kernel/src/causal_review.rs", "backend/crates/runtime/qip-kernel/src/central/causal.rs"]
+  },
+  {
+    "name": "qip-world-model::graph+relationship+state+vocabulary+resolution_source (substrate)",
+    "path": "backend/crates/services/qip-world-model/src/{graph.rs,relationship.rs,state.rs,vocabulary.rs,resolution_source.rs}",
+    "kind": "service",
+    "purpose": "The plain (non-causal) knowledge-graph substrate: Node/Fact with bitemporal Fact::holds(valid_at, known_at), typed Relationship edges, a WorldState change journal (WorldDiff), the fixed feature-name vocabulary (FeatureRead constants), and ResolutionSourceClaim for which authority settles a given series.",
+    "key_contracts": [
+      "struct Node::new/with_attribute, enum NodeKind, struct Fact::holds/holds_now (graph.rs)",
+      "enum RelationshipKind::inverse/is_symmetric, struct Relationship::new/inverted/key (relationship.rs)",
+      "enum ChangeKind, struct Change, WorldState, WorldDiff::material/of_kind (state.rs)",
+      "enum SubjectKind, struct FeatureRead::new, const CLOSE/VOLUME/REALISED_VOLATILITY_20D/SENTIMENT/REVENUE/... (vocabulary.rs)",
+      "struct ResolutionSourceClaim::new/authoritative_from/knowable_at, const RESOLUTION_SOURCE_PREFIX (resolution_source.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:207-213 imports WorldModel, ConditionStanding, Feature/FeatureValue, granger, Node/NodeKind, DepthObservation/LiquidityTopology, ResolutionSourceClaim; :25889-25891 (test module boundary) shows CausalEdge/Fact/Relationship used together, but the graph/relationship substrate itself is written every absorb_news call (world.rs:543-567, Node::new/graph.add_node/graph.assert_fact).",
+    "io_and_state": "No I/O; in-memory graph substrate.",
+    "tests": { "count": 11, "notable": ["resolution_source.rs (7 tests, tests/) — a claim whose authority does not match settles() is refused", "vocabulary.rs (4 tests, inline) — a feature read for the wrong SubjectKind is refused"] },
+    "status": ["exists", "hardened"],
+    "status_reason": "Written on every absorb_news call and read throughout platform.rs's causal and exposure paths.",
+    "blueprint_capabilities": ["WORLD", "DATA"],
+    "gaps_observed": [],
+    "evidence": ["backend/crates/services/qip-world-model/src/world.rs:543-567", "backend/crates/runtime/qip-kernel/src/platform.rs:207-213"]
+  },
+
+  {
+    "name": "qip-chain",
+    "path": "backend/crates/services/qip-chain",
+    "kind": "service",
+    "purpose": "Models on-chain state as market data with three properties no exchange has: a revisable past (reorg-aware ChainState), a computed-not-quoted AMM price, and unpromised mempool ordering/gas — renders effective swaps as qip_contracts::MarketMessage so downstream code doesn't need to know the wire was a chain (src/lib.rs:1-26).",
+    "key_contracts": [
+      "struct ChainState, enum Applied { Extended, SideBranch, Duplicate, Reorganised }, struct Reorg, ConfirmedView, DerivedState, PoolState (state.rs)",
+      "struct Block::market_messages, Transaction, Trace, enum TxStatus, TraceKind (block.rs)",
+      "struct Pool, PoolCurve, PoolInvariant, SwapQuote, enum FeeSide (amm.rs)",
+      "struct Mempool, PendingTransaction, OrderedPending, enum LikelyOrdering, ReorderingRisk (mempool.rs)",
+      "struct BridgeLedger, BridgeTransfer, BridgeExposure, BridgeFailure, enum TransferStatus (bridge.rs)",
+      "struct Confirmations, enum Finality (finality.rs)",
+      "trait ChainAdapter, struct SyntheticChain, NodeChainAdapter, ChainUpdate, ChainDescriptor (adapter.rs)",
+      "struct JsonRpcChainAdapter, RpcChainConfig, RpcStats, TokenBinding (rpc.rs, 1188 lines, real JSON-RPC client over qip_transport)",
+      "fn effective_gas_price, struct GasCost, GasProfile (gas.rs)",
+      "struct TokenAmount, Quantised, Conversion (units.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-transport"],
+    "reached_from_production": "tests-only",
+    "production_evidence": "qip-kernel/src/platform.rs:102-105 imports BridgeFailure/BridgeLedger/BridgeTransfer/ChainState/ChainUpdate/Confirmations/ConfirmedView, and :16011 defines pub fn observe_chain(&mut self, updates: Vec<ChainUpdate>) -> ChainAbsorption, which constructs ChainState::new(...) at :16033 and inspects Applied::{Extended,SideBranch,Duplicate,Reorganised} at :16035-16038. `grep -rn observe_chain backend/crates` shows it called only from qip-kernel/tests/bridges.rs and tests/platform_services.rs — no app (qip-api, qip-fastbrain, qip-deepbrain, qip-edge-node, qip-cli) and no other non-test line in qip-kernel/src calls it. No ChainAdapter (SyntheticChain, JsonRpcChainAdapter, NodeChainAdapter) is constructed anywhere outside qip-chain's own tests either.",
+    "io_and_state": "rpc.rs makes blocking JSON-RPC calls via qip_transport::{HttpClient, HttpRequest} (no TLS in-process, https refused by name per the same ADR-0060 pattern as qip-data-finder's probe); ChainState/Mempool/BridgeLedger are pure in-memory structures with no persistence of their own.",
+    "tests": { "count": 69, "notable": ["rpc_node.rs (34 tests) — JsonRpcChainAdapter against a fixture node", "chain.rs (12 tests) — reorg rollback replays the winning branch from the common ancestor", "pools.rs (23 tests) — AMM SwapQuote is exact integer arithmetic at contract width"] },
+    "status": ["exists", "hardened", "unused"],
+    "status_reason": "The crate is complete, its own contract tests pass, and its types are imported into qip-kernel's Platform for absorbing chain updates (observe_chain, ChainAbsorption) — but nothing in any deployable binary or in qip-kernel's own cycle machinery ever calls observe_chain or constructs a ChainAdapter, so no on-chain data reaches a running process today.",
+    "blueprint_capabilities": ["ASSET", "DATA", "TICK"],
+    "gaps_observed": [
+      "Platform::observe_chain (backend/crates/runtime/qip-kernel/src/platform.rs:16011) is called only from backend/crates/runtime/qip-kernel/tests/bridges.rs and tests/platform_services.rs; zero non-test call sites in any crates/apps/* binary.",
+      "No ChainAdapter implementation (SyntheticChain, JsonRpcChainAdapter, NodeChainAdapter) is constructed anywhere in crates/apps or crates/runtime/qip-kernel/src — `grep -rn 'SyntheticChain::|JsonRpcChainAdapter::|NodeChainAdapter::' crates/apps crates/runtime` (excluding tests) returns nothing."
+    ],
+    "evidence": [
+      "backend/crates/services/qip-chain/src/lib.rs:1-59",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:102-105",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:16011-16038",
+      "backend/crates/runtime/qip-kernel/tests/bridges.rs:139-236",
+      "backend/crates/runtime/qip-kernel/tests/platform_services.rs:441-511"
+    ]
+  }
+]

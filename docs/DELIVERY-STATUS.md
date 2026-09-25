@@ -1,5 +1,11 @@
 # Algorik delivery status
 
+> **Historical register since 2026-09-25.** [ADR 0099](adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md)
+> made Master Blueprint v11.6 and GCP Platform Blueprint v2.1 the architecture of record.
+> The live register is [docs/blueprint/traceability-matrix.md](blueprint/traceability-matrix.md).
+> This file still scores v10.1 and is kept, with its acceptance test, as the record of that
+> scoring. It is not updated to track v11.6: one live register at a time.
+
 **The single status document for this repository.** It scores the Algorik
 Master Blueprint v10.1 — all 181 numbered sections of
 `docs/architecture/algorik-blueprint-v10.1-source.md` — against the code, one

@@ -1,0 +1,590 @@
+[
+  {
+    "id": "SEC-051",
+    "status": "MISSING",
+    "current": "nothing. Each environment (dev/test/stage/prod) is a single flat GCP project with no google_organization or google_folder resource anywhere in the tree; modules/trust-zones and modules/network provide only per-VPC (project-scoped) firewall rules, which is the layer GCP-058 already scores separately.",
+    "evidence": [
+      "grep -rn 'google_compute_firewall_policy|google_compute_organization_security_policy' infrastructure/terraform/ -> no hits",
+      "grep -rn 'google_folder|google_organization' infrastructure/terraform/*.tf -> no hits (confirmed by GCP-016)",
+      "infrastructure/terraform/modules/scc/ORGANISATION-SCOPED.md:1-10 ('There is no org_id variable and this module deliberately does not add one')"
+    ],
+    "gap": "No org/folder hierarchy exists to attach a hierarchical firewall policy to; segmentation today depends entirely on per-project VPC rules a project-level identity could in principle relax.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016"
+    ],
+    "blocked_by": "",
+    "verification": "An infra-plan test asserting a google_compute_firewall_policy is associated with the organization or the prod/nonprod folders and carries deny rules no project-level rule can relax. Neither the resource nor the test exists.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Same root cause as GCP-058 (which scores the same absence from the GCP domain); this row is the SEC-specific restatement. Duplicate of GCP-058's finding, not a second gap."
+  },
+  {
+    "id": "SEC-052",
+    "status": "PARTIAL",
+    "current": "VPC side is complete: modules/trust-zones google_compute_firewall.deny_egress/.deny_ingress (main.tf:265-311) are for_each = var.zones, priority 65000, deny all, one pair per declared zone; external_egress (main.tf:412-451) is the only route out, refused at plan time for a purpose the zone does not hold (local.sanctioned_egress_purposes). modules/network's console_egress subnet, modules/execution-node and modules/image-bake each carry their own tag-targeted deny-egress at 65000 with narrow tagged allows. Every subnet in the one VPC is covered by a tag-targeted deny (pinned by every_subnet_in_the_network_is_covered_by_an_egress_deny), and every egress allow in the tree names a target tag and a destination range. dev applies 4 zones; its only external allows are the 40 generated GitHub /24 rules (root main.tf:153-171, merged at :427) from the management zone on 443 for Argo CD/Kargo -- dev's external_egress tfvars entry is empty but the root adds these when gitops_enabled = true. NOT covered: the portal (qip-dev-portal, deployed in dev, INGRESS_TRAFFIC_ALL) runs with vpcAccess egress PRIVATE_RANGES_ONLY (gitops/envs/dev/portal.yaml:76-93; scripts/deploy-frontends.sh:264 --vpc-egress private-ranges-only), so every public destination it contacts leaves through Cloud Run's own internet path, never meets a VPC firewall rule, and is default-allow.",
+    "evidence": [
+      "infrastructure/terraform/modules/trust-zones/main.tf:265-311 (deny_egress, deny_ingress, priority 65000, for_each var.zones)",
+      "infrastructure/environments/dev/terraform.tfvars:61-82 (4 zones applied: application-identity, cognition, intelligence, management)",
+      "infrastructure/terraform/main.tf:153-171,427 (local.github_egress: 40 generated management-zone egress rules on 443 when gitops_enabled; dev sets gitops_enabled = true at tfvars:138)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3476 the_trust_zones_deny_by_default_and_only_optimisation_may_reach_ibm",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3521 no_firewall_allow_rule_permits_the_whole_internet",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2608 every_subnet_in_the_network_is_covered_by_an_egress_deny (every subnet in network/trust-zones/execution-node/image-bake has a tag-targeted deny-egress below its allows)",
+      "infrastructure/gitops/envs/dev/portal.yaml:76-93 (vpcAccess egress: PRIVATE_RANGES_ONLY -- internet-bound traffic bypasses the VPC)",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:2480-2485 (ALL_TRAFFIC asserted only for catalogue services inside every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held; the portal is outside the catalogue and unchecked)"
+    ],
+    "gap": "One deployed platform workload's outbound traffic is not default-deny: the portal's PRIVATE_RANGES_ONLY egress sends every non-RFC1918 destination out through Cloud Run's own path, where no firewall rule applies -- the compromised-workload exfiltration path the requirement's rationale names, on the one internet-facing service. No test asserts that every Cloud Run manifest (portal included) routes ALL_TRAFFIC through its tagged interface, and none asserts tree-wide that every egress allow names a target (true today by inspection only).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test infrastructure the_trust_zones_deny_by_default_and_only_optimisation_may_reach_ibm no_firewall_allow_rule_permits_the_whole_internet every_subnet_in_the_network_is_covered_by_an_egress_deny (all pass, run 2026-09-25). Missing: a test that every Cloud Run manifest under gitops/envs/* (portal included) sets vpcAccess egress ALL_TRAFFIC through a tagged interface, or that the portal's public egress is otherwise constrained.",
+    "work_item": "E14",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: downgraded COMPLETE -> PARTIAL. The VPC mechanism is complete and tested, but the portal (deployed in dev, INGRESS_TRAFFIC_ALL) uses PRIVATE_RANGES_ONLY egress, so its internet-bound traffic never meets any deny -- the whole requirement ('each network denies egress by default and allows only the named outbound flows its workloads need') is not met for that workload. Also corrected the note: dev is not free of external allows -- the root generates 40 GitHub egress rules from the management zone (sanctioned, named, tagged, so consistent with the requirement). Added the stronger every_subnet_in_the_network_is_covered_by_an_egress_deny test to evidence; the 3 cited tests were run and pass. | Applied in dev: 4 zones each get a real deny_egress/deny_ingress pair (8 firewall resources), and dev's permitted_paths/external_egress are empty, so nothing currently punches a hole in the default. No test drives real network traffic against the applied project (e2e=false); the evidence is plan-time/text-level."
+  },
+  {
+    "id": "SEC-053",
+    "status": "PARTIAL",
+    "current": "modules/trust-zones' google_compute_firewall.path_egress / .path_ingress (main.tf:347-403) are for_each = var.permitted_paths, each rule scoped to allow{ tcp, ports = each.value.ports } between the two zones' tags/CIDRs, and refused at plan time unless the pair+mode is in local.sanctioned_paths (3 lifecycle preconditions, main.tf:365-380). dev's applied state currently declares permitted_paths = {} (terraform.tfvars:96), so zero lateral-path rules exist in the one real environment today; the mechanism is proven only by terraform test plans, not by an applied instance.",
+    "evidence": [
+      "infrastructure/terraform/modules/trust-zones/main.tf:347-403 (path_egress/path_ingress, ports required, preconditions refusing an unsanctioned pair or mode)",
+      "infrastructure/terraform/modules/trust-zones/tests/zone-model.tftest.hcl:223 a_sanctioned_path_is_admitted_and_written_in_both_directions",
+      "infrastructure/terraform/modules/trust-zones/tests/zone-model.tftest.hcl:251 the_wallet_read_path_may_not_reach_the_treasury_write_path (expect_failures on an unsanctioned pair)",
+      "infrastructure/environments/dev/terraform.tfvars:96 permitted_paths = {}",
+      "terraform test in a scratch copy of modules/trust-zones, 2026-09-25: 'Success! 20 passed, 0 failed' (both cited runs pass)",
+      "infrastructure/terraform/modules/trust-zones/main.tf:365-366,396-397 (path_egress names its destination, and path_ingress its source, by zone CIDR rather than by tag or service account)"
+    ],
+    "gap": "No environment has ever declared a permitted_paths entry, so the narrow-allow half of the requirement has never produced a real firewall rule in any applied project; only the default-deny half (SEC-052) and the terraform-test-proven mechanism are live.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform test -filter=a_sanctioned_path_is_admitted_and_written_in_both_directions infrastructure/terraform/modules/trust-zones; terraform test -filter=the_wallet_read_path_may_not_reach_the_treasury_write_path infrastructure/terraform/modules/trust-zones",
+    "work_item": "E14",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status unchanged (PARTIAL). Ran the trust-zones terraform tests (20 passed). Two observations added: the path rules identify one side by zone CIDR, not by the 'source identity' the requirement names (egress rules cannot target a destination tag, but ingress could use source tags/SAs); and much east-west traffic between planes in dev goes over Cloud Run invoker IAM (portal -> api) rather than the VPC at all, so firewall paths are not the only lateral mechanism. The one all-ports allow in dev (gitops-control-plane nodes_reach_each_other, main.tf:397) is intra-management-zone, not a zone-to-zone path. | Same shape as GCP-053/GCP-054 (public-edge): the module is complete and terraform-tested, but the one real environment plans it to zero instances because no lateral path has yet been argued for and declared."
+  },
+  {
+    "id": "SEC-054",
+    "status": "MISSING",
+    "current": "modules/scc declares 2 project-scoped Security Health Analytics custom modules (google_scc_management_project_security_health_analytics_custom_module.binary_authorization / .private_endpoint, main.tf:41,80) plus a mute-config resource (main.tf:114), all gated behind enable_security_command_center which is false in every environment's tfvars. Nothing else -- no organization-level SCC activation, no Security Health Analytics library, no Event Threat Detection -- exists, because (per modules/scc/ORGANISATION-SCOPED.md) SCC activates at the organization and this configuration has no organization.",
+    "evidence": [
+      "infrastructure/terraform/modules/scc/main.tf:41,80,114",
+      "infrastructure/environments/dev/terraform.tfvars:267 enable_security_command_center = false (also false in test/stage/prod)",
+      "infrastructure/terraform/modules/scc/ORGANISATION-SCOPED.md:33-40 ('Security Command Center is turned on for an organisation, not for a project... nothing here can detect which it is')",
+      "docs/reports/security-baseline.md:47-49 ('Cloud posture (Security Command Center, IAM analyser). No local cloud credential exists by decision... and the dev project's billing is disabled')"
+    ],
+    "gap": "SCC is not activated anywhere (off by default, no organization to activate it at), so no posture, findings or threat data are aggregated for any platform project; the 2 custom modules that do exist evaluate nothing while unattached to an activated SCC tier.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016"
+    ],
+    "blocked_by": "",
+    "verification": "An infra-plan test asserting SCC is activated at organization level with Security Health Analytics and Event Threat Detection enabled and every platform project in scope. No such test exists (module has 0 tests).",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T4",
+    "size": "L",
+    "notes": "verify: status unchanged (MISSING). The two gated-off project-scoped SHA custom modules are fragments that cannot run without SCC activation and are not the aggregation the requirement asks for; module.scc is wired at root main.tf:866 but no environment enables it and no test references it. Fixed the security-baseline citation (lines 47-49, not 52-55). | The 2026-09-25 security baseline explicitly ran no cloud posture check, for the same reason: no organization, no credential, billing disabled on the dev project."
+  },
+  {
+    "id": "SEC-055",
+    "status": "MISSING",
+    "current": "nothing. No SCC notification config (google_scc_notification_config or equivalent) exists anywhere in the tree, and SCC itself is inactive (SEC-054). qip_compliance::incident (IncidentLog, Incident, Halt, Clearance, ResponsePolicy in backend/crates/libs/qip-compliance/src/incident.rs) is a real, tested response-workflow primitive, but it is wired to the platform's own trading/compliance halts, not to any cloud-security finding source.",
+    "evidence": [
+      "grep -rln 'google_scc_notification_config|google_scc_v2_notification_config' infrastructure/terraform -> no hits",
+      "infrastructure/terraform/modules/scc/main.tf (no notification_config resource)",
+      "backend/crates/libs/qip-compliance/src/incident.rs:251,66,227,32,239,160 (IncidentLog etc., a different subsystem entirely)"
+    ],
+    "gap": "No SCC notification config routes findings anywhere, and no work has connected qip-compliance's incident log (or any other system) to a cloud-security finding; this depends on SEC-054 being resolved first.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "SEC-054"
+    ],
+    "blocked_by": "",
+    "verification": "An integration test raising a test finding in SCC and asserting it reaches a response workflow through a notification config, recorded with an owner. No such test exists.",
+    "work_item": "E12",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Priority P1 per the requirement's own notes: response integration needs the SRE incident loop, which arrives after the foundation phases (and after SEC-054's org-level SCC activation)."
+  },
+  {
+    "id": "SEC-056",
+    "status": "PARTIAL",
+    "current": "deploy.yml's 'scan image' step runs `trivy image --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed` against every built binary's image before push/sign/attest (deploy.yml:474-487), and CI's separate `trivy fs` job scans the source tree on every PR. Neither is Artifact Analysis: modules/services enables containeranalysis.googleapis.com (for the Binary Authorization note) but not containerscanning.googleapis.com, so the registry itself performs no continuous scanning of pushed digests.",
+    "evidence": [
+      "infrastructure/terraform/modules/services/main.tf:58,69 (artifactregistry.googleapis.com and containeranalysis.googleapis.com enabled; containerscanning.googleapis.com absent from both the always and optional maps)",
+      ".github/workflows/deploy.yml:474-487 (trivy image, CRITICAL+HIGH, exit-code 1, before push)",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:3503 the_pipeline_no_longer_moves_a_service_and_still_signs_attests_and_refuses_prod (asserts 'trivy image' is still in deploy.yml)",
+      "docs/reports/security-baseline.md:15 ('Container vulnerability scan | CI vulnerability scan (run 36168396965) | pass')",
+      "docs/reports/security-baseline.md:25 (45 GitHub Actions references by movable tag -- v2.1 SS28's anti-pattern, related but separate finding)"
+    ],
+    "gap": "Artifact Analysis (containerscanning.googleapis.com) is never enabled, so a vulnerability disclosed after an image is pushed is never caught; only the one-time pre-push CI Trivy scan exists, which is a real and tested gate but not the requirement's continuous-scanning capability.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test gitops the_pipeline_no_longer_moves_a_service_and_still_signs_attests_and_refuses_prod (proves the CI gate); an infra-plan test asserting containerscanning.googleapis.com is enabled and every pushed digest has vulnerability occurrences in Artifact Analysis would prove the rest. The latter does not exist.",
+    "work_item": "E14",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status unchanged (PARTIAL). Confirmed no containerscanning/ondemandscanning anywhere in the repo; deploy.yml's trivy image step is pre-push only. Fixed citations: security-baseline.md lines 15 and 25 (not 19/24); the gitops test starts at 3503 (3528 is its 'trivy image' assertion). Note the baseline's run 36168396965 is the CI trivy fs job, not the image scan. | Enforcement of a positive scan result (Binary Authorization admitting only attested images) is SEC-037, not this requirement."
+  },
+  {
+    "id": "SEC-057",
+    "status": "MISSING",
+    "current": "nothing. No Sensitive Data Protection (DLP) resource -- discovery scan config, inspection template, or job trigger -- exists anywhere in infrastructure/terraform, and no data catalogue module exists to publish a data profile to.",
+    "evidence": [
+      "grep -rln 'google_data_loss_prevention|dlp.googleapis.com' infrastructure/ -> no hits",
+      "infrastructure/terraform/modules/data/main.tf:1-19 (module header: only BigQuery/AlloyDB/Bigtable/Memorystore/Spanner, all gated off; no DLP resource of any kind)",
+      "infrastructure/terraform/modules/data/NOT-PROVISIONED.md"
+    ],
+    "gap": "No discovery-scan configuration covers any bucket or dataset. Targets do exist: modules/evidence's bucket is created unconditionally in every environment (root main.tf:552), plus the egress-proxy bootstrap and image-bake payload buckets; the managed analytics stores in modules/data are all gated off. So there is a target and no scanner.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "SEC-058"
+    ],
+    "blocked_by": "",
+    "verification": "An infra-plan test asserting discovery scan configurations cover every Cloud Storage bucket and BigQuery dataset in prod/data and publish data profiles to the catalogue. No such test exists.",
+    "work_item": "E08",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: status unchanged (MISSING). Corrected the gap: it said there was 'neither a scanner nor a target', but Cloud Storage buckets are created in every environment. In-tree qip-market-ingestion LicensingClass labelling is about licensing, not PII, and explicitly 'labels, it does not redact' -- not an implementation of this requirement. | The pass-through design (no durable external-world corpus) narrows the scope this eventually needs to cover but does not remove it: customer/operator records and anything a scout parses transiently still pass through."
+  },
+  {
+    "id": "SEC-058",
+    "status": "MISSING",
+    "current": "nothing. No de-identification template (google_data_loss_prevention_deidentify_template or equivalent) exists anywhere in the tree.",
+    "evidence": [
+      "grep -rln 'deidentify|de_identify|DeidentifyTemplate' infrastructure/ backend/ -> no hits"
+    ],
+    "gap": "No redaction/tokenization policy exists to apply to anything, and SEC-057's classification (its prerequisite) does not exist either, so there is nothing to key a redaction policy on.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "SEC-057"
+    ],
+    "blocked_by": "",
+    "verification": "An integration test seeding a dataset with synthetic PII and asserting every classified field is redacted or tokenized in the research/training copy. No such test exists.",
+    "work_item": "E08",
+    "tier": "T3",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "SEC-059",
+    "status": "MISSING",
+    "current": "nothing. No google_project_iam_audit_config (or organization-level equivalent) and no google_logging_project_sink exist anywhere in infrastructure/terraform; Cloud Audit Logs' default admin-activity logging is whatever the project's own default is, unconfigured and unaggregated by this repository.",
+    "evidence": [
+      "grep -rln 'audit_config|audit_log_config' infrastructure/terraform -> no hits",
+      "grep -rln 'google_logging_project_sink|google_logging_organization_sink' infrastructure/terraform -> no hits",
+      "docs/reports/security-baseline.md:26 (gcp-cloud-storage-logging: 9 buckets in modules/{ai,cloudrun,data,egress-proxy,evidence,image-bake,public-edge} declare no access-log sink; v2.1 SS15 asks for Cloud Audit Logs data-access evidence)"
+    ],
+    "gap": "DATA_READ/DATA_WRITE audit logging is not explicitly enabled for any service holding platform data, keys or secrets, and no aggregated sink routes audit logs to retained storage; 9 buckets identified by the 2026-09-25 baseline carry no access-log sink at all.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016"
+    ],
+    "blocked_by": "",
+    "verification": "An infra-plan test asserting audit configuration enables DATA_READ and DATA_WRITE for every service holding platform data/keys/secrets, and an aggregated sink routes to org/platform-foundation. No such test exists.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: status unchanged (MISSING); no google_logging_* or audit_config anywhere. Fixed baseline citation (line 26, not 22). | Cloud Asset Inventory is SEC-060; the audit sinks are meant to live in org/platform-foundation (SEC-006), which does not exist because no organization does (GCP-016)."
+  },
+  {
+    "id": "SEC-060",
+    "status": "MISSING",
+    "current": "nothing. No Cloud Asset Inventory feed or scheduled export (google_cloud_asset_project_feed / .organization_feed) exists anywhere in the tree. The one 'cloudasset' string found (infrastructure/gitops/bootstrap/config-connector-operator/upstream/autopilot-configconnector-operator.yaml:2152) is a Config Connector CRD API group name, not a Cloud Asset Inventory resource.",
+    "evidence": [
+      "grep -rln 'google_cloud_asset_project_feed|google_cloud_asset_organization_feed|google_cloud_asset_folder_feed' infrastructure/ -> no hits",
+      "infrastructure/gitops/bootstrap/config-connector-operator/upstream/autopilot-configconnector-operator.yaml:2152 (unrelated CRD group, not a CAI feed)"
+    ],
+    "gap": "No inventory of the platform's cloud resources or IAM policies, and no change history, exists; resources created outside Terraform and unreviewed IAM changes would be invisible to anything this repository runs.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016"
+    ],
+    "blocked_by": "",
+    "verification": "An infra-plan test asserting the Cloud Asset API is enabled at organization level and an asset feed or scheduled export covers every platform project's resources and IAM policies. No such test exists.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T2",
+    "size": "M",
+    "notes": "No foundation-phase exit names this requirement and no safety invariant depends on it, per the requirement's own priority note (P1)."
+  },
+  {
+    "id": "SEC-061",
+    "status": "INCORRECT",
+    "current": "The in-process controls exist: qip_risk_engine::autonomy::AutonomyController::request_change (autonomy.rs:567) requires a fresh authenticated OperatorIdentity and a second approver, and no edge crate can depend on qip-capital/qip-lifecycle (architecture.rs:792). But the capital-envelope HMAC key (Secret Manager qip-capital-envelope-key, ADR 0043 s2) is readable by an engineering-pipeline identity: modules/cicd grants the infra service account (qip-infra-<env>) roles/secretmanager.admin -- which includes secretmanager.versions.access -- plus resourcemanager.projectIamAdmin, iam.serviceAccountUser and run.admin at project level (cicd/main.tf:230-270), with no IAM deny policy anywhere in the tree. That account is impersonable through WIF by any workflow on any refs/heads/ branch of this repository (cicd/main.tf:68, 224-228), and the module's own comment says 'anyone who can push a workflow file to this repository can reshape dev, test and stage. For a repository whose pushes are the platform's own agents acting for its owner, that is the intended arrangement' (cicd/main.tf:213-217). An autonomous engineering agent with push access can therefore read the envelope-signing key and sign a paper capital envelope. The acceptance suite pins this grant as required (infrastructure.rs:3198 a_credential_with_no_version_is_seeded_before_the_apply_that_resolves_it asserts the infra account holds secretmanager.admin 'which includes secretmanager.versions.access').",
+    "evidence": [
+      "backend/crates/services/qip-risk-engine/src/autonomy.rs:567 (request_change)",
+      "backend/crates/services/qip-risk-engine/tests/risk_engine.rs:75 one_operator_cannot_enable_live_trading_alone (passes; proves the two-operator rule, not agent/key separation)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:792 no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy (passes; a crate-dependency property, not an identity one)",
+      "infrastructure/terraform/modules/cicd/main.tf:230-270 (infra_roles: secretmanager.admin, projectIamAdmin, serviceAccountUser, run.admin, cloudkms.admin)",
+      "infrastructure/terraform/modules/cicd/main.tf:68,224-228 (WIF condition admits any refs/heads/ branch of the repository; infra_impersonation grants workloadIdentityUser to the whole repository principalSet)",
+      "infrastructure/terraform/modules/cicd/main.tf:195-217 (comment: IAM admin is self-escalating; anyone who can push a workflow file can reshape dev/test/stage, 'the intended arrangement' for agent pushes)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3198 a_credential_with_no_version_is_seeded_before_the_apply_that_resolves_it (lines 3255-3273 pin secretmanager.admin on the infra account and state it includes versions.access)",
+      "grep -rn 'google_iam_deny_policy' infrastructure/terraform -> no hits",
+      "infrastructure/terraform/catalogue.tf:341-343,460-462,563-565 (the envelope key is mounted into the 3 workload identities; project-level admin grants still reach it)"
+    ],
+    "gap": "The requirement forbids exactly what the committed IAM grants: an engineering-agent-reachable identity (the infra pipeline account, impersonable from any branch push) can read the capital-envelope signing key via project-level secretmanager.admin and can self-escalate via projectIamAdmin. Closing it needs the envelope key (and any capital-signing material) out of reach of every pipeline identity -- e.g. an IAM deny policy on secretmanager.versions.access for the ci/infra principals on that secret, or the key in a separate project the pipeline cannot administer -- plus a way for the seeding step to add versions without read, and the game-day/infra-plan test the requirement names.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "GOV-026"
+    ],
+    "blocked_by": "",
+    "verification": "No test demonstrates the requirement; the two cited tests (run 2026-09-25, both pass) prove different properties, and infrastructure.rs:3198 pins the opposite. Needed: an infra-plan/acceptance test that enumerates every principal able to reach secretmanager.versions.access on qip-capital-envelope-key (project roles included) and asserts none is a pipeline or agent identity, plus the agent-compromise game day.",
+    "work_item": "E13-agent-identity-iam-test",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: changed PARTIAL -> INCORRECT, tested true -> false, size S -> M. The row claimed 'an engineering/deployment identity holds no path to it today' because no secretAccessor grant names ci/infra; but modules/cicd grants the infra account project-level roles/secretmanager.admin (includes versions.access) and projectIamAdmin, impersonable from any branch of the repo, and the repo's own test asserts that grant. That is the authority the requirement forbids an engineering agent to obtain, not merely an untested gap. GOV-026 (GOV.json, PARTIAL with every flag true) cites the same controls and likely needs the same correction. | LIVE_CAPITAL is deliberately not the reason this is not COMPLETE: under paper trading 'capital' means the paper envelopes, and the prohibition is already testable and largely tested against them; what is missing is the explicit agent-compromise exercise, not a live-capital dependency."
+  },
+  {
+    "id": "SEC-062",
+    "status": "NEEDS-VALIDATION",
+    "current": "infrastructure/terraform/modules/binaryauthorization/main.tf:138(ci_signs, roles/cloudkms.signerVerifier),190(ci_reads_attestor, roles/binaryauthorization.attestorsViewer),146,166(note attach/list) grant exactly 5 narrow roles, every one to var.ci_service_account and none to any Cloud Run workload identity; modules/cloudrun's google_service_account.workload (main.tf:204) is never referenced anywhere in modules/binaryauthorization or modules/secrets' KMS/attestor grants. Only modules/cicd's separate infra_service_account (the Terraform-apply pipeline, not a trading service) additionally holds roles/binaryauthorization.{policyAdmin,attestorsAdmin} (modules/cicd/main.tf:255,263), for creating/updating the attestor resource and the admission policy -- a different, non-trading identity.",
+    "evidence": [
+      "infrastructure/terraform/modules/binaryauthorization/main.tf:138,146,166,181,190 (5 grants, all to var.ci_service_account: signerVerifier on the key, notes.attacher, notes.occurrences.viewer, project-level containeranalysis.occurrences.editor, attestorsViewer)",
+      "infrastructure/terraform/modules/cicd/main.tf:255,263 (infra_service_account holds policyAdmin/attestorsAdmin; a pipeline identity, not a workload)",
+      "infrastructure/terraform/modules/cloudrun/main.tf:278-279,307-367 (workload SA grants: deployer serviceAccountUser on itself, metricWriter, logWriter, per-secret secretAccessor, objectViewer -- no signing, attestation or registry-write role)",
+      "infrastructure/terraform/modules/execution-node/main.tf:213-260 (node SA: envelope/secret read, metricWriter, logWriter, evidence objectCreator; 'Deliberately no Artifact Registry grant')",
+      "infrastructure/terraform/modules/registry/main.tf:47-52 (artifactregistry.writer to var.ci_service_account only)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3883 every_attestation_command_the_pipeline_runs_has_a_grant_that_permits_it (passes; proves the CI account HAS each role -- a positive, not the requirement's negative)"
+    ],
+    "gap": "No test asserts the negative the requirement states -- that no trading-service identity (api/fastbrain/deepbrain Cloud Run SAs, the execution-node SA) holds any signing, attestation-creating or registry-push role. True today by inspection of every grant (confirmed by grep), but unpinned: the cited test only proves the CI account has the roles it needs.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A negative test enumerating every IAM grant on the attestor key, note, occurrences, policy and image repository and asserting each member is the CI or infra account, never a workload or node service account. Does not exist. every_attestation_command_the_pipeline_runs_has_a_grant_that_permits_it passes (run 2026-09-25) but is the positive.",
+    "work_item": "E13",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: changed PARTIAL -> NEEDS-VALIDATION and tested true -> false. The behaviour appears fully implemented and is live in dev (every workload/node grant inspected; none can sign, attest or push), but the only cited test demonstrates the opposite property (CI holds the roles), so no test demonstrates the requirement. Added the missing project-level occurrences.editor grant (main.tf:181) and the workload/node/registry grant evidence. | Applied in dev; the attestor and its policy are the only deployment-signing surface in the tree today, so the requirement is answerable in full against the current architecture (no C3/C7 dependency)."
+  },
+  {
+    "id": "SEC-063",
+    "status": "MISSING",
+    "current": "nothing. No google_org_policy_policy (or legacy google_organization_policy) resource of any kind exists in infrastructure/terraform, and no organization exists to attach one to (GCP-016).",
+    "evidence": [
+      "grep -rln 'google_org_policy_policy|google_organization_policy|orgpolicy' infrastructure/terraform -> no hits",
+      "infrastructure/terraform/modules/scc/ORGANISATION-SCOPED.md:9-11 ('There is no org_id variable')"
+    ],
+    "gap": "No constraint is set at organization or folder level, and no test asserts that a project-level identity holds no roles/orgpolicy.policyAdmin, because no organization exists for either to be true or false against.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016"
+    ],
+    "blocked_by": "",
+    "verification": "An infra-plan test asserting every constraint is set on the organization or a folder, and no project-level principal holds roles/orgpolicy.policyAdmin or an equivalent custom role. No such test exists.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T4",
+    "size": "M",
+    "notes": "The specific constraints this would hold in force are SEC-066 through SEC-069, all equally MISSING for the same root cause."
+  },
+  {
+    "id": "SEC-064",
+    "status": "PARTIAL",
+    "current": "modules/public-edge declares google_compute_security_policy.edge (main.tf:59) and attaches it to the application backend SERVICE (security_policy = google_compute_security_policy.edge[0].id, main.tf:232) -- but NOT to its default backend BUCKET google_compute_backend_bucket.static_shell (main.tf:168-200, CDN-enabled, no edge_security_policy), so the one load balancer the module builds has a backend with no Cloud Armor policy. modules/iap-edge (portal_edge, main.tf:1118) attaches a policy to its backend service (iap-edge/main.tf:215). None is enabled: public_edge is unset in every environment, gitops_portal_hostname = \"\" and gitops_gateway_enabled = false in dev. The GitOps Gateway (a GKE gke-l7-global-external-managed ALB, bootstrap/gateway/base/gateway.yaml) carries no GCPBackendPolicy/securityPolicy anywhere in the tree. Meanwhile dev's actual internet-facing paths bypass any load balancer: the portal (gitops/envs/dev/portal.yaml:66, INGRESS_TRAFFIC_ALL with Cloud Run-level IAP) and OpenObserve (openobserve.yaml:27, INGRESS_TRAFFIC_ALL plus an allUsers invoker, ADR 0030) answer on run.app with no Cloud Armor. No regional GKE service plane exists (GCP-010/GCP-021 MISSING).",
+    "evidence": [
+      "infrastructure/terraform/modules/public-edge/main.tf:59,232 (policy, attached to the backend service)",
+      "infrastructure/terraform/modules/public-edge/main.tf:168-200 (backend bucket static_shell: no edge_security_policy)",
+      "grep -rn 'edge_security_policy' infrastructure/terraform -> no hits",
+      "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl:47 a_declared_hostname_creates_the_whole_edge_and_nothing_on_port_80 (terraform test in a scratch copy, 2026-09-25: 12 passed)",
+      "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs:254 the_public_edge_attaches_every_backend_to_the_cloud_armor_policy (passes; despite its name it checks only the backend service line)",
+      "infrastructure/terraform/modules/iap-edge/main.tf:130,215 and infrastructure/terraform/main.tf:1118-1120 (portal_edge, count on gitops_portal_hostname; dev tfvars:613 sets \"\")",
+      "infrastructure/environments/dev/terraform.tfvars:521 gitops_gateway_enabled = false; public_edge unset in all four environments",
+      "infrastructure/gitops/envs/dev/portal.yaml:66 and infrastructure/gitops/envs/dev/openobserve.yaml:27 (INGRESS_TRAFFIC_ALL, no load balancer, no Cloud Armor)",
+      "docs/blueprint/assessment/GCP-b1.json GCP-010, GCP-021 (both MISSING: no regional service-plane GKE cluster exists anywhere)"
+    ],
+    "gap": "Even the Cloud Run/LB form is incomplete: public-edge's default backend bucket has no Cloud Armor (edge) policy, and the test that claims 'every backend' checks only the backend service. No environment enables any external load balancer, while dev's two internet-facing services (portal, OpenObserve) are reached directly on run.app with no Cloud Armor in front. The GitOps Gateway, if enabled, would front GKE backends with no security policy. The regional-GKE half needs C3.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-010",
+      "GCP-053",
+      "GCP-054"
+    ],
+    "blocked_by": "C3",
+    "verification": "cargo test -p qip-acceptance --test terraform_plan the_public_edge_attaches_every_backend_to_the_cloud_armor_policy (passes, backend-service half only). Missing: an assertion that every google_compute_backend_bucket carries edge_security_policy, that the GitOps Gateway's backends carry a GCPBackendPolicy securityPolicy, and an environment that actually puts its internet-facing services behind the edge.",
+    "work_item": "E14",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status unchanged (PARTIAL) but integrated true -> false (no environment enables public_edge, portal_edge or the GitOps gateway, so no Terraform an environment applies reaches this). Corrected 'attaches it to every backend service/bucket': the static_shell backend bucket has no edge_security_policy. Added that dev's portal and OpenObserve are internet-facing on run.app with no Cloud Armor, and fixed the attachment line (232, not 222). | Scored PARTIAL rather than BLOCKED because the Cloud Run form of the requirement is fully buildable today without any conflict-register item; only the named GKE clusters are C3-blocked."
+  },
+  {
+    "id": "SEC-065",
+    "status": "BLOCKED",
+    "current": "No 'Risk Brain' exists as a distinct service (ADR 0091 composes qip_risk_engine into all three of qip-api, qip-fastbrain and qip-deepbrain's own main.rs, each importing qip_risk_engine::autonomy::AutonomyLevel directly). The permitted, generic form of the underlying property already holds for all three: each Cloud Run workload gets its own service account and its own Secret Manager grants under modules/cloudrun (main.tf:204,323,343), read directly by qip_core::secret with no intermediary. No Reflex package-signing/verification path exists anywhere in the tree to be separate from -- grep for a package-signing agent finds nothing.",
+    "evidence": [
+      "grep -n 'qip_risk_engine' backend/crates/apps/{qip-api,qip-fastbrain,qip-deepbrain}/src/main.rs -> all 3 import qip_risk_engine::autonomy::AutonomyLevel (ADR 0091: 5 binaries, not per-brain services)",
+      "infrastructure/terraform/modules/cloudrun/main.tf:204,323,343 (per-workload service account and file-mounted secret grants)",
+      "grep -rln 'PackageAgent|package_agent|ReflexPackage|package.signing' backend/crates infrastructure/ -> no hits (no package-signing path exists to be separate from)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3018 every_secret_a_workload_mounts_is_created_by_terraform_and_granted_to_it (passes; the per-secret secretAccessor grant is keyed on exactly the mounts)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3073 every_deployable_has_its_own_cloud_run_identity (passes)"
+    ],
+    "gap": "Risk Brain cannot exist as a distinct service without C7 (per-brain services) and, for its own GKE/Fabric placement, C3; separately, the Reflex package-signing path this requirement asks Risk Brain's credential path to be independent of does not exist yet either (tracked under GCP-034's Fabric-broker MISSING finding), so the two-path distinction the requirement describes has nothing on the other side to be distinct from.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "GCP-034"
+    ],
+    "blocked_by": "C7",
+    "verification": "An infra-plan test asserting a distinct Risk Brain service account holds secretAccessor only on its own secrets and no Risk Brain credential appears in any Reflex package manifest. Neither a distinct Risk Brain identity nor a package manifest exists to test.",
+    "work_item": "E99",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: status unchanged (BLOCKED, C7 is the real reason: Risk Brain as a distinct identity is a per-brain service). Changed tested false -> true for the permitted form, which two passing acceptance tests do demonstrate (own identity per binary; secretAccessor only on mounted secrets). Caveat: project-level secretmanager.admin on the infra pipeline account (see SEC-061) means 'only its own identity can read it' does not hold for pipeline identities. | The permitted form -- each composed binary reads its own secrets directly under its own Cloud Run identity, never through a package channel -- is implemented and applied in dev today (implemented/integrated/deployable=true for that generic pattern); what is BLOCKED is Risk Brain existing as the distinct identity the requirement is written against."
+  },
+  {
+    "id": "SEC-066",
+    "status": "MISSING",
+    "current": "modules/services enables a fixed, curated map of Google APIs per environment (locals.always, main.tf:20-70, plus locals.optional gated per flag), each entry carrying a one-line reason in a comment -- this is code review of what gets enabled, not an enforced allow-list that would refuse an API added outside that review.",
+    "evidence": [
+      "infrastructure/terraform/modules/services/main.tf:20-70 (locals.always, per-API rationale comments)",
+      "grep -rln 'gcp.restrictServiceUsage|google_org_policy_policy' infrastructure/terraform -> no hits"
+    ],
+    "gap": "No Organization Policy constraint limits which APIs may be enabled; a future module could enable any Google API with no guardrail refusing it, only a reviewer noticing the diff.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016"
+    ],
+    "blocked_by": "",
+    "verification": "An infra-plan test asserting a constraint at organization or folder level (gcp.restrictServiceUsage or an equivalent custom constraint) limits enabled services to the approved list. No such test exists.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "SEC-067",
+    "status": "MISSING",
+    "current": "Every module that takes a region does so via var.region, and each environment sets exactly one region (us-east4 in dev) -- a convention, not an enforced restriction. Nothing refuses a resource declared with a different region literal.",
+    "evidence": [
+      "grep -rn 'var.region' infrastructure/terraform/modules/*/main.tf | wc -l (pervasive single-region convention)",
+      "grep -rln 'gcp.resourceLocations|google_org_policy_policy' infrastructure/terraform -> no hits"
+    ],
+    "gap": "No Organization Policy constrains resource creation to approved regions; a module edit naming a literal region elsewhere would succeed at plan and apply time with nothing to refuse it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016"
+    ],
+    "blocked_by": "",
+    "verification": "An infra-plan test asserting gcp.resourceLocations is set at organization or folder level to the approved regions, and a real plan proving a resource declared outside them is refused. No such test exists.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Residency is also a v2.1 ledger concern (the ledger's leader region is chosen by legal residency); modules/data's Spanner instance is gated off everywhere, so that dependency is not live today either."
+  },
+  {
+    "id": "SEC-068",
+    "status": "MISSING",
+    "current": "No Organization Policy exists (no organization, GCP-016), so nothing sets compute.vmExternalIpAccess. Compensating, not the requirement: the only VM template in Terraform (modules/execution-node) declares no access_config and infrastructure.rs:661 asserts that for that one module; image.yml's bake VM is created with --no-address (.github/workflows/image.yml:824-835). execution_nodes = {} in every environment, so no Terraform-managed VM exists.",
+    "evidence": [
+      "grep -rn 'access_config' infrastructure/terraform -> only modules/execution-node/main.tf:354 (comment) and modules/gitops-control-plane/main.tf:219 (unrelated GKE master access, not a VM external IP)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:661 the_execution_node_has_no_external_address_and_no_container_runtime (asserts !module.contains(\"access_config\"))",
+      "infrastructure/terraform/modules/trust-zones/NOT-ENFORCED-HERE.md:172-179 ('No public addresses is an organisation policy, not a subnet setting... It cannot stop somebody attaching an external address... The control for that is constraints/compute.vmExternalIpAccess, which is organisation-scoped')"
+    ],
+    "gap": "No Organization Policy sets compute.vmExternalIpAccess; the one VM template in the tree structurally omits access_config and is tested for it, but nothing stops a future VM resource elsewhere from adding one, and no VM instance exists anywhere today regardless (execution_nodes = {}).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016"
+    ],
+    "blocked_by": "",
+    "verification": "An infra-plan test asserting compute.vmExternalIpAccess is set to deny-all (or an explicit list) at organization or folder level. Does not exist. the_execution_node_has_no_external_address_and_no_container_runtime passes (run 2026-09-25) but checks one module's text, not a policy.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: downgraded PARTIAL -> MISSING and set implemented/tested/integrated false. The requirement is the Organization Policy constraint itself; the requirement's own notes treat the execution node's missing access_config as 'the property this constraint would enforce', i.e. a separate fact. Nothing implements the constraint. The per-template absence is also not integrated (execution_nodes = {} everywhere) and its test is module-scoped, not tree-wide. Consistent with SEC-066/067, which the assessor scored MISSING despite analogous conventions. | Scored PARTIAL rather than MISSING because the module's own doc (NOT-ENFORCED-HERE.md) names this exact gap and a real per-template control already achieves the intended end-state for the one VM type that exists, even though the organization-level guardrail itself is absent."
+  },
+  {
+    "id": "SEC-069",
+    "status": "MISSING",
+    "current": "No Organization Policy exists (no organization, GCP-016): none of iam.disableServiceAccountKeyCreation, .disableServiceAccountKeyUpload, .automaticIamGrantsForDefaultServiceAccounts or .workloadIdentityPoolProviders is set anywhere, and nothing removes the default compute service account's automatic Editor grant. Compensating habit (SEC-034/SEC-035's credit, not this row's): no google_service_account_key in Terraform and the pipeline authenticates through WIF only, both pinned by passing acceptance tests.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2073 no_service_account_key_exists_anywhere_in_the_terraform",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4748 the_pipeline_authenticates_without_a_long_lived_key",
+      "grep -rln 'iam.disableServiceAccountKeyCreation|iam.workloadIdentityPoolProviders|google_org_policy_policy' infrastructure/terraform -> no hits"
+    ],
+    "gap": "A key could be created tomorrow by anyone with the IAM grant to do so, since nothing at the policy layer refuses it; only the current Terraform's own absence of a google_service_account_key resource, and the CI workflow's own choice not to use one, hold the line today.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-016"
+    ],
+    "blocked_by": "",
+    "verification": "An infra-plan test asserting the 4 constraints at organization or folder level. Does not exist. no_service_account_key_exists_anywhere_in_the_terraform and the_pipeline_authenticates_without_a_long_lived_key pass (run 2026-09-25) but prove the absence SEC-035 holds, not the impossibility this row requires.",
+    "work_item": "E14-org-folder-hierarchy",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: downgraded PARTIAL -> MISSING and set implemented/tested/integrated/deployable false. The requirement's own notes say it 'turns SEC-035 from an absence into an impossibility': the absence is SEC-035's, and the impossibility (the org policy) does not exist in any form. Crediting the absence here double-counts it. | This is SEC-034/SEC-035's habit turned into SEC-069's impossibility, per the requirement's own notes; the habit half is real, tested, and applied in the one real environment today."
+  },
+  {
+    "id": "SEC-070",
+    "status": "PARTIAL",
+    "current": "modules/execution-node's instance template sets shielded_instance_config{ enable_secure_boot=true, enable_vtpm=true, enable_integrity_monitoring=true } unconditionally (main.tf:392-396). No Fabric VM exists anywhere (GCP-034 MISSING: no Fabric broker of any kind), so there is nothing to hold the other half of the requirement, and execution_nodes = {} in every environment means the Reflex half has never applied to a real instance.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node/main.tf:392-396",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:661-700 the_execution_node_has_no_external_address_and_no_container_runtime (asserts all 3 shielded settings by literal match)",
+      "infrastructure/environments/dev/terraform.tfvars (execution_nodes = {})"
+    ],
+    "gap": "execution_nodes = {} everywhere, so this configuration has never applied to a running instance; and no Fabric VM exists anywhere to configure at all.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "GCP-034"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test infrastructure the_execution_node_has_no_external_address_and_no_container_runtime",
+    "work_item": "E14",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status unchanged (PARTIAL); integrated true -> false because execution_nodes = {} in all four environments, so no environment enables the template (matches GCP-059's flags). Cited test passes (run 2026-09-25) and does assert all three shielded settings. | Identical finding to GCP-059, restated from the SEC domain; not a second, independent gap."
+  },
+  {
+    "id": "SEC-071",
+    "status": "MISSING",
+    "current": "nothing. modules/execution-node's instance template sets no confidential_instance_config block and no machine-type register recording Confidential VM compatibility per machine type exists anywhere in the tree.",
+    "evidence": [
+      "grep -n 'confidential' infrastructure/terraform/modules/execution-node/*.tf -> no hits (the one match in variables.tf:456 is prose about integrity, not a Confidential VM setting)"
+    ],
+    "gap": "No Confidential VM configuration exists for any machine type, and no benchmark of its effect on decision p99 has been run (the requirement's own precondition for enabling it).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "For each Reflex/Fabric machine type, a register recording Confidential VM support, and a benchmark showing its effect on decision p99 before enabling it. Neither exists.",
+    "work_item": "E14",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Priority P3 per the requirement's own notes: optional hardening, no phase exit names it, and it must first be shown not to break the Reflex latency budget."
+  },
+  {
+    "id": "SEC-072",
+    "status": "INCORRECT",
+    "current": "modules/network publishes google_dns_record_set.restricted_vip naming *.googleapis.com's A record as 199.36.153.8-11 (main.tf:104-119) and defines local.restricted_vip_range = \"199.36.153.8/30\" (main.tf:173), which every consumer (modules/trust-zones, modules/execution-node, modules/connectivity, modules/gitops-control-plane, modules/image-bake, and the root main.tf's local.private_google_apis) treats as 'the restricted VIP' and routes/firewalls against. Per Google's own Private Google Access documentation, 199.36.153.8/30 is private.googleapis.com (the unrestricted range, which also serves APIs a VPC Service Controls perimeter cannot protect); restricted.googleapis.com is 199.36.153.4/30. No VPC-SC perimeter exists either (trust-zones/NOT-ENFORCED-HERE.md:161-166: 'No perimeter exists'), so the range confusion currently has no perimeter behind it to matter for -- but the moment SEC-047's perimeter is built, every workload resolving *.googleapis.com through this zone would reach the wrong VIP.",
+    "evidence": [
+      "infrastructure/terraform/modules/network/main.tf:104-119 (A record: 199.36.153.8,9,10,11)",
+      "infrastructure/terraform/modules/network/main.tf:173 (restricted_vip_range = \"199.36.153.8/30\")",
+      "infrastructure/terraform/main.tf:125 (local.private_google_apis = \"199.36.153.8/30\", named 'private' here -- the one place in the tree that uses the correct term for this range)",
+      "infrastructure/terraform/modules/trust-zones/variables.tf:178, modules/execution-node/variables.tf:327,336, modules/connectivity/main.tf:124,159, modules/gitops-control-plane/main.tf:59, modules/image-bake/main.tf:114 (6 further consumers, all calling 199.36.153.8/30 'restricted')",
+      "grep -rn '199.36.153|restricted.googleapis|private.googleapis' backend/crates/tests/qip-acceptance/tests -> no hits (nothing tests this at all)"
+    ],
+    "gap": "The address block named and used as 'the restricted VIP' throughout the tree is actually private.googleapis.com's range; restricted.googleapis.com is 199.36.153.4/30. This is a defect in 7 files, not a missing feature, and no test in the repository would catch it because nothing references either range.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "SEC-047"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. A test would assert *.googleapis.com resolves through the private DNS zone to 199.36.153.4/30 (or a Private Service Connect endpoint targeting the vpc-sc bundle) rather than .8/30, and that every firewall/route rule admitting Google API traffic names the same corrected range.",
+    "work_item": "E14",
+    "tier": "T1",
+    "size": "M",
+    "notes": "Found while writing this requirement, not fixed here (this task writes requirements/assessment only). Fixing it is a one-value change to a widely-referenced local plus a rename across 7 files, tier T1 for the code; sized M because 7 files each need re-review of what actually still needs port 443 at that address."
+  },
+  {
+    "id": "SEC-073",
+    "status": "PARTIAL",
+    "current": "On Cloud Run, modules/binaryauthorization's default rule (REQUIRE_ATTESTATION, main.tf:199-232) means an unattested revision is refused before it ever starts, so 'admission before secret access' holds by construction: there is no running container to mount a Secret Manager volume into until Binary Authorization has already admitted the image. modules/gitops-control-plane's GKE cluster separately evaluates the same project policy (binary_authorization{evaluation_mode=PROJECT_SINGLETON_POLICY_ENFORCE}) but hosts only Config Connector/Argo CD/Kargo, never a trading binary or a runtime secret consumer.",
+    "evidence": [
+      "infrastructure/terraform/modules/binaryauthorization/main.tf:199-232 (default rule REQUIRE_ATTESTATION)",
+      "infrastructure/terraform/modules/cloudrun/main.tf:323,343 (secret mounts are per-workload IAM grants, independent of and downstream from the admission decision Cloud Run itself enforces before starting the revision)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2490 every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy",
+      "grep -rn 'fn .*admission.*secret|fn .*unattested' backend/crates/tests/qip-acceptance/tests -> no hits (no test asserts the coupling itself, only each half separately)"
+    ],
+    "gap": "No test directly demonstrates the coupling (an unattested/unadmitted workload never receives its secret); each half (admission policy exists; secrets are granted per workload) is tested separately, and the coupling is Cloud Run's own platform behaviour rather than anything this repository builds or verifies. The GKE-specific form (NetworkPolicy plus admission, for warm GKE services) needs C3 and does not apply until such services exist.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "An integration test in a test cluster/project: a pod from an unattested image, or from outside the governed identity, is refused at admission and never receives the secret; the admitted workload with the same service account mounts it. No such test exists; the closest today is the two separate unit-level assertions above.",
+    "work_item": "E13",
+    "tier": "T1",
+    "size": "S",
+    "notes": "The requirement's own notes call this reading 'this entry's own, since neither PDF states the coupling' and note it fully applies only once warm GKE services consume secrets (GCP Phase 6, C3-gated); the Cloud Run form already covers the paper/current architecture's equivalent."
+  }
+]
