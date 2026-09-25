@@ -61,6 +61,7 @@ pub mod managed;
 pub mod provider;
 pub mod redis;
 pub mod repository;
+pub mod segment;
 pub mod settings;
 
 pub use blob::{BlobStore, FileBlobStore, MemoryBlobStore};

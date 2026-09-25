@@ -93,10 +93,12 @@
 pub mod breaker;
 pub mod deadletter;
 pub mod error;
+pub mod event_fabric;
 pub mod http;
 pub mod mesh;
 pub mod queue;
 pub mod retry;
+pub mod server;
 pub mod spool;
 
 pub use deadletter::{DeadLetter, DeadLetterReason, DeadLetterSink, MemoryDeadLetters};
