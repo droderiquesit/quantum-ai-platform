@@ -2179,3 +2179,171 @@ fn the_standard_scenario_library_still_shocks_the_factor_the_risk_crate_names() 
         qip_risk::market_factor::EQUITY_SHOCK
     );
 }
+
+// --- blueprint §2.2's architectural rules, read from the same graph ----------
+
+/// The crates in which a strategy exists as a thing: the compiler and its
+/// intermediate representation, the opportunity search that produces path
+/// candidates, the router that assigns them, and the two crates that
+/// generate and promote strategies.
+///
+/// Named individually rather than taken as "everything under `crates/edge`",
+/// because two of the five are services and one of the edge crates
+/// (`qip-edge`) is the cell that *does* send the order. A directory rule here
+/// would forbid the very edge the architecture requires.
+const STRATEGY_BEARING: [&str; 6] = [
+    "qip-strategy",
+    "qip-arbitrage",
+    "qip-routing",
+    "qip-feature-dag",
+    "qip-evolution",
+    "qip-lifecycle",
+];
+
+/// The crates through which an order reaches a venue.
+///
+/// `qip-execution-engine` owns the order manager, `qip-brokers` holds the
+/// venue adapters that speak to one, and `qip-edge` is the cell that nets
+/// intents into the one order and calls a `Placer`. Anything that can reach
+/// one of these can send an order; everything else has to hand an intent to
+/// something that can.
+const ORDER_SENDING: [&str; 3] = ["qip-execution-engine", "qip-brokers", "qip-edge"];
+
+#[test]
+fn no_crate_that_expresses_a_strategy_can_reach_a_facility_that_sends_an_order() {
+    // Blueprint §2.2: "No strategy sends an order. Strategies produce
+    // intents; intents are netted, gated, then executed. One net order, many
+    // contributors."
+    //
+    // `docs/DELIVERY-STATUS.md` scores this rule held on the strength of
+    // `grep -n 'fn work\|net(' backend/crates/edge/qip-edge/src/cell.rs` —
+    // which shows that the netting seam exists, and cannot show that nothing
+    // bypasses it. The bypass is one line in a `Cargo.toml`, and it is the
+    // cheapest line in the repository to add: a strategy crate that could
+    // reach a `Placer` would net nothing, gate nothing, and produce one order
+    // per contributor with the aggregate limits none the wiser — which is the
+    // precise failure the rule names in its consequence column.
+    //
+    // Asserted as an absence for the reason this whole file is: the netting
+    // seam is visible in the code that uses it, and the edge that defeats it
+    // is invisible until an incident.
+    let graph = dependency_graph();
+    assert_named_crates_exist(&graph, STRATEGY_BEARING.iter().copied());
+    assert_named_crates_exist(&graph, ORDER_SENDING.iter().copied());
+
+    for root in STRATEGY_BEARING {
+        let reachable = reachable_from(&graph, root);
+        // The per-root vacuity guard. `reachable_from` answers with the empty
+        // set for a root it cannot see, and `assert_named_crates_exist` above
+        // catches a rename but not a crate that has been emptied of shipped
+        // dependencies — at which point this root's assertion would hold
+        // while proving nothing about it.
+        assert!(
+            !reachable.is_empty(),
+            "{root} reaches nothing at all, so the absence asserted for it proves nothing"
+        );
+        for facility in ORDER_SENDING {
+            assert!(
+                !reachable.contains(facility),
+                "{root} expresses strategies and can reach {facility}, which sends orders. \
+                 Blueprint §2.2 requires a strategy to produce an intent and stop there: \
+                 intents are netted into one order at the cell, and a strategy with its own \
+                 path to a venue is a contributor that nets with nobody. Reachable: {reachable:?}"
+            );
+        }
+    }
+}
+
+/// The crates that hold the limit engine and the risk authority.
+const RISK_AUTHORITY: [&str; 2] = ["qip-risk", "qip-risk-engine"];
+
+#[test]
+fn no_risk_crate_can_name_a_strategy() {
+    // Blueprint §2.2: "Risk reads aggregates, never strategy lists. A risk
+    // check is O(1) in strategy count, always."
+    //
+    // A complexity claim is the hardest kind of rule to keep, because
+    // breaking it costs nothing visible on a desk running twelve strategies
+    // and everything on one running ten thousand — and the commit that breaks
+    // it looks like a feature. Timing it would be a flaky test of a fast
+    // machine, so this asserts the structural fact underneath the complexity
+    // claim instead: the risk crates cannot name a strategy at all, so no
+    // check inside them can be written to iterate over strategies whatever
+    // its author intended.
+    //
+    // This is strictly stronger than what `docs/DELIVERY-STATUS.md` scores
+    // the rule on — `grep -n 'pub enum LimitKind' …/limits.rs`, which shows
+    // that today's limits are aggregate-shaped and says nothing about
+    // tomorrow's.
+    //
+    // What it deliberately does not claim: that every limit is O(1) in
+    // *positions*. Position count is not strategy count, the aggregates are
+    // per-instrument by design, and conflating the two would make this test
+    // an argument against the exposure axes the risk engine is built on.
+    let graph = dependency_graph();
+    assert_named_crates_exist(&graph, RISK_AUTHORITY.iter().copied());
+    assert_named_crates_exist(&graph, STRATEGY_BEARING.iter().copied());
+
+    for root in RISK_AUTHORITY {
+        let reachable = reachable_from(&graph, root);
+        assert!(
+            !reachable.is_empty(),
+            "{root} reaches nothing at all, so the absence asserted for it proves nothing"
+        );
+        for bearer in STRATEGY_BEARING {
+            assert!(
+                !reachable.contains(bearer),
+                "{root} is a risk authority and can reach {bearer}, in which a strategy exists \
+                 as a thing. Blueprint §2.2 requires a risk check to read aggregates and be \
+                 O(1) in strategy count; a risk crate that can name a strategy can be given a \
+                 list of them, and the check that iterates one is a feature nobody will read as \
+                 a defect until the tenth thousand strategy. Reachable: {reachable:?}"
+            );
+        }
+    }
+}
+
+/// The crates through which capital moves: the envelope issuer and signer,
+/// and the fabric that pre-positions cash against an issued corridor.
+const CAPITAL_MOVING: [&str; 2] = ["qip-capital", "qip-capital-fabric"];
+
+#[test]
+fn nothing_that_moves_capital_can_reach_a_language_model() {
+    // Blueprint §2.2: "No language model touches a trade, a cycle, or a
+    // transfer." This file already holds the *trade* clause from four
+    // directions — `SAFETY_CRITICAL` above names the nine crates whose output
+    // is an order — and the *cycle* clause is held structurally elsewhere, by
+    // `qip-cost-router`'s `Determinism::Required` arm returning a type that
+    // cannot name a model rung.
+    //
+    // The *transfer* clause had nothing. `SAFETY_CRITICAL` does not name
+    // either capital crate, and it should not: that list is "the crates whose
+    // output is an order", and a list that means everything constrains
+    // nothing. So the third clause is asserted separately here, which is also
+    // the honest shape — moving money and placing an order are different acts
+    // and a reader should not have to infer one boundary from the other's
+    // name.
+    //
+    // The failure this prevents is a plausible one rather than a wild one.
+    // An envelope carries a rationale, a rationale is prose, and prose is the
+    // one thing a language model is genuinely good at — so the crate that
+    // signs corridors is exactly where a summarising helper would look
+    // reasonable. It would also put a model inside the boundary that decides
+    // where money may go.
+    let graph = dependency_graph();
+    assert_named_crates_exist(&graph, CAPITAL_MOVING.iter().copied());
+    assert_named_crates_exist(&graph, ["qip-ai"]);
+
+    for root in CAPITAL_MOVING {
+        let reachable = reachable_from(&graph, root);
+        assert!(
+            !reachable.is_empty(),
+            "{root} reaches nothing at all, so the absence asserted for it proves nothing"
+        );
+        assert!(
+            !reachable.contains("qip-ai"),
+            "{root} moves capital and can reach the language-model interface. Blueprint §2.2: \
+             no language model touches a trade, a cycle, or a transfer. Reachable: {reachable:?}"
+        );
+    }
+}
