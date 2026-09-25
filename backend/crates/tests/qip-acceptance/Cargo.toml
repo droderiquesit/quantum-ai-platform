@@ -37,6 +37,10 @@ qip-mesh.workspace = true
 qip-observability.workspace = true
 qip-kernel.workspace = true
 qip-api.workspace = true
+# The blueprint renderer, so the suite can refuse a traceability view that no
+# longer matches its JSON sources (ADR 0099). A dev-dependency on an app, as
+# qip-api above is: nothing ships depending on it.
+qip-cli.workspace = true
 
 # The stress, chaos and performance suites reach the edge stack directly: the
 # cell and its journal, the books it prices from, the sequencer that decides a

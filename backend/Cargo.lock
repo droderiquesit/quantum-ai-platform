@@ -34,6 +34,7 @@ dependencies = [
  "qip-brokers",
  "qip-capital",
  "qip-chain",
+ "qip-cli",
  "qip-compliance",
  "qip-contracts",
  "qip-core",

@@ -17,6 +17,7 @@
 //! with, so a test can assert both, and `main` is left with nothing to do
 //! but print and exit.
 
+pub mod blueprint;
 pub mod demo;
 pub mod registrations;
 pub mod replay;

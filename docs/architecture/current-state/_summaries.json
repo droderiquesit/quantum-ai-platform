@@ -15,7 +15,7 @@
     ]
   },
   {
-    "group": "libs-finance (qip-financial, qip-market, qip-numerics, qip-portfolio, qip-risk, qip-compliance)",
+    "group": "libs-finance",
     "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/libs-finance.json",
     "components": 19,
     "headline": "Six dependency-light lib crates (~50,058 lines including tests) forming the platform's financial object model, market structure, numerics, accounting, risk-limit and governance layers. All six are constructed and exercised inside qip-kernel::Platform, which every deployable binary (qip-api, qip-fastbrain, qip-deepbrain) composes via Platform::new/new_serving in production main.rs -- so every crate is reached from a deployable binary, not just from tests. 629 #[test] functions total across the six crates (207+75+139+51+142+74 - some counted twice across parent/sub-records where a test file spans modules), zero I/O or ambient-clock calls anywhere (consistent with the libs-have-no-I/O architecture rule), and effectively no unwrap/expect/panic outside #[cfg(test)] except one documented case. The domain rule's claim that RiskState::with_tail_risk now fills expected_shortfall (fixing the historical MaxExpectedShortfall-can-never-fire defect) is directly verified in code: wired at qip-kernel platform.rs:15135, proven by the_expected_shortfall_limit_can_actually_fire at platform.rs:18759.",
@@ -25,7 +25,8 @@
       "qip-market/src/corporate_action.rs:294 adjust_prices has no production caller -- qip-kernel's apply_corporate_action (platform.rs:9607-9657) reimplements the same per-bar adjustment inline using CorporateAction::price_adjustment_factor directly rather than calling the crate's own convenience function; adjust_prices is exercised only by qip-market/tests/structure.rs.",
       "qip-compliance/src/signing.rs is explicitly documented as symmetric HMAC-SHA256, not asymmetric signing: the module doc itself states none of the four production requirements (asymmetric signing, identity binding, key rotation/revocation, countersigned timestamping) are in this build. The gap is surfaced honestly via ComplianceReport's caveats mechanism (plane.rs:53) rather than hidden, and matches ADR 0043's named gap in .claude/rules/architecture/00-boundaries.md.",
       "qip-financial/src/cashflow.rs:1107 names an acknowledged, undone modelling gap: 'A commitment whose call timing is not yet modelled' for unscheduled private-capital commitments."
-    ]
+    ],
+    "label": "libs-finance (qip-financial, qip-market, qip-numerics, qip-portfolio, qip-risk, qip-compliance)"
   },
   {
     "components": 5,
@@ -55,7 +56,7 @@
   {
     "components": 22,
     "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/services-data-world.json",
-    "group": "services-data-world (qip-market-ingestion, qip-data-finder, qip-streaming, qip-entity-resolution, qip-world-model, qip-chain)",
+    "group": "services-data-world",
     "headline": "SENSE and UNDERSTAND are real and reached from production: market-ingestion runs 7 shipped connectors plus a synthetic/replay fallback (default when unconfigured), data-finder's discovery lifecycle is wired into qip-deepbrain via DiscoveryDesk, streaming's durable transport and entity-resolution's matcher both fire every cycle, and world-model's bitemporal graph/causal layer is written and read every cycle through a single live Upstream&lt;WorldModel&gt; instance. qip-chain is the outlier: fully implemented and tested, its types are imported into qip-kernel's Platform, but Platform::observe_chain and every ChainAdapter are called only from qip-kernel's own tests — no deployable binary feeds it a single on-chain event.",
     "notable_gaps": [
       "qip-chain: Platform::observe_chain (qip-kernel/src/platform.rs:16011) has zero non-test call sites in any crates/apps binary; no ChainAdapter (SyntheticChain/JsonRpcChainAdapter/NodeChainAdapter) is constructed outside qip-chain's own tests — the crate is dead code in every deployed process today.",
@@ -63,12 +64,13 @@
       "qip-market-ingestion: no licensed live feed is subscribed to — default deployment (no --tape/--replay) always falls back to SyntheticEnvironment (qip-deepbrain/src/main.rs:434-460); the rest/narrative/depth/alternative vendor adapters always report a non-None production_requirement (unconfigured for any real vendor anywhere in the repo).",
       "qip-data-finder: no CRAWL stage exists (`follow_links`/`expand_from`/`fn crawl(` all absent) — candidates are a stated, committed list, never discovered autonomously; the crate's own module docs (lib.rs:64-69, probe.rs:14-20) still describe NetworkProbe as never opening a socket, which is stale relative to the ADR-0060 implementation that now makes real HTTP calls.",
       "qip-entity-resolution and qip-world-model both have zero TODO/stub markers and are cleanly reached from production (absorb_news -> resolver.resolve, called from the SENSE absorption loop at platform.rs:8751)."
-    ]
+    ],
+    "label": "services-data-world (qip-market-ingestion, qip-data-finder, qip-streaming, qip-entity-resolution, qip-world-model, qip-chain)"
   },
   {
     "components": 12,
     "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/services-capital-exec.json",
-    "group": "Capital, risk and execution services (qip-brokers, qip-capital, qip-capital-fabric, qip-execution-engine, qip-risk-engine, qip-portfolio-engine, qip-lifecycle, qip-mesh)",
+    "group": "services-capital-exec",
     "headline": "Eight backend/crates/services crates covering the capital and execution spine: risk-checked order management (qip-execution-engine) and paper-only venue adapters (qip-brokers) at the edge; central-plane capital allocation, envelopes and per-user ledgers (qip-capital) with a predictive pre-positioning layer (qip-capital-fabric); deterministic pre-trade/autonomy control (qip-risk-engine) and proposal construction (qip-portfolio-engine); the promotion/demotion evidence ladder (qip-lifecycle); and data-mesh plus network-mesh ports (qip-mesh). All are wired into qip-kernel's Platform and reached from qip-api/qip-fastbrain/qip-deepbrain/qip-cli except qip-brokers, whose only caller binary (qip-edge-node) is deployed to no environment.",
     "notable_gaps": [
       "qip-capital-fabric's seven-veto TransferGate (custody.rs, destination.rs, assessment.rs, ~2,800 lines) is fully implemented and tested but structurally unreachable in production: no code outside tests constructs a GateCommand, so CustodyPolicy/TransferAuthority/EnforcementPoints are never evaluated against a real transfer, confirmed by qip-kernel's own pre_positioning.rs doc comment stating 'nothing here reaches the fabric's gate' (backend/crates/runtime/qip-kernel/src/pre_positioning.rs:22-31)",
@@ -78,7 +80,8 @@
       "qip-lifecycle's corridor.rs::emit, the function that actually derives a CorridorPolicy/CorridorRuling from strategy standings, has zero production callers; only the plain CorridorSubject data record reaches qip-kernel",
       "qip-capital's capacity.rs (CapacityModel/CapacityBound) has zero production references anywhere, tests-only",
       "qip-execution-engine's LiveBroker is a complete interface with no transport by design (paper-trading boundary), reporting itself unavailable rather than trading; ORIGINATION_MAX_EXPOSURE is a hard-coded, non-configurable ceiling by design, not a gap"
-    ]
+    ],
+    "label": "Capital, risk and execution services (qip-brokers, qip-capital, qip-capital-fabric, qip-execution-engine, qip-risk-engine, qip-portfolio-engine, qip-lifecycle, qip-mesh)"
   },
   {
     "group": "services-intelligence",
@@ -136,7 +139,7 @@
     ]
   },
   {
-    "group": "qip-kernel: everything except cycle.rs and platform.rs (central/, valuation.rs, and the rest of src/)",
+    "group": "kernel-planes",
     "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/kernel-planes.json",
     "components": 48,
     "headline": "48 records: 31 top-level src/ modules plus all 17 central/ submodules. This is the set of ~30 blueprint-control modules (adversary/venue/family/rule/sizing/causal review, cross-margin, hedge, quote loop, falsification, exploration, feature statistics, pre-positioning, etc.) that platform.rs's stages call into, plus the central plane (StrategyFactory, CapitalAllocator, region shares, realised P&L, DNA sealing, causal/belief/episodic digest producers) that composes edge-cell governance. Nearly all are pure, clock-free, I/O-free arithmetic over caller-supplied Timestamps; persistence is only via the platform's event log, written by callers.",
@@ -146,7 +149,8 @@
       "fabric_declaration.rs and references.rs are reached from production but NOT through Platform::run_cycle — they're used directly by qip-api's and qip-deepbrain's own composition roots (qip-api/src/fabric.rs:110, qip-deepbrain/src/campaign.rs:88,1141), a second production-reachability pattern distinct from the platform.rs cycle path most other modules use.",
       "family_review.rs (ADR 0064) is deliberately half-built: it measures which strategy families are earning their funding but never revises weights; the module's own doc comment (lines 320-335) says the non-existence of a weight-mover is enforced only by a review discipline (REVIEWED_WEIGHT_MOVERS in qip-acceptance's security.rs), not a structural guarantee, and that an independent review has already defeated three prior versions of that scan.",
       "blueprint_objectives.rs, exploration.rs, falsification.rs, model_serving.rs, references.rs, and valuation.rs each have zero internal #[test] despite being reached from production every cycle — their coverage lives entirely in separate integration-test files (tests/blueprint_objectives.rs, tests/exploration.rs, tests/falsification.rs, tests/serving.rs, tests/valuation_{plane,seam,credit}.rs), which is a real but indirect form of coverage worth distinguishing from capacity_review's total absence of any caller."
-    ]
+    ],
+    "label": "qip-kernel: everything except cycle.rs and platform.rs (central/, valuation.rs, and the rest of src/)"
   },
   {
     "group": "edge-cell",
@@ -254,7 +258,7 @@
   {
     "components": 27,
     "file": "/home/david/Downloads/quantum-ai-platform/quantum-ai-platform/docs/architecture/current-state/frontend.json",
-    "group": "frontend (portal, landing, packages/*, mobile)",
+    "group": "frontend",
     "headline": "The portal is a real, deployed Next.js console (Cloud Run/GitOps, dev, behind IAP) that reads qip-api through a self-hosted BFF gateway with a structural write-allowlist, real session/IAP auth, and 182 Playwright tests; landing is a fully-built, CI-tested but never-deployed marketing site whose own README documents that it word-for-word duplicates the portal's separate (marketing) route group; of the 11 shared frontend/packages/*, only auth, validation, brand and (indirectly, via a regex-parsed build script) design-tokens are actually consumed — the other seven (analytics, api-client, charts, feature-flags, shared-types, testing, ui) are wired into next.config.ts's transpilePackages and portal's package.json but have zero import sites anywhere in the tree, most being pure re-export shims pointing back into the portal's own source.",
     "reached_from_production": [
       "portal (app shell)",
@@ -284,7 +288,8 @@
       "portal's lib/sim (seeded/simWalk/simPick/simBetween) and the SimulatedBanner/SimChip components meant to display it per portal/CLAUDE.md's 'simulated data must be labelled' rule have zero call sites in any page — every current (portal) page reads real qip-api data instead.",
       "lib/api/endpoints.ts's NOT_YET_SERVED table names 11 backend routes the UI cannot serve (positions, cash, data-sources/health, compliance, compliance/attestations, kill-switch/history, topology, account/me, ledger/users/{user}, and three explanation routes with no matching backend handler at all), each rendered as a named absence rather than invented data.",
       "useTreasury.ts's expected-inflow declare/cancel routes are deliberately excluded from the gateway's write-allowlist because qip-api itself refuses them for every credential the console can currently hold (no per-person attested principal, ADR 0065/0075/0076) — documented as requires-migration, not a bug."
-    ]
+    ],
+    "label": "frontend (portal, landing, packages/*, mobile)"
   },
   {
     "group": "infrastructure",

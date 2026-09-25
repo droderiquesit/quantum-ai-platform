@@ -67,6 +67,7 @@ fn main() {
         "storage" => storage_command().map(|()| OK),
         "registrations" => registrations_command(&arguments[1..]),
         "replay" => replay_command(&arguments[1..]),
+        "blueprint" => blueprint_command(&arguments[1..]),
         other => Err(Error::invalid(format!(
             "unknown command: {other}. Run `qip help` for the list."
         ))),
@@ -102,6 +103,9 @@ fn print_help() {
     println!("                    eligibility, registration and fabric registries from");
     println!("                    it alone, against the platform this configuration");
     println!("                    assembles");
+    println!("  blueprint render|check [--root <path>]");
+    println!("                    render the blueprint registers from their JSON sources,");
+    println!("                    or exit 3 if a committed view is stale");
     println!();
     println!("`registrations` exits 3 while any catalogued source is still refused, and");
     println!("`replay` exits 3 if the chain is broken or a registry disagrees. Both exit");
@@ -118,6 +122,64 @@ fn print_help() {
     println!("There is deliberately no command to raise the autonomy level:");
     println!("enabling live trading needs two authenticated operators, and a");
     println!("command line cannot establish two people.");
+}
+
+/// `qip blueprint render|check [--root <path>]`.
+///
+/// `render` rewrites whichever of the three blueprint views is stale. `check`
+/// rewrites nothing, and exits [`qip_cli::blueprint::STALE`] if any view
+/// differs from what its sources render to, so CI can refuse a hand-edited
+/// view or a source changed without its view.
+fn blueprint_command(arguments: &[String]) -> Result<u8> {
+    let mut root = PathBuf::from(".");
+    let mut action = None;
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        match argument.as_str() {
+            "render" | "check" if action.is_none() => action = Some(argument.clone()),
+            "--root" => {
+                root = rest
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| Error::invalid("--root needs a path"))?;
+            }
+            other => {
+                return Err(Error::invalid(format!(
+                    "unexpected argument {other}; usage: qip blueprint render|check [--root <path>]"
+                )));
+            }
+        }
+    }
+    let action = action
+        .ok_or_else(|| Error::invalid("usage: qip blueprint render|check [--root <path>]"))?;
+    let sources = qip_cli::blueprint::load(&root)?;
+    let views = qip_cli::blueprint::render_views(&sources);
+    if action == "check" {
+        let stale = qip_cli::blueprint::stale(&root, &views);
+        if stale.is_empty() {
+            println!(
+                "up to date: {}",
+                views.iter().map(|v| v.path).collect::<Vec<_>>().join(", ")
+            );
+            return Ok(OK);
+        }
+        println!(
+            "stale blueprint views (run `qip blueprint render`): {}",
+            stale.join(", ")
+        );
+        return Ok(qip_cli::blueprint::STALE);
+    }
+    let written = qip_cli::blueprint::write(&root, &views)?;
+    println!(
+        "rendered {} requirements; wrote: {}",
+        sources.requirements.len(),
+        if written.is_empty() {
+            "nothing (already current)".to_string()
+        } else {
+            written.join(", ")
+        }
+    );
+    Ok(OK)
 }
 
 /// The configured store, proven writable.
