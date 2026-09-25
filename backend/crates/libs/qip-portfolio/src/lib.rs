@@ -17,6 +17,7 @@
 //! lot a sale closes is an explicit choice rather than an artefact.
 
 pub mod exposure;
+pub mod ledger;
 pub mod lifecycle;
 pub mod lot;
 pub mod portfolio;
