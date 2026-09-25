@@ -36,6 +36,20 @@ Disk is the second wall. At 961 MB free — `target/` alone is 26 GB — there i
 room for **one** isolated worktree. Any plan needing more isolation than that
 is blocked on disk before it is blocked on anything else.
 
+**Measured on the owner's desktop, 2026-09-25** (ADR 0098):
+
+```
+cpus 12 · memory available 21248 MB · disk available 118823 MB
+concurrent workers      10   <- binding constraint: cpu (12 cores, 2 reserved)
+isolated worktrees     169   (at 700 MB each)
+```
+
+The ladder starts at 8 there. **The verified ceiling is 0 until the
+desktop has a C linker** — `cargo build` cannot link without one, so no
+Rust gate in §10 runs, and a worker whose output no gate can check produces
+zero accepted output under §2. Re-run the script rather than quoting either
+block.
+
 **This is a container limit, not a policy limit.** On a 64-core box with disk,
 the same script returns 16 (the harness cap per workflow), and the ladder below
 climbs on its own. Nothing in this policy needs editing to scale; the script is
