@@ -19,5 +19,8 @@
 
 pub mod blueprint;
 pub mod demo;
+/// ADR 0100 §2: the CLI's event fabric operator commands: grant and inspect.
+/// SLICE-52.
+pub mod event_fabric;
 pub mod registrations;
 pub mod replay;
