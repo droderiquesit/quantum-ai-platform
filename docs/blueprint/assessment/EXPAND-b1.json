@@ -1,0 +1,861 @@
+[
+  {
+    "id": "EXPAND-001",
+    "status": "PARTIAL",
+    "current": "No single mechanism covers all six lists. qip_data_finder::catalogue::load (backend/crates/services/qip-data-finder/src/catalogue.rs:30-50) loads candidate SOURCES from a committed file at qip-deepbrain startup (main.rs:1059-1083) -- data-driven, but still requires a redeploy to add an entry, not a live-registration API; qip_agents::governance::Roster + qip_agents::manifest::AgentManifest (backend/crates/libs/qip-agents/src/governance.rs:38-76, manifest.rs:88) are a generic, runtime-composable roster TYPE, but the production SPECIALIST roster is qip_investment_agents::manifests -- 17 specialists as hard-coded Rust functions (backend/crates/agents/qip-investment-agents/src/manifests.rs:32-61, e.g. fn macro_analyst, fn equity_analyst), each wired individually into qip-deepbrain/src/roster.rs and qip-fastbrain/src/roster.rs; a new specialist requires a new Rust function and a redeploy. qip_kernel::asset_class_registry (backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:1-50) is explicitly a FIXED compiled list -- 9 of AssetClass's 13 variants, by the module's own doc 'the list to change when a class becomes supported... a reviewed [code] change'. No ToolRegistry, model-family registry, or ontology registry exists anywhere.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/catalogue.rs:30-50",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:1059-1083",
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs:32-61",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:1-50",
+      "qip-data-finder/tests/candidate_catalogue.rs -- a catalogue entry with no egress_route is refused at load (data-driven half only)",
+      "rg -l 'ToolRegistry|struct ModelFamilyRegistry' backend/crates -> no matches (2026-09-25)"
+    ],
+    "gap": "Specialist roster and the asset-class list are compiled Rust, not runtime registry data; there is no Tool Registry or model-family registry at all; adding any of the six kinds still requires a code change and redeploy in this build, contradicting the invariant as a whole even though the source catalogue and the Roster/AgentManifest types are extensible in shape.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test proves runtime registration without redeploy for any of the six kinds. Nearest: qip-data-finder/tests/candidate_catalogue.rs (file-driven source load). Needed: an integration test that registers a new specialist, tool, model family and market at runtime, with no code change or redeploy, and asserts each resolves.",
+    "work_item": "E16-extensible-registries",
+    "tier": "T2",
+    "size": "L",
+    "notes": "qip_ai::registry::ModelRegistry (backend/crates/libs/qip-ai/src/registry.rs) is a real, versioned model registry but tracks lifecycle/evaluation state for models already known to the platform, not open-ended model-family admission."
+  },
+  {
+    "id": "EXPAND-002",
+    "status": "PARTIAL",
+    "current": "No GapSignal/ResearchQueue engine exists, but one narrow, production-reached slice of 'ignorance/uncertainty becomes ranked, structured research work' does: the exploration desk (blueprint §13.2). qip_kernel::exploration::review (called from the DECIDE stage, backend/crates/runtime/qip-kernel/src/platform.rs:13100) builds ProbeCandidates from the platform's own measures of what it does not know -- a self-model component whose accuracy sits near one half (ProbeKind::UncertainModel), one with too thin a record (StaleEstimate), an instrument with too few scored fills (CapacityAtSize), and causal edges untested in a newly entered regime (RegimeBoundary) -- and qip_capital::exploration::ExplorationBook::plan ranks them by an upper-confidence-bound rule, bounds each probe, holds budget capital against it and records the plan. Nothing takes a probe up (no execution path), and the output is a capital-held question, not research or capability work that expands sources, ontology, memory, specialists, tools or models. Novelty/surprise (qip_opportunity_engine::DetectorRegistry, detector.rs:923-937) and calibration failure (qip_learning_engine::feedback::FeedbackEngine) are produced every cycle but are not turned into work of any kind.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/exploration.rs:20-54 (candidates come from the self model, scored fills and the regime-boundary marker)",
+      "backend/crates/services/qip-capital/src/exploration.rs:1-60 (ExplorationBook::plan: UCB selection over uncertainty, bounded probes)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13100 (crate::exploration::review called from the DECIDE stage, non-test)",
+      "backend/crates/runtime/qip-kernel/tests/exploration.rs:227 a_probe_nobody_takes_up_settles_as_observation_and_never_as_evidence_that_probing_works",
+      "backend/crates/runtime/qip-kernel/tests/regime_boundary.rs:164 a_subject_whose_regime_turns_becomes_the_regime_boundary_probe_the_desk_funds",
+      "backend/crates/services/qip-capital/tests/exploration.rs:147 two_runs_over_the_same_evidence_select_the_same_probes_in_the_same_order",
+      "rg -l 'GapSignal|CurriculumItem|ResearchQueue' backend/crates -> no matches (re-run 2026-09-25)"
+    ],
+    "gap": "No GapSignal, CurriculumItem or ResearchQueue type exists. Only uncertainty/ignorance is ranked, and only into capital-held exploration probes that nothing executes; novelty, surprise, failure and unsupported requests become no work at all, and no ranked item can expand sources, ontology, memory, specialists, tools, models or curricula.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-014",
+      "EXPAND-025",
+      "EXPAND-026"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test exploration --test regime_boundary; cargo test -p qip-capital --test exploration (uncertainty -> ranked probe slice only). Still needed: inject an unexplained residual, a low-confidence region, a contradiction and an unsupported request, and assert each yields a ranked ResearchQueue item carrying the originating GapSignal as lineage.",
+    "work_item": "E16-gap-detection-engine",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "This is the load-bearing MISSING requirement the rest of the EXPAND domain is written against; almost every other EXPAND-0xx requirement depends on this engine or its ResearchQueue/GapSignal types existing. verify: upgraded MISSING -> PARTIAL. The row missed the exploration desk (kernel exploration.rs + qip-capital exploration.rs), which turns the platform's measured ignorance into UCB-ranked, bounded, recorded probes every DECIDE pass and is tested; it is a narrow slice (probes are never executed and expand no capability), so PARTIAL, not more."
+  },
+  {
+    "id": "EXPAND-003",
+    "status": "PARTIAL",
+    "current": "Two promotion paths exist, neither organised as the requirement's lane choice. (1) Strategies: qip_contracts::gate::GateStage (gate.rs:14-31, Candidate->Holdout->Paper->Shadow->Pilot->Scaled->Retired) walked by qip_lifecycle::attempt_promotion through qip_kernel::central::factory (factory.rs:477-489), reached from qip-deepbrain's evolution round (qip-deepbrain/src/evolution.rs:925) and dual-approval promotion (platform.rs:7111); challengers are compared by qip_evolution::challenger::ChallengerTest in qip-deepbrain's SuccessionDesk (succession.rs:121-173). (2) Trained models (ADR 0083): qip-deepbrain's LearningDesk::promote_candidate (learning.rs:821, called from evolution.rs:601) promotes via Platform::promote_model (qip-kernel/src/model_serving.rs:210), which journals a ModelPromotion; the promoted model can be served in-process (Platform::serve_model, :184 -- a warm-service form) and its distillate is named in the trained_models manifest (:273) that qip-api ships to cells, where Cell::check_models_promoted (qip-edge/src/cell.rs:2645) installs a plan carrying it only if the manifest names it (a bounded reflex-artifact form). No candidate declares a target lane, no promotion record names a lane, nothing refuses a candidate naming no lane, and no tool, specialist or schema has any promotion path.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/gate.rs:14-31",
+      "backend/crates/services/qip-evolution/src/promotion.rs:39-133",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:925 (factory promote, non-test) and backend/crates/apps/qip-deepbrain/src/succession.rs:121-173 (ChampionBook/ChallengerTest in production)",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:184,210,273 (serve_model, promote_model, model_manifest)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:821 (promote_candidate), called from evolution.rs:601",
+      "backend/crates/edge/qip-edge/src/cell.rs:2645 (check_models_promoted) and backend/crates/edge/qip-edge/tests/model_manifest.rs",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs:171 a_promotion_is_journalled_before_the_registry_adopts_it_and_names_the_distillate_by_the_digest_a_cell_checks",
+      "backend/crates/services/qip-evolution/tests/evolution.rs:1233 a_verdict_about_another_strategy_does_not_promote_this_one"
+    ],
+    "gap": "No lane is declared or recorded per candidate and nothing refuses a candidate naming no lane; the model path's warm-serving and reflex-artifact forms are consequences of one promotion rather than distinct lanes a candidate is targeted at; the reflex form reaches no deployed process (execution_nodes = {}); tools, specialists and schemas have no promotion path at all.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-004"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-evolution --test evolution; cargo test -p qip-lifecycle --test lifecycle; cargo test -p qip-kernel --test serving; cargo test -p qip-edge --test model_manifest. Needed: three candidates each targeted at a named lane, each landing as a versioned registry entry in exactly that lane with a promotion record, and a refusal for a candidate naming no lane.",
+    "work_item": "E16-three-lane-promotion",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: status kept PARTIAL. 'current' said nothing but strategies is promoted through any lane; the ADR 0083 model promotion (promote_model -> serve_model -> trained_models manifest -> Cell::check_models_promoted) is a second, production-reached path and is now recorded, with the strategy path's actual production callers (deepbrain evolution.rs:925, succession.rs)."
+  },
+  {
+    "id": "EXPAND-004",
+    "status": "INCORRECT",
+    "current": "The strategy ladder (qip_contracts::gate::GateStage, gate.rs:14-44; qip_lifecycle gates; qip_evolution challenger) gates strategy candidates stage by stage and is tested. But production paths exist that activate a capability without the six stages, which is what this invariant forbids: (a) the hosted language model in qip-deepbrain/src/language.rs:181-225 is installed into the model chain on a configuration/precondition check alone -- no sandbox, security/data-policy check, simulation, independent evaluation or shadow stage; (b) the ADR 0083 model lane (qip-deepbrain/src/learning.rs:821 promote_candidate -> Platform::promote_model, qip-kernel/src/model_serving.rs:210) promotes a trained model from development straight to production on the fitting desk's own holdout comparison, with no shadow/paper stage and no independent evaluation, after which its distillate may be installed by a cell (Cell::check_models_promoted); (c) new connectors and agent manifests are compiled in and deployed through ordinary CI (branch, tests, secret/dependency scans) with no simulation, independent evaluation or shadow stage.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/gate.rs:14-44",
+      "backend/crates/services/qip-lifecycle/src/ledger.rs (attempt_promotion)",
+      "backend/crates/services/qip-evolution/src/challenger.rs:96-366 (ChallengerTest)",
+      "backend/crates/apps/qip-deepbrain/src/language.rs:181-225 (hosted model installed on a precondition check, no stages)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:86-116,821-900 (model promotion: skill bar + own-holdout RMSE vs incumbents, development -> production)",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:1-40,210 (promote_model journals and adopts; no shadow stage)"
+    ],
+    "gap": "The six stages are enforced for strategy candidates only, and two production paths (hosted-LLM installation, ADR 0083 model promotion) activate a model without passing all six; nothing gates a new tool, agent, feature or schema. The fix is not only additive: the existing model paths must be routed through the stages (or refused) before the invariant can hold.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "qip-lifecycle and qip-evolution suites prove the strategy-only path. Needed: submit seven candidates (six each missing one stage's evidence, one complete) of each capability kind and assert the six are refused naming the missing stage -- and a test that the hosted-LLM and model-promotion paths are refused without that evidence, which today they are not.",
+    "work_item": "E16-gated-capability-pipeline",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "P0 in the requirement register because it is a safety invariant; the gap is that the invariant is enforced for one candidate type (strategies) and silently absent for every other kind of capability the statement names. verify: downgraded PARTIAL -> INCORRECT. The invariant says no path activates a capability that has not passed every stage; two production paths do (language.rs:181-225 hosted model on a config check; learning.rs:821 -> model_serving.rs:210 promotes a model development->production on its own holdout with no shadow stage or independent evaluation). That is an implementation the requirement forbids, not merely an incomplete one."
+  },
+  {
+    "id": "EXPAND-005",
+    "status": "MISSING",
+    "current": "Nothing; no Intelligence Expansion Engine crate exists. No 'Scout', 'Evaluation Brain', 'Reflex Mesh', 'Model Foundry' or 'Quantum Foundry' named component exists either -- the platform's actual architecture is organised around the SENSE/UNDERSTAND/DISCOVER/REASON/SIMULATE/DECIDE/ACT/LEARN cycle stages (qip-kernel), not the blueprint's named-brain layering this requirement assumes.",
+    "evidence": [
+      "ls backend/crates/services backend/crates/libs backend/crates/runtime -> no expansion-engine crate",
+      "rg -l 'EvaluationBrain|ReflexMesh|ModelFoundry|QuantumFoundry|struct Scout\\b' backend/crates -> no matches (2026-09-25)"
+    ],
+    "gap": "The layer itself does not exist, so there is nothing whose placement or dependency direction can be tested.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-002",
+      "EXPAND-014"
+    ],
+    "blocked_by": "",
+    "verification": "No architecture test exists because the crate does not exist. Needed once EXPAND-002 lands: an architecture-suite test reading the workspace dependency graph and asserting nothing on the reflex/risk path depends on the new crate.",
+    "work_item": "E16-expansion-engine-placement",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Sized for the placement/dependency test alone; the engine itself is the XL item under EXPAND-002."
+  },
+  {
+    "id": "EXPAND-006",
+    "status": "PARTIAL",
+    "current": "qip_evolution's generate -> mutate -> challenger -> promotion pipeline (backend/crates/services/qip-evolution/src/{generate,mutate,challenger,promotion}.rs) auto-generates strategy candidates over a declared feature Palette (StrategyFoundry, qip-kernel/src/central/foundry.rs:70-239), mutates a champion into challengers and compares them on the same window (qip-deepbrain SuccessionDesk, succession.rs:121-173, reached from evolution.rs:392) -- close to 'hypothesis, evidence, experiment, backtest, proposal' but scoped to trading-rule candidates from a fixed grammar. A ResearchCampaignClosed record does exist (qip-kernel/src/references.rs:228, journaled by qip-deepbrain/src/campaign.rs), but it is the data-fetch manifest of one learning round's window assembly (§22.4: references, cache, hashes, sketched statistics, concentration verdict), not a hypothesis-to-proposal campaign; it records no hypothesis, experiment definition, failure analysis or proposal.",
+    "evidence": [
+      "backend/crates/services/qip-evolution/src/generate.rs:172-211",
+      "backend/crates/services/qip-evolution/src/challenger.rs:96-366",
+      "backend/crates/runtime/qip-kernel/src/central/foundry.rs:70-239 (production caller: self.generator.generate(...))",
+      "backend/crates/apps/qip-deepbrain/src/succession.rs:121-173 and evolution.rs:392 (challenger comparison reached from the deepbrain composition root)",
+      "backend/crates/runtime/qip-kernel/src/references.rs:228 (ResearchCampaignClosed: data-fetch manifest, not a research campaign record)",
+      "backend/crates/services/qip-evolution/tests/evolution.rs:167 a_generated_strategy_only_names_features_the_palette_declares (54 tests in the file)"
+    ],
+    "gap": "No ExperimentPack or hypothesis-to-proposal campaign record exists (the existing ResearchCampaignClosed is a data-fetch manifest); no explicit failure-analysis step is recorded; scope is limited to strategy candidates from a fixed grammar rather than research over an arbitrary CurriculumItem; nothing asserts a proposal carries no execution authority.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-014"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-evolution --test evolution (54 tests). Needed: a ResearchCampaign/ExperimentPack record and a failure-analysis output driven by a CurriculumItem, which do not exist.",
+    "work_item": "E08-research-campaigns",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: status kept PARTIAL. Corrected the claim that no ResearchCampaign artifact type exists: ResearchCampaignClosed (references.rs:228, journaled from deepbrain campaign.rs) exists but is a data-fetch manifest, not this requirement's campaign. Added the deepbrain succession desk as the production reach of the challenger half."
+  },
+  {
+    "id": "EXPAND-007",
+    "status": "MISSING",
+    "current": "Nothing. qip_data_finder registers DATA SOURCES (a related but distinct concept, see EXPAND-033) and qip_ai::registry::ModelRegistry (backend/crates/libs/qip-ai/src/registry.rs:14-60) registers MODELS specifically -- neither is a general Tool Registry covering connectors, browsers, parsers, solvers, code runtimes, simulators, geospatial tools, venue adapters, model endpoints and quantum backends as one catalogue with a permission scope per entry.",
+    "evidence": [
+      "rg -l 'ToolRegistry|ToolSpec' backend/crates -> no matches (2026-09-25)",
+      "backend/crates/libs/qip-ai/src/registry.rs:14-60 (nearest neighbour: model-only registry)"
+    ],
+    "gap": "No ToolRegistry or ToolSpec type exists for the ten named tool kinds, and no permission-scope model exists for a tool.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: register one tool of each of the ten kinds and assert each resolves by kind to its ToolSpec including a permission scope.",
+    "work_item": "E16-tool-registry",
+    "tier": "T2",
+    "size": "L",
+    "notes": "The registry itself (metadata catalogue) needs no new dependency; executing some of the named tool kinds (a browser, a general code runtime) would need an ADR under ADR 0002/0009 before implementation, which the registry design should record as a distinct, later step."
+  },
+  {
+    "id": "EXPAND-008",
+    "status": "MISSING",
+    "current": "Nothing. No task-failure-to-ToolSpec pathway exists. The closest analogue is qip_data_finder::replacement::RankedReplacement (backend/crates/services/qip-data-finder/src/replacement.rs) which proposes a ranked replacement SOURCE when one degrades -- a neighbouring but distinct concept (a data source, not an arbitrary missing tool), and it is not triggered by a task's own failure.",
+    "evidence": [
+      "rg -l 'ToolSpec|CapabilityPack' backend/crates -> no matches (2026-09-25)",
+      "backend/crates/services/qip-data-finder/src/replacement.rs (nearest neighbour, sources only)"
+    ],
+    "gap": "No ToolSpec/CapabilityPack proposal path exists for a missing tool, and no mechanism records a task as blocked-on-a-tool rather than failing silently.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-007",
+      "EXPAND-014"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: submit a task needing an unregistered parser and assert a ToolSpec/CapabilityPack proposal plus a matching curriculum item are created, and the task is recorded blocked rather than failing silently.",
+    "work_item": "E16-tool-gap-to-buildtask",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "EXPAND-009",
+    "status": "PARTIAL",
+    "current": "No RegionalEpisode/ReflexDelta type exists, but each reflex cell does record its local episodes as typed, per-event, hash-chained records: qip_edge::journal::Decision (backend/crates/edge/qip-edge/src/journal.rs:19-375) has typed variants for fills (Filled: order, venue, object, quantity, price, simulated), feed anomalies (GapDetected), failures (Refused{gate,reason}, ReconciliationBreak, HaltChanged, VenueReconciled), expiries and mass cancels, written by Cell::work on the hot path without I/O and drained by the journal Mirror (qip-edge-node/src/mirror.rs). Aggregate CellMetrics counters sit beside this, not instead of it. What is absent: typed microstructure, venue-behaviour, latency and slippage episodes, and a per-record cell/region identity (the journal is per cell; records do not carry region).",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/journal.rs:1-40 (hash-chained local decision record; no I/O on the hot path)",
+      "backend/crates/edge/qip-edge/tests/fills.rs:253 an_order_the_venue_accepted_is_not_a_fill_until_the_order_entry_channel_reports_one (asserts journaled Decision::Filled)",
+      "backend/crates/edge/qip-edge/tests/cell.rs:361 the_journal_chain_catches_an_edited_decision",
+      "backend/crates/apps/qip-edge-node/tests/mirror.rs:64 a_shipped_journal_is_readable_after_the_process_that_wrote_it_is_gone",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:203 (Cell::work called from the edge-node composition root)",
+      "rg -l 'RegionalEpisode|ReflexDelta' backend/crates -> no matches (re-run 2026-09-25)"
+    ],
+    "gap": "No RegionalEpisode/ReflexDelta artifact; no typed latency, slippage, microstructure or venue-behaviour episode; journal records do not name the region; and qip-edge-node is not deployed anywhere (execution_nodes = {}).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test fills --test cell; cargo test -p qip-edge-node --test mirror (typed local journal of fills/anomalies/failures). Needed: replay a session with fills, slippage, a latency spike, an anomaly and a failure and assert one typed episode per category naming cell and region.",
+    "work_item": "E04-reflex-episode-recording",
+    "tier": "T2",
+    "size": "M",
+    "notes": "qip-edge-node itself is not deployable today: execution_nodes = {} in every environment's tfvars, so even once built this would run only under QIP_VENUE_FEED=simulated in tests until a node is provisioned. verify: upgraded MISSING -> PARTIAL. 'current' said only aggregate counters and gauges are recorded; the cell's hash-chained journal (journal.rs Decision) records each fill, gap, refusal, halt and reconciliation break as a typed per-event record, tested in fills.rs/cell.rs and mirrored by qip-edge-node. deployable stays false."
+  },
+  {
+    "id": "EXPAND-010",
+    "status": "MISSING",
+    "current": "Nothing. No KnowledgeDelta/RegionalEpisode type exists (see EXPAND-009), so there is nothing to propagate to global training, and no propagation path from qip-edge-node to qip-deepbrain's training loop (qip_training::local::LocalTrainer) exists either.",
+    "evidence": [
+      "rg -l 'RegionalEpisode|KnowledgeDelta' backend/crates -> no matches (2026-09-25)"
+    ],
+    "gap": "No typed episode exists to export, and no channel carries a cell's local learning into global training.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-009"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: export episodes from two cells and assert global training's input set contains them as typed RegionalEpisode/KnowledgeDelta records carrying their originating region.",
+    "work_item": "E11-regional-to-global-learning",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: status kept MISSING. Nearest typed uplink, for the next reader: a cell's report reaches the centre through Platform::ingest_cell_report (fills attributed, feasibility refusals into the venue-withdrawal window), which feeds venue review and reconciliation, not global training."
+  },
+  {
+    "id": "EXPAND-011",
+    "status": "PARTIAL",
+    "current": "qip_edge's crate doc states the hot path does no I/O -- 'Cell::on_bytes and Cell::work touch memory and arithmetic only' (backend/crates/edge/qip-edge/src/lib.rs:16-17) -- and cell.rs's module doc says bytes leave as orders 'without a network hop to the central plane anywhere in between', so latency-critical inference is local by construction (ADR 0008). Cell::work is reached from production only via qip-edge-node/src/pass.rs:203 (simulated feed). Behavioural evidence that a cell keeps running without the centre exists: qip-edge-node/tests/mesh.rs:375 a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (asserts the cell is not halted and keeps its deployed strategy) and qip-edge/tests/region_table.rs:1118 a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire. No test cuts every central model-serving endpoint and asserts continued decisions within a hot-path latency budget.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/lib.rs:16-17 (hot path does no I/O)",
+      "backend/crates/edge/qip-edge/src/cell.rs:1-11 (no network hop to the central plane)",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:203 (production caller of Cell::work)",
+      "backend/crates/apps/qip-edge-node/tests/mesh.rs:375 a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running",
+      "backend/crates/edge/qip-edge/tests/region_table.rs:1118 a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire"
+    ],
+    "gap": "No chaos test cuts a cell off from every central model-serving endpoint and asserts it keeps producing decisions from local artifacts within a hot-path latency budget; the property is proven structurally and by a keeps-running assertion, not by a decision-rate-and-latency scenario.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge-node --test mesh; cargo test -p qip-edge --test region_table. Needed: a named chaos test that cuts every central endpoint and asserts decisions continue with hot-path latency within budget.",
+    "work_item": "E04-reflex-local-inference-chaos-test",
+    "tier": "T1",
+    "size": "S",
+    "notes": "deployable=false because execution_nodes = {} in every environment; Cell::work today runs from a composition root only when a qip-edge-node process exists, and none is provisioned. verify: status kept PARTIAL; evidence corrected. The 'no I/O' quote is in qip-edge/src/lib.rs:16-17, not cell.rs; failure_isolation.rs tests restart reconciliation, not a cut central link, so it was replaced with mesh.rs:375 and region_table.rs:1118; qip-cli does not call Cell::work (only qip-edge-node/src/pass.rs:203 does)."
+  },
+  {
+    "id": "EXPAND-012",
+    "status": "PARTIAL",
+    "current": "No KnowledgeDelta/SharedEpisode type exists, but one typed knowledge channel from the centre to regional nodes does: qip-api's mesh publishes a PolicyPayload whose slots carry the centre's knowledge as typed, deny_unknown_fields contracts -- belief_priors (BeliefPriors: per-subject priors, from Platform::pending_episodes), episodic_digest (EpisodicDigest: digest + count of resolved episodes), causal_digest (CausalDigest: the active edges the UNDERSTAND stage discovered) and trained_models (ModelManifest) -- assigned in qip-api/src/mesh.rs:947-973 and read by cells (qip-contracts/src/policy.rs:285-302,600-604). So a discovery in one component (a temporal-precedence edge) does reach regional nodes through a typed channel. Among specialists, qip_agents::memory::ResearchMemory is read by the review and learning agents (qip-investment-agents/src/review.rs:62, learning.rs:62) but nothing in production ever writes to it (record_episode/record_lesson have no non-test caller; the kernel constructs it empty, platform.rs:4271), so specialist-to-specialist sharing does not happen. Nothing flows cell -> centre as knowledge.",
+    "evidence": [
+      "backend/crates/apps/qip-api/src/mesh.rs:947-973 (episodic_digest, belief_priors, causal_digest, trained_models assigned to the payload)",
+      "backend/crates/libs/qip-contracts/src/policy.rs:285-302,600-604 (typed slot contracts)",
+      "backend/crates/apps/qip-api/tests/mesh.rs:1987 the_causal_digest_ships_the_edges_the_understand_stage_wrote_stamped_with_the_graphs_own_instant",
+      "backend/crates/apps/qip-api/tests/mesh.rs:1752 a_cycle_ships_slot_three_stamped_with_the_oldest_open_belief_and_the_halving_returns_when_it_ages",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4271 (ResearchMemory::new(), never written in production)",
+      "rg -n 'record_episode|record_lesson' backend/crates --glob '!**/tests/**' -> only the definitions in qip-agents/src/memory.rs (2026-09-25)",
+      "rg -l 'KnowledgeDelta|SharedEpisode' backend/crates -> no matches (re-run 2026-09-25)"
+    ],
+    "gap": "Only centre -> region typed knowledge exists, and mostly as digests and freshness (a cell reads slot freshness to lift degradation multipliers, not the knowledge itself); the specialists' shared ResearchMemory is never written, so one specialist's discovery reaches no other; nothing carries a regional node's knowledge back; no KnowledgeDelta/SharedEpisode type and no architecture test forbidding shared-state or free-text exchange; the receiving regional node is not deployed (execution_nodes = {}).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-010"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-api --test mesh (causal digest and belief priors shipped to cells). Needed: a discovery recorded in one specialist as a KnowledgeDelta, received by a second specialist and a regional node through a typed channel, plus an architecture test finding no shared-mutable-state or free-text knowledge exchange.",
+    "work_item": "E09-typed-knowledge-sharing",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: upgraded MISSING -> PARTIAL. 'current' said cells share only CellStateDelta; qip-api's PolicyPayload ships typed belief priors, episodic digest, causal digest and model manifest to cells (mesh.rs:947-973, tested in qip-api/tests/mesh.rs:1752,1987). Also recorded that ResearchMemory, cited as the specialists' shared memory, has no production writer."
+  },
+  {
+    "id": "EXPAND-013",
+    "status": "PARTIAL",
+    "current": "The eight measures are scattered, not unified. Forecast accuracy/calibration: qip_learning_engine::{ThesisEvaluator, FeedbackEngine, CalibrationReport} (backend/crates/services/qip-learning-engine/src/{evaluation,feedback}.rs), reached every LEARN pass. P&L attribution: qip_learning_engine::attribution::{Attribution, Attributor} with Attribution::residual required to be exactly zero (src/attribution.rs:48-153), ADR 0007. Execution quality: qip_venue_fill_error_bps histogram in qip-kernel's central plane (Platform::score_filled), diagnostic only, read by nothing that decides (per the observability domain rule file). Model decay: qip_training::estimators::StreamingDrift (feature-population drift, not per-model decay specifically). Source value: qip_data_finder::quality::{SourceQuality, SourceCost} and freshness::LeadLedger. Unexplained residuals: qip_world_model::{granger, confounder}. Hallucination/error rate for the hosted LLM adapter is not measured anywhere. No Scorecard artifact unifies these eight, and no GapSignal is emitted when any of them crosses a threshold.",
+    "evidence": [
+      "backend/crates/services/qip-learning-engine/src/attribution.rs:48-153 (Attribution::residual)",
+      "backend/crates/services/qip-learning-engine/src/feedback.rs:185-351",
+      "backend/crates/services/qip-data-finder/src/quality.rs, freshness.rs",
+      "backend/crates/services/qip-world-model/src/granger.rs, confounder.rs",
+      "rg -l 'Scorecard|hallucination' backend/crates -> no matches for either (2026-09-25)"
+    ],
+    "gap": "No unified Scorecard artifact exists; hallucination/error rate for the hosted-LLM voice is not measured at all; nothing emits a GapSignal (which itself does not exist, EXPAND-002) when a measure crosses a threshold.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-002"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-learning-engine (attribution/evaluation/feedback suites). Needed: a Scorecard type unifying all eight measures, a hallucination-rate measure for the HuggingFace adapter, and GapSignal emission on threshold breach.",
+    "work_item": "E12-unified-scorecard",
+    "tier": "T2",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "EXPAND-014",
+    "status": "MISSING",
+    "current": "Nothing. No Curriculum Engine, CurriculumItem or ResearchQueue exists anywhere in the workspace.",
+    "evidence": [
+      "rg -l 'CurriculumItem|ResearchQueue|CurriculumEngine' backend/crates -> no matches (2026-09-25)"
+    ],
+    "gap": "No engine ranks candidate research tasks of any kind, so nothing decides which data acquisition, simulation, label, experiment or campaign runs next.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-002",
+      "EXPAND-015"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: feed candidates of each type (data, simulation, label, experiment, campaign) and assert a ranked ResearchQueue is emitted and the scheduler starts the highest-ranked eligible item first.",
+    "work_item": "E16-curriculum-engine",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "verify: status kept MISSING. Nearest neighbour, for the next reader: the exploration desk ranks uncertainty probes by UCB every DECIDE pass (qip-kernel exploration.rs, qip-capital exploration.rs), but probes are never executed and decide no data acquisition, simulation, label, experiment or campaign, so it is not a curriculum."
+  },
+  {
+    "id": "EXPAND-015",
+    "status": "MISSING",
+    "current": "Nothing scores a candidate research task on the eight named criteria (expected economic value, uncertainty reduction, strategic coverage, risk reduction, information gain, cross-domain reuse, compute/data cost, legal/operational feasibility) or records novelty/failure-frequency/urgency as ranking inputs. No CurriculumEngine exists to score against (EXPAND-014).",
+    "evidence": [
+      "rg -l 'CurriculumItem' backend/crates -> no matches (2026-09-25)"
+    ],
+    "gap": "No scoring record or type exists for any of the eleven named ranking inputs.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-014"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: score a candidate and assert its score record holds a value for each of the eleven named inputs, refusing a candidate missing any one rather than defaulting it.",
+    "work_item": "E16-curriculum-scoring",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status kept MISSING. The exploration desk scores probe candidates on uncertainty times a stated constant value plus a UCB rarity bonus (qip-capital exploration.rs) -- two of the eleven inputs at most, with no record that refuses a missing input -- so the contract does not exist."
+  },
+  {
+    "id": "EXPAND-016",
+    "status": "PARTIAL",
+    "current": "No MicrostructureDelta artifact exists, but parts of the named aspects are learned continuously from the platform's own data in production: cross-asset lead/lag -- Platform::discover_temporal_precedence (platform.rs:10181), called at the start of every UNDERSTAND stage (:9793), re-tests instrument pairs over accumulated return history and writes an evidenced TemporalPrecedence causal edge for each pair clearing a strict F-test, and marks an edge failing when the relationship stops holding (world.record_causal_condition_failure, :10252); venue mechanics -- crate::venue_measurement::measure (:14054) measures a venue's declared latency/fees/order types against what the broker port observed; liquidity regimes -- qip_world_model::liquidity::LiquidityTopology (platform.rs:820) tracks per-venue depth/spread/staleness from observation; execution dynamics -- score_filled (:16483) records the twin's fill error per venue (qip_venue_fill_error_bps), diagnostic only. The inputs are bars and broker observations, not tick/order-book history; queue behaviour and market reactions are not learned; qip_evolution::cost_model::CostModelCalibration (re-fitting the cost model from realised fills) has no non-test caller; qip_simulation_engine's SimBook/CostModel remain configured, not re-fitted.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9793,10181 (discover_temporal_precedence every UNDERSTAND pass)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10252 (edge marked failing when its relationship stops holding)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14054 (venue_measurement::measure) and :16483 (score_filled)",
+      "backend/crates/runtime/qip-kernel/tests/causal_precedence.rs:133 a_real_lagged_pair_of_instruments_produces_a_temporal_precedence_edge",
+      "backend/crates/runtime/qip-kernel/tests/causal_precedence.rs:409 a_relationship_that_stops_holding_marks_the_edge_it_already_wrote_as_failing",
+      "backend/crates/services/qip-evolution/src/cost_model.rs (CostModelCalibration: tests only, no production caller)",
+      "rg -l 'MicrostructureDelta' backend/crates -> no matches (re-run 2026-09-25)"
+    ],
+    "gap": "No MicrostructureDelta artifact; learning runs on bars and broker observations, not tick/order-book history; queue behaviour and market reactions are not learned; execution-cost re-fitting exists only in qip-evolution tests; no byte-for-byte reproducibility test of a learned microstructure record.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test causal_precedence (lead/lag learned continuously, and retracted when it stops holding). Needed: replay a recorded tick/order-book window with the platform's own fills and assert a MicrostructureDelta per named aspect, reproducible byte for byte.",
+    "work_item": "E06-microstructure-learning",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: upgraded MISSING -> PARTIAL. Cross-asset lead/lag is re-learned every UNDERSTAND pass from the platform's own return history (platform.rs:9793/10181, tests causal_precedence.rs:133/:409), and venue mechanics/liquidity are measured from observation; the MicrostructureDelta artifact and tick-level learning remain absent."
+  },
+  {
+    "id": "EXPAND-017",
+    "status": "MISSING",
+    "current": "No TickCampaign type or residual-threshold trigger exists. qip-kernel's central plane computes a diagnostic slippage/fill-error histogram (qip_venue_fill_error_bps, per the observability domain notes) but nothing reads it to spawn a research campaign, and no venue-discovery event triggers one either.",
+    "evidence": [
+      "rg -l 'TickCampaign' backend/crates -> no matches (2026-09-25)"
+    ],
+    "gap": "No campaign type and no residual-growth or new-venue trigger exist.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-016"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: replay a window in which slippage residuals grow past a threshold and a previously unseen venue appears, and assert a TickCampaign is created for each, scoped to the affected instruments/venue.",
+    "work_item": "E06-tick-campaign-triggers",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "EXPAND-018",
+    "status": "MISSING",
+    "current": "qip-kernel's Platform holds exactly ONE WorldModel instance -- 'world: Upstream<WorldModel>' (backend/crates/runtime/qip-kernel/src/platform.rs:806), with a doc comment noting that before this field existed no running binary had ever produced an order from it. No WorldModelSpec/WorldModelBranch type exists, and no spawning mechanism exists at all.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:793-806 (single Upstream<WorldModel> field)",
+      "rg -l 'WorldModelBranch|WorldModelSpec|federation' backend/crates -> no matches (2026-09-25)"
+    ],
+    "gap": "There is one world model per platform instance and no mechanism to spawn a domain/regional/horizon/scenario/counterfactual branch of it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-004"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: drive a world model's residual past an insufficiency threshold and assert a WorldModelBranch is proposed with parent and triggering evidence recorded, entering service only through the gated pipeline.",
+    "work_item": "E09-world-model-spawning",
+    "tier": "T3",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "EXPAND-019",
+    "status": "MISSING",
+    "current": "Nothing; depends entirely on EXPAND-018's spawning mechanism, which does not exist. There is no federation of world models to benchmark a branch against -- only the one instance.",
+    "evidence": [
+      "rg -l 'WorldModelBranch|federation' backend/crates -> no matches (2026-09-25)"
+    ],
+    "gap": "No spawned branch and no federation exist to benchmark a branch against.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-018"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: spawn one branch that adds predictive value and one that duplicates an existing model, benchmark both against the federation on a held-out set, and assert only the first is kept.",
+    "work_item": "E09-world-model-benchmarking",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "EXPAND-020",
+    "status": "PARTIAL",
+    "current": "A real, narrower instance of this requirement exists for CAUSAL STRUCTURES specifically. qip_world_model::causal::CausalEdge (backend/crates/services/qip-world-model/src/causal.rs:52-343) carries an EdgeStanding that only reaches Established after qip_world_model::falsification::{FalsificationPass, TrialLedger} (src/falsification.rs:90-234) runs the edge against held-out data via a declared HypothesisSource -- an unvalidated pattern cannot become an Established causal structure by construction. The production writer is Platform::discover_temporal_precedence (qip-kernel/src/platform.rs:10181, every UNDERSTAND pass), which builds edges through qip_world_model::granger (granger.rs:303) and WorldModel::claim_causal; the falsification Book is held by the Platform (qip-kernel/src/falsification.rs, platform.rs:434) and standing is read at platform.rs:11309. No RulePack/ConstraintPack/TheoryDelta exists for the wider set the requirement names -- ontology relations, invariants, constraints, or symbolic proof procedures beyond the causal graph -- and nothing routes a new causal structure through EXPAND-004's pipeline.",
+    "evidence": [
+      "backend/crates/services/qip-world-model/src/causal.rs:52-343",
+      "backend/crates/services/qip-world-model/src/falsification.rs:90-234",
+      "backend/crates/services/qip-world-model/src/granger.rs:303 (non-test CausalEdge::new)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10181 (discover_temporal_precedence, production writer), :11309 (standing read)",
+      "backend/crates/runtime/qip-kernel/src/falsification.rs:63-236 (kernel's falsification Book)",
+      "backend/crates/services/qip-world-model/tests/falsification.rs (16 tests) -- a hypothesis whose source was never declared cannot reach Established"
+    ],
+    "gap": "RulePack/ConstraintPack/TheoryDelta for ontology relations, invariants and constraints beyond the causal graph do not exist; only the causal-structure slice of the requirement is met.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-world-model --test falsification (16 tests). Needed: RulePack/ConstraintPack types and a path from a validated pattern to a new ontology relation or constraint, which do not exist.",
+    "work_item": "E09-symbolic-theory-growth",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: status kept PARTIAL; evidence corrected. platform.rs:19224 and :20581, cited as non-test CausalEdge constructions, are inside #[cfg(test)] modules (decide_tests from :18513, the next from :20385); the production writer is discover_temporal_precedence (:10181) via granger.rs:303."
+  },
+  {
+    "id": "EXPAND-021",
+    "status": "PARTIAL",
+    "current": "Contradiction is never silently absorbed for causal edges specifically: qip_world_model::causal::{FailureRun, Retirement} (backend/crates/services/qip-world-model/src/causal.rs:52-275) retires an edge (marks it no longer Established) after RETIREMENT_CONSECUTIVE_FAILURES=3 consecutive falsification failures, an explicit, recorded state change rather than a silent drop. This is a retirement, not a queued 'theory-revision task' held as unresolved in a Research Registry -- no Research Registry exists (EXPAND-014/EXPAND-033 note the same absence).",
+    "evidence": [
+      "backend/crates/services/qip-world-model/src/causal.rs:52-275 (FailureRun, Retirement, RETIREMENT_CONSECUTIVE_FAILURES)",
+      "qip-world-model/tests/retirement.rs (10 tests) -- an edge retires only after 3 consecutive failures, not 1 or 2",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10252 (world.record_causal_condition_failure, the production caller of the failure run)",
+      "backend/crates/runtime/qip-kernel/tests/causal_precedence.rs:409 a_relationship_that_stops_holding_marks_the_edge_it_already_wrote_as_failing"
+    ],
+    "gap": "Retirement changes the edge's own standing rather than creating a separate, trackable theory-revision task recorded as unresolved in a registry; no such registry exists to hold it.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-014"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-world-model --test retirement (10 tests). Needed: an explicit theory-revision task type, distinct from retirement, recorded as unresolved until addressed.",
+    "work_item": "E09-theory-revision-tasks",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status kept PARTIAL; added the production caller (platform.rs:10252 -> world.rs:404 -> CausalGraph::record_condition_failure) that the integrated flag rested on but the row did not cite."
+  },
+  {
+    "id": "EXPAND-022",
+    "status": "PARTIAL",
+    "current": "No always-on ambient model and no AmbientSignal/AttentionEvent type exist, but unprompted discovery of precursor relationships and of broken assumptions does run: the UNDERSTAND stage's temporal-precedence pass (Platform::stage_understand, platform.rs:9788 -> discover_temporal_precedence :10181) tests instrument pairs from the platform's own bar history every cycle with no request, writes an evidenced causal edge for a relationship that clears its bar (a planted lead-lag relationship is found, causal_precedence.rs:133, with a negative control at :185), and marks an edge failing when the relationship stops holding (:409, platform.rs:10252) -- the 'broken assumption' half. Records land as causal edges and journal lines, not AmbientSignal/AttentionEvent artifacts, and the pass runs inside the tick-driven cycle rather than as a separate always-on mesh. This matches the sibling assessment's AMBIENT-017 (PARTIAL), which this row previously cited as MISSING.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9788,9793,10181 (UNDERSTAND-stage temporal-precedence pass)",
+      "backend/crates/runtime/qip-kernel/tests/causal_precedence.rs:133 a_real_lagged_pair_of_instruments_produces_a_temporal_precedence_edge",
+      "backend/crates/runtime/qip-kernel/tests/causal_precedence.rs:185 two_independent_instruments_produce_no_causal_edge",
+      "backend/crates/runtime/qip-kernel/tests/causal_precedence.rs:409 a_relationship_that_stops_holding_marks_the_edge_it_already_wrote_as_failing",
+      "docs/blueprint/assessment/AMBIENT.json -- AMBIENT-017 PARTIAL on the same evidence",
+      "rg -l 'AmbientSignal|AttentionEvent' backend/crates -> no matches (re-run 2026-09-25)"
+    ],
+    "gap": "No AmbientSignal/AttentionEvent artifact; discovery is limited to pairwise temporal precedence over bars; weak signals and high-value unknowns are not surfaced; runs inside the tick-driven cycle, not an always-on ambient mesh.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test causal_precedence (planted precursor found with no prompt; a relationship that stops holding is marked failing). Needed: the same replay asserting AmbientSignal records name both.",
+    "work_item": "E09-ambient-mesh-scheduler",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Owned primarily by the AMBIENT domain; kept here per the EXPAND requirement's own cross-reference. verify: upgraded MISSING -> PARTIAL. The row said the sibling AMBIENT domain records this as MISSING; AMBIENT-017 is PARTIAL, and the evidence it cites (platform.rs:9788, causal_precedence.rs:133/:185/:409) was re-checked here and holds."
+  },
+  {
+    "id": "EXPAND-023",
+    "status": "MISSING",
+    "current": "Nothing; depends on EXPAND-022 (no ambient signal exists to become a curriculum item) and EXPAND-014 (no curriculum/ResearchQueue exists to receive one).",
+    "evidence": [
+      "rg -l 'AmbientSignal' backend/crates -> no matches (2026-09-25)"
+    ],
+    "gap": "Neither the signal nor the curriculum queue it would feed exist.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-022",
+      "EXPAND-014"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: emit an AmbientSignal marked useful with no user/API request in the run, and assert a CurriculumItem citing it enters the ResearchQueue.",
+    "work_item": "E16-ambient-to-curriculum",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Duplicates AMBIENT-018."
+  },
+  {
+    "id": "EXPAND-024",
+    "status": "PARTIAL",
+    "current": "Specialists are woken by an unprompted detection, not by a human request: the cycle is driven by the binaries' own run loops (e.g. qip-fastbrain's node loop), DISCOVER's standard detector registry (platform.rs:4521, qip_opportunity_engine::DetectorRegistry::standard) queues an opportunity, and Platform::stage_reason (platform.rs:10794) -> reason_about_the_queue (:10839) convenes the organisation only for a queued detection the cost router judges worth it, dispatching the brief (self.organisation.dispatch, :10998) to every specialist whose manifest accepts it (qip-investment-agents/src/chief.rs:357-372, agent.accepts(brief)) -- i.e. by declared competency. The decision is recorded as a ReasonRouting (:2357) naming the originating opportunity. There is no AmbientSignal, no AttentionEvent naming it as the trigger, and the wake is a step of the SENSE..LEARN cycle rather than an independent ambient mesh. Matches the sibling AMBIENT-005 (PARTIAL).",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10839 reason_about_the_queue; :10998 self.organisation.dispatch; :2357 ReasonRouting",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs:357-372 (dispatch to every agent whose manifest accepts the brief)",
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs:957 the_reason_stage_records_where_the_router_put_the_decision_and_whether_the_panel_convened",
+      "docs/blueprint/assessment/AMBIENT.json -- AMBIENT-005 PARTIAL on the same evidence",
+      "rg -l 'AmbientSignal' backend/crates -> no matches (re-run 2026-09-25)"
+    ],
+    "gap": "The trigger is a DISCOVER detection inside the cycle, not an AmbientSignal from an always-on mesh; no AttentionEvent records the signal as the specialist's trigger and that no human requested it.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-022"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test kernel the_reason_stage_records_where_the_router_put_the_decision_and_whether_the_panel_convened (detection-driven convening recorded). Needed: a run with no request that emits a useful AmbientSignal within a specialist's competency and asserts the specialist is invoked with the signal as its trigger.",
+    "work_item": "E09-ambient-wakes-specialist",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Duplicates AMBIENT-005. verify: upgraded MISSING -> PARTIAL. 'current' said specialists are never woken outside a triggered cycle; the cycle itself is unprompted and REASON convenes competency-matched specialists only on a queued detection (platform.rs:10839/:10998, chief.rs:357-372, kernel.rs:957), consistent with AMBIENT-005."
+  },
+  {
+    "id": "EXPAND-025",
+    "status": "PARTIAL",
+    "current": "No GapSignal and no unifying detector exist, but six of the seven triggers are detected separately in production: surprise -- DetectorRegistry::standard (detector.rs:923-937, constructed at platform.rs:4521, run every DISCOVER pass); low confidence -- the exploration desk's UncertainModel/StaleEstimate candidates from the self model (qip-kernel/src/exploration.rs:20-40); contradictions -- the falsification Book and record_causal_condition_failure (platform.rs:10252); missed opportunities -- score_declined's counterfactual regret on declined paths (platform.rs:16326, DeclinedScore); model drift -- qip_training::estimators::StreamingDrift and degraded_models in qip-deepbrain/src/learning.rs:1051. Unexplained P&L is refused rather than detected (Attribution::residual must be zero, attribution.rs:48-153), and requests no brain or tool can satisfy are not detected anywhere. None of these raises a GapSignal or opens any loop.",
+    "evidence": [
+      "backend/crates/services/qip-opportunity-engine/src/detector.rs:923-937; backend/crates/runtime/qip-kernel/src/platform.rs:4521",
+      "backend/crates/runtime/qip-kernel/src/exploration.rs:20-40 (low-confidence and stale-estimate candidates)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10252 (contradiction: edge failing its conditions); :16326 score_declined",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:1051 (degraded_models from StreamingDrift)",
+      "backend/crates/services/qip-learning-engine/src/attribution.rs:48-153 (residual refused, not surfaced)",
+      "rg -l 'GapSignal' backend/crates -> no matches (re-run 2026-09-25)"
+    ],
+    "gap": "No GapSignal type and no unifying step 1: the six detected triggers each end in their own record or refusal and open no loop; unexplained P&L is refused instead of surfaced; unsupported requests are not detected.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-002"
+    ],
+    "blocked_by": "",
+    "verification": "Each detector has its own suite (qip-opportunity-engine, qip-kernel --test exploration/causal_precedence/learning, qip-training). Needed: raise each of the seven triggers in turn and assert exactly one GapSignal naming its trigger.",
+    "work_item": "E16-novelty-detection",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: upgraded MISSING -> PARTIAL, consistent with EXPAND-013's treatment of scattered measures: six of the seven named triggers are detected in production code and tested (the row itself listed three as 'unconnected partial analogues'); the GapSignal that makes them step 1 of a loop does not exist."
+  },
+  {
+    "id": "EXPAND-026",
+    "status": "MISSING",
+    "current": "No classifier and no GapSignal exist to classify.",
+    "evidence": [
+      "rg -l 'GapSignal' backend/crates -> no matches (2026-09-25)"
+    ],
+    "gap": "No nine-class gap classifier exists.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-025"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: for generated GapSignals, assert the classifier always returns one of the nine classes and refuses a signal it cannot classify rather than defaulting.",
+    "work_item": "E16-gap-classification",
+    "tier": "T1",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "EXPAND-027",
+    "status": "PARTIAL",
+    "current": "No unified, gap-driven acquisition step exists, but each of the five acquisition ROUTES has an independent, real, production-reached mechanism for its own narrow purpose: lawful data discovery = qip_data_finder::DataFinder::assess (backend/crates/services/qip-data-finder/src/finder.rs:40-169, reached via qip-deepbrain's DiscoveryDesk); model/solver selection = qip_cost_router::Router::select (backend/crates/services/qip-cost-router/src/router.rs:384-441, reached every REASON pass); simulation construction = qip-simulation-engine (reached every SIMULATE pass). Connector/tool creation and specialist instantiation are NOT dynamic: a tool is hand-written code, and a specialist is one of 17 compiled qip_investment_agents::manifests functions (see EXPAND-001) -- neither is instantiated from a ranked gap because no ranked gap exists (EXPAND-002/EXPAND-014).",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/finder.rs:40-169",
+      "backend/crates/services/qip-cost-router/src/router.rs:384-441",
+      "backend/crates/services/qip-simulation-engine (reached every SIMULATE pass)",
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs (specialists are compiled, not instantiated)"
+    ],
+    "gap": "The five acquisition primitives exist independently for their own purposes but are never driven by, or connected to, a ranked GapSignal/CurriculumItem, because none exists; connector/tool creation and specialist instantiation specifically have no dynamic path at all.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-002",
+      "EXPAND-026"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-data-finder, -p qip-cost-router, -p qip-simulation-engine (each primitive's own suite). Needed: step 4 of the loop itself, driving one of the five routes from a ranked gap, which does not exist.",
+    "work_item": "E16-capability-acquisition",
+    "tier": "T2",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "EXPAND-028",
+    "status": "PARTIAL",
+    "current": "Reproducibility and provenance building blocks exist but are not unified into a campaign spanning the four environments. The closest artifact is ResearchCampaignClosed (qip-kernel/src/references.rs:228), journaled to the hash-chained log by qip-deepbrain's learning round (qip-deepbrain/src/campaign.rs): its CampaignManifest records every extent fetched as a DataReference, flags any entry a later source revision contradicts, and carries the concentration verdict -- dataset provenance and lineage for one historical learning window. qip_evolution uses a seeded Xoshiro256 RNG as its only randomness (qip-evolution/src/lib.rs); qip_data_finder's ReferenceLedger and catalogue digests track data provenance; qip_simulation_engine's MarketSimulator is point-in-time. The manifest records no seed or code version, the campaign covers historical data only (not simulated, paper and shadow), and no test re-runs a campaign to identical results.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/references.rs:228-266 (ResearchCampaignClosed: manifest, flagged entries, concentration)",
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs:1-70 (campaign walk: resolve references, TTL cache, hash check, manifest journaled)",
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs:674 a_window_is_assembled_through_a_campaign_whose_manifest_is_journaled",
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs:1031 the_campaign_that_used_the_original_is_flagged_and_the_one_that_used_the_revision_is_not",
+      "backend/crates/services/qip-evolution/src/lib.rs (Xoshiro256, deterministic seed)",
+      "backend/crates/services/qip-data-finder/src/ledger.rs (ReferenceLedger)"
+    ],
+    "gap": "The only campaign record is a historical data-fetch manifest: it names no seed or code version, spans none of the simulated/paper/shadow environments, and no test re-runs a completed campaign from its recorded inputs to identical results.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-006"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-deepbrain campaign (manifest journaled; revision flagging); cargo test -p qip-evolution, -p qip-data-finder. Needed: re-run a completed campaign from recorded inputs, seeds and code version and assert identical results, with every cited artifact resolving to a provenance entry.",
+    "work_item": "E08-campaign-provenance",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: status kept PARTIAL. The row said no ResearchCampaign artifact ties provenance together; ResearchCampaignClosed (references.rs:228, journaled from deepbrain campaign.rs, tested at campaign.rs:674/:1031) does for data provenance and lineage. Seeds, code version, the four environments and a re-run test are still missing."
+  },
+  {
+    "id": "EXPAND-029",
+    "status": "INCORRECT",
+    "current": "No Evaluation Brain independent of the producer exists, and both production promotion paths promote on the producer's own evaluation, which this invariant forbids. Strategies: qip-deepbrain's evolution round promotes a generated candidate to Holdout by putting 'the evidence the search just produced' in front of the lifecycle gate (qip-deepbrain/src/evolution.rs:888-930, factory promote at :925 with rationale 'the holdout gate read the search's own evidence'); the gate is separate code checking thresholds, but the evaluation it reads is the creator's. qip_evolution::challenger::ChallengerTest (challenger.rs:96-366) is a separate module run by the same foundry process (SuccessionDesk), and advance_challenger (promotion.rs:55) refuses a losing verdict. Models: ADR 0083's promote stage lives with the desk that fitted the candidate -- LearningDesk::promote_candidate (qip-deepbrain/src/learning.rs:821-900) scores the candidate on its own holdout tail against incumbents and calls Platform::promote_model, promoting development -> production with no independent evaluator. Human approval is required only for the capital-holding strategy rungs (Pilot/Scaled).",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:888-930 (holdout promotion on the search's own evidence)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:86-116,821-900 (model promotion rule lives with the fitting desk)",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:30-33 ('the promotion rule lives with the desk that fitted the candidate')",
+      "backend/crates/services/qip-evolution/src/challenger.rs:96-366; promotion.rs:55-70 (advance_challenger refuses a verdict about another strategy)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:1561 a_skilled_candidate_is_promoted_against_no_incumbent_and_an_equal_successor_is_not"
+    ],
+    "gap": "Both promotion paths let the creator's own evaluation promote its candidate; independence is at most module-level inside the producing foundry. Making the invariant hold means changing existing paths (route strategy holdout evidence and model promotion through an evaluator the producer does not control), not only adding one.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-004"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-evolution (challenger/promotion suites); qip-deepbrain learning.rs:1561. Needed: attempt to promote a candidate carrying only its creator's evaluation and assert refusal, then admission once an independent evaluator has scored it -- both the strategy holdout step and the model promote step would fail the first half today.",
+    "work_item": "E16-independent-evaluator",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P0 in the requirement register as a safety invariant; the one instance that exists (strategies) is itself hardened and tested, which is why this is PARTIAL rather than MISSING. verify: downgraded PARTIAL -> INCORRECT. The row credited structural independence to the strategy lane; production promotion to Holdout reads 'the search's own evidence' (deepbrain evolution.rs:888-930), and ADR 0083's model promotion is decided by the desk that fitted the model (learning.rs:821-900; model_serving.rs:30-33). Both are a creator's evaluation promoting its own candidate, which the requirement forbids."
+  },
+  {
+    "id": "EXPAND-030",
+    "status": "PARTIAL",
+    "current": "Several of the nine criteria are individually measured but not unified into one evaluation record that refuses promotion on a missing criterion. qip_simulation_engine::validation::{DeflatedSharpe, assess_overfitting} (validation.rs:29-392) covers leakage/robustness-style statistical discipline and is reached from qip-kernel's family_review.rs (:162,339) and central/learning.rs (:69); qip_cost_router::Router covers cost/latency-tier selection; qip-kernel's regime_allocation.rs covers regime sensitivity; the strategy challenger and the ADR 0083 model promotion each compare against incumbents (incremental value). Safety and legal-eligibility criteria have no evaluation anywhere in either promotion path, and today both paths promote candidates without results for all nine (the model path on holdout RMSE alone, qip-deepbrain/src/learning.rs:821-900).",
+    "evidence": [
+      "backend/crates/services/qip-simulation-engine/src/validation.rs:29-392",
+      "backend/crates/runtime/qip-kernel/src/family_review.rs:162,339",
+      "backend/crates/runtime/qip-kernel/src/central/learning.rs:69",
+      "backend/crates/services/qip-simulation-engine/tests/simulation.rs (deflated Sharpe / overfitting tests)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:821-900 (model promotion on one criterion)"
+    ],
+    "gap": "No single evaluation record holds a result for all nine named criteria (calibration, robustness, leakage, regime sensitivity, cost, latency, safety, legal eligibility, incremental value); safety and legal-eligibility specifically have no evaluation criterion anywhere in the promotion path.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-029"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-simulation-engine --test simulation. Needed: evaluate a candidate and assert its record holds a result for each of the nine criteria, refusing promotion naming the one missing when a result is removed.",
+    "work_item": "E16-nine-criteria-evaluation",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status kept PARTIAL; corrected the verification command (qip-simulation-engine has no tests/validation.rs -- the deflated-Sharpe tests are in tests/simulation.rs), removed the unsupported claim that qip-deepbrain's evolution.rs calls validation, and recorded that both promotion paths currently promote without all nine results."
+  },
+  {
+    "id": "EXPAND-031",
+    "status": "PARTIAL",
+    "current": "The prohibition's core holds structurally: no live money can move at all, by the three paper-trading layers -- (1) infrastructure/terraform/variables.tf refuses a live autonomy ceiling at plan time; (2) AutonomyLevel::deployable refuses the three live values at start-up in qip-api/qip-fastbrain/qip-deepbrain; (3) qip_edge::Cell has no constructor taking a non-paper ceiling and Cell::send refuses a live-class venue before the gateway is called (qip-edge/src/cell.rs:3864); qip_brokers::AdapterClass has only Simulated and Sandbox. But the requirement also states that a research output reaches execution only through EXPAND-003's lanes and EXPAND-004's gates, and its check asks that a promoted capability in any lane can reach only the simulated broker and that no promotion path names a live venue. Neither is tested: paper_boundary.rs and compliance_proof.rs never mention promotion, and the strategy promotion ladder does name live-capital rungs -- GateStage::Pilot 'Live with capital' and Scaled, for which holds_capital()/may_reach_a_venue() return true (qip-contracts/src/gate.rs:24-66) -- reachable in production by dual approval (qip-kernel/src/platform.rs:7111). The venue ladder alone is capped below live (VENUE_PROMOTION_CEILING = Paper, qip-lifecycle/src/venue_ladder.rs:81). EXPAND-003's lanes and EXPAND-004's gates are themselves PARTIAL/INCORRECT, so the 'only through' half cannot hold yet.",
+    "evidence": [
+      "infrastructure/terraform/variables.tf (refuses supervised_live/limited_autonomous_live/autonomous_live at plan time)",
+      "backend/crates/edge/qip-edge/src/cell.rs:3864 (Cell::send refuses GATE_LIVE_VENUE before the gateway is called)",
+      "backend/crates/edge/qip-edge/src/cell.rs:8473 the_send_seam_refuses_a_live_class_venue_and_the_gateway_is_never_called (unit test in cell.rs, not qip-edge/tests)",
+      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:37,148,219 (autonomy-ceiling refusal; no promotion assertions)",
+      "backend/crates/tests/qip-acceptance/tests/acceptance.rs:292 the_assembled_platform_cannot_be_talked_into_live_trading",
+      "backend/crates/libs/qip-contracts/src/gate.rs:24-66 (Pilot/Scaled hold capital and may reach a venue)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:7111 (dual-approval strategy promotion, production)",
+      "backend/crates/services/qip-lifecycle/src/venue_ladder.rs:81 (venue ladder ceiling is Paper)",
+      "grep -n -i 'promot' backend/crates/tests/qip-acceptance/tests/paper_boundary.rs backend/crates/tests/qip-acceptance/tests/compliance_proof.rs -> no matches (2026-09-25)"
+    ],
+    "gap": "No test asserts that a promoted capability, in any lane, reaches only the simulated broker; the strategy promotion path names live-capital rungs (Pilot/Scaled) reachable by dual approval, held back only by the autonomy ceiling rather than by the promotion path; and the 'only through EXPAND-003 lanes and EXPAND-004 gates' half depends on two requirements that do not hold (the hosted-LLM and model-promotion paths bypass the gates).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test paper_boundary --test compliance_proof --test acceptance; cargo test -p qip-edge the_send_seam_refuses_a_live_class_venue_and_the_gateway_is_never_called (the paper boundary). Needed: promote a strategy to Pilot/Scaled and a model through ADR 0083's path and assert every order either can produce reaches only the simulated broker, plus a scan that no promotion path names a live venue or live-capital rung.",
+    "work_item": "E00-paper-boundary-maintenance",
+    "tier": "T0",
+    "size": "S",
+    "notes": "Marked COMPLETE for the prohibition as stated; any future work that would let a promoted lane reach a live venue is refused by ADR 0099's conflict register (C1) and must stay refused. verify: downgraded COMPLETE -> PARTIAL; e2e true -> false; blocked_by cleared (it is not a BLOCKED row). The cited tests prove the autonomy ceiling, not promotion: neither paper_boundary.rs nor compliance_proof.rs mentions promotion, and none of the cited tests crosses processes. The strategy ladder names Pilot/Scaled 'live with capital' rungs reachable by dual approval (platform.rs:7111). Keeping any live path refused (C1) is unchanged."
+  },
+  {
+    "id": "EXPAND-032",
+    "status": "PARTIAL",
+    "current": "qip-kernel's LEARN stage (stage_learn, platform.rs:13828) updates memory and world-model beliefs from paper-trading outcomes, reached from production every cycle: calibrate_resolved calls Platform::remember_resolved (platform.rs:11538, called at :14565), which moves each resolved thesis's episode (qip_ai memory Episode, with its outcome) into Platform::episodes; belief calibration runs through learn_from in the same path; vetoes are scored counterfactually by score_declined (:16326) and filled orders by score_filled (:16483); causal edges are marked failing via record_causal_condition_failure (:10252). qip_agents::memory::ResearchMemory -- which this row previously cited as the memory LEARN updates -- is constructed empty (platform.rs:4271) and never written in production. Source scores are not updated from outcomes: the source lead ledger is fed on ingest (source_leads.observe, platform.rs:8623), not by any trading result. Reflex episodes do not reach LEARN, and no update produces a curriculum item (no curriculum exists, EXPAND-014).",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13828 (stage_learn), :11538/:14565 (remember_resolved), :16326 (score_declined), :10252",
+      "backend/crates/runtime/qip-kernel/tests/episodic.rs:280 a_resolved_episode_records_how_far_the_outcome_was_from_what_the_claim_expected",
+      "backend/crates/runtime/qip-kernel/tests/episodic.rs:838 the_learn_stage_reads_regime_experience_from_memory_and_journals_it_with_the_blind_spots",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4271 (ResearchMemory::new(); no production writer)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8623 (source leads observed on ingest, not from outcomes)"
+    ],
+    "gap": "Memory and world-model beliefs are updated from outcomes; source scores are not updated from outcomes at all; failed reflex episodes never reach LEARN; no update produces a future curriculum item.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "EXPAND-014"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test episodic --test causal_precedence --test learning. Needed: replay outcomes including a veto, a missed opportunity and a failed reflex episode, and assert each updates memory, a source score and a world-model belief and produces a curriculum item traceable to the outcome's event.",
+    "work_item": "E16-outcomes-to-curriculum",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status kept PARTIAL; evidence corrected. ResearchMemory::record_episode/record_lesson have no non-test caller (the memory LEARN writes is Platform::episodes via remember_resolved), and 'source scores updated from outcomes' was unsupported -- the lead ledger is fed on ingest -- so the gap now names source scores too."
+  },
+  {
+    "id": "EXPAND-033",
+    "status": "PARTIAL",
+    "current": "Four of the five named fields already travel together in one record, and the fifth lives elsewhere. qip_data_finder::source::SourceCandidate::new (backend/crates/services/qip-data-finder/src/source.rs:84-128) requires identity (SourceIdentity), discovered_from and discovered_at (provenance), declared_licensing (LicensingPosture), cost (SourceCost) and declared_coverage including update_frequency (declared freshness, coverage.rs:131-137) -- a candidate cannot be built without them. Measured freshness is qip_data_finder::freshness::{LeadLedger, SourceLeadSummary}; licence decisions are admission::{LicensingDecision} plus legal.rs's three-valued Legality; utility is scoring::{RoutingClass, SourceScores}. All are reached from production through DataFinder::assess (finder.rs:40-169), called from qip-deepbrain's DiscoveryDesk (main.rs:508, discovery.rs:173 -> Platform::assess_sources, platform.rs:15946), and the crate carries 178 tests (118 integration, 60 unit). No single record carries utility beside the other four, and no test refuses an entry missing exactly one of the five as a combined gate.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/source.rs:84-128 (SourceCandidate: identity, provenance, licensing, cost, coverage)",
+      "backend/crates/services/qip-data-finder/src/coverage.rs:131-137 (update_frequency)",
+      "backend/crates/services/qip-data-finder/src/quality.rs:12-30 (SourceQuality/SourceCost)",
+      "backend/crates/services/qip-data-finder/src/freshness.rs:1-30 (LeadLedger)",
+      "backend/crates/services/qip-data-finder/src/finder.rs:40-169",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:15946-15952 (assess_sources)",
+      "qip-data-finder tests: legality.rs (27 tests), tiers.rs (19 tests), lifecycle.rs (10 tests), registration.rs"
+    ],
+    "gap": "Provenance, cost, licence, freshness and utility are each modelled and tested in a separate type; no single Source Registry entry carries all five, and no test refuses an entry missing exactly one of the five as a combined gate.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-data-finder (legality.rs, tiers.rs, lifecycle.rs and the finder.rs suites). Needed: register a source missing one of the five fields as ONE combined record and assert refusal; register a complete one and assert it is stored and readable with all five together.",
+    "work_item": "E08-unified-source-registry",
+    "tier": "T1",
+    "size": "M",
+    "notes": "qip-data-finder's own module doc already names this crate as the audit's largest former Layer-1 gap that has since been closed piecemeal; unifying the five fields into one registry record is the remaining step. verify: status kept PARTIAL; corrected details. scoring::Routing does not exist (it is RoutingClass); the crate has 178 tests, not 111; and SourceCandidate::new already requires provenance, licence, cost and declared freshness together, so the missing piece is utility in the same record plus the combined refusal test."
+  }
+]

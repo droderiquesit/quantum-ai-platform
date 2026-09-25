@@ -1,0 +1,692 @@
+[
+  {
+    "id": "AMBIENT-001",
+    "status": "MISSING",
+    "current": "nothing implements a distinct 'Proactive Ambient Model Mesh'. The closest adjacent infrastructure is qip-fastbrain's own run loop (backend/crates/apps/qip-fastbrain/src/node.rs: fn step, the `loop` at node.rs:192-266) which polls a feed and calls Platform::run_cycle on a configured cycle_interval without a per-cycle external request -- but that loop *is* the strategy-tick cycle itself (SENSE..LEARN), not a background process that runs independently of one. No code path runs anything when no cycle is in flight.",
+    "evidence": [
+      "backend/crates/apps/qip-fastbrain/src/node.rs:192-266 (the cycle loop, sleeps the remainder of cycle_interval)",
+      "rg for AmbientMesh|ambient_mesh|ProactiveAmbient across backend/crates: no hits"
+    ],
+    "gap": "No component runs on its own schedule or on events independent of the main SENSE..LEARN cycle; the only 'continuous' loop that exists is the trading cycle itself, which is exactly what the requirement says the mesh must not depend on.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test exists. Would need a test asserting mesh state advances during a window with zero calls to Platform::run_cycle.",
+    "work_item": "E09-ambient-mesh-scheduler",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Could be built in-tree in Rust with no new dependency, following the fastbrain node.rs loop pattern as a second, independent loop -- not blocked by ADR 0099's conflict register on its own."
+  },
+  {
+    "id": "AMBIENT-002",
+    "status": "MISSING",
+    "current": "nothing maintains a stateful, multi-horizon expected-state distribution. qip-world-model (backend/crates/services/qip-world-model/src/{world.rs,causal.rs}) holds a single evidence-freshness horizon (CAUSAL_GRAPH_HORIZON) used to admit or decay causal claims, not a family of forecast distributions spanning milliseconds to years. qip-capital-fabric/src/forecast.rs builds a point-plus-interval demand forecast, but only for capital-readiness lanes (AMBIENT-013), not for general world/market state.",
+    "evidence": [
+      "backend/crates/services/qip-world-model/src/causal.rs:1082-1136 (single decay horizon, not multi-horizon state)",
+      "backend/crates/services/qip-capital-fabric/src/forecast.rs (interval forecast scoped to capital demand only)",
+      "rg 'ForecastModel|forecast_model' backend/crates: no hits outside capital-fabric"
+    ],
+    "gap": "No type holds a forecast distribution per horizon that carries forward between updates; no millisecond-to-year horizon ladder exists anywhere.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test exists. Would need a replay test asserting per-horizon state persists across updates for horizons spanning sub-second to multi-year.",
+    "work_item": "E09-multi-horizon-forecast-state",
+    "tier": "T3",
+    "size": "L",
+    "notes": "A simple in-tree deterministic multi-horizon state structure is not blocked; the policy_flags NON_RUST/NEW_DEPENDENCY apply only to a learned/hosted-model variant, which would be BLOCKED under C4/C5 if attempted via a managed model service."
+  },
+  {
+    "id": "AMBIENT-003",
+    "status": "PARTIAL",
+    "current": "qip_opportunity_engine::detector::DetectorRegistry (backend/crates/services/qip-opportunity-engine/src/detector.rs) runs 8+ statistical anomaly detectors (ReturnAnomalyDetector, VolatilityShiftDetector, StructuralBreakDetector, RegimeDetector, CorrelationBreakdownDetector, LiquidityDetector, ObservationDetector) that report a z-score, an expected false-positive rate and a description for each finding. It is wired into every cycle's DISCOVER stage: `self.opportunities.scan(&detection, &self.context)` at backend/crates/runtime/qip-kernel/src/platform.rs:10412, reached from every deployable binary via Platform::run_cycle. It runs unconditionally each cycle, surfacing findings before REASON runs, without any external request for that specific detection.",
+    "evidence": [
+      "backend/crates/services/qip-opportunity-engine/src/detector.rs (Detector trait, 13 AnomalyKind variants)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10412 (self.opportunities.scan in stage_discover)",
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs: the_return_detector_finds_a_large_move_and_ignores_a_calm_series (:38), the_regime_detector_fires_on_a_transition_and_not_on_a_stable_series (:142), every_detector_declares_its_noise_rate (:335)"
+    ],
+    "gap": "Detection is a step inside the same request/tick-driven cycle rather than a separately-scheduled scan; there is no dedicated AmbientSignal contract type distinguishing a 'weak signal below every strategy's entry threshold' from an ordinary Opportunity, and no test asserts detection precedes a strategy signal on the same instrument as its own property.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-opportunity-engine --test discovery proves the detectors fire correctly; no test proves the ordering/threshold claim the requirement's verification method names.",
+    "work_item": "E09-ambient-weak-signal-contract",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Strongest existing overlap with any AMBIENT requirement outside AMBIENT-012/013/014."
+  },
+  {
+    "id": "AMBIENT-004",
+    "status": "PARTIAL",
+    "current": "Platform::stage_simulate (backend/crates/runtime/qip-kernel/src/platform.rs:12559) calls stress_the_book (:12598, defined :12749) on every cycle with no caller request. It applies qip_simulation_engine::scenario::standard_library() (:12799), an adversarial worst-plausible scenario, and, for every driver the world model's causal graph reaches a held position from, a causal_scenario (:12956) whose name carries the originating driver (CAUSAL_SCENARIO_PREFIX 'causal:', scenario.rs:515). UNDERSTAND rewrites the graph from the tape each cycle, so a changed driver relationship changes the scenario set the next SIMULATE runs. Reached from every deployable binary through Platform::run_cycle.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12559 fn stage_simulate; :12598 self.stress_the_book(now); :12799 standard_library(); :12956 causal_scenario(origin, ...)",
+      "backend/crates/services/qip-simulation-engine/src/scenario.rs:512-542 (CAUSAL_SCENARIO_PREFIX and causal_scenario: a shock at a named driver propagated through the causal graph)",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:150 the_simulate_stage_stresses_the_open_book_against_the_standard_library",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:372 a_driver_the_understand_stage_established_from_the_tape_is_stressed_through_the_graph"
+    ],
+    "gap": "Scenarios are recomputed from scratch inside each strategy-tick cycle, not held as branches carried between updates. Nothing re-simulates when a conditioning input changes; the re-run waits for the next tick. Only loss scenarios over the currently held book are produced (a driver the book does not sit downstream of yields no scenario, scenario.rs:531-535), not future paths across world and markets. The 'condition' survives only as the driver named in the scenario label, not as a recorded condition field.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test stress (the two tests above) proves unrequested per-cycle simulation of causal scenarios built from a graph edge UNDERSTAND established. No test changes a conditioning input and asserts that a held branch re-simulates and records its condition, which is the requirement's check.",
+    "work_item": "E09-conditional-scenario-branches",
+    "tier": "T3",
+    "size": "M",
+    "notes": "qip-simulation-engine::scenario is real, tested, production infrastructure that a scenario-branch feature could be built on top of. verify: upgraded MISSING -> PARTIAL. The row said scenario code is only 'invoked on demand for stress testing'; stage_simulate runs the library and graph-derived causal scenarios on every cycle with no request (platform.rs:12559-12956, tests stress.rs:150 and :372). Flags set for that permitted partial form."
+  },
+  {
+    "id": "AMBIENT-005",
+    "status": "PARTIAL",
+    "current": "The specialist panel is woken selectively by a detection, not unconditionally. Platform::stage_reason (backend/crates/runtime/qip-kernel/src/platform.rs:10794) calls reason_about_the_queue (:10839). That returns 'nothing in the queue to reason about' unless DISCOVER queued an opportunity from a detector finding. It then asks qip-cost-router whether convening the agent organisation is worth it for that opportunity, and dispatches the organisation (self.organisation.dispatch, :10998) only when it is. Each decision is kept as a ReasonRouting record (:2357) naming the originating opportunity_id, the router's rationale and whether the panel convened, and is counted under REASON_ROUTINGS{outcome=convened|declined} (:10768-10783). The cycle is driven by qip-fastbrain's own loop (backend/crates/apps/qip-fastbrain/src/node.rs:133), not by a human or API request.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10839-10960 reason_about_the_queue (empty queue returns early; cost-router refusal returns 'the panel was not convened')",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10998 self.organisation.dispatch, reached only past those gates",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:2357 pub struct ReasonRouting (opportunity_id, rationale, dispatched, convened)",
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs:957 the_reason_stage_records_where_the_router_put_the_decision_and_whether_the_panel_convened",
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs:1400 a_reasoning_confidence_bar_that_is_not_a_probability_stops_the_decision_and_names_the_field (declined path)"
+    ],
+    "gap": "Activation is a step of the tick-driven SENSE..LEARN cycle, not a wake issued by an independent ambient mesh. The whole organisation is convened rather than the specialists the signal concerns. No research pathway is ever woken. Only the queue head is considered each cycle. The record is ReasonRouting, held as the cycle's latest routing, not an AttentionEvent that references an AmbientSignal and states that no human requested it (AMBIENT-019).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-010",
+      "AMBIENT-019"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test kernel the_reason_stage_records_where_the_router_put_the_decision_and_whether_the_panel_convened proves a detection-driven convening decision is recorded with its outcome. No test injects an ambient signal with no request in flight and asserts an AttentionEvent names it as origin.",
+    "work_item": "E09-ambient-wake-pathway",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Needs AttentionEvent (AMBIENT-019) and a router (AMBIENT-010) to have anywhere to record the wake reason. verify: upgraded MISSING -> PARTIAL. The row said REASON dispatches 'unconditionally every cycle regardless of what DISCOVER found'; it does not. reason_about_the_queue (platform.rs:10839) convenes the panel only for a queued detection the cost router judges worth it, and records why (ReasonRouting, :2357)."
+  },
+  {
+    "id": "AMBIENT-006",
+    "status": "PARTIAL",
+    "current": "qip_opportunity_engine::detector::ObservationDetector (backend/crates/services/qip-opportunity-engine/src/detector.rs:837-900) computes, per subject, a z-score of the latest observation against the median/MAD of recent history and emits {observed, expected, z_score} together in one Anomaly record -- structurally the residual/expected-baseline/score triple the requirement asks for. Wired into stage_discover every cycle (platform.rs:10412) and reached from every deployable binary.",
+    "evidence": [
+      "backend/crates/services/qip-opportunity-engine/src/detector.rs:864-895 (z = (latest - centre) / scale; an Anomaly{z_score, observed, expected, ...} is emitted only when |z| >= threshold 2.5)",
+      "backend/crates/services/qip-opportunity-engine/src/detector.rs:932 (ObservationDetector registered in DetectorRegistry::standard, which the kernel uses at platform.rs:4520-4523)",
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:298 the_observation_detector_finds_a_surprise (asserts one anomaly, its kind and z_score > 3.0; it does not assert observed or expected)"
+    ],
+    "gap": "The 'expected state' compared against is a rolling median/MAD over recent observations, not a maintained forecast produced by AMBIENT-002's (missing) forecast models; the requirement explicitly measures surprise against 'the forecasts', which do not exist. No property test proves the score is minimal exactly when observation matches expectation across generated pairs. The score is not maintained: an observation below the 2.5 threshold emits nothing, so no per-subject surprise state exists between findings. The cited test does not assert that the residual and baseline are emitted with the score.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-002"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-opportunity-engine --test discovery the_observation_detector_finds_a_surprise proves the mechanism; the requirement's own property-test verification method is not implemented.",
+    "work_item": "E09-surprise-against-forecast-state",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Once AMBIENT-002 exists, ObservationDetector's residual pattern could be retargeted at forecast state instead of rolling history. verify: status kept PARTIAL. Evidence corrected: the row said the test asserts 'observed/expected recorded', but discovery.rs:298 asserts only count, kind and z_score. Gap extended: nothing below threshold is emitted, so the score is not maintained."
+  },
+  {
+    "id": "AMBIENT-007",
+    "status": "PARTIAL",
+    "current": "Premises of beliefs are re-tested every cycle. crate::falsification::Book::review (backend/crates/runtime/qip-kernel/src/falsification.rs:229), called from Platform::stage_learn (platform.rs:13957), evaluates the falsifier of every open recorded thesis (a belief REASON formed) against world-model closes that became knowable after the claim was formed, charges each test to its family's trial ledger and records refutations in a register (Book::refutation_of, :204). A thesis whose falsifier fired is graded falsified. Reached from every deployable binary through run_cycle. Strategies (StrategyDna) and risk models carry no premise at all.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/falsification.rs:1-12 (module doc: 'Book::review runs it, once per cycle, from Platform::stage_learn'), :229 pub fn review",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13957 .review(&self.world.read(), &self.predictions, now, outcome)",
+      "backend/crates/runtime/qip-kernel/tests/falsification.rs:212 the_learn_stage_reports_a_falsification_pass_on_every_cycle_including_an_idle_one",
+      "backend/crates/runtime/qip-kernel/tests/falsification.rs:333 a_statistic_derived_only_from_closes_knowable_after_a_claim_was_formed_can_refute_it",
+      "backend/crates/runtime/qip-kernel/tests/falsification.rs:496 a_thesis_whose_own_falsifier_fired_is_graded_falsified_rather_than_credited_as_a_correct_call"
+    ],
+    "gap": "Only beliefs are covered, and only theses whose falsifier mirrors a machine-readable threshold claim; the rest are counted unevaluable. Strategies and risk models record no premise to retest. A refutation is recorded against the claim's family and statement but does not name the strategies or positions that depended on it. It runs inside the tick-driven LEARN stage rather than as an independent sentinel with its own check interval.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test falsification proves open theses are re-tested each cycle on held-out data and graded falsified when their falsifier fires. No test registers a strategy premise, falsifies it, and asserts the sentinel names the strategy.",
+    "work_item": "E09-assumption-sentinels",
+    "tier": "T3",
+    "size": "M",
+    "notes": "Blocked on REASON/RISK first defining an explicit premise concept on StrategyDna and risk models; qip-world-model::falsification is real, tested, wired infrastructure this could build on for the hypothesis half. verify: upgraded MISSING -> PARTIAL. The row cited only qip_world_model::falsification as 'adjacent'; the kernel wires it (falsification.rs:229, called from stage_learn at platform.rs:13957) to re-test every open thesis each cycle, which is the belief third of the requirement."
+  },
+  {
+    "id": "AMBIENT-008",
+    "status": "MISSING",
+    "current": "Existing dislocation code detects *full* signals, not precursors: qip_prediction::arbitrage (backend/crates/services/qip-prediction/src/arbitrage.rs) prices already-locked-profit sets within one market; qip_prediction::cross (cross.rs) prices already-mispriced pairs across two venues on the same proposition; qip_edge::arbitrage::ArbitrageDesk (backend/crates/edge/qip-edge/src/arbitrage.rs) scans and sizes multi-leg cycles at the edge cell. None of these surface a precursor before a full signal exists, and none is organised around the five named categories (cross-asset, cross-region, event, physical-product, multi-leg).",
+    "evidence": [
+      "backend/crates/services/qip-prediction/src/arbitrage.rs:1-14 (detects a locked-profit set, sizes it -- already a full signal)",
+      "backend/crates/services/qip-prediction/src/cross.rs:1-14 (already-mispriced cross-venue pair)",
+      "backend/crates/edge/qip-edge/src/arbitrage.rs:1-20 (ArbitrageDesk scans books at size -- a signal, not a precursor)"
+    ],
+    "gap": "No sentinel produces a precursor ahead of a full signal for any of the five named dislocation kinds; what exists is the signal-generation layer itself, the opposite end of the pipeline from what is required.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E09-opportunity-precursor-sentinels",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Cross-region detection needs multi-region data (MULTI_REGION); physical-product depends on COMMERCE (master Phase 7, not yet built); multi-leg precursor work could sit ahead of the existing edge ArbitrageDesk. verify: status kept MISSING, context added. The nearest in-tree analogues are DISCOVER's CorrelationBreakdownDetector (a cross-asset dislocation, detected as it happens rather than ahead of it) and CatalystDetector's 'catalyst landing' statement (a genuine event precursor). The kernel registers CatalystDetector::default() through DetectorRegistry::standard() (detector.rs:923-935, platform.rs:4520-4523) and never feeds it an ImpactHistory, so catalyst-landing precursors cannot fire in production. Both are already credited under AMBIENT-003."
+  },
+  {
+    "id": "AMBIENT-009",
+    "status": "PARTIAL",
+    "current": "Pieces exist; none is organised as a risk sentinel. (1) RiskMonitor::observe runs every cycle in stage_decide (backend/crates/runtime/qip-kernel/src/platform.rs:13333) and returns MonitorAction::Warn when a limit is close but not breached (backend/crates/services/qip-risk-engine/src/monitor.rs:24). That is a precursor raised before the hard limit, but by proximity arithmetic, not by a model. (2) LiquidityDetector (spread widening and depth thinning, detector.rs:758) and CorrelationBreakdownDetector (detector.rs:670) run in DISCOVER every cycle (platform.rs:10412), but their findings go to the opportunity queue, not to risk review. (3) AggregateExposure::crowded (backend/crates/services/qip-capital/src/exposure.rs:201) is computed on every cell report in CentralPlane (central/plane.rs:2133) and lists names several cells hold. (4) qip_capital::collateral::LiquidationCascade (collateral.rs:345, CollateralGraph::cascade :921) models margin-domain contagion, but qip-kernel's cross_margin.rs:47-66 states it is library-only and it has no production caller. (5) qip-simulation-engine's crowding.rs measures counterparty crowding for candidate evaluation in qip-deepbrain evolution.rs:1168-1181, not for the live book.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13333 (monitor.observe(&risk_state, ...) in stage_decide)",
+      "backend/crates/services/qip-risk-engine/src/monitor.rs:20-35 (MonitorAction::Warn: 'A limit is close. Recorded and surfaced; nothing is stopped.')",
+      "backend/crates/libs/qip-risk/tests/risk.rs:619 approaching_a_limit_warns_without_blocking",
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:239 the_liquidity_detector_fires_on_widening_but_not_tightening; :176 the_correlation_detector_finds_a_broken_relationship",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:2133-2135 (self.exposure.crowded(minimum_cells_for_crowding) on every ingest)",
+      "backend/crates/runtime/qip-kernel/src/cross_margin.rs:47-66 (LiquidationCascade contagion arithmetic is library-only)",
+      "backend/crates/libs/qip-risk/src/limits.rs:794-840 (with_tail_risk feeds expected shortfall to a hard limit, not a precursor)"
+    ],
+    "gap": "No component models tail conditions, contagion, liquidity evaporation, crowding and correlated failure together and raises a risk precursor to the risk desk. The only precursor that reaches risk (Warn) is limit-proximity arithmetic. Liquidity and correlation detections are routed as opportunities. Contagion modelling (LiquidationCascade) is reached only from tests. No replay test shows a sentinel warning strictly before the first hard-limit breach on the same history.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "qip-risk tests/risk.rs:619 approaching_a_limit_warns_without_blocking and qip-opportunity-engine discovery.rs:239 and :176 prove the pieces fire. The requirement's replay-ordering check (warning before first breach) is not implemented.",
+    "work_item": "E09-risk-sentinels",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Sentinels must only warn and must never replace the deterministic risk gate, per the domain rule; RiskMonitor already establishes the pattern of a non-blocking escalation ladder this could extend. verify: upgraded MISSING -> PARTIAL. The row said 'no model of contagion, liquidity evaporation, crowding or correlated failure exists anywhere' after searching only the two risk crates. RiskMonitor's integrated Warn arm, the liquidity and correlation detectors, cross-cell crowding in the central plane, and the (unintegrated) LiquidationCascade contagion model are partial behaviour."
+  },
+  {
+    "id": "AMBIENT-010",
+    "status": "MISSING",
+    "current": "nothing. No 'Attention Router' or 'Ambient Attention Brain' type exists anywhere in the workspace.",
+    "evidence": [
+      "rg -i 'AttentionRouter|Attention Router|AmbientAttention' backend/crates --glob '*.rs': no hits"
+    ],
+    "gap": "No component combines surprise, opportunity, risk and assumption signals and routes a material deviation to one of the five named outcomes. Its inputs now exist only partially: AMBIENT-006, -007 and -009 are PARTIAL and AMBIENT-008 is MISSING.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-006",
+      "AMBIENT-007",
+      "AMBIENT-008",
+      "AMBIENT-009",
+      "AMBIENT-019"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E09-attention-router",
+    "tier": "T3",
+    "size": "L",
+    "notes": "The core of the mesh; nothing else in AMBIENT can wake anything until this exists. verify: status kept MISSING; the gap no longer says none of the four inputs exists. The nearest analogue is reason_about_the_queue plus qip-cost-router (platform.rs:10839-10960). That judges materiality for one input class (a DISCOVER opportunity) and one outcome (convening the panel). It is credited under AMBIENT-005, not here."
+  },
+  {
+    "id": "AMBIENT-011",
+    "status": "MISSING",
+    "current": "nothing. No 'World Model Federation' type exists; qip-world-model holds one world/causal graph, not multiple competing world models being weighed, and there is no typed exchange of surprise/hypotheses/scenarios/attention with anything called an ambient mesh.",
+    "evidence": [
+      "rg -i 'WorldModelFederation|World Model Federation' backend/crates --glob '*.rs': no hits"
+    ],
+    "gap": "Neither side of the link exists: there is no federation of competing world models to feed the mesh, and no mesh to type its four outputs (surprise/hypotheses/scenarios/attention) back into it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-002",
+      "AMBIENT-004"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E09-world-model-federation-link",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Depends on a World Model Federation existing at all, which is outside this domain's scope (WORLD)."
+  },
+  {
+    "id": "AMBIENT-012",
+    "status": "PARTIAL",
+    "current": "qip_twin::counterfactual::CounterfactualEngine prices alternatives to a decision. Platform::evaluate_alternatives (backend/crates/runtime/qip-kernel/src/platform.rs:16218) is called every cycle from stage_learn by two paths: score_declined (:16326, called at :13962) prices the alternatives to a refused order once its horizon has passed, and score_filled (:16483, called at :13976) does the same for filled orders. Both share COUNTERFACTUALS_PER_CYCLE = 8. Each priced refusal is kept as a DeclinedScore (:2792) in Platform::declined_scores, a process-memory Vec bounded to DECLINED_HISTORY = 256 (:1056). ADR 0055 reads it back as learning data: rule_review::regret_by_rule, precedent_declines, and counterfactual_sizing_multiplier (:11795). The cycle journal carries only CounterfactualJournal counts (scored, regrets, deferred; :2608, written at :9398), not the per-decision simulated outcomes.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:16218 Platform::evaluate_alternatives",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13962 score_declined and :13976 score_filled, called directly from stage_learn",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:16413-16429 (DeclinedScore pushed to declined_scores and drained past DECLINED_HISTORY)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:2608-2624 CounterfactualJournal (counts only) and :9398 counterfactuals: self.cycle_counterfactuals.clone() in journal_cycle",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:15530-15546 (a posture or venue-state refusal is never queued for the twin; a refusal arriving while 256 wait is counted under reason=capacity and not priced)",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs:360 a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs:591 a_filled_order_is_priced_once_its_horizon_has_passed_and_its_size_regrets_are_recorded",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs:722 declined_and_filled_paths_share_one_per_cycle_counterfactual_cap",
+      "backend/crates/tests/qip-acceptance/tests/e2e.rs:846-870 (layer 6 constructs a CounterfactualEngine and calls evaluate by hand; it does not exercise Platform::score_declined/score_filled)"
+    ],
+    "gap": "The simulated outcomes are retained only in process memory. Per-decision records (DeclinedScore, FillScore) are not journaled; the log holds only per-cycle counts. They are lost on restart and cannot be reproduced from the log, which the requirement's verification demands. Not every declined alternative gets a record: posture and venue-state refusals are never queued, and refusals arriving while 256 wait are counted and dropped. The only acceptance-level walk (e2e.rs layer 6) prices a counterfactual by hand rather than through the LEARN path.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test learning (the three tests above) proves refused and filled orders are priced automatically in LEARN and retained in memory with their gate. No test replays a run and checks that every declined alternative has a record reproducible from the log.",
+    "work_item": "E06-journal-counterfactual-outcomes",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Runs automatically every cycle from stage_learn with no per-evaluation caller request, satisfying the 'continuous' framing even though the enclosing cycle itself is tick-driven. verify: downgraded COMPLETE -> PARTIAL and e2e -> false. (a) The 'retained ... reproducible from the log' half fails: DeclinedScore lives in a 256-entry in-memory Vec and only counts reach the journal (platform.rs:2608, :9398, :16413-16429). (b) Not every declined alternative is priced (:15530-15546). (c) The cited e2e test calls CounterfactualEngine directly (e2e.rs:846-870), so it does not demonstrate the automatic path. Also corrected: score_declined is called directly from stage_learn (:13962), not via calibrate_resolved."
+  },
+  {
+    "id": "AMBIENT-013",
+    "status": "PARTIAL",
+    "current": "qip_capital_fabric::plan::PrePositioningPlanner (backend/crates/services/qip-capital-fabric/src/plan.rs) recommends pre-positioning across qip_capital_fabric::forecast::DemandKind::{Cash, Collateral, FxFunding, Inventory, Margin} (forecast.rs:50-61), naming the resource, location and horizon (PrePositionMove, plan.rs:242-260). Wired every cycle: Platform::plan_pre_positioning (platform.rs:18083, called from stage_decide) builds and journals a PrePositioningPlanned recommendation, and Platform::score_pre_positioning (platform.rs:18146, called from stage_learn) evaluates it against realised demand once its window closes -- the paper/shadow evaluation ADR 0021 permits.",
+    "evidence": [
+      "backend/crates/services/qip-capital-fabric/src/forecast.rs:50-61 (DemandKind: Cash, Collateral, FxFunding, Inventory, Margin)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18083 fn plan_pre_positioning, :18146 fn score_pre_positioning",
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:714 decide_plans_the_pre_positioning_on_its_forecasts_and_retains_one_plan_per_window",
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:526 a_pre_positioning_plan_is_scored_against_what_the_world_needed",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:15637-15643 (record_capital_demand(..., DemandKind::Cash, ...) is the only production feed)"
+    ],
+    "gap": "'Hedges' -- one of the four resource kinds the statement names (collateral, cash, inventory or hedges) -- is not a modeled DemandKind; Margin (clearing/prime-broker calls) is the closest and is a different concept from anticipating a hedge need. In the deployed path the only demand the platform records is DemandKind::Cash, fed from fills (platform.rs:15637-15643), and no app calls record_capital_demand. So the collateral, inventory and margin lanes exist in the service and its tests but are never forecast in production. The planner is also handed an idle envelope there (see AMBIENT-014).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test platform_outcomes decide_plans_the_pre_positioning_on_its_forecasts_and_retains_one_plan_per_window and a_pre_positioning_plan_is_scored_against_what_the_world_needed",
+    "work_item": "E07-capital-readiness-hedge-lane",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Carrying out a pre-positioning transfer is a treasury movement and is BLOCKED under ADR 0021/ADR 0099 C1; only the recommendation and its paper/shadow evaluation are in scope here, and that permitted form is what this row scores. verify: status kept PARTIAL. Gap extended: production records only the Cash lane (platform.rs:15637-15643), so collateral, inventory and margin anticipation are service/test-only today."
+  },
+  {
+    "id": "AMBIENT-014",
+    "status": "PARTIAL",
+    "current": "qip_capital_fabric::plan::PrePositioningPlanner::plan (backend/crates/services/qip-capital-fabric/src/plan.rs:509) refuses rather than clips. A move larger than the remaining headroom is refused as BudgetExhausted (:733-747), and one that would take a venue past its allocator limit is refused as VenueLimit (:755-770), each with the figures in the detail. Headroom is the smaller of mobile capital and the live allocation's drawdown-adjusted room (fn headroom, :803). The planner is reached every cycle from stage_decide through Platform::plan_pre_positioning (platform.rs:13228, :18083). But Platform::pre_position (:18047) hands it `self.pre_positioner.allocator().allocate(&[], 0.0, now)`: an allocation with no strategy proposals and zero drawdown.",
+    "evidence": [
+      "backend/crates/services/qip-capital-fabric/src/plan.rs:188-203 RefusalReason::{BudgetExhausted, VenueLimit, ...}",
+      "backend/crates/services/qip-capital-fabric/src/plan.rs:733-770 (refusal on budget and on venue limit, never a partial transfer)",
+      "backend/crates/services/qip-capital-fabric/src/plan.rs:803 fn headroom",
+      "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:189 a_plan_never_commits_more_than_the_budget_it_was_given (200 generated cases, asserts budget and venue refusals were reached)",
+      "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:958 a_transfer_breaching_the_allocators_venue_limit_is_refused_not_clipped",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18047 (let live = self.pre_positioner.allocator().allocate(&[], 0.0, now)?; the doc at :18019 says 'checked against the allocator's live limits')"
+    ],
+    "gap": "In the only production path the envelope the recommendation is checked against is not the one governing the resource. Platform::pre_position builds an idle allocation (no proposals, drawdown 0.0), so the deployed plan is bounded by the allocator's static total budget and venue limits, never by the live strategy allocation or the drawdown-adjusted budget. The service's own drawdown shutdown (capital_fabric.rs the_drawdown_response_shuts_the_fabric_down_with_the_rest_of_the_book) therefore never engages in production. No qip-kernel test asserts the platform's emitted plan stays within, or is refused outside, a live envelope. The service-level refuse-not-clip property holds for whatever envelope it is handed.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-capital-fabric --test capital_fabric a_plan_never_commits_more_than_the_budget_it_was_given a_transfer_breaching_the_allocators_venue_limit_is_refused_not_clipped proves the service invariant. Nothing proves it against the live envelope at the composition root.",
+    "work_item": "E07-pre-positioning-live-envelope",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Test names directly mirror the invariant's own wording ('refused, not clipped'), and follow the house principle in CLAUDE.md #2 (refuse rather than guess). verify: downgraded COMPLETE -> PARTIAL. The service refuses rather than clips and is property-tested, but the integrated path checks recommendations against allocate(&[], 0.0, now) (platform.rs:18047): an idle, drawdown-free envelope, not the live one. The row's 'computes headroom against the live allocation' is true of the service and false of the platform."
+  },
+  {
+    "id": "AMBIENT-015",
+    "status": "PARTIAL",
+    "current": "crate::exploration::review (backend/crates/runtime/qip-kernel/src/exploration.rs:168), called every cycle from stage_decide (platform.rs:13100), reads the platform's own measures of what it does not know. Those are self-model components near chance or too thin to estimate, instruments with unmeasured capacity, and causal conditions untested in a newly entered regime. It ranks them as probe candidates and opens budgeted probes held against the reservation ledger under 'exploration-budget', each recorded as an open question in the ExplorationBook. Reached from every deployable binary through run_cycle.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/exploration.rs:1-60 (module doc: candidates from the platform's own measures of ignorance; 'There is no exploration execution path')",
+      "backend/crates/runtime/qip-kernel/src/exploration.rs:123 RESOLUTION_VALUE_BPS ('A stated assumption, not a measurement')",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13100 crate::exploration::review(...) in stage_decide",
+      "backend/crates/runtime/qip-kernel/tests/exploration.rs:227 a_probe_nobody_takes_up_settles_as_observation_and_never_as_evidence_that_probing_works (opens probes for three stale-estimate unknowns and holds the budget)",
+      "rg -i 'curiosity' backend/crates --glob '*.rs': no hits"
+    ],
+    "gap": "The value of resolving an unknown is a single stated constant (RESOLUTION_VALUE_BPS), not an estimate per unknown. A selected probe triggers nothing: the module states there is no exploration execution path, so no scout, tool, simulation, specialist or symbolic hypothesis is ever requested. Unknowns are limited to the platform's self-measures. Nothing links a probe to EXPAND's governed spawning path.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test exploration a_probe_nobody_takes_up_settles_as_observation_and_never_as_evidence_that_probing_works proves unknowns are found and recorded as budgeted probes. No test asserts a governed request for a scout, tool, simulation, specialist or hypothesis carrying a value estimate.",
+    "work_item": "E09-curiosity-models",
+    "tier": "T3",
+    "size": "M",
+    "notes": "Depends on EXPAND's governed spawning path (qip-evolution) as the target of any request curiosity would emit. verify: upgraded MISSING -> PARTIAL. The row searched only for the word 'curiosity'. The kernel's exploration desk (exploration.rs:168, called at platform.rs:13100) already searches the platform's measured unknowns and records budgeted probes. The trigger half (scouts/tools/simulations/specialists) and per-unknown value are absent."
+  },
+  {
+    "id": "AMBIENT-016",
+    "status": "MISSING",
+    "current": "no ambient output type exists to gate, so the invariant has nothing to hold over. The platform does have an analogous promotion-gate pattern elsewhere -- qip_ai::registry::{ModelCard, ModelStage} gates a model's promotion, and stage_decide gates every order on compliance.report().require_fully_enforced() (platform.rs:13435) -- which a future ambient-promotion gate could follow structurally.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13435 (compliance sign-off gate pattern, an analogous structural precedent)",
+      "rg -i 'AmbientSignal|AttentionEvent' backend/crates --glob '*.rs': no hits, confirming there is no ambient output to gate"
+    ],
+    "gap": "No ambient output type exists at all (AMBIENT-005/008/010/013 are the candidate sources), so there is nothing for a promotion boundary to intercept, and no such boundary has been built.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-005",
+      "AMBIENT-008",
+      "AMBIENT-010"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E09-ambient-promotion-gate",
+    "tier": "T2",
+    "size": "M",
+    "notes": "A P0 invariant that is vacuously unviolated today only because nothing ambient exists to violate it; must land in the same slice as whatever first produces an ambient output. verify: status kept MISSING, two findings added. (1) One ambient-class output already reaches the order path with no promotion gate. Counterfactual declined scores (the AMBIENT-012 shadow model) feed counterfactual_sizing_multiplier (platform.rs:11795), which narrows position size directly. It can only return values in (0, 1] and so only restricts, which the fail-closed principle tolerates, but a promotion gate must account for it. (2) Pre-positioning recommendations (AMBIENT-013) are structurally advisory: they are only journaled and scored, and have no execution path."
+  },
+  {
+    "id": "AMBIENT-017",
+    "status": "PARTIAL",
+    "current": "The UNDERSTAND stage's temporal-precedence pass (Platform::stage_understand, backend/crates/runtime/qip-kernel/src/platform.rs:9788, reported at :9877) tests instrument pairs from the platform's own bar history every cycle. When a lead-lag relationship clears its significance bar it writes an evidenced TemporalPrecedence CausalEdge with a capped, test-statistic-derived confidence. No human prompt is involved, and no registered detector is used. SIMULATE then stresses the book through discovered edges, and a relationship that stops holding is marked failing. Reached from every deployable binary through run_cycle.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9788 fn stage_understand; :9877 'temporal-precedence pass tested {} instrument pair(s), wrote {} causal ...'",
+      "backend/crates/runtime/qip-kernel/tests/causal_precedence.rs:133 a_real_lagged_pair_of_instruments_produces_a_temporal_precedence_edge (plants a lag-1 relationship, asserts an evidenced edge with no prompt)",
+      "backend/crates/runtime/qip-kernel/tests/causal_precedence.rs:185 two_independent_instruments_produce_no_causal_edge (negative control)",
+      "backend/crates/runtime/qip-kernel/tests/causal_precedence.rs:409 a_relationship_that_stops_holding_marks_the_edge_it_already_wrote_as_failing",
+      "backend/crates/services/qip-opportunity-engine/src/detector.rs:923-935 (the weak-signal detector set itself is fixed and hand-registered)"
+    ],
+    "gap": "Discovered relationships extend the world model's causal graph, not the weak-signal detector set. Nothing watches a discovered driver to flag its effect ahead of time as a precursor. Discovery is limited to pairwise temporal precedence over observed bar returns. It runs inside the tick-driven cycle, and records land as causal edges, not as AmbientSignal records.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-003"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test causal_precedence a_real_lagged_pair_of_instruments_produces_a_temporal_precedence_edge is close to the requirement's own check: a planted lead-lag relationship is recorded with evidence and no prompt, with a negative control. No test asserts the discovered relationship becomes a tracked precursor.",
+    "work_item": "E09-ambient-signal-discovery",
+    "tier": "T3",
+    "size": "M",
+    "notes": "P3, master Phase 9 work; depends on the fixed-detector baseline in AMBIENT-003 existing first. verify: upgraded MISSING -> PARTIAL. The row looked only at the fixed detector registry; the UNDERSTAND temporal-precedence pass (platform.rs:9788-9877, tests causal_precedence.rs:133/:185/:409) discovers lead-lag relationships nobody specified."
+  },
+  {
+    "id": "AMBIENT-018",
+    "status": "MISSING",
+    "current": "nothing. No curriculum concept exists anywhere in the workspace. The only hit for 'curriculum' is a label string in backend/crates/apps/qip-cli/src/blueprint.rs:77. qip-training has no curriculum type, cadence-driven or otherwise.",
+    "evidence": [
+      "rg -n -i 'curricul' backend/crates --glob '*.rs': one hit, backend/crates/apps/qip-cli/src/blueprint.rs:77 ('Intelligence expansion engine, registries, curriculum')"
+    ],
+    "gap": "Both halves are absent: no ambient signal (AMBIENT-019) and no curriculum item type to create from one.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-005"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E09-ambient-curriculum-trigger",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P3, master Phase 9 work. verify: status kept MISSING. Current/evidence corrected: the row said qip-training 'builds curricula but from configured cadence/dataset inputs'. rg finds no curriculum concept in qip-training or anywhere else."
+  },
+  {
+    "id": "AMBIENT-019",
+    "status": "MISSING",
+    "current": "nothing. Neither AmbientSignal nor AttentionEvent exists as a type anywhere in the workspace.",
+    "evidence": [
+      "rg 'AmbientSignal|AttentionEvent' backend/crates --glob '*.rs': no hits"
+    ],
+    "gap": "No contract type exists for either record, so nothing produced by any (missing) AMBIENT component has a defined, serialisable, journal-round-tripping shape.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E02-ambient-signal-attention-event-contracts",
+    "tier": "T1",
+    "size": "M",
+    "notes": "Foundational contract work (CONTRACT domain); nearly every other AMBIENT requirement depends on these two types existing first."
+  },
+  {
+    "id": "AMBIENT-020",
+    "status": "BLOCKED",
+    "current": "nothing runs as a continuously-scheduled ambient service on any runtime. qip-fastbrain and qip-deepbrain run as Cloud Run services with their own polling loop (backend/crates/apps/qip-fastbrain/src/node.rs), but neither is an 'ambient model mesh' and Cloud Run scales to zero absent traffic unless configured otherwise -- no ambient-specific service or minimum-instance configuration exists in Terraform.",
+    "evidence": [
+      "infrastructure/terraform/modules/cloudrun (Cloud Run only; no GKE module remains, per ADR 0024)",
+      "rg -i 'ambient' infrastructure/terraform: no hits"
+    ],
+    "gap": "Both named placements are refused under standing decisions: GKE was retired for Cloud Run (ADR 0024; ADR 0099 C3), and a managed Agent runtime (Gemini Enterprise Agent Platform) is a managed-service and possibly non-Rust dependency (ADR 0099 C4, C5).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-001"
+    ],
+    "blocked_by": "C3",
+    "verification": "No test exists; a plan against the named placements would need to be shown to conflict with ADR 0099's conflict register.",
+    "work_item": "E99-ambient-mesh-placement-decision",
+    "tier": "T4",
+    "size": "M",
+    "notes": "An in-tree, always-running Cloud Run service (following the fastbrain pattern) is not itself blocked; only the two placements the requirement names are."
+  },
+  {
+    "id": "AMBIENT-021",
+    "status": "MISSING",
+    "current": "no ambient model exists to wake on an event. The general pattern of event-driven reaction exists elsewhere (e.g. qip-edge's mesh delta/grant handling reacts to Fabric messages), but nothing subscribes an ambient component to a world-model update.",
+    "evidence": [
+      "rg -i 'ambient' backend/crates/services/qip-streaming backend/crates/services/qip-mesh: no hits beyond unrelated word matches (e.g. 'ambient-clock')"
+    ],
+    "gap": "There is no ambient subscriber to wake; the event-driven mechanism this would use (the in-tree event bus/Fabric) exists and is production-wired for other consumers, but nothing ambient listens on it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-001",
+      "AMBIENT-006"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E09-ambient-event-wakeups",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Not blocked: an in-tree Fabric subscription needs no managed service or new crate."
+  },
+  {
+    "id": "AMBIENT-022",
+    "status": "MISSING",
+    "current": "nothing. No ambient mesh exists to isolate a resource budget for (AMBIENT-020 is MISSING/BLOCKED). qip-cost-router (backend/crates/services/qip-cost-router, the determinism/rung router) governs which compute rung a model call uses, but has no notion of an 'ambient' resource pool distinct from the reflex/risk/ledger/custody paths.",
+    "evidence": [
+      "rg -i 'ambient' backend/crates/services/qip-cost-router/src: no hits"
+    ],
+    "gap": "No resource isolation exists between a (non-existent) ambient workload and the reflex/risk/ledger/custody paths; there is nothing to starve them yet, but also no structural guarantee that a future ambient mesh could not.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-020"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E09-ambient-resource-isolation",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P0 invariant; must land in the same slice that first deploys any ambient compute, not after."
+  },
+  {
+    "id": "AMBIENT-023",
+    "status": "PARTIAL",
+    "current": "The existing detection-to-activation path has a hard per-cycle bound. OpportunityEngine::scan truncates candidates to EngineConfig::max_per_cycle (default 12; backend/crates/services/qip-opportunity-engine/src/engine.rs:38, :122-124) and counts the rest in suppressed_count, which DISCOVER reports each cycle ('{suppressed} suppressed this run', backend/crates/runtime/qip-kernel/src/platform.rs:10413-10432). What is surfaced waits in the queue until it expires (:10421-10426). REASON considers only the queue head, so it convenes the panel at most once per cycle (:10840).",
+    "evidence": [
+      "backend/crates/services/qip-opportunity-engine/src/engine.rs:122-124 (candidates.truncate(max_per_cycle); suppressed += excess)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10412-10432 (scan, suppressed_count, expiry, stage detail)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10840 (let Some(opportunity) = self.queue.first() ...)",
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:490 the_queue_is_capped_and_the_suppressed_count_is_visible",
+      "rg -i 'attention.?budget' backend/crates --glob '*.rs': no hits"
+    ],
+    "gap": "No Attention Router exists (AMBIENT-010), so there is no budget over the five activation classes. The bound is a per-cycle cap on surfaced opportunities plus one convening per cycle, not a configured attention budget per window. The excess is a cumulative count and queue expiry, not a per-signal deferred or shed record. No storm test asserts activations per window never exceed a configured budget.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-010"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-opportunity-engine --test discovery the_queue_is_capped_and_the_suppressed_count_is_visible proves the cap is hard and the excess is counted. The requirement's storm property over the Attention Router is not implemented.",
+    "work_item": "E09-ambient-attention-budget",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P0 invariant; cannot be built before AMBIENT-010's router exists to bound. verify: upgraded MISSING -> PARTIAL. The only activation path that exists today (detection -> opportunity -> panel, AMBIENT-005) is already bounded by max_per_cycle with a visible suppressed count (engine.rs:122-124, platform.rs:10413-10432) and one convening per cycle."
+  },
+  {
+    "id": "AMBIENT-024",
+    "status": "BLOCKED",
+    "current": "no fast-knowledge tier (K0) exists. qip_storage::provider::StorageTarget::Bigtable (backend/crates/libs/qip-storage/src/provider.rs:32-151) and qip_mesh::provider::MeshTarget::Bigtable (backend/crates/services/qip-mesh/src/provider.rs:72-152) exist only as enum variants that describe what Bigtable would be for and explicitly return Error::Unavailable naming the missing gRPC client -- 'Bigtable's data plane ... is the part that stops here' (qip-storage/src/provider.rs:247-255). No ambient-model state is held anywhere, in Bigtable or otherwise.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/provider.rs:32,247-255 (StorageTarget::Bigtable named but its gRPC data plane explicitly not implemented)",
+      "backend/crates/services/qip-mesh/src/provider.rs:72,151-152 (MeshTarget::Bigtable: same pattern, names required GCP resources, implements nothing)"
+    ],
+    "gap": "No K0 tier and no ambient-model state to place in it; the only Bigtable-shaped code in the workspace is a named-but-unimplemented placeholder that refuses to serve, by design, because a real client needs a gRPC/protobuf dependency the workspace does not permit.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-002",
+      "AMBIENT-006"
+    ],
+    "blocked_by": "C4",
+    "verification": "No test exists.",
+    "work_item": "E99-fast-knowledge-tier-placement",
+    "tier": "T4",
+    "size": "M",
+    "notes": "Also implicates C2 (a gRPC/protobuf client would be a new dependency the workspace's two-dependency policy refuses)."
+  },
+  {
+    "id": "AMBIENT-025",
+    "status": "MISSING",
+    "current": "no ambient agent exists to consume evidence. qip-data-finder is the in-tree evidence-sourcing and licensing-evaluation pipeline, and the requirement's verification accepts 'their in-tree equivalents'. An in-tree BigQuery REST client does exist: qip_storage::BigQueryWarehouse (backend/crates/libs/qip-storage/src/gcp/bigquery.rs), reached only from qip-storage/tests/gcp.rs. The workspace has no Spanner Graph or Knowledge Catalog client.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/{legal.rs,catalogue.rs,admission.rs} (in-tree licensing/catalogue evaluation)",
+      "backend/crates/libs/qip-storage/src/gcp/bigquery.rs:1-24 (BigQueryWarehouse: streaming insert and query over REST); used only in backend/crates/libs/qip-storage/tests/gcp.rs",
+      "rg -i 'Spanner|Knowledge Catalog' backend/crates/services/qip-data-finder/src: no hits"
+    ],
+    "gap": "No ambient agent exists to read evidence through any store, managed or in-tree, and nothing carries a consumed item's provenance into an ambient signal. The managed placement (Knowledge Catalog, Spanner Graph, BigQuery) is ADR 0099 C4, but the requirement's own verification admits in-tree equivalents, so C4 does not block the data flow.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E09-ambient-evidence-consumption",
+    "tier": "T3",
+    "size": "M",
+    "notes": "qip-data-finder is the in-tree equivalent for the general evidence pipeline and would need extension to an ambient consumer before this could be assessed as anything but MISSING/BLOCKED. verify: changed BLOCKED(C4) -> MISSING. The verification accepts in-tree equivalents, so the behaviour can be built without a refused store; what is actually missing is the ambient consumer. C4 still governs the named managed placement. Also corrected the claim that none of the three stores has a client in the workspace: qip-storage/src/gcp/bigquery.rs is an in-tree BigQuery REST client, test-only."
+  },
+  {
+    "id": "AMBIENT-026",
+    "status": "MISSING",
+    "current": "the in-tree Fabric equivalent (qip_events::AnyEvent plus qip-streaming's StreamEnvelope, backend/crates/services/qip-streaming/src/lib.rs) is real, production-wired and journals every event with producer identity, topic and lineage. No ambient agent exists to publish a research or opportunity task through it, because no ambient agent exists.",
+    "evidence": [
+      "backend/crates/services/qip-streaming/src/lib.rs:1-14 (StreamEnvelope wraps qip_events::AnyEvent with source, subject, cost, wire)",
+      "rg -i 'ambient' backend/crates/services/qip-streaming/src: no hits beyond unrelated matches"
+    ],
+    "gap": "No ambient-agent producer exists to publish onto the Fabric; the Fabric itself is not the gap.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-005"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E09-ambient-fabric-publishing",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Not blocked: the in-tree Fabric (qip-events/qip-streaming) is a permitted, already-built target for this once an ambient agent exists to publish to it."
+  },
+  {
+    "id": "AMBIENT-027",
+    "status": "MISSING",
+    "current": "qip_data_finder::campaign::CampaignManifest (backend/crates/services/qip-data-finder/src/campaign.rs:306-405) tracks per-locator manifest entries and flags a locator as revised for a later re-fetch (flag_revised, campaign.rs:391) -- adjacent, real, tested machinery for re-fetch bookkeeping -- but nothing named a 'Source Manifest Registry' accepts a control-class 'request refresh' message, and no ambient model exists to send one.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/campaign.rs:306-405 (ManifestEntry, CampaignManifest, flag_revised)",
+      "rg -i 'source manifest registry|request.?refresh' backend/crates --glob '*.rs': no hits"
+    ],
+    "gap": "No control-message entry point exists on any manifest/registry type, and there is no ambient model to originate the request.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E09-ambient-refresh-request",
+    "tier": "T2",
+    "size": "S",
+    "notes": "CampaignManifest is the natural place to add a control-message entry point once an ambient caller exists."
+  },
+  {
+    "id": "AMBIENT-028",
+    "status": "MISSING",
+    "current": "no ambient mesh exists, so there is no fast-state read path. The requirement names the 'Bigtable/Memory' tier, and GCP v2.1 p10 places in-memory caches alongside Bigtable in K0. The read-path contract (mesh reads derived fast state directly, and keeps scoring while the federation is stopped) can therefore be built against an in-tree or in-memory K0 store. Only a Bigtable-backed K0 is refused: qip-storage's Bigtable target returns Unavailable for want of a gRPC client.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/provider.rs:32, :253-258 (StorageTarget::Bigtable data plane unimplemented: gRPC only)",
+      "docs/blueprint/requirements/AMBIENT.json AMBIENT-028 statement ('Bigtable/Memory tier') and AMBIENT-024 notes (G p10: 'in-memory/GKE caches' alongside Bigtable)"
+    ],
+    "gap": "Neither the mesh nor any fast-state store for it exists. The Bigtable half of the named tier is ADR 0099 C4/C2, but the memory half is not, so the contract is buildable in-tree once AMBIENT-001/006 give it a consumer.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-001",
+      "AMBIENT-006"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E09-ambient-fast-state-read-path",
+    "tier": "T3",
+    "size": "S",
+    "notes": "Shares its blocker and work item with AMBIENT-024; this row is the mesh's read side of that same gap. verify: changed BLOCKED(C4) -> MISSING. This is a contract, not a placement, and it names a 'Bigtable/Memory' tier. The read path can be built against an in-memory or in-tree K0, so C4 is not the reason it is absent. depends_on moved from AMBIENT-024 (the Bigtable placement row, still BLOCKED) to the mesh and surprise rows it actually needs."
+  }
+]

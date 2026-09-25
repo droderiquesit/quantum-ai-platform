@@ -1,0 +1,173 @@
+[
+  {
+    "item": "The regional edge cell's entire hot path (`Cell::on_bytes`/`Cell::work`/`Cell::flush`) is proven only by tests: `execution_nodes = {}` in every environment's tfvars, so no deployed process ever runs blueprint §16's Reflex Node",
+    "files": [
+      "infrastructure/environments/dev/terraform.tfvars:227",
+      "infrastructure/environments/test/terraform.tfvars:49",
+      "infrastructure/environments/stage/terraform.tfvars:49",
+      "infrastructure/environments/prod/terraform.tfvars:51",
+      "infrastructure/environments/dev/terraform.tfvars:1-226 (the commented-out `newyork-1` node block, and the header explaining exactly what blocks uncommenting it)",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:169-227",
+      "backend/crates/edge/qip-edge/src/cell.rs:1003-1191 (Cell::on_bytes/work/flush)",
+      "docs/operations/deploying-an-edge-cell.md"
+    ],
+    "category": "deployment-ci-gap / simulated-only-production-path",
+    "class": "B-refactor",
+    "why": "REFLEX-002 requires the hot path to run with no synchronous global dependency, and ADR 0008 is exactly what `qip_edge::Cell` implements — but the binary that would run it in production, `qip-edge-node`, is never provisioned anywhere. This is not an unplanned gap: ADR 0035 already authorises one node (`newyork-1`, `us-east4`, shadow mode, dev only) against the in-process `QIP_VENUE_FEED=simulated` matcher, so it needs no venue address range; `dev/terraform.tfvars` carries the exact `execution_nodes` block, commented, ready to uncomment. What blocks it is two concrete, named prerequisites: no boot image has ever been baked (`.github/workflows/image.yml` and `infrastructure/images/execution-node/` exist and have never been dispatched) and no person has yet written the region's capital ceiling into the tfvars file (ADR 0045 proposes `\"1000000\"` but a proposal is explicitly not a choice). `docs/operations/deploying-an-edge-cell.md` carries the exact sequence. The fix is executing a known runbook, not designing one — prefer that over any workaround that fakes deployment evidence.",
+    "blueprint_refs": ["v11.6 §16 Regional Reflex Nodes", "REFLEX-002", "ADR 0008", "ADR 0035", "ADR 0045", "ADR 0099"],
+    "risk": "high",
+    "suggested_epic": "E04"
+  },
+  {
+    "item": "`CellMetrics`' full Prometheus series (halt state, region-share application, quote-budget depletion, dark regions, settlement-unprojected venues, fill dispersion) is emitted and tested, but scrapes no deployed process because the binary that serves it is the same one item 1 shows is never provisioned",
+    "files": [
+      "backend/crates/edge/qip-edge/src/telemetry.rs:72-359,381",
+      "backend/crates/edge/qip-edge/src/cell.rs:3864,4245,4426,7495,7770 (the five metrics.refusal(...) call sites)",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs (17 #[test])",
+      "infrastructure/environments/prod/terraform.tfvars:51"
+    ],
+    "category": "deployment-ci-observability-gap",
+    "class": "B-refactor",
+    "why": "This is the observability domain's own conclusion for this crate, worth stating plainly here rather than left implicit: the emitting half is real, tested and correctly wired (19 named series, each proven by a dedicated test), so the remaining work is not more instrumentation code — it is item 1's deployment runbook plus, per `.claude/rules/domains/infrastructure.md`, confirming a pod is actually scraped before any alert policy naming an `edge_*` series is switched on. Writing more `qip-edge` telemetry code cannot close this gap; only a running node and a scrape can.",
+    "blueprint_refs": ["GCP v2.1 (Cloud Monitoring)", "OBS domain"],
+    "risk": "medium",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "`qip-edge` depends on `qip-execution-engine`, but zero source files in the crate import it; the dependency exists, by the crate's own committed comment, only to satisfy an architecture test's vacuity guard, not because the cell functionally uses it",
+    "files": [
+      "backend/crates/edge/qip-edge/Cargo.toml:32-39",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:757-786 (only_the_edge_cell_itself_holds_an_order_manager)"
+    ],
+    "category": "dependency-direction / test-integrity",
+    "class": "B-refactor",
+    "why": "`grep -rn qip_execution_engine backend/crates/edge/qip-edge/src` returns nothing — confirmed. The architecture test's own vacuity-guard assertion, `reachable_from(&graph, \"qip-edge\").contains(\"qip-execution-engine\")`, is satisfied purely by this unused Cargo.toml line, and the dependency's own comment says so: 'the edge is a pinned claim, not a use... the guard needs re-stating against the cell's real order path before this line can go.' A test whose vacuity guard is trivially satisfiable by an unused dependency is not proving what it claims to prove — the same class of defect `MaxExpectedShortfall` was for risk limits (a control that reads as protection and is not). The cell sends orders exclusively through its own `Placer` trait (cell.rs:8051), so the guard should assert reachability of that seam, or of a real `OrderManager`-typed field, not of a crate name alone.",
+    "blueprint_refs": ["ADR 0008", ".claude/rules/architecture/00-boundaries.md"],
+    "risk": "medium",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "`cell.rs` is a single 9,040-line file — 45% of the crate's source — holding the whole per-pass cycle (pricing, netting, crossing, disposition, halts, mesh state-delta, journal writes) as one type, with five `#[allow(clippy::too_many_arguments)]` suppressions on functions whose own parameter lists trip clippy's lint",
+    "files": [
+      "backend/crates/edge/qip-edge/src/cell.rs:1-9040 (total; struct Cell spans 1003-7846)",
+      "backend/crates/edge/qip-edge/src/cell.rs:3841 (Cell::send)",
+      "backend/crates/edge/qip-edge/src/cell.rs:6132 (Cell::rest_cycle_leg)",
+      "backend/crates/edge/qip-edge/src/cell.rs:6441 (Cell::send_cycle_leg)",
+      "backend/crates/edge/qip-edge/src/cell.rs:6646 (Cell::observe_cycle_leg)",
+      "backend/crates/edge/qip-edge/src/cell.rs:8066 (Cell::place)"
+    ],
+    "category": "architecture-conflict (monolith) / code-quality",
+    "class": "B-refactor",
+    "why": "CLAUDE.md principle 4 — 'make it structural' — and the crate's own module structure argue against this: every other concern in this crate (arbitrage, decomposition, dispersion, feasibility, journal, mesh, passive, quoting, reservation, resume, settlement...) already lives in its own file with a clear boundary; `Cell` alone did not receive the same treatment and instead accreted the entire cycle inline. The five suppressed too-many-arguments lints are clippy naming the exact functions (`send`, `rest_cycle_leg`, `send_cycle_leg`, `observe_cycle_leg`, `place`) whose parameter lists are the visible symptom of state that should be grouped or of logic that should sit in the module its inputs already belong to (e.g. `send_cycle_leg`/`observe_cycle_leg` read like `arbitrage.rs`/`decomposition.rs` material). Splitting is additive — the aggregate `Cell` type can stay the composition root while its per-concern methods move into `impl Cell` blocks in per-topic files, which is refactoring in place, not a rewrite. Risk is medium rather than high: nothing here is a functional defect, but a single 9k-line file is the highest-probability merge-conflict surface in the crate for a programme running many parallel lanes, which this repository's own history (ADR-numbering collisions, stale line citations throughout `.claude/rules/domains/observability.md`) shows is a real cost here.",
+    "blueprint_refs": ["ADR 0008", "CLAUDE.md principle 4"],
+    "risk": "medium",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "`qip_edge::journal::FileMirror` has zero callers anywhere in the workspace — not even in its own crate's tests — yet five blueprint-assessment traceability documents cite it as \"the current\" journal-shipping mechanism, while the real production composition root implements a different, unmentioned type",
+    "files": [
+      "backend/crates/edge/qip-edge/src/journal.rs:617-643 (struct FileMirror, impl Mirror for FileMirror)",
+      "backend/crates/edge/qip-edge/src/lib.rs:78 (pub use journal::{..., FileMirror, ...})",
+      "backend/crates/apps/qip-edge-node/src/mirror.rs:1-70 (StoreMirror — the actual production Mirror, built against qip_storage::kv::KeyValueStore, never mentioned in the assessment docs below)",
+      "docs/blueprint/assessment/REFLEX-b1.json",
+      "docs/blueprint/assessment/FABRIC-b1.json",
+      "docs/blueprint/assessment/MESH-b1.json",
+      "docs/blueprint/assessment/MESH-b2.json",
+      "docs/blueprint/assessment/RES-b1.json"
+    ],
+    "category": "dead-code / duplicate-systems / documentation-drift",
+    "class": "E-needs-evidence",
+    "why": "`grep -rn FileMirror backend/crates` matches only the type's own definition and its `pub use` re-export — no construction site exists anywhere, including `#[cfg(test)]`. Meanwhile `docs/blueprint/assessment/*.json` — generated by `qip blueprint render`, 'do not edit by hand' — repeatedly names `journal::{...,FileMirror}` as the crate's current durable-shipping mechanism for REFLEX-b1, FABRIC-b1, MESH-b1, MESH-b2 and RES-b1, and never mentions `qip-edge-node::mirror::StoreMirror`, the type that actually ships a deployed cell's journal into the platform's configurable `KeyValueStore` (the same durability seam item 1 of `libs-foundation.json` covers). This is not simple dead code with no plan behind it — the blueprint's own generated traceability register is the plan, and it currently points at the wrong implementation. Evidence needed before acting: whether the render tool should be taught to look at `qip-edge-node`'s composition root (retargeting the citation, after which `FileMirror` becomes deletable with nothing left depending on it, not even documentation) or whether `FileMirror` is meant to gain a real caller (e.g. a `qip-cli` demo path with no store dependency). Left as is, an auditor reading the traceability matrix — the document this platform exists to make trustworthy — is told the wrong type ships a cell's decision record.",
+    "blueprint_refs": ["v11.6 (durable knowledge memory)", "REFLEX-b1", "FABRIC-b1", "MESH-b1", "MESH-b2", "RES-b1"],
+    "risk": "low",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "`Cell`'s mesh uplink/downlinks carry signed capital envelopes, policy/halt payloads and cell state over `qip_transport::MeshPublisher`, which is plaintext and unauthenticated by its own module doc — the exact gap ADR 0012 accepted `rustls` to close, but the dependency was never added",
+    "files": [
+      "backend/crates/edge/qip-edge/src/mesh.rs:420-451 (CellUplink holds and constructs a live MeshPublisher)",
+      "backend/crates/edge/qip-edge/src/mesh.rs:669,993 (CapitalDownlink, PolicyDownlink — the same transport for capital grants and halt payloads)",
+      "backend/crates/libs/qip-transport/src/lib.rs:45-75 (module doc: no TLS, no peer authentication)",
+      "docs/adr/0012-where-a-library-earns-its-place.md"
+    ],
+    "category": "security-shortcut",
+    "class": "B-refactor",
+    "why": "This is the same accepted-but-unimplemented ADR 0012 gap `libs-foundation.json` already files against `qip-transport` generally; it is listed here because this crate is the concrete case that makes the exposure legible — `CellUplink`/`CapitalDownlink`/`PolicyDownlink` are precisely the wire that carries a cell's authority to spend capital and its instruction to halt or keep trading, over a channel the library's own doc says has no TLS and authenticates no peer, relying entirely on VPC-level isolation. No fix belongs in `qip-edge` itself — the dependency has to land in `qip-transport` per ADR 0012's own scoping — but the risk this crate carries is real and should not be invisible to a reader of this component group specifically. Do not duplicate remediation effort against `libs-foundation.json`'s item; this entry exists so the edge-cell register does not read as silent on its own exposure.",
+    "blueprint_refs": ["GCP v2.1 (mTLS / service-mesh requirement)", "ADR 0012", "ADR 0099 C2"],
+    "risk": "high",
+    "suggested_epic": "E03"
+  },
+  {
+    "item": "`GATE_SETTLEMENT` refusal counting is correctly wired through the standard `Cell::refuse` seam and is explicitly asserted by a test — the current-state architecture doc's own hedge (\"verify against the current CellMetrics wiring before relying on the count\") does not hold up on inspection",
+    "files": [
+      "backend/crates/edge/qip-edge/src/cell.rs:5760,5782,5802 (admit_settlement calls self.refuse(report, GATE_SETTLEMENT, ...))",
+      "backend/crates/edge/qip-edge/src/cell.rs:7486-7503 (fn refuse — pushes to WorkReport.refusals AND calls self.metrics.refusal(gate) unconditionally)",
+      "backend/crates/edge/qip-edge/tests/settlement.rs:349-359 (asserts metrics.snapshot().counter(EDGE_REFUSALS, {gate: GATE_SETTLEMENT}) == 1, named \"the refusal was not counted under its own gate\")",
+      "docs/architecture/current-state/edge-cell.json (qip-edge::settlement record, gaps_observed)"
+    ],
+    "category": "documentation-gap (resolved on inspection)",
+    "class": "A-retain",
+    "why": "The current-state architecture doc flags an open question rather than a defect, and this entry closes it with evidence rather than leaving it standing as unresolved debt: every `GATE_SETTLEMENT` call site routes through the crate's single generic `refuse()` function, which both pushes onto the pass's `WorkReport.refusals` and unconditionally calls `self.metrics.refusal(gate)` — there is no separate, uncounted refusal path for this gate the way there genuinely is for `GATE_LIVE_VENUE` and `GATE_QUOTE_BUDGET`'s `Cell::send`-time recordings (which have no `WorkReport` to push onto). A dedicated test even names the property directly. No code change is warranted; the current-state doc's hedge should be resolved rather than re-verified by the next reader who runs into it.",
+    "blueprint_refs": ["v11.6 §32.2 (settlement funding)", "OBS domain"],
+    "risk": "low",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "`qip-api`'s doc comments name a private (non-`pub`) helper, `qip_edge::feasibility::effective` (feasibility.rs:280), as prose describing what a shipped policy payload expects the cell to do — nothing checks that this name still exists as `qip-edge` evolves",
+    "files": [
+      "backend/crates/edge/qip-edge/src/feasibility.rs:280 (fn effective — private, no pub qualifier, not re-exported by lib.rs)",
+      "backend/crates/apps/qip-api/src/mesh.rs:724,981 (doc comments citing `qip_edge::feasibility::effective` and `qip_edge::feasibility::assess`)",
+      "backend/crates/apps/qip-api/Cargo.toml:44-50 (qip-edge is a [dev-dependencies]-only entry; these are prose references, not compiled code)"
+    ],
+    "category": "documentation-gap (cross-crate citation drift risk)",
+    "class": "B-refactor",
+    "why": "`qip-api`'s serving binary never names `qip-edge` as a real dependency — it is dev-only, for tests that decode genuine cell deltas — so a doc comment naming `qip_edge::feasibility::effective` by its exact private path is prose the compiler cannot check. If `qip-edge` is refactored (exactly the kind of change item 4's cell.rs decomposition would produce) and `effective` is renamed, split, or inlined, nothing in the workspace would catch that `qip-api/src/mesh.rs`'s explanation of slot 11 now names a function that no longer exists — the same stale-citation failure mode `.claude/rules/domains/observability.md` documents happening repeatedly to itself, here with no self-correcting process watching it. Low-cost fix: cite the public `feasibility::assess` (which the second reference already does correctly) rather than a private helper, or add a doctest/reference that would fail to compile if the name moved.",
+    "blueprint_refs": ["CONTRACT domain (policy payload slots)"],
+    "risk": "low",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "`qip-mesh::delta::WireDelta` is a hand-maintained, field-by-field mirror of `qip_edge::mesh::CellStateDelta`, required because the dependency direction forbids a service from naming an edge crate — the module doc already corrects a prior false claim about how the duplication is guarded, and a real cross-crate round-trip test exists in `qip-api`",
+    "files": [
+      "backend/crates/services/qip-mesh/src/delta.rs:1-33 (module doc: \"Two declarations of one wire shape, on purpose\")",
+      "backend/crates/services/qip-mesh/src/delta.rs:136-143 (self-correction: \"It previously said it was held equal ... by the round-trip tests; nothing compared the two, and this type is private, so nothing could\")",
+      "backend/crates/edge/qip-edge/src/mesh.rs:201 (struct CellStateDelta, the declaration this mirrors)",
+      "backend/crates/apps/qip-api/tests/mesh.rs:4,242-320 (constructs a real CellStateDelta, ships it through CellUplink, decodes it through qip-mesh's decode_cell_delta — the cross-crate half of the proof)"
+    ],
+    "category": "competing-event-formats / duplicated-schema (by design)",
+    "class": "A-retain",
+    "why": "Two independent struct declarations of one wire shape is exactly the pattern this task is asked to flag, and on inspection it is the correct answer to a real constraint rather than drift: `qip-mesh` is a service and `qip-edge` is an edge crate, and the dependency-direction rule in `.claude/rules/architecture/00-boundaries.md` forbids a service from depending on an edge crate, so `qip-mesh` cannot import `CellStateDelta` directly. The schema-version number is deliberately NOT duplicated — both sides read `qip_contracts::wire::CELL_DELTA_SCHEMA_VERSION` — and the module doc is unusually honest about what is and is not proven: a prior version of this same file claimed the two struct shapes were \"held equal by the round-trip tests\", which was false (the tests only proved `WireDelta` round-trips through itself), and that claim has since been corrected in place. What actually closes the gap is `qip-api/tests/mesh.rs`, the one composition root allowed to name both types, building a genuine `CellStateDelta` and decoding it through `qip-mesh`'s function — confirmed present. No change needed; worth recording as intentional so a future reader does not \"fix\" the duplication by weakening the dependency-direction rule.",
+    "blueprint_refs": ["v11.6 §7.2 (wire schema)", "ADR 0008", ".claude/rules/architecture/00-boundaries.md"],
+    "risk": "low",
+    "suggested_epic": "E02"
+  },
+  {
+    "item": "`CellConfig`'s quoting, dispersion and decomposition policies are structurally configurable per cell but every field stays at its compile-time `::default()` — `qip-edge-node`'s composition root, the only place allowed to read deployment configuration, never sets any of the three",
+    "files": [
+      "backend/crates/edge/qip-edge/src/cell.rs:389-405 (CellConfig::new sets quote_limits/dispersion/decomposition to ::default() unconditionally)",
+      "backend/crates/edge/qip-edge/src/quoting.rs:92-103 (7 DEFAULT_* rate-limit tunables)",
+      "backend/crates/edge/qip-edge/src/dispersion.rs:52 (DEFAULT_DISPERSION_BOUND=250ms, DEFAULT_MIN_SAMPLES=3, DEFAULT_WINDOW=64)",
+      "backend/crates/edge/qip-edge/src/decomposition.rs:94 (DEFAULT_MINIMUM_VIABLE_FRACTION=50%)",
+      "backend/crates/apps/qip-edge-node/src/main.rs:356-358 (cell_config's only mutation is .with_venue(...); no .quote_limits/.dispersion/.decomposition assignment anywhere in the binary)"
+    ],
+    "category": "hard-coded-configuration",
+    "class": "B-refactor",
+    "why": "`grep -n 'DecompositionPolicy::\\|DispersionPolicy::\\|RateLimits::' backend/crates/apps/qip-edge-node/src/*.rs` returns nothing, and `main.rs`'s only field write on `cell_config` after construction is `.with_venue(...)` — confirmed. The type system supports a different policy per cell (and, by extension, per venue's real latency/message-rate profile), but no composition root has ever exercised that capability, so every cell that could ever be deployed would run identical anti-dispersion and message-budget parameters regardless of which venue it faces. This is contained today by item 1 (nothing is deployed), so the risk is latent rather than active — but it is exactly the gap that would surface silently the first time a real venue's message-rate tolerance differs from the constants qip-edge ships with, since `std::env` reads are forbidden outside `crates/apps/**` and no other seam exists to carry the value in.",
+    "blueprint_refs": ["v11.6 §29.2 (per-venue message budget)", "v11.6 §32.1 (anti-dispersion mechanisms)"],
+    "risk": "medium",
+    "suggested_epic": "E04"
+  },
+  {
+    "item": "`MAX_OPEN_ORDERS = 256` bounds every strategy, venue and instrument a cell serves combined, with no override path and no test that drives the cell to the bound to prove the `open_orders` refusal actually fires",
+    "files": [
+      "backend/crates/edge/qip-edge/src/cell.rs:915 (pub const MAX_OPEN_ORDERS: usize = 256 — a crate-level constant, not a CellConfig field)",
+      "backend/crates/edge/qip-edge/src/cell.rs:3912-3925 (has_open_capacity / refuse_for_capacity — the gate that fires at the bound)"
+    ],
+    "category": "scaling-limits / missing-tests-on-production-path",
+    "class": "E-needs-evidence",
+    "why": "The bound is deliberate and its refusal is journaled like any other gate — this is not a silent limit — but two things are true together: it is a single constant shared across every strategy/venue/instrument the cell serves rather than a per-scope figure, and `grep -n 'MAX_OPEN_ORDERS\\|256' backend/crates/edge/qip-edge/tests/*.rs backend/crates/tests/qip-acceptance/tests/stress.rs` finds no test that actually opens 256 orders and asserts the 257th is refused under the `open_orders` gate. Blueprint §18.1 (Market Making) is one of the capabilities this crate is scored against, and a market maker resting passive quotes across many instrument×venue pairs is exactly the shape of workload that could reach 256 working orders in one cell. Evidence needed before treating this as fine as is: a measurement of how many open orders a realistic market-making deployment actually holds, and a boundary test proving the refusal fires (and that a cell at capacity keeps trading rather than wedging) — not a code change on its own.",
+    "blueprint_refs": ["v11.6 §18.1 Market Making"],
+    "risk": "medium",
+    "suggested_epic": "E04"
+  }
+]

@@ -1,0 +1,471 @@
+[
+  {
+    "id": "EVENT-001",
+    "status": "PARTIAL",
+    "current": "Two disjoint halves exist. (1) The event-contract-specific research capability the requirement names is fully built but orphaned: qip_prediction::scoring::{ScoredForecast::new, brier_score, market_brier_score, compare} (backend/crates/services/qip-prediction/src/scoring.rs:46,66,155,164,185,230) Brier-scores the platform's own probability against a resolved market's implied probability over a set of ScoredForecast records, and ScoredForecast::new refuses a market quote known after the platform's own probability was formed. That is a different point-in-time rule from the one the requirement's verification names: the verification asks that no *outcome* be read before its resolution became knowable, whereas ScoredForecast::new accepts any Final MarketResolution and never compares the resolution's own instant with an as-of clock -- there is no replay clock in the scoring path at all. It has zero callers outside its own crate (confirmed: `grep -rln \"qip_prediction::scoring\\|qip_prediction::market\\|qip_prediction::oracle\" backend --include=*.rs` matches only qip-prediction/tests). (2) A different, generic mechanism -- qip_prediction::resolution::{Proposition::new, ResolutionCriteria} -- IS reached from production: qip-kernel's REASON-stage thesis pipeline constructs a Proposition for every investment hypothesis it forms (backend/crates/runtime/qip-kernel/src/platform.rs:12432-12450) and grades it point-in-time in the LEARN stage (platform.rs:14403-14528), proven replay-safe by backend/crates/runtime/qip-kernel/tests/falsification.rs. But that pipeline forms propositions about generic market-data metrics, never an EventMarket or a prediction-market contract -- no event-contract fixture is anywhere in that path.",
+    "evidence": [
+      "backend/crates/services/qip-prediction/src/scoring.rs:46 (ScoredForecast), :66 (ScoredForecast::new, refuses late-known market quotes), :230 (compare)",
+      "backend/crates/services/qip-prediction/tests/scoring.rs:127 a_platform_closer_to_every_outcome_than_the_market_scores_better_with_a_negative_difference",
+      "backend/crates/services/qip-prediction/tests/scoring.rs:217 a_market_quote_known_after_the_platform_formed_its_probability_is_refused_as_leakage",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12432 Proposition::new (generic thesis, not an event contract)",
+      "backend/crates/runtime/qip-kernel/tests/falsification.rs:245 a_claim_is_never_tested_against_closes_that_were_knowable_before_it_was_formed",
+      "backend/crates/runtime/qip-kernel/tests/falsification.rs:333 a_statistic_derived_only_from_closes_knowable_after_a_claim_was_formed_can_refute_it"
+    ],
+    "gap": "qip-kernel never calls qip_prediction::scoring or constructs an EventMarket, so nothing today replays a research run 'over a fixture of historical event contracts and their resolutions' as the requirement's own verification describes -- the point-in-time replay machinery that exists is proven only for generic price-threshold theses.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-prediction --test scoring proves the crate-local capability in isolation. The test to write: a qip-kernel or qip-acceptance test that drives Platform through a fixture of historical EventMarket/MarketResolution records twice and asserts (a) identical replay and (b) qip_prediction::scoring::compare is actually invoked and its result reaches the event log.",
+    "work_item": "E17-event-research-wiring",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The scoring half is the most developed EVENT capability in the tree, but it is not 'just a caller away' from COMPLETE: the requirement also needs event-contract hypothesis formation, a pricing model to evaluate (EVENT-002 is MISSING), a historical event-contract/resolution fixture, a replay harness, and the scored result written to the event log. verify: status and flags kept (PARTIAL, implemented/tested true, integrated false). Corrected the claim that ScoredForecast::new is 'exactly' the verification's point-in-time rule -- it guards market-quote leakage, not resolution-knowable-time leakage -- and toned down the note that only a caller is missing. Re-ran `cargo test -p qip-prediction --no-fail-fast` on 2026-09-25: tests/scoring.rs 'test result: ok. 6 passed; 0 failed'. Line refs scoring.rs:46,66,155,164,185,230 and tests/scoring.rs:127,217 confirmed. qip-kernel falsification.rs was not re-run by this verifier (test names at :245 and :333 confirmed by reading only)."
+  },
+  {
+    "id": "EVENT-002",
+    "status": "MISSING",
+    "current": "nothing. qip_prediction::pricing (backend/crates/services/qip-prediction/src/pricing.rs) only runs the opposite direction the requirement needs: implied_from_ask/implied_from_bid/implied_band (pricing.rs:121,140,159) back a probability *out of* a market price. No function anywhere takes an estimated outcome distribution and a contract's payoff terms and returns a fair value, and no valuation record type cites the distribution a price used.",
+    "evidence": [
+      "backend/crates/services/qip-prediction/src/pricing.rs:110-174 (naive_probability, implied_from_ask, implied_from_bid, implied_band -- all price-to-probability, none probability-to-price)",
+      "grep -n 'fair_value_from_distribution|price_from_probability|OutcomeDistribution' backend/crates --include=*.rs returns nothing"
+    ],
+    "gap": "No fair-value-from-belief function, and its prerequisite (an estimated outcome distribution, EVENT-010) does not exist either.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVENT-010"
+    ],
+    "blocked_by": "",
+    "verification": "Test to write: for a mutually exclusive/exhaustive outcome set priced from one distribution, assert each fair value lies in the payoff range, values sum to the payoff before fees, each moves monotonically with its outcome's probability, and the valuation record cites the distribution.",
+    "work_item": "E17-event-fair-value",
+    "tier": "T3",
+    "size": "M",
+    "notes": "The Decimal/f64 crossing point required by core-rust domain rules would sit exactly where a probability (statistics, f64-eligible) is multiplied into a payoff (Decimal); nothing in the tree does this today so there is no precedent to follow."
+  },
+  {
+    "id": "EVENT-003",
+    "status": "MISSING",
+    "current": "qip_prediction::adapter::{PredictionAdapter, SyntheticPredictionVenue, VenueApiAdapter} (backend/crates/services/qip-prediction/src/adapter.rs:71-84,205-370,403-475) exists but is a *data-poll* port only -- fn poll(until), fn start, fn stop -- with no order-submission method of any kind. It is not qip_brokers::adapter's VenueAdapter trait (backend/crates/services/qip-brokers/src/adapter.rs:310), the trait every other venue's orders and fills go through, and no composition root constructs any qip_prediction adapter (`grep -rln VenueApiAdapter backend/crates/apps` returns nothing). qip-brokers and qip-execution-engine have zero references to qip_prediction or VenueClass::PredictionMarket anywhere in src/. Two further pieces exist and do not change the status: qip_market_ingestion::connectors::kalshi_markets (backend/crates/services/qip-market-ingestion/src/connectors/kalshi_markets.rs) ingests a prediction venue's top-of-book as a Quote -- market data only, and refused at admission by qip-data-finder (admission.rs:356-382) pending ADR 0034's licence read -- and qip_prediction::arbitrage/cross produce qip_contracts::LegPlan values for set and cross-venue arbitrage, but nothing outside qip-prediction/tests consumes them and no leg is ever sent.",
+    "evidence": [
+      "backend/crates/services/qip-prediction/src/adapter.rs:71-84 (PredictionAdapter trait: poll/start/stop, no place_order)",
+      "backend/crates/services/qip-brokers/src/adapter.rs:310 (VenueAdapter, the common execution contract; never implemented for a prediction venue)",
+      "grep -rn 'prediction|Prediction|EventMarket' backend/crates/services/qip-brokers/src backend/crates/services/qip-execution-engine/src -- zero hits",
+      "backend/crates/services/qip-market-ingestion/src/connectors/kalshi_markets.rs:1-40 (prediction-venue quote connector, data only, refused by admission)"
+    ],
+    "gap": "No event-venue adapter implements the common execution contract or sits on the pre-trade-limit path; there is no paper order flow for event contracts at all, so the requirement's own verification (drive a paper order through a simulated adapter) has nothing to run against.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Test to write: construct a simulated event-venue VenueAdapter, drive a paper order through qip-execution-engine's pre-trade path, and assert it is checked before an order object exists and cannot be constructed with a non-paper autonomy ceiling.",
+    "work_item": "E17-event-venue-adapter",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Live trading on a real event venue remains permanently refused under ADR 0003/0021 regardless of this work; only the paper/simulated form is in scope, and even that does not exist yet, so this is scored MISSING rather than BLOCKED. verify: status kept MISSING; added the Kalshi quote connector and the arbitrage LegPlan output the assessor did not mention, neither of which submits or fills an order."
+  },
+  {
+    "id": "EVENT-004",
+    "status": "MISSING",
+    "current": "The generic quoting mechanics this would apply exist and are hardened for other instruments -- qip_execution_engine::quoting::{QuotePair, quote} (backend/crates/services/qip-execution-engine/src/quoting.rs:429-433,603) computes fair_value/bid/ask with skew from inventory -- but nothing connects it to an EventMarket or its outcomes: zero references to qip_prediction anywhere in qip-execution-engine/src, and no outcome-inventory concept exists.",
+    "evidence": [
+      "backend/crates/services/qip-execution-engine/src/quoting.rs:429-433 (QuotePair, fair_value), :603 (quote())",
+      "grep -rn 'prediction|Prediction|EventMarket' backend/crates/services/qip-execution-engine/src -- zero hits"
+    ],
+    "gap": "No wiring exists between EventMarket/outcomes and the quote engine, and there is no event venue to quote on in the first place (EVENT-003).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVENT-002",
+      "EVENT-003"
+    ],
+    "blocked_by": "",
+    "verification": "Test to write: run the quote engine against a simulated event venue and assert two-sided quotes within the payoff range, skew as outcome inventory accumulates, and shared capital/inventory reservation with other strategies.",
+    "work_item": "E17-event-market-making",
+    "tier": "T3",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "EVENT-005",
+    "status": "MISSING",
+    "current": "nothing event-specific. qip_brokers::exchange::SimulatedExchange has generic list/list_synthetic/seed_liquidity (backend/crates/services/qip-brokers/src/exchange.rs:380,405,446) for ordinary instruments, with no resolution-rules or pricing-rules publication step and no event-log record of a governed creation workflow. The assessor missed qip_execution_engine::origination::OriginationMandate::admit (backend/crates/services/qip-execution-engine/src/origination.rs:205,223), blueprint §29.3's five-gate 'gate before any market creation' (valuation, absence explanation, adverse-selection model, hard-coded exposure ceiling, per-class human approval): it is the market-creation *admission* half in generic form, but it defines no event contract, lists nothing, publishes no pricing rules and records nothing to the event log. SyntheticPredictionVenue emits PredictionUpdate::MarketListed (backend/crates/services/qip-prediction/src/adapter.rs:46,345), but that is a simulated venue announcing its own market, test-only, not the platform creating one.",
+    "evidence": [
+      "backend/crates/services/qip-brokers/src/exchange.rs:380 (list), :405 (list_synthetic), :446 (seed_liquidity)",
+      "backend/crates/services/qip-execution-engine/src/origination.rs:205 OriginationMandate, :223 admit (generic §29.3 creation gate; no event definition, listing or pricing-rule publication)",
+      "grep -n 'market_creation|create_market|EventMarket' backend/crates/services/qip-brokers/src backend/crates/services/qip-prediction/src -- no event-market-creation workflow anywhere"
+    ],
+    "gap": "No workflow exists that defines an event contract's resolution rules, lists it, seeds liquidity and publishes pricing rules as one governed, event-logged act; and its permission gate (EVENT-016) does not exist either.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVENT-016"
+    ],
+    "blocked_by": "",
+    "verification": "Test to write: run creation against a simulated venue and assert each of definition/rules/listing/seed-liquidity/pricing-rules is a distinct event-log record, and that the workflow cannot target anything but a simulated venue.",
+    "work_item": "E17-event-market-creation",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: status kept MISSING. Corrected exchange.rs line refs (list() is at :380, not :392-433) and added the origination-mandate gate the assessor missed as the reusable admission step."
+  },
+  {
+    "id": "EVENT-006",
+    "status": "MISSING",
+    "current": "nothing. qip_contracts::VenueClass (backend/crates/libs/qip-contracts/src/venue.rs:36-55) has nine variants -- Exchange, DarkPool, Ecn, Derivatives, OverTheCounter, CryptoExchange, DecentralisedExchange, PredictionMarket, Custodian -- and no Wagering (or similarly named) variant. The only occurrence of the word 'wager' anywhere in backend/crates is a phase-listing string in the CLI's blueprint renderer (backend/crates/apps/qip-cli/src/blueprint.rs:81), not implementation.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/venue.rs:36-55 (VenueClass, 9 variants, none is wagering)",
+      "grep -rin wager backend/crates --include=*.rs -- one hit, a display string in qip-cli/src/blueprint.rs:81"
+    ],
+    "gap": "No regulated-wagering venue type exists at all, so there is nothing to isolate and no routing path for the isolation invariant to guard.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Test to write: register a simulated wagering venue with a new VenueClass::Wagering (or equivalent) variant, assert an order sent through generic or event-contract routing to it is refused before an order object exists, and that the same order through the wagering-specific path with a permitting policy is admitted.",
+    "work_item": "E17-wagering-venue-type",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P0 fail-closed invariant with nothing built toward it yet; this is the foundation EVENT-007/008/017 each need."
+  },
+  {
+    "id": "EVENT-007",
+    "status": "MISSING",
+    "current": "nothing wagering-specific exists. The nearest structural analogue in the tree is qip_capital::ledger::eligibility::EligibilityRegistry::admit (backend/crates/services/qip-capital/src/ledger/eligibility.rs:346,412) combined with ledger::product::ProductCatalogue::offer/offering (backend/crates/services/qip-capital/src/ledger/product.rs:52,77,102), which is a fail-closed, jurisdiction-gated admission pattern reached from production via UserLedger::admit for *capital funding* -- an empty catalogue refuses everywhere by construction. It is not wired to any venue-routing path and has no wagering or jurisdiction-of-venue concept. A second analogue the assessor missed: qip_financial::constraints::TradingRestriction::JurisdictionBlocked (backend/crates/libs/qip-financial/src/constraints.rs:47,57), read by the ComplianceControl agent (backend/crates/agents/qip-investment-agents/src/control.rs:156). It is an instrument-level block list that defaults open (RegulatoryConstraints::unrestricted), not a per-entity, per-venue policy that refuses when none is configured, and it has no wagering concept.",
+    "evidence": [
+      "backend/crates/services/qip-capital/src/ledger/eligibility.rs:346,412 (EligibilityRegistry::admit, fail-closed pattern)",
+      "backend/crates/services/qip-capital/src/ledger/product.rs:52,77 (ProductCatalogue::offer, refuses an offering cleared in no jurisdiction)",
+      "grep -rin jurisdiction backend/crates/services/qip-prediction -- zero hits",
+      "backend/crates/libs/qip-financial/src/constraints.rs:57 TradingRestriction::JurisdictionBlocked (instrument-level, default-open)"
+    ],
+    "gap": "No wagering venue exists to gate (EVENT-006), and no jurisdiction check sits on any order-routing path for one.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVENT-006"
+    ],
+    "blocked_by": "",
+    "verification": "Test to write per the requirement's own check: no policy configured refuses; excluding jurisdiction refuses pre-order-object with a named jurisdiction; including it admits.",
+    "work_item": "E17-wagering-jurisdiction-gate",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Once EVENT-006 exists, the qip-capital eligibility/product pattern is a directly reusable shape for this gate. verify: status kept MISSING; added the instrument-level JurisdictionBlocked restriction as a further analogue and recorded why it does not satisfy the fail-closed, per-entity requirement."
+  },
+  {
+    "id": "EVENT-008",
+    "status": "MISSING",
+    "current": "nothing wagering-specific exists. No eligibility-by-age or per-venue eligibility record exists for any venue type; the same qip_capital::ledger::eligibility pattern cited under EVENT-007 is the nearest analogue and is unconnected to venues or age. The only investor-eligibility notion on a trading path is TradingRestriction::ProfessionalInvestorsOnly (backend/crates/libs/qip-financial/src/constraints.rs:55), an instrument-level flag with no per-entity eligibility record, no age criterion and no venue scope.",
+    "evidence": [
+      "backend/crates/services/qip-capital/src/ledger/eligibility.rs:346,412 (nearest analogous fail-closed pattern, for capital funding only)",
+      "grep -rin 'age|eligib' backend/crates/services/qip-prediction -- zero hits",
+      "backend/crates/libs/qip-financial/src/constraints.rs:55 ProfessionalInvestorsOnly (instrument-level, no per-entity record, no age)"
+    ],
+    "gap": "No wagering venue exists (EVENT-006) and no eligibility-record concept, age included, exists for any event or wagering venue.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVENT-006",
+      "EVENT-007"
+    ],
+    "blocked_by": "",
+    "verification": "Test to write: no eligibility record refuses; a record marked ineligible (including under the venue's age threshold) refuses pre-order-object; an eligible entity is admitted.",
+    "work_item": "E17-wagering-eligibility-gate",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Per the privacy rule, no age or identity datum may appear in fixtures/logs/test names beyond what the control needs. verify: status kept MISSING; added the ProfessionalInvestorsOnly restriction as the nearest trading-path analogue."
+  },
+  {
+    "id": "EVENT-009",
+    "status": "MISSING",
+    "current": "No specialist-brain society exists in the codebase at all (grep for 'specialist.?brain|BrainSociety|SpecialistBrain' across backend/crates/**/*.rs matches nothing but a display string). The closest structure is qip_investment_agents::manifests::roster (backend/crates/agents/qip-investment-agents/src/manifests.rs:507), an 18-manifest analyst roster (chief, macro, equity, credit, microstructure, derivatives, commodities, fx_rates, alternative_data, causal, adversarial_reviewer, simulation, portfolio_construction, quantum_optimization, risk_control, compliance_control, execution_trader, learning_attribution) with no event/prediction analyst among them, so nothing today is attributable to a dedicated Event/Prediction Brain.",
+    "evidence": [
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs:507 roster() (18 named manifests, none event/prediction)",
+      "grep -rin 'specialist.?brain|EventBrain|PredictionBrain' backend/crates --include=*.rs -- zero hits"
+    ],
+    "gap": "There is no specialist-brain architecture of any kind, and even if there were, its four owned outputs (EVENT-010/011/012/002) do not exist to attribute.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVENT-010",
+      "EVENT-011",
+      "EVENT-012",
+      "EVENT-002"
+    ],
+    "blocked_by": "",
+    "verification": "Test to write: run a cycle containing an event contract and assert the society's registry lists an Event/Prediction Brain and that its four outputs in the log are attributed to it.",
+    "work_item": "E09-event-prediction-brain",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Adding a manifest to the existing roster() pattern is mechanically small; the four outputs it would own are the expensive prerequisite work."
+  },
+  {
+    "id": "EVENT-010",
+    "status": "MISSING",
+    "current": "nothing. qip_prediction::resolution::Observations (backend/crates/services/qip-prediction/src/resolution.rs:63-88) holds one realised value per metric with one observed_at instant -- a fact, not a probability distribution over an outcome set. No OutcomeDistribution or equivalent type exists anywhere (`grep -rn 'OutcomeDistribution|outcome_distribution' backend/crates --include=*.rs` returns nothing). Two near misses the assessor did not list: qip_reasoning_engine::bayes::update (backend/crates/services/qip-reasoning-engine/src/bayes.rs:119) produces a single binary hypothesis confidence and EvidenceSet::latest_known_at (evidence.rs:453) gives its latest evidence instant -- a probability of one claim, not a distribution over an event's defined outcome set; and SyntheticPredictionVenue::fair_prices (backend/crates/services/qip-prediction/src/adapter.rs:241) normalises random weights to sum to one, but that is a simulated venue's generated book, test-only, not the platform's estimate.",
+    "evidence": [
+      "backend/crates/services/qip-prediction/src/resolution.rs:63-88 (Observations: single realised values, not a distribution)",
+      "grep -rn 'probability_distribution|OutcomeDistribution' backend/crates --include=*.rs -- zero hits in production or test code",
+      "backend/crates/services/qip-reasoning-engine/src/bayes.rs:119 update (binary hypothesis confidence, not an outcome-set distribution)"
+    ],
+    "gap": "No estimator, type or storage for a probability distribution over an event's outcome set exists at any layer.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Test to write: for generated multi-outcome events, assert each estimated distribution is non-negative, sums to one, covers exactly the defined outcomes, and carries the instant of its latest evidence.",
+    "work_item": "E09-event-outcome-distribution",
+    "tier": "T3",
+    "size": "M",
+    "notes": "This is the prerequisite most other EVENT requirements (002, 009, 011, 012, 018) sit behind. verify: status kept MISSING; recorded the reasoning engine's binary belief and the synthetic venue's normalised fair prices as near misses so they are not mistaken for this capability later."
+  },
+  {
+    "id": "EVENT-011",
+    "status": "MISSING",
+    "current": "nothing. No scenario-tree, event-tree or conditional-probability-branching type exists anywhere in backend/crates (`grep -in 'scenario.?tree|event.?tree|conditional.?probabilit'` matches only an unrelated comment in qip-capital's allocation.rs about position-sizing conditional probability, not event branching).",
+    "evidence": [
+      "grep -rn 'scenario.?tree|event.?tree' backend/crates --include=*.rs -i -- zero relevant hits",
+      "backend/crates/services/qip-capital/src/allocation.rs:162 (the one 'conditional probability' hit, unrelated to events)"
+    ],
+    "gap": "No representation of an event as branching intermediate developments with conditional probabilities exists.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVENT-010"
+    ],
+    "blocked_by": "",
+    "verification": "Test to write: for generated trees, assert conditional probabilities leaving each node sum to one, every leaf maps to exactly one defined outcome, and path-probability products reproduce EVENT-010's outcome distribution.",
+    "work_item": "E09-event-scenario-tree",
+    "tier": "T3",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "EVENT-012",
+    "status": "MISSING",
+    "current": "No event-specific information-arrival model exists. Adjacent bitemporal primitives exist elsewhere -- qip_prediction::resolution::Observations::at (resolution.rs:69, one observed_at per snapshot) and qip_world_model::resolution_source::ResolutionSourceClaim (backend/crates/services/qip-world-model/src/resolution_source.rs, carries both the instant an authority began to hold and the instant it became knowable, reached from production at backend/crates/runtime/qip-kernel/src/platform.rs:14499-14516) -- but neither models an arrival updating an event's outcome distribution, and no update anywhere names which arrival caused it. The closest mechanism, which the assessor missed, is generic: qip-reasoning-engine reads evidence point-in-time (EvidenceSet::as_of, backend/crates/services/qip-reasoning-engine/src/evidence.rs:330, applied in engine.rs:173) and bayes::update records a per-evidence BeliefContribution with the running probability after each item (bayes.rs:40,119), which is 'which arrival moved the belief' for a binary hypothesis confidence. It is reached from the REASON stage, but it updates a thesis's confidence, not an event's outcome distribution, and nothing feeds it event-contract information arrivals.",
+    "evidence": [
+      "backend/crates/services/qip-prediction/src/resolution.rs:63-88 (Observations: single snapshot, not an update log)",
+      "backend/crates/services/qip-world-model/src/resolution_source.rs (bitemporal claim provenance for a different fact -- who resolves a thesis -- not event-belief updates)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14499-14516 (ResolutionSourceClaim production use, unrelated to information arrival)",
+      "backend/crates/services/qip-reasoning-engine/src/bayes.rs:40 BeliefContribution (per-evidence attribution, generic hypotheses only)"
+    ],
+    "gap": "No mechanism updates an event's outcome distribution on a dated information arrival, point-in-time, with the arrival named in the update.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVENT-010"
+    ],
+    "blocked_by": "",
+    "verification": "Test to write: replay a dated arrival sequence for one event twice and assert an identical probability path, no update before its arrival's knowable instant, and every update names its arrival.",
+    "work_item": "E09-event-information-arrival",
+    "tier": "T3",
+    "size": "M",
+    "notes": "verify: status kept MISSING (nothing updates an event outcome distribution); added the reasoning engine's point-in-time Bayesian update with per-evidence attribution as the reusable mechanism the assessor missed."
+  },
+  {
+    "id": "EVENT-013",
+    "status": "PARTIAL",
+    "current": "Half the requirement exists, orphaned; the half its verification checks first does not. Present: the class's own lifecycle including resolution -- qip_prediction::oracle::MarketResolution (backend/crates/services/qip-prediction/src/oracle.rs:160-385: Pending/Overdue/Proposed/Disputed/Final/Void, settle refused unless Final) -- and a class-specific adapter port (PredictionAdapter/SyntheticPredictionVenue, adapter.rs:71,205), with EventMarket::new refusing any venue whose VenueClass is not PredictionMarket (market.rs:358-371). All of it is tested in qip-prediction/tests and none of it is constructed outside that crate's tests. Absent: the asset-class registry entry. qip_financial::asset_class::AssetClass (backend/crates/libs/qip-financial/src/asset_class.rs:13-27) has 13 variants, none Prediction or Event, and qip_kernel::asset_class_registry::AssetClassRegistry (backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:365,664) registers 9 of them, so there is no candidate variant to register and no FinancialObject for an event contract to resolve through it.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/asset_class.rs:13-27 (13 AssetClass variants, no Prediction/Event)",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:664 AssetClassRegistry::admit (registers 9 of 13, Prediction/Event never a candidate)",
+      "backend/crates/services/qip-prediction/src/oracle.rs:160-385 MarketResolution (class-specific resolution lifecycle, tests-only)",
+      "backend/crates/services/qip-prediction/src/market.rs:358-371 EventMarket::new (refuses a non-PredictionMarket venue)",
+      "backend/crates/services/qip-prediction/tests/markets.rs:456 a_disputed_resolution_blocks_settlement",
+      "backend/crates/services/qip-prediction/tests/markets.rs:499 an_unchallenged_resolution_settles_once_its_window_closes",
+      "backend/crates/services/qip-prediction/tests/markets.rs:243 a_market_on_a_venue_that_is_not_a_prediction_market_is_refused"
+    ],
+    "gap": "No Prediction/Event AssetClass variant or registry entry exists, so the requirement's own verification ('enumerate the asset-class registry and assert it holds a Prediction/event entry distinct from derivatives, then register an event contract and assert it resolves to the class's own adapter and lifecycle') fails at its first step. The lifecycle and adapter that would sit behind the entry exist but are reached only from tests.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-prediction --test markets proves the class-specific resolution lifecycle in isolation (re-run 2026-09-25: 'test result: ok. 21 passed; 0 failed'). The test to write is an AssetClassRegistry test enumerating a Prediction/Event entry distinct from Derivative and resolving a registered event contract to MarketResolution, per the requirement's own check.",
+    "work_item": "E05-prediction-event-asset-class",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Same registry file and pattern ASSET-001 already assesses; adding this variant is a reviewed registry change (asset_class_registry.rs's own module doc calls this 'the list to change when a class becomes supported'). verify: upgraded MISSING -> PARTIAL, implemented/tested set true, integrated left false. MISSING means 'nothing implements it', but the requirement names 'its own entry, adapter and lifecycle, including resolution', and the lifecycle-with-resolution and adapter halves are implemented and tested (markets.rs:456/499/532 drive MarketResolution through dispute, finalise and settle; all 21 markets tests pass). This is the same scoring the assessor applied to EVENT-001's orphaned-but-tested qip-prediction code. The registry entry -- the part the verification checks first -- is still wholly absent, so this is not close to COMPLETE."
+  },
+  {
+    "id": "EVENT-014",
+    "status": "MISSING",
+    "current": "nothing. No event-definition ingestion connector or pipeline exists (`grep -in 'event.?definition|EventDefinition' backend/crates --include=*.rs` returns nothing). qip_prediction::resolution::Proposition (resolution.rs:417-427) carries only resolves_at and a dispute_window, not a distinct valid-time/knowable-time pair, so even the in-memory type does not carry the bitemporal shape the requirement asks for. The assessor missed the one prediction-venue ingestion connector: qip_market_ingestion::connectors::kalshi_markets (backend/crates/services/qip-market-ingestion/src/connectors/kalshi_markets.rs), nameable in qip-fastbrain's connector feed (connector_feed.rs:216) but refused at admission (qip-data-finder admission.rs:356-382, licence unread per ADR 0034). It ingests quotes only and deliberately drops the rules text and every other definition field (its module doc: 'The body holds the ten fields the record is made from'), so it carries no outcome set, contract terms or definition source.",
+    "evidence": [
+      "grep -rn 'event.?definition|EventDefinition' backend/crates --include=*.rs -- zero hits",
+      "backend/crates/services/qip-prediction/src/resolution.rs:417-427 (Proposition: no valid-time/knowable-time pair)",
+      "backend/crates/services/qip-market-ingestion/src/connectors/kalshi_markets.rs:1-70 (prediction-venue quote connector; definitions deliberately not ingested; refused at admission)"
+    ],
+    "gap": "No ingestion pipeline, bitemporal storage, or amend-as-new-record behaviour exists for event definitions.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Test to write: ingest a fixture feed of event definitions and assert each is stored with outcome set/terms/source/valid-time/knowable-time, an amended definition is a new record, and one missing an outcome set is refused naming the missing field.",
+    "work_item": "E17-event-definition-ingestion",
+    "tier": "T2",
+    "size": "M",
+    "notes": "qip-market-ingestion already has bitemporal-record precedent elsewhere in the tree to follow (data-and-streaming domain rule). verify: status kept MISSING; added the Kalshi quote connector and why it does not ingest event definitions."
+  },
+  {
+    "id": "EVENT-015",
+    "status": "PARTIAL",
+    "current": "The refusal exists at construction and is tested in isolation; it is not exercised in production. qip_prediction::resolution::Proposition::new (backend/crates/services/qip-prediction/src/resolution.rs:432-461) refuses a proposition whose named source does not publish every metric its criteria need, and the source and resolves_at are non-optional fields, so a proposition missing either cannot be constructed. MarketKind::categorical (market.rs:139) refuses two outcomes resolving on identical criteria (an ambiguity refusal), and EventMarket::validate (market.rs:386-404) re-checks per outcome that the source publishes each outcome's metrics. Corrections to the original row: (a) EventMarket::validate's per-outcome refusal has NO test -- no test in qip-prediction constructs an EventMarket whose outcome criteria the source does not publish; (b) the production call site of Proposition::new (backend/crates/runtime/qip-kernel/src/platform.rs:12432-12450) builds its ResolutionSource with exactly the metric its criteria name (`vec![metric]`), so the refusal cannot fire there -- that path reaches the constructor but never the refusal. There is no 'resolved' marking on a definition and no pricing or trading path for the refusal to guard (EVENT-002, EVENT-003 are MISSING).",
+    "evidence": [
+      "backend/crates/services/qip-prediction/src/resolution.rs:432-461 Proposition::new",
+      "backend/crates/services/qip-prediction/src/market.rs:139 MarketKind::categorical (refuses outcomes with identical criteria)",
+      "backend/crates/services/qip-prediction/src/market.rs:386-404 EventMarket::validate (per-outcome check; untested)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12432-12450 Proposition::new call site (source built from the same metric, so the refusal is unreachable there)",
+      "backend/crates/services/qip-prediction/tests/markets.rs:120 a_proposition_whose_source_does_not_publish_its_metrics_is_refused",
+      "backend/crates/services/qip-prediction/tests/markets.rs:225 a_categorical_market_whose_outcomes_share_criteria_is_refused"
+    ],
+    "gap": "No ingested event definition carries a 'resolved' mark, no pricing or trading path exists to refuse an unresolved contract, EventMarket::validate's per-outcome refusal is untested, and nothing in a deployed process constructs an EventMarket or a Proposition whose refusal could fire.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-prediction --test markets (re-run 2026-09-25: 'test result: ok. 21 passed; 0 failed') proves Proposition::new's unpublished-metric refusal (markets.rs:120) and the categorical ambiguity refusal (markets.rs:225). Tests to write: an EventMarket whose outcome criteria the source does not publish is refused naming the metric (mutation-verify against EventMarket::validate), and -- once EVENT-002/003 exist -- a pricing/trading refusal for an unresolved definition reached from a composition root.",
+    "work_item": "E17-event-source-of-truth-integration",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status kept PARTIAL, flags unchanged. Corrected two claims: EventMarket::validate is NOT tested in-crate (no test reaches its refusal), and the platform.rs:12432 production call cannot fire the refusal because the source is built from the criteria's own metric, so 'production-proven' was wrong. Replaced evidence markets.rs:243 (a venue-class refusal, unrelated to source-of-truth rules) with markets.rs:225 (ambiguous-outcome refusal)."
+  },
+  {
+    "id": "EVENT-016",
+    "status": "MISSING",
+    "current": "nothing event-creation-specific exists. The nearest structural analogue is the same qip_capital::ledger::product::ProductCatalogue fail-closed pattern cited under EVENT-007 (backend/crates/services/qip-capital/src/ledger/product.rs:52,77) -- an empty catalogue refuses everywhere by construction -- but it gates capital funding by strategy family, not market creation by venue/jurisdiction, and is not connected to event markets at all. The assessor missed a nearer analogue: qip_execution_engine::origination::OriginationMandate::admit (backend/crates/services/qip-execution-engine/src/origination.rs:223) is a fail-closed market-creation gate -- every request needs a per-class ClassApproval signed by a named operator (origination.rs:177) and is refused without one -- but its five gates are valuation, absence explanation, adverse selection, exposure ceiling and approval; neither the target venue nor the jurisdiction is an input, so the permission this requirement names is not checked.",
+    "evidence": [
+      "backend/crates/services/qip-capital/src/ledger/product.rs:52,77 (nearest fail-closed analogue, unconnected to event-market creation)",
+      "grep -n 'market_creation|create_market' backend/crates --include=*.rs -i -- zero hits",
+      "backend/crates/services/qip-execution-engine/src/origination.rs:177 ClassApproval, :223 OriginationMandate::admit (fail-closed creation gate with no venue or jurisdiction input)"
+    ],
+    "gap": "No venue/jurisdiction permission gate exists in front of any market-creation action, because no market-creation action exists (EVENT-005).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Test to write: no permission configured refuses; a venue/jurisdiction lacking creation permission refuses before any market object exists; granting it admits against a simulated venue.",
+    "work_item": "E17-event-market-creation-gate",
+    "tier": "T1",
+    "size": "S",
+    "notes": "P0 fail-closed invariant; cheap to build once EVENT-005's creation action exists to gate, since it can reuse the ProductCatalogue shape. verify: status kept MISSING; added the origination mandate as the gate a venue/jurisdiction permission would most naturally extend."
+  },
+  {
+    "id": "EVENT-017",
+    "status": "MISSING",
+    "current": "nothing wagering-specific exists, and no product-policy-per-venue concept exists for event or wagering venues. The nearest analogue is again qip_capital::ledger::product::ProductCatalogue (backend/crates/services/qip-capital/src/ledger/product.rs:52,77), which gates by strategy family for capital funding, not by wagering product for a venue. qip_capital::ledger::entitlement::Entitlement::evaluate (backend/crates/services/qip-capital/src/ledger/entitlement.rs:137), reached from production at platform.rs:5865, derives a per-user, per-product entitlement from jurisdiction, product eligibility, role and mandate on every request -- the closest per-entity product-policy shape in the tree -- but for capital strategy families, not wagering products on a venue.",
+    "evidence": [
+      "backend/crates/services/qip-capital/src/ledger/product.rs:52,77 (nearest fail-closed analogue, unconnected to wagering)",
+      "grep -rin wager backend/crates --include=*.rs -- one non-implementation hit (qip-cli/src/blueprint.rs:81)",
+      "backend/crates/services/qip-capital/src/ledger/entitlement.rs:137 Entitlement::evaluate (per-user product entitlement for capital families, not wagering)"
+    ],
+    "gap": "No wagering venue exists (EVENT-006) and no product-policy gate exists on any wagering or event action.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVENT-006"
+    ],
+    "blocked_by": "",
+    "verification": "Test to write: an eligible entity in a permitted jurisdiction wagering on a product absent from the product policy is refused pre-order-object; one on a listed product is admitted.",
+    "work_item": "E17-wagering-product-gate",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status kept MISSING; added the §43.3 entitlement evaluator the assessor missed as the nearest per-entity product gate."
+  },
+  {
+    "id": "EVENT-018",
+    "status": "MISSING",
+    "current": "nothing to test the property on. No function anywhere prices an event contract (EVENT-002 is MISSING), so there is no pricing path whose independence from venue availability could be demonstrated, and no venue-availability input exists on any pricing path (`grep -in 'legally available|venue_availab' backend/crates --include=*.rs` returns nothing).",
+    "evidence": [
+      "grep -rn 'legally available|venue_availab' backend/crates --include=*.rs -- zero hits",
+      "(see EVENT-002 evidence: no event-pricing function exists to test this property against)"
+    ],
+    "gap": "The property is vacuously unverifiable because event pricing itself does not exist yet.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "EVENT-002"
+    ],
+    "blocked_by": "",
+    "verification": "Test to write, once EVENT-002 exists: for generated events, assert the price computed with every venue available equals the price computed with none available.",
+    "work_item": "E17-event-pricing-venue-independence",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Cheap to prove once EVENT-002 lands, provided the valuation function is written to never take venue-availability as an argument -- an argument-shape discipline rather than new logic."
+  },
+  {
+    "id": "EVENT-019",
+    "status": "MISSING",
+    "current": "nothing. No per-entity, per-venue legal-availability record or gate exists anywhere for event contracts (`grep -in 'legally available' backend/crates --include=*.rs` returns nothing). The nearest structural analogue is qip_capital::ledger::eligibility::EligibilityRegistry::admit (backend/crates/services/qip-capital/src/ledger/eligibility.rs:346,412), which gates capital funding per user/jurisdiction, fail-closed, but has no venue-availability concept and is not on any order-routing path. Further near misses the assessor did not list: RegulatoryConstraints.approved_venues (backend/crates/libs/qip-financial/src/constraints.rs:106-108) is documented 'Empty means unrestricted' -- the fail-open default this requirement forbids -- and is read by nothing outside constraints.rs; the execution path's 'venue-availability' refusal (RefusalReason::VenueUnavailable, platform.rs:18257) is operational availability of a withdrawn venue, not legal availability to an entity; and Entitlement::evaluate (qip-capital ledger/entitlement.rs:137) is per-user but for capital products, not venues.",
+    "evidence": [
+      "grep -rn 'legally available' backend/crates --include=*.rs -- zero hits",
+      "backend/crates/services/qip-capital/src/ledger/eligibility.rs:346,412 (nearest fail-closed analogue, unconnected to venue routing)",
+      "backend/crates/libs/qip-financial/src/constraints.rs:106-108 approved_venues ('Empty means unrestricted'; no reader outside the file)"
+    ],
+    "gap": "No action gate decides per-entity venue availability for an event contract before an order object exists, so a priced event (were pricing to exist) has nothing stopping it from being treated as tradable.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Test to write: price an event; assert an order by an entity with no availability record, or none available to it, is refused pre-order-object; granting one venue admits the order routed only there.",
+    "work_item": "E17-event-per-entity-availability-gate",
+    "tier": "T1",
+    "size": "S",
+    "notes": "P0 fail-closed invariant; the wagering controls (EVENT-007/008/017) are the stricter special case of this general gate. verify: status kept MISSING; added approved_venues (default-open and unenforced), the operational venue-availability refusal and the capital entitlement evaluator, none of which is a per-entity legal-availability gate."
+  }
+]

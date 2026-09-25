@@ -1,0 +1,214 @@
+[
+  {
+    "item": "Central-plane state is ephemeral in every deployed environment, including prod: `QIP_STORAGE_TARGET=memory` everywhere, and the one durable target (`engine`) is wired only through an execution node that no environment provisions",
+    "files": [
+      "infrastructure/terraform/variables.tf:365-382",
+      "infrastructure/gitops/envs/prod/api.yaml:72-73",
+      "infrastructure/gitops/envs/dev/api.yaml:72-73",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:184-185",
+      "backend/crates/libs/qip-storage/src/provider.rs:14-72",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4486 (DurableLogTransport::in_memory, corroborating: the kernel's own journal construction path)"
+    ],
+    "category": "scaling-limits / temporary-infrastructure",
+    "class": "B-refactor",
+    "why": "Terraform's own doc calls `memory` 'a statement rather than a placeholder', but every Cloud Run binary (api, fastbrain, deepbrain) in dev, stage AND prod runs with QIP_STORAGE_TARGET=memory, so a restart loses all in-process state. The only durable target this build implements (`engine`, an embedded WAL) is reached solely by the execution-node's startup script, and execution_nodes = {} in every environment's tfvars, so nothing durable ever runs. This directly contradicts the platform's own stated goal ('Every decision reproducible from the log alone', .claude/rules/10-product-direction.md) and the governance rule that the event log is hash-chained 'on purpose' — there is no deployed process today whose chain survives a restart.",
+    "blueprint_refs": ["v11.6 §13 durable knowledge memory", "GCP v2.1 Phase 4 (financial truth store)", "ADR 0099 C4"],
+    "risk": "high",
+    "suggested_epic": "E05"
+  },
+  {
+    "item": "qip-storage's managed-store adapters (Cloud Storage, BigQuery, Redis/Memorystore — 4,486 lines combined) are fully implemented and unit-tested but structurally unreachable from any deployed configuration",
+    "files": [
+      "backend/crates/libs/qip-storage/src/gcp/storage.rs (563 lines)",
+      "backend/crates/libs/qip-storage/src/gcp/bigquery.rs (1038 lines)",
+      "backend/crates/libs/qip-storage/src/redis.rs (2089 lines)",
+      "backend/crates/libs/qip-storage/src/provider.rs:62-73 (is_implemented() includes them; the only gate is the caller)",
+      "infrastructure/terraform/variables.tf:376-382 (storage_target validation admits only memory|file|engine)"
+    ],
+    "category": "unfinished-migration / dead-code (unreached in production)",
+    "class": "E-needs-evidence",
+    "why": "is_implemented()==true for CloudStorage, BigQuery and Memorystore, and each adapter has its own test suite, but Terraform's storage_target variable refuses any value naming them, so no composition root can select one — confirmed by no non-test reference to CloudStorageBlobStore/BigQueryWarehouse/RedisKeyValueStore in backend/crates/apps/*/src. This is not dead code with no plan: the type is fresh and tested, and ADR 0099 names the missing piece explicitly — 'a storage record per store, the ledger first' (C4). Widening the Terraform gate or wiring a caller ahead of that record would be building ahead of a decision, not migrating toward one; the evidence needed is that record.",
+    "blueprint_refs": ["GCP v2.1 (Cloud Storage / BigQuery data plane)", "ADR 0099 C4"],
+    "risk": "medium",
+    "suggested_epic": "E05"
+  },
+  {
+    "item": "qip-storage's `DurableStore` is a single-node WAL+checkpoint engine; no replication, quorum or broker-fleet concept exists anywhere in the crate",
+    "files": [
+      "backend/crates/libs/qip-storage/src/engine/mod.rs (906 lines: WAL + checkpoints + crash recovery, single process)",
+      "infrastructure/terraform/modules/execution-node (one local disk per node, no clustering)"
+    ],
+    "category": "scaling-limits",
+    "class": "E-needs-evidence",
+    "why": "v11.6's Fabric wants regional broker fleets with replicated, quorum-acknowledged logs; the only durable store this workspace has is one process's embedded engine on local disk with no consensus protocol, and a Raft (or equivalent) implementation is a new dependency ADR 0002/0009 currently refuse. Evidence needed before any multi-node design starts: a consensus/replication record under ADR 0099 C2. Today's actual exposure is bounded because no environment provisions the node that would run this engine at all (execution_nodes = {} everywhere, per item 1), so this is a target-state gap rather than a live incident.",
+    "blueprint_refs": ["v11.6 §7 Fabric brokers", "ADR 0099 C2, C8"],
+    "risk": "medium",
+    "suggested_epic": "E03"
+  },
+  {
+    "item": "qip-transport's mesh and HTTP client remain plaintext and unauthenticated; the TLS dependency ADR 0012 accepted specifically to close this gap was never added",
+    "files": [
+      "backend/crates/libs/qip-transport/src/lib.rs:45-75 (module doc: 'This transport has no TLS and no authentication of the peer... Production must add mutual TLS')",
+      "backend/crates/libs/qip-transport/Cargo.toml (dependencies: serde, serde_json, qip-core, qip-contracts, qip-events — no rustls)",
+      "docs/adr/0012-where-a-library-earns-its-place.md (Decision → 'Admitted now: TLS. rustls... Scope: the I/O edge only. qip-transport')"
+    ],
+    "category": "unfinished-migration / security-shortcut",
+    "class": "B-refactor",
+    "why": "ADR 0012 (accepted) is explicit that rustls is admitted at qip-transport's I/O edge specifically because 'a hand-rolled TLS stack guarding real money is indefensible' — this is the wire that carries signed capital envelopes and cell state deltas. The ADR was accepted but never acted on: qip-transport's Cargo.toml carries no rustls dependency and its own module doc still states the gap plainly, relying entirely on VPC-level network isolation. An accepted decision to close a named, acknowledged security gap sits unimplemented rather than merely deferred.",
+    "blueprint_refs": ["GCP v2.1 (mTLS / service-mesh requirement)", "ADR 0012", "ADR 0099 C2"],
+    "risk": "high",
+    "suggested_epic": "E03"
+  },
+  {
+    "item": "The blueprint's Fabric target (async/Tokio, QUIC/mTLS, protobuf via prost, BLAKE3, Raft, gRPC clients) is architecturally incompatible with qip-transport/qip-events' current, deliberately different design (blocking I/O, serde_json wire, SHA-256, at-least-once HTTP/1.1, no consensus)",
+    "files": [
+      "backend/crates/libs/qip-transport/src/lib.rs:1-75",
+      "backend/crates/libs/qip-events/src/bus.rs (590 lines, synchronous dispatch)",
+      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md (conflict register row C2)"
+    ],
+    "category": "architectural-conflict",
+    "class": "E-needs-evidence",
+    "why": "This is a whole-shape conflict, not a single defect: every element of the current design traces to an accepted ADR (0001 no async runtime, 0002/0009 two dependencies, 0011 in-tree Pub/Sub substitute). ADR 0099 itself defers resolution to 'a dependency record per class (async runtime, transport security, wire schema, consensus, managed-service clients)' and explicitly forbids treating adoption of the blueprint as authorization to act ('A dependency, cluster or managed service appearing in the tree before its record... would mean this record was read as the reopening of ADR 0002, 0009 or 0024, which it explicitly is not'). No libs-foundation code should move on this until that record exists.",
+    "blueprint_refs": ["v11.6 §7 Native Rust Event & Control Fabric", "ADR 0099 C2"],
+    "risk": "high",
+    "suggested_epic": "E03"
+  },
+  {
+    "item": "Three non-unified topic-classification vocabularies stand in for the blueprint's single per-topic QoS model, with no type able to refuse a topic missing a required QoS field",
+    "files": [
+      "backend/crates/libs/qip-events/src/topic.rs:38,327,416,532,649,658 (Topic::name/group/retention_class only)",
+      "backend/crates/libs/qip-events/src/retention.rs:55-76 (RetentionClass, a nine-row data-domain taxonomy per blueprint §22.1)",
+      "backend/crates/services/qip-streaming/src/routing.rs:75-110 (RoutingClass, a two-way Hot/Durable split)"
+    ],
+    "category": "competing-schemas",
+    "class": "B-refactor",
+    "why": "v11.6 §7.2 names a five-class per-topic QoS model (partitioning key, ordering, overload, mirroring, replication semantics). `RetentionClass` and `RoutingClass` each partially cover the space from a different angle — one is a data-lifecycle taxonomy, the other a two-way delivery split — and neither is silent about its own scope, but nothing unifies them: a topic's actual delivery semantics depend on which of the two a piece of reading code happens to consult, and there is no topic-creation API that can refuse a topic missing an ordering or mirroring declaration, because no type models that concept at all.",
+    "blueprint_refs": ["v11.6 §7.2 P0-P4 QoS classes"],
+    "risk": "medium",
+    "suggested_epic": "E03"
+  },
+  {
+    "item": "`CapitalEnvelope::admit` clamps an oversized order to remaining headroom (`CapitalGrant::Reduced`) instead of refusing it whole, contradicting the house rule against silently correcting an invalid input",
+    "files": [
+      "backend/crates/libs/qip-contracts/src/capital.rs:190-228 (the clamp: lines 219-227 compute `cap` and return `CapitalGrant::Reduced(cap)` rather than `Refused`)",
+      "backend/crates/libs/qip-contracts/tests/contracts.rs:503-524 (an_oversized_order_is_reduced_rather_than_approved_as_requested)",
+      "backend/crates/edge/qip-edge/src/cell.rs:7371-7373 (doc comment contrasting this with hold_region_capital's refuse-whole design right beside it)"
+    ],
+    "category": "risk-control-defect (silent correction of an invalid input)",
+    "class": "B-refactor",
+    "why": "CLAUDE.md principle 2 states plainly: 'Refuse rather than guess... A value silently corrected is a caller bug that survives.' The codebase demonstrates it knows the difference — `hold_region_capital`, right beside this call site, refuses whole rather than reducing. `CapitalEnvelope::admit` does the opposite for the gross-limit bound, and the behaviour is deliberate (it has a named test asserting the reduction). This sits in the capital-limit path every order is checked against, so the inconsistency with the house rule is load-bearing rather than cosmetic.",
+    "blueprint_refs": ["GCP v2.1 (pre-trade limit semantics)"],
+    "risk": "high",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "`DegradationState::halts()` is hard-coded to always return `false`; an expired capital envelope narrows a desk's size but never halts it, withdraws its resting orders, or reports it halted",
+    "files": [
+      "backend/crates/libs/qip-contracts/src/degradation.rs:853 (pub const fn halts(&self) -> bool { false })",
+      "backend/crates/edge/qip-edge/src/cell.rs:3493-3497 (envelope_expiry gate refuses new signals only, never calls apply_halt)",
+      "backend/crates/edge/qip-edge/src/cell.rs:1956 (is_halted driven only by kill_switch/policy_halt/polled_halt)"
+    ],
+    "category": "hard-coded-configuration / fail-open default",
+    "class": "E-needs-evidence",
+    "why": "A value that should reflect live degradation state is instead a compile-time constant, by explicit design ('halting belongs to the kill switch... not a consequence of a warm-path job being late'). Consequence: a cell whose capital envelope has expired keeps trading indefinitely at a reduced size (floor 0.375x) rather than stopping — the opposite of 'every safety default is the restrictive one' (CLAUDE.md principle 3). The code and its own tests already name the tension; what is missing is an owner decision on which side is wrong — the constant or the fail-closed principle — before either changes, not a mechanical bug fix.",
+    "blueprint_refs": ["v11.6 §22 degradation contracts (fail-closed default)"],
+    "risk": "high",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "`PolicyPayload` carries twelve typed slots; two (`trained_models`, `compiled_plan`) are never produced by the only production path that ships one",
+    "files": [
+      "backend/crates/libs/qip-contracts/src/policy.rs:584-620 (PolicyPayload's twelve Slot<T> fields)",
+      "backend/crates/apps/qip-api/src/mesh.rs:892-930 (pending_policy: produces capital_grants, risk_envelope, belief_priors only)",
+      "backend/crates/apps/qip-api/tests/mesh.rs:2285 (a_shipped_payload_produces_exactly_the_six_slots_the_register_names)"
+    ],
+    "category": "unfinished-migration / placeholder",
+    "class": "B-refactor",
+    "why": "The type models a twelve-slot policy contract; production wiring fills a handful every cycle and leaves trained_models/compiled_plan permanently Slot::Stale — confirmed by the mesh test's own name asserting exactly which slots ship. The two unshipped slots have no consumer either (qip-edge-node's Cell::apply_policy has no code path expecting them filled), so these are live types with no live producer and no live consumer: a smaller, more specific gap than deleting the fields would address, and one the platform's own e2e test already pins down rather than leaving implicit.",
+    "blueprint_refs": ["v11.6 (policy pack register, CONTRACT-001..015)"],
+    "risk": "medium",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "`Telemetry` bundles three signal kinds (metrics, traces, logs) into one process-scoped value with no entity-keyed graph joining them; the blueprint's unified five-signal-class model does not exist",
+    "files": [
+      "backend/crates/libs/qip-observability/src/lib.rs:9-47 (Telemetry{metrics, tracer, logger}, three name-keyed collections)"
+    ],
+    "category": "architectural-conflict",
+    "class": "B-refactor",
+    "why": "v11.6's observability model joins infrastructure, application, data-quality, model-health and trading-behaviour signals on shared entity nodes, so an operator can walk from one instrument's data-quality signal to its model-health signal. Telemetry here holds three separate, name-keyed collections with nothing joining a signal to the entity it concerns across signal kinds, and two of the five target classes (data quality, trading behaviour) have no representation at all. This is additive work on a sound base — the three existing collections are three of the five inputs a graph layer needs — not a rewrite.",
+    "blueprint_refs": ["v11.6 (unified observability, five signal classes)"],
+    "risk": "low",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "Nothing calls `Logger` per cycle today (correct), but the O(1)-log-volume property that depends on that fact has no regression test pinning it",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs (grep -c 'logger\\.' → 0; 55 sites call metrics.* and none call logger.*, measured 2026-09-25)",
+      "backend/crates/libs/qip-observability/src/logs.rs (Logger, Severity)"
+    ],
+    "category": "missing-tests-on-production-path",
+    "class": "B-refactor",
+    "why": "The platform currently avoids per-tick logging, which matters because on this cycle's cadence that would make log volume scale with tick count rather than with events actually worth recording — an explicit prohibition in .claude/rules/domains/observability.md. That absence is a fact about the code today, verified only by grep/inspection, not a property the test suite protects: a future change adding one logger.info inside a per-stage function would silently reintroduce unbounded log growth and nothing would fail.",
+    "blueprint_refs": ["v11.6 (bounded retention, always)"],
+    "risk": "medium",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "Metrics are recorded and exposed at /metrics (55 sites, tested), but nothing has been shown to scrape any deployed process, so every Cloud Monitoring alert policy stays gated off",
+    "files": [
+      "infrastructure/terraform/variables.tf:1136-1158 (workload_metrics_exist default = false)",
+      "infrastructure/terraform/modules/observability/main.tf (9 alert policies, all `count = ... workload_metrics_exist`)",
+      "backend/crates/apps/qip-api/src/routes.rs:79,1249 (scrape(&platform) exposes Prometheus text)"
+    ],
+    "category": "deployment-ci-observability-gap",
+    "class": "B-refactor",
+    "why": "The emitting half of observability is real and tested; what remains is proof of ingestion. The Cloud Run half of the gap is currently blocked upstream — the only published managed-Prometheus sidecar image fails the platform's own Trivy gate on an unfixed CRITICAL CVE in golang.org/x/crypto — so this cannot be closed by writing more qip-observability code. workload_metrics_exist must stay false, and no alert policy should be flipped on, until a pod is actually shown to have been scraped; treating a deployment's mere existence as evidence would be the exact mistake .claude/rules/domains/observability.md warns against.",
+    "blueprint_refs": ["GCP v2.1 (Cloud Monitoring)"],
+    "risk": "medium",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "`CellInsights`' two query methods (and the `Platform::insights_mut` accessor that reaches them) have no caller anywhere outside tests, despite the gate itself being built into every cycle",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/central/insights.rs:75-109 (mean_gross_notional, total_realised_loss)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:358,4441,5377 (Platform::new constructs CellInsights unconditionally; insights_mut is the only accessor)",
+      "backend/crates/runtime/qip-kernel/tests/insights.rs (only caller of either method)"
+    ],
+    "category": "dead-code / tests-only surface",
+    "class": "B-refactor",
+    "why": "The differential-privacy disclosure gate (qip-confidential) is built into every Platform::new — so its construction cost is paid every cycle — and is extensively tested, including an explicit differencing-attack demonstration, but no console route, API endpoint or CLI command in crates/apps/** ever calls the two methods that are its entire reason to exist. Not dead code with no plan (the type is fresh, tested, and reachable from Platform's own constructor), but a production surface that has never been asked a real question, which per the change-management evidence standard is a claim about protection nobody has verified end-to-end.",
+    "blueprint_refs": ["SEC (cross-cell aggregate disclosure control)"],
+    "risk": "low",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "`PrivacyLedger`'s spent-epsilon state is process-memory only and does not survive a restart",
+    "files": [
+      "backend/crates/libs/qip-confidential/src/budget.rs (Budget, PrivacyLedger, SpentEpsilon — no persistence)",
+      "backend/crates/libs/qip-confidential/src/lib.rs:1-191 (no qip_core::KeyValueStore usage anywhere in the crate)"
+    ],
+    "category": "scaling-limits",
+    "class": "E-needs-evidence",
+    "why": "The differential-privacy defence is only as strong as its budget accounting. If a Cloud Run instance restarts — which item 1 shows is routine, not exceptional, for every deployed environment today — every cell's spent epsilon resets to zero, and a sequence of releases that would have been refused as over-budget across the restart boundary is instead admitted as if it were the first query ever made. This is contained today only because the query surface has no production caller (see the CellInsights finding above); wiring one without first deciding where the ledger persists would reopen a real disclosure risk. Evidence needed: a decision on which durable store the ledger persists through, consistent with whatever item 1 resolves to for central-plane durability generally.",
+    "blueprint_refs": ["SEC (privacy budget durability)"],
+    "risk": "medium",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "qip-storage and qip-transport perform real I/O (file fsync, TCP sockets, HTTP calls) from inside crates/libs/, which reads as a flat violation of the architecture rule 'No lib performs I/O... a lib that opens a socket is a service in the wrong directory' unless ADR 0011/0012 are already known",
+    "files": [
+      ".claude/rules/architecture/00-boundaries.md (states the rule with no exception named)",
+      "backend/crates/libs/qip-storage/src/fsio.rs (flushes every write to the storage device)",
+      "backend/crates/libs/qip-transport/src/http.rs (opens raw std::net::TcpStream connections)",
+      "docs/adr/0011-everything-in-rust-on-kubernetes.md:20-21 (qip-transport replaces Pub/Sub; qip-storage replaces Spanner, deliberately as libraries)",
+      "docs/adr/0012-where-a-library-earns-its-place.md:46-48 ('Scope: the I/O edge only. qip-transport...')"
+    ],
+    "category": "documentation-gap (dependency-direction clarity)",
+    "class": "A-retain",
+    "why": "The code is correct and the exception is deliberate and doubly ADR-sanctioned (ADR 0011 designed these two crates as the in-tree substitutes for Spanner and Pub/Sub specifically as libraries; ADR 0012 explicitly scopes the one admitted TLS dependency to 'the I/O edge... qip-transport'). No code change is warranted. But the architecture rule a reader (or an agent) consults first states the boundary with no exception named, which is exactly the shape of drift .claude/rules/architecture/00-boundaries.md itself warns about elsewhere in its own text regarding stale citations — the next reader who has not read ADR 0011/0012 will flag this as a fresh violation. Naming the exception in the rule file is a documentation fix, not a code change.",
+    "blueprint_refs": ["ADR 0011", "ADR 0012"],
+    "risk": "low",
+    "suggested_epic": "E00"
+  }
+]

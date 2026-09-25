@@ -1,0 +1,632 @@
+[
+  {
+    "id": "MESH-001",
+    "status": "MISSING",
+    "current": "nothing implements peer-to-peer Reflex Mesh coordination. The repository's only 'mesh' code is the ADR 0011 centre-to-cell spine: qip_edge::mesh::{CellUplink,PolicyDownlink,CapitalDownlink} (backend/crates/edge/qip-edge/src/mesh.rs) over qip_transport::mesh (backend/crates/libs/qip-transport/src/mesh.rs, whose own module doc says 'Nine regional cells publish state deltas up; the central plane publishes signed capital envelopes back down') and qip_mesh::spine::{CapitalDispatcher,CellDeltaReceiver} (backend/crates/services/qip-mesh/src/spine.rs), wired into qip-api under QIP_MESH_CELLS. qip_edge::arbitrage's own module doc states plainly that the desk 'does not coordinate' and that cross-region paths 'need a mirror edge class the graph does not have' (backend/crates/edge/qip-edge/src/arbitrage.rs:41-57); qip_arbitrage::legs's module doc repeats it: 'A cell's graph holds the cell's own venues (ADR 0008), so every cycle the desk can see today is path 1, 2 or 7, executed alone' (backend/crates/edge/qip-arbitrage/src/legs.rs:48-57).",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/arbitrage.rs:41-57 (module doc: 'it does not coordinate')",
+      "backend/crates/edge/qip-arbitrage/src/legs.rs:48-57 (module doc: cross-region needs a mirror edge class the graph does not have)",
+      "backend/crates/libs/qip-transport/src/mesh.rs:1-11 (module doc: centre-to-cell spine, not peer)",
+      "rg for peer_reflex|PeerReflex|peer.to.peer|ReflexMesh across backend/crates returns zero matches"
+    ],
+    "gap": "No peer transport, no distributed-opportunity coordination protocol, and no message registry exist between cells; the only inter-process channel a cell has is the centre-to-cell spine, which MESH-001's own requirement notes name as a naming collision that does not satisfy it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-004",
+      "MESH-005",
+      "MESH-007",
+      "MESH-008",
+      "MESH-009",
+      "MESH-013",
+      "MESH-015",
+      "MESH-017",
+      "MESH-021",
+      "MESH-022"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. To build one: two paper qip-edge-node processes, connected only by a new peer channel with the central plane unreachable, exchanging state and carrying a 2-leg cross-region paper cycle end to end (qip-edge/tests/cross_region.rs is the closest existing fixture shape to extend).",
+    "work_item": "E11",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "Flagged NEW_DEPENDENCY in the requirement, but the existing centre-cell spine achieves authenticated delivery over plaintext HTTP/1.1 plus HMAC-signed envelopes (ADR 0002's permitted in-tree hashing) with no new crate; the same pattern is plausibly reusable peer-to-peer, so BLOCKED-by-C2 is not asserted here without a concrete design showing otherwise."
+  },
+  {
+    "id": "MESH-002",
+    "status": "PARTIAL",
+    "current": "qip_edge::cell::Cell::on_bytes/Cell::work are structurally memory-and-arithmetic-only (module doc backend/crates/edge/qip-edge/src/lib.rs:16-19); every I/O seam (journal::FileMirror::ship, mesh::CellUplink/PolicyDownlink/CapitalDownlink) is confined to Cell::flush or the mesh module, never called from work(). qip_edge::region tracks peer regions gone dark and suspends the one existing cross-region mechanism (mirrors) rather than blocking on them (region.rs).",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/lib.rs:16-19",
+      "backend/crates/edge/qip-edge/src/region.rs:48,57,77 and 10 inline tests, e.g. an_unreadable_wire_darkens_every_region_except_the_cells_own (region.rs:304)",
+      "backend/crates/edge/qip-edge/tests/cross_region.rs::a_dark_region_leaves_a_cell_whose_venues_are_all_at_home_trading_exactly_as_before (1307)",
+      "backend/crates/apps/qip-edge-node/tests/mesh.rs::a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (375) -- the centre spine, not a peer, but the nearest composition-root chaos analogue",
+      "backend/crates/apps/qip-edge-node/src/main.rs:852-876 (serve loop: Cell::flush runs before and independently of MeshLink::exchange_with_installers)"
+    ],
+    "gap": "The 'no remote dependency' invariant holds by construction for what exists today (local decisions, the centre spine, and the one dark-peer/mirror mechanism), but there is no peer link (MESH-001) to sever and no distributed cycle to disable, so the specific chaos property this requirement names is unproven against its actual target.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001"
+    ],
+    "blocked_by": "",
+    "verification": "backend/crates/edge/qip-edge/tests/cross_region.rs::a_dark_region_leaves_a_cell_whose_venues_are_all_at_home_trading_exactly_as_before proves the closest existing analogue; a chaos test severing the future peer mesh is the remaining work once MESH-001 exists.",
+    "work_item": "E11",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status and flags confirmed (Cell::work reached from qip-edge-node run_pass; region.rs:304 and cross_region.rs:1307 tests exist). Added the edge-node unreachable-centre test and the serve-loop ordering as evidence; no status change."
+  },
+  {
+    "id": "MESH-003",
+    "status": "PARTIAL",
+    "current": "The downward signed path is implemented and hardened: qip_edge::policy::VerifiedPolicy / qip_edge::envelope::VerifiedEnvelope (signature-recomputing construction only) received through qip_edge::mesh::PolicyDownlink/CapitalDownlink, wired from qip-edge-node/src/mesh.rs into Cell::apply_policy/apply_halt/renew_capital.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/envelope.rs:25 (VerifiedEnvelope, private inner)",
+      "backend/crates/edge/qip-edge/tests/mesh.rs::a_downlink_that_cannot_verify_anything_refuses_to_exist",
+      "backend/crates/edge/qip-edge/tests/cell.rs::an_unsigned_envelope_cannot_become_a_verified_one, tampering_with_any_bound_invalidates_the_signature"
+    ],
+    "gap": "The 'peers never carry policy' half of the invariant has nothing to test against: no peer channel exists (MESH-001 is MISSING), so no test demonstrates that a well-formed signed pack delivered over a peer connection is refused. The property is vacuously true today rather than demonstrated.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001"
+    ],
+    "blocked_by": "",
+    "verification": "backend/crates/edge/qip-edge/tests/mesh.rs (10 tests) proves the downward path; a test delivering a valid pack over a peer connection and asserting refusal must be written once MESH-001 exists.",
+    "work_item": "E11",
+    "tier": "T1",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "MESH-004",
+    "status": "PARTIAL",
+    "current": "qip_edge::reservation::{RegionAllocation,RegionTable} (backend/crates/edge/qip-edge/src/reservation.rs:121,522) is an atomic, all-or-nothing, in-memory hold/release ledger for one region's capital, shared by clones across cells and by both local strategies and the arbitrage desk's cycles; wired from qip-edge-node/src/lib.rs:152 (Cell::with_unfunded_region, which opens a RegionTable via Cell::with_region_table) under the ceiling qip-edge-node/src/allocation.rs reads.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/reservation.rs:121,522 (RegionAllocation, RegionTable)",
+      "backend/crates/edge/qip-edge/src/reservation.rs:634 a_second_hold_against_the_same_capital_is_refused_whole_rather_than_reduced (inline #[cfg(test)], not tests/reservation.rs)",
+      "backend/crates/edge/qip-edge/src/reservation.rs:686 releasing_a_hold_returns_exactly_what_it_took (inline)",
+      "backend/crates/edge/qip-edge/src/reservation.rs:731 one_cells_sweep_leaves_another_cells_holds_standing (inline, not tests/region_table.rs)",
+      "backend/crates/edge/qip-edge/tests/region_table.rs:400 two_cells_under_one_region_table_cannot_each_spend_the_whole_grant",
+      "backend/crates/edge/qip-edge/tests/reservation.rs:249 a_second_strategy_is_refused_once_the_region_allocation_is_spent_even_though_its_own_envelope_would_admit_it",
+      "backend/crates/apps/qip-edge-node/src/lib.rs:152 (with_unfunded_region at the composition root)"
+    ],
+    "gap": "Atomicity within one region's capital ledger is implemented and tested, but (a) it reserves capital only -- rg finds no inventory reservation anywhere in crates/edge or crates/services, and the requirement names inventory and capital; (b) nothing ties one reservation per node to a shared cross-region opportunity epoch (MESH-005 is partial, MESH-001 missing), so 'each node reserves its own legs for the same distributed opportunity' is missing; (c) the property-based interleaving check the requirement names does not exist -- the tests are example-based.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001",
+      "MESH-005"
+    ],
+    "blocked_by": "",
+    "verification": "Inline tests in backend/crates/edge/qip-edge/src/reservation.rs (15, e.g. a_second_hold_against_the_same_capital_is_refused_whole_rather_than_reduced, releasing_a_hold_returns_exactly_what_it_took) plus tests/reservation.rs (8) and tests/region_table.rs (10) prove single-region capital atomicity; an inventory ledger and a cross-node property test keyed by a shared epoch id are the remaining work.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: two cited tests were given at tests/reservation.rs and tests/region_table.rs but live inline in src/reservation.rs (634, 731) -- paths corrected; wiring corrected to with_unfunded_region (lib.rs:152); gap now names the missing inventory reservation. Status PARTIAL and flags unchanged."
+  },
+  {
+    "id": "MESH-005",
+    "status": "PARTIAL",
+    "current": "qip_arbitrage::scan::Opportunity::cycle_id / cycle_legs (backend/crates/edge/qip-arbitrage/src/legs.rs:80-149) gives a cycle a reproducible identity (path kind + every leg's object@venue/side + opened_at) and a per-cycle deadline (valid_until) refused if it is not strictly after opened_at. This is local to one cell's own scan, not a token exchanged between peers.",
+    "evidence": [
+      "backend/crates/edge/qip-arbitrage/src/legs.rs:80-149",
+      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs::the_cycle_id_replays_at_one_instant_and_separates_two (1233)",
+      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs::legs_that_would_expire_before_the_cycle_opens_are_refused (1256)"
+    ],
+    "gap": "Opportunity::cycle_id/cycle_legs cover four of the seven named fields in substance -- the cycle (path kind + object@venue/side sequence), its legs, each leg's signed size, and a TTL-shaped deadline (valid_until) -- but not as one epoch type: there is no minimum-edge field, no model-version field and no unwind-policy field (rg for OpportunityEpoch|OpportunityToken|unwind_policy|UnwindPolicy|min_edge across backend/crates returns nothing), construction does not refuse a missing field by name, and nothing is ever exchanged as a token between peers because MESH-001 does not exist.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001"
+    ],
+    "blocked_by": "",
+    "verification": "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs::legs_that_would_expire_before_the_cycle_opens_are_refused proves the existing TTL-shaped field; a unit test on a new OpportunityEpoch type refusing construction missing any of the seven named fields is the remaining work (ties to CONTRACT-015).",
+    "work_item": "E02",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: gap said cycle_id/CycleLeg cover '2 of the 7' fields; cycle_legs also carries the cycle identity and a per-leg size (legs.rs:118-146), so 4 of 7 in substance -- gap corrected. Status PARTIAL and flags unchanged."
+  },
+  {
+    "id": "MESH-006",
+    "status": "MISSING",
+    "current": "nothing exchanges outcomes or state directly region-to-region. The only cross-region-shaped data flow in the tree is centre-mediated: qip_mesh::spine::{CapitalDispatcher,CellDeltaReceiver} (backend/crates/services/qip-mesh/src/spine.rs) push signed envelopes down from, and drain cell deltas up to, the central plane; and qip_edge::mirror's reference price/targets likewise arrive from the centre's policy payload (backend/crates/edge/qip-edge/src/mirror.rs:1-19), never from a peer directly.",
+    "evidence": [
+      "backend/crates/services/qip-mesh/src/spine.rs (CapitalDispatcher/CellDeltaReceiver definitions)",
+      "backend/crates/edge/qip-edge/src/mirror.rs:1-19 (module doc: reference price/targets arrive from the centre's policy payload)",
+      "backend/crates/apps/qip-api/src/mesh.rs:73-90 (spine wiring, centre-to-cell)"
+    ],
+    "gap": "Every cross-region-shaped fact currently flows up to the centre and back down; no direct region-to-region path exists, which is exactly the relay this requirement forbids.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: with the global brain stopped, an outcome record from region A's paper cell reaches region B's cell directly and B applies it.",
+    "work_item": "E11",
+    "tier": "T3",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "MESH-007",
+    "status": "MISSING",
+    "current": "nothing. rg for clock_offset, ClockOffset, clock_sync and 'synchronized clock' across backend/crates returns zero matches; no measured-offset type, no exclusion-from-epoch logic, and no exported offset gauge exist.",
+    "evidence": [
+      "rg -il 'clock_offset|ClockOffset|clock_sync' backend/crates --type rust -> no matches"
+    ],
+    "gap": "No measured clock offset, no configured bound, no exclusion of an out-of-bound node from a distributed epoch, and no opportunity epoch (MESH-005 is only partial) for a TTL to be measured against across regions in the first place.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001",
+      "MESH-005"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: a chaos test skewing one paper node's measured offset past a configured bound and asserting exclusion from new distributed epochs while in-bound nodes keep coordinating.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Host clock discipline (chrony/PTP) is an infrastructure decision outside this repository's scope; the in-tree work is the measured-offset export and the exclusion gate."
+  },
+  {
+    "id": "MESH-008",
+    "status": "PARTIAL",
+    "current": "qip_edge::decomposition::{Decomposition,Completion} (backend/crates/edge/qip-edge/src/decomposition.rs:78-198) gives every partial fill a defined next state inside one cell's cycle -- Whole, Reduced{fraction} (the resize transition) or Unviable -- computed in Cell::place_cycle; a later leg the venue refuses, or a resting leg that expires half-filled, is journaled and trips the kill switch (Cell::break_cycle) rather than being unwound. Separately, qip_execution_engine::multileg::LegGroup (backend/crates/services/qip-execution-engine/src/multileg.rs) is a full unwind state machine -- Verdict::{Continue,Complete,Unwind,Abandon,Close,Escalate}, reversing orders derived per filled leg, a stated UNWIND_WINDOW -- tested inline, but it has no production call site: rg finds it only in qip-acceptance/tests/performance.rs, and qip-contracts/src/intent.rs:104 says so.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/decomposition.rs:138-198 (Completion, Decomposition)",
+      "backend/crates/edge/qip-edge/src/decomposition.rs:399 a_leg_that_filled_short_sizes_every_later_leg_to_what_it_actually_completed (inline #[cfg(test)], not tests/decomposition.rs)",
+      "backend/crates/edge/qip-edge/src/decomposition.rs:418 the_fraction_a_cycle_completes_at_only_ever_falls_across_its_legs (inline)",
+      "backend/crates/edge/qip-edge/tests/decomposition.rs:367 a_cycle_whose_first_leg_fills_three_quarters_sends_its_later_legs_at_three_quarters",
+      "backend/crates/edge/qip-edge/src/cell.rs:5952-5987 (place_cycle doc: a refused later leg halts the cell; LegGroup has nothing it could act on here)",
+      "backend/crates/edge/qip-edge/src/arbitrage.rs:46-51 (module doc: 'a cycle whose later leg the venue refuses after an earlier one filled cannot be unwound from here')",
+      "backend/crates/services/qip-execution-engine/src/multileg.rs:253-277,310 (Verdict, LegGroup) and inline test a_half_filled_group_past_its_deadline_is_unwound_and_never_abandoned (950) -- no composition-root caller"
+    ],
+    "gap": "Only the resize transition runs in a reached path. Unwind exists as a tested library state machine (LegGroup) that no composition root calls; hedge and reroute transitions exist nowhere; the cell's answer to an unrecoverable partial state is halt-and-journal, which is defined but is not a saga recovery. The whole reached mechanism is local to one cell; the cross-region saga MESH-008 requires (recovery coordinated across the nodes of a distributed cycle) does not exist because MESH-001 does not, and no property test drives 2-to-20-leg cycles through every reachable fill vector.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001"
+    ],
+    "blocked_by": "",
+    "verification": "backend/crates/edge/qip-edge/tests/decomposition.rs (5 tests) plus 9 inline tests in src/decomposition.rs prove the resize transition; qip-execution-engine multileg.rs inline tests prove LegGroup's unwind/escalate logic in isolation. Wiring LegGroup (or an equivalent) into the cell's cycle path and a property test generating every reachable partial-fill vector with a defined transition (resize/hedge/reroute/unwind) is the remaining work.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: two cited tests were given at tests/decomposition.rs but are inline in src/decomposition.rs (399, 418) -- corrected; the assessor missed qip_execution_engine::multileg::LegGroup, an unwind state machine that is implemented and tested but not integrated -- added to current/evidence/gap; arbitrage.rs quote is at 46-51, not 52-57. Status PARTIAL and flags unchanged (integrated=true holds only for the resize transition)."
+  },
+  {
+    "id": "MESH-009",
+    "status": "PARTIAL",
+    "current": "Two pre-trade bounds exist in the reached path, neither a loss bound. qip_edge::dispersion::{DispersionPolicy,DispersionVerdict} (backend/crates/edge/qip-edge/src/dispersion.rs) bounds the fill-time spread between a cycle's venues (DEFAULT_DISPERSION_BOUND=250ms), which the module doc says bounds worst-case unwind cost. qip_arbitrage::plan::LegPlanner::plan (backend/crates/edge/qip-arbitrage/src/plan.rs:205-215) refuses a plan whose residual exposure if it stops after its first leg (LegPlan::residual_after(1)) exceeds PlanSettings::leg_risk_budget; qip-edge-node sets that budget (src/arbitrage.rs:67,185-190, PLAN_BUDGET=50000). qip_execution_engine::multileg::LegGroup::max_leg_risk bounds unmatched notional while a group works, but LegGroup has no production caller.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/dispersion.rs:1-15,52",
+      "backend/crates/edge/qip-edge/src/dispersion.rs:481 a_pair_of_venues_a_bound_apart_is_inside_it_and_one_nanosecond_further_is_not (inline #[cfg(test)], not tests/dispersion.rs)",
+      "backend/crates/edge/qip-arbitrage/src/plan.rs:205-215 (residual_after(1) vs leg_risk_budget, refused)",
+      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs:817 a_plan_whose_residual_exceeds_its_budget_is_refused",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:67,185-190 (PlanSettings::with_budget at the composition root)",
+      "backend/crates/services/qip-execution-engine/src/multileg.rs:325 (LegGroup::max_leg_risk; not integrated)"
+    ],
+    "gap": "Both reached bounds are proxies fixed before FIRE -- a time spread and a gross stranded-notional budget -- not a currency ceiling on realized recovery loss stated by a per-cycle unwind policy. Nothing computes realized recovery loss, nothing checks it against a declared bound across adversarial sequences of partial fills and peer losses, and MESH-008's saga (which this bound would govern) is itself only partial with no cross-region form.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-008"
+    ],
+    "blocked_by": "",
+    "verification": "backend/crates/edge/qip-edge/tests/dispersion.rs (4 tests) plus 9 inline tests prove the time-bound gate; qip-arbitrage tests/arbitrage.rs:817 proves the leg-risk budget refusal. A property test asserting realized recovery loss never exceeds a bound declared before FIRE across generated adversarial fill sequences, with a mutation that skips the check producing a counterexample, is the remaining work.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: cited test path was tests/dispersion.rs but the test is inline in src/dispersion.rs:481 -- corrected; the assessor missed the qip-arbitrage plan leg-risk budget (refused pre-trade, tested, set by qip-edge-node) and LegGroup::max_leg_risk -- added. Status PARTIAL and flags unchanged."
+  },
+  {
+    "id": "MESH-010",
+    "status": "PARTIAL",
+    "current": "Two length controls exist. qip_arbitrage::search::SearchSettings::max_cycle_edges (backend/crates/edge/qip-arbitrage/src/search.rs:41,50,171) silently excludes over-length cycles from the search (never truncated, but never reported either); qip-edge-node uses the default of 4 (SearchSettings::default() in qip-edge-node/src/arbitrage.rs:187). Downstream, qip_routing::path::Composition::cycle (backend/crates/edge/qip-routing/src/path.rs:95,101,335-350) refuses a composition under MIN_COMPOSITION_EDGES (2) or over MAX_COMPOSITION_EDGES (8) with a message naming the limit, and Cell::work records that refusal under the path-router gate with no leg sent.",
+    "evidence": [
+      "backend/crates/edge/qip-arbitrage/src/search.rs:41,50,171",
+      "backend/crates/edge/qip-edge/src/arbitrage.rs:164-167 (ArbitrageDesk::new refuses max_cycle_edges==0)",
+      "backend/crates/edge/qip-routing/src/path.rs:95 (pub const MAX_COMPOSITION_EDGES: usize = 8), :101 (MIN_COMPOSITION_EDGES = 2) and :335-350 (refusals naming the limit)",
+      "backend/crates/edge/qip-edge/tests/path_assignment.rs:621 a_cycle_longer_than_the_routers_bound_is_refused_whole_and_no_leg_of_it_reaches_the_gateway (9 edges refused with 'exceeds the 8', nothing placed; 8 edges admitted)"
+    ],
+    "gap": "The in-force maximum is a compile-time constant of 8, not configuration, so 9-to-20-leg cycles cannot be routed at all and the requirement's '2 and 20 accepted, 21 refused' check fails at 20; the search-level max_cycle_edges is configurable but drops over-length candidates without a refusal message and has no ceiling of 20 enforced on it; no test covers the 1/2 lower boundary through the cell.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "backend/crates/edge/qip-edge/tests/path_assignment.rs::a_cycle_longer_than_the_routers_bound_is_refused_whole_and_no_leg_of_it_reaches_the_gateway proves refusal-not-truncation at the 8/9 boundary with a message naming the limit. Making the maximum configuration (never above 20) and a unit test at max=20 (2 and 20 accepted, 1 and 21 refused) and max=5 (6 refused, nothing sent) is the remaining work.",
+    "work_item": "E11",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: the assessor missed qip_routing's MAX_COMPOSITION_EDGES=8 refusal and its boundary test, and wrongly said no test exercises a length boundary -- current/evidence/gap/verification rewritten; the real gap is that the ceiling is a hard-coded 8, below the required 20. Status PARTIAL and flags unchanged."
+  },
+  {
+    "id": "MESH-011",
+    "status": "PARTIAL",
+    "current": "Cross-venue and cross-region cycles are both substantially implemented and tested for a single cell's own scan: qip_arbitrage::graph::ArbitrageGraph represents cross-venue conversions natively (Node{object,venue}), and qip_edge::mirror's band/reference mechanism lets one cycle span a local venue and a venue the centre has declared abroad, with 20+ tests in tests/cross_region.rs (e.g. a_cell_told_one_of_its_venues_is_abroad_composes_mirror_edges_and_is_assigned_path_three).",
+    "evidence": [
+      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs::triangular_detection_finds_a_genuine_cycle_and_the_book_confirms_it (455) -- single-venue cross-instrument",
+      "backend/crates/edge/qip-edge/tests/cross_region.rs::a_cell_told_one_of_its_venues_is_abroad_composes_mirror_edges_and_is_assigned_path_three (459)",
+      "backend/crates/edge/qip-arbitrage/src/graph.rs:39-43 (Node has no region or representation field)"
+    ],
+    "gap": "This is a single-cell-executed, centrally-policy-gated mirror mechanism (ADR 0008), not the peer coordination MESH-001 envisions. Cross-currency and cross-asset within one cycle are structurally possible via distinct ObjectIds but not specifically demonstrated by a named test, and every representation beyond spot (derivative, tokenized, physical, event) is unrepresentable: Node carries only (object, venue), with no representation dimension at all (see MESH-024).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-024",
+      "MESH-001"
+    ],
+    "blocked_by": "",
+    "verification": "backend/crates/edge/qip-edge/tests/cross_region.rs (20+ tests) proves the cross-region mirror mechanism; a test building one cycle crossing two currencies, two assets and at least spot+derivative representations on one graph is the remaining work, and needs MESH-024 first.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "L",
+    "notes": "Physical and event representations are explicitly out of scope before master Phase 7 per the requirement's own notes."
+  },
+  {
+    "id": "MESH-012",
+    "status": "PARTIAL",
+    "current": "qip_arbitrage::netedge::{EdgeAssumptions,NetEdgeCalculator} (backend/crates/edge/qip-arbitrage/src/netedge.rs) computes and refuses-if-incomplete a nine-deduction cost model per priced path: spread, slippage (size-dependent, from the book sweep), fees, latency, funding, collateral, uncertainty, compute cost, data cost (qip_contracts::edge::DeductionKind).",
+    "evidence": [
+      "backend/crates/edge/qip-arbitrage/src/netedge.rs:1-64",
+      "backend/crates/libs/qip-contracts/src/edge.rs:25-74 (DeductionKind's nine arms)",
+      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs::a_net_edge_that_skipped_a_deduction_is_refused (600)",
+      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs::the_calculator_considers_every_deduction_kind (616)",
+      "backend/crates/edge/qip-arbitrage/src/graph.rs:110-129 (ConversionEdge carries only indicative_rate and cost_fraction)"
+    ],
+    "gap": "This is a different nine from MESH-012's required ten (price/rate, fees, size-dependent slippage, carry/funding, borrow cost, transfer/bridge/logistics cost, tax/duty estimate, settlement risk, probability of fill, time): funding/carry/borrow/gas are merged into one 'funding' deduction rather than kept as three named attributes, and there is no tax/duty estimate and no probability-of-fill. It is also a path-level aggregate computed once per priced cycle (NetEdgeCalculator::calculate), not a ten-attribute contract carried on each ConversionEdge and refused at edge construction -- the graph edge itself carries only two of the ten (rate, a combined cost fraction).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs (a_net_edge_that_skipped_a_deduction_is_refused, the_calculator_considers_every_deduction_kind, spread_and_slippage_are_charged_as_separate_costs) proves the existing nine-deduction path model; redefining ConversionEdge to carry all ten named attributes with construction-time refusal is the remaining work.",
+    "work_item": "E02",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "MESH-013",
+    "status": "MISSING",
+    "current": "nothing. rg for 'Lane 0', 'Lane 1', TimeLane, time_lane across backend/crates returns zero matches; there is no message registry and no lane concept anywhere in the tree.",
+    "evidence": [
+      "rg -il 'Lane 0|Lane 1|TimeLane|time_lane' backend/crates --type rust -> no matches"
+    ],
+    "gap": "No message/command registry exists to place the five named functions in a lane, and four of the five functions themselves (peer reflex messages, opportunity tokens, distributed reservations, hedge/unwind commands) do not exist yet either (MESH-001, MESH-004, MESH-005, MESH-008).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001",
+      "MESH-004",
+      "MESH-005",
+      "MESH-008"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: a registry mapping each of the five message/command kinds to Lane 1, and a static check that no Lane 0 code path awaits any of them.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "MESH-014",
+    "status": "MISSING",
+    "current": "nothing replays multi-leg arbitrage end to end. The only replay infrastructure in the tree is single-venue session replay for the promotion ladder (qip_kernel::session_replay, backend/crates/runtime/qip-kernel/src/session_replay.rs, which replays 'one pass at one venue'), plus market-data replay in qip_market_ingestion::replay and qip_capital_fabric::replay, neither of which touches the arbitrage graph or a multi-leg cycle.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/session_replay.rs:1-25 (module doc: 'not a new file format... a session is the traffic of one pass at one venue')",
+      "find backend/crates -iname '*replay*' -> qip-cli/src/replay.rs, qip-market-ingestion/src/replay.rs, qip-capital-fabric/src/replay.rs, none reference qip_arbitrage",
+      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs:1118 scanning_the_same_market_twice_produces_the_same_answer (discovery is deterministic given the same books; not a replay from the log)",
+      "backend/crates/services/qip-simulation-engine/src/market.rs:1187-1205 (SimulatedMarket::execute_plan reports every leg of a multi-leg ExecutionPlan including partials; not wired to qip-arbitrage cycles or replay)"
+    ],
+    "gap": "No replay engine covers opportunity discovery, reservation, legging risk, path decay, partial execution, hedge/unwind or capital consumption for a multi-leg cycle; the existing arbitrage e2e coverage (qip-acceptance/tests/e2e.rs) is a single forward run through search/plan/price, not a deterministic replay from the journal.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001",
+      "MESH-008"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: replaying a recorded two-region paper cycle and a synthetic 20-leg cycle twice each from the log, with identical output reporting all seven named elements per leg.",
+    "work_item": "E06",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "verify: searched for a missed implementation; found only fragments (deterministic scan, simulator execute_plan over generic ExecutionPlans, qip-orderbook/tests/replay.rs for book replay) -- none replays a multi-leg arbitrage cycle from the log. Recorded as evidence; status MISSING kept."
+  },
+  {
+    "id": "MESH-015",
+    "status": "MISSING",
+    "current": "nothing implements peer-to-peer coordination traffic at all (MESH-001), so there is no direct-vs-broker distinction to prove for it yet. The one applicable precedent in the tree is architectural: the existing centre-cell mesh already avoids a broker (qip_transport's HTTP/1.1 client talks directly to the cell/centre, not through qip-events or any pub/sub), which is the same design pattern MESH-015 asks for.",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/mesh.rs:17-24 (three direct HTTP endpoints, no broker)",
+      "rg -il 'peer_reflex|PeerReflex' backend/crates --type rust -> no matches"
+    ],
+    "gap": "There is no peer channel to be direct or broker-mediated. Once MESH-001 exists, this requirement is largely a design constraint on it (reuse the existing direct-HTTP pattern rather than routing through the future Fabric broker).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; would be proven by the same trace-based integration test MESH-001 needs, asserting no coordination message is published to a Fabric topic.",
+    "work_item": "E11",
+    "tier": "T3",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "MESH-016",
+    "status": "MISSING",
+    "current": "nothing, because the durable Event & Control Fabric this requirement separates the Mesh from does not exist in-tree yet: the closest names are qip_capital_fabric (capital-movement discipline, an unrelated use of the word 'fabric') and qip_events (the hash-chained event log type), neither of which is a topic/broker with its own connections and queues. The 'fabric MVP (in-tree broker, journal, offsets, QoS, archive)' is listed as future work under epic E03.",
+    "evidence": [
+      "rg -il 'event.*fabric|control fabric|EventFabric' backend/crates --type rust -> only qip-capital-fabric (unrelated) and doc/test files referencing 'fabric' loosely",
+      "backend/crates/libs/qip-events/src/log.rs (hash-chained log, not a pub/sub broker)"
+    ],
+    "gap": "Both halves of the comparison are missing: the peer Mesh (MESH-001) and the durable Fabric broker (E03) neither exist, so there is nothing to demonstrate stays separate under load.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed once both exist: driving the Fabric into backpressure leaves Mesh coordination latency inside baseline noise, and vice versa.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Depends on the in-tree Fabric broker (epic E03) landing first, not only on MESH-001. verify: status MISSING confirmed -- no broker code exists under backend/crates/libs or services. ADR 0100 (committed d864dab8) now decides the fabric's first build as an in-tree single-node broker on std TCP; that is a decision, not code, and it gives this requirement its Fabric side to separate from once built."
+  },
+  {
+    "id": "MESH-017",
+    "status": "MISSING",
+    "current": "nothing, because the peer Reflex Mesh itself does not exist (MESH-001). The closest existing analogue, qip_transport::MeshPublisher (the centre-cell spine), is explicitly NOT ephemeral: it holds a durable dead-letter spool for undelivered envelopes (qip-mesh's spine.rs notes an_envelope_to_a_cell_that_is_down_stays_in_the_spool_rather_than_being_lost).",
+    "evidence": [
+      "backend/crates/services/qip-mesh/src/spine.rs:29 (module doc: this direction is spooled) and backend/crates/services/qip-mesh/tests/spine.rs:389 an_envelope_to_a_cell_that_is_down_stays_in_the_spool_rather_than_being_lost",
+      "backend/crates/edge/qip-edge/tests/mesh.rs:601 a_delta_for_a_peer_that_is_not_listening_is_dead_lettered_rather_than_blocking_forever"
+    ],
+    "gap": "Nothing exists to be ephemeral or not. Note for whoever builds MESH-001: reusing the existing MeshPublisher pattern uncritically would violate this requirement, since that pattern is deliberately durable (a dead-letter spool), which is the opposite of MESH-017's 'no persistent log or offsets.'",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: a restarted peer receives none of the messages sent before it went down, and a completed paper cycle reconstructs from the Fabric journal alone.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: the spool test was cited as living in src/spine.rs; it is in tests/spine.rs:389 -- path corrected. Status MISSING confirmed."
+  },
+  {
+    "id": "MESH-018",
+    "status": "PARTIAL",
+    "current": "No Reflex Mesh exists (MESH-001), so the property is checked against the only mesh there is, the ADR 0011 centre spine. Journaling is structurally independent of it: qip-edge-node's serve loop calls Cell::flush (ships the hash-chained journal to a FileMirror) before and regardless of MeshLink::exchange_with_installers, and a failed flush is logged without stopping the loop (qip-edge-node/src/main.rs:848-876). Control has one path independent of the spine: the polled halt flag (qip-edge-node/src/halt.rs, a file on the node read every pass, 'nothing between the operator's hand and the cell goes through qip-transport') and the dark-region wire beside it. Policy frames, signed halts and capital envelopes still arrive only over the spine's PolicyDownlink/CapitalDownlink, and the journal ships to a local mirror, not to a Fabric.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/journal.rs:428,569,617,652 (Journal, Mirror, FileMirror, ship -- no inline tests; journal tests live in tests/cell.rs, e.g. mirror_batches_chain_onto_each_other_across_flushes (398))",
+      "backend/crates/apps/qip-edge-node/src/main.rs:848-876 (flush before and independent of the mesh exchange)",
+      "backend/crates/apps/qip-edge-node/src/halt.rs:1-26 (polled halt: a control path that does not use qip-transport)",
+      "backend/crates/apps/qip-edge-node/tests/halt.rs:59 the_node_halts_the_cell_on_a_present_flag_and_releases_it_when_the_flag_is_removed",
+      "backend/crates/edge/qip-edge/src/mesh.rs (CellUplink and PolicyDownlink share one qip_transport channel to the centre)"
+    ],
+    "gap": "No test severs any mesh link and asserts journal continuity -- the row previously credited 'journal.rs's own tests', but journal.rs has no tests and tests/cell.rs's journal tests never involve the mesh. The journal forwards to a local mirror, not the Fabric (which does not exist). Only halt and region-darkening have a control path independent of the spine; policy frames, capital grants and package announcements do not. The chaos test the requirement names does not exist.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "backend/crates/apps/qip-edge-node/tests/halt.rs proves the halt control path works with no transport involved; nothing proves journal continuity during a mesh outage. A chaos test severing the node's mesh connections and asserting an unbroken journal sequence reaching the Fabric plus a control announcement received during the outage is the remaining work.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: the row's tested=true rested on 'journal.rs's own tests', which do not exist (0 #[test] in journal.rs); tested kept true only on the basis of the polled-halt tests (qip-edge-node/tests/halt.rs), which demonstrate a control path independent of the spine; the claim that control has no path independent of the mesh was wrong (halt flag, dark-region wire) -- corrected. Status PARTIAL kept."
+  },
+  {
+    "id": "MESH-019",
+    "status": "PARTIAL",
+    "current": "For the one cycle shape that exists today (a single cell's own local cycle), legs are treated as independently fallible rather than atomic in three reached places: qip_arbitrage::plan::LegPlanner orders the least reversible leg first, prefunds a leg whose input comes from a venue that can revert (VenueClass::settles_atomically), and refuses a plan whose residual exposure after its first leg exceeds a budget (plan.rs:1-22,205-215); qip_edge::decomposition sizes every later leg to what an earlier one actually completed rather than assuming all-or-nothing; and a refused or expired later leg is journaled as a break (Cell::break_cycle). qip_execution_engine::multileg::LegGroup models the same premise for unwinds but is not integrated. rg for riskless/risk-free/zero-risk finds no arbitrage, edge or execution code path that labels a cycle riskless.",
+    "evidence": [
+      "backend/crates/edge/qip-arbitrage/src/plan.rs:1-22,205-215",
+      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs:817 a_plan_whose_residual_exceeds_its_budget_is_refused; :853 a_leg_whose_input_comes_from_a_venue_that_can_revert_is_prefunded; :791 the_least_reversible_leg_is_planned_first",
+      "backend/crates/edge/qip-edge/src/decomposition.rs:1-15",
+      "backend/crates/edge/qip-edge/src/decomposition.rs:399 a_leg_that_filled_short_sizes_every_later_leg_to_what_it_actually_completed (inline #[cfg(test)], not tests/decomposition.rs)",
+      "rg -in 'riskless|risk.?free|zero.?risk' backend/crates --type rust -> hits only in qip-financial credit/volatility and qip-prediction, none in arbitrage/edge/execution"
+    ],
+    "gap": "The invariant is shown only for local, single-region cycles, and only by example tests: there is no valuation outcome set with per-state probabilities (the plan computes a worst-case residual, not a distribution), no property test over generated distant-venue cycles, and no distant-venue (cross-region, peer-coordinated) cycle to run it against because MESH-001 does not exist -- so the 'distant legs' half is unproven rather than violated.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001"
+    ],
+    "blocked_by": "",
+    "verification": "qip-arbitrage tests/arbitrage.rs (817, 853) and qip-edge decomposition tests prove the local-cycle property; a property test over generated distant-venue cycles asserting every outcome set includes non-atomic partial states with non-zero probability, no riskless label ever produced, and a forced-atomic mutation failing it, is the remaining work.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: the assessor missed qip_arbitrage::plan's residual-after-first-leg budget and revert-aware prefunding, the strongest reached evidence for this row -- added; decomposition test path corrected to inline src/decomposition.rs:399. Status PARTIAL and flags unchanged."
+  },
+  {
+    "id": "MESH-020",
+    "status": "PARTIAL",
+    "current": "Two adjacent but not matching mechanisms exist. qip_kernel::pre_positioning (backend/crates/runtime/qip-kernel/src/pre_positioning.rs, Platform::pre_position/evaluate_pre_positioning) plans and scores general capital movement to a target location ('how much to move... where: cheapest signed corridor that arrives in time'), which is CAPITAL-027 territory rather than an arbitrage-cycle-template decision. qip_edge::mirror's reference-price/target mechanism is the local execution-time discipline that consumes a pre-set target, not the brain that decides where to position it for arbitrage specifically.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/pre_positioning.rs:1-40,63,89",
+      "backend/crates/edge/qip-edge/src/mirror.rs:1-33",
+      "backend/crates/edge/qip-edge/tests/cross_region.rs:565 a_region_holding_nothing_cannot_sell_the_leg_it_would_have_to_sell (a mirrored cross-region cycle only draws on inventory already held in the region)",
+      "backend/crates/edge/qip-edge/tests/cross_region.rs:685 a_mirror_the_centre_named_no_inventory_target_for_is_not_an_established_mirror",
+      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs:886 a_transfer_is_realised_as_held_inventory_rather_than_an_order (a transfer edge is prefunded from held inventory, not executed at FIRE)",
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs:255-266 (the centre deliberately produces no InventoryTargets slot)"
+    ],
+    "gap": "Nothing in the tree is a 'Global/Warm Arbitrage Brain' choosing where to pre-position inventory/capital for candidate cycle templates specifically; the existing pre-positioning module is general capital demand forecasting, and mirror.rs only consumes a target the centre already set by unrelated means. The consuming half is further along than the row said -- a mirrored cycle's local leg can only draw on inventory already held (cross_region.rs:565) and a transfer edge is realised as prefunded held inventory rather than an order at FIRE (arbitrage.rs:886) -- but nothing produces the targets: the centre refuses to fill the InventoryTargets policy slot (central/whitelist.rs), so no deployed cell is ever told where to hold anything.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001"
+    ],
+    "blocked_by": "",
+    "verification": "backend/crates/runtime/qip-kernel tests for pre_positioning (inline, 2 tests) prove the general capital mechanism; a replay test showing an arbitrage cycle's leg reservation met from a holding placed ahead of its epoch, keyed to a candidate cycle template, is the remaining work.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "M",
+    "notes": "LIVE_CAPITAL and COST flags on this requirement mean only the paper/simulated form is in scope here; carrying out a real pre-position is out of scope for this repository per the paper-trading boundary. verify: status PARTIAL and flags confirmed (pre_positioning is reached from Platform::stage_decide -> plan_pre_positioning, platform.rs:13228). Added the cell-side evidence that legs draw on held inventory and the fact that no producer of InventoryTargets exists; no status change."
+  },
+  {
+    "id": "MESH-021",
+    "status": "MISSING",
+    "current": "nothing. There is no opportunity-epoch type, so there is nothing to synchronize participants on and nothing to fence stale actors against. The nearest analogue, qip_arbitrage's per-cycle cycle_id plus CycleLeg::valid_until, is scoped to one cell's own local cycle and is never checked against a second participant's view of the same opportunity.",
+    "evidence": [
+      "backend/crates/edge/qip-arbitrage/src/legs.rs:80-101 (cycle_id, single-cell)",
+      "rg -il epoch backend/crates/edge/qip-arbitrage backend/crates/edge/qip-edge -> matches are all Timestamp::EPOCH (Unix epoch) or day-numbering, unrelated to opportunity epochs"
+    ],
+    "gap": "No fencing mechanism exists at all: no reservation, FIRE, fill or saga message carries an epoch that a second participant could check for staleness, because there is neither an epoch type (MESH-005 is only partial) nor a second participant (MESH-001 is missing).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-001",
+      "MESH-005"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. Needed: interleaved generated messages from superseded epochs, including a restarted node holding a stale epoch, none of which changes reservation/execution/saga state, each journaled as refused.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "MESH-022",
+    "status": "PARTIAL",
+    "current": "qip_arbitrage's CycleLeg carries a per-cycle deadline (valid_until) refused at construction if it is not strictly after the cycle's opened_at instant (backend/crates/edge/qip-arbitrage/src/legs.rs:118-131). The cell enforces it at send time: on the passive-first path a remaining leg whose valid_until has passed is not sent and the cycle is broken instead (backend/crates/edge/qip-edge/src/cell.rs:6344-6358), and Cell::withdraw_expired withdraws resting orders past their time to live (cell.rs:4139). The validity is a fixed node constant, LEG_VALIDITY = 30s (qip-edge-node/src/arbitrage.rs:60), applied by ArbitrageDesk.",
+    "evidence": [
+      "backend/crates/edge/qip-arbitrage/src/legs.rs:118-131",
+      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs:1256 legs_that_would_expire_before_the_cycle_opens_are_refused",
+      "backend/crates/edge/qip-edge/src/cell.rs:6344-6358 (no remaining leg crossed past valid_until)",
+      "backend/crates/edge/qip-edge/tests/passive.rs:610 a_resting_leg_that_half_filled_and_then_expired_stops_the_cell_rather_than_crossing_a_stale_price",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:60 (LEG_VALIDITY constant, 30s)"
+    ],
+    "gap": "This bounds one local cycle's own deadline, not an opportunity epoch's TTL: there is no configured TTL ceiling and no refusal of a TTL above one (LEG_VALIDITY is a hard-coded constant), the send-time expiry check covers the passive-first path's remaining legs rather than being proven for every send path by a property test, messages bearing an expired epoch cannot be discarded because no epoch messages exist, and there is no synchronized-clock check (MESH-007 is missing).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "MESH-005",
+      "MESH-007"
+    ],
+    "blocked_by": "",
+    "verification": "qip-arbitrage tests/arbitrage.rs::legs_that_would_expire_before_the_cycle_opens_are_refused proves the construction refusal and qip-edge tests/passive.rs::a_resting_leg_that_half_filled_and_then_expired_stops_the_cell_rather_than_crossing_a_stale_price proves one send-time enforcement; a unit test refusing an epoch TTL of zero or above a configured ceiling, plus a property test that no leg fires at or after expiry on the synchronized clock, is the remaining work.",
+    "work_item": "E02",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: the assessor missed the cell's send-time enforcement of valid_until (cell.rs:6349) and its test in tests/passive.rs -- added. Status PARTIAL and flags unchanged."
+  },
+  {
+    "id": "MESH-023",
+    "status": "PARTIAL",
+    "current": "qip_arbitrage::graph::ArbitrageGraph::{add_trade,add_transfer,add_synthetic} (backend/crates/edge/qip-arbitrage/src/graph.rs:351-419) represent every conversion added to the graph as a directed ConversionEdge, structurally validated at construction (graph.rs:461-538). At the composition root, qip-edge-node's graph_from_whitelist (qip-edge-node/src/arbitrage.rs:81-148) turns each whitelisted conversion into exactly one directed trade edge and refuses the whole whitelist, naming the entry, when any conversion cannot become an edge -- refused, never skipped.",
+    "evidence": [
+      "backend/crates/edge/qip-arbitrage/src/graph.rs:287-419 (add_edge/add_trade/add_transfer/add_synthetic)",
+      "backend/crates/edge/qip-arbitrage/src/graph.rs:461-538 (Self::validate, structural refusals -- no test asserts any of these refusals)",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:81-148 (graph_from_whitelist)",
+      "backend/crates/apps/qip-edge-node/tests/arbitrage.rs:152 the_node_installs_a_desk_from_the_payloads_whitelist_once_capital_for_it_has_arrived (asserts 'the three conversions are the three edges')",
+      "backend/crates/apps/qip-edge-node/tests/arbitrage.rs:207 a_whitelist_naming_a_venue_outside_the_configured_list_is_refused_and_installs_nothing"
+    ],
+    "gap": "The whitelist is a per-desk permission list, not a registry of what is tradable, and each entry becomes one edge in one direction -- nothing adds the reverse direction a conversion can also be traded in, transfers and synthetics are never produced from it, and nothing cross-checks a tradable-instrument registry against the graph and reports a tradable conversion with no edge as a gap. The registry-fixture property check is unimplemented.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "qip-edge-node tests/arbitrage.rs:152 proves every whitelisted conversion becomes a directed edge at the composition root, and :207 proves a bad entry refuses the whole list; qip-arbitrage tests exercise directed trade/transfer/synthetic edges through cycle detection, but no test asserts graph.rs's validate refusals. A property test against a registry fixture asserting every tradable conversion has a directed edge in each tradable direction, with a named gap report for any that don't, is the remaining work.",
+    "work_item": "E02",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: verification claimed tests exercise edge 'validation extensively' -- no test hits any graph.rs validate refusal message (rg), so that claim was removed; the assessor missed the composition-root whitelist-to-edge installer and its tests -- added. Status PARTIAL and flags unchanged."
+  },
+  {
+    "id": "MESH-024",
+    "status": "PARTIAL",
+    "current": "qip_arbitrage::graph::Node (backend/crates/edge/qip-arbitrage/src/graph.rs:39-54) is the identity primitive of the arbitrage graph, currently a 2-tuple (object: ObjectId, venue: VenueId), Ord/Eq-derived so two nodes differing in either component are provably distinct and cannot be interned as the same node (graph.rs's intern()).",
+    "evidence": [
+      "backend/crates/edge/qip-arbitrage/src/graph.rs:39-54",
+      "backend/crates/edge/qip-arbitrage/src/graph.rs:450-459 (intern, keyed on the full Node)",
+      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs:886 a_transfer_is_realised_as_held_inventory_rather_than_an_order (the same instrument at two venues is two nodes joined by transfer edges, exercising the venue component of identity)",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:135-146 (Node::new at the composition root)"
+    ],
+    "gap": "Node carries 2 of the 5 required components (asset, venue); representation, settlement stage and region are absent as identity dimensions. A spot and a future of the same instrument at the same venue, or the same instrument at two settlement stages, therefore collapse into one node today -- exactly the silent merge the requirement forbids, and the reason MESH-011's representation-crossing clause cannot be built until this is fixed.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Distinctness by venue is exercised only indirectly, by cross-venue cycle tests such as qip-arbitrage tests/arbitrage.rs::a_transfer_is_realised_as_held_inventory_rather_than_an_order; no test proves distinctness by representation, settlement stage or region, because the fields do not exist. A unit test refusing a node missing any of the 5 components, and asserting two nodes differing only in settlement stage or region compare unequal and are joined by an edge, is the remaining work once Node is extended.",
+    "work_item": "E02",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: tested=true was paired with a verification text saying no test proves node distinctness; tested kept true on the transfer test, which genuinely exercises the venue half of identity, and evidence/verification now say so. Status PARTIAL kept."
+  }
+]

@@ -1,0 +1,204 @@
+[
+  {
+    "item": "qip-cost-router::reputation.rs (ModelReputation/ReputationBook/Judgement, per-context Bayesian-shrunk model-competence weighting) is exported from lib.rs, fully tested, and never constructed by qip-kernel or any app, so Router::select and Router::assess weigh every intelligence-tier rung as equally trustworthy regardless of the model's track record in that context",
+    "files": [
+      "backend/crates/services/qip-cost-router/src/reputation.rs:102,217,306",
+      "backend/crates/services/qip-cost-router/src/router.rs:384,441",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:120-125,6549,6594"
+    ],
+    "category": "dead code / tests-only surface",
+    "class": "B-refactor",
+    "why": "`grep -rn \"ReputationBook\\|ModelReputation\\|Judgement\\b\" backend/crates/runtime/qip-kernel/src backend/crates/apps/*/src` matches only unrelated local enums (`WalletJudgement`, `InvestmentJudgement`) defined inside platform.rs itself -- confirmed by direct search, no hit inside qip-cost-router's own type names. `Router::select`/`Router::assess` route on cost, latency and strength (tier.rs's 9-rung ladder) but on nothing resembling the reputation module's per-context competence score, so a rung is chosen the same way whether the model at that rung has been reliable in this regime or wrong every time. The module is not a stub: it has its own construction discipline (Bayesian shrinkage) and 24 crate tests exercise it. This is a built capability with no caller, not a missing one.",
+    "blueprint_refs": [
+      "v11.6 §9.1 Specialist Brain Society -- Meta Brain: \"measures which brains/models are reliable in which regimes\"",
+      "v11.6 §23.2 Registries That Prevent Intelligence From Becoming Fixed"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "qip-evolution::discovery.rs (FeatureScreen, feature-candidate stability/selection-bar screening) has no caller outside the crate's own tests, so the palette a strategy is generated over is never narrowed by measured stability before generation runs",
+    "files": [
+      "backend/crates/services/qip-evolution/src/discovery.rs:158,179",
+      "backend/crates/services/qip-evolution/src/generate.rs:172,211",
+      "backend/crates/runtime/qip-kernel/src/central/foundry.rs:70-73,239"
+    ],
+    "category": "dead code / tests-only surface",
+    "class": "B-refactor",
+    "why": "`grep -rln \"qip_evolution::discovery\" backend --include='*.rs'` returns only files inside crates/services/qip-evolution/ itself -- confirmed, empty output outside the crate. `StrategyGenerator::generate` (the path foundry.rs actually calls) takes the palette as given rather than as `FeatureScreen::screen` would narrow it, so the multiple-testing discipline this crate is built around (TrialLedger, no public Candidate constructor) runs over a feature set nothing has screened for stability -- a gap in the input, not the guard.",
+    "blueprint_refs": [
+      "v11.6 §10 Model & Strategy Foundry",
+      "v11.6 §23 Intelligence Expansion Engine -- \"World-model + ontology expansion\""
+    ],
+    "risk": "medium",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "qip-evolution::attribution.rs (AttributionLedger, this crate's own gross-vs-deduction cost-surprise decomposition against NetEdge) has no caller outside the crate's own tests, so cost-model miscalibration surprises are never fed to cost_model.rs's CostModelCalibration despite the module doc naming that feed as the reason it exists",
+    "files": [
+      "backend/crates/services/qip-evolution/src/attribution.rs:195",
+      "backend/crates/services/qip-evolution/src/cost_model.rs:120,213"
+    ],
+    "category": "dead code / tests-only surface",
+    "class": "B-refactor",
+    "why": "`grep -rln \"qip_evolution::attribution\" backend --include='*.rs'` matches only files inside the crate itself. The module's own doc comment states its purpose as feeding two downstream consumers -- \"Feeding the first into crate::scoring and the second into crate::cost_model is the division this module exists to make possible\" -- and neither feed exists in production: `cost_model::CostModelCalibration::propose_all` is reached from qip-deepbrain, but nothing constructs an `AttributionLedger` to hand it a surprise to calibrate against. This is distinct from qip-learning-engine's Attribution (P&L source decomposition); both live in a file named attribution.rs in sibling crates of the same component group, which is worth a naming note but is not itself the defect -- the defect is the unreached feed.",
+    "blueprint_refs": [
+      "v11.6 §10.1 Training Lifecycle, item 3: \"Classical baseline is trained first and calibrated\""
+    ],
+    "risk": "low",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "qip-opportunity-engine's CatalystDetector is registered in every DISCOVER pass (DetectorRegistry::standard()) but its ImpactHistory calibration data is never constructed or fed by qip-kernel, so the detector runs silently and can never actually detect a catalyst",
+    "files": [
+      "backend/crates/services/qip-opportunity-engine/src/detector.rs:923-937",
+      "backend/crates/services/qip-opportunity-engine/src/catalyst.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4521,10288,10412"
+    ],
+    "category": "placeholder / simulated-only production path",
+    "class": "B-refactor",
+    "why": "`grep -n \"ImpactHistory\\|CatalystDetector\" backend/crates/runtime/qip-kernel/src/platform.rs` returns nothing besides the registry construction line, confirmed. detector.rs:933-935 documents this as deliberate (\"Silent until the context carries event visibility ... until its history has been fed\"), which is honest about the current state but leaves one of the platform's eight registered detectors permanently inert in every deployed cycle -- a control wired in but never armed, the same shape the repo's own rules name as the pattern to avoid (`MaxExpectedShortfall`, .claude/rules/domains/risk-and-execution.md), applied here to a discovery detector rather than a risk limit.",
+    "blueprint_refs": [
+      "v11.6 §6.3 Pass-Through Acquisition and Knowledge Distillation",
+      "v11.6 §8.4 World + Market Intelligence Fusion"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E05"
+  },
+  {
+    "item": "qip-optimization-engine's CentralPlane::issue (the seam that would feed family_structure's calendar of live capital-grant envelopes) has no production caller anywhere -- every call site is a test -- so family_structure returns None in every deployment and the correlation-family sizing diagnostic the module exists to compute never runs",
+    "files": [
+      "backend/crates/services/qip-optimization-engine/src/lib.rs:93-95",
+      "backend/crates/services/qip-optimization-engine/src/families.rs",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:1883",
+      "backend/crates/runtime/qip-kernel/src/central/structure.rs:99"
+    ],
+    "category": "dead code / tests-only surface",
+    "class": "B-refactor",
+    "why": "The crate's own module doc states the limit precisely: \"CentralPlane::issue has no production caller -- every call site is a test. Until a deployed process issues a grant, the calendar is empty, family_structure returns None.\" This is a measure-only diagnostic by design (\"the caller measures and does not allocate\"), so nothing acts on it directly -- but a measurement nobody has ever produced in a deployed process is not yet a measurement, it is a shape waiting for its first fact.",
+    "blueprint_refs": [
+      "v11.6 §13 Capital Brain & Capital Bank"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "qip-optimization-engine::horizons.rs's family_horizons and family_horizons_settled have no caller outside the crate's own tests, so the blueprint's \"horizon × family\" cross is reconciled on the horizon axis only -- one budget per strategy -- and never on the correlation-family axis",
+    "files": [
+      "backend/crates/services/qip-optimization-engine/src/lib.rs:110-121",
+      "backend/crates/services/qip-optimization-engine/src/horizons.rs:1068,1085",
+      "backend/crates/runtime/qip-kernel/src/central/horizon.rs:76-77"
+    ],
+    "category": "dead code / tests-only surface (unfinished migration)",
+    "class": "B-refactor",
+    "why": "Confirmed no caller: `family_horizons`/`family_horizons_settled` appear in horizons.rs and in the crate's own lib.rs doc/re-export only. The crate's own doc names the reason precisely: `FamilyAssignment` has no constructor, and the lifecycle crate holds no correlation matrix, so there is nothing to key a per-family horizon reconciliation on even though the function exists and is tested. The seam that does run (HorizonRegister::settle via qip-kernel's central::factory calling qip_lifecycle::attempt_promotion) reconciles a narrower budget than the blueprint's cross names.",
+    "blueprint_refs": [
+      "v11.6 §13 Capital Brain & Capital Bank",
+      "v11.6 §23.3 (family/horizon cross referenced in the module's own doc)"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "qip-prediction's entire prediction-market trading engine -- market.rs, oracle.rs, adapter.rs, arbitrage.rs, cross.rs, pricing.rs, scoring.rs (9 of 9 non-resolution modules, ~3050 of ~3114 src lines) -- has no caller outside the crate's own tests; only the resolution-criteria vocabulary is wired into production, for hypothesis-falsification, and even the crate's paper-trading-safe SyntheticPredictionVenue adapter is never constructed by any composition root",
+    "files": [
+      "backend/crates/services/qip-prediction/src/market.rs:333,429",
+      "backend/crates/services/qip-prediction/src/oracle.rs:160,354,388,403",
+      "backend/crates/services/qip-prediction/src/adapter.rs:1-13,71,205,400-424",
+      "backend/crates/services/qip-prediction/src/arbitrage.rs",
+      "backend/crates/services/qip-prediction/src/cross.rs",
+      "backend/crates/services/qip-prediction/src/pricing.rs",
+      "backend/crates/services/qip-prediction/src/scoring.rs",
+      "backend/crates/runtime/qip-kernel/src/falsification.rs:62,206,353,389",
+      "backend/crates/runtime/qip-kernel/Cargo.toml:48-55"
+    ],
+    "category": "dead code / tests-only surface (unfinished migration)",
+    "class": "B-refactor",
+    "why": "`grep -rln \"qip_prediction::market\\|qip_prediction::oracle\\|qip_prediction::adapter\\|qip_prediction::arbitrage\\|qip_prediction::cross\\|qip_prediction::pricing\\|qip_prediction::scoring\" backend --include='*.rs'` returns nothing, confirmed empty. qip-kernel's own Cargo.toml documents the intent: qip-prediction is one of \"eleven service crates... until this change, reachable from no deployable binary,\" added to the kernel's dependency graph specifically to make it ship -- but wiring stopped at the resolution module. Two things are worth separating: the engine (market/oracle/arbitrage/cross/pricing/scoring, plus the deterministic-seeded SyntheticPredictionVenue) is a complete, tested, paper-trading-compatible capability with a clear plan (blueprint §19) and should be evolved into the DISCOVER/REASON loop. VenueApiAdapter is different -- it is a declared port whose every call returns `qip_core::Error::Unavailable` by design (adapter.rs:11), so the shape of a real venue integration is reviewed without any live path existing; per ADR 0099's conflict register (C1) and the paper-trading rules, that adapter must stay inert until an owner supersedes ADR 0003, and no work in this group should implement it.",
+    "blueprint_refs": [
+      "v11.6 §19 Prediction, Event & Regulated Wagering Markets"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E17"
+  },
+  {
+    "item": "qip-simulation-engine::baseline.rs (RegimeComparison -- the always-computed unconditional-vs-regime-conditional comparison that applies ADR 0006's classical-baseline discipline to regime-conditional sizing) has no production caller, so the regime-conditional cap that actually reaches live sizing (qip-kernel's regime_allocation.rs, reading qip-optimization-engine::regime.rs's AllocationRegime) has never been checked against the baseline this module exists to compute for it",
+    "files": [
+      "backend/crates/services/qip-simulation-engine/src/baseline.rs:1-19,209,253",
+      "backend/crates/services/qip-optimization-engine/src/regime.rs:1-48",
+      "backend/crates/runtime/qip-kernel/src/regime_allocation.rs:1-52"
+    ],
+    "category": "missing tests on a production path / unfinished migration",
+    "class": "B-refactor",
+    "why": "`grep -rln \"qip_simulation_engine::baseline\" backend --include='*.rs'` matches only lib.rs (the re-export) and the crate's own tests, confirmed. baseline.rs's own doc names its purpose against the exact live seam: \"Until this module existed the platform had a regime detector and no comparison arm ... a method is not a finding, and a finding is a difference against a baseline computed every time\" -- the failure ADR 0006 names for the quantum path, restated for regime allocation. The live path (regime_allocation.rs -> regime.rs::AllocationRegime) is a deliberately conservative, fail-closed narrowing keyed off `Platform::market_regime`'s four-branch classifier and is not itself wrong -- its own doc explains why it needs no validation to narrow (\"enough evidence to take risk off ... not enough to put risk on\"). What is missing is that the more rigorous, HMM-fitted, out-of-sample-validated comparison this crate built specifically for regime-conditional sizing has never run against real capital-sizing decisions, so nobody has verified whether the live narrowing is doing more good than an unconditional baseline in the deployments that use it.",
+    "blueprint_refs": [
+      "v11.6 §10.1 Training Lifecycle, item 3",
+      "v11.6 §23.3 (regime-conditional allocation, cited in regime.rs's own module doc)"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "qip-simulation-engine::montecarlo.rs (MonteCarlo/Distribution/Generator -- bootstrap, parametric and antithetic path generation with standard-error reporting) has no caller anywhere in the workspace outside its own crate's tests, and is not even used internally by the crate's other modules (scenario.rs's StressTester is a separate, causal/adversarial mechanism)",
+    "files": [
+      "backend/crates/services/qip-simulation-engine/src/montecarlo.rs:1-14,118",
+      "backend/crates/services/qip-simulation-engine/src/lib.rs:52-64"
+    ],
+    "category": "dead code / tests-only surface",
+    "class": "E-needs-evidence",
+    "why": "`grep -rln \"qip_simulation_engine::montecarlo\" backend --include='*.rs'` matches only lib.rs and the crate's own tests, and `grep -rln \"montecarlo::\" src` inside the crate outside lib.rs also returns nothing, confirmed -- unlike venue.rs/conditions.rs (used internally by market.rs/execution.rs), this module is unused even by its own siblings. It is a well-built, general-purpose utility with no evident duplicate elsewhere in the workspace (no other `MonteCarlo` struct exists), so it is not a candidate for deletion, but no named consumer or blueprint requirement calls for path-level Monte Carlo confidence intervals specifically -- evidence needed: which stage (risk sizing? evaluation-brain confidence reporting?) is meant to consume it, before deciding whether to wire it in or park it as intentionally-ahead-of-need.",
+    "blueprint_refs": [],
+    "risk": "low",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "qip-training's managed-cloud training port (job.rs::TrainingProvider trait, TrainingJob, JobState, run_to_completion, implemented by vertex.rs::VertexAiProvider -- 1,380 src lines, the largest file in the crate) has zero production callers; qip-deepbrain bypasses the port entirely and calls LocalTrainer/distil directly, so the abstraction meant to let local and managed training be swapped is unused on both sides",
+    "files": [
+      "backend/crates/services/qip-training/src/vertex.rs:389,439,560,590,839,903",
+      "backend/crates/services/qip-training/src/job.rs:31",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:133-138,1316,1366",
+      "backend/crates/apps/qip-deepbrain/src/openobserve.rs:24"
+    ],
+    "category": "unfinished migration / incompatible interfaces",
+    "class": "B-refactor",
+    "why": "`grep -rn \"VertexAiProvider\" backend --include='*.rs'` matches only the crate's own lib.rs re-export, a doc comment in job.rs, and the crate's own tests -- confirmed, no app or qip-kernel source constructs it; the only production Vertex mention is a comment in qip-deepbrain/src/openobserve.rs naming it as an egress-proxy destination, not a construction site. `grep -n \"TrainingProvider|run_to_completion|TrainingJob\\b\" backend/crates/apps/qip-deepbrain/src/learning.rs` returns nothing; production code instead constructs `LocalTrainer::new()` (learning.rs:1316) and calls `distil(...)` (learning.rs:1366) directly, bypassing the port that exists precisely so the two training paths can be switched without touching call sites. GCP v2.1 §11 names \"Agent Platform / Vertex custom training\" as the target placement for custom model training, so this is a plan-bearing gap, not orphaned code -- but two independently-callable training entry points that both work and neither uses the interface meant to unify them is exactly the kind of parallel-path debt that goes stale silently.",
+    "blueprint_refs": [
+      "v11.6 §10 Model & Strategy Foundry",
+      "GCP v2.1 §11 Cognitive, Model and Quantum Compute Plane -- \"Custom model training: Agent Platform / Vertex custom training and pipelines\""
+    ],
+    "risk": "medium",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "qip-twin::record.rs (LearningRecord -- the JSON-serialisable persisted decision/outcome record, with_attribution/validate/to_json/from_json) has no caller outside the crate's own tests, not even internally from capture.rs or counterfactual.rs, so no counterfactual decision this crate prices is ever turned into the durable record the type exists to produce",
+    "files": [
+      "backend/crates/services/qip-twin/src/record.rs:115,174,197,234,242",
+      "backend/crates/services/qip-twin/src/lib.rs:124"
+    ],
+    "category": "dead code / tests-only surface",
+    "class": "B-refactor",
+    "why": "`grep -rln \"record::\" src` inside qip-twin, outside lib.rs and record.rs itself, returns nothing, confirmed -- the type is exported (lib.rs:124) but nothing in capture.rs (OutcomeCapture/Decision) or counterfactual.rs (CounterfactualEngine) ever builds one. ADR 0099's title theme is \"durable knowledge memory\" for what was previously pass-through, and this is exactly a durability seam the crate already built and never connected: the counterfactual engine runs and produces results every cycle (platform.rs:16209,16211), but none of those results are captured into the one type designed to survive a restart.",
+    "blueprint_refs": [
+      "v11.6 §1.3 External World Data Is Pass-Through; Knowledge Is Durable",
+      "v11.6 §9.2 Memory & Self Model -- counterfactual memory"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E08"
+  },
+  {
+    "item": "qip-twin::regret.rs (RegretAnalysis, AlternativeRegret -- systematic-regret-across-alternatives analysis) has no caller outside the crate's own tests, so the platform never asks whether it is systematically regretting the same kind of declined alternative",
+    "files": [
+      "backend/crates/services/qip-twin/src/regret.rs:36,99,113",
+      "backend/crates/services/qip-twin/src/lib.rs:128"
+    ],
+    "category": "dead code / tests-only surface",
+    "class": "B-refactor",
+    "why": "`grep -rln \"regret::\" src` inside qip-twin, outside lib.rs and regret.rs itself, returns nothing, confirmed. The counterfactual engine already scores alternatives every cycle (AlternativeMenu, counterfactual.rs:48,117) and precedent_declines.rs consumes qip-twin's Simulated type, so the raw material RegretAnalysis needs already flows through the platform -- what is missing is the aggregation step that would turn individual scored alternatives into a systematic-bias finding for the Evaluation/Meta Brain to act on.",
+    "blueprint_refs": [
+      "v11.6 §22 Continuous Learning & Evaluation Brain",
+      "v11.6 §9.5 Proactive Ambient Model Mesh -- \"Counterfactual shadow models continuously simulate alternate actions and maintain learning data for decisions not taken\""
+    ],
+    "risk": "low",
+    "suggested_epic": "E08"
+  }
+]

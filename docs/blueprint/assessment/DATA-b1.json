@@ -1,0 +1,672 @@
+[
+  {
+    "id": "DATA-001",
+    "status": "PARTIAL",
+    "current": "The body-free types are real and reached from production: qip_market_ingestion::connector::digest::FetchDigest::of hashes the fetched body and never stores it; qip_data_finder::reference::DataReference has no body field; qip_data_finder::probe::PayloadSample::manifest keeps a hash of a sampled payload, never its text; qip_financial::intelligence::NewsItem carries a SourceManifest (locator + sha256) in place of the article text; qip_data_finder::campaign::ResearchCache holds fetched bytes only TTL-bounded in memory and FetchCampaign::close drops them. What is still durably retained verbatim is each third-party headline: NewsItem.headline is an EventBody field written to the permanent hash-chained log, and WorldModel::absorb_news copies it into the graph node label and the retrieval index.",
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/connector/digest.rs:1-93 (FetchDigest: hash, length, locator, keys; never the body)",
+      "backend/crates/services/qip-data-finder/src/reference.rs:219-243 (DataReference struct has no body field)",
+      "backend/crates/services/qip-data-finder/src/probe.rs:82-105 (PayloadSample::manifest keeps a hash, not the sampled body)",
+      "backend/crates/libs/qip-financial/src/intelligence.rs:121-139 (NewsItem: headline kept verbatim; manifest instead of article text)",
+      "backend/crates/services/qip-world-model/src/world.rs:553,598 (absorb_news writes item.headline into the graph label and the retrieval index)",
+      "backend/crates/services/qip-market-ingestion/tests/narrative_feed.rs:667 the_article_text_reaches_no_record_the_log_seals_and_a_hashed_reference_stands_in_for_it",
+      "backend/crates/apps/qip-cli/src/demo/mod.rs:808 (the only composition-root construction of NarrativeAdapter; no deployed process ingests documents)"
+    ],
+    "gap": "No test does what the requirement's verification states: drive a marker-bearing fixture through the whole pipeline and search every durable sink (event log, KV-backed world model, reference ledger, stream journal) for the marker. The one test that exercises the prohibition (narrative_feed.rs:667) checks one serialised record type inside the adapter crate, and the adapter it covers is reached only from qip-cli's demo. Third-party headlines are retained verbatim in the permanent log and the world model, which is copied external text in durable stores; it needs either a recorded ruling that a headline is an allow-listed 'summary' (DATA-005) or a derived label in its place. The two kernel tests this row previously cited (daily-bar fallback retention, 90-day log window) test market-bar retention, not this prohibition.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-market-ingestion --test narrative_feed the_article_text_reaches_no_record_the_log_seals_and_a_hashed_reference_stands_in_for_it (existing, one record type). Missing: a qip-acceptance test that fetches a marker-bearing fixture through a connector into a Platform with a file-backed event log and KV store, then greps every durable sink for the marker and the payload bytes.",
+    "work_item": "E08",
+    "tier": "T0",
+    "size": "M",
+    "notes": "verify: downgraded COMPLETE->PARTIAL. The cited tests (retention.rs:68 daily bars, retention.rs:204 policy table) test bar retention and a policy table, not the raw-corpus prohibition; the prohibition-specific test is narrative_feed.rs:667, which covers one record type in an adapter reached only from qip-cli's demo; the sink-wide verification does not exist; and headlines are durably retained verbatim by design (intelligence.rs:123, world.rs:553/598). Prior note: Tape (tape.rs) is a stamped LicensingClass::Synthetic demo fixture the platform generates itself, not a retained copy of third-party content, so it does not implicate this prohibition."
+  },
+  {
+    "id": "DATA-002",
+    "status": "PARTIAL",
+    "current": "Most named stages exist as separately wired points across three crates, not as one composed, order-enforcing pipeline: fetch (qip_market_ingestion::connector::runtime::ConnectorRuntime::ingest), schema/quality gate (SchemaGuard, connector/validate.rs), admission/licensing gate (qip_data_finder::admission::admit_registered and StandingAdmission, called in qip-fastbrain/src/feed.rs before a poll), entity/event extraction and knowledge delta (qip_world_model::world::WorldModel::absorb_news / absorb_macro, called from qip-kernel/src/platform.rs:8751). Two stages do not exist as stages: a distinct evidence/provenance check, and secure egress in a deployment (the egress proxy module is committed but nothing has been applied, per the data-and-streaming rule).",
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs:527-570 (ingest: decode -> version gate -> schema gate -> digest)",
+      "backend/crates/apps/qip-fastbrain/src/feed.rs:49-305 (admission gate before poll)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8745-8752 (absorb_news call site)",
+      "backend/crates/services/qip-data-finder/tests/registration_is_not_ingestion.rs (a registered source still cannot poll without a separate admission)"
+    ],
+    "gap": "No single pipeline type structurally refuses a stage being skipped end to end; the ordering is enforced by which composition-root code calls which function in which sequence, not by a type that a caller cannot assemble out of order. There is also no distinct, named 'evidence/provenance check' stage separable from schema validation and admission licensing.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-003",
+      "DATA-004",
+      "DATA-005"
+    ],
+    "blocked_by": "",
+    "verification": "An acceptance test in qip-acceptance/tests/e2e.rs driving one record from a connector poll through to a WorldModel fact and asserting each stage's output type, refusing to compile a caller that skips one.",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status kept PARTIAL; 'current' corrected, because it said every named stage exists and is reached from production while its own gap said the evidence/provenance stage does not exist; also recorded that secure egress is not applied."
+  },
+  {
+    "id": "DATA-003",
+    "status": "PARTIAL",
+    "current": "The record the requirement describes is split, by design, across two co-located types rather than one: qip_financial::manifest::SourceManifest (per-source static config: source_id, provider, region=geography, licensing=entitlement, endpoint, freshness_sla_ms, schema=parser/version lineage) and qip_data_finder::reference::DataReference (per-fetch: locator, content_hash sha256, retrieved_at, range=period, symbols). Neither carries a source body.",
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/connector/manifest.rs:798-844 (SourceManifest struct)",
+      "backend/crates/services/qip-data-finder/src/reference.rs:219-243 (DataReference struct)",
+      "backend/crates/services/qip-market-ingestion/src/connector/digest.rs:63-93 (FetchDigest, the per-poll content hash the reference is built from)",
+      "backend/crates/runtime/qip-kernel/tests/references.rs:112 a_digest_from_a_source_this_platform_never_admitted_is_refused_and_records_nothing",
+      "backend/crates/runtime/qip-kernel/tests/references.rs:349 a_restarted_platform_rebuilds_its_reference_ledger_from_the_log"
+    ],
+    "gap": "The per-fetch record (DataReference, built from FetchDigest) carries source identity, origin, category, locator, retrieved_at, sha256, byte length, period, symbols, schema shape, cost and availability, but none of: version/etag (no etag handling exists anywhere in backend/crates), cursor (the connector Checkpoint is a separate per-source KV record, not on the reference), entitlement (licensing lives on the admission and the per-source SourceManifest), geography (per-source SourceManifest.region only), freshness/expiry, or re-fetch instructions beyond the opaque locator. Not every fetch writes one either: FetchDigest::of refuses a body that decodes to no events or maps to no subject, so such a fetch leaves no manifest record. The requirement's verification (exactly one record per fetch, every listed field populated) would fail on the missing fields.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test references (existing: admission refusal, revision flagging, restart rebuild). Missing: a property test that every fixture fetch yields exactly one reference carrying etag, cursor, entitlement, geography, expiry and re-fetch instructions.",
+    "work_item": "E08",
+    "tier": "T0",
+    "size": "M",
+    "notes": "verify: downgraded COMPLETE->PARTIAL: the requirement lists ten fields for the per-fetch record and DataReference lacks etag/version, cursor, entitlement, geography, freshness/expiry and re-fetch instructions; a fetch whose body maps to no subject writes no record at all (digest.rs FetchDigest::of refusals). Prior note: Naming collision to flag for the reader: the blueprint's 'Source Manifest' (per-fetch) and the code's SourceManifest type (per-source config) are not the same thing; the per-fetch record is DataReference."
+  },
+  {
+    "id": "DATA-004",
+    "status": "PARTIAL",
+    "current": "Enforced structurally rather than by a runtime stage that could be omitted: no type downstream of qip_market_ingestion::connector::runtime::ConnectorRuntime::ingest (digest.rs, validate.rs, dedup.rs) ever holds the fetched body past the function that parsed it; qip_data_finder::reference::DataReference and FetchDigest have no body field to assign into.",
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/connector/digest.rs:1-20 (module doc naming the discard as a section 22.1 requirement)",
+      "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs:527-570"
+    ],
+    "gap": "There is no discard stage: the fetched body is a local that is released when ConnectorRuntime::ingest returns, so the requirement's mandatory discard stage wired from knowledge-delta creation, and the refusal to construct a pipeline without it, do not exist. No test asserts release of the buffer or deletion of an ephemeral file after a successful fetch or after a fetch that fails at parse. The ownership-based drop makes retention of the body unlikely, but that is not the construction-time refusal the requirement names and nothing demonstrates it.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-001"
+    ],
+    "blocked_by": "",
+    "verification": "A test in qip-market-ingestion/tests/ that runs ConnectorRuntime::ingest with a body containing a marker string and asserts the marker is not reachable from any field of the returned PollReport/FetchDigest/DataReference.",
+    "work_item": "E08",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: downgraded COMPLETE->PARTIAL: the row itself carried tested=false, which the COMPLETE definition forbids, and the discard stage and construction-time refusal the requirement names are not implemented."
+  },
+  {
+    "id": "DATA-005",
+    "status": "PARTIAL",
+    "current": "qip_events::Topic is a closed enum (no wildcard arm) and every variant must declare a row in Topic::retention_class; only events under a declared Topic reach the log. The Topic set closely matches the allow-list: DataReferenceRecorded (manifests/hashes), EntityUpdated/EntityResolved/RelationshipUpdated (facts/entities/relationships), WorldModelUpdated (world-model deltas), FeatureComputed (embeddings/features), HypothesisCreated/EvidenceAttached/HypothesisChallenged (beliefs with confidence/contradiction).",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/topic.rs:20-95 (Topic enum, SENSE/UNDERSTAND/REASON groups)",
+      "backend/crates/libs/qip-events/src/topic.rs:532 (retention_class, exhaustive match)",
+      "backend/crates/libs/qip-events/src/retention.rs:55-76 (RetentionClass::ALL, nine rows)",
+      "backend/crates/libs/qip-events/src/topic.rs:545-552 (MarketTrade, FundamentalUpdated, MacroUpdated, NewsReceived, AlternativeDataReceived, ReferenceDataUpdated all filed under one Referenced row)",
+      "backend/crates/libs/qip-events/tests/backbone.rs:2411 every_topic_declares_the_retention_class_its_record_carries (enumerates retention classes, not the DATA-005 allow-list)"
+    ],
+    "gap": "Topic is the closed registry of every event type in the platform, not an allow-list of types derived from world data. Nothing at the write seam knows whether a record is world-derived, so nothing refuses a world-derived record for being off the list; it is refused only if its topic does not exist. World-derived topics carry more than the list names (NewsReceived keeps the verbatim headline; FundamentalUpdated/AlternativeDataReceived carry mapped vendor records), and no test enumerates the accepted world-derived types against the blueprint list as the requirement's verification states.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Missing: a unit test at a world-data write seam that accepts each DATA-005 type, refuses any other, and compares the accepted set with the list. cargo build proves only that every Topic has a retention class.",
+    "work_item": "E08",
+    "tier": "T0",
+    "size": "M",
+    "notes": "verify: downgraded COMPLETE->PARTIAL and tested->false: no named test was cited and none exists for the allow-list; the closed Topic enum is a general event registry, not the world-derived allow-list with a refusal the requirement states. Prior note: Enforcement is compiler-structural rather than a runtime refusal an integration test can trigger, consistent with the codebase's stated preference for structural guarantees over runtime checks."
+  },
+  {
+    "id": "DATA-006",
+    "status": "PARTIAL",
+    "current": "qip_data_finder::ledger::ReferenceLedger::record compares a new DataReference's content_hash with the stored reference for the same ExtentKey and yields First/Unchanged/Revised. It is reached from production when a connector happens to poll the same extent again (qip-fastbrain/qip-api feed.rs hand each FetchDigest to the kernel's reference path). No historical analysis re-fetches through a manifest: the only historical-analysis path, qip-deepbrain's campaign::assemble, serialises the bar window the engine already holds in memory (campaign.rs:356, serde_json::to_vec(&window)) and references those bytes. It never fetches from the source using the reference's locator or cursor.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/ledger.rs:56-320 (ReferenceLedger, ExtentKey, LedgerOutcome)",
+      "backend/crates/runtime/qip-kernel/tests/references.rs:168 a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_and_the_metrics",
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs:308,356 (assemble serialises the held window; no re-fetch through the locator)"
+    ],
+    "gap": "No code takes a stored DataReference and re-fetches its locator to re-derive knowledge. Revision detection is a side effect of routine polling, not of historical reasoning, and the historical-analysis path reads a retained in-memory copy (the engine's bar window), which is what the requirement says must not drive it. For world content (news, filings) there is no historical re-fetch path at all.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-003"
+    ],
+    "blocked_by": "",
+    "verification": "Missing: a test in which a fixture source is fetched and discarded, historical analysis of it is requested, and the fixture origin records a new request made with the reference's locator and cursor while no stored copy is read.",
+    "work_item": "E08",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: downgraded COMPLETE->PARTIAL: the cited test proves hash-to-hash revision flagging on routine polls, a different property; the manifest-driven re-fetch for historical analysis is not implemented, and the deep brain's campaign reads its own held window (campaign.rs:356)."
+  },
+  {
+    "id": "DATA-007",
+    "status": "PARTIAL",
+    "current": "qip_data_finder::campaign::FetchCampaign (bounded by CacheBound, produces DataReference per fetch) is constructed from qip-deepbrain's campaign.rs/evolution.rs for the learning loop; every fetch, campaign-driven or connector-driven, passes admission::admit_registered's licensing gate first, and no code anywhere copies a provider's corpus in bulk (max_events_per_batch bounds every connector poll).",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/campaign.rs:228-260 (ResearchCache, CachedExtract, bounded)",
+      "backend/crates/services/qip-data-finder/src/admission.rs:659-711 (admit_registered gates every poll)",
+      "backend/crates/services/qip-market-ingestion/src/connector/manifest.rs:825 (max_events_per_batch)",
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs:356 (the campaign 'fetch' serialises the held window; no on-demand provider query)",
+      "backend/crates/services/qip-market-ingestion/tests/rest_feed.rs:445 more_records_than_the_cap_are_refused_even_when_the_body_fits"
+    ],
+    "gap": "No path queries a historical API on demand for an analysis window: the deep brain's research campaign serialises the bars it already holds rather than asking a provider for the window it needs. What is real is the bulk-copy side: every connector poll is capped by max_events_per_batch and gated by licensing admission. The requirement's own verification uses a fixture historical provider that counts requests, which needs no vendor credential, so the absence of a licensed provider is not what blocks it.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-003",
+      "DATA-006"
+    ],
+    "blocked_by": "",
+    "verification": "A qip-acceptance e2e test standing up a licensed-class connector (once one is configured) and asserting the campaign's DataReference count is bounded by the analysis's own symbol/period need, not by the provider's full history.",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: cleared blocked_by 'external:billing'. The blocker was not the reason: the missing behaviour is an on-demand historical query path, buildable and testable against an in-tree fixture provider, and GCP billing has nothing to do with a data-vendor contract. Status stays PARTIAL. Prior note: Blocked in practice on having any real licensed vendor credential to test against, which in this environment traces back to billing/procurement, not code."
+  },
+  {
+    "id": "DATA-008",
+    "status": "MISSING",
+    "current": "qip_data_finder::reference::RevisionCheck and qip_data_finder::ledger::LedgerOutcome model only {Unchanged, Revised} -- a re-fetch that returns different bytes. Neither type has a variant for a re-fetch that fails entirely (404/withdrawn/embargoed), and nothing propagates such an outcome onto the derived knowledge (a Fact, a CausalEdge, a belief) as 'evidence no longer re-fetchable'.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/reference.rs:174-181 (RevisionCheck: Unchanged | Revised only)",
+      "backend/crates/services/qip-data-finder/src/ledger.rs:303-311 (LedgerOutcome: First | Unchanged | Revised only)"
+    ],
+    "gap": "No 'Gone'/'Unretrievable' outcome exists in RevisionCheck or LedgerOutcome, and no field on a persisted Fact/CausalEdge/belief records that its evidence is no longer fetchable; a source that stops answering entirely is indistinguishable, in the retained knowledge, from one that was never checked again.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-006"
+    ],
+    "blocked_by": "",
+    "verification": "A new test asserting a re-fetch that errors (not merely returns different bytes) marks the DataReference's evidence as unretrievable and that the fact/belief built from it survives with that flag set, once the outcome variant and the flag exist.",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "DATA-009",
+    "status": "PARTIAL",
+    "current": "qip_events::retention::RetentionClass is the nine-row table (ADR 0089): Transient (raw ticks/book deltas, Never), Irreplaceable (own orders/fills/quotes/transfers, Permanent), EventAnchored (book state at each own order/fill, Rolling 90 days), and six more -- each a distinct class with its own Retention policy, and the log's eviction order (qip_events::log) reads only Retention::is_replaceable/is_permanent, nothing else.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/retention.rs:52-193 (RetentionClass, Retention, the nine rows; Transient = 'raw ticks, book deltas, quote updates, source text')",
+      "backend/crates/libs/qip-events/src/topic.rs:532-560 (MarketTick/Quote/OrderBook -> Transient; MarketTrade filed with NewsReceived/FundamentalUpdated -> Referenced)",
+      "backend/crates/libs/qip-events/src/log.rs:818-887 (eviction reads retention_class only)",
+      "backend/crates/libs/qip-events/tests/backbone.rs:2411 every_topic_declares_the_retention_class_its_record_carries",
+      "backend/crates/libs/qip-events/tests/backbone.rs:2521 a_topics_declared_retention_class_and_not_its_group_decides_whether_the_log_rolls_it",
+      "backend/crates/runtime/qip-kernel/tests/retention.rs:218 the_platforms_event_log_is_bounded_by_the_blueprints_ninety_day_window_at_every_destination"
+    ],
+    "gap": "The own-records class (Irreplaceable: orders, fills, intents, quotes, transfers; Permanent) is distinct and correct, and an unclassed topic cannot compile. The tick/order-book class is not separate from pass-through world data: RetentionClass::Transient is one row for 'raw ticks, book deltas, quote updates, source text', so raw ticks share a class with third-party source text, and Topic::retention_class files MarketTrade with NewsReceived, FundamentalUpdated, AlternativeDataReceived and ReferenceDataUpdated under Referenced, so external trade data shares a class with world data too. The table follows the older §22.1 retention-behaviour rows, not the blueprint's data-family split (Tier T versus K0-K3), and raw ticks are never retained as governed history (Transient = Never), so no Tier T exists for tick/order-book data.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-events --test backbone every_topic_declares_the_retention_class_its_record_carries (existing). Missing: a test that the tick/order-book class value differs from the class that holds pass-through source text (today they are the same value, Transient).",
+    "work_item": "E08",
+    "tier": "T0",
+    "size": "M",
+    "notes": "verify: downgraded COMPLETE->PARTIAL: the requirement says the tick/order-book class is separate from pass-through world data, but Transient holds both raw ticks and source text (retention.rs, what()) and Referenced holds both MarketTrade and NewsReceived (topic.rs:545-552). Added the backbone.rs tests, which exercise the class table directly; the daily-bar test previously cited tests the fallback series, not the class separation. Prior note: The code does not use the literal labels 'Tier T' or 'K0-K3'; it implements the same separation (own-financial-records vs. tick data vs. knowledge) under its own vocabulary (Irreplaceable/Transient vs. Episodic/Semantic). Semantic naming gap only, not a behavioural one."
+  },
+  {
+    "id": "DATA-010",
+    "status": "PARTIAL",
+    "current": "The retention-class table (DATA-009) says what is kept and for how long, and qip_financial::quality::LicensingClass gates whether a record may be used as a production decision input. What was not found is a distinct gate that refuses to retain a specific tick/execution record because its venue entitlement forbids storage.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/retention.rs:52-193",
+      "backend/crates/libs/qip-financial/src/quality.rs:15-90 (LicensingClass, gates use not storage)",
+      "backend/crates/libs/qip-contracts/src/governance.rs:59-68 (Usage is Research/Derive/Trade/Redistribute; there is no storage or historical-retention right)",
+      "backend/crates/services/qip-data-finder/src/retention.rs:158-198 (FallbackSeries::retain keeps three years of daily bars with no entitlement check)"
+    ],
+    "gap": "No code path was found that inspects a venue/source entitlement and refuses a write specifically because storage (as opposed to decision-use) is not licensed; LicensingClass::Synthetic/Internal/etc. bars a record from being a decision input, which is a different check from a refusal to persist. There is no storage right to check: qip_contracts::governance::Usage has no Store/Retain variant and LicensingClass speaks only to display and decision use. The one market-data store that retains history, FallbackSeries::retain, keeps three years of daily bars from any source without consulting an entitlement. The implemented/tested flags describe the retention-policy half only (DATA-009's class table).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-009"
+    ],
+    "blocked_by": "",
+    "verification": "A new test constructing a record whose entitlement forbids storage and asserting the write to the event log/journal is refused (mirroring the MaxExpectedShortfall lesson: a limit that cannot fire is not protection).",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status kept PARTIAL; recorded that no storage right exists in Usage/LicensingClass and that FallbackSeries retains bars without an entitlement check, so the rights half of the requirement is absent, not merely untested."
+  },
+  {
+    "id": "DATA-011",
+    "status": "PARTIAL",
+    "current": "Per admitted, polling connector: qip_market_ingestion::connector::checkpoint::{Checkpoint,Cursor} (cursor) plus connector::dedup::EventFingerprint (fingerprint) plus qip_data_finder::ledger::ReferenceLedger (revisions/deltas since last use) together give exactly cursor+fingerprint+deltas per source, reached from production for the 7 shipped connectors.",
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/connector/checkpoint.rs (Checkpoint, Cursor, CursorPosition)",
+      "backend/crates/services/qip-market-ingestion/src/connector/dedup.rs (DedupWindow, EventFingerprint)",
+      "backend/crates/services/qip-data-finder/src/ledger.rs:1-40",
+      "backend/crates/services/qip-market-ingestion/tests/connector_runtime.rs (43 tests over checkpoint/dedup interplay)"
+    ],
+    "gap": "This exists only for sources that have already cleared admission and are actively polling. The requirement's 'for each watched source' implies coverage over the wider Scout Fabric candidate set too, which DATA-020's missing CRAWL/autonomous-discovery stage means does not exist to be watched.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-003"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-market-ingestion --test connector_runtime",
+    "work_item": "E08",
+    "tier": "T1",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "DATA-012",
+    "status": "NEEDS-VALIDATION",
+    "current": "No code exists to measure or assert this NFR directly. Structurally it is very likely true by construction: nothing durable holds a raw body (DATA-001/004), and DataReference/FetchDigest are small fixed-shape records (a hash, a length, bounded key sets) rather than copies.",
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/connector/digest.rs:36-46 (module doc costing the digest: 'a set of at most max_events_per_batch keys... no allocation outlives the report')"
+    ],
+    "gap": "No metric or test compares durable-knowledge bytes against source bytes; the claim is architecturally plausible but unmeasured.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-001",
+      "DATA-005"
+    ],
+    "blocked_by": "",
+    "verification": "A benchmark/test that fetches a source body of known size N, runs it through the pipeline, and asserts the durable footprint (event-log bytes + world-model delta bytes) is materially smaller than N.",
+    "work_item": "E12",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: flags corrected to match NEEDS-VALIDATION (implemented and reached, not tested): the row had implemented=false and integrated=false, which is MISSING, not NEEDS-VALIDATION. The compact-record design is what the running connectors use; what is absent is the measurement."
+  },
+  {
+    "id": "DATA-013",
+    "status": "MISSING",
+    "current": "Nothing. No KnowledgePack type, and no protobuf or Parquet encoding exists anywhere in the workspace (`grep -rn KnowledgePack` and `grep -rn parquet|protobuf` outside comments/enum-variant-names return nothing). Durable state is JSON via serde_json through qip_core::kv::KeyValueStore, the workspace's only permitted serialization dependency.",
+    "evidence": [
+      "grep -rn 'KnowledgePack' backend/crates -> no results",
+      "backend/crates/services/qip-data-finder/src/endpoint.rs:127 (the only 'Parquet' hit in the tree, an AccessMechanism/FileFormat enum variant describing a vendor's own file format, not the platform's output)"
+    ],
+    "gap": "No KnowledgePack type exists in any form. The permitted form (a versioned, schema-checked pack type on serde/serde_json, with round-trip and refusal of out-of-schema fields) can be built in-tree today and has not been; only the literal protobuf/Parquet encoding would need a dependency record (ADR 0099 C2 names prost), and a protobuf wire encoding could also be written in-tree without a client stack.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-005",
+      "DATA-012"
+    ],
+    "blocked_by": "",
+    "verification": "Missing: a pack type per content kind with a schema version, a byte-for-byte round-trip test, and a test that a pack carrying a field outside its schema is refused.",
+    "work_item": "E08",
+    "tier": "T4",
+    "size": "L",
+    "notes": "verify: changed BLOCKED(C2)->MISSING. C2 is not the reason nothing exists: the requirement's own notes name an in-tree serde pack as the permitted form, and that form is buildable and absent. The dependency question applies only to the protobuf/Parquet encoding. Prior note: Permitted form today: JSON documents via qip_core::kv::KeyValueStore, which is what every durable structure in the platform (world model, ledgers, journal) actually uses."
+  },
+  {
+    "id": "DATA-014",
+    "status": "PARTIAL",
+    "current": "qip-deepbrain's DiscoveryDesk::maybe_run (main.rs:508 wiring, DiscoveryDesk::new) calls Platform::assess_sources on a cadence with no human step in the loop -- the desk itself needs no human intervention to keep running.",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:1-51,173-182,321 (a_desk_on_cadence_reaches_the_platforms_assess_sources)",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:508",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:15946-15952 (assess_sources)"
+    ],
+    "gap": "The candidate universe the cadence assesses is a stated, human-committed catalogue file (qip_data_finder::catalogue::load, invoked once at startup from a static file) -- 'without waiting for a human to add a feed' is false today: DATA-020's CRAWL stage does not exist, so the only way a new feed appears is a person editing the catalogue file and redeploying.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-016",
+      "DATA-017",
+      "DATA-020"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-deepbrain a_desk_on_cadence_reaches_the_platforms_assess_sources (proves the cadence half); DATA-020's verification proves the rest once it exists.",
+    "work_item": "E08",
+    "tier": "T3",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "DATA-015",
+    "status": "PARTIAL",
+    "current": "qip_data_finder::scoring::SourceScores{reliability, freshness, uniqueness, historical_value, cost_efficiency} with fixed WEIGHTS, computed in DataFinder::assess and reached from production via DiscoveryDesk.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/scoring.rs:22-39 (SourceScores, WEIGHTS)",
+      "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs:90 a_duplicate_of_a_registered_source_scores_no_uniqueness",
+      "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs:136 an_expensive_source_scores_worse_on_cost_than_a_free_one"
+    ],
+    "gap": "Three of the four required dimensions are present (uniqueness maps to information gain, freshness to timeliness, reliability to reliability); 'realized strategy contribution (source alpha)' -- a closed-loop feedback score from actual trading/decision outcomes attributable to a source -- has no field anywhere in SourceScores or elsewhere, so a source's score is never fed by whether it actually helped.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A new SourceScores field (e.g. realized_contribution) populated from qip-kernel's attribution/learning path (the same LEARN-stage machinery that already produces per-strategy attribution) and a test that a source behind a strategy's realised gain scores higher on it than one behind a loss.",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "DATA-016",
+    "status": "PARTIAL",
+    "current": "qip_data_finder::legal::Legality (three-valued, ::and never permits on Unknown), tier::SourceTier::classify, personal_data::screen, and probe::{InMemoryProbe,NetworkProbe} together gate every candidate through DataFinder::assess before RegistrationDecision::registered can be reached; admission.rs's AdmittedSource additionally requires RegistrationRecord where the source needs one.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/legal.rs:28-125 (Legality::and, least-permissive combinator)",
+      "backend/crates/services/qip-data-finder/src/tier.rs:52-267",
+      "backend/crates/services/qip-data-finder/tests/legality.rs (27 tests -- Legality::and never collects on Unknown)",
+      "backend/crates/services/qip-data-finder/tests/tiers.rs (19 tests -- dark-web tier refuses every access mode by name)",
+      "backend/crates/services/qip-data-finder/src/finder.rs:324-480 (assess_one: classify, tier, host rules, robots, probe, scores; no manipulation-risk attribute)",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:1057-1073 (discovery candidates come only from QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH; empty when unset)"
+    ],
+    "gap": "Manipulation risk is not inspected anywhere; no non-test code in backend/crates mentions it, so one of the seven required inspection attributes is absent. And the seven connectors actually polled in production never pass DataFinder::assess: they are admitted from the committed code catalogue (admit_registered / StandingAdmission), which evaluates licensing posture only. Schema, freshness, cost and uniqueness inspection applies only to discovery candidates, which reach assess only from qip-deepbrain's DiscoveryDesk over an operator-supplied candidate file.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-data-finder --test legality --test tiers (existing: the law/terms half). Missing: a manipulation-risk attribute, and a test that registration is refused, naming the attribute, when any of the seven is missing.",
+    "work_item": "E08",
+    "tier": "T0",
+    "size": "M",
+    "notes": "verify: downgraded COMPLETE->PARTIAL: manipulation risk, one of the seven attributes the requirement lists, has no implementation; the production connectors bypass the full inspection and pass only the licensing gate."
+  },
+  {
+    "id": "DATA-017",
+    "status": "PARTIAL",
+    "current": "qip_data_finder::endpoint::AccessMechanism::poll_plan() -- 'everything an adapter author needs in order to write poll' (delivery mode, natural interval, incremental support, credential requirement) -- is computed for every candidate in DataFinder::assess (finder.rs:357,648,910), a genuine automated adapter proposal.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/endpoint.rs:219-273 (poll_plan)",
+      "backend/crates/services/qip-data-finder/src/finder.rs:357,648,910 (poll_plan called in production assess path)",
+      "backend/crates/services/qip-data-finder/tests/lifecycle.rs:168 a_registered_source_becomes_something_the_pull_adapter_contract_can_poll",
+      "backend/crates/services/qip-data-finder/tests/lifecycle.rs:205 a_push_mechanism_is_marked_as_needing_a_buffer_behind_poll"
+    ],
+    "gap": "Nothing instantiates an actual running qip_market_ingestion::DataAdapter from a PollPlan automatically -- a human still writes or configures a concrete connector (one of the four generic rest/narrative/depth/alternative adapters, or a bespoke SourceConnector) to match. 'Proposes' is satisfied; 'creates' is not.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-016"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-data-finder --test lifecycle",
+    "work_item": "E08",
+    "tier": "T3",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "DATA-018",
+    "status": "PARTIAL",
+    "current": "Two overlapping mechanisms: qip_data_finder::scoring::RoutingClass{Hot,Warm,Cold,Rejected} decides a candidate's tier at assessment time, and qip_data_finder::finder::MonitorOutcome{Healthy,Degraded,Quarantined,Dead} decides a registered source's fate on monitoring (schema drift -> Quarantined; needs_replacement() true for Quarantined|Dead). replacement.rs ranks a replacement, never outranking a source with worse legality regardless of score.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/scoring.rs:130-139 (RoutingClass)",
+      "backend/crates/services/qip-data-finder/src/finder.rs:206-248 (MonitorOutcome, needs_replacement)",
+      "backend/crates/services/qip-data-finder/src/finder.rs:1085-1150 (monitor(): schema-drift quarantine, dead on silence)",
+      "backend/crates/services/qip-data-finder/tests/schema_drift.rs:113 a_source_whose_schema_drifted_is_quarantined_rather_than_consumed",
+      "backend/crates/services/qip-data-finder/tests/replacement.rs:86 a_dead_source_is_reported_dead_and_triggers_a_replacement_search",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:548,2827 a_lapsed_standing_admission_withdraws_the_source_from_the_platform"
+    ],
+    "gap": "'Promoted'/'throttled' are not distinct lifecycle actions on an already-registered source the way 'quarantined'/replaced are -- RoutingClass is decided once at assessment, and no code was found that moves a registered source between Hot/Warm/Cold in response to its evolving score or MonitorOutcome history. Throttling exists only as a runtime rate limiter (ratelimit.rs), not as a policy action taken because a source's score fell. DataFinder::monitor, the only code that quarantines or declares a source dead, has no caller in any composition root (backend/crates/apps/*/src or qip-kernel/src); it runs only from qip-data-finder's tests. The one automated retirement reached in production is the deep brain withdrawing a source whose standing admission lapsed. No transition is recorded on the event log.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-015",
+      "DATA-021"
+    ],
+    "blocked_by": "",
+    "verification": "A test that re-runs DataFinder::assess for an already-registered source whose score has since dropped and asserts its RoutingClass moves from Hot to Warm/Cold, once that re-evaluation path exists.",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status kept PARTIAL; evidence corrected: lifecycle.rs holds no monitor test (the monitor tests are schema_drift.rs:113 and replacement.rs:86), monitor() is reached only from tests, and the deep brain's lapsed-admission withdrawal was added as the one production-reached transition."
+  },
+  {
+    "id": "DATA-019",
+    "status": "PARTIAL",
+    "current": "qip_data_finder::endpoint::AccessMechanism covers Rest, WebSocket, Feed, BulkFile, GitRepository, Mcp, HtmlPage, StreamingMulticast (web/API/WebSocket/file/stream/registry-shaped access, no explicit database mechanism). qip_data_finder::category::ContentSignal names SatelliteOrWeatherImagery, VesselOrPortTracking, CustomsOrTradeData, RegulatoryFiling, GeneralNews, ProductListingOrAuction and 11 more, covering most of the named source families as a classification taxonomy. Only 7 concrete connectors are shipped: Coinbase (crypto), Frankfurter (FX), ECB and NY Fed (rates), NWS (weather obs), Kalshi (prediction markets), Alpaca (equity bars).",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/endpoint.rs:150-201 (AccessMechanism variants)",
+      "backend/crates/services/qip-data-finder/src/category.rs:231-253 (ContentSignal, 17 variants)",
+      "backend/crates/services/qip-market-ingestion/src/connectors/mod.rs:87-101 (the 7 shipped connectors)"
+    ],
+    "gap": "No database access mechanism variant; no IoT source category; no blockchain source reaches production (qip-chain is tests-only, see the kernel-cycle record). The taxonomy that would classify a source as covered is broader and better-reached from production than the set of connectors that actually fetch from one.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-016",
+      "DATA-017"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-data-finder --test tiers --test scoring_and_routing",
+    "work_item": "E08",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "See DATA-023/DATA-024 for the blockchain/qip-chain gap in detail."
+  },
+  {
+    "id": "DATA-020",
+    "status": "MISSING",
+    "current": "Nothing. The candidate universe DataFinder::assess evaluates is loaded once from a committed file by qip_data_finder::catalogue::load, called at qip-deepbrain startup.",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/main.rs:1059-1083 (catalogue::load(text, now) on a committed file)",
+      "grep -rn 'follow_links|expand_from|fn crawl(' backend/crates/services/qip-data-finder/src -> no results"
+    ],
+    "gap": "No CRAWL implementation exists: no link-following, no domain expansion, no autonomous discovery of a source the platform was not told about. The crate's own module docs (lib.rs, probe.rs) describe this gap explicitly.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-016"
+    ],
+    "blocked_by": "",
+    "verification": "A new module implementing seeded link-following/expansion bounded by depth and rate, with a test asserting a source never in the committed catalogue is discovered, probed, and reaches DataFinder::assess as a candidate.",
+    "work_item": "E08",
+    "tier": "T3",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "DATA-021",
+    "status": "PARTIAL",
+    "current": "Two mechanisms. qip_data_finder::admission::StandingAdmission re-asks the whole licensing gate (catalogue posture, class agreement, both usages, registration standing) before every poll of an adopted connector, and refuses the poll before any socket opens once the terms stop granting. It is reached from qip-fastbrain, qip-api and qip-deepbrain feed/connector wiring, and in the deep brain a lapse withdraws the source from the platform. Separately, DataFinder::monitor re-checks a registered discovery source's schema (drift -> Quarantined) and availability (Dead), but nothing outside qip-data-finder's tests calls it.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/admission.rs:991-1019,1110 (StandingAdmission, check)",
+      "backend/crates/apps/qip-fastbrain/src/feed.rs:231,249 (StandingAdmission opened per connector)",
+      "backend/crates/apps/qip-fastbrain/tests/registrations.rs:505 a_licence_that_expires_mid_run_stops_the_next_poll_rather_than_the_next_restart",
+      "backend/crates/apps/qip-api/tests/feed.rs:917 a_licence_that_expires_mid_run_stops_the_next_cycle_rather_than_the_next_restart",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:2827 a_lapsed_standing_admission_withdraws_the_source_from_the_platform",
+      "backend/crates/services/qip-data-finder/src/finder.rs:1085-1150 (monitor; test-only callers)"
+    ],
+    "gap": "The terms re-checked each poll are the committed catalogue's (licence effective/expiry instants, registration standing). Nothing observes the provider's own terms or robots.txt changing after adoption; a change reaches the platform only as a reviewed code change to the catalogue. DataFinder::monitor (schema and availability) is not reached from any composition root, and neither path moves the source through DATA-018's quarantine/retire lifecycle on the event log.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-016",
+      "DATA-018"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-fastbrain --test registrations a_licence_that_expires_mid_run_stops_the_next_poll_rather_than_the_next_restart (existing). Missing: a fixture provider that changes its served terms/robots between polls, with the source quarantined or retired within the monitoring interval and no further fetch made.",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status kept PARTIAL; 'current' and evidence rewritten. The assessor missed StandingAdmission, the production-reached per-poll licence re-check with tests in qip-fastbrain, qip-api and qip-deepbrain. The cited lifecycle.rs:104 test is about crawl-delay pacing, and monitor() has no production caller."
+  },
+  {
+    "id": "DATA-022",
+    "status": "PARTIAL",
+    "current": "Core mechanics exist: qip_market_ingestion::depth::DepthFeedAdapter (order book, rebuilds on a sequence gap via qip_sequencing/qip_orderbook), MarketTick/MarketQuote/MarketTrade/MarketOrderBook/MarketBar as qip_events::Topic variants, and 3 of the 7 shipped connectors deliver trades/quotes/bars (Coinbase, Kalshi, Alpaca) through the production feeds. DepthFeedAdapter itself is constructed only in qip-cli's demo (demo/mod.rs:813), so order-book depth reaches no deployed process.",
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/depth.rs:1138-1179",
+      "backend/crates/libs/qip-events/src/topic.rs:20-35 (Market* topics)",
+      "backend/crates/services/qip-market-ingestion/tests/book_depth.rs (50 tests -- sequence-gap rebuild, crossed-book handling)"
+    ],
+    "gap": "grep across the workspace for options surfaces, funding rates, borrow rates and venue status returns nothing (no type, field or connector for any of the four); the source universe as actually implemented is spot/bar/order-book only.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-019"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-market-ingestion --test book_depth",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: status kept PARTIAL; 'current' corrected: it said DepthFeedAdapter is reached from production, but its only composition-root caller is qip-cli's demo."
+  },
+  {
+    "id": "DATA-023",
+    "status": "MISSING",
+    "current": "Nothing implements a 'Market Intelligence & Tick Learning Fabric' as a distinct consumer of the same raw events the reflex path sees. The closest analogue -- qip-edge's Cell::work consuming market events for live execution -- exists but reaches no deployed process (execution_nodes = {} in every environment terraform.tfvars); qip-streaming's kernel journal is always DurableLogTransport::in_memory (platform.rs:4486), not a historical tick store.",
+    "evidence": [
+      "grep -rn 'tick_learning|TickLearning|reflex path' backend/crates -> no results",
+      "backend/crates/services/qip-streaming/src/lib.rs:1-55 (journal is in-memory only, no file-backed construction site in production)",
+      "infrastructure/environments/*/terraform.tfvars (execution_nodes = {})"
+    ],
+    "gap": "Neither half of the dual-delivery this requirement describes exists as a named thing: there is no deployed reflex path (qip-edge-node is deployed nowhere) and no separate historical Tick Learning Fabric consuming the same event stream for training.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-024"
+    ],
+    "blocked_by": "",
+    "verification": "None exists. Would require a fan-out at the point market events are published (qip-streaming envelope) to both the edge cell and a durable tick store, with a test asserting the same event id appears in both.",
+    "work_item": "E06",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "Depends structurally on an edge cell actually being deployed (FABRIC/reflex-path work), which today it is not in any environment."
+  },
+  {
+    "id": "DATA-024",
+    "status": "PARTIAL",
+    "current": "No Tick Learning Fabric exists, but the deep brain's learning input is licence-gated. qip-deepbrain's campaign::assemble resolves a stream's door before reading a byte and refuses (Assembly::RefusedAtDoor, counted) any stream that is neither admitted through the licensing gate nor platform-generated; admission asks Usage::Derive and Usage::Trade of every source (admission.rs:89 REQUIRED_USAGES). So data whose licence does not grant derived use does not enter learning.",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs:308-337 (door resolution before any bytes are read)",
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs:1251 a_stream_that_is_neither_admitted_nor_generated_is_refused_at_the_door",
+      "backend/crates/services/qip-data-finder/src/admission.rs:89 (REQUIRED_USAGES = [Derive, Trade])",
+      "backend/crates/libs/qip-events/src/retention.rs:52-193 (the general retention-class machinery)"
+    ],
+    "gap": "The split the requirement turns on is not modelled: admission requires Derive and Trade together, so a venue licensed for real-time use but not for historical or derived use is not admitted at all and never reaches any path, including the reflex path. The gate sits on the deep brain's bar-window fit, not on raw market events entering a tick learning/archive fabric, which does not exist (DATA-023).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-009",
+      "DATA-010",
+      "DATA-023"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-deepbrain a_stream_that_is_neither_admitted_nor_generated_is_refused_at_the_door (existing, learning-side gate). Missing: a fixture venue whose entitlement grants real-time use only, with events reaching the reflex path and none reaching the tick learning fabric or archive.",
+    "work_item": "E06",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: upgraded MISSING->PARTIAL with evidence: the deep brain refuses to learn from a stream no licensing admission covers (campaign.rs door gate, tested at campaign.rs:1251), which is the learning-side half of this gate. The real-time versus derived-use split and the fabric itself remain absent."
+  },
+  {
+    "id": "DATA-025",
+    "status": "PARTIAL",
+    "current": "Two of the shipped connectors are genuinely central-bank releases (EcbKeyRatesConnector, NyFedEffrConnector -- REFERENCE_RATE_NOTICE). qip_data_finder::category::ContentSignal names RegulatoryFiling, CourtDocket, GovernmentProcurement, CustomsOrTradeData, InvestorRelations, CorporatePressRoom as a classification taxonomy reached from production via DataFinder::assess.",
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/connectors/mod.rs:100-102 (EcbKeyRatesConnector, NyFedEffrConnector)",
+      "backend/crates/services/qip-data-finder/src/category.rs:231-247 (RegulatoryFiling, CourtDocket, GovernmentProcurement, CustomsOrTradeData, InvestorRelations, CorporatePressRoom)"
+    ],
+    "gap": "No connector exists for filings, earnings, court/docket data, procurement, patents or corporate registries -- only central-bank rate releases are actually fetched; the rest exist solely as a classification label a candidate could be scored under, never as a working feed.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-019"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-market-ingestion --test ecb_key_rates --test nyfed_effr",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "DATA-026",
+    "status": "PARTIAL",
+    "current": "qip_market_ingestion::narrative::NarrativeAdapter is a real, tested generic document-vendor adapter (filed-vs-covering instant discipline), and qip_data_finder::category::ContentSignal covers GeneralNews, UnspecialisedDiscussion, SpecialistTradeForum, LeakForum, ProductListingOrAuction, PreprintOrWorkingPaper, DeveloperOrRepositoryActivity, JobPostings as a reached-from-production taxonomy.",
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/narrative.rs:1-60,1095 (NarrativeAdapter, always non-None production_requirement)",
+      "backend/crates/services/qip-market-ingestion/tests/narrative_feed.rs (46 tests -- filed-vs-covering instant discipline, licensing-class refusal)",
+      "backend/crates/services/qip-data-finder/src/category.rs:231-253"
+    ],
+    "gap": "No news/social/public-web vendor is actually configured anywhere in the repository; NarrativeAdapter's production_requirement is always Some(...), so news/social coverage is a working, tested, generic adapter with nobody plugged into it, not a live feed. NarrativeAdapter is constructed only in qip-cli's demo (demo/mod.rs:808), so no deployed process ingests documents. Free public sources (press releases, public-web and discussion feeds, government RSS) need no paid vendor, so closing this is connector and licensing-evaluation work, not something billing holds up.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-019"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-market-ingestion --test narrative_feed",
+    "work_item": "E08",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: cleared blocked_by 'external:billing': GCP billing does not gate a news or public-web connector, and free public families exist. Status stays PARTIAL. Prior note: Closing this is a vendor-credential/configuration task (E08), not a code-architecture gap -- the adapter is already hardened."
+  }
+]

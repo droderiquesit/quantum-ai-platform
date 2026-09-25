@@ -1,0 +1,624 @@
+[
+  {
+    "id": "COVERAGE-001",
+    "status": "PARTIAL",
+    "current": "qip_financial::extensions::{FxDetails, CashDetails} (backend/crates/libs/qip-financial/src/extensions.rs:379-388,840-847); qip_financial::asset_class::InstrumentType::{FxSpot,FxForward,FxSwap,Cash,MoneyMarketInstrument} (asset_class.rs:128-130,154-155). The only construction of either class anywhere in the workspace is one FxSpot (EURUSD, settlement_date None) and one Cash (USD-CASH) inserted into a qip_financial::universe::Universe in a test; no FxForward carrying a value date and no MoneyMarketInstrument is constructed anywhere, production or test. qip_kernel::asset_class_registry::AssetClassRegistry::shipped() (backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:379-603) deliberately registers only 9 of AssetClass's 13 variants and names Cash and ForeignExchange among the four it refuses (asset_class_registry.rs:40-48), and Platform::new refuses to assemble over any universe holding an instrument in an unregistered class (platform.rs:4091-4104).",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/extensions.rs:379-388 (FxDetails, with settlement_date: Option<Timestamp> for a forward's value date)",
+      "backend/crates/libs/qip-financial/src/extensions.rs:840-847 (CashDetails)",
+      "backend/crates/libs/qip-financial/tests/object_model.rs:363-504 every_asset_class_can_be_represented (inserts an FxSpot EURUSD with settlement_date None and a Cash USD-CASH into a Universe and asserts only len()==7 and composition breadth -- no serialise/deserialise round-trip and no FX forward)",
+      "grep -rn 'InstrumentType::FxForward\\|InstrumentType::MoneyMarketInstrument' backend/crates -- only the enum-to-class mapping test at object_model.rs:66; neither is ever built into an instrument",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:694-714 the_shipped_registry_holds_nine_classes_and_names_the_four_it_refuses (ForeignExchange and Cash are two of the four named)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4091-4104 (assembly refuses a universe holding an instrument in an unregistered class)"
+    ],
+    "gap": "Cash and ForeignExchange are two of the four AssetClass variants the composition-root registry deliberately excludes, so no paper position in either class can reach a running Platform to be sized, held or valued in the reporting currency. Within the object model itself only a spot pair and a fiat cash balance have ever been constructed: an FX forward with a value date and a cash equivalent (money-market instrument) are declared types that nothing builds, so three of the four registrations the verification names have no demonstration at any layer, and none has a round-trip assertion.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial --test object_model every_asset_class_can_be_represented proves the round-trip; no test values a Cash or FX position through Platform because AssetClassRegistry::admit refuses both classes before one could exist.",
+    "work_item": "E05-register-cash-and-fx-classes",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: status and flags unchanged. current/evidence corrected: the assessor said these 'round-trip through Universe', but the cited test only inserts an FxSpot (value date None) and a Cash instrument and asserts a count; no FX forward with a value date and no money-market instrument is constructed anywhere in the workspace. Line refs tightened (FxDetails :379, CashDetails :840, InstrumentType :128-130/:154-155). | Registering the class means naming one of asset_class_registry.rs's six ValuationEngine paradigms for a continuously-quoted spot instrument, which the module's own doc says the six do not enumerate -- closing this touches the registry's own stated design boundary, not just an omission."
+  },
+  {
+    "id": "COVERAGE-002",
+    "status": "PARTIAL",
+    "current": "qip_capital_fabric::transfer::FxRates::{new,with_rate,to_base,convert} (backend/crates/services/qip-capital-fabric/src/transfer.rs:246-306), constructed in production at backend/crates/runtime/qip-kernel/src/platform.rs:18033.",
+    "evidence": [
+      "backend/crates/services/qip-capital-fabric/src/transfer.rs:281-292 (to_base refuses an unpriced currency rather than assuming parity)",
+      "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:1403 an_unpriced_currency_is_refused_rather_than_assumed_to_be_at_parity",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18033 (FxRates::new(Currency::USD) constructed from a production kernel path)",
+      "grep -rn 'struct.*Leg\\b' backend/crates/services/qip-capital-fabric/src backend/crates/libs/qip-portfolio/src -- no match",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18021-18033 pre_position (the one production FxRates is FxRates::new(Currency::USD) with no other rate, so every non-USD conversion on that path is refused; reached from DECIDE via plan_pre_positioning)",
+      "backend/crates/services/qip-capital/src/ledger/book.rs:93 (UserLedger holds cash per Currency but exposes no conversion operation between two balances)",
+      "backend/crates/edge/qip-arbitrage/src/pricing.rs:131 PricedConversion (an edge arbitrage pricing of a conversion edge against a book, not a ledger booking)"
+    ],
+    "gap": "FxRates::convert refuses an unpriced currency instead of defaulting one (the safety property the requirement names), but nothing books a conversion as two linked ledger legs at a recorded rate and time -- FxRates only produces a converted Decimal for internal budget/limit arithmetic, and no ConversionEvent/leg type exists anywhere in qip-portfolio or qip-capital-fabric.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-001"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-capital-fabric --test capital_fabric an_unpriced_currency_is_refused_rather_than_assumed_to_be_at_parity proves the refusal half; no test exists for a two-leg conversion booking because no such booking exists.",
+    "work_item": "E05-two-leg-conversion-booking",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: status and flags unchanged. Re-searched for a two-leg booking under other names (Conversion, FxConversion, conversion_rate, Posting, JournalEntry, LedgerEntry): the only multi-currency ledger (qip-capital UserLedger) has per-currency balances and no conversion, and qip-arbitrage's PricedConversion is edge pricing, not booking. Added those as evidence; the refusal half stands as the assessor graded it."
+  },
+  {
+    "id": "COVERAGE-003",
+    "status": "MISSING",
+    "current": "nothing. qip_financial::costs::TransactionCostModel carries only a short_borrow_bps_annual rate for a securities-lending short (backend/crates/libs/qip-financial/src/costs.rs:230,279-346), which is a security borrow cost, not a cash-funding-behind-a-position record. Neither qip_portfolio::position::Position nor qip_portfolio::portfolio::Portfolio carries a funding currency, amount or accrued cost field.",
+    "evidence": [
+      "grep -in funding backend/crates/libs/qip-portfolio/src/position.rs backend/crates/libs/qip-portfolio/src/portfolio.rs -- no match",
+      "backend/crates/libs/qip-financial/src/costs.rs:230,279-346 (short_borrow_bps_annual is the only borrow-adjacent field in the crate, and it is a stock-loan rate, not a funding-currency/amount/cost record)"
+    ],
+    "gap": "No position-level funding record (currency, amount, accrued cost) exists anywhere; a position financed in a second currency has no representation and its funding is invisible to valuation, exactly the failure the requirement's rationale names.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-001"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; none can, because no funding record exists to construct.",
+    "work_item": "E05-position-funding-record",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: status unchanged (MISSING). Re-searched for a position-level funding record under other names: qip-brokers CashBalance/MarginState (account-level, one currency, no per-position financing), qip-edge settlement::LegFunding (whether an arbitrage leg's input has settled, not financing), qip-capital-fabric plan funding_cost (a pre-positioning transfer hurdle), qip-simulation-engine costs::borrow_cost (short-stock borrow), qip-kernel FundingBasis/CapitalCallFunding (private-fund capital-call reads). None records the currency, amount and accrued cost financing a position."
+  },
+  {
+    "id": "COVERAGE-004",
+    "status": "PARTIAL",
+    "current": "qip_financial::asset_class::InstrumentType::{CommonStock,PreferredStock,DepositaryReceipt,ExchangeTradedFund,Index} (asset_class.rs:103-107); qip_financial::extensions::{EquityDetails, IndexDetails, StructuredProductDetails} (extensions.rs:111-140,831-837,850-862). Equity is registered in AssetClassRegistry::shipped (asset_class_registry.rs:402-427) and is the best-covered class in the platform (corporate actions, lots, risk all exercise CommonStock).",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/extensions.rs:831-837 (IndexDetails: methodology, constituent_count -- a count, not a list of constituents with weights)",
+      "backend/crates/libs/qip-financial/src/extensions.rs:850-862 (StructuredProductDetails: underlying_object_ids: Vec<String>, i.e. a basket's members with no weight field)",
+      "grep -rn IndexDetails backend/crates -- only the declaration and its own Extension variant; zero constructions anywhere, including tests",
+      "grep -rn underlying_object_ids backend/crates -- only the declaration; zero readers",
+      "backend/crates/libs/qip-financial/tests/object_model.rs:362-504 every_asset_class_can_be_represented and backend/crates/apps/qip-deepbrain/src/reference.rs:163-165 construct CommonStock/GovernmentBond only -- no ExchangeTradedFund, Index or basket instrument is constructed anywhere in the workspace, production or test",
+      "backend/crates/edge/qip-arbitrage/src/graph.rs:56-66 SyntheticComponent { object, venue, units_per_unit, unwind_side } and backend/crates/edge/qip-arbitrage/tests/arbitrage.rs:374 synthetic_basket / :908 a_synthetic_against_its_components_is_found_as_a_cross_instrument_path -- the only basket-to-constituents structure with quantities in the workspace; it lives in the edge arbitrage graph (qip-edge-node only, execution_nodes = {} everywhere), carries units per unit rather than weights summing to one, and is not a registry entry",
+      "data/datasets/universe.json -- the committed catalogue every central root loads holds six common_stock records and no ETF or index"
+    ],
+    "gap": "Equities are solidly registrable, tested and production-reached. ETFs and indices are declared enum/extension variants with zero construction anywhere (not even a fixture). Indices carry no constituent references at all (only a count), and the one basket-shaped extension (StructuredProductDetails) carries constituent ids with no weights, so 'constituents and their weights sum to one' cannot be demonstrated for either.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial --test object_model every_asset_class_can_be_represented and the corporate-action tests in platform.rs prove equities; no test constructs an ETF, index or basket because IndexDetails/underlying_object_ids have no production or test caller.",
+    "work_item": "E05-index-and-basket-constituents",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: status and flags unchanged. Added the edge arbitrage graph's SyntheticComponent as the one place a basket references constituents with quantities; it is edge-only, not deployed, and not part of the registry, so it does not close the gap. The equity half's integration rests on the committed catalogue, which holds six common stocks."
+  },
+  {
+    "id": "COVERAGE-005",
+    "status": "PARTIAL",
+    "current": "qip_market::corporate_action::{CorporateAction, CorporateActionKind, price_adjustment_factor, quantity_adjustment_factor} (backend/crates/libs/qip-market/src/corporate_action.rs); Platform::{queue_corporate_action, apply_due_corporate_actions, apply_corporate_action} (backend/crates/runtime/qip-kernel/src/platform.rs:9498,9544,9607-9689), called from stage_sense (platform.rs:9695-9701) -- reached every cycle from every composition root via qip-kernel.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9607-9689 apply_corporate_action (adjusts bar history via price_adjustment_factor and the lot's quantity/average_price via quantity_adjustment_factor)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9695-9701 stage_sense calls apply_due_corporate_actions every cycle",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:25601 a_split_the_tape_has_crossed_makes_the_history_continuous_and_leaves_the_holding_worth_the_same",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:25743 the_same_split_absorbed_twice_adjusts_the_history_and_the_holding_exactly_once",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:25780-25817 a_cash_dividend_adjusts_the_price_series_and_leaves_the_cost_basis_alone (asserts price series and cost basis; never asserts a ledger cash balance changed)",
+      "grep -n 'CashDividend' backend/crates/runtime/qip-kernel/src/platform.rs -- the only two production-code hits are a telemetry label (:18410) and the test fixture (:25784); self.capital.cash is never touched by apply_corporate_action",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8813 (a SensedRecord::CorporateAction from a feed is queued here; qip-api/qip-fastbrain feed.rs open a TapeFeed, and qip-market-ingestion tape.rs:502-511 emits CashDividend actions)",
+      "backend/crates/libs/qip-portfolio/src/portfolio.rs:236-250 Portfolio::credit_income ('Credit a dividend or coupon') with backend/crates/libs/qip-portfolio/tests/accounting.rs:548 dividends_are_credited_to_cash -- the cash-crediting primitive exists and is tested, but grep -rn credit_income backend/crates finds no non-test caller, and the kernel books into TrackedCapital (platform.rs:909), not a qip_portfolio::Portfolio"
+    ],
+    "gap": "Splits, stock dividends, quantity/cost-basis adjustment and price-history continuity are implemented, production-wired and mutation-quality tested. A cash dividend correctly leaves cost basis alone but the dividend's cash payment is never credited to ledger cash anywhere -- apply_corporate_action touches only bar history and the position lot, never self.capital.cash -- so the ledger-cash half of the requirement is not implemented for the one action kind that should move it. Mergers, spinoffs, delistings and renames carry adjustment factors but have no ledger-cash or lifecycle test at all.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --lib platform:: -- a_cash_dividend_adjusts_the_price_series_and_leaves_the_cost_basis_alone is the test that proves price/cost-basis handling (re-run in the verify pass together with the two split tests and the registry unit tests: 'test result: ok. 6 passed'); it does not and cannot prove ledger cash moved, because nothing on the kernel path credits it. cargo test -p qip-portfolio --test accounting dividends_are_credited_to_cash proves only the unwired library primitive.",
+    "work_item": "E05-cash-dividend-credits-ledger",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status and flags unchanged. Added the missed Portfolio::credit_income primitive (tested in qip-portfolio, no production caller) to sharpen the gap: the dividend-cash half is an unwired library function, not absent arithmetic. stage_sense line ref corrected (:9695). Re-ran the three corporate-action unit tests with the registry tests ('test result: ok. 6 passed') and qip-portfolio's dividends_are_credited_to_cash ('ok. 1 passed'). | Replay-idempotency (the same action applied twice adjusts exactly once) is proven, which is the harder half of the requirement's replay verification method."
+  },
+  {
+    "id": "COVERAGE-006",
+    "status": "PARTIAL",
+    "current": "qip_financial::extensions::{BondDetails, LoanDetails, StructuredCreditDetails, CreditDerivativeDetails} (extensions.rs:143-165,287-352); qip_kernel::valuation::CreditRegister::from_universe, discounted_expected_loss (backend/crates/runtime/qip-kernel/src/valuation.rs:78-253), constructed at Platform::new (platform.rs:4221). qip-deepbrain's synthetic reference data constructs a real BondDetails object (reference.rs:200-217) on the default production path -- but that universe feeds only the evolution engine's backtester (EvolutionEngine::over_synthetic, evolution.rs:481-489, called from main.rs:455), never a Platform. Every central root (qip-api, qip-fastbrain, qip-deepbrain) assembles its Platform over the committed catalogue named by QIP_UNIVERSE_PATH, and the catalogue format refuses any instrument type that has a maturity (backend/crates/libs/qip-financial/src/catalogue.rs:329-335), so CreditRegister in a running Platform never holds a bond, loan or other credit claim.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/extensions.rs:143-165 (BondDetails: issuer, coupon_rate, coupon_frequency, maturity, day_count -- issuer/coupon/maturity/accrual convention all present)",
+      "backend/crates/apps/qip-deepbrain/src/reference.rs:200-217 (a composition root constructs a real BondDetails)",
+      "backend/crates/runtime/qip-kernel/src/valuation.rs:222-253 discounted_expected_loss (discounts a credit claim's expected loss on its currency's sovereign curve)",
+      "backend/crates/runtime/qip-kernel/tests/valuation_credit.rs:148 a_universe_of_credit_claims_is_valued_against_a_curve_built_from_its_own_sovereigns",
+      "grep -rn BondDetails backend/crates -- only extensions.rs, object_model.rs, valuation_credit.rs and qip-deepbrain/reference.rs; no bond coupon-schedule generator exists anywhere (grep -n 'fn.*schedule\\|fn.*coupon_dates' backend/crates/libs/qip-financial/src/extensions.rs backend/crates/libs/qip-financial/src/cashflow.rs -- no match)",
+      "backend/crates/libs/qip-financial/src/catalogue.rs:322-335 (the catalogue refuses every derivative and every has_maturity() type -- GovernmentBond, CorporateBond, Loan, StructuredCredit -- 'this catalogue format carries none')",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:205,222-229 (the deepbrain Platform is assembled over catalogue.universe; the synthetic bond goes to EvolutionEngine::over_synthetic at main.rs:455 instead)",
+      "backend/crates/libs/qip-financial/src/cashflow.rs:58 (CashflowKind::Coupon exists as a label; nothing generates coupon flows from BondDetails)"
+    ],
+    "gap": "Government/corporate bonds, loans, structured credit and credit derivatives are fully specced and reach production (a real BondDetails is constructed by qip-deepbrain's composition root, and credit claims are discounted against a sovereign curve with a real, mutation-quality-tested pipeline). No code projects a bond's coupon cash-flow schedule from its terms -- there is no coupon-date generator anywhere -- so the requirement's own verification ('the projected cash-flow schedule matches the coupon and maturity it was registered with') cannot be demonstrated for any instrument today.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test valuation_credit a_universe_of_credit_claims_is_valued_against_a_curve_built_from_its_own_sovereigns proves discounting; no test proves a coupon schedule because no schedule generator exists to test.",
+    "work_item": "E05-bond-coupon-schedule-generator",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status and flags unchanged. current corrected: the assessor implied the deepbrain bond and the CreditRegister pipeline meet in production; they do not -- the bond reaches only the evolution engine's backtest universe, and every Platform is assembled over a catalogue whose format refuses any instrument with a maturity, so no running Platform holds a debt instrument. integrated/deployable kept true for the representation half only (a composition root builds a BondDetails with issuer/coupon/maturity/day count on its default path)."
+  },
+  {
+    "id": "COVERAGE-007",
+    "status": "PARTIAL",
+    "current": "qip_market::curve::{CurvePoint, TermStructure} (backend/crates/libs/qip-market/src/curve.rs:15-48, name/currency/as_of held with the curve, no version field); qip_kernel::valuation::CreditRegister builds one government curve per currency from the universe's GovernmentBond issues (valuation.rs:119-186), constructed at Platform::new (platform.rs:4221). TermStructure::new has exactly one non-test caller (valuation.rs:160). Because every central root assembles its Platform over the committed catalogue and the catalogue format refuses any instrument with a maturity (catalogue.rs:329-335), the curve builder runs at every assembly over a universe that cannot contain a sovereign issue, so no curve is ever built in a running process.",
+    "evidence": [
+      "backend/crates/libs/qip-market/src/curve.rs:37-48 (TermStructure carries name, currency, as_of and points; deserialisation routed through new() so a stored curve is refitted and refused by the same rules a live one is)",
+      "backend/crates/runtime/qip-kernel/src/valuation.rs:89-186 (CreditRegister fits one TermStructure per currency from the universe's sovereign issues)",
+      "backend/crates/runtime/qip-kernel/tests/valuation_credit.rs:385 a_sovereign_yield_quoted_in_percent_is_refused_rather_than_valuing_every_claim_at_zero",
+      "backend/crates/runtime/qip-kernel/tests/valuation_credit.rs:493 a_claim_maturing_beyond_the_curves_longest_quote_is_refused_rather_than_flat_extrapolated",
+      "backend/crates/runtime/qip-kernel/src/valuation.rs:222-253 discounted_expected_loss returns a bare Decimal with no curve name/as_of attached to the output",
+      "backend/crates/libs/qip-market/tests/structure.rs:796 the_curve_passes_through_its_quoted_tenors (the input-repricing half of the requirement's check, at the curve level)",
+      "backend/crates/runtime/qip-kernel/src/valuation.rs:138-141 (only an InstrumentType::GovernmentBond with a maturity contributes a curve point)",
+      "backend/crates/libs/qip-financial/src/catalogue.rs:329-335 (the catalogue refuses every has_maturity() type, GovernmentBond included) and data/datasets/universe.json (six common stocks)"
+    ],
+    "gap": "Curves are built as proper market objects carrying as_of and reprice correctly (tested via refusal of unrepricable/percent-scale/out-of-range inputs). No valuation output pairs its Decimal result with the curve's name/as_of/version -- discounted_expected_loss returns a bare Decimal, so an auditor reading a stored valuation cannot recover which curve discounted it without separately re-deriving CreditRegister at the same instant.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-006"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test valuation_credit (curve-construction and repricing tests) proves curve building; no test asserts a valuation record names its curve version because no valuation record carries one.",
+    "work_item": "E05-valuation-records-curve-version",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: deployable true -> false. The curve builder is wired from Platform::new, but its only input is GovernmentBond instruments with maturities, and the only universe any root hands a Platform is the committed catalogue, whose format refuses every instrument with a maturity; no committed configuration in any environment can make a curve exist. integrated kept true (the path is invoked at every assembly). Added the curve-level repricing test the assessor did not cite; TermStructure carries as_of but no version field."
+  },
+  {
+    "id": "COVERAGE-008",
+    "status": "MISSING",
+    "current": "nothing beyond a data-model stub. qip_financial::extensions::RepoDetails and InstrumentType::Repo exist (extensions.rs:369-376, asset_class.rs:126) but have no reader anywhere.",
+    "evidence": [
+      "grep -rn RepoDetails backend/crates -- only its own declaration in extensions.rs; zero constructions, zero readers, including in tests",
+      "grep -rn '\\brepo\\b' backend/crates/services/qip-capital backend/crates/services/qip-capital-fabric --include=*.rs -i -- no match outside unrelated words (reposition/repository)"
+    ],
+    "gap": "No repo/secured-funding interface exists at any layer -- no open/close, no collateral tracking, no simulated-counterparty refusal path. RepoDetails is a struct nobody constructs.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-006"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; none can.",
+    "work_item": "E07-repo-funding-interface",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: status unchanged (MISSING). Re-searched backend/ for Repo/RepoDetails/secured funding/credit line/financing: RepoDetails and InstrumentType::Repo (mapped to AssetClass::Rates, which is registered) have no constructor or reader anywhere, and the catalogue format would refuse a Repo anyway (has_maturity). No simulated counterparty, open/close or refusal path exists. | LIVE_CAPITAL flagged in the requirement -- only a simulated-counterparty interface should ever be built; a live repo counterparty is refused by ADR 0021."
+  },
+  {
+    "id": "COVERAGE-009",
+    "status": "PARTIAL",
+    "current": "qip_financial::asset_class::InstrumentType::{CommoditySpot,CommodityFuture,CommoditySwap} (asset_class.rs:132-134); qip_financial::extensions::{CommodityDetails, FutureDetails} (extensions.rs:391-414). AssetClass::Commodity is one of the four classes AssetClassRegistry::shipped deliberately excludes (asset_class_registry.rs:40-48).",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/extensions.rs:391-400 (CommodityDetails: commodity, grade, delivery_location, unit, storage_cost_rate, convenience_yield -- no delivery-period field)",
+      "backend/crates/libs/qip-financial/src/extensions.rs:403-414 (FutureDetails: expiry, contract_month_index -- no commodity/grade/delivery_location field)",
+      "backend/crates/libs/qip-financial/tests/object_model.rs:421-436 (a CommodityFuture is built with Extension::Future(FutureDetails), so grade/delivery_location/storage_cost_rate are absent from the only commodity-future fixture in the workspace)",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:694-714 the_shipped_registry_holds_nine_classes_and_names_the_four_it_refuses"
+    ],
+    "gap": "An instrument carries either commodity terms (grade, delivery location) via Extension::Commodity or contract terms (expiry, month index) via Extension::Future, never both, so a commodity future cannot state product, delivery location and delivery period together as one instrument -- the object model has no combined shape and the one existing fixture proves it by using Future alone. AssetClass::Commodity is also structurally excluded from Platform assembly, so even a well-formed commodity instrument cannot reach a running Platform.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial --test object_model every_asset_class_can_be_represented constructs a CommodityFuture (as Extension::Future only); no test constructs two futures differing only by delivery month because no field carries delivery period on a commodity-terms object.",
+    "work_item": "E05-register-commodity-class",
+    "tier": "T2",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "COVERAGE-010",
+    "status": "PARTIAL",
+    "current": "A forward-only reference exists and is enforced: FinancialObject.underlying_object_id: Option<ObjectId> (backend/crates/libs/qip-financial/src/object.rs:36, set by the builder's .underlying at :333) is required on every derivative type, CommodityFuture included (asset_class.rs:277), and validation refuses one without it (object.rs:186-188); FutureDetails also carries an underlying_object_id string (extensions.rs:404). Nothing reads either field outside qip-financial's own object/extension code, so the reference is never resolved against the Universe, there is no reverse lookup from a spot or physical instrument to its futures, and no futures-minus-spot basis is computed. The edge carries adjacent but unconnected ideas: qip-routing's EdgeClass::Basis ('spot against perpetual, future, tokenised or ETF form', path.rs:155-157) is supplied by the caller rather than derived from any registry link, and qip-arbitrage's graph describes 'a future against spot' as a one-component synthetic edge (graph.rs:17-21) with no fixture that uses a future.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/object.rs:36 (underlying_object_id on every FinancialObject)",
+      "backend/crates/libs/qip-financial/src/object.rs:186-188 ('{} requires an underlying' for any is_derivative() type; CommodityFuture is one, asset_class.rs:277)",
+      "backend/crates/libs/qip-financial/src/extensions.rs:404 (FutureDetails.underlying_object_id, a bare String)",
+      "grep -rn underlying_object_id backend/crates --include=*.rs | grep -v /tests/ -- only object.rs and extensions.rs; zero readers, so the link is never resolved",
+      "backend/crates/libs/qip-financial/tests/object_model.rs:219 a_derivative_without_an_underlying_is_rejected (exercises the required-underlying rule on an Option only; no commodity future and no resolution)",
+      "backend/crates/edge/qip-routing/src/path.rs:155-157 EdgeClass::Basis (caller-supplied), backend/crates/edge/qip-arbitrage/src/graph.rs:17-21 (future-against-spot described, not fixtured) -- both edge-only",
+      "grep -rin 'basis' backend/crates/libs/qip-financial backend/crates/services -- no futures-to-spot basis computation",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:694-714 (AssetClass::Commodity is one of the four classes the registry refuses at assembly)"
+    ],
+    "gap": "Only the forward half of the link exists, as a required but unresolved id: nothing checks that a commodity future's underlying names a registered spot or physical instrument, nothing answers 'which futures hedge this physical holding', and no basis is computed from a future and its underlying. No test builds a commodity future and its physical underlying together. The Commodity class is also refused at Platform assembly, so none of this can reach a running process.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-009"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial --test object_model a_derivative_without_an_underlying_is_rejected proves the generic required-underlying rule on an Option; no test resolves a commodity future to its spot/physical underlying in either direction or computes basis, because no code does.",
+    "work_item": "E05-commodity-future-spot-link",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: MISSING -> PARTIAL (upgrade), implemented true, tested/integrated/deployable false. The assessor cited only FutureDetails' string field and missed the top-level FinancialObject.underlying_object_id, which validation requires on every derivative including CommodityFuture (object.rs:186) -- a real, enforced forward reference. PARTIAL rather than MISSING because that half of 'linked' exists in non-test code; tested false because the only test of the rule uses an Option and nothing resolves the link or computes basis; not integrated because AssetClass::Commodity is refused at assembly."
+  },
+  {
+    "id": "COVERAGE-011",
+    "status": "PARTIAL",
+    "current": "qip_financial::physical::{PhysicalArbitrage, LandedCost, Spoilage, Customs, LogisticsTerms, delivered_price} (backend/crates/libs/qip-financial/src/physical.rs:129-669), 11 embedded tests (physical.rs:729-1047). It models a physical-goods consignment -- freight legs, customs duty, spoilage, storage per unit per day, marketplace fees and returns -- and nets a cross-location spread of all of them. It has no insurance component, and its own module doc says it has 'no production caller' (physical.rs:42-45). The commodity-specific carry fields on the object model, CommodityDetails.storage_cost_rate and convenience_yield (extensions.rs:397,399), have no reader anywhere, test code included.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/physical.rs:356,669 (PhysicalArbitrage, delivered_price)",
+      "backend/crates/libs/qip-financial/src/physical.rs:685+ (11 embedded #[cfg(test)] tests, including delivered_price handling negative-cost legs)",
+      "grep -rl PhysicalArbitrage backend/crates -- only qip-financial/src/physical.rs and its own tests; zero cross-crate callers",
+      "backend/crates/libs/qip-financial/src/physical.rs:42-45 (module doc: 'this module has no production caller and no default anything')",
+      "backend/crates/libs/qip-financial/src/physical.rs:882 a_gross_spread_that_looks_profitable_is_negative_once_the_goods_are_landed (net-of-carry half, for physical goods)",
+      "backend/crates/libs/qip-financial/src/physical.rs:427-470 LogisticsTerms::validate (refuses a missing route and negative freight; storage_per_unit_per_day is a required field, but a zero rate is accepted, so 'unknown' and 'free' are not distinguished)",
+      "grep -rn 'storage_cost_rate\\|convenience_yield' backend/crates -- only extensions.rs; zero readers",
+      "grep -in insurance backend/crates/libs/qip-financial/src/physical.rs -- no match"
+    ],
+    "gap": "The landed-cost model nets a cross-location physical spread of freight, duty, spoilage and storage and is unit-tested, but it has no production or cross-crate caller, carries no insurance cost, and is a physical-goods consignment model rather than a spot/futures cash-and-carry valuation: nothing values a commodity future against spot net of storage/financing, and the commodity object model's own storage_cost_rate/convenience_yield are never read. 'Unknown carry is refused' holds only structurally (the field cannot be absent); a zero storage rate is admitted, and no feasibility check anywhere consults this model.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-009"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial (physical.rs embedded tests) proves the arithmetic in isolation; no test exists in qip-opportunity-engine or qip-kernel because nothing there calls it.",
+    "work_item": "E05-wire-physical-carry-costs",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status and flags unchanged. current/gap corrected: the model is a physical-goods landed-cost model (spoilage, customs, marketplace fees) with no insurance term, not a commodity cash-and-carry valuation; CommodityDetails' carry fields have zero readers; a zero storage rate is admitted. Test line ref corrected (tests start at :729, not :685). Related caution, not scored here: qip-arbitrage's net edge charges synthetic carry at a defaulted 5% funding rate (netedge.rs:108) rather than refusing an unstated one."
+  },
+  {
+    "id": "COVERAGE-012",
+    "status": "PARTIAL",
+    "current": "qip_financial::extensions::{FutureDetails, OptionDetails} (extensions.rs:403-436), each linked to an underlying and carrying full contract terms (expiry/strike/multiplier/settlement style); InstrumentType::{Future,Forward,Option,VarianceSwap,VolatilityIndexFuture} (asset_class.rs:136-140), mapped to AssetClass::Derivative, which the shipped registry does register. No composition root can put a derivative into a running Platform: every central root loads its universe from the committed catalogue, and the catalogue format refuses every derivative ('a derivative is registered through ingestion, not the reference catalogue', catalogue.rs:322-328) -- yet no ingestion path adds an instrument to a Platform's universe after assembly, and the only other root-built universe (qip-deepbrain reference.rs) holds common stock and one government bond. No non-test code in backend/crates/apps, runtime or edge constructs an OptionDetails or FutureDetails.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/extensions.rs:403-436 (FutureDetails, OptionDetails)",
+      "backend/crates/libs/qip-financial/tests/object_model.rs:218-252 a_derivative_without_an_underlying_is_rejected (exercises Option construction and the underlying-required invariant)",
+      "backend/crates/libs/qip-financial/tests/object_model.rs:421-436 (CommodityFuture/FutureDetails inserted into a Universe)",
+      "backend/crates/libs/qip-financial/src/catalogue.rs:322-328 (the catalogue every central root loads refuses any is_derivative() type)",
+      "grep -rln 'OptionDetails\\|FutureDetails' backend/crates/apps backend/crates/runtime/qip-kernel/src backend/crates/edge -- no non-test construction",
+      "grep -rn -i perpetual backend/crates --include=*.rs -- no InstrumentType or extension; the hits are qip-capital-fabric's ToleranceClass::PerpetualFuture (a wallet-tolerance bucket), qip-financial::ladder's liquidation-horizon rung, and qip-contracts intent.rs:53-58 Representation::Perpetual (a tag on an edge intent, with no contract terms or funding mechanics)"
+    ],
+    "gap": "Options and futures are specced, linked to an underlying and tested in the object model, but no running process can hold one: the catalogue every root loads refuses derivatives by format and nothing adds instruments to a Platform after assembly. There is no InstrumentType::Perpetual and no funding-mechanics extension -- a perpetual cannot be registered at all; the only 'perpetual' in the contracts layer is qip-contracts' Representation::Perpetual tag on an edge intent, which carries no terms.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial --test object_model a_derivative_without_an_underlying_is_rejected and every_asset_class_can_be_represented prove options/futures; no test constructs a perpetual because no InstrumentType names one.",
+    "work_item": "E05-perpetual-instrument-type",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: integrated true -> false and deployable true -> false. The assessor treated the Derivative class being registered as integration, but no composition root can put a derivative into a Platform: the catalogue format refuses every is_derivative() type (catalogue.rs:322), nothing inserts into a Platform's universe after assembly, and no non-test code outside qip-financial constructs OptionDetails/FutureDetails. Perpetual evidence corrected to include qip-contracts' Representation::Perpetual intent tag, which the assessor's grep summary omitted; it does not change the finding."
+  },
+  {
+    "id": "COVERAGE-013",
+    "status": "MISSING",
+    "current": "nothing. qip_financial::constraints::TradingRestriction (constraints.rs:44-61) gates sanctions/jurisdiction/halt per instrument, and qip_compliance::licensing::EntitlementRegistry gates data licensing, but neither is an entity/jurisdiction permission gate for a derivative type.",
+    "evidence": [
+      "grep -rin derivative backend/crates/services/qip-execution-engine backend/crates/services/qip-risk-engine backend/crates/libs/qip-compliance backend/crates/libs/qip-risk -- no match in any of the four",
+      "backend/crates/libs/qip-financial/src/constraints.rs:44-61 (TradingRestriction: per-instrument sanctions/jurisdiction/halt, not a per-derivative-type entity permission)"
+    ],
+    "gap": "No gate exists anywhere that refuses an order for a derivative type the trading entity/jurisdiction has not been granted permission for, before an order object exists, while still permitting research/simulation and defaulting to refuse-all with no permissions configured. This is a P0 fail-closed invariant with no implementation.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-012"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; none can.",
+    "work_item": "E13-derivative-permission-gate",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status unchanged (MISSING). Re-searched for a derivative-type permission under other shapes: AssetClassRegistry refuses unregistered classes at assembly but registers Derivative (so it admits derivatives, per class, with no entity or jurisdiction); the catalogue refuses every derivative by format (catalogue.rs:322), which also blocks research and has no grant path, so it is not this gate; TradingRestriction is per-instrument and defaults permissive (object_model.rs venue_approval_defaults_to_permissive_but_binds_once_set); qip-capital ProductEligibility gates investor products by jurisdiction. None refuses an order for an ungranted derivative type while still admitting it to simulation, and none admits it once granted. | P0 in the requirement register; the platform currently has no structural barrier between 'the registry can represent this derivative type' and 'an order for it may be created'."
+  },
+  {
+    "id": "COVERAGE-014",
+    "status": "PARTIAL",
+    "current": "qip_capital::margin::{MarginModel, MarginRequirement, MarginModel::require} (backend/crates/services/qip-capital/src/margin.rs:31-80+), consumed by qip_kernel::cross_margin::review, which Platform::review_cross_margin calls with MarginModel::default() (platform.rs:14998-15011) from the LEARN path (platform.rs:13886), over holdings fed by qip-api's statement route (qip-api/src/statement.rs:357 observe_statement). No derivative position can reach it: no root can load a derivative (see COVERAGE-012).",
+    "evidence": [
+      "backend/crates/services/qip-capital/src/margin.rs:31-56 (MarginModel: initial_rate, maintenance_rate, concentration_add_on/threshold, applied to aggregate gross exposure)",
+      "backend/crates/services/qip-capital/tests/capital.rs:693-729 margin_rises_with_concentration_at_the_same_notional",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14998-15011 review_cross_margin (MarginModel::default at :15006, 'the rates are a term of a margin agreement and this repository has never been shown one'), called at :13886",
+      "backend/crates/runtime/qip-kernel/src/cross_margin.rs:413 (#[cfg(test)] starts here; the :467+ MarginModel::default uses the assessor cited are tests, not the production path)",
+      "grep -rn '\\.initial_margin\\b\\|\\.maintenance_margin\\b' backend/crates -- no match; FutureDetails' contract-specified per-instrument margin figures are never read anywhere"
+    ],
+    "gap": "A real, tested, production-wired margin engine exists, but it computes initial/maintenance margin from aggregate gross exposure at a single default (Reg-T-like) rate, not 'under the applicable venue or clearing rules' per instrument type -- FutureDetails' own contract-specified initial_margin/maintenance_margin fields are dead (zero readers), options carry no margin fields at all, and there is no per-type rule set whose absence causes a refusal (MarginModel::default is always available, so margin is never refused for want of an applicable rule).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-012"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-capital --test capital margin_rises_with_concentration_at_the_same_notional proves the aggregate model; no test computes margin for a specific option/future against a per-type rule set because none exists, and none proves a refusal on a missing rule because the default model never refuses.",
+    "work_item": "E07-per-instrument-margin-rules",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status and flags unchanged. Evidence corrected: cross_margin.rs:467+ is inside the module's #[cfg(test)] block (from :413); the production seam is Platform::review_cross_margin (platform.rs:14998-15011), called at :13886 and fed by qip-api's statement route. integrated/deployable kept true for the aggregate engine; the derivative-specific rule set, which is the requirement, does not exist, and no derivative position can reach the engine."
+  },
+  {
+    "id": "COVERAGE-015",
+    "status": "PARTIAL",
+    "current": "qip_financial::risk_profile::Greeks::{scaled, combined, is_finite} (backend/crates/libs/qip-financial/src/risk_profile.rs:10-60) -- scaling by quantity and linear combination, with no non-test caller anywhere in the workspace; qip_edge_routing::extension::PayoffExtension (backend/crates/edge/qip-routing/src/extension.rs:348-410) gates caller-supplied net delta/gamma/vega against limits, but PayoffExtension::new and PathExtensions::with_payoff are called only inside extension.rs's #[cfg(test)] module (from :798), and qip-routing runs only in qip-edge-node, which no environment deploys.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/risk_profile.rs:36-60 (Greeks::scaled and Greeks::combined)",
+      "grep -rn '\\.combined(\\|\\.scaled(' backend/crates --include=*.rs | grep -v /tests/ -- no match: nothing outside tests aggregates greeks",
+      "backend/crates/libs/qip-financial/tests/object_model.rs:810-824 greeks_aggregate_linearly",
+      "backend/crates/edge/qip-routing/src/extension.rs:355-410 PayoffExtension; grep -rn 'with_payoff(\\|PayoffExtension::new(' shows only :462 (the method) and calls at :1177+ inside #[cfg(test)] (:798)",
+      "grep -rn -i 'black.\\?scholes\\|black76\\|option_price\\|price_option\\|binomial' backend/crates -- no match; qip-quant has no option-pricing module (qip-numerics has normal_cdf, used only for statistics)",
+      "OptionDetails.greeks: Greeks (extensions.rs:433) is a plain stored field with no computing function anywhere"
+    ],
+    "gap": "Greeks aggregate linearly (tested) and are gated against limits at the edge, but the platform never computes a greek from a pricing model -- there is no Black-Scholes or equivalent anywhere in the workspace, so OptionDetails.greeks is only ever vendor-supplied data. The requirement's own verification (computed delta/gamma agreeing with finite-difference bumps of the pricing model) cannot be demonstrated because no pricing model exists to bump.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-012"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial --test object_model greeks_aggregate_linearly proves aggregation; no property test compares computed greeks to finite-difference bumps because no computation exists to bump.",
+    "work_item": "E07-option-pricing-model-for-greeks",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: integrated true -> false and deployable true -> false. Greeks::scaled/combined have no non-test caller anywhere, and the edge Payoff gate the assessor cited as production is constructed only in extension.rs's test module and would in any case run only in qip-edge-node, which execution_nodes = {} leaves undeployed. Status stays PARTIAL on the unit-tested library aggregation; nothing computes a greek from a pricing model. | Aggregation 'per underlying' specifically is not demonstrated either -- greeks_aggregate_linearly sums a flat list, with no grouping by underlying_object_id in evidence."
+  },
+  {
+    "id": "COVERAGE-016",
+    "status": "MISSING",
+    "current": "qip_financial::extensions::SettlementStyle (Cash/Physical, extensions.rs:416-421) is declared on FutureDetails and OptionDetails but has no consumer.",
+    "evidence": [
+      "grep -rln SettlementStyle backend/crates -- only extensions.rs and qip-financial/tests/object_model.rs; zero production readers",
+      "grep -rn 'fn.*exercise\\|fn.*final_settlement\\|OptionExpiry' backend/crates/runtime/qip-kernel/src backend/crates/services/qip-execution-engine backend/crates/libs/qip-portfolio -- no match",
+      "grep -rn funding_rate backend/crates -- the only hits are qip-arbitrage netedge.rs:82 funding_rate_annual_f64 (a path-level funding assumption, defaulted to 0.05) and qip-quant signal.rs:350 carry(yield_rate, funding_rate, vol) (a signal); neither accrues perpetual funding into a ledger"
+    ],
+    "gap": "No code anywhere settles an option to expiry (in or out of the money), a future to final settlement, or accrues perpetual funding into the ledger. SettlementStyle is a field nobody reads. This is the direct ledger-side counterpart of COVERAGE-012's missing perpetual type and is independently missing even for the options/futures that are registrable.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-012",
+      "COVERAGE-014"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; none can.",
+    "work_item": "E05-derivative-settlement-engine",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: status unchanged (MISSING). Evidence corrected: the assessor's 'grep funding_rate -- no match anywhere' is false (qip-arbitrage netedge.rs:82, qip-quant signal.rs:350), but neither hit settles or accrues a derivative position in a ledger, so the finding stands."
+  },
+  {
+    "id": "COVERAGE-017",
+    "status": "PARTIAL",
+    "current": "qip_financial::extensions::DigitalAssetDetails (chain, contract_address, decimals, is_tokenized_security -- extensions.rs:465-476); InstrumentType::{Cryptocurrency,TokenizedSecurity} (asset_class.rs:142-143). AssetClass::DigitalAsset is one of the four classes AssetClassRegistry::shipped deliberately excludes (asset_class_registry.rs:40-48).",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/extensions.rs:465-476 (DigitalAssetDetails: is_tokenized_security is a bare bool with no field linking to the asset represented)",
+      "backend/crates/libs/qip-financial/tests/object_model.rs:437-450 (a BTC Cryptocurrency instrument is constructed and inserted into a Universe)",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:694-714 the_shipped_registry_holds_nine_classes_and_names_the_four_it_refuses"
+    ],
+    "gap": "Crypto spot round-trips through the object model and is tested. A tokenized representation has no dedicated link to the asset it represents: DigitalAssetDetails carries chain/contract_address and an is_tokenized_security bool only. The generic FinancialObject.underlying_object_id (object.rs:36, builder .underlying at :333) can be set on a TokenizedSecurity, but it is optional for that type (is_derivative excludes it), is never resolved against the Universe (zero readers), and no test builds a token with it, so 'the tokenized representation resolves to both the bond and its chain/contract' is not demonstrated. DigitalAsset is also one of the four classes structurally excluded from Platform assembly (proven by qip-kernel tests/asset_classes.rs:69, which uses a BTC instrument as its refused case), so no crypto or tokenized position can reach a running Platform.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-012"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial --test object_model every_asset_class_can_be_represented constructs a BTC Cryptocurrency instrument; no test constructs a tokenized representation of another registered asset because DigitalAssetDetails has no field to link them.",
+    "work_item": "E05-register-digital-asset-class",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: status and flags unchanged. gap corrected: the assessor said no underlying_object_id-equivalent field exists; the generic FinancialObject.underlying_object_id can carry the reference, but it is optional for TokenizedSecurity, unread, and untested, so the finding is unchanged in substance."
+  },
+  {
+    "id": "COVERAGE-018",
+    "status": "PARTIAL",
+    "current": "qip_brokers::{VenueAdapter (adapter.rs:310), SimulatedExchange (exchange.rs:201, impl VenueAdapter at :818), RestOrderEntryAdapter (rest.rs:450, impl VenueAdapter at :1275), AdapterClass::{Simulated,Sandbox} (adapter.rs:63, structurally rejects 'live')}, DexVenue (dex.rs:76, model-only, no VenueAdapter impl).",
+    "evidence": [
+      "backend/crates/services/qip-brokers/src/adapter.rs:310 (trait VenueAdapter)",
+      "grep -n 'impl VenueAdapter\\|impl Broker' backend/crates/services/qip-brokers/src/*.rs -- SimulatedExchange and RestOrderEntryAdapter implement it; dex.rs is absent from the list",
+      "backend/crates/services/qip-brokers/tests/exchange.rs (89 tests total in the crate per docs/architecture/current-state/services-capital-exec.json; e.g. :577 a_fill_in_an_unregistered_instrument_is_refused_rather_than_guessed_at)",
+      "docs/architecture/current-state/services-capital-exec.json qip-brokers record: 'qip-edge-node (the only binary that constructs these adapters) is never deployed: execution_nodes = {} in dev/stage/test/prod terraform.tfvars', confirmed by grep -rn execution_nodes backend/../infrastructure/environments/*/terraform.tfvars"
+    ],
+    "gap": "The CEX side (SimulatedExchange, RestOrderEntryAdapter) fully implements VenueAdapter, is well tested and structurally paper-only. DexVenue deliberately does not implement VenueAdapter -- only the pricing model exists, not order entry/fills in the common contract -- so DEX fills in the common execution contract cannot be demonstrated. The one binary that constructs any of these adapters, qip-edge-node, is deployed to no environment (execution_nodes = {} everywhere), so even the CEX half is not reachable from a running process.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-017"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-brokers --test exchange (21 tests in that binary; 89 across the crate) proves the CEX adapter contract instrument-agnostically; no test drives a DEX adapter through VenueAdapter because dex.rs does not implement it, and no qip-brokers test drives a crypto or tokenized instrument through either adapter.",
+    "work_item": "E04-dex-venue-adapter",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status and flags unchanged. Verification corrected (the exchange test binary holds 21 tests; 89 is the crate total). Added: SimulatedExchange::list_synthetic types every listing it creates as InstrumentType::CommonStock (exchange.rs:423), and no broker test uses a crypto or tokenized instrument, so the CEX half is proven for the adapter contract, not for the crypto class the requirement names. | 'Integrated' is true in the narrow sense that qip-edge-node's own non-test code constructs these adapters; 'deployable' is false because that binary ships to no environment."
+  },
+  {
+    "id": "COVERAGE-019",
+    "status": "PARTIAL",
+    "current": "qip_chain::bridge::{BridgeTransfer, BridgeLedger, BridgeRoute, TransferStatus, FeeBps} (backend/crates/services/qip-chain/src/bridge.rs) fully models fee/delay/failure and refuses crediting before source finality; Platform::{observe_chain, open_bridge_transfer} (backend/crates/runtime/qip-kernel/src/platform.rs:16011,16070) compose it into the kernel.",
+    "evidence": [
+      "backend/crates/services/qip-chain/src/bridge.rs:149-166,248-267 (TransferStatus::{AwaitingSourceFinality,InFlight,Credited,Failed}; credit() refuses crediting before InFlight)",
+      "backend/crates/services/qip-chain/tests/pools.rs:652-760 a_bridged_position_is_visible_as_exposure_until_it_is_credited, a_transfer_cannot_be_credited_before_its_source_side_is_confirmed, a_reorganised_source_block_fails_the_transfer_it_was_funding",
+      "backend/crates/runtime/qip-kernel/tests/bridges.rs:133-242 a_reorganisation_that_withdraws_a_deposit_block_fails_the_transfer_riding_on_it (the one kernel-level integration test)",
+      "grep -n 'observe_chain\\|open_bridge_transfer' backend/crates/apps backend/crates/runtime/qip-kernel/src -- only the two method declarations in platform.rs; zero calls from any crates/apps/* binary (docs/architecture/current-state/services-data-world.json qip-chain record confirms: 'called only from qip-kernel/tests/bridges.rs and tests/platform_services.rs')"
+    ],
+    "gap": "Fee, delay and counterparty-risk (reorg failure) are fully modelled, tested at both the crate and kernel-integration level, and the destination is never credited before the modelled delay/finality. No composition root ever calls Platform::observe_chain or open_bridge_transfer, so no deployed process ever absorbs a chain update or opens a bridge transfer -- the mechanism exists and is proven only in tests.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-017"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-chain --test pools (bridge tests) and cargo test -p qip-kernel --test bridges a_reorganisation_that_withdraws_a_deposit_block_fails_the_transfer_riding_on_it both pass today; no app calls the seam they exercise.",
+    "work_item": "E11-wire-bridge-observation-to-a-composition-root",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status and flags unchanged. Re-ran both cited suites: cargo test -p qip-chain --test pools ('test result: ok. 23 passed') and cargo test -p qip-kernel --test bridges ('ok. 1 passed'); confirmed no backend/crates/apps/*/src non-test code calls Platform::observe_chain or open_bridge_transfer (platform.rs:16011,16070)."
+  },
+  {
+    "id": "COVERAGE-020",
+    "status": "MISSING",
+    "current": "nothing ties a trade's settlement to chain confirmation. qip_chain::finality::{Confirmations, Finality} (backend/crates/services/qip-chain/src/finality.rs:21-62) exists and is used only to gate bridge-transfer crediting (COVERAGE-019), not trade settlement.",
+    "evidence": [
+      "grep -in 'ChainState\\|Finality\\|Confirmations' backend/crates/runtime/qip-kernel/src/platform.rs -- all hits are inside the bridge/observe_chain seam (platform.rs:103,418,420,4452,15982-16075); none touch a Trade/Fill settlement path",
+      "grep -rn SettlementStyle backend/crates -- confirms (per COVERAGE-016) no trade-settlement code exists to gate on chain confirmation in the first place",
+      "backend/crates/services/qip-brokers/src/dex.rs has no chain client (per COVERAGE-018), so no DEX fill is ever tied to on-chain confirmation"
+    ],
+    "gap": "The finality/confirmation primitive exists but is wired only to bridge-transfer crediting, not to trade settlement. No code marks a trade settled only once chain state confirms it, and no reconciliation-break record exists for chain-state-vs-ledger divergence on a trade (as distinct from the unrelated cell-vs-venue reconciliation in central/plane.rs).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-016",
+      "COVERAGE-019"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; none can.",
+    "work_item": "E05-on-chain-trade-settlement-reconciliation",
+    "tier": "T2",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "COVERAGE-021",
+    "status": "PARTIAL",
+    "current": "qip_financial::valuation::{ValuationMethod, IlliquidValuator, AssetValuation::confidence_at} (backend/crates/libs/qip-financial/src/valuation.rs:68-280,392,419+); qip_financial::extensions::{PrivateAssetDetails, RealAssetDetails} (extensions.rs:540-816,819-828); qip_kernel::asset_class_registry registers PrivateMarket and RealAsset on ValuationEngine::IlliquidValuation (asset_class_registry.rs:570-598); Platform::new marks private holdings through private_holdings_of (platform.rs:1800, called at :4175), which skips every instrument whose extension is not Extension::PrivateAsset (platform.rs:1814-1816). The catalogue format every root loads carries no extension at all, and no composition root constructs a PrivateAssetDetails outside tests, so the marking path runs at every assembly over nothing in any deployed process. A RealAssetDetails instrument would also be skipped: no kernel path marks a real asset.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/valuation.rs (no ValuationMethod variant is a continuous quote for an illiquid mark; IlliquidValuator refuses rather than invents one)",
+      "backend/crates/libs/qip-financial/tests/valuation.rs:161-202,438-509 a_mark_loses_exactly_half_its_confidence_over_one_half_life, a_mark_decays_with_the_age_of_the_record_and_not_with_the_instant_it_was_assembled",
+      "backend/crates/runtime/qip-kernel/tests/valuation_plane.rs:346-410 a_mark_past_its_review_date_stops_sizing_rather_than_decaying_forever, a_vintage_year_that_is_not_an_instant_stops_assembly_instead_of_the_process",
+      "grep -rln PrivateAssetDetails backend/crates/apps -- only qip-api's own test fixtures (ledger_routes.rs, api.rs); no composition root constructs one outside a test",
+      "grep -rln RealAssetDetails backend/crates -- only extensions.rs; zero constructions anywhere, including tests",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:1800-1816 private_holdings_of (only Extension::PrivateAsset is marked; 'A universe of listed equities produces an empty book, no marks and no schedules')",
+      "backend/crates/libs/qip-financial/src/catalogue.rs (the record format has no extension field) and data/datasets/universe.json (six common stocks)"
+    ],
+    "gap": "The valuation engine (decay from as_of, refuse-rather-than-invent, mark staleness stopping sizing) is well built and tested for private fund interests specifically. RealAssetDetails is declared but never constructed anywhere in the workspace, and the kernel's marking path matches only Extension::PrivateAsset, so real assets have no valuation-from-marks path at all. No committed configuration can supply a private instrument with its terms either: the catalogue carries no extension and no root builds one outside tests, so no private-market mark is produced in any environment.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial --test valuation (24+ tests) proves the decay/refusal machinery for private assets; no test in the workspace constructs a RealAssetDetails.",
+    "work_item": "E05-real-asset-reference-instrument",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: deployable true -> false. The assessor's own gap says no private-market instrument reaches a running process, and the definition of deployable requires committed config to run it: the catalogue format carries no extension and private_holdings_of skips anything that is not Extension::PrivateAsset, so no environment produces a mark. Added that the kernel's marking path never matches a RealAssetDetails, which widens the real-asset half from 'no fixture' to 'no path'. integrated kept true (private_holdings_of is invoked at every assembly). | The strongest-evidenced item in this domain other than the registry gate itself; the gap is narrowly the real-asset half and the absence of a production (non-test) construction of either."
+  },
+  {
+    "id": "COVERAGE-022",
+    "status": "PARTIAL",
+    "current": "qip_kernel::asset_class_registry::{AssetClassRegistry, AssetClassRecord} (backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:202-680); AssetClassRegistry::admit refuses an instrument in an unregistered class at Platform assembly (platform.rs:4091-4104).",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:379-603 AssetClassRegistry::shipped (registers 9 of AssetClass::ALL's 13 variants)",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:694-714 the_shipped_registry_holds_nine_classes_and_names_the_four_it_refuses (names ForeignExchange, Commodity, DigitalAsset, Cash as the four excluded, by design)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4091-4104 (the refusal is structural, at assembly, not a runtime record nobody reads)",
+      "grep -rn AssetClass backend/crates/services/qip-prediction/src -- no match: the prediction/event-market service has its own disconnected type system (market.rs, pricing.rs, resolution.rs), not an entry in this registry",
+      "grep -n physical backend/crates/libs/qip-financial/src/asset_class.rs -- no AssetClass variant named for physical products either",
+      "backend/crates/runtime/qip-kernel/tests/asset_classes.rs:69 a_universe_of_registered_classes_assembles_and_one_holding_an_unregistered_class_does_not (the refusal half at Platform assembly, with the admitting half as premise)"
+    ],
+    "gap": "One registry does exist, refuses cleanly (tested, structural at assembly) and covers private/illiquid (PrivateMarket, RealAsset both registered). It covers only 9 of 13 existing AssetClass variants -- Cash, ForeignExchange, Commodity and DigitalAsset (which folds in tokenized) are deliberately unregistered -- and AssetClass has no variant at all for event-driven or physical, whose actual implementations (qip-prediction, qip-financial::physical) are disconnected type systems the registry does not enumerate. 'All major liquid, event-driven, private/illiquid, tokenized and physical classes have an extensible registry' is true only for the liquid and private/illiquid halves.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-001",
+      "COVERAGE-004",
+      "COVERAGE-006",
+      "COVERAGE-009",
+      "COVERAGE-012",
+      "COVERAGE-017",
+      "COVERAGE-021"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --lib asset_class_registry:: -- the_shipped_registry_holds_nine_classes_and_names_the_four_it_refuses proves 9 registered and 4 named as refused; cargo test -p qip-kernel --test asset_classes proves an instrument in an unregistered class stops assembly while a registered one assembles.",
+    "work_item": "E05-register-remaining-classes",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "verify: status and flags unchanged. Added the integration test that proves the refusal half (tests/asset_classes.rs), which the assessor's evidence omitted; confirmed qip-prediction has no AssetClass use and AssetClass has no event-driven or physical variant. Re-ran cargo test -p qip-kernel --test asset_classes ('test result: ok. 2 passed'). | This item and ASSET-001 in docs/blueprint/assessment/ASSET.json examine the same registry from adjacent angles (adapter-per-class vs coverage-per-class) and independently corroborate the 9-of-13 finding."
+  },
+  {
+    "id": "COVERAGE-023",
+    "status": "PARTIAL",
+    "current": "qip_kernel::asset_class_registry::{AssetClassRecord::new, AssetClassRegistry::{shipped, get, admit}} (asset_class_registry.rs:224-361,379-680). The registry has exactly one production consumer: Platform::new's admission gate (platform.rs:4091-4104), which dispatches by table lookup (admit, :664-679) and so needs no change when a row is added. Nothing outside asset_class_registry.rs reads a record's valuation_engine, settlement, calendar, margin regime or eligible families (admits_family has no caller; there is no eligible_families method), so the valuation, risk and ledger paths do not consult the registry at all -- they dispatch on Extension/InstrumentType (e.g. private_holdings_of matches Extension::PrivateAsset, CreditRegister matches GovernmentBond) -- and a new class's valuation engine or lifecycle engine cannot be plugged in through the registry. Adding a class means editing the compile-time shipped() table.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:50-52 (module doc: 'This is the list to change when a class becomes supported, and the change is a reviewed one')",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:664-679 admit (dispatches generically via self.records.get(&object.asset_class), unchanged by adding a row)",
+      "grep -rn 'asset_class_registry\\|admits_family\\|valuation_engine' backend/crates --include=*.rs, excluding asset_class_registry.rs -- the only production use is platform.rs:4091-4104 (assembly admission); no stage reads a record",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:762-783 every_hedge_class_the_shipped_table_names_is_itself_registered (table self-consistency, not consumer decoupling)",
+      "grep -n -i version backend/crates/runtime/qip-kernel/src/asset_class_registry.rs -- no version concept on AssetClassRecord or AssetClassRegistry"
+    ],
+    "gap": "Adding a row makes the assembly gate admit the class without touching Platform::new, but that is the only consumer: valuation, risk and ledger never read the registry, so the record's ValuationEngine is a label, and a new class's adapters and lifecycle engine have no plug-in point and must be written into those paths. There is no versioning at all -- shipped() is one hard-coded table rebuilt identically at every Platform::new -- so 'an instrument registered under an earlier version continues to resolve unchanged' has nothing to hold it and no test. No test adds a class to the registry and shows any consumer accepting it.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "COVERAGE-022"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test asset_classes proves the admission gate reads the table; no test adds a class and shows a valuation, risk or ledger path accepting it (none consults the registry), and none exercises cross-version resolution (no version concept exists).",
+    "work_item": "E05-versioned-asset-class-registry",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: tested true -> false. The cited test (every_hedge_class_the_shipped_table_names_is_itself_registered) proves the shipped table is self-consistent, a different property from extensibility; no test adds a class. current corrected: the assessor said valuation/risk stages call generic accessors, but nothing outside the registry module reads a record -- the assembly gate is the only consumer, and eligible_families (cited as a method) is a private field whose accessor admits_family has no caller. Status stays PARTIAL on the table-driven admission gate."
+  }
+]

@@ -1,0 +1,487 @@
+[
+  {
+    "id": "ASSET-001",
+    "status": "PARTIAL",
+    "current": "qip_kernel::asset_class_registry::{AssetClassRecord, AssetClassRegistry} (backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:203-361,363-680) structurally refuses an instrument in an unregistered class at Platform assembly -- AssetClassRegistry::admit (asset_class_registry.rs:664-679) and AssetClassRecord::new (asset_class_registry.rs:235-290) refuse a class with no valuation engine/settlement/eligible family. But there is no class-specific *adapter* type (venue protocol vs fund administrator vs marketplace vs on-chain): exchange-traded classes all route through the one qip_brokers::VenueAdapter trait (backend/crates/services/qip-brokers/src/adapter.rs:310) regardless of class; private/fund classes settle via ClassSettlement::PeriodicStatement (no administrator adapter object exists); qip_chain::adapter::ChainAdapter exists for on-chain observation but DigitalAsset is one of the four classes the registry deliberately leaves unregistered (asset_class_registry.rs:40-48); physical has no adapter of any kind.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:664-679 (AssetClassRegistry::admit refuses an unregistered class)",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:694-714 the_shipped_registry_holds_nine_classes_and_names_the_four_it_refuses",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:716-760 a_record_naming_no_eligible_family_is_refused_and_one_with_no_engine_cannot_be_written",
+      "backend/crates/services/qip-brokers/src/adapter.rs:310 (single VenueAdapter trait for every exchange-traded class)",
+      "backend/crates/services/qip-chain/src/adapter.rs:66-80 (ChainAdapter, the only on-chain-shaped adapter, for a class the registry does not register)"
+    ],
+    "gap": "No per-class adapter abstraction exists; venue-protocol trading is one generic VenueAdapter for every registered class, private/fund settlement has no administrator adapter object, and physical has no adapter at all -- only the registration refusal half of the requirement is built.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel asset_class_registry:: -- the_shipped_registry_holds_nine_classes_and_names_the_four_it_refuses and a_record_naming_no_eligible_family_is_refused_and_one_with_no_engine_cannot_be_written prove the refusal half; no test exists for a per-class adapter because none exists to test.",
+    "work_item": "E05-asset-class-adapters",
+    "tier": "T3",
+    "size": "L",
+    "notes": "The blueprint's six classes (liquid/event-driven/illiquid/private/tokenized/physical) do not map 1:1 onto the code's 13-variant AssetClass; event-driven is an AlphaFamily, not an AssetClass."
+  },
+  {
+    "id": "ASSET-002",
+    "status": "PARTIAL",
+    "current": "Three of the four example class-specific lifecycle events are implemented and production-wired: corporate actions via qip_market::corporate_action::CorporateAction (backend/crates/libs/qip-market/src/corporate_action.rs:15-294) applied in Platform::apply_corporate_action (backend/crates/runtime/qip-kernel/src/platform.rs:9607-9657); capital calls via qip_financial::cashflow::{Commitment,CapitalCall} (backend/crates/libs/qip-financial/src/cashflow.rs:809-1458) wired through qip-kernel (backend/crates/runtime/qip-kernel/tests/capital_calls.rs); bridge transfers via qip_chain::bridge (backend/crates/services/qip-chain/src/bridge.rs) absorbed in Platform (platform.rs:16035-16038) and exercised in backend/crates/runtime/qip-kernel/tests/bridges.rs. The fourth example, a warehouse/inventory movement for the physical class, has no implementation (qip_financial::physical.rs has zero production callers -- see ASSET-014/015). No single 'lifecycle engine' type per class exists; each event type is a free-standing module reached ad hoc from Platform.",
+    "evidence": [
+      "backend/crates/libs/qip-market/src/corporate_action.rs:15,294",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9607-9657 apply_corporate_action",
+      "backend/crates/libs/qip-financial/src/cashflow.rs:809,927,1113",
+      "backend/crates/runtime/qip-kernel/tests/capital_calls.rs:198 a_capital_call_is_refused_before_anything_is_journalled_and_an_admitted_one_is_on_the_log",
+      "backend/crates/runtime/qip-kernel/tests/bridges.rs:133 a_reorganisation_that_withdraws_a_deposit_block_fails_the_transfer_riding_on_it"
+    ],
+    "gap": "No warehouse/inventory-movement event exists for the physical class, and there is no unifying per-class 'lifecycle engine' type -- a position of an unregistered class is refused only via ASSET-001's registry, not via a refusal specific to a missing lifecycle engine.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "ASSET-001"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test capital_calls, --test bridges; cargo test -p qip-market corporate_action",
+    "work_item": "E05-physical-lifecycle-events",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Split from the same blueprint bullet as ASSET-001; the physical-mode gap here is the same gap ASSET-014 names."
+  },
+  {
+    "id": "ASSET-003",
+    "status": "PARTIAL",
+    "current": "Construction happens across strategies (qip_portfolio_engine::construction::PortfolioConstructor, backend/crates/services/qip-portfolio-engine/src/construction.rs:157, called in Platform::new at platform.rs:4514) and asset classes (asset_class_registry gates every instrument). qip_portfolio::exposure::ExposureBreakdown (backend/crates/libs/qip-portfolio/src/exposure.rs:85-94) reports by_asset_class, by_sector, by_country, by_currency, by_issuer, by_venue, by_factor -- but has no by_strategy, by_region or by_horizon field. by_strategy exists elsewhere for realised PnL/settlement (central/plane.rs:603,612 cost_bps_by_strategy/by_strategy) and by_horizon exists in qip-optimization-engine's horizon-claims bookkeeping (horizons.rs:691-899), but neither is part of a unified exposure report, and no by_region breakdown exists anywhere.",
+    "evidence": [
+      "backend/crates/libs/qip-portfolio/src/exposure.rs:85-94 ExposureBreakdown fields",
+      "backend/crates/services/qip-portfolio-engine/src/construction.rs:157",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4514 PortfolioConstructor::new",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:603,612 (by_strategy is a PnL breakdown, not an exposure breakdown)",
+      "backend/crates/services/qip-optimization-engine/src/horizons.rs:691-899 (by_horizon is a claims map, not an exposure breakdown)"
+    ],
+    "gap": "No single exposure report breaks the book down by strategy, asset class, region and horizon together; strategy and horizon breakdowns exist for other purposes (settlement PnL, horizon-claim bookkeeping) and region does not exist as an exposure axis at all.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test asserts a four-dimension breakdown exists; the test to write drives ExposureBreakdown (or its successor) over positions spanning >=2 strategies/classes/regions/horizons and asserts each breakdown sums to the total.",
+    "work_item": "E05-four-dimension-exposure-report",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Cross-region construction additionally depends on the multi-region mesh (policy_flags: MULTI_REGION), which this assessment did not separately verify."
+  },
+  {
+    "id": "ASSET-004",
+    "status": "PARTIAL",
+    "current": "The nine fields exist as separate types in separate crates, each reached from production, but no single record type unifies them and refuses when one is missing: mandate -> qip_capital::ledger::mandate::Mandate (backend/crates/services/qip-capital/src/ledger/mandate.rs:69); target exposure -> qip_portfolio::exposure::Exposure/ExposureBreakdown; valuation+confidence -> qip_financial::valuation::AssetValuation (valuation.rs:280) with confidence_at; horizon -> qip_financial::extensions private-asset fields / qip-optimization-engine::horizons; expected liquidity -> qip_financial::ladder::LiquidityLadder (ladder.rs:493); hedges -> qip_risk::hedge::HedgeProposal (hedge.rs:347); corporate actions -> qip_market::corporate_action::CorporateAction; commitments -> qip_financial::cashflow::Commitment (cashflow.rs:1113); exit plan -> no type exists anywhere (grep for ExitPlan/exit_plan across backend/crates returns nothing).",
+    "evidence": [
+      "backend/crates/services/qip-capital/src/ledger/mandate.rs:69",
+      "backend/crates/libs/qip-financial/src/valuation.rs:280",
+      "backend/crates/libs/qip-financial/src/ladder.rs:493",
+      "backend/crates/libs/qip-risk/src/hedge.rs:347",
+      "backend/crates/libs/qip-financial/src/cashflow.rs:1113",
+      "backend/crates/apps/qip-api/src/ledger_views.rs:1087-1097 PrivatePositionView (a partial, per-route assembly of some of these fields, not a canonical contract)"
+    ],
+    "gap": "No PositionRecord/AssetBrainPosition type exists that carries all nine fields and refuses construction when one is absent (as the requirement's unit-test check demands); 'exit plan' has no representation anywhere in the workspace.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ASSET-006",
+      "ASSET-007"
+    ],
+    "blocked_by": "",
+    "verification": "No such builder exists to test. The test to write: construct a record omitting each of the nine fields in turn and assert a named refusal; construct a complete one per supported class and assert a serialisation round trip.",
+    "work_item": "E05-position-record-contract",
+    "tier": "T2",
+    "size": "L",
+    "notes": "P0 in the requirement because it is meant to be a canonical contract; today it is nine contracts, none of which refuse on behalf of the other eight."
+  },
+  {
+    "id": "ASSET-005",
+    "status": "MISSING",
+    "current": "No discover->evaluate->acquire->hold/hedge->monitor->resize->exit/divest->settle->attribute state machine exists. The only position-level lifecycle enum is qip_portfolio::lifecycle::PositionLifecycle (backend/crates/libs/qip-portfolio/src/lifecycle.rs:19-40): Opened, Held, Flagged, Unwinding, Orphaned, Closed -- six states with a different shape and different names, driven by qip_portfolio's own transition table (lifecycle.rs:69-90), not by the blueprint's nine stages. The underlying activities exist as separate, unconnected mechanisms (opportunity discovery in qip-opportunity-engine, hypothesis review/acquire via the OMS, hedge via qip_risk::hedge, monitor via qip_risk_engine::monitor::RiskMonitor, settle via qip-capital-fabric::settlement, attribute via qip-learning-engine::attribution) with no shared state machine tying them into one ordered sequence per position.",
+    "evidence": [
+      "backend/crates/libs/qip-portfolio/src/lifecycle.rs:19-40,69-90 (a different six-state machine, not the blueprint's nine stages)",
+      "grep -rn 'DiscoverEvaluateAcquire\\|LifecycleStage' backend/crates --include=*.rs returns nothing"
+    ],
+    "gap": "The nine-stage discover-to-attribute state machine does not exist as a type; PositionLifecycle is a different, six-state machine for a different purpose (what the desk is doing about a position, not its life history), and no code enforces that exit/divest can only reach attribute through settle.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ASSET-006"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists. The property test to write: generated event sequences accepted only along the nine legal transitions (with hold/hedge, monitor, resize repeatable), every stage-skip refused, and replay rebuilding the same stage.",
+    "work_item": "E05-position-lifecycle-state-machine",
+    "tier": "T2",
+    "size": "L",
+    "notes": "Do not confuse with qip_portfolio::lifecycle::PositionLifecycle, which answers a different question and should not be repurposed as this state machine without review."
+  },
+  {
+    "id": "ASSET-006",
+    "status": "PARTIAL",
+    "current": "Exact-sum attribution exists and is production-wired, but not in the shape the requirement states. (a) LEARN: Platform::attribute (backend/crates/runtime/qip-kernel/src/platform.rs:14706-14848) runs qip_learning_engine::attribution::Attributor over every *fill* each cycle, not over a settled position: each PositionPeriod has opening_quantity 0, opening/closing/decision/traded price all = fill.price, realised_pnl 0, and the total is -commission, so the decomposition closes (residual zero) over implementation cost only. (b) Central plane: Settlement::attribution (central/plane.rs:517, set at :2585) splits a cell's netted fill across contributing strategies exactly, and Platform::book_settlement (platform.rs:5653) journals only the per-strategy booked amount as LedgerEntry::Booked under Topic::AttributionCompleted (platform.rs:3096); the attribution's components are never written to the event log. Every committed Cloud Run manifest sets QIP_STORAGE_TARGET=memory (infrastructure/gitops/envs/*/api.yaml:73), so in deployment the log does not outlive a replica either.",
+    "evidence": [
+      "backend/crates/services/qip-learning-engine/src/attribution.rs:515 a_split_the_weights_do_not_divide_still_sums_to_the_total_to_the_last_unit",
+      "backend/crates/services/qip-learning-engine/src/attribution.rs:551 a_split_with_nothing_to_split_by_is_refused_rather_than_made_even",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14706-14848 Platform::attribute (per-fill periods, realised_pnl ZERO, total = -commission)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:5653 book_settlement (journals LedgerEntry::Booked amount, not the attribution components)",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:517,2585 Settlement::attribution",
+      "backend/crates/runtime/qip-kernel/tests/attribution.rs:187 a_netted_orders_fill_is_attributed_to_its_contributors_with_zero_residual",
+      "backend/crates/runtime/qip-kernel/tests/attribution.rs:649 a_fill_whose_shares_do_not_sum_to_it_is_refused_rather_than_booked_short",
+      "backend/crates/tests/qip-acceptance/tests/e2e.rs:889-900 (step 8 asserts only learn.ran && learn.detail.len() > 10)"
+    ],
+    "gap": "No attribution is produced on the settlement of a position (it runs per fill per cycle, and per netted cell fill in the central plane); the attribution's components are not journalled, so they cannot be rebuilt from the event log alone; no test replays a log and rebuilds any attribution byte-for-byte; no test covers settled positions in two or more asset classes; the LEARN attribution's 'realised result' is commission only.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-learning-engine attribution:: and cargo test -p qip-kernel --test attribution prove the exact-sum property of fill splits. Missing: the requirement's replay test - replay the log of a run that settled positions in >=2 classes and rebuild each position's attribution byte-for-byte, components summing to the realised result.",
+    "work_item": "E05-settled-position-attribution-replay",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: downgraded COMPLETE -> PARTIAL and e2e true -> false. The cited tests prove exact sums of fill splits, not attribution of a settled position; nothing journals the components or replays them, and the e2e suite's learning step asserts only a non-empty detail string. The assessor's own note flagged the missing replay test. | A dedicated byte-for-byte replay-determinism test naming attribution specifically was not found in this pass, though replay determinism is proven for the adjacent fabric journal (qip-capital-fabric's replay_is_deterministic_across_two_runs_and_two_journals); worth a follow-up NEEDS-VALIDATION check if that specific claim is load-bearing."
+  },
+  {
+    "id": "ASSET-007",
+    "status": "PARTIAL",
+    "current": "qip_financial::valuation::IlliquidValuator (backend/crates/libs/qip-financial/src/valuation.rs:419-500) strikes a mark carrying as_of, confidence and next_review and refuses one with no evidence, a non-positive value or a confidence outside (0,1]. Platform's private-marking sweep records every unmarkable object in illiquid_unmarkable (platform.rs:690,1811,4199-4200) rather than defaulting it, Platform::sizing_confidence (platform.rs:11833-11852) refuses to size against an unmarked or stale mark, and qip-api's /ledger/private-positions (ledger_views.rs:1127-1190) serves the mark (value, method, confidence, as_of) or an `unmarkable` arm with available:false. But marks feed only sizing and that view: no portfolio total is valued by them. RiskState is built with 'no unrealised P&L and no mark-to-market exposure - the platform holds no marks' (platform.rs:14862), and the liquidity ladder takes every position 'at the absolute value of its at-cost notional' (platform.rs:15200 doc), so a held private position is carried at cost in the book's totals whether or not it has a mark - the default the requirement forbids.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/valuation.rs:419-500 IlliquidValuator::assemble refusals",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:690,1811,4199-4200 illiquid_unmarkable bookkeeping",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:11833-11852 sizing_confidence refuses rather than defaults",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14862 (RiskState doc: no mark-to-market exposure; positions at cost)",
+      "backend/crates/apps/qip-api/src/ledger_views.rs:1127-1190 private_positions (mark / unmarkable arms)",
+      "backend/crates/apps/qip-api/tests/api.rs:2723 the_private_positions_surface_reports_the_mark_struck_and_the_confidence_it_carries_now (marked half only; nothing asserts the unmarkable arm)",
+      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs:420 a_thesis_on_an_unmarkable_private_asset_stops_the_construction_and_the_cycle_says_why"
+    ],
+    "gap": "Held illiquid/private positions are not valued by their mark in any portfolio total - RiskState and the liquidity ladder carry them at cost; no test asserts that an unmarked position is reported 'unvalued' and contributes no value to portfolio totals (the kernel test proves the sizing refusal; the API test covers only the marked arm).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial --test valuation; cargo test -p qip-kernel --test valuation_seam a_thesis_on_an_unmarkable_private_asset_stops_the_construction_and_the_cycle_says_why; cargo test -p qip-api --test api the_private_positions_surface_reports_the_mark_struck_and_the_confidence_it_carries_now. Missing: a test that a held private position contributes its mark (marked) or nothing (unmarked) to portfolio totals, never its cost.",
+    "work_item": "E05-mark-valued-portfolio-totals",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: downgraded COMPLETE -> PARTIAL. The mark and the no-mark refusal exist, but the book's totals (RiskState, liquidity ladder) carry every position at its at-cost notional and read no mark, so a held private position is valued at cost - the case the requirement names; no test covers the totals half."
+  },
+  {
+    "id": "ASSET-008",
+    "status": "COMPLETE",
+    "current": "qip_financial::cashflow::{Commitment,CapitalCall,CallSchedule} (backend/crates/libs/qip-financial/src/cashflow.rs:809-1458) tracks each commitment's unfunded remainder (Commitment::record_call/obligation at cashflow.rs:1300,1458) and refuses a call larger than the unfunded remainder. Wired production-side via qip-kernel (backend/crates/runtime/qip-kernel/tests/capital_calls.rs) and served at /ledger/private-positions (qip-api/src/ledger_views.rs).",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/cashflow.rs:1113,1300,1379,1421,1458",
+      "backend/crates/libs/qip-financial/tests/cashflow.rs:300 a_commitment_refuses_more_called_than_was_ever_promised",
+      "backend/crates/libs/qip-financial/tests/cashflow.rs:324 a_schedule_calling_more_than_remains_unfunded_is_refused",
+      "backend/crates/libs/qip-financial/tests/cashflow.rs:673 a_notice_demanding_more_than_remains_unfunded_is_refused_rather_than_capped",
+      "backend/crates/runtime/qip-kernel/tests/capital_calls.rs:198 a_capital_call_is_refused_before_anything_is_journalled_and_an_admitted_one_is_on_the_log"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial --test cashflow; cargo test -p qip-kernel --test capital_calls",
+    "work_item": "",
+    "tier": "T0",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "ASSET-009",
+    "status": "MISSING",
+    "current": "No Private Markets specialist brain and no stage concept for a private-company/fund position exists. `grep -rli \"PrivateCompanyStage\\|FundStage\\|InvestmentStage\\|SpecialistBrain\\|PrivateMarketsBrain\" backend/crates --include=*.rs` returns nothing. ASSET-008's commitment/call machinery tracks capital flow but has no notion of a position 'stage' (investment, calls, distributions, exit) that changes only on a recorded event.",
+    "evidence": [
+      "grep -rli 'PrivateCompanyStage|FundStage|InvestmentStage|SpecialistBrain|PrivateMarketsBrain' backend/crates --include=*.rs -- no matches"
+    ],
+    "gap": "Nothing models a private-company or fund lifecycle stage distinct from the commitment/call/mark bookkeeping ASSET-007/ASSET-008 already provide.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ASSET-007",
+      "ASSET-008"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E08-private-markets-specialist-brain",
+    "tier": "T3",
+    "size": "M",
+    "notes": "P2 in the requirement (specialist-agent society, master Phase 8) so its absence is expected at this point in delivery, not a regression."
+  },
+  {
+    "id": "ASSET-010",
+    "status": "PARTIAL",
+    "current": "qip_risk::shared_cause::{SharedCauseExposure,FACTOR_AXIS,CAUSAL_DRIVER_AXIS} (backend/crates/libs/qip-risk/src/shared_cause.rs:105-194) computes a loading-weighted, non-netted exposure bucket per factor and per causal driver, charged into RiskState::axis_exposures and read by LimitKind::MaxAxisWeight/MaxBucketExposure, wired production-side at backend/crates/runtime/qip-kernel/src/shared_cause.rs:72-74. This is real exposure reporting and a real post-hoc veto (an allocation that would breach the axis cap is refused), but it is not active portfolio *construction* by factor/driver -- PortfolioConstructor (qip-portfolio-engine) does not optimise toward factor or causal-driver targets; the axis mechanism only measures and vetoes what construction already produced.",
+    "evidence": [
+      "backend/crates/libs/qip-risk/src/shared_cause.rs:105,109,117,128,131,194",
+      "backend/crates/runtime/qip-kernel/src/shared_cause.rs:72-74",
+      "backend/crates/libs/qip-risk/tests/shared_cause.rs (11 tests, e.g. a_long_and_a_short_that_share_one_driver_do_not_net_each_other_away)"
+    ],
+    "gap": "Exposure to factor and causal driver is measured and capped after construction; nothing allocates toward or away from a factor/driver target during construction itself.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-risk --test shared_cause",
+    "work_item": "E07-factor-driver-allocation",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "ASSET-011",
+    "status": "PARTIAL",
+    "current": "No single 'Asset Brain' crate exists, but the invariant holds structurally across the crates that carry this data. qip_portfolio and qip_financial are backend/crates/libs/** and are structurally barred from depending on any service (qip-execution-engine, qip-brokers included) by the general layering test a_library_never_depends_on_a_service_or_an_application (backend/crates/tests/qip-acceptance/tests/architecture.rs:1391). qip_portfolio_engine's own workspace_deps are only qip-core and qip-optimization-engine (no execution-engine, no brokers), and its output type is qip_portfolio_engine::proposal::Proposal -- 'intent plus reasoning plus checks passed, explicitly not an order' -- with no function anywhere that returns or submits an Order. However, the Asset Brain's economic-lifecycle state is held and composed in qip_kernel::Platform - commitments (platform.rs:675), illiquid marks (:682), the Attributor (:342), the PortfolioConstructor (:4514) - and that same struct owns the OrderManager (platform.rs:233, constructed at :4527-4528) and submits orders through it. qip-kernel is on the permitted list of both the_execution_engine_is_reachable_from_almost_nothing (architecture.rs:541) and nothing_outside_a_composition_root_holds_an_order_manager, so where the economic-lifecycle logic actually runs, nothing separates it from order submission.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1391 a_library_never_depends_on_a_service_or_an_application",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:541 the_execution_engine_is_reachable_from_almost_nothing",
+      "backend/crates/services/qip-portfolio-engine/src/proposal.rs:131,44,73,21 (Proposal/ProposalLeg/ProposalStatus/Side; no Order-returning function)",
+      "backend/crates/services/qip-portfolio-engine/Cargo.toml (workspace_deps: qip-core, qip-optimization-engine only)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:233,4527-4528 (Platform owns the OrderManager beside commitments :675, marks :682, attributor :342)"
+    ],
+    "gap": "No Asset Brain component exists that is structurally barred from execution: the libraries (qip-portfolio, qip-financial) and qip-portfolio-engine are, but the kernel struct that holds positions, commitments, marks and attribution also holds and drives the order manager. The requirement's named, mutation-verified architecture-suite test for an Asset Brain crate does not exist, because no such crate does.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test architecture a_library_never_depends_on_a_service_or_an_application the_execution_engine_is_reachable_from_almost_nothing",
+    "work_item": "E05-asset-brain-boundary-test",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: downgraded COMPLETE -> PARTIAL. The invariant is inherited by the libraries only; the economic-lifecycle state lives in qip_kernel::Platform, which also owns OrderManager and is exempt from both execution-isolation tests, and the requirement's own named test does not exist (the assessor's gap said so). | Recommend a named test pinning exactly which crates constitute the Asset Brain's economic-lifecycle logic (qip-portfolio, qip-financial, qip-portfolio-engine), so the invariant is explicit rather than inherited."
+  },
+  {
+    "id": "ASSET-012",
+    "status": "PARTIAL",
+    "current": "A private-asset record's lockup is tracked (qip_financial::extensions PrivateEquityDetails::lockup_years/lockup(), extensions.rs:548,769-787) and consumed by exit_days_with_forecast (backend/crates/runtime/qip-kernel/src/platform.rs:1909-1940) to raise -- never lower -- a holding's stated exit-time input to the MinLiquidity/MaxDaysToLiquidate risk limits. This makes a lockup-bound position read as illiquid to those limits, but there is no ExitPlan/DivestmentPlan type and no explicit refusal of 'an exit plan dated before lockup expiry' as the requirement's own unit-test check describes.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/extensions.rs:548,769-787 lockup()/lockup_years",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:1909-1940 exit_days_with_forecast",
+      "grep -rli 'ExitPlan|exit_plan' backend/crates --include=*.rs -- no matches",
+      "backend/crates/runtime/qip-kernel/tests/valuation_plane.rs:488 a_private_fund_inside_its_lockup_is_not_counted_as_exitable_on_the_catalogue_s_word",
+      "backend/crates/libs/qip-financial/tests/valuation.rs:695 a_lockup_that_is_not_a_finite_term_is_refused_rather_than_saturating"
+    ],
+    "gap": "No exit/divestment plan object exists to refuse; the lockup only widens a liquidity-limit input, it does not refuse a plan dated before expiry with a mutation-verified boundary.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "ASSET-004"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test valuation_plane a_private_fund_inside_its_lockup_is_not_counted_as_exitable_on_the_catalogue_s_word; cargo test -p qip-financial --test valuation a_lockup_that_is_not_a_finite_term_is_refused_rather_than_saturating. No test for an exit-plan refusal exists because no exit-plan type exists.",
+    "work_item": "E05-exit-plan-lockup-refusal",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: status unchanged; the verification command was corrected - 'cargo test -p qip-financial extensions::' matches nothing (extensions.rs has no test module); the lockup tests are in qip-financial/tests/valuation.rs and qip-kernel/tests/valuation_plane.rs."
+  },
+  {
+    "id": "ASSET-013",
+    "status": "MISSING",
+    "current": "Nothing implements a secondary-sale exit route. `grep -rli \"secondary_sale|secondary_exit|SecondarySale\" backend/crates --include=*.rs` returns no matches. The exit planner ASSET-013 names does not exist (see ASSET-005/ASSET-012 for the adjacent gaps).",
+    "evidence": [
+      "grep -rli 'secondary_sale|secondary_exit|SecondarySale' backend/crates --include=*.rs -- no matches"
+    ],
+    "gap": "No secondary-sale exit route, discount-to-mark logic, or primary-liquidity-event trigger exists anywhere.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ASSET-007",
+      "ASSET-012"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists.",
+    "work_item": "E05-secondary-exit-logic",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Carrying out a secondary sale stays simulated under ADR 0003/0021 once built; computing the plan needs no external action and is not itself BLOCKED."
+  },
+  {
+    "id": "ASSET-014",
+    "status": "MISSING",
+    "current": "No inventory ledger or reconciliation between economic exposure and physical inventory/logistics state exists. qip_financial::physical (backend/crates/libs/qip-financial/src/physical.rs, 1072 lines, PhysicalArbitrage/LandedCost/LogisticsTerms/Customs/Spoilage/MarketplaceFees/Returns) models delivered-price arbitrage economics but has zero production or cross-crate callers -- `grep -rl PhysicalArbitrage backend/crates` outside qip-financial's own src/tests returns nothing -- and holds no units/location/condition/reservations fields at all (only route/cost economics).",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/physical.rs:1-49 (module doc: 'this module has no production caller and no default anything')",
+      "backend/crates/libs/qip-financial/src/physical.rs:356,260,669 PhysicalArbitrage/LandedCost/delivered_price",
+      "grep -n 'struct ' backend/crates/libs/qip-financial/src/physical.rs -- no Inventory/Reservation/location/condition tracking type"
+    ],
+    "gap": "No InventoryLedger exists; physical.rs prices arbitrage routes but is not integrated anywhere, and it does not track units/location/condition/reservations or reconcile against them.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ASSET-015"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; physical.rs's own 11 embedded #[cfg(test)] tests (physical.rs:685) exercise only its pricing arithmetic, not any inventory reconciliation.",
+    "work_item": "E17-physical-inventory-ledger",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: blocked_by 'external:billing' cleared - the row is MISSING, nothing about an in-tree simulated inventory ledger depends on the dev project's billing, and the row's own note says it is not blocked. Re-searched backend/ for Inventory/warehouse/reservation: only market-making inventory (qip-routing InventoryBand, qip-contracts InventoryTargets) and edge capital reservations, none physical. | P2 (master Phase 7). The requirement's own EXTERNAL_ACTION flag scores real purchasing/logistics BLOCKED once a simulated form exists; today there is no simulated form to score, so this is MISSING rather than BLOCKED -- nothing in-tree is refused by a conflict, there is simply nothing built yet."
+  },
+  {
+    "id": "ASSET-015",
+    "status": "PARTIAL",
+    "current": "qip_financial::physical::LandedCost (backend/crates/libs/qip-financial/src/physical.rs:260-356) computes delivered_price (physical.rs:669) from named, separately-stated components -- acquisition price, freight/LogisticsTerms, Customs duty, Spoilage loss, MarketplaceFees and Returns -- each refused rather than defaulted (LogisticsTerms has no Default; Spoilage refuses a rate with no cited source). The model is fully implemented and self-tested (11 embedded tests, physical.rs:685) but has zero callers anywhere outside its own file, so it is not reached from production.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/physical.rs:129,149,217,228,244,260,356,669",
+      "backend/crates/libs/qip-financial/src/physical.rs:1029-1033 (delivered_price handles negative-cost legs, embedded test)",
+      "grep -rl PhysicalArbitrage backend/crates -- only qip-financial/src and qip-financial's own tests"
+    ],
+    "gap": "Correct and complete in isolation; not integrated into any production position/attribution path, so no product-level result is actually reported for a held physical position today.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial physical:: (embedded tests in physical.rs); no integration test exists because nothing calls it from a position.",
+    "work_item": "E17-physical-product-economics-wiring",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The raw requirement's EXTERNAL_ACTION flag was correctly not carried onto this split (per the requirement's own notes) since computing the economics needs no external action."
+  },
+  {
+    "id": "ASSET-016",
+    "status": "PARTIAL",
+    "current": "Two reconciliations exist, neither per position against settled ownership. (1) qip_capital_fabric::wallet::Wallet::reconcile halts a venue-asset on any ledger/observed divergence and never corrects either side, but in production Platform::reconcile_wallet (platform.rs:7890-7932) supplies one LedgerView only - the desk's settlement-currency cash at the broker's venue, less reservations - against statements an operator files through qip-api (statement.rs:357 -> Platform::observe_statement, platform.rs:7806). That is a cash-balance reconciliation; instrument holdings are never compared with a custody or settlement record. (2) CentralPlane::record_halt (central/plane.rs:2665) counts breaks (cell_over_venue, venue_over_cell, detail_only, unsent_fill) between what a cell booked and what the venue confirmed at order/fill level; the cell-side reconciliation runs in qip-edge (not deployable: execution_nodes = {}), while the centre's unsent_fill finding runs in Platform::ingest_cell_report, reached from qip-api mesh.rs:1621. Nothing models a fill that is booked economically and then fails simulated settlement.",
+    "evidence": [
+      "backend/crates/services/qip-capital-fabric/src/wallet.rs (module doc: halt, never correct)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:7890-7932 reconcile_wallet (single desk-cash LedgerView)",
+      "backend/crates/apps/qip-api/src/statement.rs:357 (operator statement -> observe_statement)",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:2665 record_halt",
+      "backend/crates/runtime/qip-kernel/tests/attribution.rs:513 a_fill_on_an_order_the_centre_never_saw_sent_halts_the_cell_and_books_nothing",
+      "backend/crates/runtime/qip-kernel/tests/attribution.rs:581 a_fill_beyond_the_quantity_sent_is_the_same_break",
+      "backend/crates/runtime/qip-kernel/tests/central.rs:681 a_reconciliation_break_halts_that_cell_and_only_that_cell",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs:2596 the_learn_stage_halts_a_statement_beyond_its_floor_and_not_one_inside_it"
+    ],
+    "gap": "No continuous per-position reconciliation of economic exposure against a settled-ownership (simulated custody/settlement) record exists; no simulated settlement can fail after economic booking, so the requirement's first injected case cannot be raised; the wallet half covers desk cash only and the cell-vs-venue half is order/fill-level and runs in the undeployed edge node.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test attribution a_fill_on_an_order_the_centre_never_saw_sent_halts_the_cell_and_books_nothing a_fill_beyond_the_quantity_sent_is_the_same_break; cargo test -p qip-kernel --test ledger the_learn_stage_halts_a_statement_beyond_its_floor_and_not_one_inside_it; cargo test -p qip-capital-fabric --test wallet. Missing: the requirement's integration test (an economically booked fill that fails simulated settlement, and a settled holding with no economic position, each raising a break within the next cycle with neither side overwritten).",
+    "work_item": "E05-position-vs-settlement-reconciliation",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: downgraded COMPLETE -> PARTIAL and e2e true -> false. The wallet reconciles only desk cash against operator statements, the break series is order/fill-level from cells that are not deployed, and no simulated settlement failure or custody record exists for either injected case the requirement names; the cited tests are crate tests, not a cross-process run. | 'Legal/settled ownership' is read as the simulated custody/settlement record per the requirement's own paper-trading note; both mechanisms operate against that simulated record, not a live custodian."
+  },
+  {
+    "id": "ASSET-017",
+    "status": "BLOCKED",
+    "current": "The Asset/Portfolio logic (qip-portfolio, qip-financial, qip-portfolio-engine, composed by qip-kernel's Platform) runs as in-process library code inside the qip-api, qip-fastbrain and qip-deepbrain binaries (ADR 0091), not as a separate warm regional service on GKE Standard. Those binaries are Cloud Run services declared as Config Connector RunService manifests (infrastructure/gitops/envs/<env>/{api,fastbrain,deepbrain}.yaml) reconciled by Argo CD on the GitOps control-plane cluster, which is suspended (ADR 0093); the terraform cloudrun module no longer declares the service itself (modules/cloudrun/main.tf:6-12). They scale on Cloud Run's instance model (api.yaml: minInstanceCount 0, maxInstanceCount 4).",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:675,682,4253 (commitments, marks and Portfolio held in Platform, in-process)",
+      "infrastructure/terraform/modules/cloudrun/main.tf:5-12 (Cloud Run catalogue; service now a gitops RunService manifest)",
+      "infrastructure/gitops/envs/dev/api.yaml:42-44 (Cloud Run scaling block)",
+      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md:126 (C3)",
+      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md:130 (C7)"
+    ],
+    "gap": "No GKE Standard deployment of an Asset Brain workload exists or is plausible without first resolving ADR 0099's C3/C7 conflicts.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3",
+    "verification": "No GKE Standard cluster for an Asset Brain workload exists to plan. For the permitted form, no named test pins the Asset logic off the Reflex path: qip-edge's manifest does not depend on qip-kernel or qip-portfolio-engine today, but the closest architecture test, no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy, covers only qip-capital and qip-lifecycle.",
+    "work_item": "E14-asset-brain-placement-adr",
+    "tier": "T4",
+    "size": "L",
+    "notes": "verify: tested true -> false (the cited 'proven by qip-kernel's own test suite' names no test, and no architecture test asserts the cell cannot reach the Asset logic); evidence ADR line refs corrected (:128 is C5 - C3 is :126); current corrected - the cloudrun module no longer renders the service, the gitops RunService manifests do, under a suspended reconciler. | Also implicates C7 (per-brain services vs five binaries). 'Current' reports the permitted Cloud Run form, per BLOCKED handling instructions."
+  },
+  {
+    "id": "ASSET-018",
+    "status": "BLOCKED",
+    "current": "Asset/Portfolio state (positions, commitments, marks) is held in-process in qip-kernel's Platform (platform.rs:675,682,4253). The kernel can persist through its own hash-chained, file-backed event log (ADR 0089) and resume from it on restart (e.g. qip-kernel tests/capital_calls.rs:475 a_filed_capital_call_survives_a_restart_and_a_withdrawn_one_does_not), selected by QIP_STORAGE_TARGET in the composition roots. But every committed Cloud Run manifest - api, fastbrain and deepbrain in dev, test, stage and prod - sets QIP_STORAGE_TARGET=memory, so in every environment the state is replica-local and a replacement replica starts empty. Nothing uses Spanner/Bigtable.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:675,682,4253 (state held in Platform, in-process)",
+      "backend/crates/runtime/qip-kernel/tests/capital_calls.rs:475 a_filed_capital_call_survives_a_restart_and_a_withdrawn_one_does_not",
+      "infrastructure/gitops/envs/dev/api.yaml:72-73 (QIP_STORAGE_TARGET=memory; same in fastbrain/deepbrain and in test/stage/prod)",
+      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md:127 (C4)"
+    ],
+    "gap": "No managed-database-backed state exists or is buildable without resolving C4. Separately, and not blocked: the permitted in-tree form (file-backed log on durable storage) is not configured anywhere - every environment runs the log in memory, so the requirement's testable part ('state is not replica-local') fails in every committed deployment.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ASSET-017"
+    ],
+    "blocked_by": "C4",
+    "verification": "Permitted-form check: cargo test -p qip-kernel --test capital_calls a_filed_capital_call_survives_a_restart_and_a_withdrawn_one_does_not (file-backed log resumes). No chaos test terminates a replica and reads ASSET-004 state back from any durable store, and no environment configures one.",
+    "work_item": "E14-asset-brain-storage-adr",
+    "tier": "T4",
+    "size": "L",
+    "notes": "verify: status kept BLOCKED on C4 for the Spanner/Bigtable store; current corrected - it said a replacement replica resumes by replaying the file-backed log, but every committed manifest sets QIP_STORAGE_TARGET=memory, so state is replica-local today (a gap in the permitted form, not a C4 matter); ADR line ref corrected (:129 is C6 - C4 is :127). | 'Current' reports the permitted in-tree, file-backed-log form, per BLOCKED handling instructions."
+  },
+  {
+    "id": "ASSET-019",
+    "status": "BLOCKED",
+    "current": "No HorizontalPodAutoscaler exists because there is no GKE deployment for the Asset Brain (see ASSET-017). Cloud Run services scale on Cloud Run's built-in concurrency-based autoscaling (min/max instance counts), not an HPA driven by CPU and a named custom metric.",
+    "evidence": [
+      "infrastructure/gitops/envs/dev/api.yaml:42-44 (Cloud Run instance scaling, not an HPA)",
+      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md:126 (C3)",
+      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md:130 (C7)"
+    ],
+    "gap": "No HPA and no named custom-metric scaling signal exists for Asset Brain logic; Cloud Run's own autoscaling is not CPU+custom-metric HPA.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ASSET-017"
+    ],
+    "blocked_by": "C3",
+    "verification": "No plan or test exists for this.",
+    "work_item": "E14-asset-brain-placement-adr",
+    "tier": "T4",
+    "size": "M",
+    "notes": "verify: status unchanged; evidence corrected - ADR 0099 C3 is at :126 (not :128, which is C5), and Cloud Run scaling is declared in the gitops RunService manifests, not in modules/cloudrun/main.tf. Searched infrastructure/ for HorizontalPodAutoscaler: only Argo CD's own upstream install. | Same C3/C7 blocker and same resolving record as ASSET-017; listed separately per the requirement split."
+  }
+]

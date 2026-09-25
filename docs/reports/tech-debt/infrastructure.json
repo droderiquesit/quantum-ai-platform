@@ -1,0 +1,317 @@
+[
+  {
+    "item": "The GitOps control-plane cluster is suspended and has never completed a bootstrap, so no Config Connector `RunService` manifest is reconciled anywhere — every Cloud Run workload's declared state (identity/grants half applied by Terraform) and its actual serving state (the service half, meant to be owned by Argo CD per ADR 0036) have no live controller keeping them in agreement",
+    "files": [
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:103-131",
+      "infrastructure/gitops/bootstrap/README.md:1-96",
+      "infrastructure/docker/argocd-patched.Dockerfile:1-122",
+      "infrastructure/egress/derived-images.txt:33-36",
+      "infrastructure/CLAUDE.md"
+    ],
+    "category": "deployment-ci-observability-gap / unfinished-migration",
+    "class": "B-refactor",
+    "why": "The vendored Argo CD v3.5.2 image (row 2 of the bootstrap's own 8-step apply order) is refused by vendor.yml's CRITICAL Trivy gate on CVE-2025-68121 (vulnerable git-lfs/kustomize binaries copied in unmodified from upstream), so infra.yml's `bootstrap` step has never completed on any cluster and the one applied cluster (dev) was manually suspended — a targeted destroy of the cluster resource, keeping the etcd key and the rest of state — per ADR 0093. `infrastructure/docker/argocd-patched.Dockerfile` is the accepted, self-verifying remedy (rebuilds kustomize on a patched Go toolchain, deletes git-lfs) but has never been dispatched by vendor.yml, so its digest has never been pinned into `infrastructure/gitops/bootstrap/argocd/overlays/*/kustomization.yaml`. This is a migration in progress with a concrete, already-written next step, not a dead end — dispatching the build is the unblocking action.",
+    "blueprint_refs": [
+      "GCP v2.1 §8 (CICD-009, CICD-041, GitOps split)",
+      "GCP v2.1 §13 (CICD-057/058, promotion through GitOps)",
+      "ADR 0099 C3"
+    ],
+    "risk": "high",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "No execution cell has ever been provisioned in any environment: `execution_nodes = {}` everywhere, and the one boot image the node would run (`infrastructure/images/execution-node`) has never actually been baked against a real project",
+    "files": [
+      "infrastructure/terraform/variables.tf:245-313",
+      "infrastructure/environments/dev/terraform.tfvars:200-227",
+      "infrastructure/terraform/modules/image-bake/main.tf:1-16,134-260",
+      "infrastructure/images/execution-node/README.md:180-204"
+    ],
+    "category": "temporary-infrastructure / unfinished-migration",
+    "class": "E-needs-evidence",
+    "why": "`modules/execution-node`'s `for_each` over `var.execution_nodes` instantiates zero nodes in dev/test/stage/prod, so the platform's whole edge/Reflex execution layer — the one part of the blueprint this repository builds toward directly, not just researches — is unreached in every deployed environment. The image bake is individually verified offline (crane extraction, the secret-fetch helper against stub metadata/Secret Manager servers) but `images/execution-node/README.md` states plainly the bake workflow itself has never been dispatched, so cloud-side behaviour (serial-console handshake, `update-grub`, guest OS features) has never been proven. ADR 0099's conflict register (C8) already names the blocker precisely: an owner cost ceiling is required, and billing is independently disabled on the dev project today (`deploy.yml` fails at image push with 'This API method requires billing to be enabled'). The evidence needed before building further here is the owner's cost decision plus a `region_allocation` choice (deliberately never defaulted) — not a code change.",
+    "blueprint_refs": [
+      "v11.6 §26 (GCP-001, Reflex Cells on dedicated Compute Engine)",
+      "ADR 0099 C8"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "`control_fabric_topic` is hard-coded to `null` in the composition root; no native Event & Control Fabric resource exists anywhere in the Terraform tree, so the blueprint's internal nervous system has no place to run",
+    "files": [
+      "infrastructure/terraform/main.tf:493",
+      "infrastructure/terraform/modules/data/main.tf:1-19"
+    ],
+    "category": "architectural-conflict / hard-coded-configuration",
+    "class": "E-needs-evidence",
+    "why": "v11.6 replaces Pub/Sub and Kafka with a native Rust Event & Control Fabric (Tokio, QUIC/mTLS, Protobuf via prost, BLAKE3, a Rust Raft) run on dedicated Compute Engine VMs across three zones (GCP v2.1 §26/§19). This workspace permits exactly two dependencies (`serde`, `serde_json`; ADR 0002/0009) and no async runtime (ADR 0001/0011), so nothing in this configuration can provision a Fabric broker today — there is no crate, no module, no resource, confirmed by grep across the tree. `control_fabric_topic = null` is the honest expression of that gap rather than a bug, and ADR 0099's own conflict register (C2) already schedules the fix as 'a dependency record per class (async runtime, transport security, wire schema, consensus, managed-service clients), each weighed against an in-tree or egress-proxy alternative' — exactly the evidence this item needs before it can move.",
+    "blueprint_refs": [
+      "v11.6 §26 / GCP v2.1 §19 (GCP-005, GCP-006, GCP-020, Fabric broker VMs)",
+      "ADR 0099 C2"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E03"
+  },
+  {
+    "item": "Four RunService manifests declare `gcs` volumes (egress bootstrap, universe catalogue) that the vendored Config Connector operator's own CRD schema does not list as a valid volume kind",
+    "files": [
+      "infrastructure/gitops/envs/dev/api.yaml:212-217",
+      "infrastructure/gitops/envs/README.md:41-80"
+    ],
+    "category": "incompatible-interfaces",
+    "class": "E-needs-evidence",
+    "why": "`gitops/envs/README.md` records a real schema check dated 2026-09-06: fetching the vendored operator's (v1.156.0) `RunService` CRD and enumerating `spec.template.volumes` returns exactly four properties — `cloudSqlInstance`, `emptyDir`, `name`, `secret` — with `grep -ci gcs` returning 0. The manifests declare `gcs { bucket, read_only }` anyway on four workloads (api, fastbrain, deepbrain, openobserve), because that is how Terraform's `google_cloud_run_v2_service` (the resource these manifests were derived from before ADR 0036) expressed the same mount. The README itself names three possible outcomes on the first real sync — refused validation, silently-different reconciliation, or a match — and says only the third is acceptable; none has been observed because the cluster that would sync them is suspended (see the GitOps item above). This is a genuine, previously-verified interface mismatch between the declared manifests and the operator that must reconcile them, not a hypothetical one.",
+    "blueprint_refs": [
+      "GCP v2.1 §8 (SEC-030, GKE workloads receive secrets/config via CSI)",
+      "ADR 0099 C3"
+    ],
+    "risk": "high",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "The portal and landing Cloud Run services are deployed by an imperative script (`scripts/deploy-frontends.sh`) that never touches the GitOps source of truth, while `infrastructure/gitops/envs/*/kustomization.yaml` still declares `qip-portal` as `TO-PIN` in all four environments — two independent, disconnected mechanisms both claim to own how the portal reaches Cloud Run",
+    "files": [
+      "scripts/deploy-frontends.sh:1-19,231-257",
+      "infrastructure/gitops/envs/dev/kustomization.yaml:32-45",
+      "infrastructure/terraform/catalogue.tf:876-921"
+    ],
+    "category": "duplicate-systems / incorrect-coupling",
+    "class": "B-refactor",
+    "why": "`catalogue.tf`'s own comment names `infrastructure/gitops/envs/<env>/portal.yaml` as the console's Cloud Run service of record, reconciled the same way api/fastbrain/deepbrain are — but no run of deploy.yml/Kargo has ever built or promoted `qip-portal`, so its digest stays `TO-PIN` in every environment. In its place, `scripts/deploy-frontends.sh` builds, attests (correctly — by digest, against the same Binary Authorization attestor and key version Terraform holds, per its own header comment) and deploys the portal and landing directly with `gcloud run deploy`, and never writes the resulting digest back into `kustomization.yaml` or commits anything. The two paths cannot converge: a future Argo CD sync (once the suspended cluster returns, see the GitOps item above) would find `envs/dev/portal.yaml` referencing a `TO-PIN` image and either fail validation or attempt to redeploy over whatever the script last put there, with no record connecting the two. Note that `infrastructure/docker/README.md:57-63`'s claim that the frontend deploy has 'no signing step and no attestation' is itself stale against the current script (last changed 2026-09-21, after the README) — the script does attest and does deploy by digest; that documentation drift should be corrected alongside unifying the deployment path.",
+    "blueprint_refs": [
+      "GCP v2.1 §13-14 (CICD-057/058, one digest promoted through every environment by the same mechanism)",
+      "ADR 0099 C3"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "No test enumerates `infrastructure/docker/*.Dockerfile` and refuses an upstream `FROM` that is not pinned by a 64-character lowercase digest",
+    "files": [
+      "infrastructure/docker/README.md:43-48"
+    ],
+    "category": "missing-tests-on-production-path",
+    "class": "B-refactor",
+    "why": "Every `FROM` line in the three Dockerfiles is in fact digest-pinned today, but by convention rather than by a control: the one acceptance test that reads `Dockerfile` (`the_image_runs_as_a_non_root_user_on_an_empty_filesystem`) checks `scratch`/`USER`/`--locked` and never opens `portal.Dockerfile` or `landing.Dockerfile`, and checks no digest at all. `docker/README.md` says so itself — 'this section describes a convention rather than a control' — which is exactly the gap this repository's own testing rule exists to close: a production build input (the base image) has no test standing between a future edit and a tag that can move underneath a reviewer.",
+    "blueprint_refs": [],
+    "risk": "low",
+    "suggested_epic": "E01"
+  },
+  {
+    "item": "All 9 Cloud Monitoring alert policies (kill switch, live fill, persistent breach, permission violation, edge halted, edge/central reconciliation break, risk figure unevaluated, sign-off withheld) are fully specified and gated behind `workload_metrics_exist`, which is `false` in every environment, and the one collector that would flip it (`cloud-run-gmp-sidecar`) is refused by the platform's own CRITICAL scan gate with no fixed upstream tag published",
+    "files": [
+      "infrastructure/terraform/modules/observability/main.tf:1-23,313,395",
+      "infrastructure/terraform/modules/observability/NOT-SCRAPED.md",
+      "infrastructure/egress/vendored-images.txt:36-120",
+      "infrastructure/environments/dev/terraform.tfvars:275-295"
+    ],
+    "category": "deployment-ci-observability-gap",
+    "class": "E-needs-evidence",
+    "why": "Cloud Monitoring refuses a policy naming a descriptor it has never ingested, so `workload_metrics_exist` correctly stays `false` until a scrape is *observed*, not merely declared — and none has been, because `us-docker.pkg.dev/.../cloud-run-gmp-sidecar:1.9.2` fails vendor.yml's CRITICAL gate on CVE-2026-56854 (an unfixed `golang.org/x/crypto` finding) with no newer tag published by Google as of the last check. This is exactly the state `.claude/rules/domains/observability.md` insists on naming plainly: nothing currently pages a human on a kill-switch trip, a live-fill alarm, a persistent limit breach or a permission denial in any deployed environment, which is a direct gap against this platform's own stated precondition ('A process nothing can see is a process nobody can operate', `.claude/rules/10-product-direction.md`). The evidence needed is either an upstream fix to the sidecar or a decision to build/vendor an alternative collector — not a Terraform edit, since the gate is doing exactly what it should.",
+    "blueprint_refs": [
+      "GCP v2.1 §16 / §19 (OBS-017, OBS-038, Managed Service for Prometheus into Cloud Monitoring)"
+    ],
+    "risk": "high",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "The GitOps control-plane cluster cannot be cleanly turned off: `gitops_enabled = false` would plan to destroy `google_kms_crypto_key.etcd`, which carries `prevent_destroy = true`, so the module stays declared (`gitops_enabled = true` in dev) while the cluster it describes was suspended out-of-band by a targeted `terraform destroy` of the cluster resource alone — configuration and reality have diverged by design, not by accident",
+    "files": [
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:103-131",
+      "infrastructure/environments/dev/terraform.tfvars:138-139"
+    ],
+    "category": "hard-coded-configuration / temporary-infrastructure",
+    "class": "B-refactor",
+    "why": "`prevent_destroy` on the etcd key is itself correct — destroying it makes every Secret the suspended cluster ever held unreadable at once — but it means the only way to represent 'this environment's GitOps control plane is currently suspended' in Terraform is a manual, targeted destroy that Terraform's own state does not fully agree with afterwards (a `plan` against dev would presumably want to recreate the cluster). ADR 0093 already names the durable fix — move the etcd key out of `modules/gitops-control-plane` into something that can be turned off independently of the cluster — and has not yet been done. This is a live example of the exact failure this repository's architecture rules warn about: infrastructure whose *declared* state and *actual* state can only be reconciled by a person remembering an out-of-band action.",
+    "blueprint_refs": [
+      "ADR 0093",
+      "ADR 0099 C3"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "Two independent, fully-built front-door systems exist for administrative/console access — `modules/iap-edge` (custom-domain load balancer + Cloud Armor + managed certificate) and `modules/iap-run` (IAP directly on the Cloud Run service) — and the module chosen by ADR 0094 is blocked by a hard, zero-value GCP quota that this repository cannot self-remediate, while its DNS dependency (`modules/dns-zone`) is separately superseded and also instantiates nothing anywhere",
+    "files": [
+      "infrastructure/terraform/modules/iap-edge/main.tf:85-284",
+      "infrastructure/environments/dev/terraform.tfvars:583-613",
+      "infrastructure/terraform/modules/dns-zone/main.tf:41-64",
+      "infrastructure/environments/dev/terraform.tfvars:681"
+    ],
+    "category": "duplicate-systems",
+    "class": "E-needs-evidence",
+    "why": "`infra.yml` run 71 failed applying `iap-edge`'s Cloud Armor policy with `Quota 'SECURITY_POLICY_RULES' exceeded. Limit: 0.0 globally` — not exceeded-by-one, a project with no allowance at all, and raising it is a quota request Google may refuse. ADR 0095 responded by narrowing `iap-edge` to a secondary option and making `iap-run` (per-service IAP, no load balancer, no DNS) the primary door in every environment; `dns-zone`, whose only committed consumer was `iap-edge`'s certificate, now has `dns_zone_domain = \"\"` everywhere and creates nothing. Both modules remain fully built and heavily tested (14 and 17 `.tftest.hcl` runs respectively) for a role ADR 0095 already assigned elsewhere. The evidence needed is an owner decision: either request the Cloud Armor quota and keep `iap-edge` as the documented secondary path, or write the record that formally retires it and `dns-zone` rather than leaving two live-looking, mutually-exclusive-by-construction systems in the tree indefinitely.",
+    "blueprint_refs": [
+      "GCP v2.1 §19 (GCP-057, administrative interfaces reachable only through IAP)"
+    ],
+    "risk": "low",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "Kargo's promotion chain beyond `dev` is structurally unable to deploy anything: the one warehouse subscribes to `dev`'s registry, and a promotion to `test`/`stage`/`prod` would commit `dev`'s digests into a `kustomization.yaml` naming a registry that does not hold them and an attestor that never signed them",
+    "files": [
+      "infrastructure/gitops/kargo/README.md:30-49",
+      "infrastructure/gitops/kargo/base/stages.yaml:14-105"
+    ],
+    "category": "incompatible-interfaces / unfinished-migration",
+    "class": "E-needs-evidence",
+    "why": "This is documented by the module's own README as a known-unresolved architecture question ADR 0036 itself anticipated in its 'what would make this wrong' section: either one registry and one attestor serving every environment (so a digest means the same thing everywhere), or one warehouse per environment subscribed to that environment's own builds. Until that record exists, a promotion past `dev` would commit, the target's Argo CD `Application` would report `Degraded` (when that environment even has a control plane, which none but dev does), and nothing would deploy — not a bug in the promotion task itself, but a real gap in the environment-progression story every other CI/CD control in this repository assumes exists.",
+    "blueprint_refs": [
+      "GCP v2.1 §13-14 (CICD-057, CICD-058, promotion invariants)"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "`modules/data`'s six managed data services (BigQuery, Cloud Storage archive, AlloyDB, Bigtable, Memorystore, Spanner — including the global ledger database `trust-zones` wires its grants against) are fully implemented Terraform, gated off in every environment, with no driver or adapter for any of them anywhere in the Rust workspace",
+    "files": [
+      "infrastructure/terraform/modules/data/main.tf:1-19,85,214-343",
+      "infrastructure/terraform/modules/data/NOT-PROVISIONED.md",
+      "infrastructure/environments/dev/terraform.tfvars:252-258"
+    ],
+    "category": "architectural-conflict / placeholder",
+    "class": "E-needs-evidence",
+    "why": "All six `enable_*` flags are `false` in every environment's tfvars by design — `StorageTarget::is_implemented` in the Rust workspace returns true only for `memory`/`file`/`engine`, and provisioning an unopenable managed database would be a bill and an attack surface with nothing behind it (the module's own header names this explicitly). v11.6/GCP v2.1 name Spanner Enterprise Plus as the global, multi-region ledger (GCP-004) with its KMS keys isolated in a dedicated `prod/ledger` project (SEC-007), which directly contradicts ADR 0002/0009's two-dependency posture and ADR 0089's file-backed log. ADR 0099's conflict register (C4) already schedules the fix as 'a storage record per store... the ledger comes first' — that record, not a Terraform flag flip, is the evidence this item is waiting on.",
+    "blueprint_refs": [
+      "v11.6 §26 / GCP v2.1 §3-4 (GCP-004, SEC-007, the global ledger)",
+      "ADR 0099 C4"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E05"
+  },
+  {
+    "item": "`modules/ai` provisions a KMS-encrypted bucket, a Vertex AI metadata store and a serving endpoint, fully built and off by default, while `qip_training`'s Vertex port has no client, no credential and no egress path in the Rust workspace",
+    "files": [
+      "infrastructure/terraform/modules/ai/main.tf:1-25,29,52,95,113",
+      "infrastructure/environments/dev/terraform.tfvars:258"
+    ],
+    "category": "placeholder / dead-code (unreached in production)",
+    "class": "E-needs-evidence",
+    "why": "`var.enable_vertex_ai` is `false` everywhere, so the module creates zero resources anywhere it has been applied — but the module's own output (`reachable_by_this_build`) states the gap explicitly rather than implying a working capability: enabling the variable today would produce a healthy, empty, billable service nothing in this repository can submit a job to. This is the shadow-scope form v11.6 asks the platform to build first ('Research/simulation may be broader than executable scope', §25), correctly held short of the part that needs a research-runtime decision (ADR 0099 C5, Python/JAX/PyTorch vs. ADR 0001's Rust-everywhere) before it goes further.",
+    "blueprint_refs": [
+      "ADR 0099 C5"
+    ],
+    "risk": "low",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "`modules/connectivity`'s Partner Interconnect VLAN attachment is fully built and entirely gated off in every environment, and its own module header notes an attachment with no ordered partner circuit sits `PENDING_PARTNER` and bills hourly once activated whether or not any traffic ever crosses it",
+    "files": [
+      "infrastructure/terraform/modules/connectivity/main.tf:59-162",
+      "infrastructure/terraform/modules/connectivity/NOT-ORDERED.md"
+    ],
+    "category": "scaling-limits / temporary-infrastructure",
+    "class": "E-needs-evidence",
+    "why": "`enable_partner_interconnect` and `enable_private_service_connect` are both `false` in every environment's tfvars, so nothing bills today — but this is the answer to prod's 3 colocated cells (chicago-1, newyork-1, dubai-1) sitting ~300-400km from their venues with no local GCP region, and `NOT-ORDERED.md` names manual, out-of-band steps (the partner circuit itself, the cross-connect, the pairing key) that Terraform cannot perform and that this repository cannot verify have happened before a future `apply` flips the flag. The cost risk (an activated attachment with no partner circuit billing indefinitely) is a real scaling-limit finding worth a runbook check gating any future enablement, not just a flag. Blocked on the same owner cost ceiling as the execution nodes it exists to serve (ADR 0099 C8).",
+    "blueprint_refs": [
+      "GCP v2.1 §5/§19 (GCP-031, GCP-033, Cloud Interconnect / PSC)",
+      "ADR 0099 C8"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "`terraform-catalogue` wires exactly 3 of the blueprint's roughly 70 named workloads (`api`, `fastbrain`, `deepbrain`) into Cloud Run — the whole per-brain federation (Asset, Capital, Risk, Evidence, World-model, Reflex, Fabric brokers, and the rest) has no deployable identity anywhere in the tree",
+    "files": [
+      "infrastructure/terraform/catalogue.tf:234-570"
+    ],
+    "category": "scaling-limits / architectural-conflict",
+    "class": "E-needs-evidence",
+    "why": "v11.6/GCP v2.1 describe a federation of separate warm services per brain (GCP-002: 'Stateful and long-running warm services run on regional GKE Standard'); this repository composes those same brains as library crates inside five binaries (ADR 0091), currently deployed as three Cloud Run services. ADR 0099's conflict register (C7) already declines to resolve this by fiat — 'v2.1 describes placement, not a process count, and a brain can be a crate in a binary until independent scaling is *measured* to require otherwise' — taken together with C3 (GKE Standard vs. Cloud Run). The gap is real and worth tracking precisely because the honest completion percentage against the blueprint's catalogue depends on it, but splitting further ahead of a measured scaling need would be the wrong direction per the platform's own principle 4 ('make it structural... beats one a runtime check holds').",
+    "blueprint_refs": [
+      "GCP v2.1 §1 (GCP-002, regional service plane)",
+      "ADR 0099 C7"
+    ],
+    "risk": "low",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "`modules/backup`'s disk-snapshot schedule and KMS key for the execution node's journal carry zero tests, and coverage is structurally zero until an operator manually runs the printed attachment command against a real node disk — which cannot happen because no execution node has ever been provisioned",
+    "files": [
+      "infrastructure/terraform/modules/backup/main.tf:29-73",
+      "infrastructure/terraform/modules/backup/NOT-COVERED.md"
+    ],
+    "category": "missing-tests-on-production-path / temporary-infrastructure",
+    "class": "B-refactor",
+    "why": "Terraform cannot attach a `google_compute_resource_policy` to a disk that the instance group creates later, so the module's own design prints the attachment command as an output rather than running it — that part is a reasonable, documented limitation. What is missing is any test proving the printed command is even well-formed (0 tests today, versus the module's siblings which mostly carry `.tftest.hcl` coverage), which matters specifically because this is the one record `NOT-COVERED.md` says the disaster-recovery runbook cannot reconstruct from the venue: the journal is the thing this schedule exists to protect, and nothing currently proves the schedule it prints would actually apply cleanly the day an execution node exists to receive it.",
+    "blueprint_refs": [],
+    "risk": "medium",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "Four `removed` blocks in the Terraform root release `google_cloud_run_v2_service`/`_iam_member` resources for `cloud_run` and `openobserve` from state without destroying them (ADR 0036 decision 5), and their own comment says they may be deleted once every environment that ever held those resources has applied them — a condition that may already be true for `dev`, the only environment that ever did",
+    "files": [
+      "infrastructure/terraform/main.tf:1004-1034"
+    ],
+    "category": "unfinished-migration / temporary-infrastructure",
+    "class": "E-needs-evidence",
+    "why": "The blocks are a no-op for any environment whose state never held the resource (test/stage/prod, which have never been applied at all), and dev's own history in `infrastructure/CLAUDE.md` shows a re-apply on 2026-09-20 reporting `0 added, 1 changed, 0 destroyed`, which is consistent with dev's state having already migrated past the addresses these blocks name. This is genuinely temporary migration scaffolding with a self-declared removal trigger; the evidence needed before deleting it is a `terraform state list` (or an equivalent plan) against dev's real state confirming `module.cloud_run.google_cloud_run_v2_service.workload` and the three sibling addresses are already absent — a cheap check this report cannot perform without touching the environment, and one worth doing before the next time this file is edited near these lines.",
+    "blueprint_refs": [
+      "ADR 0036 decision 5"
+    ],
+    "risk": "low",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "Binary Authorization's signing chain is only as strong as the pipeline's own deploy identity: whoever can run a `deploy.yml` step can produce a valid attestation, with no two-person or HSM-gated control in front of it",
+    "files": [
+      "infrastructure/terraform/modules/binaryauthorization/main.tf:54-199",
+      "infrastructure/terraform/modules/binaryauthorization/OUT-OF-BAND.md"
+    ],
+    "category": "security-shortcuts",
+    "class": "A-retain",
+    "why": "This is disclosed by the module's own honest-limits document rather than hidden, and `OUT-OF-BAND.md` states plainly that a stronger arrangement is out of reach of this repository alone (it would require an organisational control — a second approver, an HSM-gated key ceremony — outside what Terraform or GitHub Actions alone can enforce). The chain itself (KMS signing key, Container Analysis note, attestor, `REQUIRE_ATTESTATION` policy, no repository-variable identity) is otherwise hardened and applied; nothing here should be built around or silently accepted further without the same disclosure this file already gives it.",
+    "blueprint_refs": [
+      "GCP v2.1 §15 (CICD-054, KMS signs release manifests)"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E13"
+  },
+  {
+    "item": "OpenObserve is genuinely anonymous on the public internet by owner instruction (ADR 0030): `module.openobserve`'s derived posture sets `INGRESS_TRAFFIC_ALL` with an `allUsers` invoker, and nothing structurally prevents a future deployment from making the store non-empty while that posture stands",
+    "files": [
+      "infrastructure/terraform/modules/openobserve/main.tf",
+      "infrastructure/gitops/envs/dev/openobserve.yaml"
+    ],
+    "category": "security-shortcuts",
+    "class": "A-retain",
+    "why": "The module is deliberately resource-free (a pure decision module) and its own header states the exposure is acceptable only while the store holds nothing, naming the exact trigger to re-argue it — any deployment that sets `QIP_OPENOBSERVE_URL`, meaning a platform binary is actually shipping telemetry into it. Kept as-is per ADR 0030, with the re-argue trigger flagged here so this item is not read as settled forever: the moment OpenObserve stops being empty, this posture needs the same decision revisited rather than inherited by default.",
+    "blueprint_refs": [
+      "ADR 0030"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "Six optional per-workload data files (`venue_registrations_file`, `wallet_statement_file`, `capital_fabric_file`, `central_horizons_file`, `risk_limits_file`, `source_candidates_file`) are `null`/commented-out in every environment's tfvars, so every corresponding `QIP_*_PATH` mount is absent from every deployed workload in every environment",
+    "files": [
+      "infrastructure/terraform/catalogue.tf:93-225",
+      "infrastructure/terraform/variables.tf:470-610",
+      "infrastructure/environments/dev/terraform.tfvars:315-425"
+    ],
+    "category": "placeholders / hard-coded-configuration",
+    "class": "E-needs-evidence",
+    "why": "Each variable follows the platform's own principle 2 ('refuse rather than guess') correctly — an unset file is absent, not defaulted to an empty or fabricated one, and the validation regex refuses a path outside `data/` or containing `..` — so this is not a code defect. It is nonetheless a real, structural gap against the blueprint: the desk's venue registrations, wallet statement, capital-fabric declaration, §23.4 central-horizons policy, signed risk limits and source-candidate catalogue reach no deployed binary anywhere today, and `dev`'s own tfvars comment (line 425) notes this is consistent with `source_candidates_file`'s absence producing zero passes. What is needed is not a Terraform change but the desk actually producing and committing these files (or an explicit decision that a given one stays empty for longer), which is why this is evidence-needed rather than a refactor.",
+    "blueprint_refs": [
+      "GCP v2.1 §4 (GCP-014, shared/global catalogue placement)"
+    ],
+    "risk": "medium",
+    "suggested_epic": "E06"
+  },
+  {
+    "item": "Two of the egress bootstrap's seven listeners (`frankfurter`, `huggingface`) are fully wired — named clusters, SAN-pinned upstream certificates, path/method-restricted routes — but dark in every environment: no deployed configuration sets `QIP_CONNECTOR_BASE_URL` or `QIP_LANGUAGE_MODEL_BASE_URL`/mounts `QIP_HF_TOKEN` to route real traffic through them",
+    "files": [
+      "infrastructure/egress/envoy.yaml:451-480",
+      "infrastructure/egress/envoy.yaml:518-537"
+    ],
+    "category": "placeholders / simulated-only production paths",
+    "class": "A-retain",
+    "why": "This is scaffolding built ahead of its caller rather than a defect: the routes exist and are tested (`the_hugging_face_host_is_one_value_in_the_adapter_the_bootstrap_and_the_allowlist`, `egress.rs`), matching this platform's principle of never having a vendor call without a timeout or a route the bootstrap doesn't declare. The huggingface listener is explicitly the ADR 0037 model-vendor path and stays dark until a language-model configuration is actually set; nothing here is presented as a working capability while empty. Listed as a placeholder rather than debt, and worth revisiting once the corresponding Rust-side connector/config lands.",
+    "blueprint_refs": [
+      "v11.6 §13 (world data pass-through / connector staging)"
+    ],
+    "risk": "low",
+    "suggested_epic": "E09"
+  }
+]

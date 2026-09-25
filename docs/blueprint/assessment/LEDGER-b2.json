@@ -1,0 +1,605 @@
+[
+  {
+    "id": "LEDGER-026",
+    "status": "PARTIAL",
+    "current": "qip_contracts::intent::Intent (backend/crates/libs/qip-contracts/src/intent.rs:134-160) carries `inputs: Vec<(String, u64)>` -- the feature name and revision a signal/intent was reasoned from -- and qip-kernel's model_serving::ModelPromotion (backend/crates/runtime/qip-kernel/src/model_serving.rs:77-95) permanently journals `reference: String` (ModelCard name+version) on the Learn-group event log every time a model is promoted (Platform::promote_model). Neither is attached per-decision to an order: qip_execution_engine::order::Order (backend/crates/services/qip-execution-engine/src/order.rs:197-216) carries only `proposal_id` and `hypotheses: Vec<String>` -- bare strategy-name strings via qip_contracts::signal::StrategyId, a newtype over String with no version field (signal.rs:9) -- and there is no policy_version or config_version field anywhere in the intent/order/proposal types.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/intent.rs:134-160 (Intent.inputs)",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:63-95 (ModelPromotion.reference, journalled)",
+      "backend/crates/services/qip-execution-engine/src/order.rs:197-216 (Order: no version fields)",
+      "backend/crates/libs/qip-contracts/src/signal.rs:9 (StrategyId is a bare String newtype)",
+      "a_promotion_is_journalled_before_the_registry_adopts_it_and_names_the_distillate_by_the_digest_a_cell_checks (backend/crates/runtime/qip-kernel/tests/serving.rs:171)",
+      "backend/crates/libs/qip-contracts/tests/contracts.rs:1912,2155 (Intent.inputs carried and compared)"
+    ],
+    "gap": "No decision record (Intent, Order, Proposal) carries a strategy version, a policy version or a config version -- only a model's name+version is journalled, and only at promotion time, not against each decision that used it. Nothing refuses a decision record for a missing identifier; the refusal half of the requirement is entirely unimplemented.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test serving a_promotion_is_journalled_before_the_registry_adopts_it_and_names_the_distillate_by_the_digest_a_cell_checks; cargo test -p qip-contracts --test contracts (inputs assertions at :1912,:2155); no test exists asserting a decision record missing a version identifier is refused -- that test must be written once the fields exist.",
+    "work_item": "E02-decision-version-provenance",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "LEDGER-027",
+    "status": "BLOCKED",
+    "current": "No Rust code writes to Spanner. infrastructure/terraform/modules/data/main.tf:326-341 declares `google_spanner_instance.global` (`config = \"regional-${var.region}\"`, `processing_units = 100`, no `edition` attribute so it defaults to STANDARD rather than ENTERPRISE_PLUS) and `google_spanner_database.positions` (:343-354), both gated `count = var.enable_spanner ? 1 : 0`, and `enable_spanner = false` in every environment's tfvars (dev:257, stage:111, test:111, prod:114). The module's own output doc says why nothing uses it even if enabled: 'spanner: no adapter -- a REST data plane exists but needs session pooling, transaction selectors and streaming resume tokens' (modules/data/outputs.tf:84). qip_storage::StorageTarget::Spanner is a named enum variant (provider.rs:29) but StorageTarget::is_implemented() (provider.rs:62-73) excludes it, and StorageProvider::key_value's fallback arm (provider.rs:379-384) refuses it as 'not built into this binary'. The platform's actual ledger today is qip_portfolio's in-process double-entry accounting (qip-portfolio/src/portfolio.rs) plus qip_events::log::EventLog (ADR 0089, file-backed, hash-chained).",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:326-354 (disabled Spanner instance + database)",
+      "infrastructure/terraform/modules/data/outputs.tf:84 ('spanner: no adapter')",
+      "infrastructure/environments/{dev,stage,test,prod}/terraform.tfvars (enable_spanner = false everywhere)",
+      "backend/crates/libs/qip-storage/src/provider.rs:29,62-73,379-384",
+      "backend/crates/libs/qip-portfolio/src/portfolio.rs (in-process ledger of record today)"
+    ],
+    "gap": "No gRPC/session-pooled Spanner client exists in-tree (needs an HTTP/2+TLS+auth stack this workspace does not have, forbidden without a new ADR per C2/C4); the declared Terraform instance is not Enterprise Plus edition; and enable_spanner=false everywhere means nothing is provisioned even if a client existed.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C4",
+    "verification": "No verification is possible today; `terraform plan -var enable_spanner=true` would still fail to be usable because no adapter reads or writes the resulting database.",
+    "work_item": "E05-spanner-ledger-store",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "LEDGER-045 names the same blocker for the client half; see its row."
+  },
+  {
+    "id": "LEDGER-028",
+    "status": "BLOCKED",
+    "current": "Same disabled module as LEDGER-027. Even if `enable_spanner` were turned on, `google_spanner_instance.global`'s `config` is hardcoded to `\"regional-${var.region}\"` (modules/data/main.tf:331) -- a single-region instance config, not a multi-region one -- so the declared (dormant) infrastructure does not meet this requirement even on its own terms.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:326-341 (config = \"regional-${var.region}\")",
+      "infrastructure/environments/{dev,stage,test,prod}/terraform.tfvars (enable_spanner = false)"
+    ],
+    "gap": "No multi-region instance config is declared anywhere in the Terraform tree, and Spanner itself is disabled in every environment.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-027"
+    ],
+    "blocked_by": "C4",
+    "verification": "`grep -n 'config' infrastructure/terraform/modules/data/main.tf` shows a single-region config today.",
+    "work_item": "E05-spanner-ledger-store",
+    "tier": "T4",
+    "size": "L",
+    "notes": "Also touches C8 (multi-region cost ceiling) once C4 is resolved."
+  },
+  {
+    "id": "LEDGER-029",
+    "status": "PARTIAL",
+    "current": "Two independent in-tree mechanisms cover parts of this. (1) qip_storage::chain::ChainArchive (backend/crates/libs/qip-storage/src/chain.rs:84-160) is an append-only, hash-chained archive over any KeyValueStore, opened by every composition root (qip-api/src/main.rs:107, qip-fastbrain/src/main.rs:86, qip-deepbrain/src/main.rs:95, qip-cli/src/main.rs:198), and proven to refuse a silent reconstruction over an edited or removed entry (tests/chain.rs::an_archived_record_that_was_edited_breaks_the_chain_at_its_own_position, ::an_archived_record_that_was_removed_breaks_the_chain_where_it_was). (2) qip_storage::gcp::CloudStorageBlobStore (gcp/storage.rs) is a real, hardened, in-tree GCS REST adapter reachable through StorageProvider::blobs (provider.rs:425-433), proven against a real loopback socket in 20+ tests/gcp.rs cases (e.g. a_cloud_storage_put_uploads_the_bytes_and_carries_the_token_in_a_header:600). Terraform already declares the target bucket, `${local.prefix}-event-archive` (modules/data/main.tf:115-162), versioned and KMS-encrypted with a retention_policy block.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/chain.rs:84-160",
+      "backend/crates/libs/qip-storage/tests/chain.rs (an_archived_record_that_was_edited_breaks_the_chain_at_its_own_position, ::_that_was_removed_...)",
+      "backend/crates/libs/qip-storage/src/provider.rs:425-433 (StorageProvider::blobs -> CloudStorageBlobStore)",
+      "backend/crates/libs/qip-storage/tests/gcp.rs:600 and 20+ adjacent cases",
+      "infrastructure/terraform/modules/data/main.tf:115-162 (archive bucket, retention_policy.is_locked=false at :141)"
+    ],
+    "gap": "Nobody wires the two mechanisms together: no production code calls StorageProvider::blobs to export ledger segments or a manifest (hashes, sequence range) -- ChainArchive is keyed by KeyValueStore, not BlobStore, so it cannot itself write to CloudStorage. The declared bucket's retention_policy has `is_locked = false` (modules/data/main.tf:141), i.e. the lock this requirement specifically asks for is off by declaration, and `enable_cloud_storage = false` in every environment's tfvars means the bucket does not exist anywhere today. No test rebuilds ledger balances from exports alone.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-storage --test chain; cargo test -p qip-storage --test gcp; `grep -n is_locked infrastructure/terraform/modules/data/main.tf` shows false today; no rebuild-from-archive-alone test exists yet.",
+    "work_item": "E05-ledger-archive-export",
+    "tier": "T3",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "LEDGER-030",
+    "status": "PARTIAL",
+    "current": "Capital grants are committed as records on the platform's own hash-chained event log, which is the in-tree store of record for the ledger today. Platform::issue_capital (backend/crates/runtime/qip-kernel/src/platform.rs:7190) takes two operator signatures and journals a CapitalGrantEntry (producer kernel/capital-grant) for the first signature, for the pair's decision before CentralPlane::issue is asked, and for the plane's outcome (platform.rs:7260, :7314, :7339); CentralPlane::issue (central/plane.rs:1883) signs the CapitalEnvelope and records the approval chain. The operator route that reaches it exists in qip-api (routes.rs:1915), but in every deployed process it is refused before the kernel is called: Principal::authentication_instant (qip-api/src/auth.rs:199-217) refuses every standing bearer credential under ADR 0065, and the kernel's own doc says the intent is 'authorised in shape and refused in fact until a per-person credential exists (ADR 0076)'. So no grant is ever issued in any environment today.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:7190 (Platform::issue_capital), :7260,:7314,:7339 (CapitalGrantEntry journalled on the event log)",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:1883 (CentralPlane::issue, the only writer of self.envelopes)",
+      "backend/crates/apps/qip-api/src/routes.rs:1915 (route calling Platform::issue_capital)",
+      "backend/crates/apps/qip-api/src/auth.rs:199-217 (presence gate refuses every standing credential, ADR 0065)",
+      "two_operators_present_together_issue_a_grant_through_the_platforms_intent_and_the_decision_is_logged_before_the_envelope (backend/crates/runtime/qip-kernel/tests/central.rs:6779)",
+      "backend/crates/services/qip-capital/src/envelope.rs:177 (EnvelopeIssuer::issue)"
+    ],
+    "gap": "(1) No grant can be issued in any deployed process: the only production route is refused by the ADR 0065 presence gate, so the record-of-grant path is reachable only in tests. (2) The named test proves one grant's journalled record matches its envelope's gross limit; no test asserts the requirement's property that the set of grants the platform reports as outstanding equals the set of grant records (e.g. after expiry, recall or restart-replay). (3) The store is the in-process event log, not the strongly consistent Financial Truth store the requirement names (Spanner, C4 -- see LEDGER-027); consistency between grants and positions holds because one process writes both.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-027"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test central two_operators_present_together_issue_a_grant_through_the_platforms_intent_and_the_decision_is_logged_before_the_envelope; no test yet asserts outstanding grants == grant records; no deployed process can issue a grant until a per-person credential exists (ADR 0065/0076).",
+    "work_item": "E05-grant-ledger-consistency-proof",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: NEEDS-VALIDATION -> PARTIAL; tested false->true, deployable true->false. The cited evidence was wrong: central/plane.rs:36 is a `use` line, qip-api/src/main.rs:1095 is inside a #[cfg(test)] module, and FabricJournal (journal.rs) records transfer-fabric commands (destinations, corridors, wallets, gates), not capital grants. The real grant record path (Platform::issue_capital journalling CapitalGrantEntry) and a test for it exist, but every deployed request is refused by the presence gate and the outstanding-equals-records property is untested."
+  },
+  {
+    "id": "LEDGER-031",
+    "status": "MISSING",
+    "current": "infrastructure/terraform/main.tf uses one `var.project_id` throughout every module instantiation (e.g. main.tf:53,74,192,215,232); there is no folder/project model and no separate prod/ledger project. The (disabled) ledger/capital Spanner module and its KMS key (google_kms_crypto_key.records, modules/data/main.tf) live in the exact same project as the analytics warehouse (google_bigquery_dataset.research, same file, same project_id).",
+    "evidence": [
+      "infrastructure/terraform/main.tf:53,74,192,215,232 (single var.project_id)",
+      "infrastructure/terraform/modules/data/main.tf (Spanner, KMS and BigQuery all in one module/project)"
+    ],
+    "gap": "No org/folder/project structure of any kind exists in this Terraform tree -- everything (compute, ledger stub, analytics warehouse, KMS keys) is declared in the single project named by var.project_id.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "`grep -c 'project *= *var.project_id' infrastructure/terraform/main.tf` shows every module sharing one project; no second project_id variable exists in variables.tf.",
+    "work_item": "E14-org-folder-project-model",
+    "tier": "T3",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "LEDGER-032",
+    "status": "PARTIAL",
+    "current": "qip_events has no GCP Pub/Sub topic-class concept, but its own retention table (ADR 0089) gives 'own orders, fills, intents, verdicts, quotes, receipt timestamps, transfers' the RetentionClass::Irreplaceable row (backend/crates/libs/qip-events/src/topic.rs:601-613), whose Retention::Permanent (retention.rs) means never evicted, with an append refused rather than a permanent record silently dropped when the log is full (log.rs's make_room refusal path). Topic::OrderFilled, OrderSubmitted, PositionUpdated, ReconciliationCompleted etc. all carry this class.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/topic.rs:601-613 (Irreplaceable topics)",
+      "backend/crates/libs/qip-events/src/retention.rs (Retention::Permanent, RetentionClass::Irreplaceable)",
+      "backend/crates/libs/qip-events/src/log.rs (permanent-retention refusal-to-evict path)",
+      "decision_relevant_topics_are_retained_permanently_and_never_dropped (backend/crates/libs/qip-events/tests/backbone.rs:95)",
+      "a_full_log_refuses_the_append_rather_than_dropping_an_audit_record (backend/crates/libs/qip-events/tests/backbone.rs:1423)"
+    ],
+    "gap": "This is a permanence guarantee inside one process's own log, not 'long hot retention plus an immutable GCS archive' for a durable pub/sub fabric outcomes wait in during a ledger outage: there is no separate Fabric broker, no RF3 quorum, and (per LEDGER-029) no wired GCS archive export -- an outcome surviving a process restart is proven (ChainArchive tests), but surviving an outage of a genuinely external ledger store, for longer than the process's own retention ceiling, cannot be exercised because no such external store exists yet. Also: a cell's outcomes do not reach the centre's log durably at all -- the cell->centre delta uplink keeps its dead letters in memory and a dead-lettered delta's per-interval orders/fills/crosses are never re-sent (see LEDGER-033), so an outcome lost on the uplink cannot be replayed into the centre's ledger from anything the centre holds.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-029",
+      "LEDGER-033"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-events --test backbone decision_relevant_topics_are_retained_permanently_and_never_dropped a_full_log_refuses_the_append_rather_than_dropping_an_audit_record; `grep -n 'RetentionClass::Irreplaceable' backend/crates/libs/qip-events/src/topic.rs`.",
+    "work_item": "E03-fabric-p1-topic-durability",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: status unchanged. Named the retention tests (the prior filter `-- retention` matches no test name in backbone.rs) and added the uplink dead-letter gap."
+  },
+  {
+    "id": "LEDGER-033",
+    "status": "INCORRECT",
+    "current": "There is no separate ledger sink, but there is an in-tree path by which financial outcomes travel to the centre's ledger, and it does what this requirement forbids. A cell's orders, fills and crosses reach the centre only inside a CellStateDelta (backend/crates/edge/qip-edge/src/mesh.rs:201-254), where they are per-interval and incremental ('a receiver adds these rather than replacing'), built from the current pass's WorkReport (qip-edge/src/cell.rs:7520 Cell::state_delta); the centre books them via Platform::ingest_cell_report -> CentralPlane::settle -> book_settlement. The uplink retries on a bounded ladder and then dead-letters the delta (qip-edge/src/mesh.rs:409 'Deltas that spent the whole ladder and were recorded as dead letters'), or refuses it outright while the circuit is open; the node keeps dead letters in memory only (qip-edge-node/src/mesh.rs:64-69, DEAD_LETTER_CAPACITY = 64, 'a lost message is superseded by the next one') and nothing redrives them. qip-mesh/src/spine.rs:14 states the up direction is 'not durable'. The test a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (qip-edge-node/tests/mesh.rs:375, asserting dead_lettered at :388 and :392) pins that behaviour. The cell's own local journal still holds its decisions, but nothing replays them into the centre. The centre's own event log fails closed (refuses a new append rather than evicting a permanent record), which is a different behaviour from retrying a commit.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/mesh.rs:201-254 (CellStateDelta: orders/fills/crosses per-interval and incremental)",
+      "backend/crates/edge/qip-edge/src/cell.rs:7520 (state_delta built from the current pass's WorkReport)",
+      "backend/crates/edge/qip-edge/src/mesh.rs:409 (uplink dead-letters a delta after the retry ladder)",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs:64-69 (dead letters in memory, capacity 64, no redrive)",
+      "backend/crates/services/qip-mesh/src/spine.rs:14 ('Up: state deltas, not durable')",
+      "a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (backend/crates/apps/qip-edge-node/tests/mesh.rs:375, :388, :392)",
+      "backend/crates/libs/qip-events/src/log.rs:830 (centre log refuses rather than evicts -- a different failure mode)"
+    ],
+    "gap": "The only in-tree route from a cell's financial outcomes to the centre's ledger dead-letters them after a bounded retry (or refuses them with the circuit open) and never redrives them, so an outage longer than the retry ladder loses that interval's orders/fills/crosses from the centre's books -- the exact 'dropped, dead-lettered' outcome the requirement forbids. What is needed: outcome-bearing deltas (or a dedicated outcome stream) spooled durably at the cell (qip_transport::spool::DurableSpool already exists and is used for the capital downlink) and retried without limit, a poison outcome stopping its partition rather than being skipped, and the backlog surfaced (LEDGER-044). None of this needs Spanner or a refused crate, so it is not BLOCKED; no chaos test exists.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge-node --test mesh a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (demonstrates the forbidden dead-letter today); the required chaos test -- centre unreachable longer than the backoff ceiling, then every outcome committed exactly once after recovery -- does not exist.",
+    "work_item": "E05-ledger-sink-retry",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: BLOCKED(C4) -> INCORRECT; implemented/integrated/deployable true->false. The retry-indefinitely semantics are store-independent and buildable in-tree (DurableSpool exists), so C4 is not the reason. The in-tree outcome path (cell uplink -> centre settlement) dead-letters outcome-bearing deltas after a bounded ladder, keeps dead letters in memory, and never redrives them, which the requirement forbids; the cited EventLog refusal is a different behaviour (refuse the new write), not a retrying sink. The forbidden path is reached from qip-edge-node and qip-api composition roots, but no edge node is deployed (execution_nodes = {} everywhere)."
+  },
+  {
+    "id": "LEDGER-034",
+    "status": "BLOCKED",
+    "current": "Vacuously true today: infrastructure/terraform/modules/data/main.tf declares exactly one Spanner database (`google_spanner_database.positions`, :343-354) and no Spanner Graph database anywhere in the tree, and the world graph (qip-world-model) is an in-tree, in-process graph structure with no store of its own. Nothing can share a database that does not exist.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:343-354 (the one Spanner database declared)",
+      "backend/crates/services/qip-world-model/src (in-process graph, no Spanner client)"
+    ],
+    "gap": "The invariant cannot be meaningfully tested until both a ledger store and a world-graph store exist to check are separate; today's separation is an accident of nothing being built rather than a proven design.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-027"
+    ],
+    "blocked_by": "C4",
+    "verification": "`grep -c 'resource \"google_spanner_database\"' infrastructure/terraform/modules/data/main.tf` = 1 today.",
+    "work_item": "E05-spanner-ledger-store",
+    "tier": "T4",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "LEDGER-035",
+    "status": "BLOCKED",
+    "current": "modules/data/main.tf:331 hardcodes `config = \"regional-${var.region}\"` -- the leader region is simply whichever region the environment's tfvars name, with no separate write-origin or residency analysis process, document, or gate anywhere in the tree.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:326-341"
+    ],
+    "gap": "No residency/write-origin analysis exists in the repository, and Spanner is disabled everywhere so the question is moot today.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-027",
+      "LEDGER-028"
+    ],
+    "blocked_by": "C4",
+    "verification": "`grep -n config infrastructure/terraform/modules/data/main.tf` shows a single hardcoded region today.",
+    "work_item": "E05-spanner-ledger-store",
+    "tier": "T4",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "LEDGER-036",
+    "status": "PARTIAL",
+    "current": "No code path in the workspace makes a synchronous call to an external ledger/Spanner store from the order path -- qip-edge's Cell (backend/crates/edge/qip-edge/src/cell.rs) has no such dependency at all, and a cell admits or refuses paper orders purely against its locally-held VerifiedEnvelope. backend/crates/tests/qip-acceptance/tests/stress.rs:1317-1351 (a_cell_cut_off_from_the_centre_spends_only_its_grant_and_then_stops) demonstrates a cell keeps admitting orders against its cached grant while cut off from the centre, refusing only once the grant itself is exhausted.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs (no ledger/Spanner dependency in the admit path)",
+      "backend/crates/tests/qip-acceptance/tests/stress.rs:1317-1351 (a_cell_cut_off_from_the_centre_spends_only_its_grant_and_then_stops)",
+      "a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (backend/crates/apps/qip-edge-node/tests/mesh.rs:375) -- cell stays running with the centre unreachable, and its delta is dead-lettered (:388)",
+      "backend/crates/services/qip-mesh/src/spine.rs:14 ('Up: state deltas, not durable')"
+    ],
+    "gap": "The first half holds structurally: nothing on the cell's order path calls the centre or any ledger store. But neither cited test places an order through Cell::work with commits stalled or measures decision-to-order latency; the stress test proves envelope admission while cut off, and the edge-node test proves the cell stays un-halted. The second half of the verification -- outcomes 'queue durably for later commit' -- is not merely unproven but contradicted by the current design: the uplink dead-letters outcome-bearing deltas after a bounded retry and keeps dead letters in memory only (see LEDGER-033, INCORRECT).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-033"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test stress a_cell_cut_off_from_the_centre_spends_only_its_grant_and_then_stops; no test measures decision-to-order latency under a stalled ledger or asserts durable outcome queuing specifically.",
+    "work_item": "E05-ledger-commit-off-hot-path-proof",
+    "tier": "T2",
+    "size": "M",
+    "notes": "deployable=false because qip-edge-node (the only binary that runs Cell::work outside tests) has execution_nodes={} in every environment. verify: status and flags unchanged. Added the qip-edge-node unreachable-centre test and recorded that durable outcome queuing is contradicted by the in-memory dead-letter uplink, not just untested."
+  },
+  {
+    "id": "LEDGER-037",
+    "status": "BLOCKED",
+    "current": "modules/data/main.tf:333 sets `processing_units = 100` as a fixed value with no `autoscaling_config` block on `google_spanner_instance.global` at all (contrast `google_bigtable_instance.timeseries` two resources above it, which does declare autoscaling_config:284-288).",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:326-341,284-288"
+    ],
+    "gap": "Even in its dormant, disabled state the declared Spanner instance has no autoscaling and therefore no autoscaling floor sized for peak close/reconciliation.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-027"
+    ],
+    "blocked_by": "C4",
+    "verification": "`grep -n autoscaling_config infrastructure/terraform/modules/data/main.tf` -- present for Bigtable, absent for Spanner.",
+    "work_item": "E05-spanner-ledger-store",
+    "tier": "T4",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "LEDGER-038",
+    "status": "BLOCKED",
+    "current": "No ledger schema/DDL exists in any form -- the current ledger is Rust types (qip_portfolio::portfolio::Portfolio) plus qip_events log records, not a table with a primary key, so 'hotspot-safe keys' has nothing to inspect yet.",
+    "evidence": [
+      "backend/crates/libs/qip-portfolio/src/portfolio.rs (no DDL, no primary key concept)"
+    ],
+    "gap": "There is no DDL to review for a monotonic leading key because no relational ledger schema has been written.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-027"
+    ],
+    "blocked_by": "C4",
+    "verification": "No DDL exists to inspect; this must be decided when the Spanner schema is first written, per the requirement's own note.",
+    "work_item": "E05-spanner-ledger-store",
+    "tier": "T4",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "LEDGER-039",
+    "status": "BLOCKED",
+    "current": "The sink half exists and is hardened: qip_storage::gcp::bigquery (backend/crates/libs/qip-storage/src/gcp/bigquery.rs, 1038 lines) is a real in-tree BigQuery REST/streaming-insert client, reachable through StorageProvider and tested against a real loopback socket in tests/gcp.rs. The source half does not exist: change streams are a Spanner feature, and there is no Spanner adapter (LEDGER-027/045). BigQueryWarehouse has no production caller anywhere outside qip-storage (`rg -n BigQueryWarehouse backend/crates -g '!**/tests/**'` finds only qip-storage), so no ledger change propagates to any reporting table or derived cache in any form.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/gcp/bigquery.rs (1038 lines)",
+      "backend/crates/libs/qip-storage/tests/gcp.rs (BigQuery adapter tests against a real socket)"
+    ],
+    "gap": "No change-stream source exists because there is no working Spanner client to read one from; the downstream BigQuery sink has no production caller wiring it to ledger data at all.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-027",
+      "LEDGER-045"
+    ],
+    "blocked_by": "C4",
+    "verification": "cargo test -p qip-storage --test gcp -- bigquery",
+    "work_item": "E05-spanner-ledger-store",
+    "tier": "T4",
+    "size": "L",
+    "notes": "implemented/tested reflect the sink half only; the requirement as a whole is blocked on the source. verify: implemented/tested true->false. The flags described a generic BigQuery client with no caller, not the requirement's behaviour (ledger changes propagating downstream with a commit reference); neither the source (change streams, C4) nor any pipeline exists, and BigQuery itself is also C4. Blocker unchanged."
+  },
+  {
+    "id": "LEDGER-040",
+    "status": "PARTIAL",
+    "current": "backend/crates/runtime/qip-kernel/src/central/plane.rs::ingest_cell_report (breaks assembled around :2085-2099) collects ReconciliationBreak records (struct at :213-225, carrying instrument/cell_quantity/external_quantity/detail/origin) and calls halt_cell (:2682-2705), which raises a qip_compliance::incident::Incident and returns a HaltScope. record_halt (:2665-2679) counts each break by direction on `qip_central_reconciliation_breaks_total` and the halt on `qip_central_cell_halts_total`. The HaltScope is carried on CellReport.halted (:433) and surfaced to operators over the API (halted_by_centre via KillSwitch::is_halted at qip-api/src/routes.rs:3112, console.rs:352, web.rs:181; halted_at at qip-api/src/mesh.rs:1321). Named tests: a_reconciliation_break_halts_that_cell_and_only_that_cell and a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause (backend/crates/runtime/qip-kernel/tests/central.rs:681,737). The custody half is closer than stated: Platform::reconcile_wallet (qip-kernel/src/platform.rs:7890) runs Wallet::reconcile through Platform::decide_fabric (:7559), which appends a FabricRecord to the event log and publishes it on the journal under Topic::ComplianceEvaluated (qip-capital-fabric/src/journal.rs:471, an Irreplaceable Decide-group topic); each ReconciliationOutcome carries venue, asset, delta and direction (wallet.rs:398-430). But no environment mounts a wallet statement (qip-acceptance manifest_wiring.rs:1954), so in any deployment it judges nothing, and position breaks arrive only from cells, none of which is deployed.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:213-225,2085-2099,2665-2705",
+      "backend/crates/apps/qip-api/src/routes.rs:3112 (halted_by_centre)",
+      "backend/crates/apps/qip-api/src/mesh.rs:1321",
+      "a_reconciliation_break_halts_that_cell_and_only_that_cell (backend/crates/runtime/qip-kernel/tests/central.rs:681)",
+      "a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause (backend/crates/runtime/qip-kernel/tests/central.rs:737)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:7559-7625 (decide_fabric appends and publishes the FabricRecord), :7890 (reconcile_wallet)",
+      "backend/crates/services/qip-capital-fabric/src/journal.rs:471 (FabricRecord TOPIC = ComplianceEvaluated)",
+      "the_learn_stage_halts_a_statement_beyond_its_floor_and_not_one_inside_it (backend/crates/runtime/qip-kernel/tests/ledger.rs:2596)",
+      "the_wallet_statement_is_mountable_from_a_root_variable_and_no_environment_names_one (backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs:1954)"
+    ],
+    "gap": "No discrete event type is published onto the event bus for a break the way the requirement asks ('published as a P0 or P1 Fabric event'); qip_events::Topic::ReconciliationCompleted is used for a different reconciliation (strategy-retirement disposition, central/learning.rs:336), not this one, and qip_events::Topic has no P0/P1 priority tiering at all -- that is a Pub/Sub-specific concept this in-tree bus does not model. ReconciliationBreak itself has no venue/custodian field (only `instrument`), so 'names ... the venue or custodian' is not literally carried.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-kernel --test central a_reconciliation_break_halts_that_cell_and_only_that_cell a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause",
+    "work_item": "E05-reconciliation-break-event",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status unchanged; deployable true->false and evidence corrected. routes.rs:3018 is the cycle report's own halted flag, not a reconciliation HaltScope (replaced with routes.rs:3112). Added the custody-statement reconciliation, which does journal its discrepancies as an event, but as one ComplianceEvaluated record per reconcile command rather than one break event per mismatch on a P0/P1 class. Not deployable in fact: no environment mounts a wallet statement and no cell is deployed to report a position break."
+  },
+  {
+    "id": "LEDGER-041",
+    "status": "PARTIAL",
+    "current": "Deterministic, model-free halting on a reconciliation break exists at two places that are not connected. (1) The cell: Cell::break_on (backend/crates/edge/qip-edge/src/cell.rs:4608) records every break the cell itself finds on its drop-copy/execution-report channels and, on the first, trips its own kill switch globally (:4618) -- local execution stops. Proven by a_report_naming_an_order_the_cell_never_sent_is_a_break_and_halts_the_cell (qip-edge/tests/fills.rs:450). Runs outside tests only in qip-edge-node, which no environment deploys. (2) The centre: CentralPlane::ingest (central/plane.rs:2020) halts on any non-empty break list (:2090-2125) -- raising an incident (halt_cell, :2682) and tripping the platform kill switch scoped to that cell (:2110). But that scoped halt never reaches the cell: the policy payload's halted flag is `platform.autonomy().kill_switch().is_globally_tripped()` (qip-api/src/mesh.rs:799, applied at :895), broadcast_halt is called only from the operator's global /kill-switch route (routes.rs:2340-2358), and CentralPlane::may_act (plane.rs:1531), which reads the incident, has no production caller. So a break the centre finds itself (a BreakOrigin::UnsentFill from settle) is displayed to operators (halted_by_centre) and does not narrow or stop the cell. Neither side has a policy threshold or policy table: any break halts, and there is no 'narrow' action.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:4608-4635 (Cell::break_on: first break trips the cell's kill switch)",
+      "a_report_naming_an_order_the_cell_never_sent_is_a_break_and_halts_the_cell (backend/crates/edge/qip-edge/tests/fills.rs:450)",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:2090-2125 (any break -> halt_cell + trip_scope), :2682-2705",
+      "backend/crates/apps/qip-api/src/mesh.rs:799 (payload `halted` = is_globally_tripped(), so a scoped reconciliation halt is not carried), :895",
+      "backend/crates/apps/qip-api/src/routes.rs:2340-2358 (broadcast_halt only on the operator's global kill switch)",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:1531 (may_act: no production caller)",
+      "a_reconciliation_break_halts_that_cell_and_only_that_cell (backend/crates/runtime/qip-kernel/tests/central.rs:681) -- asserts the centre's scoped switch and may_act, not the cell",
+      "a_break_with_equal_quantities_is_recorded_as_detail_only_and_still_halts (backend/crates/runtime/qip-kernel/tests/central.rs:853)"
+    ],
+    "gap": "(1) A break found at the centre (including UnsentFill from settle) does not narrow or stop the cell: the scoped trip is not carried by payload.halted (global only), not broadcast, and may_act has no production caller. (2) No policy table or threshold exists -- every break halts; the 'narrow' arm the requirement names is absent. (3) No test replays the same break and asserts the same action. (4) The cell-side halt runs only in qip-edge-node, which is not deployed (execution_nodes = {} everywhere).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-040"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test fills a_report_naming_an_order_the_cell_never_sent_is_a_break_and_halts_the_cell; cargo test -p qip-kernel --test central a_reconciliation_break_halts_that_cell_and_only_that_cell a_break_with_equal_quantities_is_recorded_as_detail_only_and_still_halts; missing: a test that a centre-found break halts or narrows the reporting cell through the mesh, a policy-table threshold test, and a replay-determinism test.",
+    "work_item": "E05-reconciliation-break-policy",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: COMPLETE -> PARTIAL; gap, work_item, tier and size filled. The COMPLETE rested on 'The HaltScope reaches the cell through the mesh policy payload (mesh.rs:895)', which is false: the payload's halted flag is is_globally_tripped() (mesh.rs:799), so the centre's cell-scoped reconciliation halt never reaches the cell. The cited central.rs tests assert the centre's own switch, not local execution. There is no policy table/threshold, no narrow action, and no replay test; the cell-side path is not deployed. Central-plane half runs in qip-api."
+  },
+  {
+    "id": "LEDGER-042",
+    "status": "BLOCKED",
+    "current": "No backup schedule or version_retention_period is declared for google_spanner_database.positions (modules/data/main.tf:343-354 declares only encryption_config and deletion_protection); Spanner itself is disabled everywhere.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:343-354"
+    ],
+    "gap": "Not implemented even in the disabled Terraform stub, and blocked on LEDGER-027 in any case.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-027"
+    ],
+    "blocked_by": "C4",
+    "verification": "`grep -n 'version_retention_period\\|backup_schedule' infrastructure/terraform/modules/data/main.tf` -> no match.",
+    "work_item": "E05-spanner-ledger-store",
+    "tier": "T4",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "LEDGER-043",
+    "status": "BLOCKED",
+    "current": "No leader failover has ever been exercised because no Spanner instance is provisioned (enable_spanner=false everywhere) and the declared instance is single-region regardless (LEDGER-028).",
+    "evidence": [
+      "infrastructure/environments/{dev,stage,test,prod}/terraform.tfvars (enable_spanner = false)",
+      "infrastructure/terraform/modules/data/main.tf:331 (regional config)"
+    ],
+    "gap": "A game day needs a provisioned, multi-region Spanner instance to remove a leader region from; neither exists.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-028"
+    ],
+    "blocked_by": "C4",
+    "verification": "No game day has been run; none is possible until LEDGER-028 is unblocked.",
+    "work_item": "E05-spanner-ledger-store",
+    "tier": "T4",
+    "size": "L",
+    "notes": "Cost of the drill itself also touches C8 once C4 is resolved."
+  },
+  {
+    "id": "LEDGER-044",
+    "status": "MISSING",
+    "current": "No outcome-to-ledger backlog/lag metric exists anywhere. `grep -rn 'ledger.lag\\|ledger_lag\\|outcome_to_ledger\\|ledger_backlog' backend/crates docs/adr` returns nothing. The observability domain's own extensive metrics inventory (.claude/rules/domains/observability.md) enumerates qip_central_reconciliation_breaks_total, qip_central_cell_halts_total, qip_central_orders_sent_total, qip_central_fills_attributed_total and qip_venue_fill_error_bps as the central-plane series that exist, and none of them is a backlog/lag gauge. Nearest existing signals, neither of which is a backlog: qip_journal_write_failures_total (metrics.rs:834, recorded in platform.rs) counts cycles that could not be journalled and never returns to zero; the edge node charts uplink dead letters (qip_edge_mesh_deltas_total{outcome}), which counts outcome-bearing deltas lost rather than outstanding (see LEDGER-033).",
+    "evidence": [
+      "backend/crates/libs/qip-observability/src/metrics.rs (no backlog/lag series defined)",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs (reconciliation-break and halt counters, no lag gauge)"
+    ],
+    "gap": "No metric measures how far the ledger has fallen behind what cells/the desk have done; without an external ledger there is no natural 'commit lag' to measure yet, but even the trivial version (time since the last successful settle()/record_realised cycle) is not recorded.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "`grep -n 'BACKLOG\\|LEDGER_LAG' backend/crates/libs/qip-observability/src/metrics.rs` -> no match.",
+    "work_item": "E12-outcome-to-ledger-backlog-metric",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status unchanged; searched metrics.rs and the kernel/edge for lag/backlog/pending series and recorded the two nearest counters so the implementer does not mistake either for this gauge."
+  },
+  {
+    "id": "LEDGER-045",
+    "status": "BLOCKED",
+    "current": "Confirmed directly by the Terraform module's own doc comment: 'spanner: no adapter -- a REST data plane exists but needs session pooling, transaction selectors and streaming resume tokens' (infrastructure/terraform/modules/data/outputs.tf:84). qip_storage::StorageTarget::Spanner is a named enum variant with no implementation (provider.rs's is_implemented:62-73 excludes it; required_configuration names what a gRPC client would need).",
+    "evidence": [
+      "infrastructure/terraform/modules/data/outputs.tf:84",
+      "backend/crates/libs/qip-storage/src/provider.rs:29,62-73"
+    ],
+    "gap": "A Spanner gRPC client needs HTTP/2, TLS and Google auth beyond the metadata-server bearer token qip-storage's REST adapters already use -- none of which ADR 0002 (two dependencies: serde, serde_json) or ADR 0009 permit in-tree today.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-027"
+    ],
+    "blocked_by": "C2, C4",
+    "verification": "No verification possible; `grep -rn 'tonic\\|prost\\|h2' backend/crates/**/Cargo.toml` -> no match, confirming no gRPC stack exists.",
+    "work_item": "E05-spanner-ledger-store",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Same blocker as LEDGER-027; the requirement's own note states it is 'blocked on an ADR, not on code.' verify: blocked_by C4 -> 'C2, C4'. The requirement fixes gRPC; a gRPC client needs HTTP/2, protobuf and TLS crates (C2) as well as the Spanner service itself (C4)."
+  },
+  {
+    "id": "LEDGER-046",
+    "status": "PARTIAL",
+    "current": "Two component-level mechanisms independently implement 'ledger/statement, never a cache' reconciliation, covering cash and positions separately. Cash: qip_capital_fabric::wallet::Wallet::reconcile (backend/crates/services/qip-capital-fabric/src/wallet.rs:633-663) computes `expected = ledger_balance - reserved + in_flight` from the LedgerView alone and halts (never corrects) a venue-asset whose observed holding diverges beyond tolerance -- the module doc states this explicitly: 'a HALT that venue-asset, alert, never correct'. Positions: central/plane.rs::ingest_cell_report compares a cell's reported book against settlement/report reconciliation breaks (:2085-2091), the venue/centre's own record, not a cache.",
+    "evidence": [
+      "backend/crates/services/qip-capital-fabric/src/wallet.rs:1-40,633-663",
+      "a_holding_the_ledger_never_booked_halts_as_unrecorded (backend/crates/services/qip-capital-fabric/tests/wallet.rs:498)",
+      "a_delta_at_tolerance_halts_exactly_that_venue_asset_and_no_other (backend/crates/services/qip-capital-fabric/tests/wallet.rs:385)",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:2085-2099",
+      "every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one_flipped_byte_refuses_the_replay (backend/crates/tests/qip-acceptance/tests/truth_loop.rs:1193) -- rebuilds the desk's cash registry from the log alone in a second platform instance",
+      "the_wallet_statement_is_mountable_from_a_root_variable_and_no_environment_names_one (backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs:1954)"
+    ],
+    "gap": "No acceptance-level test empties or poisons every cache/derived store and shows a rebuild from the ledger plus (simulated) venue/custody statements alone reproduces prior balances -- the existing tests prove the halt-not-correct behaviour at the component level, not a whole-platform rebuild.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-capital-fabric --test wallet a_holding_the_ledger_never_booked_halts_as_unrecorded a_delta_at_tolerance_halts_exactly_that_venue_asset_and_no_other; cargo test -p qip-kernel --test central a_reconciliation_break_halts_that_cell_and_only_that_cell; no acceptance-level rebuild-with-poisoned-caches test exists yet.",
+    "work_item": "E05-reconciliation-rebuild-acceptance-proof",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status unchanged; deployable true->false. The cash half needs a custody statement and every environment declines QIP_WALLET_STATEMENT_PATH, and the position half depends on cell reports from undeployed edge nodes. Added truth_loop's rebuild-from-the-log-alone acceptance test, which covers the cash registry's rebuild but does not poison caches or compare against venue/custody statements."
+  },
+  {
+    "id": "LEDGER-047",
+    "status": "BLOCKED",
+    "current": "No regional GKE service plane exists at all -- ADR 0024 retired Kubernetes for Cloud Run, so there is no 'regional GKE' node to write control state from. modules/data/main.tf declares one Spanner database ('positions'), disabled everywhere, and qip-storage has no Spanner adapter (LEDGER-045). Today's regional control state -- what qip-edge-node/Cell holds and what the mesh spine (qip-mesh::spine) pushes/drains -- lives in the cell's own local journal and in qip_transport's durable file-backed spool, not in any cross-region-consistent store, and would not survive the regional process/VM being rebuilt without that local disk.",
+    "evidence": [
+      "infrastructure/environments/{dev,stage,test,prod}/terraform.tfvars (execution_nodes = {} everywhere; the only google_container_cluster is the ADR 0036 GitOps control plane at modules/gitops-control-plane/main.tf:131, which runs no qip-* image)",
+      "infrastructure/terraform/modules/data/main.tf:343-354 (the one disabled Spanner database)",
+      "backend/crates/services/qip-mesh/src/spine.rs (CapitalDispatcher/CellDeltaReceiver over a local durable spool, not Spanner)"
+    ],
+    "gap": "Both the placement (Kubernetes) and the store (Spanner) this requirement names are absent; even the execution-node VM model that replaced GKE (ADR 0024) has no durable-control-state Spanner write path.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-027"
+    ],
+    "blocked_by": "C3, C4",
+    "verification": "`grep -rn 'resource \"google_container_cluster\"' infrastructure/terraform` -> only gitops-control-plane (a controller cluster, no service plane); `grep -n execution_nodes infrastructure/environments/*/terraform.tfvars` -> {} in all four.",
+    "work_item": "E05-spanner-ledger-store",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Also blocked by C4 (no Spanner client); C3 is primary because the regional GKE placement the requirement names does not exist under any name post-ADR 0024. verify: blocked_by C3 -> 'C3, C4' (the Spanner store is C4 as the note already said). Corrected the evidence: a GKE cluster does exist -- the ADR 0036 GitOps control plane -- but it hosts controllers, not a regional service plane, so the BLOCKED status stands."
+  },
+  {
+    "id": "LEDGER-048",
+    "status": "PARTIAL",
+    "current": "No 'scout/parse/evidence/delta/discard' pipeline exists under those names anywhere in the workspace (qip-data-finder's modules are admission/campaign/catalogue/category/coverage/decision/endpoint/finder/freshness/health/ingestion/ledger/legal/personal_data/probe/quality/reference/registration/replacement/retention/robots/schema/scoring/source/tier -- no delta or discard stage). Internal outcomes (order, fill, position events) are journalled directly onto qip_events topics of the Irreplaceable class (topic.rs:601-613) from qip-kernel. qip-kernel does depend on qip-data-finder (config.rs:15 registrations, references.rs:61 admitted sources), but for source registration and data references, not on the outcome-journalling path. The 'internal lake' half of the durable stores does not exist (LEDGER-049).",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/ (module list; no delta/discard stage)",
+      "backend/crates/libs/qip-events/src/topic.rs:601-613 (Irreplaceable order/fill/position topics)",
+      "backend/crates/runtime/qip-kernel/src/config.rs:15, references.rs:61 (qip-kernel's qip_data_finder uses: registrations and references only)"
+    ],
+    "gap": "The separation holds only because no discard-capable world-data pipeline has been built, not because anything keeps the two apart structurally; no test names this invariant (the acceptance hits for 'scout|discard' are incidental prose, not this property). The verification's second half -- the outcome still present in the internal lake -- cannot pass because the lake does not exist (LEDGER-049). A future change routing the event log through a dedup/discard stage would reintroduce the failure with nothing to catch it.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-049"
+    ],
+    "blocked_by": "",
+    "verification": "No test exists; needed: a wiring test (e.g. in qip-acceptance architecture/manifest_wiring) asserting no path from internal-outcome topics into any discard-capable stage, plus an acceptance test that an outcome the delta stage would call a duplicate is still in the ledger and the internal lake.",
+    "work_item": "E08-internal-outcome-discard-isolation-test",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: NEEDS-VALIDATION -> PARTIAL. The invariant is vacuous today (the discard pipeline does not exist) and the lake leg of 'written directly to their durable stores' is missing, so the code does not 'appear to implement' the whole requirement. Also corrected two false evidence claims: `grep qip_data_finder qip-kernel/src` does match (config.rs, references.rs), and the acceptance grep for scout|discard is not empty (incidental hits)."
+  },
+  {
+    "id": "LEDGER-049",
+    "status": "MISSING",
+    "current": "No 'Tick/Internal Lake' or equivalent GCS-backed scan store exists for internal outcomes. `grep -rn 'internal_lake\\|InternalLake\\|Algorik Outcome' backend/crates` returns nothing, and no production code calls qip_storage::StorageProvider::blobs at all (`grep -rn '\\.blobs(' backend/crates/apps` returns nothing). Internal outcomes are durably retained only in the general-purpose event log (Irreplaceable/permanent retention, topic.rs:601-613) and, where a composition root opens one, ChainArchive (chain.rs) -- neither is a store built for scanning execution history beside tick history. qip-mesh declares a Lakehouse port (ports.rs:185) with File/Memory adapters, but nothing in qip-kernel or any app constructs one, and nothing writes internal outcomes to it.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/topic.rs:601-613",
+      "backend/crates/libs/qip-storage/src/chain.rs:84-160",
+      "backend/crates/libs/qip-storage/src/provider.rs:389-433 (blobs() exists; no caller in backend/crates/apps)"
+    ],
+    "gap": "The specific capability -- a scan-optimised lake holding internal orders/fills/decisions beside market ticks, with a test showing a session's lake and ledger counts agree -- does not exist; the in-tree CloudStorage adapter that could hold it (qip_storage::gcp::CloudStorageBlobStore) is implemented and tested but has no caller for this purpose.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "LEDGER-029"
+    ],
+    "blocked_by": "",
+    "verification": "`grep -rn 'internal_lake\\|InternalLake' backend/crates` -> no match.",
+    "work_item": "E06-internal-outcome-lake-write",
+    "tier": "T3",
+    "size": "M",
+    "notes": "verify: status unchanged; searched for lake/lakehouse and found the qip-mesh Lakehouse port, which has no production caller and holds no internal outcomes."
+  }
+]

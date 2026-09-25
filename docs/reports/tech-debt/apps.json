@@ -1,0 +1,200 @@
+[
+  {
+    "item": "`RestGateway`'s paper/live self-report (`is_simulated`) is derived from `AdapterClass`, which has no `Live` variant by design — but the crate's own two module docs disagree about what that guarantees: `qip-brokers::adapter` says `AdapterClass::Sandbox` is 'a real protocol against a real endpoint, settling nothing. Still not real money', while `qip-edge-node::venue` says in the same breath that selects it, 'nothing in the platform's code can tell a venue's sandbox host from its production host... point the adapter at [the production host] and the orders are real while `Broker::is_simulated` still answers `true`'",
+    "files": [
+      "backend/crates/apps/qip-edge-node/src/gateway.rs:769-780 (RestGateway doc: 'is_simulated answers true, and that is not a claim about the money')",
+      "backend/crates/apps/qip-edge-node/src/gateway.rs:929-940 (impl Placer for RestGateway: fn is_simulated reads self.adapter.is_simulated() and nothing else)",
+      "backend/crates/apps/qip-edge-node/src/venue.rs:19-28 (module doc: 'nothing in the platform's code can tell a venue's sandbox host from its production host... this process has no way to ask')",
+      "backend/crates/services/qip-brokers/src/adapter.rs:44-63,84-92 (AdapterClass has two variants, both is_paper()==true; Sandbox doc: 'still not real money, and still not a variant that can become one')",
+      "backend/crates/services/qip-brokers/src/rest.rs:1286,1785-1786 (RestOrderEntryAdapter::class() hardcodes AdapterClass::Sandbox; is_simulated derives from class().is_paper())",
+      "backend/crates/edge/qip-edge/src/cell.rs:3822-3862 (Cell::send: let simulated = gateway.is_simulated(); if !simulated { refuse } — GATE_LIVE_VENUE, 'unconditional on the class')"
+    ],
+    "category": "security-shortcut / architectural-conflict (paper-trading boundary)",
+    "class": "E-needs-evidence",
+    "why": "This is not a hidden bug — the code names its own limit repeatedly and more plainly than most findings in this register, and the design (no Live variant can be written, so the type system rather than a runtime flag is what a live path would have to defeat) is exactly the 'make it structural' principle CLAUDE.md asks for. But `Cell::send`'s GATE_LIVE_VENUE — the third of the three independently-cited paper-trading layers in `.claude/rules/01-security-and-safety.md` ('the type system... qip-edge's Cell has no constructor taking a ceiling other than paper trading') — decides whether an order is refused entirely from `gateway.is_simulated()`, and `RestGateway.is_simulated()` is true unconditionally, for any host it is pointed at. So the one structural check this codebase's own security rule names as independent of operator diligence is, for the one gateway that can reach a real network endpoint, not independent of operator diligence: it depends on the operator never pointing `QIP_VENUE_ORDER_ENTRY_ACKNOWLEDGED` and the credential at a venue's production host, a fact `venue.rs`'s own module doc calls 'a witness, not a check'. `qip-brokers::adapter`'s doc asserts a stronger guarantee ('settling nothing... not a variant that can become one') than `qip-edge-node::venue`'s doc admits the crate can deliver, and a reader of only the first would believe the third layer holds unconditionally for this path. Today this is inert — `execution_nodes = {}` in every environment, so no process ever constructs a `RestGateway` outside tests — but per CLAUDE.md's own product-direction question ('Does it make a guarantee weaker in exchange for speed? Then say so out loud in the diff') the two docs should say the same thing, and an owner should decide whether the venue-host claim needs a structural check (e.g. an allow-listed sandbox-host registry) before `execution_nodes` is ever non-empty. This report classifies rather than resolves it, per `.claude/rules/01-security-and-safety.md`: 'If a task appears to require a live-order path, stop and ask.'",
+    "blueprint_refs": ["v11.6 §14 Risk Brain + Deterministic Risk Gate", "v11.6 §16 Regional Reflex Nodes", "ADR 0021"],
+    "risk": "high",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "No Compute Engine execution node has ever been provisioned in any environment (`execution_nodes = {}` everywhere), so `qip-edge-node` — the only binary that can hold a `Cell` — has never run outside `cargo test` in this repository's history",
+    "files": [
+      "infrastructure/environments/dev/terraform.tfvars:1-27,227",
+      "infrastructure/environments/{test,stage,prod}/terraform.tfvars:49,49,51",
+      "backend/crates/apps/qip-edge-node/src/main.rs:1-1157",
+      ".github/workflows/deploy.yml:227-260,278 (the binary is built and attested every run; nothing runs it)"
+    ],
+    "category": "temporary-infrastructure / deployment-ci-observability-gap",
+    "class": "E-needs-evidence",
+    "why": "ADR 0035 authorises exactly one node (newyork-1, shadow mode) but, per dev's own tfvars comment, needs three sequenced human acts (bake the boot image, dispatch infra.yml up, then image.yml) plus an operator-chosen capital allocation the tfvars says 'no workflow may pick'. None of that is a code defect: 129 tests exercise the gateway/mesh/arbitrage/reprice/cross-region stack, and the binary is built and Binary-Authorization-attested on every `deploy.yml` run. What is missing is evidence — the capital-allocation decision and the sequenced infra dispatch — not a rewrite, so this is not a bug to fix in this codebase; it is the one fact that makes every other apps-group finding about mesh reachability, live-venue exposure and edge telemetry currently untestable against a real deployment rather than merely untested.",
+    "blueprint_refs": ["v11.6 §16 Regional Reflex Nodes", "GCP v2.1 §24", "ADR 0099 C8", "ADR 0035"],
+    "risk": "high",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "No Cloud Run service exists today for any of the three warm composition roots (`qip-api`, `qip-fastbrain`, `qip-deepbrain`); every one of their apps.json records is 'reached_from_production: partial' for the same single reason",
+    "files": [
+      "docs/adr/0093-the-dev-control-planes-cluster-is-suspended-while-no-argo-cd-release-passes-the-scan-gate.md",
+      "infrastructure/gitops/envs/dev/{api,fastbrain,deepbrain}.yaml",
+      "backend/crates/apps/qip-api/src/main.rs:1-235 (composition root serving nothing today)",
+      "backend/crates/apps/qip-fastbrain/src/main.rs:1-391",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:1-1497"
+    ],
+    "category": "deployment-ci-observability-gap",
+    "class": "A-retain",
+    "why": "ADR 0093 is explicit that this 'suspends a deployment, not a decision': ADR 0036 stands unamended, every GitOps manifest stays in the tree, and 'the reversal is one word in one tfvars line', done on the owner's 2026-09-20 instruction to minimise cost. There is nothing for a tech-debt programme to migrate or refactor here — the code these three composition roots run is production-grade (262+98+169 tests respectively) and was observed serving in dev on 2026-09-04 before teardown. This is recorded because every apps-group finding that says 'X is real code but currently unreached' traces to this one root cause, and a reader should not have to rediscover that three times.",
+    "blueprint_refs": ["GCP v2.1 §24", "ADR 0099 C3, C8", "ADR 0093"],
+    "risk": "medium",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "Three composition roots (`qip-fastbrain`, `qip-deepbrain`, `qip-edge-node`) each hand-roll their own minimal blocking-HTTP health/quiesce/metrics server — same shape, same function names (`Request::parse`, `respond`, `bind`, `serve`, `answer`, `json`, `exposition`), near-duplicated rather than shared",
+    "files": [
+      "backend/crates/apps/qip-fastbrain/src/health.rs:1-554 (Request::parse at 62, respond at 135, serve at 220)",
+      "backend/crates/apps/qip-deepbrain/src/health.rs:1-584 (Request::parse at 66, respond at 139, serve at 226)",
+      "backend/crates/apps/qip-edge-node/src/main.rs:791,1089 (its own TcpListener bind and write_response, a third independent implementation)"
+    ],
+    "category": "duplicate-systems",
+    "class": "B-refactor",
+    "why": "The decoupling itself is deliberate and well-reasoned — each module doc says explicitly this is 'the same shape qip-edge-node uses, for the same reason': a node whose liveness probe depends on qip-api has coupled the two, and the probe must answer while a stalled cycle holds the platform lock. That reasoning does not require re-deriving the request-line parser, the read/write timeout handling and the TCP accept loop independently in each crate — the fastbrain and deepbrain files share function names because one was written by copying the other, and a bug fixed in the timeout handling of one (or a request-smuggling-shaped parsing defect) has to be independently re-fixed in the other two rather than in one place. Following the precedent already accepted for qip-transport/qip-storage (I/O admitted into a library crate specifically for the platform's own wire, per ADR 0011/0012), a shared minimal-probe-server library is a plausible target; nothing here requires a rewrite of any of the three call sites' actual business logic (what /ready checks, what /quiesce does), only the shared transport plumbing.",
+    "blueprint_refs": ["GCP v2.1 (Cloud Run liveness/readiness probes)"],
+    "risk": "low",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "`qip-api`'s `RateLimiter` is an in-process `BTreeMap` behind a `Mutex`, with no shared backing store, while prod's own manifest scales the service to up to 4 Cloud Run instances",
+    "files": [
+      "backend/crates/apps/qip-api/src/auth.rs:497-528 (RateLimiter::new/permit; limits held in std::sync::Mutex<BTreeMap<...>>, process-local)",
+      "backend/crates/apps/qip-api/src/main.rs (RateLimiter::new(Duration::from_secs(60), 600) constructed once per process)",
+      "infrastructure/gitops/envs/prod/api.yaml:43-44 (minInstanceCount: 0, maxInstanceCount: 4)"
+    ],
+    "category": "scaling-limits",
+    "class": "B-refactor",
+    "why": "A per-subject window of 600 requests/minute is enforced independently by each Cloud Run instance that happens to receive that subject's traffic; with up to 4 concurrent instances the effective ceiling for one credential is not the configured 600/min but anywhere up to 4x that, depending on load-balancer placement the application has no control over, and the count resets on every instance restart or scale event rather than persisting. This is the same in-memory-state pattern already flagged for the kernel's own storage target (memory, discarded on restart), applied here to a security control rather than to trading state. Not currently exercised — no Cloud Run instance is live in any environment (see the ADR 0093 finding above) — so the gap is real but dormant; it would need a shared counter (the KeyValueStore the process already holds, or an equivalent) before this service is scaled past one instance in fact.",
+    "blueprint_refs": ["GCP v2.1 (Cloud Run horizontal scaling)"],
+    "risk": "low",
+    "suggested_epic": "E14"
+  },
+  {
+    "item": "`GET /data-sources` answers `available: false` unconditionally — a fixed refusal rather than a real source list, health record, freshness instant or quality score, for every deployment that has ever run this binary",
+    "files": [
+      "backend/crates/apps/qip-api/src/routes.rs:312-329 (route comment: 'the handler matches one expression and answers available: false unconditionally')"
+    ],
+    "category": "hard-coded-configuration / placeholder",
+    "class": "B-refactor",
+    "why": "The route's own comment is unusually candid about its own history: a previous summary ('discovered, approved and rejected data sources with health and licensing') described an intent no code path here produces, and 'a console built against the route table was promising four fields no code path here can produce' — the current fixed-refusal summary replaced that promise with an honest one, which is the right interim fix but not the target state. `qip-data-finder`'s catalogue is the real source of this data, and `qip-deepbrain`'s DiscoveryDesk is the only production code that walks a candidate catalogue at all — but that desk is itself unconfigured in every environment (see the discovery finding below), so there is currently no producer this route could wire to even if it stopped refusing. The honest refusal is correctly the interim answer; the target-state fix is downstream of the discovery/connector wiring gap, not a defect in this route alone.",
+    "blueprint_refs": ["v11.6 §6.2 Discovery Agent Loop", "v11.6 §7 Evidence, Provenance & Truth Fabric"],
+    "risk": "low",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "The mesh backbone (`qip-api::mesh::MeshBackbone`) has never run against a real edge cell outside tests: `QIP_MESH_CELLS` is unset in every committed environment, so `/api/v1/mesh` always answers with zero cell listeners",
+    "files": [
+      "backend/crates/apps/qip-api/src/mesh.rs:1033-1205 (MeshBackbone::open/cells/regions/dispatch_policy)",
+      "backend/crates/apps/qip-api/src/main.rs:315-332 (constructed only when QIP_MESH_CELLS is set)",
+      "infrastructure/terraform/catalogue.tf:29-34 (module comment: unset, qip-api builds no mesh)"
+    ],
+    "category": "temporary-infrastructure / unfinished-migration",
+    "class": "E-needs-evidence",
+    "why": "21 tests (including `a_reconciliation_break_crossing_the_wire_halts_that_cell_and_only_that_cell` and `a_dispatched_envelope_survives_the_spool_and_verifies_at_a_real_downlink`) prove the backbone's logic in isolation, but it is structurally downstream of the same gap as the qip-edge-node finding above: there is no deployed cell anywhere to speak the mesh protocol to, because no execution node exists. Wiring `QIP_MESH_CELLS` ahead of a real cell existing would not close this gap, only relocate it, so the evidence needed here is the same owner decision (capital allocation, boot image, infra dispatch) the qip-edge-node finding names, not independent API-side work.",
+    "blueprint_refs": ["v11.6 §17 Global Reflex Mesh & 3-20-Leg Arbitrage", "ADR 0099 C2, C3"],
+    "risk": "medium",
+    "suggested_epic": "E03"
+  },
+  {
+    "item": "Every feed `qip-fastbrain` can actually select in a default deployment (synthetic exchange, replay, committed tape) is explicitly marked not production-grade; only a licensed `Live` connector can be, and none is configured in any committed environment",
+    "files": [
+      "backend/crates/apps/qip-fastbrain/src/feed.rs:701-705 (no_source_this_build_has_is_production_grade_and_each_says_what_is_missing)",
+      "backend/crates/apps/qip-fastbrain/src/feed.rs:999-1010 (a_live_vendor_is_licensed_and_may_drive_a_capital_decision — the one path that could be, unconfigured everywhere)",
+      "backend/crates/apps/qip-fastbrain/src/main.rs (banner text naming the active feed)"
+    ],
+    "category": "placeholders / simulated-only-production-path",
+    "class": "E-needs-evidence",
+    "why": "This is deliberate and structurally honest — `is_production_grade` is read from the feed's own `LicensingClass`, not asserted by configuration, so a synthetic tape cannot masquerade as market data (the same pattern as the deep brain's `Provenance::synthetic` stamping). No code defect follows from this; it correctly reflects that no committed environment has a licensed vendor wired in. It is recorded here because it is the fast-path half of the same fact the deep brain's discovery/connector finding states for the slow path: every capital-relevant feed in this workspace is currently either synthetic or unconfigured, which bears directly on how much of the platform's REASON/DECIDE behaviour has ever run against anything but its own generated data.",
+    "blueprint_refs": ["v11.6 §16 Regional Reflex Nodes", "v11.6 §8 Market Intelligence & Tick Learning Fabric"],
+    "risk": "medium",
+    "suggested_epic": "E05"
+  },
+  {
+    "item": "`QIP_CENTRAL_HORIZONS_PATH` is read by `qip-deepbrain`'s composition root but wired in no committed environment, so the §23.4 self-improvement/promotion horizon gate refuses to arm everywhere this binary has ever run",
+    "files": [
+      "backend/crates/apps/qip-deepbrain/src/main.rs:1005-1025 (doc: 'grep -rn QIP_CENTRAL_HORIZONS_PATH infrastructure/environments finds it wired nowhere')"
+    ],
+    "category": "hard-coded-configuration / unfinished-migration",
+    "class": "E-needs-evidence",
+    "why": "The gate is fail-closed by design — refusing to arm without a named policy rather than defaulting to an implicit one, consistent with 'every safety default is the restrictive one' — so this is not a bug in the refusal itself. But it means the controlled-self-improvement loop v11.6 §23.4 describes ('curriculum generation, independent evaluation, promotion by lane') is architecturally present in this crate yet has never operated in any deployed environment, because the one file that would arm it has never been written and pointed to by any committed tfvars or GitOps manifest. Evidence needed before wiring it: an owner-approved horizons policy document and a decision on where it is sourced from (operator-authored, or generated by the platform itself, which would be a different trust boundary).",
+    "blueprint_refs": ["v11.6 §23.4 Controlled Self-Improvement and Promotion"],
+    "risk": "medium",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "`DiscoveryDesk` (source discovery) and `ConnectorArm` (catalogued vendor connectors) are structurally complete and tested but have never run outside this crate's own tests: no environment sets a candidate-catalogue path or a connector-feed variable",
+    "files": [
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:66-383 (DiscoveryDesk::new/with_probe/maybe_run)",
+      "backend/crates/apps/qip-deepbrain/src/connectors.rs:67-374 (ConnectorArm::open/journal_to/shutdown)",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:475-594 (wiring, gated on QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH and connector-feed variables; doc at 512-517: 'None in every environment today')"
+    ],
+    "category": "dead-code / tests-only-surface / unfinished-migration",
+    "class": "E-needs-evidence",
+    "why": "Not dead code with no plan — the types are fresh, the wiring is reachable from `main.rs` the moment either variable is set, and this is precisely the §6 Global Scout & Data Acquisition Fabric loop the blueprint describes ('observe gaps... generate source-discovery queries... register approved source metadata... promote, throttle, quarantine or retire'). What is missing is an operator-authored candidate catalogue and a decision about which connector feeds to license, not a code change — building either ahead of that decision would be speculative work against an unapproved source list, which `qip-data-finder`'s own licensing-gate-before-use rule exists to prevent.",
+    "blueprint_refs": ["v11.6 §6 Global Scout & Data Acquisition Fabric"],
+    "risk": "low",
+    "suggested_epic": "E10"
+  },
+  {
+    "item": "`qip-deepbrain`'s replay path (`QIP_DEEPBRAIN_REPLAY_PATH`) has no reference-data source of its own, so every backtest run against it refuses with 'no fill' rather than register a flat curve as evidence",
+    "files": [
+      "backend/crates/apps/qip-deepbrain/src/main.rs:417-426 (doc comment)",
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs:269-308 (replay admission routes through the shipped connector's own licensing gate under its named source)"
+    ],
+    "category": "placeholders / missing-tests-on-production-path",
+    "class": "A-retain",
+    "why": "This is the fail-closed direction working as intended — the alternative (registering a flat curve when no reference data exists) would let an evidence-poor backtest read as a real result, which is exactly the outcome `.claude/rules/architecture/01-testing-strategy.md`'s 'asserts its own premise first' principle and ADR 0006's classical-baseline rule both exist to prevent. Recorded here rather than left silent because a reader who only sees 'the replay path refuses' without this context might read it as a bug to fix by relaxing the refusal, which would be the wrong direction to move it.",
+    "blueprint_refs": ["v11.6 §8.3 Market Replay, Counterfactual Execution and Synthetic Experience"],
+    "risk": "low",
+    "suggested_epic": "E05"
+  },
+  {
+    "item": "Capital-call settlement and expected-inflow posting are named in `qip-api`'s treasury routes but not implemented in this build: an admitted request never itself funds, and nothing this build runs ever posts or settles an inflow",
+    "files": [
+      "backend/crates/apps/qip-api/src/routes.rs:504-528 (funding is deliberately two-step: Platform::fund_user is the only funder and re-runs the gates)",
+      "backend/crates/apps/qip-api/src/routes.rs:540-552,563-598 (doc comments: 'nothing this build runs ever posts/settles it')",
+      "backend/crates/apps/qip-api/src/ledger_views.rs:289-627 (LedgerUsersView, InflowDeclarationBody::parse, decided_eligibility)"
+    ],
+    "category": "placeholders / unfinished-migration",
+    "class": "B-refactor",
+    "why": "The 27-test route surface (ledger_routes.rs) proves the parts that exist end to end — eligibility decisions, mandate/balance views, refusal leaving the ledger row unchanged — but the two-step funding split is itself deliberate (an admitted investment request must not itself move money, matching capital protection's 'limits are checked before an order object exists'). What is genuinely incomplete against v11.6's Ledger, Accounting & State of Truth target is that nothing downstream of an accepted expected-inflow declaration ever settles it — the declaration is recorded and then nothing acts on it, which is a real gap between what the route table promises ('expected-inflow') and what the platform does with one, not a safety-motivated refusal like the replay-path finding above.",
+    "blueprint_refs": ["v11.6 §15 Ledger, Accounting & State of Truth", "v11.6 §13 Capital Brain & Capital Bank"],
+    "risk": "medium",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "`qip-cli` (an application, shipped as the `qip` binary) depends directly on `qip-api` (a different application) in its normal `[dependencies]`, not `[dev-dependencies]` — an app-depends-on-app edge the architecture rule's own diagram (`libs ← services ← runtime ← apps`) names apps as the outermost layer nothing may depend on, and which no ADR or acceptance test currently reviews",
+    "files": [
+      "backend/crates/apps/qip-cli/Cargo.toml:18-31 (qip-api.workspace = true, under [dependencies])",
+      "backend/crates/apps/qip-cli/src/registrations.rs:14-21 (reuses qip_api::registration_views so 'the console, the gate and this command cannot disagree')",
+      "backend/crates/apps/qip-cli/src/demo/doubles.rs:11-27,52 (reuses qip_api::http::Server rather than 'copying three hundred lines of request parsing')",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1391-1410 (a_library_never_depends_on_a_service_or_an_application checks only libs; no test checks apps against apps)"
+    ],
+    "category": "dependency-direction",
+    "class": "B-refactor",
+    "why": "The reasoning in both call sites is sound and explicit about its tradeoff — reusing qip-api's real HTTP server and registration-view types avoids a second, independently-drifting copy of request parsing and of the registration secret-command text. But unlike the qip-storage/qip-transport I/O-in-a-library exception (ADR 0011/0012, both named), this edge has no ADR and `architecture.rs`'s own boundary test explicitly stops at libs-vs-upper-layers, so nothing in the suite would fail if this dependency were accidental rather than reviewed. `.claude/rules/architecture/00-boundaries.md` states the rule with no exception named, the same shape of drift that file elsewhere warns readers about regarding stale citations. The structural fix matching 'make it structural' would be to hoist the shared pieces — the minimal HTTP/1.1 server, the registration-view read model — down into a service or lib crate both applications depend on, rather than one composition root depending on another's internals.",
+    "blueprint_refs": ["ADR 0016 (one repository, four domains)"],
+    "risk": "low",
+    "suggested_epic": "E01"
+  },
+  {
+    "item": "`qip-api`'s OpenObserve drain thread has never had anything answer on the other end: the managed-Prometheus/OpenObserve collector sidecar for Cloud Run has no working image (the only published version fails the platform's own Trivy gate on an unfixed CRITICAL CVE), and no environment has ever run this process to begin with",
+    "files": [
+      "backend/crates/apps/qip-api/src/openobserve.rs:144-197,516 (OpenObserveConfig::from_env/read/parse; spawn -> DrainHandle)",
+      "backend/crates/apps/qip-api/src/main.rs:339-347 (spawned conditionally on OPENOBSERVE_URL)",
+      ".claude/rules/domains/observability.md (Cloud Run collector sidecar blocked on CVE-2026-56854, unfixed upstream)"
+    ],
+    "category": "deployment-ci-observability-gap",
+    "class": "A-retain",
+    "why": "The emitting half is real and 16-test-covered; what is missing is proof of ingestion, and that half is blocked upstream — no change in this repository clears an unfixed CVE in a vendor image, and the observability domain rule is explicit that the blocker should not be cleared with a scanner exception. This is a distinct mechanism from the kernel's own /metrics Prometheus surface (already covered under the libs/foundation report): this is qip-api's own background POST-based drain thread, gated on a separate variable, with its own separate blocker. Recorded so the two observability gaps are not conflated as one.",
+    "blueprint_refs": ["GCP v2.1 (Cloud Monitoring / managed collector)"],
+    "risk": "medium",
+    "suggested_epic": "E12"
+  }
+]

@@ -1,0 +1,86 @@
+[
+  {
+    "item": "qip-kernel's `capacity_review` module — a complete, internally-tested implementation of blueprint §20.1's sixth risk control (the capital level at which an edge decays, from book depth, an impact law and each leg's own stated cost) — has zero callers anywhere in the workspace, so the control it implements can never fire in a deployed process",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/capacity_review.rs:87-315",
+      "backend/crates/runtime/qip-kernel/src/lib.rs:38"
+    ],
+    "category": "risk-control-defect (a control that cannot fire) / dead-code",
+    "class": "B-refactor",
+    "why": "Confirmed with `rg -n 'capacity_review|CapacityReview|LegCapacity' backend/ --type rust`: the only hits are the module's own definitions and the bare `pub mod capacity_review;` declaration in lib.rs:38 — no call from Platform::run_cycle, no call from any crates/apps/*/src file, and no reference from any qip-acceptance suite. The module is not a stub: it is 686 lines with 4 passing unit tests covering the real edge cases (a leg whose assumed cost does not cover half the spread, a leg with no readable depth named rather than treated as roomy). This is precisely the shape the repository's own domain rule names as the template for what not to add — 'RiskState::expected_shortfall is currently always empty, so MaxExpectedShortfall can never trigger... A control that cannot fire reads as protection and is not' (.claude/rules/domains/risk-and-execution.md) — except here the control is not even wired to attempt firing; it is absent from every stage of the cycle. It is not dead code with no plan: it directly implements a numbered blueprint §20.1 control that ADR 0099 makes the architecture of record, so wiring a caller (the arithmetic is already correct and tested) is the migration this item needs, not a rewrite and not a deletion.",
+    "blueprint_refs": ["v11.6 §20.1 (sixth capacity control)", "ADR 0099"],
+    "risk": "high",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "ADR 0008's DNA-shipping half — `StrategyDna::seal`/`CentralPlane::ship` and `CentralPlane::verify_dna` — has no production writer and no wire path to an edge cell at all: `qip-edge-node` does not depend on `qip-kernel`, and no `PolicyItem` payload slot exists to carry a sealed bundle",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/central/dna.rs:78-136",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:1985,2010",
+      "backend/crates/runtime/qip-kernel/tests/central.rs:524-525,1234-1235",
+      "backend/crates/apps/qip-edge-node/Cargo.toml"
+    ],
+    "category": "unfinished-migration / dead-code (tests-only)",
+    "class": "B-refactor",
+    "why": "Confirmed with `rg -n '\\.ship\\(|verify_dna\\(' backend/crates/runtime/qip-kernel/src backend/crates/apps`: `verify_dna` has no call outside its own definition, and the one other `.ship(` hit under crates/apps (qip-edge-node/tests/mirror.rs:202) is an unrelated journal-mirror method (`fn ship` on a different trait, backend/crates/edge/qip-edge/src/journal.rs:570) — not `CentralPlane::ship`. `grep -n 'qip_kernel' backend/crates/apps/qip-edge-node/Cargo.toml` returns nothing: the one process architecturally positioned to receive a sealed DNA does not depend on the crate that seals it. Separately, `qip_contracts::policy::PolicyItem` names exactly twelve mesh-payload slots (TrainedModels..Dispositions) and none of them is a DNA/strategy-bundle slot, so even the wire format this platform already uses for every other centre-to-cell artifact (belief priors, causal digest, episodic digest, cycle whitelist) has no analogous slot for this one. The sealing/verification logic itself is structurally sound — `StrategyDna::seal` refuses a stage that `GateStage::holds_capital` says cannot hold capital — so this is a genuine, tested building block for ADR 0008 ('cells decide alone') left with no caller and no transport, not a design that should be discarded.",
+    "blueprint_refs": ["ADR 0008", "v11.6 §41.5 (mesh shipping payload)"],
+    "risk": "medium",
+    "suggested_epic": "E03"
+  },
+  {
+    "item": "`CellInsights`' differential-privacy-gated aggregate query methods (`mean_gross_notional`, `total_realised_loss`) and the `Platform::insights_mut` accessor that reaches them are constructed on every Platform but never called by anything that could show an operator the number",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/central/insights.rs:75,95",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4441,5377"
+    ],
+    "category": "dead-code / tests-only surface",
+    "class": "B-refactor",
+    "why": "Confirmed with `rg -n 'insights_mut' backend/crates -g '*.rs'` and `rg -n 'mean_gross_notional|total_realised_loss' backend/crates -g '*.rs'`: both return only their own definitions — no console route in qip-api, no CLI command, no other app calls either. `central::insights.rs` closed a real gap named in its own module doc ('qip-confidential was reachable from nothing in the kernel') by constructing `CellInsights` on every `Platform::new` (platform.rs:4441), but the aggregate-release gate it wraps produces a value for nobody: the module exists, is wired into assembly, and computes nothing any deployed process ever reads. This is the same class of finding the libs-foundation tech-debt report already raised about the underlying qip-confidential crate (its query methods have zero callers outside qip-kernel's own tests) — recorded here separately because central/insights.rs, the kernel-side seam that was supposed to close that gap, is itself unreached, confirming the gap is not closed at this layer either.",
+    "blueprint_refs": ["v11.6 SEC capability (differential-privacy aggregate release)"],
+    "risk": "low",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "family_review.rs's own safety argument for why no code path can move a family's capital weight rests on a factual claim that is now false: it says `CentralPlane::issue` 'is the only writer of a capital envelope and is reached from nothing but a test' — it is now reached from a live, human-dual-signed API route",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/family_review.rs:19-24",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:1883",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:7190,7315",
+      "backend/crates/apps/qip-api/src/routes.rs:1915"
+    ],
+    "category": "documentation-gap / risk-control (stale evidence backing a safety invariant)",
+    "class": "E-needs-evidence",
+    "why": "Confirmed with `rg -n '\\.issue\\(' backend/crates -g '*.rs'`: `self.central.issue(...)` is called at platform.rs:7315, inside `Platform::issue_capital` (platform.rs:7190), which is itself called from a production API handler at qip-api/src/routes.rs:1915. That call site requires two distinct authenticated operator signatures (platform.rs:7240-7291 refuses a single operator signing twice, refuses a stale first signature, and requires a countersignature rationale) and never consumes a `family_review::MisallocationFinding` as input — it is a separate, human-gated capital-grant workflow. So the specific invariant the module cares about (no *automated* path from a family finding to a capital move) is not demonstrated to be violated by this caller. But the sentence in the module doc is an unhedged factual claim, and it is now wrong, in the exact way the module's own comment warns about two lines later: 'this line said \"the absence is the guarantee\" until 2026-09-14 and three rounds of an acceptance scan were built on that reading... An independent review defeated each of the three rounds.' A stale premise in a load-bearing safety comment in the highest-consequence domain is worth an explicit re-check before the next reviewer inherits it at face value — the evidence needed is a reviewer confirming `issue_capital`'s new production path still cannot be reached from `family_review`'s output, and then correcting the sentence (or replacing the assertion with the verify-command discipline the comment already uses one line later) rather than leaving it stated as settled fact.",
+    "blueprint_refs": ["ADR 0064", "v11.6 §12.3"],
+    "risk": "medium",
+    "suggested_epic": "E07"
+  },
+  {
+    "item": "Three qip-deepbrain production files import `qip-kernel`'s internal `central::{foundry,models}` submodule paths directly, bypassing the curated re-export surface that `lib.rs` and `central/mod.rs` deliberately withhold them from",
+    "files": [
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:130",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:48",
+      "backend/crates/apps/qip-deepbrain/src/succession.rs:67",
+      "backend/crates/runtime/qip-kernel/src/central/mod.rs:50-86",
+      "backend/crates/runtime/qip-kernel/src/lib.rs:36-68"
+    ],
+    "category": "incorrect-coupling / dependency-direction (encapsulation)",
+    "class": "B-refactor",
+    "why": "`central/mod.rs`'s own status_reason (recorded in the current-state catalogue this report started from) states plainly that `insights::CellInsights`, `foundry::StrategyFoundry` and `models::{ModelRegistration,register_fit}` are 'NOT re-exported here (apps reach them via full crate::central::<submodule> paths)' — and confirmed with `rg -n 'use qip_kernel::central::(foundry|models|horizon|insights)::' backend/crates/apps`, three qip-deepbrain files do exactly that. The dependency direction itself is fine (apps -> runtime is permitted), but the crate root's curated surface (lib.rs's explicit `pub use` list, central/mod.rs's flat re-export list) exists precisely so a caller depends on a stable contract rather than qip-kernel's internal file layout; these three imports instead make `central/`'s submodule names and paths load-bearing API for another crate without that ever being a decision anyone recorded. A routine internal reorganisation of `central/` (splitting foundry.rs, renaming a submodule) would silently break qip-deepbrain's build at compile time rather than fail predictably against a documented surface. This needs a decision, not a guess: either fold these three into the curated re-export list (matching the pattern `belief`/`causal`/`plane` already get) or explicitly document `central::<submodule>` paths as part of the crate's public contract.",
+    "blueprint_refs": ["v11.6 ARCH (composition-root boundary)"],
+    "risk": "low",
+    "suggested_epic": "E01"
+  },
+  {
+    "item": "adversary_review.rs deliberately answers only 1 of blueprint §15.2's 5 questions and builds none of its 4 named responses — an honest, well-reasoned scope reduction, but recorded only in a module comment, not in an ADR the way family_review's identically-shaped reduction is (ADR 0064)",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/adversary_review.rs:1-50"
+    ],
+    "category": "documentation-gap (architectural scope decision recorded only in a comment)",
+    "class": "E-needs-evidence",
+    "why": "The module doc is explicit and honest: '§15.2... asks five questions and names four responses. This module answers one of the five and produces none of the four... the other four questions need data nothing in this platform ingests, and three of the four responses need a seam this platform does not have.' That is a real, reasoned architectural scope decision — but `grep -rli adversary docs/adr/*.md` finds no ADR naming it, unlike `family_review.rs`'s structurally identical reduction (measures but never revises weights), which cites ADR 0064 by number. The project's own architecture rule is direct on this point: 'If you find yourself explaining an architectural choice in a PR comment, it needed an ADR' (.claude/rules/architecture/00-boundaries.md). The evidence needed is a decision, recorded as an ADR: either that the remaining four §15.2 questions are out of scope for the v11.6 programme (as ADR 0064 settled for family-weight revision), or a plan naming when the missing data/seams will exist and the questions will be answered.",
+    "blueprint_refs": ["v11.6 §15.2"],
+    "risk": "low",
+    "suggested_epic": "E00"
+  }
+]

@@ -1,0 +1,622 @@
+[
+  {
+    "id": "CONTRACT-027",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "grep -rn \"GoalSpec\" backend --include=*.rs -> zero hits (2026-09-25)"
+    ],
+    "gap": "No GoalSpec type exists anywhere in the workspace. None of the twelve required fields (desired state/distribution, target entities, horizon, utility/success metric, budget, risk/side-effect constraints, identity, jurisdiction, authority class, prohibited methods, stop/rollback conditions) has a representation in qip-contracts or anywhere else.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A unit test asserting a GoalSpec missing any listed field, or with empty stop/rollback conditions, is refused -- does not exist, because there is no GoalSpec module to write it against.",
+    "work_item": "E16-goalspec-type",
+    "tier": "T1",
+    "size": "S",
+    "notes": "P3, master Phase 10, shadow-only per v11.6. ADR 0021 blocks only the actions a goal would drive, not the type itself -- the type can be built today as a pure serde struct with refusal-style validation."
+  },
+  {
+    "id": "CONTRACT-028",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "grep -rn \"InterventionPlan\" backend --include=*.rs -> zero hits (2026-09-25)"
+    ],
+    "gap": "No InterventionPlan type exists. None of the eleven required fields (causal hypothesis, controllable levers, ordered/conditional candidate actions, tool identities, expected effect distribution, cost, timing, reversibility, world-model simulations run, no-action baseline, required approvals, abort rules) has a representation.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A unit test asserting an InterventionPlan missing its no-action baseline, abort rules or any other listed field is refused -- does not exist.",
+    "work_item": "E16-interventionplan-type",
+    "tier": "T1",
+    "size": "S",
+    "notes": "P3, master Phase 10. A plan can be produced in shadow (no action executed); executing any candidate action goes through ActionIntent (CONTRACT-029), which is where EXTERNAL_ACTION and the paper-trading boundary bind."
+  },
+  {
+    "id": "CONTRACT-029",
+    "status": "BLOCKED",
+    "current": "nothing",
+    "evidence": [
+      "grep -rn \"ActionIntent\" backend --include=*.rs -> zero hits (2026-09-25)"
+    ],
+    "gap": "No ActionIntent type exists, including its shadow-only form (internal actions, no external effect). The requirement's own definition -- 'exactly one authorized external or internal action' -- includes external channels, and completing that half requires the platform to act in the world, which ADR 0003/0021 and ADR 0099's paper-trading section refuse structurally. The internal/shadow half is unbuilt but not blocked.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C1",
+    "verification": "A unit test asserting an ActionIntent with no acting identity, policy decision or audit lineage is refused, and that replaying an intent with the same idempotency key performs nothing a second time -- does not exist.",
+    "work_item": "E16-actionintent-shadow-type",
+    "tier": "T1",
+    "size": "M",
+    "notes": "EXTERNAL_ACTION is kept per the requirement's own notes: the shadow form (internal channels only, EXTERNAL_ACTION never granted) is buildable at T1 today; the external-channel half is refused structurally by the paper-trading boundary, not by size of effort."
+  },
+  {
+    "id": "CONTRACT-030",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "grep -rn \"EffectAttribution\" backend --include=*.rs -> zero hits (2026-09-25)"
+    ],
+    "gap": "No EffectAttribution type exists. None of the required fields (goal/intervention/action IDs, observations across horizons, control/counterfactual method, estimated causal effect distribution, confounders, side effects, confidence/identifiability, world-model and action-policy updates) has a representation, and there is nothing for it to reference since GoalSpec, InterventionPlan and ActionIntent do not exist either.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CONTRACT-027",
+      "CONTRACT-028",
+      "CONTRACT-029"
+    ],
+    "blocked_by": "",
+    "verification": "A unit test asserting an EffectAttribution missing its counterfactual method, confounders or any other listed field is refused, and that every one references an existing goal, intervention and action -- does not exist.",
+    "work_item": "E16-effectattribution-type",
+    "tier": "T1",
+    "size": "M",
+    "notes": "P3, master Phase 10 (causal effect attribution). The measurement machinery this would eventually call into (qip-risk's factor/shared_cause modules) exists for a different purpose; nothing wires it to this contract."
+  },
+  {
+    "id": "CONTRACT-031",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "grep -rln \"GapSignal\\|GapClass\\|gap_class\" backend --include=*.rs -> zero hits (2026-09-25)"
+    ],
+    "gap": "No GapSignal type and no gap-class enumeration (data, ontology, causal, memory, model, tool, specialist, execution, compute/quantum research opportunity) exist anywhere. The expansion/curriculum loop this would feed (CONTRACT-032) also does not exist.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A unit test asserting a GapSignal missing any listed field is refused, and that its candidate gap class is one of the section 23.1 classes -- does not exist.",
+    "work_item": "E16-gapsignal-type",
+    "tier": "T1",
+    "size": "S",
+    "notes": "P3, master Phase 9. Also a section 23 primary artifact (Self-evaluation: Scorecard / GapSignal)."
+  },
+  {
+    "id": "CONTRACT-032",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "grep -rln \"CurriculumItem\\|CurriculumEngine\\|ResearchQuestion\" backend --include=*.rs -> zero hits (2026-09-25)"
+    ],
+    "gap": "No CurriculumItem type or Curriculum Engine exists. None of the required fields (research question, expected information/economic value, tools/data required, budget, owning agent, evaluation suite, stop conditions) has a representation.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CONTRACT-031"
+    ],
+    "blocked_by": "",
+    "verification": "A unit test asserting a CurriculumItem missing its budget, owner, evaluation suite, stop conditions or any other listed field is refused -- does not exist.",
+    "work_item": "E16-curriculumitem-type",
+    "tier": "T1",
+    "size": "S",
+    "notes": "P3, master Phase 9 (Curriculum Engine)."
+  },
+  {
+    "id": "CONTRACT-033",
+    "status": "PARTIAL",
+    "current": "qip_agents::manifest::AgentManifest (backend/crates/libs/qip-agents/src/manifest.rs:88-117) is a BrainSpec in all but name for the agent society: competencies (competency domain), capabilities: CapabilitySet (tools and source permissions -- Capability::ReadNews/ReadAlternativeData/ReadWorldModel/CallLanguageModel/RunBacktest/... at capability.rs:23-50), models (model stack), limitations, budget and escalation (part of an authority envelope), owner and review expiry. AgentManifest::validate (manifest.rs:209) refuses a manifest with no id, purpose, owner or capabilities and enforces separation of duties. AgentContext::authorise (backend/crates/libs/qip-agents/src/runtime.rs:331-349) is the single enforcement point: a facility wrapped in Gated<T> with a required Capability is refused, and the refusal recorded, for any agent whose manifest does not grant it. The roster is cleared at start-up in qip-fastbrain (main.rs:79) and qip-deepbrain (main.rs:88), and qip-kernel's Platform gates the desk's facilities (market, world model, portfolio, risk state, research memory, library) through Gated at platform.rs:4274-4309.",
+    "evidence": [
+      "backend/crates/libs/qip-agents/src/manifest.rs:88-117 (AgentManifest fields), :209 (validate)",
+      "backend/crates/libs/qip-agents/src/runtime.rs:331-349 (AgentContext::authorise denies an ungranted capability)",
+      "backend/crates/agents/qip-investment-agents/src/desk.rs:96-106 (desk facilities Gated by Capability)",
+      "backend/crates/apps/qip-fastbrain/src/main.rs:79 and backend/crates/apps/qip-deepbrain/src/main.rs:88 (roster::clear at start-up)",
+      "a_gated_facility_cannot_be_reached_without_its_capability (backend/crates/libs/qip-agents/tests/agents.rs:455)",
+      "an_agent_without_a_purpose_or_an_owner_does_not_validate (backend/crates/libs/qip-agents/tests/agents.rs:195)",
+      "grep -rln \"BrainSpec\" backend --include=*.rs -> zero hits (2026-09-25); the analogue is named AgentManifest"
+    ],
+    "gap": "No type is named BrainSpec, and AgentManifest lacks three of the eight listed fields as first-class members: memory scope (only the coarse Read/WriteResearchMemory capabilities), evaluations (no evaluation-set field), and abstention rules (the competencies doc comment says out-of-scope questions are deferred, but no rule field exists). The authority envelope is spread across capabilities, budget and escalation rather than one declared envelope. validate does not refuse a manifest with empty competencies or models, so 'a BrainSpec missing any listed field is refused' does not hold. The deny-unnamed-tool/source half is implemented and tested.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A unit test asserting a BrainSpec missing any listed field is refused -- does not exist (validate accepts empty competencies/models and has no memory-scope/evaluation/abstention fields). The second half -- a brain is denied a tool or source its spec does not name -- is demonstrated for AgentManifest by a_gated_facility_cannot_be_reached_without_its_capability.",
+    "work_item": "E16-brainspec-type",
+    "tier": "T1",
+    "size": "M",
+    "notes": "P2: master Phase 8 (specialist-agent society) is the first phase needing a spec per specialist; Phase 9's registry/governed spawning builds on it. verify: upgraded MISSING -> PARTIAL. The assessor grepped only for the name 'BrainSpec' and missed qip_agents::AgentManifest + CapabilitySet + AgentContext::authorise, which carry competency, tool/source permissions, model stack and budget, deny ungranted facilities, and are cleared at start-up in the two brain binaries (both in the Cloud Run catalogue, so deployable). Missing fields and refusal-of-missing-field keep it PARTIAL; the work item is to extend AgentManifest, not to build a parallel type."
+  },
+  {
+    "id": "CONTRACT-034",
+    "status": "PARTIAL",
+    "current": "No ToolSpec record, but the allowed-callers half exists as the agent capability model: a tool/facility is wrapped in qip_agents::runtime::Gated<T> naming the Capability it requires and a label (runtime.rs:51-83), and AgentContext::authorise (runtime.rs:331-349) denies -- and records -- any call from an agent whose manifest does not grant that capability. Compute tools (CallLanguageModel, RunBacktest, RunSimulation, RunOptimization, RunQuantumOptimization) are Capability variants (capability.rs:23-50). qip-kernel gates the desk's facilities this way in production (platform.rs:4274-4309; qip-investment-agents desk.rs:96-106).",
+    "evidence": [
+      "backend/crates/libs/qip-agents/src/runtime.rs:51-83 (Gated<T>: required capability + label), :331-349 (authorise)",
+      "backend/crates/libs/qip-agents/src/capability.rs:23-50 (tool capabilities)",
+      "a_gated_facility_cannot_be_reached_without_its_capability (backend/crates/libs/qip-agents/tests/agents.rs:455)",
+      "a_granted_facility_is_reachable_and_charged (backend/crates/libs/qip-agents/tests/agents.rs:479)",
+      "grep -rln \"ToolSpec\\|ToolRegistry\\|allowed_callers\" backend --include=*.rs -> zero hits (2026-09-25)"
+    ],
+    "gap": "No ToolSpec type or tool registry: interface, data handling, dependency/security provenance, sandbox tests and cost/latency have no representation anywhere a tool is declared, and allowed callers are derived from each caller's manifest (who holds the capability) rather than declared by the tool. There is nowhere for a new tool's dependency record (ADR 0002/0009) to land. 'A ToolSpec missing any listed field is refused' cannot be written.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "CONTRACT-033"
+    ],
+    "blocked_by": "",
+    "verification": "A unit test asserting a ToolSpec missing any listed field is refused -- does not exist. The second half -- a call from a caller outside the tool's allowed callers is denied -- is demonstrated for Gated facilities by a_gated_facility_cannot_be_reached_without_its_capability.",
+    "work_item": "E16-toolspec-type",
+    "tier": "T1",
+    "size": "M",
+    "notes": "P2: master Phase 8 ('broader tool use'). Phase 9 adds the tool registry and sandboxed tool creation. verify: upgraded MISSING -> PARTIAL: the caller-denial half of the check exists and is reached in production through Gated<T> + AgentContext::authorise (qip-kernel desk gating). The ToolSpec record itself (7 of 8 fields) is absent, so it stays well short of COMPLETE."
+  },
+  {
+    "id": "CONTRACT-035",
+    "status": "MISSING",
+    "current": "nothing implements a KnowledgeDelta. Nearest relatives, neither of which is one: (1) qip_contracts::policy::PolicyPayload's knowledge slots -- belief_priors, episodic_digest, causal_digest (policy.rs:285-302) -- which qip-api's mesh produces from the platform's world model and memory (backend/crates/apps/qip-api/src/mesh.rs:947-964) and a cell applies whole under a strictly increasing sequence (qip-edge cell.rs:2111-2127), i.e. last-sequence-wins snapshot replacement with no provenance, confidence, conflict set or merge policy; (2) qip-edge's CellStateDelta, which carries operational cell state, not knowledge.",
+    "evidence": [
+      "grep -rln \"KnowledgeDelta\" backend --include=*.rs -> zero hits (2026-09-25)"
+    ],
+    "gap": "No KnowledgeDelta type exists: no versioned ontology/world-model/memory update carrying provenance, confidence, conflicts, originating brain/region or merge policy. The nearest existing machinery -- qip-edge's CellStateDelta (backend/crates/edge/qip-edge/src/mesh.rs) -- carries operational cell state (orders, refusals, utilisation) up the mesh, not versioned knowledge with a merge policy, and is a different contract entirely.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A property test asserting that applying two conflicting KnowledgeDeltas in either order under their merge policies yields the same resulting state or a recorded conflict, never a silent overwrite -- does not exist.",
+    "work_item": "E16-knowledgedelta-type",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The section 23 collective/federated artifact is Phase 9 (P3); cross-brain world-model/memory updates start earlier with the cognitive plane in G section 26 phase 8 (P2), so the earlier phase governs priority. verify: status kept MISSING; 'current' now names the PolicyPayload knowledge slots the assessor did not mention, and why they do not count (whole-snapshot replacement by sequence, no merge policy/conflict record/provenance)."
+  },
+  {
+    "id": "CONTRACT-036",
+    "status": "PARTIAL",
+    "current": "qip_events::envelope::{Envelope<T>, AnyEvent} (backend/crates/libs/qip-events/src/envelope.rs:36-113) carries event_id, topic, schema_version, occurred_at/recorded_at (source/receive timestamps), sequence, lineage::{correlation_id, causation_id, trace_id, producer} (backend/crates/libs/qip-core/src/lineage.rs:61-74), idempotency_key and payload_hash. qip_streaming::envelope::StreamEnvelope (backend/crates/services/qip-streaming/src/envelope.rs, wire form schema.rs:72-95) wraps an AnyEvent and adds source identity including a region (provenance.rs:159-163), subject/origin sequence, a routing class (Hot/Warm/Cold -- a three-level QoS analogue), optional confidence and cost; it recomputes the payload hash on decode and refuses a wire form missing a required field. In production the kernel seals every journal record as a StreamEnvelope (qip-kernel platform.rs:4698-4716 and siblings) onto its DurableLogTransport, and the mesh (qip-api / qip-edge-node) carries AnyEvent frames built by Envelope::new().erase(). qip_events::bus::EventBus is reached only from tests and the test-only IngestionService.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/envelope.rs:36-113",
+      "backend/crates/libs/qip-core/src/lineage.rs:61-74",
+      "backend/crates/services/qip-streaming/src/schema.rs:72-95 (EnvelopeWire), provenance.rs:159-163 (SourceIdentity.region)",
+      "envelopes_round_trip_through_type_erasure (backend/crates/libs/qip-events/tests/backbone.rs:117)",
+      "a_payload_from_a_newer_schema_is_refused_rather_than_partially_read (backend/crates/libs/qip-events/tests/backbone.rs:157)",
+      "a_missing_required_field_is_refused_rather_than_filled_in (backend/crates/services/qip-streaming/tests/schema_evolution.rs:161)",
+      "a_sealed_envelope_round_trips_through_json_unchanged (backend/crates/services/qip-streaming/tests/envelope_integrity.rs:65)",
+      "the_platform_completes_a_cycle_observed_from_sockets_and_acted_on_over_one (backend/crates/tests/qip-acceptance/tests/e2e_live.rs:804), whose DeltaCollector::absorb (e2e_live.rs:657-660) decodes a real AnyEvent that crossed the mesh"
+    ],
+    "gap": "No stream namespace, partition, ordering key, producer ID/epoch/sequence, leader epoch, per-partition offset, HLC/logical timestamp or auth context field exists. Region exists only as the upstream source's region on StreamEnvelope, not the fabric region the record was produced in, and the routing class is a three-level local-vs-durable choice, not G section 7.2's P0-P4 QoS classes. 'topic' is a fixed compile-time enum, 'sequence' is a single log position, and AnyEvent's sequence is #[serde(default)], so an absent sequence decodes as 0 rather than being refused. This is a single-log/peer-mesh record, not a partitioned multi-region wire contract.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A property test that arbitrary FabricEnvelopes round-trip every listed field, and that a record missing a mandatory field is refused -- does not exist for the full field list; the closest coverage (above) exercises only the fields Envelope/AnyEvent actually carry.",
+    "work_item": "E03-fabric-envelope-fields",
+    "tier": "T3",
+    "size": "L",
+    "notes": "The blueprint's field list assumes a partitioned, multi-broker, multi-region Fabric; qip-events/qip-transport are a single-log backbone plus a peer-to-peer HTTP/1.1 mesh with no partitioning (qip-transport/src/mesh.rs:73, 'There is no partition key'), so most of the remaining gap is architecture, not fields on a struct. verify: status and flags kept (PARTIAL; e2e_live does carry AnyEvent across sockets). Corrected 'current': EventBus is test-only, the production in-process path is the kernel journal sealing StreamEnvelopes, and StreamEnvelope (qip-streaming) already supplies region/provenance/routing-class and a missing-required-field refusal the assessor did not cite. Line references corrected (envelope.rs struct starts at :36, Lineage at :61)."
+  },
+  {
+    "id": "CONTRACT-037",
+    "status": "PARTIAL",
+    "current": "Two of the ten fields exist in distributed form. Retention: qip_events::retention::RetentionClass is declared exhaustively per topic via Topic::retention_class with no wildcard arm, so a topic without a class is a compile error. Durability/QoS class and overload behaviour: EventLog::make_room (backend/crates/libs/qip-events/src/log.rs:800-846) sheds by declared retention class under a capacity bound -- replaceable records first, then non-permanent observations -- and refuses the append rather than drop a permanent/audit record; this runs in every central binary's event log. qip_streaming::routing::RoutingClass (Hot/Warm/Cold, routing.rs:75-140) binds a class to a transport: Hot travels the bounded LocalQueue that drops its stalest entry under overload, Warm/Cold travel the durable log and may not be routed hot; the kernel derives and checks the class on every sealed journal record.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/retention.rs:51-90",
+      "backend/crates/libs/qip-events/src/log.rs:800-846 (make_room: shed replaceable, refuse permanent)",
+      "backend/crates/services/qip-streaming/src/routing.rs:75-140 (RoutingClass, path, check)",
+      "every_topic_declares_the_retention_class_its_record_carries (backend/crates/libs/qip-events/tests/backbone.rs:2411)",
+      "a_topics_declared_retention_class_and_not_its_group_decides_whether_the_log_rolls_it (backend/crates/libs/qip-events/tests/backbone.rs:2521)",
+      "capacity_eviction_never_drops_an_auditable_event (backend/crates/libs/qip-events/tests/backbone.rs:805)",
+      "a_full_log_refuses_the_append_rather_than_dropping_an_audit_record (backend/crates/libs/qip-events/tests/backbone.rs:1423)",
+      "the_local_queue_is_bounded_and_drops_the_stalest_entry_first (backend/crates/services/qip-streaming/tests/transports.rs:268)",
+      "a_lossy_transport_is_refused_for_an_event_that_must_not_be_lost (backend/crates/services/qip-streaming/tests/registry.rs:162)"
+    ],
+    "gap": "No StreamPolicy type bundles partition key, replication factor, ack policy, byte/message limits, consumer lag threshold, mirroring policy or entitlement, and none of those seven fields exists anywhere; retention and class-differentiated shedding exist as per-topic/per-class rules rather than a policy object, so 'creating a stream without a StreamPolicy is refused' has nothing to bind to. The classes are retention classes and Hot/Warm/Cold, not G section 7.2's P0-P4. LocalQueue (the path that actually sheds a hot stream) is constructed only in qip-streaming's own tests; in production the shedding that runs is EventLog's retention-class eviction. qip-transport's outbound queue refuses uniformly under pressure.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A unit test asserting creating a stream without a StreamPolicy (or missing any of its fields) is refused -- does not exist. The overload half is demonstrated in the retention-class/routing-class form: capacity_eviction_never_drops_an_auditable_event and the_local_queue_is_bounded_and_drops_the_stalest_entry_first show a replaceable/hot stream shedding while an audit/warm stream does not.",
+    "work_item": "E03-stream-policy-type",
+    "tier": "T2",
+    "size": "M",
+    "notes": "G section 7.2's P0 Critical Control .. P4 Telemetry classes have no literal representation (grep -rn \"QoS\\|CriticalControl\" backend --include=*.rs -> zero hits); the nearest analogues are RetentionClass and RoutingClass. verify: status and flags kept (PARTIAL). Corrected a false claim: the assessor said QoS classes had no representation and that nothing sheds one class while protecting another. EventLog::make_room (production) and qip-streaming RoutingClass/LocalQueue (tests only) both do, with named tests; added them to evidence."
+  },
+  {
+    "id": "CONTRACT-038",
+    "status": "PARTIAL",
+    "current": "The digest-gated activation half exists for one artifact kind, the compiled strategy plan. The signed qip_contracts::policy::PolicyPayload (policy.rs:584-619) names the plan by digest and count in its compiled_plan slot and carries a target (cell), a version (strictly increasing sequence), an issue time and valid_for (expiry) and a MAC signature verified by qip_edge::policy::VerifiedPolicy::verify. qip-edge-node's StrategyInstaller (backend/crates/apps/qip-edge-node/src/strategies.rs, wired in main.rs:66-67 and :267) reads the plan artifact from QIP_STRATEGY_PLAN_PATH, refuses it unless its bytes digest to what the verified payload names, and deploys nothing from a payload past valid_for.",
+    "evidence": [
+      "backend/crates/apps/qip-edge-node/src/strategies.rs:1-80 (digest-gated plan installation)",
+      "backend/crates/apps/qip-edge-node/src/main.rs:66-67,267 (StrategyInstaller wired into the composition root)",
+      "backend/crates/libs/qip-contracts/src/policy.rs:584-619 (sequence, cell, issued_at, valid_for, compiled_plan, signature)",
+      "a_plan_whose_bytes_are_not_the_ones_the_payload_names_deploys_nothing (backend/crates/apps/qip-edge-node/tests/strategies.rs:366)",
+      "a_stale_payload_deploys_nothing_however_good_its_plan (backend/crates/apps/qip-edge-node/tests/strategies.rs:318)",
+      "grep -rln \"ControlPackAnnouncement\\|activation_window\\|rollback_parent\" backend --include=*.rs -> zero hits (2026-09-25)"
+    ],
+    "gap": "No ControlPackAnnouncement type: nothing carries an artifact kind, an immutable URI (the plan is a node-local configured path, not a fetched URI), target regions beyond the single cell, an activation window start, a rollback parent or the acknowledgments required, and a cell sends no activation acknowledgment at all. The signature is a shared-key MAC over the whole payload, not a per-artifact signer/attestation. Only the plan artifact is digest-gated; the centre never produces the compiled_plan slot (qip-api mesh.rs produces grants, risk envelope, whitelist, digests, models and feasibility, not a plan), and the consumer runs only in qip-edge-node, which no environment deploys (execution_nodes = {}).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CONTRACT-036",
+      "CONTRACT-046"
+    ],
+    "blocked_by": "",
+    "verification": "An integration test asserting a digest mismatch or untrusted signer refuses activation and sends no acknowledgment, and that an announcement outside its activation window or past its expiry activates nothing -- exists for the plan artifact's digest mismatch (a_plan_whose_bytes_are_not_the_ones_the_payload_names_deploys_nothing) and expiry (a_stale_payload_deploys_nothing_however_good_its_plan); not for an announcement type, an activation-window start or acknowledgments.",
+    "work_item": "E04-controlpack-announcement",
+    "tier": "T3",
+    "size": "L",
+    "notes": "P0 fabric contract; the diagram's Release/Package Controller publishing these on P0 Critical Control has no analogue in the tree at all. verify: upgraded MISSING -> PARTIAL. The assessor's claim that nothing fetches an artifact against an announced digest is refuted by qip-edge-node's StrategyInstaller, which refuses a plan whose bytes do not digest to the signed payload's compiled_plan slot and deploys nothing from a stale payload, with named tests. Not deployable: edge-node only."
+  },
+  {
+    "id": "CONTRACT-039",
+    "status": "BLOCKED",
+    "current": "qip_storage::chain::ChainArchive (backend/crates/libs/qip-storage/src/chain.rs:84-99) is a single-region, append-only hash-chained archive with a next_position and tail_digest -- no destination region, no cross-region lag, no destination offset. qip_edge::journal::MirrorBatch (backend/crates/edge/qip-edge/src/journal.rs:520-530), shipped by qip-edge-node's StoreMirror, carries chains_onto (an integrity link to the previous batch) and stream watermarks, and a batch that does not follow its predecessor is refused -- but it ships one cell's decision journal to that cell's configured store, not a stream partition between two regions.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/chain.rs:84-99",
+      "backend/crates/edge/qip-edge/src/journal.rs:520-530 (MirrorBatch: nearest relative, not a cross-region mirror)",
+      "a_batch_that_does_not_follow_its_predecessor_is_refused_rather_than_written (backend/crates/apps/qip-edge-node/tests/mirror.rs:172)",
+      "grep -rln \"MirrorCheckpoint\" backend --include=*.rs -> zero hits (2026-09-25)"
+    ],
+    "gap": "No cross-region stream mirroring exists at all, and none can be proven, because no second region is deployed: execution_nodes = {} in every environment's tfvars, and ADR 0099 conflict C8 defers the multi-region Fabric-broker deployment on cost, with dev billing itself disabled.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CONTRACT-036",
+      "CONTRACT-037"
+    ],
+    "blocked_by": "C8",
+    "verification": "An integration test asserting that after a partition is mirrored between two regions, the checkpoint's destination offset and integrity hash match, and that a stopped mirror shows growing lag -- cannot run without a second deployed region.",
+    "work_item": "E11-mirror-checkpoint",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The MirrorCheckpoint type itself (a struct plus a unit-level property test against two in-process fakes) is buildable at T1-T2 without deploying anything; the integration verification the requirement names needs the region C8 defers, and that half stays BLOCKED regardless. verify: status kept BLOCKED(C8): the named integration check needs two regions. Added the edge journal mirror (MirrorBatch/StoreMirror) as the nearest in-tree relative the MirrorCheckpoint type could reuse; it does not change the status because it is single-cell journal shipping, not partition mirroring."
+  },
+  {
+    "id": "CONTRACT-040",
+    "status": "PARTIAL",
+    "current": "Every production asynchronous path found goes through the envelope-constructing API: the kernel's journal seals each record with qip_streaming::StreamEnvelope::seal (which builds via qip_events::Envelope::new().erase(); qip-kernel platform.rs:4698-4716 and siblings) onto its DurableLogTransport; the mesh carries only qip_events::AnyEvent frames (backend/crates/libs/qip-transport/src/mesh.rs:8-16), which qip_mesh::spine builds via Envelope::new().erase() for capital, policy and halt frames (spine.rs:507-525, 671-710). qip_events::bus::EventBus::publish<T: EventBody> (bus.rs:117,129,382) also requires the typed path, but EventBus is reached only from tests and the test-only IngestionService.",
+    "evidence": [
+      "backend/crates/services/qip-mesh/src/spine.rs:507-525,671-710 (frames built via Envelope::new().erase())",
+      "backend/crates/services/qip-streaming/src/envelope.rs (StreamEnvelope::seal; routing check at :190-191)",
+      "backend/crates/libs/qip-transport/src/mesh.rs:8-16",
+      "backend/crates/libs/qip-events/src/bus.rs:117,129,382,413",
+      "the_platform_completes_a_cycle_observed_from_sockets_and_acted_on_over_one (backend/crates/tests/qip-acceptance/tests/e2e_live.rs:804)"
+    ],
+    "gap": "The envelope used is qip_events::Envelope/AnyEvent (optionally wrapped in StreamEnvelope), not the FabricEnvelope of CONTRACT-036, so the invariant holds only for a narrower model. No acceptance test enumerates asynchronous publication call sites; the nearby architecture test (neither_end_of_the_cell_uplink_declares_its_schema_version_as_a_literal, backend/crates/tests/qip-acceptance/tests/architecture.rs:1795) checks one schema-version constant. At least one asynchronous record path uses a second format: the edge cell's decision journal (qip_edge::journal::{JournalEntry, MirrorBatch}, journal.rs:414-530) is shipped asynchronously by qip-edge-node's StoreMirror as its own hash-chained records, not AnyEvent envelopes -- a sweep test would have to either bring it under the envelope or name it as an exempt storage mirror. EventBus::publish_raw (bus.rs:413) accepts a pre-erased AnyEvent built by hand.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "CONTRACT-036"
+    ],
+    "blocked_by": "",
+    "verification": "An architecture test that finds every asynchronous publish call site workspace-wide and asserts each goes through the envelope-constructing API -- does not exist.",
+    "work_item": "E03-envelope-invariant-acceptance-test",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Split from G section 2 Rule 3; the field list this invariant would guard is CONTRACT-036's, which is itself only partial. verify: e2e true -> false: the requirement is a universal invariant; e2e_live demonstrates the envelope on one mesh path, and an asynchronous second record format (the edge decision-journal mirror) exists, so no end-to-end test demonstrates 'every'. Corrected 'current': EventBus is test-only; the production paths are the kernel journal (StreamEnvelope) and qip_mesh::spine frames. architecture.rs line corrected 1790 -> 1795."
+  },
+  {
+    "id": "CONTRACT-041",
+    "status": "MISSING",
+    "current": "nothing. No fabric-client crate exists.",
+    "evidence": [
+      "grep -rln \"fabric.client\\|fabric_client\" backend --include=*.rs -> zero hits (2026-09-25)",
+      "qip_events::AnyEvent.payload is an owned serde_json::Value (backend/crates/libs/qip-events/src/envelope.rs:110), cloned at multiple call sites in the transport layer"
+    ],
+    "gap": "Payloads travel as owned, cloned serde_json::Value/String through every layer (envelope erase, transport send, HTTP body serialisation); nothing passes a payload through a zero-copy buffer from caller to transport.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A benchmark counting payload copies/allocations per record through produce and consume, showing none between the caller's buffer and the transport -- does not exist.",
+    "work_item": "E03-fabric-client-zerocopy",
+    "tier": "T3",
+    "size": "L",
+    "notes": "P3, optimisation only. No new dependency needed per the requirement's own notes (std slices / Arc-backed buffers suffice)."
+  },
+  {
+    "id": "CONTRACT-042",
+    "status": "PARTIAL",
+    "current": "qip_transport::mesh::MeshInbox (backend/crates/libs/qip-transport/src/mesh.rs:255, duplicate admission at :300-307, reported in PublishAck.duplicates at :524) acknowledges a resent frame without queueing it again, keyed on AnyEvent::dedup_key (an explicit idempotency_key, or topic+payload_hash) rather than a per-partition producer sequence number; qip-api's CellDeltaReceiver additionally remembers absorbed keys past the inbox window. The mesh is composed in qip-api (src/mesh.rs, only when QIP_MESH_CELLS is set) and qip-edge-node. qip_events::EventBus also suppresses a repeated idempotency key in-process, but EventBus is reached only from tests; EventLog::append refuses (errors on) a reused event_id rather than acknowledging it.",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/mesh.rs:255,300-307,524 (MeshInbox dedup), :221-267 (bounded window)",
+      "a_lost_acknowledgement_produces_a_redelivery_that_the_receiver_detects (backend/crates/libs/qip-transport/tests/mesh.rs:343)",
+      "two_deliveries_of_one_fact_under_different_event_ids_are_still_one_fact (backend/crates/libs/qip-transport/tests/mesh.rs:373)",
+      "the_dedup_window_is_bounded_and_says_when_it_has_forgotten (backend/crates/libs/qip-transport/tests/mesh.rs:423)",
+      "a_delta_published_twice_by_a_restarted_cell_is_one_ingestion (backend/crates/apps/qip-api/tests/mesh.rs:344)",
+      "duplicate_events_are_suppressed_by_idempotency_key (backend/crates/libs/qip-events/tests/backbone.rs:302) -- EventBus, test-only path",
+      "infrastructure/environments/dev/terraform.tfvars:437-438: 'This API serves no mesh (QIP_MESH_CELLS is unset: a Cloud Run service publishes one port)'"
+    ],
+    "gap": "Achieves the practical goal (a resent record is acknowledged, not re-appended) by content/key hashing, not a monotonic per-partition producer sequence, and there is no partition (mesh.rs:73, 'There is no partition key'). The dedup window is explicitly bounded and forgets its oldest keys (mesh.rs:221-267) -- a retry arriving after the window has rolled is appended again, which the blueprint's exact-sequence design would not permit.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A property test asserting that under arbitrary interleavings of sends, lost acknowledgments and retries, each distinct producer sequence number appears exactly once in the partition log -- does not exist (no partition, no producer sequence).",
+    "work_item": "E03-producer-sequence-fencing",
+    "tier": "T2",
+    "size": "M",
+    "notes": "No new dependency needed per the requirement's own notes. verify: deployable true -> false: the network-retry dedup lives in the mesh, which dev's Cloud Run API does not serve (QIP_MESH_CELLS unset, per dev tfvars) and whose other end is qip-edge-node (execution_nodes = {}). The EventBus dedup test the assessor cited exercises a type no production path constructs. Dedup check line corrected: :837 is MeshPublisher::enqueue, the inbox check is :300-307."
+  },
+  {
+    "id": "CONTRACT-043",
+    "status": "MISSING",
+    "current": "qip_transport::mesh::MeshPublisher::publish_frames (backend/crates/libs/qip-transport/src/mesh.rs:893-925) accepts a caller-supplied Vec<AnyEvent>, but flush (:854-862) calls MeshPublisher::deliver (:948-1010) once per queued frame, and send_once (:1014-1022) posts a MeshBatch holding exactly one MeshMessage -- one network write per record. The wire format (MeshBatch.messages: Vec, :141-145) and the inbox could accept multi-message batches; no producer fills one. qip_edge::mesh::CellUplink and qip_mesh::spine call publish_frame one frame at a time.",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/mesh.rs:141-145 (MeshBatch), :854-862 (flush), :893-925 (publish_frames), :948-1022 (deliver/send_once)",
+      "a_batch_arrives_in_the_order_one_publisher_enqueued_it (backend/crates/libs/qip-transport/tests/mesh.rs:302) proves caller-supplied batch ordering, not fewer writes than records"
+    ],
+    "gap": "The one existing 'batch' API is a caller-supplied Vec sent as one write per element; there is no internal accumulate-then-flush that turns many produce calls into fewer transport writes.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A benchmark at a fixed record rate showing fewer transport writes than records, higher throughput than unbatched sends, and batching latency within the topic's QoS budget -- does not exist.",
+    "work_item": "E03-fabric-client-batching",
+    "tier": "T3",
+    "size": "L",
+    "notes": "NEW_DEPENDENCY is kept in the requirement because G pairs 'async' with fabricd's Tokio runtime (C2-refused); a dedicated thread with a bounded queue would meet the requirement without a new dependency, per the requirement's own notes. verify: status kept MISSING. Corrected the type name: the cited lines are MeshPublisher, not CellUplink (which is qip_edge::mesh::CellUplink and wraps a MeshPublisher). Added that MeshBatch already carries a Vec on the wire, so the batching work is producer-side only."
+  },
+  {
+    "id": "CONTRACT-044",
+    "status": "MISSING",
+    "current": "nothing. qip_transport::mesh has no acknowledgment-profile concept; delivery is confirmed by a single poll-based receiver's PublishAck (backend/crates/libs/qip-transport/src/mesh.rs:150), not a chosen leader-receipt-vs-quorum policy.",
+    "evidence": [
+      "grep -rln \"ack.profile\\|AckProfile\" backend --include=*.rs -> zero hits (2026-09-25)"
+    ],
+    "gap": "No producer construction path requires naming an acknowledgment profile, and there is no concept of leader-only vs quorum acknowledgment to choose between -- the mesh has one receiver per peer, not a replicated topic.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A unit test asserting constructing a producer without naming an ack profile is refused or does not compile, and that a send reports acknowledgment only once the declared profile's condition is met -- does not exist.",
+    "work_item": "E03-ack-profile",
+    "tier": "T2",
+    "size": "M",
+    "notes": "No new dependency needed per the requirement's own notes."
+  },
+  {
+    "id": "CONTRACT-045",
+    "status": "BLOCKED",
+    "current": "qip_events::registry::{SchemaDescriptor, SchemaRegistry} (backend/crates/libs/qip-events/src/registry.rs) is the in-tree serde_json-based schema model the requirement's own notes say to score against: it records topic, version, field names and a SHA-256 fingerprint, learned by serialising a sample instance -- not generated from a .proto schema.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/registry.rs:1-117",
+      "grep -rln \"prost\\|\\.proto\" backend --include=*.rs backend/**/*.proto -> zero hits (2026-09-25)",
+      "the_registry_records_schema_shape_and_detects_drift (backend/crates/libs/qip-events/tests/backbone.rs:878) and two_body_types_cannot_claim_the_same_topic (:929) -- the permitted in-tree form, reached only from qip-events' own tests"
+    ],
+    "gap": "No fabric-schema crate, no .proto definitions, and no prost code generation exist. Every Fabric payload's Rust type is hand-written and reflected into a field list at runtime, the opposite of 'generated from a registered .proto schema, and no producer or consumer hand-encodes a Fabric payload.'",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C2",
+    "verification": "An inspection test asserting every Fabric topic's payload type is generated from a registered .proto schema -- does not apply while the schema model is serde_json-based; ADR 0002/0009 refuse prost and Protobuf code generation until a wire-schema dependency record exists (ADR 0099 conflict C2).",
+    "work_item": "E99-fabric-schema-dependency-adr",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Needs an architecture decision (a dependency record weighing prost against the in-tree serde_json model) before any implementation work, not just engineering time. verify: status kept BLOCKED(C2) -- prost/.proto generation genuinely needs a refused crate. Flags implemented/tested set true for the permitted in-tree form the requirement's own notes say to score against (serde-derived typed bodies plus qip_events::SchemaRegistry, tested in backbone.rs), per the BLOCKED rule; integrated/deployable stay false because no composition root constructs a SchemaRegistry (see CONTRACT-046)."
+  },
+  {
+    "id": "CONTRACT-046",
+    "status": "PARTIAL",
+    "current": "qip_events::registry::SchemaRegistry::register (backend/crates/libs/qip-events/src/registry.rs:44-80) refuses a topic being reclaimed by a different Rust type.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/registry.rs:69-78",
+      "two_body_types_cannot_claim_the_same_topic (backend/crates/libs/qip-events/tests/backbone.rs:929)",
+      "the_registry_records_schema_shape_and_detects_drift (backend/crates/libs/qip-events/tests/backbone.rs:878)",
+      "grep -rn \"SchemaRegistry\" backend --include=*.rs -> only backend/crates/libs/qip-events/src/lib.rs, registry.rs and its own tests/backbone.rs; no composition root or other crate constructs one (2026-09-25)"
+    ],
+    "gap": "Re-registering an existing ID (topic) with the same type but different field content is NOT refused: registry.rs:69-78 checks only type_name equality and silently overwrites the descriptor otherwise (self.descriptors.insert unconditionally). The fingerprint-drift test proves the fingerprint changes across two separate registries, not that a single registry refuses the re-registration. SchemaRegistry is also never constructed by any binary -- it is reached only from its own crate's tests, so even this partial behaviour never runs in production.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A unit test asserting re-registering an existing schema ID with different content is refused, and identical content is accepted as a no-op -- does not exist; the closest test (two_body_types_cannot_claim_the_same_topic) covers a different-type claim only.",
+    "work_item": "E02-schema-registry-immutability",
+    "tier": "T2",
+    "size": "M",
+    "notes": "NEW_DEPENDENCY correctly removed per the requirement's own notes -- an in-tree registry can hold this invariant; it just does not yet, and nothing calls it."
+  },
+  {
+    "id": "CONTRACT-047",
+    "status": "MISSING",
+    "current": "nothing gates a new schema version at registration or in CI. Three decode-time compatibility policies exist, none of which is this gate: qip_events::AnyEvent::decode refuses a body written by a newer SCHEMA_VERSION; qip_streaming::schema (schema.rs:1-200) classifies the StreamEnvelope's own version skew as Exact/Forward/Backward, ignoring a newer publisher's extra fields and refusing a wire form missing a required field; and qip-market-ingestion's connector SchemaVersion::admits (connector/manifest.rs:145-147) admits a newer minor and refuses a newer major for vendor payloads. Each refuses at the consumer after the record exists, not before a production topic accepts it, and none compares a candidate schema against a registered one.",
+    "evidence": [
+      "grep -rln \"compatibility\\|Compatibility\" backend/crates/libs/qip-events --include=*.rs -> zero hits (2026-09-25)",
+      "backend/crates/services/qip-streaming/src/schema.rs:1-200 (envelope decode compatibility, not a registry gate)",
+      "a_missing_required_field_is_refused_rather_than_filled_in and a_newer_publisher_with_extra_trailing_fields_decodes_identically (backend/crates/services/qip-streaming/tests/schema_evolution.rs:161,47) -- envelope decode, not registration",
+      "a_schema_version_admits_a_newer_minor_and_refuses_a_newer_major (backend/crates/services/qip-market-ingestion/tests/connector_manifest.rs:243) -- vendor connector, not Fabric topics",
+      "backend/crates/libs/qip-events/src/registry.rs:1-6 claims 'the contract test that fails when a payload changes without a version bump'; no test pins a registry fingerprint -- the only SchemaRegistry users are qip-events' own tests"
+    ],
+    "gap": "No backward/forward compatibility policy per topic, no CI-time or runtime-registration compatibility gate, and no distinction between a breaking change (field removed) and an additive one (field added).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CONTRACT-046"
+    ],
+    "blocked_by": "",
+    "verification": "An acceptance test asserting a schema version removing a required field is rejected by both the CI check and runtime registration, while a compatible additive change is admitted -- does not exist.",
+    "work_item": "E02-schema-compatibility-gate",
+    "tier": "T2",
+    "size": "M",
+    "notes": "NEW_DEPENDENCY correctly removed per the requirement's own notes. verify: status kept MISSING. The assessor's single grep was scoped to qip-events and missed the decode-time compatibility policies in qip-streaming and qip-market-ingestion; they are named now with the reason they do not count (consumer-side, after the record exists; no registration or CI comparison). Also recorded that the registry's own doc claims a contract test that does not exist."
+  },
+  {
+    "id": "CONTRACT-048",
+    "status": "MISSING",
+    "current": "nothing. qip-transport's wire format is JSON over HTTP/1.1 with no binary frame header; the only integrity check is a SHA-256 payload-hash recomputation on arrival.",
+    "evidence": [
+      "the_inbox_speaks_the_same_wire_format_a_publisher_writes (backend/crates/libs/qip-transport/tests/mesh.rs:804)",
+      "a_frame_whose_payload_no_longer_matches_its_hash_is_refused (backend/crates/libs/qip-transport/tests/mesh.rs:591)",
+      "grep -rln \"magic.*version\\|CRC32C\\|crc32c\" backend/crates/libs/qip-transport --include=*.rs -> zero hits (2026-09-25)"
+    ],
+    "gap": "No magic/version marker, message type, flags, partition, producer ID/epoch, sequence, payload length or CRC32C exists on any frame -- a corrupt frame is only detected after its JSON body is fully parsed and its payload_hash recomputed, not refused at the edge before parsing.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CONTRACT-036"
+    ],
+    "blocked_by": "",
+    "verification": "A property test asserting arbitrary frames round-trip every header field, that flipping any CRC32C-covered bit is refused, and that a wrong magic/version or payload length is refused before the payload is read -- does not exist.",
+    "work_item": "E03-fabric-frame-header",
+    "tier": "T3",
+    "size": "L",
+    "notes": "CRC32C itself needs no new dependency (table-driven); M section 26.1's BLAKE3 content hash for the same header is C2-blocked, so only the CRC32C half is buildable today. verify: status kept MISSING. Prior art the assessor did not cite: qip-storage's WAL frame (backend/crates/libs/qip-storage/src/engine/frame.rs:1-65) has magic, format version, payload length and a SHA-256 digest, and refuses a wrong magic or digest before returning the payload -- the refuse-before-read discipline CONTRACT-048 asks for, on disk rather than on the wire, with none of the fabric header fields and no CRC32C."
+  },
+  {
+    "id": "CONTRACT-049",
+    "status": "MISSING",
+    "current": "nothing. No producer-epoch concept exists anywhere in the workspace.",
+    "evidence": [
+      "grep -n \"epoch\" backend/crates/libs/qip-transport/src/mesh.rs -> one hit at :165, a doc comment about Unix-epoch nanoseconds, unrelated to producer fencing (2026-09-25)",
+      "backend/crates/libs/qip-transport/src/mesh.rs:73, 'There is no partition key'"
+    ],
+    "gap": "No epoch registered per producer ID, no fencing of a stale producer's writes, and no partition for an epoch to be scoped to.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CONTRACT-042"
+    ],
+    "blocked_by": "",
+    "verification": "An integration test asserting that starting a second producer with the same ID bumps the epoch, the first producer's next write is refused as fenced, and none of its later records appear -- does not exist.",
+    "work_item": "E03-producer-epoch-fencing",
+    "tier": "T2",
+    "size": "M",
+    "notes": "G section 7.2 requires producer fencing on P0 Critical Control topics; those QoS classes (CONTRACT-037) also do not exist yet."
+  },
+  {
+    "id": "CONTRACT-050",
+    "status": "PARTIAL",
+    "current": "qip_events::log::EventLog (backend/crates/libs/qip-events/src/log.rs) assigns monotonic sequence numbers on append and replays deterministically; it is the platform's event log in every central binary via qip-kernel's EventLogDestination. Offset-addressed resume exists in two forms: qip-api's SSE streams use the log position as the SSE id and LoggedEvents::resume (backend/crates/apps/qip-api/src/stream.rs:497-560) resumes exactly after a client's Last-Event-ID, reporting how many records were evicted if the cursor is older than the retained head; and qip_streaming::durable::DurableLogTransport::seek(position) (durable.rs:119-128) rewinds a subscriber to any position. qip_storage::ChainArchive::absorb (chain.rs:165-190) is a sink that skips records at or below its absorbed_through watermark.",
+    "evidence": [
+      "the_log_assigns_monotonic_sequence_numbers (backend/crates/libs/qip-events/tests/backbone.rs:506)",
+      "replay_visits_every_event_in_order (backend/crates/libs/qip-events/tests/backbone.rs:660)",
+      "a_replayed_log_reproduces_the_original_run (backend/crates/libs/qip-events/tests/backbone.rs:741)",
+      "a_file_backed_log_survives_a_restart (backend/crates/libs/qip-events/tests/backbone.rs:769)",
+      "a_last_event_id_resumes_after_the_cursor_it_names (backend/crates/apps/qip-api/tests/stream.rs:546)",
+      "a_cursor_the_log_can_no_longer_replay_opens_with_a_gap_naming_what_was_lost (backend/crates/apps/qip-api/tests/stream.rs:568)",
+      "seeking_backwards_lets_a_crashed_consumer_re_read (backend/crates/services/qip-streaming/tests/transports.rs:180)",
+      "absorbing_the_same_records_twice_writes_nothing_the_second_time (backend/crates/libs/qip-storage/tests/chain.rs:125)",
+      "the_platform_walks_from_a_discovered_source_to_a_learned_lesson (backend/crates/tests/qip-acceptance/tests/e2e.rs:471) asserts only that the journal is non-empty (:1024-1032), not re-read equality"
+    ],
+    "gap": "There is one global sequence (one implicit partition) per log, not per-partition offsets. Re-reading from offset N is proven by count/position (seeking_backwards_lets_a_crashed_consumer_re_read asserts the count, the SSE test asserts cursors), not by byte-identical records. No server-side sink persists a committed consumer offset across a restart: ChainArchive resets absorbed_through to zero on open by design (chain.rs:90-99), the SSE cursor is held by the client, and DurableLogTransport::seek is called only from tests. EventFilter (log.rs:1188-1198) still has no sequence bound.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "An integration test asserting consuming a partition from offset N twice returns byte-identical records in the same order, and a sink restarted from its committed offset neither skips nor reprocesses -- does not exist in that form; the nearest are a_last_event_id_resumes_after_the_cursor_it_names and seeking_backwards_lets_a_crashed_consumer_re_read (single log, count/cursor assertions) and absorbing_the_same_records_twice_writes_nothing_the_second_time (in-process, not across a restart).",
+    "work_item": "E03-partitioned-offset-replay",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The single-partition guarantee this system actually provides is solid and well tested; the gap is partitioning and offset-addressed resume, not correctness of what exists. verify: e2e true -> false: the cited e2e assertion (e2e.rs:1024-1032) checks only that the journal is non-empty, which demonstrates neither increasing offsets nor re-read equality. Corrected a false gap claim: offset-addressed resume does exist (qip-api SSE Last-Event-ID in production; DurableLogTransport::seek in tests), so the remaining gap is partitioning, byte-identity and a persisted committed offset."
+  },
+  {
+    "id": "CONTRACT-051",
+    "status": "PARTIAL",
+    "current": "qip_contracts::policy::PolicyPayload (backend/crates/libs/qip-contracts/src/policy.rs:584-619) is a 13-slot, signed, sequence-gated bundle including trained_models: Slot<ModelManifest>, compiled_plan: Slot<PlanDigest> and risk_envelope: Slot<RiskEnvelopeSnapshot>, verified whole by qip_edge::policy::VerifiedPolicy::verify and applied as one assignment by Cell::apply_policy (backend/crates/edge/qip-edge/src/cell.rs:2100-2127), which refuses a payload for another cell or at/below the applied sequence. The strategy component travels as a separate plan file that qip-edge-node's StrategyInstaller deploys only if its bytes match the payload's compiled_plan digest (backend/crates/apps/qip-edge-node/src/strategies.rs). qip-api's mesh builds payloads with the model, risk-envelope and other slots produced (src/mesh.rs:903-1025).",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/policy.rs:584-619",
+      "backend/crates/edge/qip-edge/src/cell.rs:2100-2127 (apply_policy: cell and sequence refusal, single assignment)",
+      "backend/crates/edge/qip-edge/src/policy.rs:39 (VerifiedPolicy::verify)",
+      "backend/crates/apps/qip-api/src/mesh.rs:903-1025 (slots the centre produces; compiled_plan is not among them)",
+      "a_payload_at_or_below_the_applied_sequence_naming_a_disposition_is_refused_before_it_is_read (backend/crates/edge/qip-edge/tests/disposition.rs:723)",
+      "a_plan_whose_bytes_are_not_the_ones_the_payload_names_deploys_nothing (backend/crates/apps/qip-edge-node/tests/strategies.rs:366)",
+      "a_cell_that_has_been_told_nothing_sizes_at_the_floor_rather_than_in_full (backend/crates/edge/qip-edge/tests/unevaluated.rs:348) -- counter-evidence: a payload with components missing is applied, not refused"
+    ],
+    "gap": "The bundle's shape is 13 policy slots plus an out-of-band plan file, not the blueprint's five components: there is no feature-graph slot and no configuration component (pricing arrives from the node's QIP_DEFAULT_PRICING environment, not the package). Nothing is named a Reflex Package Builder, and the centre never produces the compiled_plan slot, so no built package carries a strategy. The opposite of the check holds today by design: a payload whose slots are unproduced is applied and narrows the cell to its conservative floor (PolicyPayload::unproduced, policy.rs:622-645; qip-api mesh.rs:716-719 'Every other slot ships unproduced'), so 'activating a package with any component missing is refused' would fail against the existing analogue until an ADR reconciles degrade-to-floor with refuse-on-missing. Delivery is polled state, not a ControlPackAnnouncement (CONTRACT-038). The whole path runs only between a mesh-serving qip-api (not on Cloud Run) and qip-edge-node (execution_nodes = {}).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "CONTRACT-038"
+    ],
+    "blocked_by": "",
+    "verification": "An integration test asserting a package built by the builder contains each of the five components, and activating a package with any component missing is refused -- does not exist; the existing analogue deliberately admits missing components (a_cell_that_has_been_told_nothing_sizes_at_the_floor_rather_than_in_full).",
+    "work_item": "E04-reflex-package-builder",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P1: packages are built by the master Phase 2 foundry; G places the signed package lifecycle in phase 8. The signing half is CONTRACT-004, already covered elsewhere. verify: deployable true -> false: the payload is produced only by a mesh-serving qip-api (Cloud Run serves no mesh) and consumed only by qip-edge-node (not deployed). Replaced a mis-cited test: an_unsigned_envelope_cannot_become_a_verified_one is about CapitalEnvelope, not the policy payload. Strengthened the gap: the analogue applies payloads with components missing (degrade-to-floor), the inverse of the check, and the centre never produces the strategy (compiled_plan) slot."
+  }
+]

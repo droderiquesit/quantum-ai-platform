@@ -1,0 +1,588 @@
+[
+  {
+    "id": "DATA-053",
+    "status": "BLOCKED",
+    "current": "Managed store: named as an enum variant only -- qip_storage::provider::StorageTarget::Bigtable (backend/crates/libs/qip-storage/src/provider.rs:32) and qip_mesh::provider::MeshTarget::Bigtable behind MeshPort::HotSeries (backend/crates/services/qip-mesh/src/provider.rs:72,92-106); both is_implemented() exclude it -- no gRPC client exists (ADR 0009 permits serde/serde_json only). Terraform declares one google_bigtable_instance.timeseries (infrastructure/terraform/modules/data/main.tf:268-291) behind enable_bigtable, false in all four environments. Permitted in-tree form: the qip_mesh::ports::HotSeries port (backend/crates/services/qip-mesh/src/ports.rs:243 -- bounded-retention, bitemporal record/latest_as_of/window over keyed series) with MemoryHotSeries and file-persisted FileHotSeries adapters (backend/crates/services/qip-mesh/src/adapters.rs:161-192) and MeshProvider::hot_series (provider.rs:237), tested in qip-mesh/tests/local_adapters.rs and point_in_time_reads.rs. No composition root constructs MeshProvider or any HotSeries (rg finds no non-test caller outside qip-mesh), and the port is generic keyed series only -- no feature or replay-index class is declared on it.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/provider.rs:14-35,62-72",
+      "backend/crates/services/qip-mesh/src/provider.rs:72,92-106,237",
+      "backend/crates/services/qip-mesh/src/ports.rs:243 (trait HotSeries)",
+      "backend/crates/services/qip-mesh/src/adapters.rs:161-192 (MemoryHotSeries, FileHotSeries)",
+      "test: the_hot_series_keeps_a_bounded_window_and_says_so (backend/crates/services/qip-mesh/tests/local_adapters.rs:244)",
+      "test: the_file_backed_hot_series_survives_a_restart_with_its_retention (backend/crates/services/qip-mesh/tests/local_adapters.rs:291)",
+      "test: the_hot_series_returns_no_point_recorded_after_the_as_of (backend/crates/services/qip-mesh/tests/point_in_time_reads.rs:109)",
+      "infrastructure/terraform/modules/data/main.tf:268-291",
+      "infrastructure/environments/dev/terraform.tfvars:255 (enable_bigtable = false, repeated in test/stage/prod)",
+      "test: cloud_storage_and_bigquery_are_implemented_and_the_other_four_managed_targets_are_not (backend/crates/libs/qip-storage/tests/gcp.rs:1357) -- negative proof that Bigtable itself is not implemented"
+    ],
+    "gap": "No gRPC client and no Bigtable adapter exist in-tree; the one Bigtable instance Terraform can declare is disabled in every environment and has no per-class table declared. The in-tree HotSeries stand-in is unwired (no composition root constructs it) and has no feature or replay-index class.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C2, C4",
+    "verification": "cargo test -p qip-mesh --test local_adapters; cargo test -p qip-mesh --test point_in_time_reads (permitted in-tree form); cargo test -p qip-storage --test gcp cloud_storage_and_bigquery_are_implemented_and_the_other_four_managed_targets_are_not (negative proof for Bigtable)",
+    "work_item": "E06",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "ADR 0099's own register already treats Bigtable as C2 (gRPC/HTTP2/protobuf, no REST data plane) plus C4 (managed service); provider.rs:253-263 spells out the exact obstacle in the deployment-facing error text. verify: implemented/tested false->true for the permitted in-tree form. The assessor wrote that no hot-series store of any kind exists; qip-mesh's HotSeries port with Memory/File adapters (ports.rs:243, adapters.rs:161-192) is exactly the local stand-in MeshPort::HotSeries maps to Bigtable, and it has named tests. integrated stays false: no composition root constructs it. Status stays BLOCKED (C2, C4)."
+  },
+  {
+    "id": "DATA-054",
+    "status": "BLOCKED",
+    "current": "Nothing. There is no in-tree Fabric (no broker/topic/partition/consumer-offset type anywhere in the workspace -- confirmed no struct Broker/Partition/Topic with offset semantics), so there is nothing for a sink to consume from, and Bigtable itself has no adapter (see DATA-053). infrastructure/terraform/modules/data/NOT-PROVISIONED.md:12-27 records that ADR 0011 replaced the whole Pub/Sub-style bus with qip-transport's HTTP mesh, which has no topic/partition model either.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/NOT-PROVISIONED.md:12-27",
+      "backend/crates/libs/qip-storage/src/provider.rs:62-72 (Bigtable not implemented)"
+    ],
+    "gap": "No Fabric broker/partition/offset concept exists in-tree at all (Epic E03 is still unbuilt), and even once one exists, writing it into Bigtable needs the gRPC client this build does not have.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-053"
+    ],
+    "blocked_by": "C2, C4",
+    "verification": "No test exists; would need a Fabric fixture + Bigtable emulator integration test once both sides are built",
+    "work_item": "E03",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Two independent gaps stack here: the Fabric itself (buildable in-tree, not ADR-blocked) and the Bigtable sink (blocked)."
+  },
+  {
+    "id": "DATA-055",
+    "status": "BLOCKED",
+    "current": "Nothing. Terraform declares a single google_bigtable_instance with one cluster and no google_bigtable_app_profile resource of any kind (infrastructure/terraform/modules/data/main.tf:268-291) -- there is no per-workload profile to choose a routing/consistency mode for. No Rust code exists that could consume an app profile either way, since Bigtable is not implemented (DATA-053).",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:268-291 (no google_bigtable_app_profile resource anywhere in infrastructure/)"
+    ],
+    "gap": "No app profiles are declared and no per-workload consistency-need mapping exists; this is buildable in pure Terraform once the instance is enabled, but the instance is gated off everywhere.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-053"
+    ],
+    "blocked_by": "C4",
+    "verification": "terraform plan against modules/data with enable_bigtable=true would need to show one google_bigtable_app_profile per workload; no such plan or test exists",
+    "work_item": "E06",
+    "tier": "T3",
+    "size": "M",
+    "notes": "Declaring app profiles is pure infra work (no new dependency needed); it is gated by the same enable_bigtable=false policy decision as DATA-053, not by a missing client for this specific piece."
+  },
+  {
+    "id": "DATA-056",
+    "status": "BLOCKED",
+    "current": "qip_storage::gcp::bigquery::BigQueryWarehouse (backend/crates/libs/qip-storage/src/gcp/bigquery.rs:406-626, insert() at 499, query() at 626) is a working REST adapter (tabledata.insertAll + jobs.query), unit-tested against a mock HTTP server (backend/crates/libs/qip-storage/tests/gcp.rs:984-1356) but never constructed by any composition root -- `rg BigQueryWarehouse backend/crates/apps` finds nothing outside tests. Terraform declares one google_bigquery_dataset.research (infrastructure/terraform/modules/data/main.tf:85-111), not one per purpose, gated behind enable_bigquery = false in every environment tfvars.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/gcp/bigquery.rs:406,499,626",
+      "backend/crates/libs/qip-storage/tests/gcp.rs:984-1356 (a_bigquery_insert_..., a_bigquery_query_...)",
+      "infrastructure/terraform/modules/data/main.tf:85-111",
+      "infrastructure/environments/dev/terraform.tfvars:252 (enable_bigquery = false, repeated in test/stage/prod)"
+    ],
+    "gap": "Never deployed anywhere (flag off in all four environments); even if enabled, a single 'research' dataset does not separate historical research, backtests, P&L attribution and data-quality studies as the requirement lists; the adapter is never constructed by qip-api, qip-fastbrain, qip-deepbrain or qip-cli.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C4",
+    "verification": "cargo test -p qip-storage --test gcp (insert/query paths pass); no infra-plan or integration evidence exists that a deployed dataset is fed or queried",
+    "work_item": "E08",
+    "tier": "T3",
+    "size": "L",
+    "notes": "The adapter code is the strongest piece of BigQuery coverage in the repo; the gap is entirely deployment and dataset-separation, not client capability."
+  },
+  {
+    "id": "DATA-057",
+    "status": "BLOCKED",
+    "current": "No fabric-sink-bigquery and no batch-load-from-GCS job exist. The only path into BigQuery is qip_storage::gcp::bigquery::BigQueryWarehouse::insert (backend/crates/libs/qip-storage/src/gcp/bigquery.rs:499) -- a REST tabledata.insertAll call, not the Storage Write API (gRPC) the requirement names -- and it is never constructed in production (see DATA-056).",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/gcp/bigquery.rs:499",
+      "infrastructure/terraform/modules/data/NOT-PROVISIONED.md:29-38 (no Dataflow job of any kind exists)"
+    ],
+    "gap": "No Fabric exists to sink from (DATA-054); no batch loader reads GCS into BigQuery; the one adapter that does exist speaks the wrong API (REST insertAll, not the gRPC Storage Write API) and is unwired.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-054",
+      "DATA-056"
+    ],
+    "blocked_by": "C2, C4",
+    "verification": "No test exists for either ingress path",
+    "work_item": "E03",
+    "tier": "T4",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "DATA-058",
+    "status": "PARTIAL",
+    "current": "The runtime half holds, vacuously: qip_storage::gcp::bigquery::BigQueryWarehouse is referenced nowhere outside qip-storage itself (rg BigQueryWarehouse backend/crates, excluding crates/libs/qip-storage, finds nothing), so no reflex or order decision can wait on a BigQuery read or write. The structural half the acceptance check names does NOT hold: the gcp module (BigQuery client included) is compiled unconditionally into qip-storage (backend/crates/libs/qip-storage/src/lib.rs:58, no cargo feature), and the reflex deployable qip-edge-node depends on qip-storage directly (backend/crates/apps/qip-edge-node/Cargo.toml:24) for its journal target; qip-fastbrain does too (Cargo.toml:24). qip-edge itself does not reach qip-storage (cargo metadata normal-dependency reachability, 2026-09-25). backend/crates/tests/qip-acceptance/tests/architecture.rs has the dependency_graph()/reachable_from() harness (:72, :360) used for similar properties (no_edge_cell_can_reach_a_language_model at :715) but no assertion names BigQuery or qip-storage.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/lib.rs:58 (pub mod gcp; unconditional)",
+      "backend/crates/libs/qip-storage/Cargo.toml (no [features]; qip-transport dependency exists for the gcp adapters)",
+      "backend/crates/apps/qip-edge-node/Cargo.toml:24 (qip-storage)",
+      "backend/crates/apps/qip-fastbrain/Cargo.toml:24 (qip-storage)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:72,360,715 (harness to extend; no BigQuery-specific assertion)"
+    ],
+    "gap": "No named test asserts the isolation, and the test the requirement's verification describes would FAIL today rather than pass: at crate granularity qip-edge-node (and qip-fastbrain) reach qip-storage, which unconditionally contains the BigQuery client. Closing it needs the gcp adapters moved behind a boundary the reflex crates do not reach (a separate crate or a cargo feature the edge node does not enable) and then an architecture.rs reachability assertion; the runtime property itself holds only because nothing constructs BigQueryWarehouse.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Would add, after separating the gcp adapters from what qip-edge-node links: an architecture.rs test asserting reachable_from(&graph, \"qip-edge-node\") and reachable_from(&graph, \"qip-edge\") exclude the crate that holds the BigQuery client, mutation-verified by re-adding the edge",
+    "work_item": "E01",
+    "tier": "T1",
+    "size": "M",
+    "notes": "P0 invariant; cheapest and highest-value gap to close of the whole DATA-053..076 set, since the code to prove is already correct. verify: NEEDS-VALIDATION -> PARTIAL, deployable true -> false, size S -> M. The row said the code to prove is already correct; it is not at the granularity the acceptance check names -- qip-edge-node/Cargo.toml:24 depends on qip-storage, whose gcp::bigquery module is compiled unconditionally (lib.rs:58), so the proposed reachability test fails today. Only the runtime half (nothing constructs BigQueryWarehouse) holds. deployable false because the reflex path runs only in qip-edge-node and execution_nodes = {} everywhere."
+  },
+  {
+    "id": "DATA-059",
+    "status": "BLOCKED",
+    "current": "In-tree permitted form: qip_mesh::catalog::Catalog (backend/crates/services/qip-mesh/src/catalog.rs:237), with DatasetRegistration/QualityState/DatasetLineage and Catalog::{register,usable_for,lineage_of,impacted_by} (catalog.rs:251,316,345,409). Reached from production: Platform holds `catalog: Catalog::new()` (backend/crates/runtime/qip-kernel/src/platform.rs:4450) and Platform::assess_sources (platform.rs:15945-15971) calls RegistrationDecision::catalogue_entry (backend/crates/services/qip-data-finder/src/decision.rs:401) then catalog.register (platform.rs:15962) for every source the data-finder lifecycle admits. This is driven on a live cadence by qip-deepbrain's DiscoveryDesk (backend/crates/apps/qip-deepbrain/src/discovery.rs:173,182). The actual GCP Knowledge Catalog / Dataplex service has zero Terraform presence anywhere in infrastructure/ (no google_data_catalog_* resource).",
+    "evidence": [
+      "backend/crates/services/qip-mesh/src/catalog.rs:237,251,316,345,409",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4450,15946-15971 (Platform::assess_sources -> catalog.register at :15962, the only non-test catalog call)",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:173,182 (DiscoveryDesk reaches assess_sources)",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:1057-1072 (load_source_candidates: empty list when QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH is unset)",
+      "infrastructure/environments/dev/terraform.tfvars:387 (source_candidates_file commented out; absent in test/stage/prod) -- every deployment runs discovery against zero candidates",
+      "test: a_source_the_finder_registers_appears_in_the_mesh_catalogue (backend/crates/runtime/qip-kernel/tests/platform_services.rs:247)",
+      "test: a_source_licensed_only_for_research_never_reaches_the_catalogue (backend/crates/runtime/qip-kernel/tests/platform_services.rs:283)",
+      "backend/crates/services/qip-mesh/tests/catalog.rs -- lineage_resolves_to_the_roots_a_dataset_was_built_from (:52), a_quarantined_dataset_cannot_be_read_however_well_licensed_it_is (:150), a_dataset_not_licensed_for_a_use_is_refused_by_the_catalogue_too (:195)"
+    ],
+    "gap": "Registers only data-finder-discovered sources, not GCS/BigQuery/Spanner/AI assets or the jobs that wrote them (no production code records a lineage edge for a derived asset); no GCP Knowledge Catalog is provisioned; and in every committed environment the discovery catalogue is empty, so catalog.register is never reached in a deployment.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C4",
+    "verification": "cargo test -p qip-kernel --test platform_services a_source_the_finder_registers_appears_in_the_mesh_catalogue; cargo test -p qip-mesh --test catalog",
+    "work_item": "E08",
+    "tier": "T4",
+    "size": "L",
+    "notes": "The permitted in-tree form is unusually solid for this domain -- COMPLETE-quality code and tests -- but the requirement names the managed GCP service by name, so status stays BLOCKED per the conflict register rather than COMPLETE. verify: deployable true -> false -- no environment sets source_candidates_file (dev line 387 is commented out), so DiscoveryDesk runs against an empty list and catalog.register never fires in a deployment. Replaced the cited deepbrain test (a_desk_on_cadence_reaches_the_platforms_assess_sources uses a refusing probe and asserts nothing about the catalogue) with qip-kernel platform_services.rs:247, which does assert registration. Status stays BLOCKED (C4)."
+  },
+  {
+    "id": "DATA-060",
+    "status": "MISSING",
+    "current": "Nothing. qip_mesh::catalog::Catalog::{usable_for,lineage_of,impacted_by} exist (see DATA-059) but `rg 'catalog.usable_for|catalog.lineage_of|catalog.impacted_by' backend/crates` matches only test files (backend/crates/tests/qip-acceptance/tests/truth_loop.rs:314,671,773,836; backend/crates/services/qip-mesh/tests/catalog.rs; backend/crates/services/qip-data-finder/tests/lifecycle.rs:276) -- no agent tool-call path in qip-agents or qip-investment-agents resolves a dataset through the catalog.",
+    "evidence": [
+      "rg -n \"catalog.usable_for|catalog.lineage_of|catalog.impacted_by\" backend/crates -- zero non-test hits"
+    ],
+    "gap": "No agent capability or tool resolves data through Catalog; an unregistered or quarantined dataset is not structurally kept from reaching an agent's context.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-059"
+    ],
+    "blocked_by": "",
+    "verification": "Would need: an agent data-access capability that calls catalog.usable_for before returning a dataset, plus a test that an unregistered/quarantined dataset is refused to the agent",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Buildable now, in-tree, with no new dependency -- the underlying Catalog is already production code; only the agent-side consult is missing."
+  },
+  {
+    "id": "DATA-061",
+    "status": "BLOCKED",
+    "current": "Nothing holds it. Terraform declares google_alloydb_cluster.records / google_alloydb_instance.primary (infrastructure/terraform/modules/data/main.tf:214-264) gated behind enable_alloydb = false in every environment. qip_storage::provider::StorageTarget::AlloyDb.is_implemented() is false (provider.rs:62-72); required_configuration (provider.rs:224-237) names the exact obstacle: AlloyDB has no REST data plane, only the PostgreSQL wire protocol, which this build (serde/serde_json only, ADR 0009) cannot speak. No AlloyDB schema DDL exists anywhere in the repository to inspect.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:214-264",
+      "backend/crates/libs/qip-storage/src/provider.rs:62-72,224-237",
+      "infrastructure/environments/dev/terraform.tfvars:254 (enable_alloydb = false, repeated in test/stage/prod)"
+    ],
+    "gap": "No PostgreSQL wire client exists in-tree and none may be added without a new ADR (ADR 0009); no schema of any kind is declared for operational metadata, so the 'no ledger/position/cash table' check has nothing to inspect.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C2, C4",
+    "verification": "cargo test -p qip-storage --test gcp cloud_storage_and_bigquery_are_implemented_and_the_other_four_managed_targets_are_not (negative proof AlloyDb is not implemented)",
+    "work_item": "E08",
+    "tier": "T4",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "DATA-062",
+    "status": "BLOCKED",
+    "current": "Nothing implements batch reprocessing. infrastructure/terraform/modules/data/NOT-PROVISIONED.md:29-38 states plainly that no code submits a Dataflow job. Dedup/gap handling exists only for the live path: qip_sequencing::tracker (backend/crates/edge/qip-sequencing/src/tracker.rs:61 new(), :269 has_open_gap) detects sequence gaps in a live order-book feed, which is unrelated to batch reprocessing of history. Enrichment/normalisation has zero implementation since qip-normalization was deleted under ADR 0029.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/NOT-PROVISIONED.md:29-38",
+      "backend/crates/edge/qip-sequencing/src/tracker.rs:61,269 (live-path only, not batch)"
+    ],
+    "gap": "No Dataflow/Dataproc job, no generic batch reprocessing engine, no enrichment pipeline, and no Spanner change-stream consumer exist anywhere in this repository.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C4, C5",
+    "verification": "No test exists",
+    "work_item": "E06",
+    "tier": "T4",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "DATA-063",
+    "status": "MISSING",
+    "current": "Vacuously true, and unguarded. No Fabric (no broker/topic/partition/offset type anywhere in the workspace) and no Dataflow/Dataproc job exist, so there is no live consumer of any kind for either to be. No acceptance test or Terraform check asserts the prohibition.",
+    "evidence": [
+      "rg -n 'struct Broker|struct Partition|struct Topic|ConsumerOffset' backend/crates -- zero hits",
+      "rg -n 'dataflow|dataproc' backend/crates/tests/qip-acceptance/tests -- zero hits"
+    ],
+    "gap": "No test or infra-plan check enforces this; the property holds only because neither side of the prohibited relationship has been built yet, so a future Fabric or Dataflow addition could violate it silently.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-054"
+    ],
+    "blocked_by": "",
+    "verification": "Would add an infra-plan/acceptance check once a Fabric exists: no declared Fabric consumer group is a Dataflow/Dataproc job",
+    "work_item": "E01",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Cheap to guard now with a placeholder acceptance test that documents the current absence, ahead of E03's Fabric MVP landing."
+  },
+  {
+    "id": "DATA-064",
+    "status": "PARTIAL",
+    "current": "The agent half is built and tested: qip_agents' capability sandbox (runtime.rs:386 Agent, :402 AgentHost; manifest.rs:88,126 AgentManifest::research; capability.rs:23 Capability) refuses a model call to a research agent fed hostile context, and refuses SubmitOrder/ChangeAutonomyLevel grants to research manifests; AgentHost is reached from production through Organisation::standard (backend/crates/agents/qip-investment-agents/src/chief.rs:244, called at backend/crates/runtime/qip-kernel/src/platform.rs:4278). No LLM tool-use loop exists anywhere. The component that actually processes untrusted web content is the data-finder discovery path -- qip_data_finder::probe::NetworkProbe (probe.rs:403-424, carries no credential) driven by qip-deepbrain's DiscoveryDesk (backend/crates/apps/qip-deepbrain/src/discovery.rs:181, main.rs:508) -- and it runs inside the qip-deepbrain process under the deep brain's identity, which mounts the production secret qip-capital-envelope-key (infrastructure/terraform/catalogue.tf:562-567, deepbrain block opens at :492) and resolves its model-provider token through qip_core::secret::resolve_from when configured (backend/crates/apps/qip-deepbrain/src/config.rs:479). There is no separate scout identity to be denied.",
+    "evidence": [
+      "backend/crates/libs/qip-agents/src/runtime.rs:386,402",
+      "backend/crates/libs/qip-agents/src/manifest.rs:88,126",
+      "backend/crates/libs/qip-agents/src/capability.rs:23-50 (no secret-read capability exists to grant or deny)",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs:244; backend/crates/runtime/qip-kernel/src/platform.rs:4278",
+      "backend/crates/services/qip-data-finder/src/probe.rs:403-424",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:181; backend/crates/apps/qip-deepbrain/src/main.rs:508",
+      "infrastructure/terraform/catalogue.tf:492,562-567 (deepbrain secret_mounts: qip-capital-envelope-key)",
+      "test: an_agent_that_has_read_a_hostile_page_still_cannot_reach_a_model_or_the_market (backend/crates/tests/qip-acceptance/tests/security.rs:162)",
+      "test: a_research_agent_cannot_be_granted_a_market_touching_capability (backend/crates/tests/qip-acceptance/tests/security.rs:215)"
+    ],
+    "gap": "(1) No test feeds a scout/crawler worker a fixture page carrying secret-read instructions; the cited test uses a hand-written Suborned agent and covers only the model-call half. (2) The requirement's identity check fails structurally: the process and service account that probe untrusted sources (qip-deepbrain) can read production secrets (qip-capital-envelope-key, the model credential), so 'when the scout's identity attempts a secret read, it is denied' is false today. (3) No scout role/identity separate from the deep brain exists. The infrastructure-isolation half is DATA-049.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test security an_agent_that_has_read_a_hostile_page_still_cannot_reach_a_model_or_the_market (model-call half only). Would add: discovery running under an identity with no secret_mounts and no secretAccessor, plus a test that a fixture page with tool-invocation and secret-read instructions produces neither, and a plan check that the scout identity holds no Secret Manager grant",
+    "work_item": "E13",
+    "tier": "T2",
+    "size": "M",
+    "notes": "No literally-named 'scout worker' role exists, but the general agent capability sandbox is strictly stronger than the requirement asks for and covers any agent given untrusted web content, including a future scout. verify: COMPLETE -> PARTIAL. The cited test proves the agent capability sandbox refuses a model call, but the requirement is about the scout/crawler worker and names two things: no tool call and no secret read, with the scout's identity denied on a direct attempt. The worker that fetches untrusted content (DiscoveryDesk/NetworkProbe) runs in qip-deepbrain, whose Cloud Run identity mounts qip-capital-envelope-key (catalogue.tf:562-567); no test covers the secret half. work_item set to E13."
+  },
+  {
+    "id": "DATA-065",
+    "status": "BLOCKED",
+    "current": "Nothing. Terraform declares exactly one cluster on the one Bigtable instance (infrastructure/terraform/modules/data/main.tf:276-290, cluster_id = '...-timeseries-primary'), so there is no second cluster to fail over to even topologically, and the instance is disabled everywhere (DATA-053). No app-profile resource exists either (DATA-055), so there is no routing distinction to test failover behaviour against.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:268-291 (single cluster block)"
+    ],
+    "gap": "No multi-cluster Bigtable topology is declared, no app profiles exist to distinguish multi-cluster from single-cluster routing, and no gRPC reader exists to observe failover at all.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-053",
+      "DATA-055"
+    ],
+    "blocked_by": "C2, C4",
+    "verification": "No game-day or chaos test exists for this store",
+    "work_item": "E06",
+    "tier": "T4",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "DATA-066",
+    "status": "BLOCKED",
+    "current": "No derived managed store exists to rebuild (Bigtable: DATA-053; GCS archive: gated off, DATA-067/068). Permitted in-tree form: derived registries rebuild from the immutable hash-chained event log alone -- Platform::replay_products / replay_eligibility / replay_registrations (backend/crates/runtime/qip-kernel/src/platform.rs:6046,6164,7395), reached from qip-cli's replay command (backend/crates/apps/qip-cli/src/replay.rs:316,346) and from a Platform assembled over an existing log -- and the acceptance test every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one_flipped_byte_refuses_the_replay (backend/crates/tests/qip-acceptance/tests/truth_loop.rs:1193) runs three cycles, assembles a second platform over the same log and asserts its fabric state and registries equal the first's. qip_storage::chain::ChainArchive (chain.rs:103,178,242) proves the log's own integrity. None of this rehydrates from Cloud Storage objects: qip_storage::gcp::CloudStorageBlobStore exists but no composition root constructs it.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:6046,6164,7395 (replay_products, replay_eligibility, replay_registrations)",
+      "backend/crates/apps/qip-cli/src/replay.rs:316,346",
+      "test: every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one_flipped_byte_refuses_the_replay (backend/crates/tests/qip-acceptance/tests/truth_loop.rs:1193)",
+      "backend/crates/libs/qip-storage/src/chain.rs:103,178,242",
+      "backend/crates/libs/qip-storage/tests/chain.rs:125 (absorbing_the_same_records_twice_writes_nothing_the_second_time)",
+      "backend/crates/libs/qip-storage/tests/engine.rs:187 (an_acknowledged_write_survives_the_process_being_killed)",
+      "infrastructure/terraform/variables.tf:365-383 (storage_target defaults to memory for every central workload)"
+    ],
+    "gap": "The Bigtable half needs a Bigtable client (C2) and the managed store (C4). The general half -- rehydrating derived stores from immutable Cloud Storage objects -- is not C4 (Cloud Storage is not in ADR 0099's C4 list) but is unbuilt: no production code writes or reads GCS segments, and enable_cloud_storage = false everywhere. Every Cloud Run environment runs QIP_STORAGE_TARGET=memory, so even the event-log rebuild has nothing durable to replay from after a restart in any deployed environment.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-053"
+    ],
+    "blocked_by": "C2, C4",
+    "verification": "cargo test -p qip-acceptance --test truth_loop every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one_flipped_byte_refuses_the_replay; cargo test -p qip-storage --test chain; cargo test -p qip-storage --test engine",
+    "work_item": "E06",
+    "tier": "T4",
+    "size": "L",
+    "notes": "deployable=false mirrors the execution-node precedent: the one durable target (Engine) is reached only by the execution-node startup script, and execution_nodes = {} in every environment. verify: blocked_by C4 -> C2, C4 (a Bigtable replay target needs the gRPC client, as DATA-053 records). Replaced the permitted-form evidence: ChainArchive proves log integrity, not a rebuild; the truth_loop acceptance test (truth_loop.rs:1193) and Platform::replay_* are the actual derived-state-rebuilt-from-the-log analogue, so implemented/tested/integrated stand on that. Recorded that the GCS-rehydration half is not C4 and is simply unbuilt."
+  },
+  {
+    "id": "DATA-067",
+    "status": "INCORRECT",
+    "current": "google_storage_bucket.archive and .artifacts (infrastructure/terraform/modules/data/main.tf:115-186) both set `location = var.region` -- a single region, not a dual-region or multi-region location -- and are gated behind enable_cloud_storage = false in every environment tfvars.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:120,170 (location = var.region)"
+    ],
+    "gap": "Even if enable_cloud_storage were turned on, the committed configuration would still fail this requirement: it hard-codes a single-region location rather than selecting a dual-region/multi-region location by residency policy.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan with modules/data would show location = <region>, not a dual-region location; no test currently checks this attribute",
+    "work_item": "E14",
+    "tier": "T2",
+    "size": "S",
+    "notes": "A pure Terraform fix (residency-policy-driven location selection); does not require resolving the C4 policy gate to correct, only to deploy."
+  },
+  {
+    "id": "DATA-068",
+    "status": "MISSING",
+    "current": "Nothing. There is no 'landing' bucket or object concept anywhere in the repository (rg -in landing backend/ infrastructure/ matches only the unrelated frontend/landing web app and the word 'landing' used figuratively). The one archive bucket (infrastructure/terraform/modules/data/main.tf:115-163) has ordinary age-based storage-class lifecycle rules (NEARLINE at 90 days, COLDLINE at 365 days) and no two-stage landing-then-archive gate of any kind.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:144-163 (age-based lifecycle_rule blocks only, no landing bucket)"
+    ],
+    "gap": "No landing bucket, no archive-confirmation gate, and no lifecycle rule conditioned on 'has this segment been archived yet' exist.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Would need: a fixture-backed integration test that blocks the archive write and asserts the landing object's lifecycle does not remove it",
+    "work_item": "E06",
+    "tier": "T3",
+    "size": "M",
+    "notes": "Buildable against the in-tree Memory/File blob stores for the test fixture, per the requirement's own verification method -- not blocked on live GCS."
+  },
+  {
+    "id": "DATA-069",
+    "status": "BLOCKED",
+    "current": "The committed shape is already correct: google_bigtable_instance.timeseries's cluster block declares autoscaling_config { min_nodes = 1, max_nodes = 10, cpu_target = 60, storage_target = 8192 } (infrastructure/terraform/modules/data/main.tf:284-289), matching the requirement. It is simply never deployed: enable_bigtable = false in every environment, and modules/data has zero Terraform test files of any kind (find infrastructure/terraform/modules/data -name '*.tftest.hcl' is empty).",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:284-289",
+      "find infrastructure/terraform/modules/data -name '*.tftest.hcl' -- no results"
+    ],
+    "gap": "Never deployed (flag off everywhere) and never plan-tested; otherwise the configuration already satisfies the requirement's text.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-053"
+    ],
+    "blocked_by": "C4",
+    "verification": "Would add a modules/data *.tftest.hcl plan asserting the autoscaling_config block, run with enable_bigtable=true",
+    "work_item": "E14",
+    "tier": "T3",
+    "size": "S",
+    "notes": "Autoscaling itself is a GCP-side behaviour that needs no in-tree gRPC client to occur -- only C4's policy gate blocks completing this one, unlike its sibling requirements."
+  },
+  {
+    "id": "DATA-070",
+    "status": "MISSING",
+    "current": "Nothing. No row-key construction function exists anywhere in the repository, because no Bigtable writer of any kind exists (DATA-053).",
+    "evidence": [
+      "rg -in 'row.key|rowkey' backend/crates/libs/qip-storage backend/crates/services/qip-mesh -- no row-key builder found"
+    ],
+    "gap": "No row-key scheme is designed or tested, even as a transport-agnostic pure function.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-053"
+    ],
+    "blocked_by": "",
+    "verification": "Would add a pure row-key builder (e.g. fn row_key(entity, ts)) plus an in-tree generated-input property test -- a seeded loop over generated entities and timestamps, not the proptest crate, which ADR 0002/0009 refuse -- asserting no key begins with a time component",
+    "work_item": "E06",
+    "tier": "T2",
+    "size": "S",
+    "notes": "Genuinely not blocked by C2/C4: a row-key naming scheme can be designed and property-tested in pure Rust today, ahead of the gRPC client landing, and would de-risk DATA-053 when it does. verify: status unchanged (no row-key builder exists; qip-mesh HotSeries keys by opaque series name). Corrected the proposed verification, which named proptest -- a third-party crate the dependency policy refuses."
+  },
+  {
+    "id": "DATA-071",
+    "status": "BLOCKED",
+    "current": "Nothing. No google_bigquery_reservation or google_bigquery_reservation_assignment resource exists anywhere in infrastructure/; the entire BigQuery footprint is the single google_bigquery_dataset.research (infrastructure/terraform/modules/data/main.tf:85-111), itself disabled in every environment.",
+    "evidence": [
+      "rg -n 'google_bigquery_reservation' infrastructure/ -- no results",
+      "infrastructure/terraform/modules/data/main.tf:85-111"
+    ],
+    "gap": "No reservations, no workload management, and no per-workload assignment exist for research/backtests/BI.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-056"
+    ],
+    "blocked_by": "C4",
+    "verification": "No test or plan exists",
+    "work_item": "E14",
+    "tier": "T3",
+    "size": "S",
+    "notes": "Pure Terraform, no new dependency; ADR 0093's owner cost-approval instruction applies before creating a reservation (a committed cost), per this requirement's own notes."
+  },
+  {
+    "id": "DATA-072",
+    "status": "MISSING",
+    "current": "Nothing. qip_storage::gcp::CloudStorageBlobStore (backend/crates/libs/qip-storage/src/gcp/storage.rs) is a generic BlobStore over Cloud Storage -- put/get/delete/list keyed by an opaque key under a namespace prefix -- with no source/date/instrument partitioning scheme and no immutability/overwrite-refusal behaviour beyond what the generic port offers.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/gcp/storage.rs:1-50 (generic key-prefix blob store, no partitioning scheme)"
+    ],
+    "gap": "No archive-writer object-naming function partitioned by source/date/instrument exists, and no 'never overwrite' or segment-size-band behaviour is implemented on top of the generic blob store.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Would add a unit test on a new archive-writer naming function, per the requirement's own verification method",
+    "work_item": "E06",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Buildable in pure Rust against the existing BlobStore port (Memory/File adapters suffice for the unit test); not blocked by C4."
+  },
+  {
+    "id": "DATA-073",
+    "status": "MISSING",
+    "current": "Nothing. No compaction job of any kind exists for Cloud Storage objects; qip_events::retention's RetentionClass::CompactDerived (backend/crates/libs/qip-events/src/retention.rs:65,126,156,176) is an unrelated concept -- an event-log retention class, not a job that merges small GCS objects into larger ones.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/retention.rs:65,126,156,176 (a different 'compact', not GCS object compaction)"
+    ],
+    "gap": "No compaction job exists that merges tiny Cloud Storage objects under a prefix into larger segments off the write path.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-072"
+    ],
+    "blocked_by": "",
+    "verification": "Would add an integration test over a fixture prefix of small objects in MemoryBlobStore/FileBlobStore, asserting hash-covered merge, per the requirement's own method",
+    "work_item": "E06",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P3 priority in the source register; genuinely optional relative to the rest of the DATA domain gaps."
+  },
+  {
+    "id": "DATA-074",
+    "status": "BLOCKED",
+    "current": "Nothing. qip_mesh::provider::MeshTarget::SpannerGraph is declared as an enum variant naming the target (backend/crates/services/qip-mesh/src/provider.rs:97, required_configuration at :159-162) but MeshTarget::is_implemented() (qip-mesh/provider.rs:104-106) excludes it -- no client of any kind exists. There is also no per-region GKE 'service plane' in the current infrastructure at all: infrastructure/CLAUDE.md and the current-state map show the only Kubernetes cluster is a single control-plane cluster running Argo CD/Config Connector (ADR 0036), not a workload plane, and modules/data itself has reached_from_production: 'n/a'. The one Spanner database Terraform can declare, google_spanner_database.positions (infrastructure/terraform/modules/data/main.tf:343-355), is a relational ledger table, not a property graph, and enable_spanner is false everywhere.",
+    "evidence": [
+      "backend/crates/services/qip-mesh/src/provider.rs:97,104-106,159-162",
+      "infrastructure/terraform/modules/data/main.tf:343-355",
+      "docs/architecture/current-state/infrastructure.json: modules/data reached_from_production = 'n/a'"
+    ],
+    "gap": "No Spanner Graph client, no property graph schema, and no regional GKE service plane exist; the architecture has since moved to Cloud Run + one execution node per region (ADR 0024), a bigger mismatch with the requirement's premise than the missing adapter alone.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3, C4",
+    "verification": "No test exists",
+    "work_item": "E09",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "Spanner does publish a partial REST data plane (unlike Bigtable), so a client is a judgement call rather than a hard C2 impossibility per provider.rs's own reasoning -- but nothing has been built either way, and the GKE regional-plane premise is the larger architectural gap."
+  },
+  {
+    "id": "DATA-075",
+    "status": "BLOCKED",
+    "current": "Same absence as DATA-074 for the GKE regional-plane premise, plus Bigtable's own absence (DATA-053). No per-region GKE service plane exists; the only cluster is the single control-plane cluster (ADR 0036), and modules/data is reached_from_production: 'n/a'.",
+    "evidence": [
+      "docs/architecture/current-state/infrastructure.json: modules/data reached_from_production = 'n/a'",
+      "backend/crates/libs/qip-storage/src/provider.rs:62-72 (Bigtable not implemented)"
+    ],
+    "gap": "No regional GKE service plane and no Bigtable client exist; per-region app-profile access as the requirement describes has nothing to attach to.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "DATA-053",
+      "DATA-055"
+    ],
+    "blocked_by": "C2, C3, C4",
+    "verification": "No test exists",
+    "work_item": "E11",
+    "tier": "T4",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "DATA-076",
+    "status": "PARTIAL",
+    "current": "Two adjacent in-tree pieces exist, neither matching the requirement exactly. (1) qip_data_finder::campaign::CampaignManifest / ManifestEntry (backend/crates/services/qip-data-finder/src/campaign.rs:306,334; flag_revised at :391) records what a research campaign's fetches read, and the kernel's reference ledger compares each new fetch's hash against the last reference to the same extent and flags a revision (SourceRevisionDetected); the manifest is journaled as ResearchCampaignClosed (backend/crates/runtime/qip-kernel/src/references.rs:228,237,248) by qip-deepbrain's learning-round campaign (backend/crates/apps/qip-deepbrain/src/campaign.rs:463). (2) qip_data_finder::freshness's SourceLeadSummary ranking tracks measured lead per source; in production it is only rendered into a stage-detail string (platform.rs:9772), and Platform::source_lead_ranking (platform.rs:15916) has no non-test caller. Neither is a Knowledge Delta Builder writing to a Source Manifest Registry, and no re-fetch cadence decision reads either.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/campaign.rs:306,334,391 (flag_revised)",
+      "backend/crates/runtime/qip-kernel/src/references.rs:228,237,248",
+      "backend/crates/apps/qip-deepbrain/src/campaign.rs:463 (ResearchCampaignClosed built in production)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9772,15916 (lead ranking: describe() in a stage detail; source_lead_ranking called only from tests)",
+      "test: a_window_is_assembled_through_a_campaign_whose_manifest_is_journaled (backend/crates/apps/qip-deepbrain/src/campaign.rs:674)",
+      "test: a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_and_the_metrics (backend/crates/runtime/qip-kernel/tests/references.rs:168)"
+    ],
+    "gap": "No single component plays the 'Knowledge Delta Builder' role, and no re-fetch cadence decision is shown reading the campaign manifest or freshness ranking back as its input -- the write-back exists in spirit (facts about a fetch are recorded) but the specific edge the requirement names is not demonstrated.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "DATA-059"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-deepbrain a_window_is_assembled_through_a_campaign_whose_manifest_is_journaled; cargo test -p qip-kernel --test references a_source_that_revises_an_extent_after_use_is_flagged_in_the_ledger_the_log_and_the_metrics (adjacent recording only); no test demonstrates a re-fetch decision consuming a write-back",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The blueprint's own notes admit the diagram underspecifies which fields the write-back updates, so PARTIAL rather than MISSING reflects real, tested, adjacent coverage rather than a green field. verify: status and flags unchanged. Replaced crate-level test commands with the two named tests that demonstrate the adjacent recording, and corrected the claim that Platform::source_lead_ranking is reached from production -- only its describe() string is; the ranking accessor has no non-test caller."
+  }
+]

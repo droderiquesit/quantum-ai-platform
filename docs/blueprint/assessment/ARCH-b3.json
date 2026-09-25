@@ -1,0 +1,630 @@
+[
+  {
+    "id": "ARCH-049",
+    "status": "BLOCKED",
+    "current": "qip_events::log::EventLog (backend/crates/libs/qip-events/src/log.rs:164, hash-chained, file-backed per ADR 0089) is today's sole authoritative store for financial facts -- reached from every composition root via qip-kernel::Platform. It is not yet a complete one even in permitted form: at assembly Platform::resume_ledger (backend/crates/runtime/qip-kernel/src/platform.rs:6327, called at :4643) replays only InflowExpected/InflowCancelled and deliberately skips Funded/Booked/FundingRefused (:6358-6360; doc :6305-6318, ADR 0085), so a restarted process rebuilds the per-user books in qip_capital::ledger::UserLedger with their declarations and without their fundings. What the log does rebuild across a restart is the capital fabric's FabricState (wallet of venue observations vs ledger views, reconciliation outcomes, drift) via Platform::resume_fabric (platform.rs:7455), plus the eligibility and registration registries. qip_storage::provider::StorageTarget::Spanner has no adapter (provider.rs:62-72, is_implemented() excludes it -- Spanner needs a gRPC client this workspace does not carry). Terraform already declares a disabled Spanner instance/database.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/log.rs:164 (EventLog struct) and :796 (holds_idempotent)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:6327 (resume_ledger), :6358-6360 (Funded | Booked | FundingRefused => continue), :6305-6318 (doc: 'a book resumes with its declarations and without its fundings')",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:7455 (resume_fabric: rebuilds FabricState from the log and refuses a divergent replay)",
+      "backend/crates/libs/qip-storage/src/provider.rs:62-72 (StorageTarget::is_implemented excludes Spanner)",
+      "infrastructure/terraform/modules/data/main.tf:326-354 (google_spanner_instance.global + google_spanner_database.positions, both count = var.enable_spanner ? 1 : 0)",
+      "infrastructure/environments/dev/terraform.tfvars:257 (enable_spanner = false)",
+      "test: backend/crates/tests/qip-acceptance/tests/truth_loop.rs:1192-1193 every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one_flipped_byte_refuses_the_replay (run 2026-09-25: 'test result: ok. 1 passed'; it rebuilds eligibility, registrations and the fabric state in a second process -- it does not rebuild per-user positions or cash)"
+    ],
+    "gap": "No Spanner ledger exists anywhere; financial truth is held by the file-backed event log. A Spanner instance/database is written in Terraform (data module) but disabled everywhere (enable_spanner=false), and no Rust adapter can open one. Independently of C4, the permitted form has an in-tree hole: per-user book fundings are not replayed from the log on restart, and no test shows positions and cash rebuilt from the log matching every other view, or that editing a derived view leaves reconciliation's truth unchanged.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C4",
+    "verification": "cargo test -p qip-acceptance --test truth_loop every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one_flipped_byte_refuses_the_replay",
+    "work_item": "E05-spanner-ledger-store",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "In this repository financial truth is held by the hash-chained, file-backed event log (ADR 0089; ADR 0002/0009), matching the requirement's own note. Moving ownership to Spanner is ADR 0099 conflict C4, which orders the ledger store first. verify: e2e true->false. The cited acceptance test (run, 1 passed) rebuilds registries and the capital-fabric wallet/reconciliation state across a second process, not positions and cash; and resume_ledger skips Funded/Booked records by design (platform.rs:6358-6360), so even the permitted form does not yet rebuild the per-user books from the log. Status BLOCKED(C4) kept because Spanner is the reason the requirement as written cannot complete; current/gap corrected ('never held anywhere else' was not accurate for fundings); provider.rs line reference corrected to :62-72."
+  },
+  {
+    "id": "ARCH-050",
+    "status": "PARTIAL",
+    "current": "qip_events::log::EventLog owns event history: append-only, hash-chained (verify_chain log.rs:1001, verify_retained_chain :1038), replayable (replay :1076, replay_filtered :1087), reached from every composition root. No Fabric-held consumer offset exists: qip_events::bus::EventBus (bus.rs) is an in-process, breadth-first dispatcher with no subscriber identity or position, and qip-transport has no offset/cursor type. The positions that do persist are all held by the consumer or producer itself -- exactly the arrangement the requirement's check forbids: the ingestion connector's Checkpoint and StreamJournal (qip-market-ingestion/src/connector/checkpoint.rs, connector/journal.rs:365 'A stream's durable record and its resume position') hold a source cursor on the connector's own key-value store; qip-api's SSE stream uses the log position as a cursor that the client holds and sends back as Last-Event-ID (qip-api/src/stream.rs:24-37, :62); qip-sequencing's gap trackers are consumer-side.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/log.rs:1076 (replay), :1087 (replay_filtered), :1001 (verify_chain)",
+      "backend/crates/libs/qip-events/src/bus.rs:1-20 (module doc: synchronous, breadth-first, in-process)",
+      "grep -rn 'offset' backend/crates/libs/qip-events/src backend/crates/libs/qip-transport/src -> no matches (re-run 2026-09-25)",
+      "backend/crates/services/qip-market-ingestion/src/connector/checkpoint.rs:1-35 and connector/journal.rs:365 (connector-held resume position)",
+      "backend/crates/apps/qip-api/src/stream.rs:24-37, :62 (SSE cursor = log position; resume position held by the client as Last-Event-ID)",
+      "test: backend/crates/tests/qip-acceptance/tests/truth_loop.rs:1193 (log replay demonstrated end-to-end; run 2026-09-25, 1 passed); no test exists for Fabric-held consumer offsets because nothing implements them"
+    ],
+    "gap": "The 'consumer offsets' half is entirely unbuilt -- no type, no persistence, no test -- so a restarted consumer has no Fabric-held position to resume from; only single-process replay of the whole log exists.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
+    "depends_on": [
+      "ARCH-063"
+    ],
+    "blocked_by": "",
+    "verification": "no test exists for consumer offsets; would need a new test restarting a named consumer against the log and asserting resumption from a durably held offset",
+    "work_item": "E03-fabric-consumer-offsets",
+    "tier": "T2",
+    "size": "L",
+    "notes": "Building a durable, named-consumer offset store does not itself need a new dependency (serde/serde_json suffice), so it is not ADR 0099-blocked even though the full broker-shaped Fabric (ARCH-063) is. verify: status and flags kept. current corrected: 'no consumer-offset concept exists anywhere' was overstated -- connector checkpoints/StreamJournal, the SSE Last-Event-ID cursor and qip-sequencing trackers are persisted positions, but every one is held by the consumer/producer rather than the Fabric, which is the shape the requirement rules out; evidence added."
+  },
+  {
+    "id": "ARCH-051",
+    "status": "PARTIAL",
+    "current": "qip_storage::gcp::storage::CloudStorageBlobStore (backend/crates/libs/qip-storage/src/gcp/storage.rs:174, impl BlobStore at :388) is implemented and tested -- it speaks the GCS JSON REST API over qip_transport::HttpClient, needing no new dependency. Terraform declares google_storage_bucket.archive ('<prefix>-event-archive', infrastructure/terraform/modules/data/main.tf:115-160) with two lifecycle_rule blocks (Nearline at 90 days, Coldline at 365) under var.enable_cloud_storage, false in every environment. Nothing writes an archive or a knowledge pack to any blob store: no non-test code outside qip-storage consumes BlobStore or StorageProvider::blobs, and Terraform's storage_target admits only memory|file|engine.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/provider.rs:62-72 (CloudStorage.is_implemented() == true)",
+      "backend/crates/libs/qip-storage/src/gcp/storage.rs:174 (CloudStorageBlobStore), :388 (impl BlobStore)",
+      "backend/crates/libs/qip-storage/tests/gcp.rs:600 a_cloud_storage_put_uploads_the_bytes_and_carries_the_token_in_a_header (52 #[test]s in the file)",
+      "grep -rn 'BlobStore|.blobs(' backend/crates --include=*.rs excluding tests/ and qip-storage/src -> no matches (2026-09-25): no archive or knowledge-pack writer exists",
+      "infrastructure/terraform/modules/data/main.tf:115-160 (archive bucket + two lifecycle_rule blocks)",
+      "infrastructure/environments/dev/terraform.tfvars:253 (enable_cloud_storage = false)",
+      "infrastructure/terraform/variables.tf:365-383 (storage_target validated to memory|file|engine only)",
+      "infrastructure/terraform/modules/evidence/main.tf:58 (google_storage_bucket.evidence -- GCS is already in use, so object storage is not a refused service)",
+      "docs/adr/0099-*.md:127 (the C4 row names Spanner, Spanner Graph, Bigtable, BigQuery, AlloyDB, Memorystore, Knowledge Catalog -- not Cloud Storage)"
+    ],
+    "gap": "No writer exists for a retained tick/internal archive or a knowledge pack, so nothing is written to GCS or anywhere else; the adapter and the lifecycle-tiered bucket both exist but are unwired (storage_target cannot select cloud_storage; enable_cloud_storage=false everywhere). Provisioning the bucket in dev is also blocked externally today (billing disabled, ADR 0099 C8 note), but building and testing the writer is not.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ARCH-063"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-storage --test gcp a_cloud_storage_put_uploads_the_bytes_and_carries_the_token_in_a_header",
+    "work_item": "E06-gcs-tick-knowledge-archive",
+    "tier": "T3",
+    "size": "L",
+    "notes": "Unlike Spanner/Bigtable/AlloyDb, the GCS adapter needs no new crate (REST over the in-tree HTTP client), so the remaining work is wiring storage_target and flipping enable_cloud_storage, not a dependency record -- but the requirement's own note assigns this to C4, which this row honours. verify: BLOCKED(C4) -> PARTIAL, blocked_by cleared. ADR 0099's C4 row (and the programme's C4 list) does not include Cloud Storage, GCS buckets are already provisioned by this repository (modules/evidence), and the adapter is in-tree REST -- so C4 is not the reason. The real gap is in-tree work: no archive or knowledge-pack writer exists at all (no non-test BlobStore consumer). provider.rs line reference corrected."
+  },
+  {
+    "id": "ARCH-052",
+    "status": "PARTIAL",
+    "current": "The pass-through rule is held by payload types, not by the log. qip_financial::intelligence::NewsItem (backend/crates/libs/qip-financial/src/intelligence.rs:139, schema v2 at :175-180) has no field that can carry article text -- only a SourceManifest (content hash, byte count, locator, retrieved_at), the headline, entity mentions and sentiment; v1's 'body' field was removed and a v1 payload fails to decode. qip-market-ingestion's NarrativeAdapter produces it, and narrative_feed.rs:667 proves against the serialised record that the served article text is absent while the manifest hashes the served document. NarrativeAdapter is reached from the qip-cli demo composition root (qip-cli/src/demo/mod.rs:808); other external fetches (ConnectorFeed) are reached from qip-api (src/feed.rs:407) and qip-fastbrain (src/feed.rs:271) and carry structured readings, not documents. RetentionClass::Referenced maps to Retention::ManifestOnly (retention.rs:180) but no code consults ManifestOnly -- the log neither strips nor evicts a Referenced record (is_replaceable() is false), so the guarantee is only as good as each payload type. No dedicated 'scout' crate exists.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/intelligence.rs:139 (NewsItem.manifest), :175-180 (TOPIC NewsReceived, schema 1->2 dropped the article body)",
+      "test: backend/crates/services/qip-market-ingestion/tests/narrative_feed.rs:667 the_article_text_reaches_no_record_the_log_seals_and_a_hashed_reference_stands_in_for_it (run 2026-09-25: 1 passed)",
+      "backend/crates/apps/qip-cli/src/demo/mod.rs:808 (NarrativeAdapter::new in a composition root); backend/crates/apps/qip-api/src/feed.rs:407 (ConnectorFeed::open)",
+      "backend/crates/libs/qip-events/src/topic.rs:543-551 (Referenced match arm) and :535-538 (Transient match arm)",
+      "backend/crates/libs/qip-events/src/retention.rs:97,180 (ManifestOnly and the Referenced=>ManifestOnly mapping); grep -rn ManifestOnly backend/crates -> only the mapping, qip-data-finder's reporting and one test (2026-09-25): nothing enforces it",
+      "test: backend/crates/libs/qip-events/tests/backbone.rs:2530-2534 (classification mapping only)",
+      "find backend/crates -iname '*scout*' -> no results (2026-09-25)"
+    ],
+    "gap": "The record-level property is proven for news at the adapter seam, but no integration test runs a fetch through a composition root and then shows that no bucket, table, spool, checkpoint or log file holds the fetched content while the manifest and derived knowledge both exist; and Retention::ManifestOnly is a declaration the log never enforces, so a future Referenced payload type that carries raw content would be retained without complaint.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-market-ingestion --test narrative_feed the_article_text_reaches_no_record_the_log_seals_and_a_hashed_reference_stands_in_for_it; cargo test -p qip-events --test backbone -- retention",
+    "work_item": "E08-scout-transient-payloads",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: status and flags kept. The assessor missed the stronger evidence (NewsItem has no body field; narrative_feed.rs:667, run and passing) and its gap claimed no external-fetch pipeline was wired, which is wrong (qip-cli demo, qip-api/qip-fastbrain ConnectorFeed). Added that ManifestOnly is never enforced by the log. e2e stays false."
+  },
+  {
+    "id": "ARCH-053",
+    "status": "BLOCKED",
+    "current": "Nothing owns hot derived features in a Bigtable-shaped store today. qip_storage::provider::StorageTarget::Bigtable.is_implemented() is false (provider.rs:55-65 -- needs a gRPC client this workspace does not carry). Terraform declares a disabled google_bigtable_instance.timeseries (autoscaling 1-10 SSD nodes, infrastructure/terraform/modules/data/main.tf:268-289), gated on enable_bigtable=false in every environment. Hot state today lives in-process only (StorageTarget::Memory/Engine inside each deployable binary).",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/provider.rs:55-65",
+      "infrastructure/terraform/modules/data/main.tf:268-289 (google_bigtable_instance.timeseries)",
+      "infrastructure/environments/dev/terraform.tfvars:255 (enable_bigtable = false)"
+    ],
+    "gap": "No adapter, no state-ownership register naming Bigtable, and nothing to inspect for hot derived features or entity/event state.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ARCH-065"
+    ],
+    "blocked_by": "C4",
+    "verification": "none; would need a qip_storage::gcp Bigtable adapter and a test proving hot features round-trip",
+    "work_item": "E06-bigtable-hot-state",
+    "tier": "T4",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "ARCH-054",
+    "status": "PARTIAL",
+    "current": "The invariant is held only at Terraform plan time, and the binaries would let Redis own state. infrastructure/terraform/variables.tf:380-383 refuses storage_target=memorystore, but the composition roots do not: qip_storage::StorageSettings::from_env (qip-storage/src/settings.rs:102) parses QIP_STORAGE_TARGET=memorystore and, given an address, builds a Redis KeyValueStore (proven end to end by redis.rs:1993 a_store_built_from_settings_authenticates_with_the_string_the_composition_root_resolved). qip-api, qip-fastbrain, qip-deepbrain and qip-edge-node open every namespace on that one store -- the 'event-log' ChainArchive, 'trial-book', the connector StreamJournal, qip-api's 'mesh' backbone (envelope dispatch spool) and qip-edge-node's 'cell-journal' (qip-api/src/main.rs:105-107,184,291,322; qip-edge-node/src/main.rs:475) -- and none refuses Memorystore (the edge node only warns on a non-durable target, main.rs:547). An unreviewed service update setting that variable would make a persistence-disabled Redis the only copy of that state, which is v2.1 §28's anti-pattern. In-process derived sets are documented as caches of the event log (qip-execution-engine/src/oms.rs:395; qip-kernel/src/central/plane.rs:763). No risk, capital or portfolio crate imports qip_storage::redis.",
+    "evidence": [
+      "infrastructure/terraform/variables.tf:365-383 (storage_target excludes redis/memorystore -- plan-time only)",
+      "backend/crates/libs/qip-storage/src/settings.rs:102-110 (from_env), :119-176 (from_values admits every managed target)",
+      "backend/crates/libs/qip-storage/src/redis.rs:1993 a_store_built_from_settings_authenticates_with_the_string_the_composition_root_resolved (the root path builds a Redis store)",
+      "backend/crates/apps/qip-api/src/main.rs:105-107, :184, :291, :322 (event-log archive, StreamJournal, trial-book, mesh opened on the configured store)",
+      "backend/crates/apps/qip-edge-node/src/main.rs:475 (cell-journal on the configured store), :547 (non-durable target warns, does not refuse)",
+      "backend/crates/services/qip-execution-engine/src/oms.rs:395 and backend/crates/runtime/qip-kernel/src/central/plane.rs:763 (derived sets described as caches of the event log)",
+      "grep -rln Redis backend/crates/services/qip-risk-engine/src backend/crates/runtime/qip-kernel/src -> no matches (2026-09-25)"
+    ],
+    "gap": "No composition root refuses a Memorystore storage target, so the only thing keeping Redis from becoming the sole store of the mesh spool, cell journal and trial book is a Terraform validation that an out-of-band service update bypasses (the second-layer check the paper boundary has, this invariant lacks). No chaos test flushes or corrupts any cache during a paper session and checks positions, capital and risk decisions are unchanged.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ARCH-066"
+    ],
+    "blocked_by": "",
+    "verification": "no test exists; needed: (1) a composition-root test that QIP_STORAGE_TARGET=memorystore is refused for every namespace that holds state (or confined to a cache role with an owning store behind it), and (2) a chaos test flushing every cache mid-session with reconciliation reporting no break",
+    "work_item": "E07-cache-authority-chaos-test",
+    "tier": "T1",
+    "size": "S",
+    "notes": "v2.1's own anti-pattern (Redis as position/capital truth or a required risk-gate dependency) has no instance to check against yet because Memorystore ships in GCP Phase 6 (ARCH-066). verify: NEEDS-VALIDATION -> PARTIAL. The assessor's premise 'Redis can never be selected by any composition root' is false: only Terraform refuses it; StorageSettings::from_env and all four state-holding roots admit memorystore and would put the mesh spool, cell journal and trial book on Redis alone. The invariant is therefore not implemented as a runtime control, only as a plan-time one."
+  },
+  {
+    "id": "ARCH-055",
+    "status": "BLOCKED",
+    "current": "No venue round trip has been measured or published from any region: docs/ops/execution-measurements.md:42-45 says so directly ('Nothing is deployed... None of these rows says anything about latency to a venue'). The posture itself is written down and partly built in permitted form: docs/operations/deploying-an-edge-cell.md:349-367 records that chicago-1, newyork-1 and dubai-1 run 300-400 km from their venues ('several milliseconds of round trip') and names colocation with a partner interconnect as the answer; infrastructure/terraform/modules/connectivity (main.tf:1-27, instantiated at infrastructure/terraform/main.tf:805, enable_partner_interconnect off in every environment) is the VPC half of that colocation path. qip-edge-node's cross-region declaration carries region round trips in whole milliseconds and refuses a zero (qip-edge-node/src/cross_region.rs:97-99, :247-274). No SLO is declared anywhere (no google_monitoring_slo in Terraform), so nothing promises sub-millisecond venue latency.",
+    "evidence": [
+      "docs/ops/execution-measurements.md:42-45 (nothing deployed; no venue latency)",
+      "docs/operations/deploying-an-edge-cell.md:349-367 (cells hundreds of km from venues; colocation + partner interconnect named as the answer)",
+      "infrastructure/terraform/modules/connectivity/main.tf:1-27 and NOT-ORDERED.md (colocation interconnect, off by default); infrastructure/terraform/main.tf:805 (module instantiated); variables.tf:964 (enable_partner_interconnect)",
+      "backend/crates/apps/qip-edge-node/src/cross_region.rs:97-99, :247-274; tests/cross_region.rs:249, :379 (region round trip must be declared, and a zero is refused) -- adjacent, not the venue benchmark",
+      "backend/crates/tests/qip-acceptance/tests/performance.rs (in-process timings only, no network/venue path)"
+    ],
+    "gap": "The benchmark the requirement's check needs -- a measured and published venue round trip from each chosen region -- does not exist, because it needs a deployed execution node per region: execution_nodes = {} everywhere (C8 cost/multi-region) and the dev project has billing disabled (external). The colocation path is declared but never ordered.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C8",
+    "verification": "none for the benchmark; the adjacent declaration checks run with cargo test -p qip-edge-node --test cross_region",
+    "work_item": "E11-venue-latency-benchmark",
+    "tier": "T3",
+    "size": "M",
+    "notes": "verify: MISSING -> BLOCKED(C8), implemented true for the permitted form. The row was MISSING with blocked_by C8, which is inconsistent; and the posture is not absent -- deploying-an-edge-cell.md:349-367 and modules/connectivity state and build the 'cloud region is not colocation' position. What cannot be produced without deploying execution nodes (C8, plus the external billing block) is the measurement itself. tested/integrated stay false: no test or root exercises a venue round trip."
+  },
+  {
+    "id": "ARCH-056",
+    "status": "PARTIAL",
+    "current": "qip-transport (backend/crates/libs/qip-transport, ADR 0011's in-tree substitute for a broker-based Fabric) documents and implements exactly five semantics and no more, each stated with what it deliberately does not do: bounded retry (retry.rs), refusing backpressure (queue.rs), at-least-once + idempotency-key dedup (mesh.rs), dead-lettering (deadletter.rs), per-publisher FIFO ordering (mesh.rs). Each has fault tests.",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/lib.rs:1-28 (the five-property table, module doc)",
+      "grep -c '#[test]' backend/crates/libs/qip-transport/tests/*.rs -> spool.rs:13 mesh.rs:13 http_client.rs:32 breaker.rs:11 reliability.rs:18 (re-counted 2026-09-25, 87 total)",
+      "infrastructure/terraform/catalogue.tf:32-37 (QIP_MESH_CELLS unset: qip-api builds no mesh in any deployment)"
+    ],
+    "gap": "This is qip-transport, a point-to-point client/mesh, not a broker-based Fabric with topics/partitions per v2.1 Phase 2; no table maps each semantic to a named platform-requirement ID -- the crate doc argues scoping in prose against ADR 0011's quote, and two shipped modules (breaker.rs, spool.rs) sit outside its five-row table. The mesh these semantics serve runs in no deployed process: catalogue.tf:32-37 leaves QIP_MESH_CELLS unset on qip-api (a Cloud Run service exposes one port) and qip-edge-node is not deployed (execution_nodes = {}).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ARCH-063"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-transport --test reliability",
+    "work_item": "E03-fabric-semantics-traceability",
+    "tier": "T2",
+    "size": "M",
+    "notes": "The requirement's own note treats qip-transport as 'the Fabric, built on what the workspace permits' -- the minimalism principle is substantially met in permitted form; only the requirement-to-test traceability table is unbuilt and does not itself need a new dependency. verify: deployable true -> false. The transport semantics run only inside the mesh, which catalogue.tf leaves unconfigured on qip-api and which qip-edge-node (undeployed) would otherwise carry; breaker/spool noted as untraced features. Test counts re-verified."
+  },
+  {
+    "id": "ARCH-057",
+    "status": "PARTIAL",
+    "current": "Explicit classes with stated per-class failure behaviour exist, in qip-streaming rather than qip-transport: qip_streaming::RoutingClass {Hot, Warm, Cold} (backend/crates/services/qip-streaming/src/routing.rs:77) maps each class to exactly one TransportPath (:47) -- Hot to the Local path, 'in-process, bounded, lossy under overload' (the LocalQueue drops the stalest entry and counts it); Warm to the durable EventLog path, 'must not be lost'; Cold durable with nothing waiting on it. RoutingClass::check (:134), called by StreamEnvelope::seal, refuses a venue-critical event on the durable path and an unlosable event on the lossy one. The kernel seals every envelope through StreamEnvelope::seal (qip-kernel/src/platform.rs:4707 and others) and publishes through DurableLogTransport (platform.rs:195), but the one shedding path, LocalQueue, is used only inside qip-streaming and its tests.",
+    "evidence": [
+      "backend/crates/services/qip-streaming/src/routing.rs:1-35 (the two rules), :47 (TransportPath), :77 (RoutingClass), :134 (check)",
+      "test: backend/crates/services/qip-streaming/tests/transports.rs:268 the_local_queue_is_bounded_and_drops_the_stalest_entry_first; :256 the_local_queue_refuses_anything_that_cannot_afford_to_be_dropped",
+      "test: backend/crates/services/qip-streaming/tests/routing.rs:26, :86, :115 (hot never traverses durable; venue-critical cannot be sealed durable; unlosable cannot be sealed hot)",
+      "cargo test -p qip-streaming --test transports --test routing, run 2026-09-25: routing 8 passed, transports 12 passed",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:195 (DurableLogTransport), :4707 (StreamEnvelope::seal); grep -rln LocalQueue backend/crates -> qip-streaming and qip-transport/src/queue.rs only"
+    ],
+    "gap": "Three classes by latency/durability, not v2.1's control/outcome/telemetry/research classes; no sampled-telemetry class; the cross-process queue (qip-transport/src/queue.rs) refuses when full without regard to class; the only shedding path is reached from no composition root; and no chaos test applies broker backpressure and shows lower classes shed or delayed while control and outcome keep their guarantees.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ARCH-063"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-streaming --test transports --test routing (class behaviour); the chaos test under backpressure does not exist",
+    "work_item": "E03-fabric-priority-classes",
+    "tier": "T2",
+    "size": "M",
+    "notes": "A priority classification with declared per-class failure behavior can be built in qip-transport's queue today without a new dependency; it does not require the Tokio/QUIC Fabric to exist first. verify: MISSING -> PARTIAL. The assessor's grep for 'Priority' missed qip_streaming::RoutingClass, a declared class set with per-class overload behaviour and passing tests (run 2026-09-25). integrated left false because the lossy/shedding path (LocalQueue) is reached only from tests, although the class check itself runs at every kernel seal."
+  },
+  {
+    "id": "ARCH-058",
+    "status": "BLOCKED",
+    "current": "No Cloud Service Mesh resource exists anywhere in Terraform, and GKE itself was retired for workloads by ADR 0024 in favour of Cloud Run. qip-transport's own 'mesh' (mesh.rs) is the unrelated cell-to-centre state/capital transport, not a sidecar service mesh. Since no mesh exists at all, the prohibition holds vacuously: zero Fabric or Reflex traffic is routed through a mesh sidecar because there is no sidecar anywhere.",
+    "evidence": [
+      "grep -rln 'service.mesh|ServiceMesh|istio|anthos' infrastructure/terraform backend -> only an unrelated doc mention in qip-storage/src/gcp/mod.rs and qip-transport's own (different) mesh module (2026-09-25)",
+      "infrastructure/terraform/main.tf (no service-mesh module instantiated)"
+    ],
+    "gap": "The exclusion is true only because the machinery it excludes (Cloud Service Mesh on warm GKE services) does not exist; there is no positive check (sidecar injection enabled on warm namespaces, confirmed absent on Fabric/Reflex) because there are no warm-service GKE namespaces at all.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3",
+    "verification": "none; would need a GKE warm-service namespace and a Fabric/Reflex workload to compare against",
+    "work_item": "E14-mesh-scope-fence",
+    "tier": "T2",
+    "size": "S",
+    "notes": "With warm services on Cloud Run (ADR 0024) there is no mesh today, so the exclusion holds vacuously, matching the requirement's own note."
+  },
+  {
+    "id": "ARCH-059",
+    "status": "BLOCKED",
+    "current": "Cloud Service Mesh does not exist (ARCH-058), and there is no warm-service-to-warm-service call: the domains are library crates composed into qip-api, qip-fastbrain and qip-deepbrain (ADR 0091, C7). The resilience primitives exist in-tree: qip_transport::retry (bounded exponential backoff, seeded jitter) and qip_transport::breaker (per-peer Closed/Open/HalfOpen). The breaker is wired only in qip-edge-node's mesh link (qip-edge-node/src/mesh.rs:259-280), which is not deployed. qip-api's mesh dispatcher has explicit timeouts (qip-api/src/mesh.rs:283-290) and a three-attempt retry ladder (:296-304) but no breaker, and it runs only when QIP_MESH_CELLS is set, which the Cloud Run catalogue leaves unset.",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/retry.rs:1-20; backend/crates/libs/qip-transport/src/breaker.rs:1-30",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs:259-280 (BreakerPolicy wired); backend/crates/apps/qip-api/src/mesh.rs:283-304 (timeouts + RetryPolicy, no breaker)",
+      "test: backend/crates/libs/qip-transport/tests/reliability.rs:510 a_slow_peer_trips_the_read_timeout_and_is_retried_rather_than_waited_on; tests/breaker.rs:72 a_circuit_opens_only_after_the_threshold_and_then_refuses_without_calling",
+      "infrastructure/terraform/catalogue.tf:32-37 (QIP_MESH_CELLS unset on qip-api)"
+    ],
+    "gap": "No Cloud Service Mesh, and no separate per-brain warm services (C7) to route through one; ADR 0001/0011's repo-wide explicit-timeout rule is not the same claim as mesh-level bounded retry plus circuit breaking between independently-scaled warm services.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ARCH-058"
+    ],
+    "blocked_by": "C3",
+    "verification": "cargo test -p qip-transport --test breaker",
+    "work_item": "E14-warm-service-resilience",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: PARTIAL(blocked_by C3) -> BLOCKED(C3), deployable true -> false. The requirement is scoped to calls on Cloud Service Mesh between warm services; neither exists (C3, C7), matching ARCH-058/060. The current text wrongly said the breaker is wired into qip-api -- it is only in qip-edge-node (undeployed); qip-api has timeouts and retry without a breaker, on a path no deployment configures."
+  },
+  {
+    "id": "ARCH-060",
+    "status": "BLOCKED",
+    "current": "No mTLS exists between any two services. qip-transport's own module doc states production must add mutual TLS 'via a service mesh sidecar, not present in any deployed manifest,' and ADR 0009 forbids in-tree TLS entirely. Cloud Run services today are reached over Google-terminated HTTPS and IAP for the portal, not workload-to-workload mTLS.",
+    "evidence": [
+      "docs/architecture/current-state/libs-foundation.json (notable_gaps: qip-transport doc quote on required mTLS via a mesh sidecar)",
+      "backend/crates/libs/qip-transport/src/lib.rs (no TLS/peer-auth by design; ADR 0011)"
+    ],
+    "gap": "No mutual authentication between any two services exists in any form, in-tree or managed -- doubly blocked, since ADR 0009 forbids in-tree TLS and no managed mesh exists to provide it either.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ARCH-058"
+    ],
+    "blocked_by": "C3",
+    "verification": "none",
+    "work_item": "E13-warm-service-mtls",
+    "tier": "T3",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "ARCH-061",
+    "status": "PARTIAL",
+    "current": "Several Phase-0 elements exist: GitHub WIF (google_iam_workload_identity_pool.github, infrastructure/terraform/modules/cicd/main.tf:24-34, used by ci.yml/deploy.yml/infra.yml with no service-account key), KMS keys in seven modules (data, ai, binaryauthorization, secrets, evidence, backup, gitops-control-plane), a VPC/subnets/DNS/firewalls (modules/network, modules/dns-zone, modules/trust-zones -- 13 zones, default-deny, only sanctioned paths). modules/scc declares two project-scoped Security Health Analytics custom modules, but enable_security_command_center = false in all four environments, so no SCC resource is created anywhere. No organization/folder/project resources, no Privileged Access Manager, no Network Connectivity Center, no Certificate Authority Service and no audit-log configuration (google_project_iam_audit_config) exist.",
+    "evidence": [
+      "infrastructure/terraform/modules/cicd/main.tf:24-34 (WIF pool + provider)",
+      "infrastructure/terraform/modules/trust-zones/main.tf:1-26 (13 zones, default deny, sanctioned paths only)",
+      "infrastructure/terraform/modules/scc/main.tf:1-29 (project-scoped only, by design); infrastructure/environments/dev/terraform.tfvars:267, stage and test :116, prod :119 (enable_security_command_center = false)",
+      "grep -rln 'google_folder|google_organization|google_privileged_access_manager|google_network_connectivity|google_privateca|google_project_iam_audit_config|resource \"google_project\"' infrastructure/terraform -> no matches (2026-09-25)",
+      "test: backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2073 no_service_account_key_exists_anywhere_in_the_terraform; :4797/:4812 (WIF attribute-condition helpers)"
+    ],
+    "gap": "No org/folder/project hierarchy, no PAM, no NCC, no CA Service and no audit-log configuration are declared; SCC is declared but disabled in every environment. The infra acceptance suite covers what is declared (WIF, no keys, trust zones), but Phase 0's full list is not met.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform validate && terraform plan -var-file=infrastructure/environments/dev/terraform.tfvars; cargo test -p qip-acceptance --test infrastructure",
+    "work_item": "E14-org-folder-pam",
+    "tier": "T3",
+    "size": "M",
+    "notes": "verify: status and flags kept; gap widened. The assessor listed only org/folder/PAM missing and described SCC as a present configuration -- it is off in all four environments, and NCC, CA Service and audit-log config are also absent (grep re-run). KMS module list corrected (cicd has no key; gitops-control-plane does)."
+  },
+  {
+    "id": "ARCH-062",
+    "status": "PARTIAL",
+    "current": "Artifact Registry (modules/registry: immutable tags, CI push-only, private) and Binary Authorization (modules/binaryauthorization; deploy.yml signs and creates an attestation per image digest, :540-561) exist and have run: deploy.yml run 115 built, scanned, pushed and attested four images (docs/operations/deployment-path.md). An SBOM exists only as ci.yml's sbom job (:146-160, cargo cyclonedx over the Rust workspace, uploaded as a CI artifact); it is not attached to the image digest in Artifact Registry, and no build-provenance (SLSA) attestation is produced for images. The GitOps management cluster (modules/gitops-control-plane, Argo CD + Kargo app secrets) is declared and gated on var.gitops_enabled (true in dev), but is suspended per ADR 0093 and its reconciler has never run (deployment-path.md: 'The reconciler half has never run'). No Cloud Build private pool exists: builds run as plain 'docker build' inside GitHub Actions runners.",
+    "evidence": [
+      "infrastructure/terraform/modules/registry/main.tf:1-25",
+      ".github/workflows/deploy.yml:455 (docker build), :540-561 (binauthz attestations sign-and-create)",
+      ".github/workflows/ci.yml:146-160 (sbom job: cargo cyclonedx, CI artifact only)",
+      "grep -niI 'sbom|provenance|slsa|spdx|cyclonedx' .github/workflows/deploy.yml -> no matches (2026-09-25)",
+      "infrastructure/terraform/main.tf:956-987 (module gitops_control_plane, count = var.gitops_enabled ? 1 : 0)",
+      "infrastructure/environments/dev/terraform.tfvars:138 (gitops_enabled = true)",
+      "docs/operations/deployment-path.md (run 115 proves the pipeline half; the reconciler half has never run)"
+    ],
+    "gap": "No Cloud Build private pool (builds run on GitHub-hosted runners); no SBOM or provenance attached to the released digest; the GitOps management cluster is declared but has never reconciled (ADR 0093), so Config Sync/Argo/Kargo/Rollouts are unproven in any environment.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3",
+    "verification": "cargo test -p qip-acceptance --test infrastructure; deploy.yml run history for the sign/attest steps",
+    "work_item": "E01-cloud-build-private-pools",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: status and flags kept; current/gap corrected. The assessor cited a 'deploy.yml sbom step' that does not exist -- the SBOM is a ci.yml workspace artifact not bound to the image digest, and no provenance attestation is produced, both of which the requirement's check needs."
+  },
+  {
+    "id": "ARCH-063",
+    "status": "PARTIAL",
+    "current": "No broker exists. The phase's other elements exist as in-tree substitutes: schemas and a client (qip_events::registry::SchemaRegistry; qip_contracts::wire CELL_DELTA_SCHEMA_VERSION; qip-transport's HTTP client and mesh -- ARCH-056), a single-copy hash-chained journal (qip_events::EventLog -- ARCH-049/050), a GCS REST adapter with no writer (ARCH-051), and OTel-shaped tracing without an OTel crate (qip-observability/src/trace.rs: W3C trace context, OTLP/JSON export; drained to OpenObserve by qip-api/src/openobserve.rs). Missing: three brokers, RF3 replication, consumer offsets, segment archiving, and a chaos suite gating adoption.",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/lib.rs (five properties, no broker/cluster type)",
+      "backend/crates/libs/qip-events/src/log.rs (journal/replay, single-process)",
+      "backend/crates/libs/qip-observability/src/trace.rs:1-4 (W3C trace context; spans exported as OTLP); backend/crates/apps/qip-api/src/openobserve.rs:1-8 (OTLP/JSON drain, no OTel dependency)",
+      "grep -rln 'struct.*Broker' backend/crates -> no matches (2026-09-25)",
+      "docs/adr/0099-*.md:125 (C2 is the Tokio/QUIC/prost/Raft implementation direction; 'Until then the Fabric is built on what the workspace permits, and the gap is scored')"
+    ],
+    "gap": "Three brokers, RF3 quorum-acknowledged journals, committed consumer offsets, archiving segments to GCS and a chaos suite that passes before adoption are all unbuilt. None of them needs a refused crate: replication and offsets can be built over the in-tree transport with serde, OTLP export already exists in-tree, and the GCS adapter is REST. A regional three-broker deployment would meet C8's cost ceiling and the external billing block, but a multi-process chaos suite run locally would not.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ARCH-050",
+      "ARCH-051",
+      "ARCH-056",
+      "ARCH-057"
+    ],
+    "blocked_by": "",
+    "verification": "none for the phase gate; the substitute pieces are covered by cargo test -p qip-transport, cargo test -p qip-events and cargo test -p qip-observability",
+    "work_item": "E03-fabric-mvp",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "OTel (NEW_DEPENDENCY) and the GCS archive (MANAGED_SERVICE) are both named in the requirement's own policy_flags, so this phase gate is blocked on two fronts (C2 and C4), with C2 as the primary listed conflict. verify: BLOCKED(C2) -> PARTIAL, blocked_by cleared, implemented/tested/integrated set for the existing substitute pieces. Per the programme rule, C2 applies only when behaviour genuinely needs a refused crate; every element of this exit test can be built in-tree, and OTel-shaped tracing already is (qip-observability trace.rs + OTLP/JSON drain), so BLOCKED hid buildable work. deployable/e2e stay false."
+  },
+  {
+    "id": "ARCH-064",
+    "status": "BLOCKED",
+    "current": "No Spanner ledger writer exists (see ARCH-049). In permitted form, idempotency exists at two seams, neither of them a ledger commit: EventBus dispatch dedup (proven by qip-events/tests/backbone.rs:302 duplicate_events_are_suppressed_by_idempotency_key, which publishes one Tick three times to the in-process bus -- it does not touch EventLog::holds_idempotent), and the edge drop-copy reconciler (qip-edge/tests/cell.rs:534 a_redelivered_drop_copy_fill_is_not_a_doubled_position). EventLog::holds_idempotent (log.rs:796) has one production caller, the reference ledger (qip-kernel/src/references.rs:511), not a financial writer. Reconciliation-shaped rebuild exists for the capital fabric (truth_loop.rs:1193) but per-user fundings are not replayed (ARCH-049). The capital envelope contract (qip_contracts::capital::CapitalEnvelope, backend/crates/libs/qip-contracts/src/capital.rs:20; issued by qip_capital::envelope::EnvelopeIssuer, HMAC-SHA-256, expiring) carries no schema version; the only versioned uplink contract is CELL_DELTA_SCHEMA_VERSION (qip-contracts/src/wire.rs:148).",
+    "evidence": [
+      "backend/crates/libs/qip-events/tests/backbone.rs:302-330 duplicate_events_are_suppressed_by_idempotency_key (EventBus, not EventLog)",
+      "backend/crates/libs/qip-events/src/log.rs:796 (holds_idempotent); backend/crates/runtime/qip-kernel/src/references.rs:511 (its only production caller)",
+      "backend/crates/edge/qip-edge/tests/cell.rs:534 a_redelivered_drop_copy_fill_is_not_a_doubled_position",
+      "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:1192-1193",
+      "backend/crates/libs/qip-contracts/src/capital.rs:20-37 (CapitalEnvelope fields: no version); backend/crates/libs/qip-contracts/src/wire.rs:148 (CELL_DELTA_SCHEMA_VERSION)",
+      "backend/crates/services/qip-capital/src/envelope.rs:1-40 (EnvelopeIssuer, HMAC-SHA-256, expiry)"
+    ],
+    "gap": "No Spanner ledger writer, so the literal 'same outcome delivered three times commits once to a Spanner ledger' scenario cannot be demonstrated. Even in permitted form, no test delivers one outcome three times and shows it booked once in the log-held ledger, fundings do not rebuild from the log, and the capital/risk envelope contracts are not versioned schemas.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ARCH-049"
+    ],
+    "blocked_by": "C4",
+    "verification": "cargo test -p qip-events --test backbone duplicate_events_are_suppressed_by_idempotency_key",
+    "work_item": "E05-spanner-ledger-writer",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "verify: e2e true -> false. The cited test proves in-process bus dispatch dedup of a Tick, a different property from committing an outcome once to a ledger; holds_idempotent is used only by the reference ledger; CapitalEnvelope has no schema version (the row called it 'versioned'), and lives in qip_contracts, not qip_capital::envelope. BLOCKED(C4) kept for the Spanner writer."
+  },
+  {
+    "id": "ARCH-065",
+    "status": "BLOCKED",
+    "current": "GCS (ARCH-051) and BigQuery (qip_storage::gcp::BigQueryWarehouse, provider.rs:55-65 is_implemented()==true) both have working, tested in-tree adapters, unreachable from any composition root today. Bigtable has no adapter (ARCH-053). Knowledge Catalog: no resource, no mention anywhere. Data contracts exist in permitted form: qip_events::registry::{SchemaRegistry,SchemaDescriptor} versions event schemas, and qip_contracts::wire carries a schema_version, proven by architecture.rs::neither_end_of_the_cell_uplink_declares_its_schema_version_as_a_literal.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/provider.rs:55-65",
+      "backend/crates/libs/qip-events/src/registry.rs (SchemaRegistry, SchemaDescriptor)",
+      "backend/crates/libs/qip-contracts/src/wire.rs:23 (schema_version, citing architecture.rs test)",
+      "grep -rn 'Knowledge Catalog|Dataplex' backend infrastructure -> no matches (2026-09-25)"
+    ],
+    "gap": "No Bigtable, no Knowledge Catalog at all; GCS and BigQuery adapters exist but neither is wired to a composition root (see ARCH-051, ARCH-053).",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ARCH-051",
+      "ARCH-053"
+    ],
+    "blocked_by": "C4",
+    "verification": "cargo test -p qip-storage --test gcp; cargo test -p qip-acceptance --test architecture neither_end_of_the_cell_uplink_declares_its_schema_version_as_a_literal",
+    "work_item": "E06-data-plane-bigtable-catalog",
+    "tier": "T4",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "ARCH-066",
+    "status": "BLOCKED",
+    "current": "No separate asset/capital/risk/evidence/API GKE services exist; those domains are library crates composed inside qip-api/qip-fastbrain/qip-deepbrain per ADR 0091 ('five binaries composed from library crates'), deployed to Cloud Run (ADR 0024), not GKE. No Fabric exists to have consumers that scale (ARCH-063). Memorystore has an in-tree adapter (see ARCH-054) but is unreachable (storage_target excludes it) and provisioned nowhere (enable_memorystore=false everywhere, though google_redis_instance.cache is already declared in Terraform).",
+    "evidence": [
+      "docs/architecture/current-state/apps.json (summary: six binaries, ADR 0091 composition)",
+      "infrastructure/terraform/modules/data/main.tf:295-325 (google_redis_instance.cache, gated)",
+      "infrastructure/environments/dev/terraform.tfvars:256 (enable_memorystore = false)"
+    ],
+    "gap": "Everything this phase asks for -- separate GKE services per brain, Fabric-driven consumer autoscaling, a live Redis cache -- is unbuilt; the only piece with in-tree code is the Redis adapter, and it is disabled.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ARCH-054",
+      "ARCH-063"
+    ],
+    "blocked_by": "C3",
+    "verification": "none",
+    "work_item": "E14-regional-service-plane",
+    "tier": "T4",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "ARCH-067",
+    "status": "BLOCKED",
+    "current": "A model registry with a real lifecycle exists: qip_ai::registry::{ModelStage,ModelRegistry} (backend/crates/libs/qip-ai/src/registry.rs:20-37; Development/Validation/Production/Shadow/Retired, ModelRegistry::require_for_decision refuses a retired/drifted/unevaluated model). Model artifacts carry a SHA-256 digest, not a cryptographic signature -- the crate's own doc says so explicitly, citing ADR 0043's gap. qip-lifecycle implements a promotion/demotion evidence ladder for strategies, not model packages. No Spanner Graph, no ambient agents, no symbolic agents, and no world+tick fusion module exist anywhere.",
+    "evidence": [
+      "backend/crates/libs/qip-ai/src/registry.rs:20-37 (ModelStage)",
+      "backend/crates/libs/qip-ai/src/serving.rs:77 ('A digest, not a signature ... (ADR 0043)')",
+      "test: backend/crates/libs/qip-ai/tests/model_infrastructure.rs:523 a_model_needs_a_passing_evaluation_before_promotion, :553 a_retired_model_is_refused_for_decisions, :567 a_drifted_model_is_refused_until_it_is_re_evaluated, :806 promoting_with_an_artifact_names_it_on_the_card_and_publishes_it_under_its_digest",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:1-30 (the research node builds a ModelRegistry and registers fits); backend/crates/runtime/qip-kernel/src/model_serving.rs:42",
+      "backend/crates/services/qip-lifecycle/src/{gates,evidence,band,demotion}.rs",
+      "find backend/crates -iname '*ambient*' -o -iname '*symbolic*' -> no matches (2026-09-25)"
+    ],
+    "gap": "No Spanner Graph (C4), no ambient/symbolic agents (unbuilt), no world+tick fusion module (unbuilt), and the model package lifecycle is digest-verified, not signed -- ADR 0043's named gap.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C4",
+    "verification": "cargo test -p qip-ai --test model_infrastructure",
+    "work_item": "E09-cognitive-ai-phase8",
+    "tier": "T4",
+    "size": "XL",
+    "notes": "verify: status and flags kept; verification command fixed. 'cargo test -p qip-ai registry::' was run on 2026-09-25 and matched 0 tests in every target (registry.rs has no test module; the registry tests live in tests/model_infrastructure.rs), so the cited verification proved nothing. Named tests added."
+  },
+  {
+    "id": "ARCH-068",
+    "status": "PARTIAL",
+    "current": "ADR 0098 records the orchestration policy that already exists: a rung ladder (8/16/32/64/100 workers gated on a measured >=10% verified-output-per-token gain), a six-gate model-provider authorisation, a worker contract, isolation/anti-duplication/no-worker-spawns-worker rules and budgets with automatic pause (docs/plan/algorik-orchestration-policy.md §2-§9), driven by the chief-orchestrator agent and vision-to-plan/implement-slice/test-change/security-review skills. scripts/model-gateway.mjs is the router's fail-closed front end. Every change lands through normal CI (ci.yml), and prod stays refused by infra.yml/deploy.yml.",
+    "evidence": [
+      "docs/adr/0098-the-development-factory-is-the-orchestration-policy-run-on-the-owners-desktop-with-claude-tiers-and-the-gcp-fabric-waits-on-a-measured-rung.md",
+      "docs/plan/algorik-orchestration-policy.md",
+      "scripts/model-gateway.mjs:299-303 (budget exhausted -> exit 3), :373-374 (ledger is the budget's source of truth); scripts/model-gateway.test.mjs (10 tests, none on exhaustion)",
+      ".claude/hooks/guard-dangerous-command.py and .claude/hooks/test_hooks.py (guard cases; not referenced by .github/workflows or Makefile)",
+      ".github/workflows/ci.yml, deploy.yml, infra.yml (existing gates; prod refused)"
+    ],
+    "gap": "No game-day agent-compromise simulation has ever been run (v2.1 §25); no GCP worker fabric exists (ADR 0098 defers it); the GitOps half of 'normal CI/GitOps' has never reconciled (docs/operations/deployment-path.md). Budget enforcement exists but is unproven: scripts/model-gateway.mjs:299-303 refuses a call once ALGORIK_WORKER_MAX_CALLS is spent, counted from a durable ledger (:373-374), yet none of the 10 tests in scripts/model-gateway.test.mjs exercises exhaustion. The sandbox guard .claude/hooks/guard-dangerous-command.py has a regression harness (.claude/hooks/test_hooks.py) that no workflow or Makefile target runs.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "no test/game-day exists; ADR 0098's own scripts/worker-capacity.sh measurement is the closest evidence run",
+    "work_item": "E01-devfactory-gameday",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: status and flags kept; gap corrected. The assessor said no budget-enforcement script existed -- scripts/model-gateway.mjs enforces a durable per-worker call budget, but untested; the guard hook's own tests exist and are not run by CI. tested stays false: nothing demonstrates the game-day property."
+  },
+  {
+    "id": "ARCH-069",
+    "status": "PARTIAL",
+    "current": "The IBM Quantum gateway exists in code and is reached by no composition root. qip_quantum::provider::HostedProvider reaches IBM Quantum over REST and refuses to report a result when the backend identifies itself as a simulator (backend/crates/libs/qip-quantum/src/lib.rs:1-20). The classical-baseline rule is structural inside qip-quantum (BenchmarkReport's non-optional baseline; ValidatedSolution's only constructor re-evaluates classically, benchmark.rs), with 57 #[test]s. But no app crate references qip_quantum; the kernel wires only SimulatedProvider (qip-kernel/src/platform.rs:4323-4326), and only when PlatformConfig::quantum_enabled, which only PlatformConfig::with_quantum (config.rs:573) sets and nothing outside tests calls; HostedProvider, BenchmarkReport and ValidatedSolution have no caller in qip-kernel or qip-optimization-engine. The compute router's classical-first routing is reached, but it gates solver choice, not the admission of an expansion item. Causal agency adapters that act outside the platform stay BLOCKED under ADR 0021 by design.",
+    "evidence": [
+      "backend/crates/libs/qip-quantum/src/lib.rs:1-30",
+      "backend/crates/runtime/qip-kernel/src/config.rs:252,534,573 (quantum_enabled; with_quantum)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4323-4326 (router.with_quantum(SimulatedProvider) only)",
+      "grep -rn qip_quantum backend/crates/apps/*/src -> no matches; grep -rn 'HostedProvider|BenchmarkReport|ValidatedSolution' backend/crates/runtime/qip-kernel/src backend/crates/services/qip-optimization-engine/src -> no matches (2026-09-25)",
+      "grep -c '#[test]' backend/crates/libs/qip-quantum/tests/*.rs backend/crates/libs/qip-quantum/src/benchmark.rs -> 57 (2026-09-25)"
+    ],
+    "gap": "No admission gate exists that refuses an expansion item without a recorded classical-baseline pass and a reliability-gate pass; the IBM gateway is unreachable from every composition root (the kernel can only ever wire the simulator); agency adapters stay shadow-only by design (ADR 0021), which is a deliberate posture rather than a gap.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-quantum",
+    "work_item": "E10-quantum-gateway-activation",
+    "tier": "T3",
+    "size": "M",
+    "notes": "Causal agency's shadow-only posture is a deliberate ADR 0021 boundary and belongs to ARCH-042, not a gap this row should chase; this row scores the quantum-gateway and classical-baseline half only. verify: integrated true -> false. HostedProvider is constructed nowhere outside qip-quantum and its tests; even with quantum_enabled (settable only by a test-used builder) the kernel wires SimulatedProvider; no app depends on qip_quantum."
+  },
+  {
+    "id": "ARCH-070",
+    "status": "PARTIAL",
+    "current": "A machine-readable per-workload register exists for the Cloud Run plane, without two of the four required attributes. infrastructure/terraform/catalogue.tf is 'one entry per workload, and one place': each entry names the binary, plane, trust zone, whose traffic it carries (ingress posture, invokers), the variables and secrets it reads, and its instance floor and ceiling (e.g. :241-255), and the acceptance suite holds every rendered manifest to its entry (manifest_wiring.rs, gitops.rs). It records no state owner (only prose comments such as 'Holds per-process state') and no degraded mode, and it deliberately excludes qip-edge-node, which modules/execution-node owns. A capability-level degradation table exists separately (qip-contracts/src/degradation.rs, the §6.2 table), but it is keyed by capability, not by workload.",
+    "evidence": [
+      "infrastructure/terraform/catalogue.tf:1-40 (register purpose and exclusions), :241-255 (plane, trust_zone, min_instances/max_instances)",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs:138 (catalogue_workloads), :2211 a_workloads_rendered_manifest_mounts_exactly_the_secrets_its_catalogue_entry_declares",
+      "backend/crates/libs/qip-contracts/src/degradation.rs (capability degradation order, not per workload)",
+      "grep -rln 'state_owner|degraded_mode|workload_register|WorkloadRegister' backend infrastructure docs -> only unrelated hits (2026-09-25)"
+    ],
+    "gap": "No state-owner or degraded-mode field in any entry, no upstream/downstream protocol field beyond ingress/invokers, the execution node is outside the register, and no acceptance test fails when a Terraform-declared workload lacks a complete entry on these four attributes.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "no test covers the four attributes; the existing parity checks run with cargo test -p qip-acceptance --test manifest_wiring",
+    "work_item": "E12-workload-register",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: MISSING -> PARTIAL, implemented/integrated true. catalogue.tf is a machine-readable per-workload register (scaling and ingress/invokers present, parity-tested against manifests) that the assessor's grep for 'state_owner|degraded_mode' could not find; it lacks state owner and degraded mode, so tested stays false."
+  },
+  {
+    "id": "ARCH-071",
+    "status": "BLOCKED",
+    "current": "Only one Spanner instance/database pair is declared at all: google_spanner_instance.global + google_spanner_database.positions (infrastructure/terraform/modules/data/main.tf:326-354), gated on enable_spanner=false everywhere. No world-graph or agent-memory Spanner database is declared (Spanner Graph is Phase 8, unbuilt -- ARCH-067), so there is nothing yet to share the ledger database with.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:326-354 (single instance, single database)",
+      "infrastructure/environments/dev/terraform.tfvars:257 (enable_spanner = false)"
+    ],
+    "gap": "The requirement cannot be positively demonstrated (separate databases per trust/performance domain) until a second Spanner-backed domain exists to check isolation against; today it is vacuously true because only one domain has a database.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "ARCH-049",
+      "ARCH-067"
+    ],
+    "blocked_by": "C4",
+    "verification": "none",
+    "work_item": "E05-spanner-db-isolation",
+    "tier": "T3",
+    "size": "M",
+    "notes": "verify: status and flags kept. Observation for when C4 resolves: the permitted-form store is one EventLog that carries LedgerEntry records beside the world-model topics (EntityUpdated, RelationshipUpdated) and every other domain (Platform::resume_ledger filters LedgerEntry::TOPIC out of the same log.records()), so domain isolation has no in-tree counterpart today and will be new work, not configuration."
+  },
+  {
+    "id": "ARCH-072",
+    "status": "NEEDS-VALIDATION",
+    "current": "Application code (backend/), the Fabric substitute (qip-transport/qip-events/qip-streaming), IaC (infrastructure/terraform), policies (docs/ops/policies, docs/operations/arbitrage-policy.md, docs/plan/algorik-orchestration-policy.md), schemas (qip_events::registry::SchemaRegistry, qip_contracts::wire CELL_DELTA_SCHEMA_VERSION), environment desired state (infrastructure/environments/*, infrastructure/gitops/envs/*) and model/config (qip-ai's model registry) all resolve to paths in this one repository, and ci.yml's jobs (format, lint, test, release-build, dependency-policy, security-audit, dependency-supply-chain, sbom, frontend-portal, frontend-landing, trivy, trunk, infrastructure, secrets) run from the same push/PR trigger against one commit.",
+    "evidence": [
+      "docs/adr/0016-repository-layout.md",
+      ".github/workflows/ci.yml:8-12 (one push/PR trigger), :27-393 (job list spanning Rust, frontend, infra, secrets)",
+      "test: backend/crates/tests/qip-acceptance/tests/gitops.rs:1510 every_argo_cd_application_points_at_this_repository_and_at_one_environment_directory_that_exists (environment desired state lives here, not in a separate env repo -- one slice of the requirement)",
+      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md:129 (C6 declined: 'The monorepo keeps one gate, one history and one review surface')"
+    ],
+    "gap": "No acceptance test directly asserts single-repository placement or would fail if a second repository appeared; the fact is demonstrated by directory inspection and by ci.yml's job list, not by a named test.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "ls backend infrastructure docs frontend (single tree) and .github/workflows/ci.yml's job list; no dedicated test exists",
+    "work_item": "E00-monorepo-placement-test",
+    "tier": "T1",
+    "size": "S",
+    "notes": "ADR 0099's conflict register declines C6 (the seven-repository split) outright, keeping ADR 0016's one repository; that decision itself is not code and so is not a 'test' in the strict sense either. verify: status and flags kept. Added the one named test that proves a slice (GitOps applications point only at this repository); it does not cover the whole placement claim, so tested stays false. ci.yml job list completed (dependency-supply-chain and trunk were omitted)."
+  }
+]

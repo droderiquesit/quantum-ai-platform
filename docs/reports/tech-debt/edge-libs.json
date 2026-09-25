@@ -1,0 +1,181 @@
+[
+  {
+    "item": "No Terraform environment ever provisions the execution node that is the sole production composition root wiring six of this group's seven crates (qip-arbitrage's scanner, qip-feature-dag via Cell::work, qip-protocols' registry, qip-routing's path/pathcycle/reprice/ratelimit, qip-sequencing's Sequencer, qip-strategy's live compiler), so every 'reached from production' claim in the source register is proven only by `cargo test`, never by a running process",
+    "files": [
+      "infrastructure/environments/dev/terraform.tfvars:227",
+      "infrastructure/environments/test/terraform.tfvars",
+      "infrastructure/environments/stage/terraform.tfvars",
+      "infrastructure/environments/prod/terraform.tfvars",
+      "backend/crates/apps/qip-edge-node/src/main.rs:55,66-68,76,577,583",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs (the only place run_pass ever executes)"
+    ],
+    "category": "temporary-infrastructure / deployment-ci-observability-gap",
+    "class": "E-needs-evidence",
+    "why": "`execution_nodes = {}` in every one of the four environments' tfvars is the single fact underneath the 'partial' status on qip-arbitrage, qip-feature-dag, qip-protocols, three of qip-routing's four sub-records, qip-sequencing and qip-strategy's live half. ADR 0099's conflict register names this precisely at row C8 and says what closes it: 'An owner cost ceiling, then a deployment record... Also blocked externally today: billing is disabled on the dev project, and deploy.yml fails at image push.' No code change in this crate group can close this; treating any of the seven crates' wiring as production-proven because a deployable binary's *source* reaches it would repeat the exact mistake .claude/rules/domains/observability.md warns against for metrics scraping.",
+    "blueprint_refs": ["GCP v2.1 §6 Regional Reflex Cell — Speed-Critical Execution", "v11.6 §16 Regional Reflex Nodes", "ADR 0099 C8"],
+    "risk": "high",
+    "suggested_epic": "E04"
+  },
+  {
+    "item": "qip-brokers, a service crate, depends directly on qip-routing, an edge crate, for RateLedger/RateLimits, FeeSchedule/Liquidity and GatewayCredential — and the acceptance suite's own boundary test checks libs against depending on services/apps/runtime/agents but has no test at all constraining anything against depending on edge, so this inversion of 'dependencies point inward only' is real, current and unguarded",
+    "files": [
+      "backend/crates/services/qip-brokers/Cargo.toml:18",
+      "backend/crates/services/qip-brokers/src/exchange.rs:56-57",
+      "backend/crates/services/qip-brokers/src/credential.rs:27",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1391-1411 (a_library_never_depends_on_a_service_or_an_application — 'upper' is services+apps+runtime+agents, edge is absent from both sides of the check)",
+      ".claude/rules/architecture/00-boundaries.md (dependency diagram: edge depends on libs + a subset of services; no arrow drawn the other way)"
+    ],
+    "category": "dependency-direction-violation",
+    "class": "E-needs-evidence",
+    "why": "The boundaries file states 'Dependencies point inward only' and draws edge as a leaf consuming libs and services, never consumed by them. libs-foundation's own tech-debt register shows the house pattern for a deliberate exception to a boundary rule: name it explicitly, with the ADR that authorises it (qip-storage/qip-transport's I/O exception, ADR 0011/0012). No such naming exists for a service depending on an edge crate. Either this is an accepted lateral relationship that the boundaries doc should say so about, or the three type families qip-brokers needs (rate limiting, fee/liquidity schedule, gateway credential) belong in a libs crate both qip-routing and qip-brokers can depend on instead. Evidence needed: which, before either the rule file or the dependency is changed.",
+    "blueprint_refs": [".claude/rules/architecture/00-boundaries.md", "ADR 0099 (traceability is structural, not narrative)"],
+    "risk": "high",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "qip-feature-dag's FeatureEngine is genuinely reached from Cell::work in the deployable qip-edge-node binary's source, but no composition root anywhere calls .register() against a single FeatureDefinition — including features::standard_suite, the crate's own twelve-feature reference set — so the live feature graph is structurally empty and evaluate() always returns an empty FeatureVector",
+    "files": [
+      "backend/crates/edge/qip-edge/src/cell.rs:1008,2829,3015",
+      "backend/crates/apps/qip-edge-node/src/main.rs:360",
+      "backend/crates/apps/qip-edge-node/src/strategies.rs:355",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:735"
+    ],
+    "category": "unfinished-migration / placeholder",
+    "class": "B-refactor",
+    "why": "This is additive wiring, not a design change: standard_suite(subject) already exists, is tested, and returns a ready Vec<Box<dyn FeatureDefinition>>; the missing piece is one registration loop beside qip-edge-node's existing FeatureEngine::new(...) call. Until it lands, every feature-referencing StrategySpec compiled against the live FeatureCatalogue::new() is refused with 'feature {key} is not registered in the feature graph' (qip-strategy/src/compile.rs:437-441), so no strategy that reads a feature can ever deploy on the edge node — the feature engine and the strategy compiler share one root cause.",
+    "blueprint_refs": ["v11.6 §16 Regional Reflex Nodes (Feature engine row)", "v11.6 §10 Model & Strategy Foundry, point 2 (features computed with strict lineage)"],
+    "risk": "high",
+    "suggested_epic": "E04"
+  },
+  {
+    "item": "The live feature vocabulary (qip-feature-dag::features::standard_suite, unused in production) and the training/backtest feature vocabulary (qip_simulation_engine::harness::bar_catalogue, used by every deepbrain evolution/succession compile) are two independent implementations with no shared source — confirmed qip-simulation-engine does not depend on qip-feature-dag in Cargo.toml — so a strategy proven in backtesting is never proven against the same feature computation it would evaluate against live",
+    "files": [
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:1047,1189,1208,2078",
+      "backend/crates/apps/qip-deepbrain/src/succession.rs:69,480",
+      "backend/crates/apps/qip-edge-node/src/strategies.rs:355",
+      "backend/crates/apps/qip-cli/src/demo/mod.rs:315",
+      "backend/crates/edge/qip-edge/src/cell.rs:8245",
+      "backend/crates/services/qip-simulation-engine/src/harness.rs:82",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:735"
+    ],
+    "category": "competing-schemas / incompatible-interfaces",
+    "class": "E-needs-evidence",
+    "why": "v11.6 §10 point 2 requires features to be computed 'with strict lineage and leak prevention' between training and execution. Here there are two FeatureCatalogue producers with no code path connecting them — one built from qip-feature-dag's registered definitions (never populated live), one built from qip-simulation-engine's own bar-derived catalogue (the only one ever non-empty) — so lineage cannot be checked even in principle. A mismatch would surface only as a strategy that backtested well and is either refused or behaves differently live. Evidence needed: a decision on whether qip-feature-dag becomes the single catalogue source for both lanes, or an explicit equivalence is proven between the two.",
+    "blueprint_refs": ["v11.6 §10 Model & Strategy Foundry, point 2", "ADR 0099 (traceability is structural, not narrative)"],
+    "risk": "high",
+    "suggested_epic": "E02"
+  },
+  {
+    "item": "qip-routing::gateway (the Gateway trait, SimulatedGateway, NativeGateway) has zero production constructors anywhere in the workspace and is the only impl of the Gateway trait that exists at all, yet a structural acceptance test explicitly forbids qip-edge's own Cell from importing qip_routing::gateway — qip-edge-node instead built and wired its own, independent SimulatedGateway/NodeGateway",
+    "files": [
+      "backend/crates/edge/qip-routing/src/gateway.rs:398,684 (the only two `impl Gateway for` sites in the workspace)",
+      "backend/crates/apps/qip-edge-node/src/gateway.rs:47-65,179,1077,1160",
+      "backend/crates/tests/qip-acceptance/tests/path_router.rs:513-521",
+      "backend/crates/services/qip-brokers/src/credential.rs:27 (only GatewayCredential, a data type, crosses)"
+    ],
+    "category": "duplicate-systems / dead-code",
+    "class": "E-needs-evidence",
+    "why": "Two independent implementations of 'how a cell places an order at a venue' exist in the tree: the one this crate's lib.rs names as a first-class contract is reached by nothing but its own tests, and the one actually running in qip-edge-node's source is unrelated code with a similarly-named type (SimulatedGateway exists in both, doing different things). The acceptance test's own comment reads as institutional wariness of letting cell.rs anywhere near qip_routing::gateway ('a second order path... is always the one nobody adds a refusal to'), not a stated plan to use it from somewhere else. Neither qip-brokers' SimulatedExchange nor anything else implements or constructs it. Evidence needed: a named future caller, or this is a D-delete case once the absence of a plan is confirmed rather than inferred from silence.",
+    "blueprint_refs": ["v11.6 §16 Regional Reflex Nodes (Router/execution row)", "v11.6 §18 Execution, Market Making & Market Creation"],
+    "risk": "medium",
+    "suggested_epic": "E04"
+  },
+  {
+    "item": "qip-routing::router::Router (venue all-in-cost selection) and ordertype::select_order_type both have zero production call sites; the one production repricing path that needs an order type hard-codes RoutedOrderType::Limit directly rather than calling the crate's own urgency/touch-based selection algorithm",
+    "files": [
+      "backend/crates/edge/qip-routing/src/router.rs:503 (select_order_type's only non-test caller, itself unreached)",
+      "backend/crates/apps/qip-edge-node/src/reprice.rs:377,693 (RoutedOrderType::Limit constructed directly)",
+      "backend/crates/edge/qip-routing/src/ordertype.rs:211,371-390 (select_order_type and its passive/aggressive ladder)"
+    ],
+    "category": "hard-coded-configuration / dead-code",
+    "class": "E-needs-evidence",
+    "why": "The crate's own lib.rs names venue selection on all-in cost as its first capability and urgency/touch-based order-type selection (market/limit/peg/IOC/FOK) as its second; production reaches neither. Every resting order the edge node places today is a plain limit order by construction, not by a computed routing decision — the selection ladder select_order_type builds for exactly this purpose sits unreached in a deployable binary's source. This is more specific than ordinary dead code: it is a live decision point standing in for one the crate already computes.",
+    "blueprint_refs": ["v11.6 §18.1 Market Making (quote-rate/message-ratio controls, cancel/replace budgets)", "v11.6 §16 (Router/execution row: 'Order types, venue selection')"],
+    "risk": "medium",
+    "suggested_epic": "E04"
+  },
+  {
+    "item": "qip-routing::health::HealthTracker and consolidate::Consolidator (venue health scoring; cross-strategy venue consolidation) have zero non-test call sites anywhere in backend/crates",
+    "files": [
+      "backend/crates/edge/qip-routing/src/health.rs",
+      "backend/crates/edge/qip-routing/src/consolidate.rs"
+    ],
+    "category": "dead-code",
+    "class": "E-needs-evidence",
+    "why": "Both are fully tested (folded into the crate's 130-test count) but nothing constructs either outside qip-routing's own tests. v11.6 §16 names 'intent netting' and implicit venue-health awareness as reflex-node responsibilities; whether these two are the intended implementation awaiting a caller in qip-edge-node, or an earlier design already superseded by logic inside qip-edge's own Cell, is not decided by the code as it stands.",
+    "blueprint_refs": ["v11.6 §16 Regional Reflex Nodes (Intent netting row)"],
+    "risk": "low",
+    "suggested_epic": "E04"
+  },
+  {
+    "item": "qip-protocols' actual venue-wire decoders (FixDecoder, ItchDecoder, SbeDecoder, JsonFrameDecoder/StreamAssembler) — the reason the crate exists — have zero production callers anywhere outside their own crate; the only decoder wired into any deployable binary is a locally-defined synthetic DepthDecoder reading a tab-separated in-process feed",
+    "files": [
+      "backend/crates/apps/qip-edge-node/src/feed.rs:74-75,349-399",
+      "backend/crates/edge/qip-edge/src/cell.rs:44,1005,1202",
+      "backend/crates/edge/qip-protocols/src/fix.rs,itch.rs,sbe.rs,framing.rs (zero non-test, non-own-crate references confirmed by workspace-wide grep)"
+    ],
+    "category": "unfinished-migration",
+    "class": "B-refactor",
+    "why": "This is the gap GCP v2.1 §6 names directly: 'Venue sessions: direct FIX/WebSocket/native adapters... No generic HTTP service between Reflex and venue.' The code to do it already exists, is extensively tested (51 tests, including a split-at-every-byte-offset invariant and a schema-tolerance invariant), and is registry-compatible with the Decoder trait qip-edge's Cell already holds. What is missing is a real venue to decode from, which item 1's deployment gap and the paper-trading boundary jointly explain: this is work waiting on a target, not a defect to fix independently of it.",
+    "blueprint_refs": ["GCP v2.1 §6 Regional Reflex Cell — Speed-Critical Execution", "v11.6 §16 (Feed adapters row)"],
+    "risk": "medium",
+    "suggested_epic": "E04"
+  },
+  {
+    "item": "qip-sequencing's ClockDiscipline, LineArbiter and FailoverReconciler — three of the crate's four disciplines — have no production caller anywhere; ClockDiscipline and FailoverReconciler have zero references outside their own crate at all, including in the acceptance suite",
+    "files": [
+      "backend/crates/edge/qip-sequencing/src/clock.rs",
+      "backend/crates/edge/qip-sequencing/src/arbitration.rs",
+      "backend/crates/edge/qip-sequencing/src/failover.rs",
+      "backend/crates/tests/qip-acceptance/tests/performance.rs:2162,2233 (LineArbiter, benchmark-only)"
+    ],
+    "category": "dead-code",
+    "class": "E-needs-evidence",
+    "why": "The crate exists to stand 'between a decoded feed and a book that is quietly wrong' across four failure modes; only reordering/dedup (Sequencer/SequenceTracker) is wired into Cell::on_bytes. qip-edge-node's only production source is a single in-process simulated feed (see item 1 and item 8), which has no venue clock to discipline, no redundant A/B line to arbitrate and nothing to fail over from — so today's absence of a caller may track the absence of a multi-line real feed rather than an abandoned design. Evidence needed either way before choosing between wiring toward a real dual-line feed and deleting.",
+    "blueprint_refs": ["v11.6 §16 Regional Reflex Nodes (Feed adapters row: 'sequence/gap detection, timestamping')"],
+    "risk": "medium",
+    "suggested_epic": "E04"
+  },
+  {
+    "item": "qip-orderbook::auction::AuctionState is wired into the public shape of VenueState and BookSnapshot (an Option<AuctionState> field on each) but is never constructed, populated or read by anything outside qip-orderbook's own crate",
+    "files": [
+      "backend/crates/edge/qip-orderbook/src/venue.rs:23,51,141,214",
+      "backend/crates/edge/qip-orderbook/src/snapshot.rs:13,111"
+    ],
+    "category": "dead-code",
+    "class": "E-needs-evidence",
+    "why": "Confirmed by grep: no reference to AuctionState or auction:: anywhere in qip-edge or qip-edge-node non-test source. The field exists in every VenueState and every BookSnapshot taken, always None in practice — the same shape as PolicyPayload's unshipped trained_models/compiled_plan slots flagged in the libs-foundation report: a live type with no live producer and no live consumer, carried through a structure that is itself production-reached.",
+    "blueprint_refs": ["v11.6 §18.1/§18.2 (auction-adjacent market-making/creation mechanics)"],
+    "risk": "low",
+    "suggested_epic": "E04"
+  },
+  {
+    "item": "L2Book and L3Book's price ladders (qip-orderbook) enforce no maximum depth, level count, or resting-order count anywhere in the crate — unlike every other bounded-state structure in this group",
+    "files": [
+      "backend/crates/edge/qip-orderbook/src/l3.rs:95-101 (orders: BTreeMap<u64, RestingOrder>, no cap)",
+      "backend/crates/edge/qip-orderbook/src/l2.rs",
+      "backend/crates/edge/qip-orderbook/src/ladder.rs",
+      "backend/crates/edge/qip-sequencing/src/tracker.rs:53 (contrast: max_buffered_messages, default 1,024)",
+      "backend/crates/edge/qip-feature-dag/src/state.rs:166,447,452 (contrast: capped history buffers, minimum 2)"
+    ],
+    "category": "scaling-limits",
+    "class": "B-refactor",
+    "why": "CLAUDE.md's product direction names 'bounded working sets, always' as a standing decision, and two sibling crates in this same group demonstrate the house pattern of refusing past a threshold rather than growing forever. A venue publishing pathological depth, or a bug on either end of the wire, has nothing here to stop the ladder from growing without limit; a grep for bound/cap/limit/MAX across l2.rs, l3.rs, ladder.rs and lib.rs returns nothing. Risk is contained today only because no real venue feed is connected (items 1 and 8); it should be closed with an explicit refusal at a configured bound, not a silent clamp, consistent with 'refuse rather than guess', before a real feed exists.",
+    "blueprint_refs": ["v11.6 (product direction: bounded retention, working sets capped, always)"],
+    "risk": "medium",
+    "suggested_epic": "E04"
+  },
+  {
+    "item": "qip-orderbook's and qip-sequencing's other production dependent, qip-market-ingestion, reaches this group's types exclusively through IngestionService, which is constructed only inside its own #[cfg(test)] block — no qip-api/qip-fastbrain/qip-deepbrain src file constructs one or references depth:: outside tests",
+    "files": [
+      "backend/crates/services/qip-market-ingestion/src/service.rs:378-554",
+      "backend/crates/services/qip-market-ingestion/src/depth.rs:134-137"
+    ],
+    "category": "dead-code / tests-only-surface",
+    "class": "E-needs-evidence",
+    "why": "Each of qip-orderbook and qip-sequencing has two named production dependents in the source register — the qip-edge/qip-edge-node chain and qip-market-ingestion — and both terminate the same way: the edge-node chain is undeployed (item 1), and qip-market-ingestion's own caller of these types never leaves its test module even though qip-market-ingestion itself is a real dependency of the deployed qip-api/qip-fastbrain/qip-deepbrain binaries. So these two crates are reached from a deployable binary's *source* twice each, and from a running process zero times. Evidence needed: whether qip-market-ingestion's depth/sequencing integration is active near-term work or an earlier prototype now superseded by the qip-edge path.",
+    "blueprint_refs": ["v11.6 §16 Regional Reflex Nodes (Local books/state; Feed adapters rows)"],
+    "risk": "medium",
+    "suggested_epic": "E04"
+  }
+]

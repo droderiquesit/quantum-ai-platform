@@ -1,0 +1,160 @@
+[
+  {
+    "item": "Platform::run_cycle is a single synchronous eight-stage pass invoked once per call, shared unmodified across ms-cadence (qip-fastbrain), request-driven (qip-api) and minute-to-day-cadence (qip-deepbrain) composition roots; v11.6 describes a federation of independently-paced lanes plus an always-on ambient layer that 'does not wait for a user prompt or a strategy tick', and neither the cycle's stage sequence nor its callers have a concept of a background pass, a selectively-woken stage, or a lane running at its own cadence",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9009-9157 (run_cycle: all eight stages run unconditionally, once per call)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10412 (stage_discover -> self.opportunities.scan runs every cycle regardless of what the last cycle found)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10998 (stage_reason -> self.organisation.dispatch runs every cycle unconditionally; no 'wake on detection' path)",
+      "backend/crates/runtime/qip-kernel/src/cycle.rs:17-26 (Stage enum: one fixed order, no lane concept)",
+      "docs/blueprint/source/algorik-master-blueprint-v11.6.txt:485-499 (Lane 3 - Cognitive Slow, minutes to days) and :960 (ambient models 'do not wait for a user prompt or a strategy tick')",
+      "docs/blueprint/assessment/AMBIENT-003.json-equivalent entry in docs/blueprint/assessment/AMBIENT.json (detection is a step inside the same tick-driven cycle, not a separately-scheduled scan)",
+      "docs/blueprint/assessment/AMBIENT.json (AMBIENT-005: 'no detection selectively activates a dormant specialist... REASON runs unconditionally every cycle')"
+    ],
+    "category": "architectural-conflict",
+    "class": "E-needs-evidence",
+    "why": "The kernel-cycle's whole reason to exist is legibility -- 'a cycle that produced nothing should be as legible as one that traded' (cycle.rs:1-8) -- and that property is real and well-tested for the tick-driven model it implements. But v11.6's federation (Reflex Mesh, Cognitive Slow lane, always-on ambient background models) is a different shape: cadence-per-lane and event-triggered activation, not one enum walked start to finish on every call regardless of caller. This is not one of ADR 0099's eight named conflict-register rows (C1-C8), which is itself worth flagging -- the register may be incomplete on this axis. Migration looks plausible (an ambient lane could run alongside the existing synchronous cycle rather than replacing it, the way qip-edge-node's reflex loop already sits beside qip-deepbrain's slow loop per ARCH-001), so this is not scored C-replace. What is missing before any code moves: an architecture record, in the shape of ADR 0099's own conflict rows, saying how a background/ambient lane relates to Platform::run_cycle -- a new stage, a second entry point, or a wrapper that schedules cycles at variable cadence.",
+    "blueprint_refs": ["v11.6 §3 Lane 3 Cognitive Slow", "v11.6 §9 Ambient proactive intelligence", "ADR 0099 (register does not currently name this row)"],
+    "risk": "medium",
+    "suggested_epic": "E09"
+  },
+  {
+    "item": "A cycle refused for being dated before the platform's own reasoned_through watermark is not written to the event log at all -- by explicit design -- leaving only a metric counter (qip_stage_runs_total{ran=\"false\"}) as evidence the refusal happened",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9010-9012 (run_cycle delegates to refuse_cycle_before instead of running)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9174-9209 (refuse_cycle_before: 'It is deliberately not journalled: the event log is the record of what the platform did, and the one thing worse than a backwards cycle is a backwards record of one')"
+    ],
+    "category": "missing-tests-on-production-path / observability-gap",
+    "class": "E-needs-evidence",
+    "why": "The reasoning in the comment is coherent (a refused cycle changed no state, so journalling one would misrepresent what the log means), but 'Every decision reproducible from the log alone' is listed as a mandatory architecture concern in .claude/rules/10-product-direction.md, and a caller handed a backwards clock is a decision this platform made (refuse rather than run) that leaves no record a replay can see -- only a metric an operator has to already be watching. The trade-off is defended in a code comment, not in an ADR. Evidence needed before changing anything: an owner ruling on whether a metric-only trail satisfies the auditability principle for a refusal, or whether a minimal non-cycle record (distinct from a CycleReport) belongs in the log for this case.",
+    "blueprint_refs": ["v11.6 (auditability / reproducible-from-log)", ".claude/rules/10-product-direction.md (mandatory architecture concerns: Auditability)"],
+    "risk": "low",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "qip_journal_write_failures_total -- the metric run_cycle's own comment calls out as the only place a process that 'traded and could not write it down' becomes a number instead of a buried sentence -- has no Cloud Monitoring alert policy at all, gated or otherwise",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9133-9148 (journal_cycle failure path: counts JOURNAL_FAILURES and pushes a LEARN-stage problem, never aborts)",
+      "backend/crates/libs/qip-observability/src/metrics.rs:834 (JOURNAL_FAILURES = \"qip_journal_write_failures_total\")",
+      "infrastructure/terraform/modules/observability/main.tf (9 declared alert policies -- 7 central-plane, edge_halted, edge_reconciliation_break -- grep for 'journal' matches nothing)"
+    ],
+    "category": "deployment-ci-observability-gap",
+    "class": "B-refactor",
+    "why": "A cycle journal write failure is deliberately non-fatal -- the platform keeps trading and reports the failure as a stage problem rather than stopping, per the same rationale reviewed and accepted for other LEARN-stage failures. That design depends entirely on the failure being visible to an operator, and today it is not: unlike qip_kill_switch_tripped, qip_limit_breaches, edge_halted and the other seven declared policies, nothing pages on a sustained run of journal-write failures even after workload_metrics_exist is flipped true, because no policy names this series at all. The gap is cheap to close and additive -- one more gated policy alongside the existing nine, following the pattern .claude/rules/domains/observability.md already documents for the rest.",
+    "blueprint_refs": ["v11.6 (auditability of the durable record)", "GCP v2.1 (Cloud Monitoring)"],
+    "risk": "medium",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "stage_act_orders only writes the qip_portfolio_leverage gauge when publishable_leverage(gross, equity) returns Some; on the None branch (non-positive equity) the gauge is left at whatever it last held rather than being cleared, zeroed, or flagged, so a book that goes to zero or negative equity reports a stale leverage figure on the one chart an operator would check first",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13372-13376 (the conditional gauge write)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:2004 (publishable_leverage: returns None on non-positive equity)",
+      "backend/crates/runtime/qip-kernel/tests/risk_aggregates.rs:1015,1059 (tests the Some branch; no test exercises the gauge's value across a transition into the None branch)"
+    ],
+    "category": "deployment-ci-observability-gap",
+    "class": "B-refactor",
+    "why": "qip_portfolio_value is written unconditionally including to legitimate zero, by the same code's own stated principle ('a gauge written only on the interesting cycles never falls back'); qip_portfolio_leverage does not follow that principle for its one edge case. publishable_leverage itself is unit-tested for correctness, but nothing in the stage or its tests proves what an operator sees on the chart during the cycle equity turns non-positive -- the most likely single reading is the last valid leverage figure, frozen, during exactly the period the book is in its worst state.",
+    "blueprint_refs": ["GCP v2.1 (Cloud Monitoring gauges)"],
+    "risk": "low",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "stage_simulate's capacity_probe swallows every refusal reason (non-positive last price, fewer than two returns, a simulator or agent construction refusal) to a bare None, so a probe that has refused on every cycle for weeks is indistinguishable in the cycle report from one that has never had enough history",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12581-12588 (stage_simulate: if let Some(probe) = self.capacity_probe(now) else nothing)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12681-12749 (capacity_probe: eleven `?`/`.ok()?` exit points, none distinguished from another)"
+    ],
+    "category": "missing-tests-on-production-path",
+    "class": "B-refactor",
+    "why": "The design is deliberate and defended in the surrounding comment ('a probe is diagnostic, not a control'), and that defense is sound for why a refusal should not block the cycle. It does not cover why the refusal reason is discarded rather than recorded: SIMULATION_CAPACITY_ADVERSITY_BPS is a gauge with no companion counter for 'the probe could not run, and here is why', so an operator cannot tell a healthy instrument with too little history from a spec-construction bug that has silently refused the probe on every cycle since a bad deploy. No test in tests/kernel.rs or tests/stress.rs exercises the distinction between the probe's several refusal paths.",
+    "blueprint_refs": ["v11.6 (capacity/adversity estimation)"],
+    "risk": "low",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "Platform::synthesise -- the one production call site that ever constructs a SynthesisInput -- always passes models: Vec::new(), so the model-identity citation field the type carries end-to-end (SynthesisInput, Hypothesis, HypothesisDraft) never has a real value in any hypothesis this platform ships",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12354 (models: Vec::new() inside the SynthesisInput literal)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12277-12372 (synthesise, the whole call)",
+      "docs/blueprint/assessment/REASON-b1.json (REASON-004: 'qip-kernel always wires models: Vec::new()... a dead field')"
+    ],
+    "category": "placeholder / unfinished-migration",
+    "class": "B-refactor",
+    "why": "The composition mechanism (many agent findings folded into one hypothesis with recorded contributor run-ids) is real and reached from production. The specific model-identity citation the field exists for is not: every hypothesis this platform has ever produced names its contributing agents but never the model(s) that produced them, which sits squarely against ADR 0007's exact-attribution goal and the platform's own stated purpose ('why, on what evidence... and whether the reasoning held up', .claude/rules/10-product-direction.md). Cheap relative to most REASON gaps -- report.findings already carries per-finding origin information the field could be populated from; the missing step is wiring it and a test asserting a shipped Hypothesis names a model.",
+    "blueprint_refs": ["v11.6 §41.5 (policy pack / model identity)", "ADR 0007 (exact attribution)"],
+    "risk": "medium",
+    "suggested_epic": "E16"
+  },
+  {
+    "item": "Platform::synthesise always builds a single-item EvidenceSet (EvidenceSet::from_items(vec![Evidence::new(...)])) per anomaly, so the corroboration and contradiction machinery the reasoning engine implements (EvidenceSet::independent_weight, net_stance_disagreement) is exercised only by qip-reasoning-engine's own unit tests and has never run against genuinely independent evidence in a live cycle",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12305-12320 (the single-item `direct` EvidenceSet construction)",
+      "backend/crates/services/qip-reasoning-engine/src/evidence.rs:184-463 (EvidenceSet::independent_weight, net_stance_disagreement, as_of -- built and tested, not reached with more than one item from production)",
+      "docs/blueprint/assessment/EVID.json (EVID-004: 'Production only ever constructs a single-item EvidenceSet per anomaly today... exercised in unit tests but not yet in a live cycle')"
+    ],
+    "category": "dead-code / tests-only surface (logically dead in production)",
+    "class": "B-refactor",
+    "why": "This is exactly the shape the change-management evidence standard warns about: a control that reads as built and tested while never having run against the case it exists for. Corroboration/contradiction arithmetic is what ADR 0005 means by 'confidence as arithmetic rather than vibes' -- a claim synthesised from one market-observation item cannot corroborate or contradict anything, so every hypothesis this platform has shipped has had its confidence set as if only one source of evidence exists, regardless of how many independent sources the panel's findings actually represent. The fix is additive (feed report.findings' facts into the EvidenceSet alongside the anomaly observation), not a rewrite of anything.",
+    "blueprint_refs": ["v11.6 (multi-source evidence synthesis)", "ADR 0005 (confidence as arithmetic)"],
+    "risk": "medium",
+    "suggested_epic": "E08"
+  },
+  {
+    "item": "stage_learn folds all 15 declared blueprint §49.1 SLO objectives every cycle, but only 2 (reconciliation-breaks-zero, netting-ratio) are ever fed a real observation from any production seam -- the other 13 are permanently unmeasured, which the code's own comment already states plainly",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14250-14259 (the fold call and its comment: 'two of the fifteen objectives are fed by this process and thirteen are unobserved')",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:5539,5561-5567 (ingest_cell_report -- the only two production observe() call sites for these objectives)",
+      "backend/crates/libs/qip-observability/src/slo.rs:200-244,290-390 (blueprint_slos declares 15)"
+    ],
+    "category": "placeholder / deployment-ci-observability-gap",
+    "class": "B-refactor",
+    "why": "Declaring an objective and never feeding it is the same shape the `MaxExpectedShortfall` example in .claude/rules/domains/risk-and-execution.md names as the template for what not to add -- a control (here, a scored objective) that reads as protection and cannot fire. This instance is self-aware rather than hidden (the code comment names the 2-of-15 ratio explicitly, 'deliberately unflattering'), which lowers the severity but does not close the gap: an operator or the traceability matrix reading '15 objectives declared' without reading this specific comment would overstate what LEARN actually measures. Each of the 13 needs its own production observe() call site, one objective at a time, the same way the 2 that exist were wired.",
+    "blueprint_refs": ["v11.6 §49.1"],
+    "risk": "low",
+    "suggested_epic": "E12"
+  },
+  {
+    "item": "platform.rs is 26,172 lines holding the eight-stage core cycle interleaved in the same impl block with capital calls, the capital-fabric wallet/corridors, product/eligibility/registration catalogues and model promotion -- subsystems with no structural relationship to run_cycle -- and the cost is not hypothetical: .claude/rules/domains/observability.md records repeated, dated incidents (2026-09-06, 09-14, 09-15, 09-19) of citation line numbers into this file drifting by over a hundred lines within a single working session because a parallel lane was editing it at the same time",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs (26,172 lines total; core-loop surface is roughly lines 220-14300, under half the file)",
+      ".claude/rules/domains/observability.md (module-doc citation drift incidents, all against this file, spanning at least four dated corrections)",
+      "docs/architecture/current-state/kernel-cycle.json (\"gaps_observed\": \"platform.rs is 26,172 lines and this record covers only its core-loop surface... the file also implements capital calls, the capital fabric wallet/corridors, product/eligibility/registration catalogues, model promotion and dozens of other subsystems not covered here\")"
+    ],
+    "category": "incorrect-coupling / scaling-limits (development velocity)",
+    "class": "B-refactor",
+    "why": "qip-kernel is correctly the one designated place to compose services into a cycle (.claude/rules/architecture/00-boundaries.md), so this is not a crate-boundary violation and needs no ADR to fix -- splitting the core-loop functions (run_cycle, the eight stage_* methods, ingest_cell_report, learn_from(_cells)) into their own module or file inside the same crate changes no dependency direction. What it would fix is a documented, recurring, real cost: this file has been the single most frequently mis-cited source location in the observability rule file, every time because concurrent edits moved code the citation had already pointed at. A file this size is also why this very tech-debt review had to be scoped to three specific line-range excerpts rather than the whole file.",
+    "blueprint_refs": ["ADR 0099 (no specific row; a maintainability concern independent of the target architecture)"],
+    "risk": "medium",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "learn_from_cells and learn_from -- the two entry points through which a cell's resolved outcomes and a thesis's resolved claims reach belief calibration -- have zero direct callers anywhere in backend/crates/apps/*/src; both are reached only transitively, through stage_learn's own private wrappers (review_strategies, calibrate_resolved)",
+    "files": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8109 (learn_from_cells)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8423 (learn_from)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14140,14287 (stage_learn -> review_strategies -> learn_from_cells)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13912,14528 (stage_learn -> calibrate_resolved -> learn_from)"
+    ],
+    "category": "missing-tests-on-production-path",
+    "class": "E-needs-evidence",
+    "why": "This is 'reached from production' in the sense that matters -- stage_learn calls both unconditionally every cycle -- so neither function is dead code and neither should be touched on the strength of this finding alone. What is missing is independent verification: because both are private-by-convention entry points called only from within the same file's own stage_learn, no app-level integration test (as opposed to qip-kernel's own tests/kernel.rs and tests/learning.rs) exercises either function as the boundary of a real composition root's behaviour. Evidence needed before treating this as settled: whether the existing kernel-level test suite's coverage of these two paths is accepted as sufficient, or whether an app-level (qip-api / qip-cli) integration test is expected per the crate-contract tier of .claude/rules/architecture/01-testing-strategy.md.",
+    "blueprint_refs": [],
+    "risk": "low",
+    "suggested_epic": "E00"
+  },
+  {
+    "item": "Two disjoint prediction-scoring systems exist in qip-prediction: qip_prediction::scoring (Brier-scores the platform's own probability against a resolved market's implied probability, and explicitly refuses a market quote timestamped after the platform's probability was formed) is fully built and tested but has zero callers outside its own crate; qip_prediction::resolution::Proposition -- a different, generic mechanism -- is the one Platform::synthesise actually wires into the REASON/LEARN pipeline, and it never forms a proposition about an event-market contract",
+    "files": [
+      "backend/crates/services/qip-prediction/src/scoring.rs:46,66,155,164,185,230 (ScoredForecast, brier_score, market_brier_score, compare -- zero production callers)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12432-12450 (Proposition::new -- the mechanism actually reached every cycle)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14403-14528 (the LEARN-stage grading path for those propositions, proven replay-safe by tests/falsification.rs)",
+      "docs/blueprint/assessment/EVENT.json (EVENT-001: confirms scoring.rs's only callers are its own tests via `grep -rln`)"
+    ],
+    "category": "duplicate-systems / dead-code (unreached in production)",
+    "class": "B-refactor",
+    "why": "Both mechanisms solve a version of the same problem -- was this claim right, judged against a fair comparison -- and only one is wired into the kernel cycle. The wired one (Proposition/ResolutionCriteria) is real production machinery, well-tested, and should not be replaced; the orphaned one (scoring.rs) is not vestigial, it is purpose-built for exactly the point-in-time-leakage-safe market comparison the requirement asks for and simply has nowhere to plug in, because nothing in the REASON pipeline ever constructs an EventMarket or a prediction-market-contract fixture. Not a rewrite: the two systems solving overlapping problems from different angles, with no caller deciding between them, is the same shape as the RetentionClass/RoutingClass finding already recorded for libs-foundation -- migration means giving qip-kernel a path to construct one when a thesis is actually about a market-implied probability, not deleting either half.",
+    "blueprint_refs": ["v11.6 (event-contract research capability)"],
+    "risk": "medium",
+    "suggested_epic": "E17"
+  }
+]

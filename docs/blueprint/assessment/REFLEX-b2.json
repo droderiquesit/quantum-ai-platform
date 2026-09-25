@@ -1,0 +1,660 @@
+[
+  {
+    "id": "REFLEX-026",
+    "status": "PARTIAL",
+    "current": "qip_strategy::runtime::StrategyRuntime::evaluate runs a CompiledStrategy's rules against a live FeatureVector and raises a qip_contracts::signal::Signal when one fires; Cell::deploy_with_pricing / Cell::work (backend/crates/edge/qip-edge/src/cell.rs) turn a fired Signal into an Intent every pass. There is no distinct 'opportunity definition' type or 'Opportunity' artifact anywhere in the tree -- strategy predicates are the only detector Phase 1 has.",
+    "evidence": [
+      "backend/crates/edge/qip-strategy/src/runtime.rs:26-96 (StrategyRuntime::new/evaluate)",
+      "backend/crates/edge/qip-edge/src/cell.rs:2502-2519 (Cell::deploy/deploy_with_pricing), cell.rs:3003-3077 (signal-to-intent per pass)",
+      "backend/crates/edge/qip-strategy tests: a_strategy_naming_a_feature_the_graph_does_not_have_is_refused; a_strategy_with_no_rules_is_refused",
+      "grep -rn OpportunityDefinition backend/crates -> no hits"
+    ],
+    "gap": "No 'opportunity definition' package section or Opportunity type exists (REFLEX-009's own in-tree package is likewise two separate verified objects, not eight sections); the requirement's own notes distinguish 'opportunity definitions' from the 'strategy predicates alone' a Phase 1 cell actually uses.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-009"
+    ],
+    "blocked_by": "",
+    "verification": "qip-strategy's compiler/runtime test suite plus Cell::work's signal-to-intent path (qip-edge tests/cell.rs); no test exists for a distinct opportunity-definition type because none exists in the code",
+    "work_item": "E02",
+    "tier": "T1",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "REFLEX-027",
+    "status": "PARTIAL",
+    "current": "qip_arbitrage::scan::OpportunityScanner + qip_arbitrage::netedge::NetEdgeCalculator (9-deduction net edge, not theoretical spread), held by qip_edge::arbitrage::ArbitrageDesk. qip-edge-node's ArbitrageInstaller (constructed in main.rs:574-577, driven at main.rs:873) builds the graph from the policy payload's CycleWhitelist and installs it via Cell::install_arbitrage (cell.rs:1367); Cell::work re-quotes and scans it every pass (cell.rs:5340) and journals each survivor as Decision::EdgePriced. The whole behaviour is implemented and reached; the after-cost veto is not demonstrated by any test.",
+    "evidence": [
+      "backend/crates/edge/qip-arbitrage/src/scan.rs:173-273 (scan(); net_edge.is_positive() veto at :256-261)",
+      "backend/crates/edge/qip-arbitrage/src/netedge.rs:139 (NetEdgeCalculator::calculate)",
+      "backend/crates/edge/qip-edge/src/arbitrage.rs:1-120 (ArbitrageDesk)",
+      "backend/crates/edge/qip-edge/src/cell.rs:5340 (desk.scan inside Cell::work), :8041 (scan_gate maps RejectionStage::NetEdge to 'arbitrage_scan_net_edge')",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:81-192 (graph_from_whitelist/desk_from_whitelist), main.rs:574-577,873",
+      "test a_path_that_pays_on_mid_prices_is_refused_once_the_book_is_walked (backend/crates/edge/qip-arbitrage/tests/arbitrage.rs:541) -- refused at RejectionStage::Book, i.e. BEFORE the net-edge check",
+      "test a_scan_reports_an_executable_opportunity_with_a_complete_edge_and_a_plan (qip-arbitrage/tests/arbitrage.rs:1091) -- positive case only",
+      "test a_cycle_on_the_cells_own_books_becomes_its_legs_as_orders_in_one_pass (backend/crates/edge/qip-edge/tests/arbitrage.rs:374)",
+      "test the_node_installs_a_desk_from_the_payloads_whitelist_once_capital_for_it_has_arrived (backend/crates/apps/qip-edge-node/tests/arbitrage.rs:152) -- installs from a whitelist, never scans",
+      "grep -rn 'arbitrage_scan_net_edge\\|RejectionStage::NetEdge' backend/crates --include=*.rs -> scan.rs and cell.rs only; no test references either"
+    ],
+    "gap": "No test drives a cycle that is profitable on the walked book but non-positive after the nine NetEdgeCalculator deductions (fees, slippage, uncertainty, ...). The only refusal test is rejected at RejectionStage::Book, ahead of the net-edge check, so deleting the `!net_edge.is_positive()` veto at scan.rs:256-261 would leave every test green: the after-cost half of 'executable expected value, not theoretical spread' is implemented but undemonstrated. Nor does any test drive whitelist -> graph -> scan -> opportunity in one run (node tests install from a whitelist but never scan; scanner tests never use a whitelist). No qip-edge-node pass test installs a desk, so nothing crosses stages.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Existing: qip-arbitrage/tests/arbitrage.rs::a_path_that_pays_on_mid_prices_is_refused_once_the_book_is_walked and ::a_scan_reports_an_executable_opportunity_with_a_complete_edge_and_a_plan. Needed: a scanner test whose cycle is profitable on the book but not after deductions, asserting it lands in rejected_at(RejectionStage::NetEdge) and raises no opportunity, mutation-verified by deleting the net-edge veto; ideally driven through a desk installed from a CycleWhitelist.",
+    "work_item": "E11",
+    "tier": "T1",
+    "size": "S",
+    "notes": "execution_nodes = {} in every environment, so this composition root runs today only under cargo test, not as a deployed process. verify: downgraded COMPLETE -> PARTIAL and e2e true -> false. The scanner's after-cost veto (scan.rs:256-261) has no test that reaches it (the cited refusal test stops at the Book stage), so the behaviour that separates executable EV from theoretical spread is unproven; and no test crossing processes/stages exercises the scanner (e2e.rs prices a triangle with price_path directly, not through the scanner or a whitelist)."
+  },
+  {
+    "id": "REFLEX-028",
+    "status": "MISSING",
+    "current": "nothing; only the operator-curated qip_contracts::policy::CycleWhitelist (reviewed cycles) reaches the node. No 'discovered candidate cycle template' concept exists, and no arbitrage-discovery module exists in qip-deepbrain.",
+    "evidence": [
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:1-93 (installer builds the graph from CycleWhitelist only)",
+      "backend/crates/libs/qip-contracts/src/policy.rs:365-620 (CycleWhitelist has no discovered-cycle variant)",
+      "grep -rln arbitrage backend/crates/apps/qip-deepbrain/src -> no hits",
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs:1-26 (the only whitelist producer builds slot 8 from an operator-supplied ArbitragePolicy: 'The centre has no pair list'; DISCOVER/REASON carry single-instrument opportunities, not conversions)",
+      "grep -rn -i 'cycle.template\\|discovered.cycle\\|CycleTemplate' backend/crates infrastructure frontend .github -> only qip-arbitrage/src/search.rs's local log-space candidate search (per-pass, over the whitelisted graph), not central discovery"
+    ],
+    "gap": "No mechanism ships candidate cycle templates discovered by a warm/global arbitrage brain into the node's signed package; only the operator-curated whitelist ever reaches the scanner.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-027"
+    ],
+    "blocked_by": "",
+    "verification": "none exists; would need a signed 'discovered cycle template' policy slot plus a test admitting a template only from a verified package and ignoring one that arrives outside one",
+    "work_item": "E10",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: MISSING confirmed. Searched backend/, infrastructure/, frontend/, .github/ for discovered-cycle concepts; the central whitelist producer (qip-kernel central/whitelist.rs) is explicitly operator-policy-derived, and the scanner's candidate search runs only over the whitelisted graph. Added both as evidence; status unchanged."
+  },
+  {
+    "id": "REFLEX-029",
+    "status": "MISSING",
+    "current": "nothing that uses peer state. qip_edge::mesh (CellUplink/PolicyDownlink/CapitalDownlink) is exclusively cell<->centre traffic; no cell-to-cell (peer) path or OpportunityToken/distributed-opportunity type exists anywhere in backend/crates. Adjacent but not this: the section 31.1 cross-region mirror (qip-edge-node src/cross_region.rs, Cell::install_mirror, ExecutionPath::MirroredInventory) lets ONE cell compose a cycle through a venue declared to sit in another region, gated by an inventory band from the centre's policy slot 10 -- the cell still sees only its own books, and no peer's state is consulted.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/mesh.rs:1-15,420,669,993 (uplink to centre, downlink from centre; no peer struct)",
+      "grep -rn OpportunityToken backend/crates -> no hits",
+      "docs/architecture/current-state/edge-cell.json REFLEX-003 note: 'this entry does not establish whether any direct cell-to-cell path exists'",
+      "backend/crates/apps/qip-edge-node/src/cross_region.rs:1-60 (single-cell mirror of a foreign-region venue; band from central inventory targets, not from a peer)"
+    ],
+    "gap": "No peer-to-peer channel between cells exists at all; distributed (cross-cell) opportunity detection is unimplemented -- the scanner sees only its own cell's books.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-003",
+      "REFLEX-027",
+      "REFLEX-040"
+    ],
+    "blocked_by": "",
+    "verification": "none exists; the requirement's own check (two loopback-mesh cells each holding one leg) has no fixture to run against",
+    "work_item": "E11",
+    "tier": "T3",
+    "size": "XL",
+    "notes": "verify: MISSING confirmed. Searched for peer/token/distributed-opportunity concepts; the only cross-region cycle path is the single-cell section 31.1 mirror, which uses centrally distributed inventory targets rather than peer state and cannot satisfy the two-cells-one-leg-each check. Recorded it in 'current' so it is not mistaken for this."
+  },
+  {
+    "id": "REFLEX-030",
+    "status": "COMPLETE",
+    "current": "qip_contracts::intent::net / netting_ratio (grouped by NettingKey; a NoNet cycle leg is isolated in its own group) called every pass from Cell::work (cell.rs:3116-3122); qip_edge_netting_ratio metric.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/intent.rs:660-700 (net, netting_ratio)",
+      "backend/crates/edge/qip-edge/src/cell.rs:3116-3122",
+      "test two_strategies_on_one_instrument_net_into_one_order_at_the_venue_with_the_tighter_spread (backend/crates/edge/qip-edge/tests/best_venue.rs:197)",
+      "test the_netting_key_separates_venues_and_representations (backend/crates/libs/qip-contracts/tests/contracts.rs:1953)",
+      "test opposing_intents_cancel_internally_and_neither_reaches_the_venue (backend/crates/libs/qip-contracts/tests/contracts.rs:1747)",
+      "test two_strategies_that_cancel_to_zero_count_a_cancellation_and_a_cap_refusal_and_no_order (backend/crates/edge/qip-edge/tests/telemetry.rs:462) -- opposing strategies through Cell::work send no order"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-072"
+    ],
+    "blocked_by": "",
+    "verification": "qip-edge/tests/best_venue.rs::two_strategies_on_one_instrument_net_into_one_order_at_the_venue_with_the_tighter_spread",
+    "work_item": "",
+    "tier": "",
+    "size": "",
+    "notes": "verify: COMPLETE upheld (net() is a signed sum grouped by NettingKey, called every pass at cell.rs:3116 from the node's run_pass; full cancellation is proven at both net() and Cell::work level). e2e true -> false: every cited test is a crate test (qip-contracts, qip-edge); neither e2e.rs nor any qip-edge-node pass test deploys two strategies on one instrument. Evidence line best_venue.rs:197 nets two same-direction strategies; added the two opposing-intent tests that actually exercise the requirement. No property test over generated intent sets exists."
+  },
+  {
+    "id": "REFLEX-031",
+    "status": "PARTIAL",
+    "current": "Cell::cross_internally / Cell::book_cross / Cell::crossing_window (cell.rs:6801,7019,7126) book the matched part of an offsetting net between its own contributors at the book mid, journal it as Decision::CrossedInternally and move strategy lots/cash, never calling Placer for the crossed quantity. The section 27.1 40% cap is measured per net unless CellConfig::crossing_interval is set, and no composition root sets it (default None, cell.rs:332-343, 401).",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:6801-7099 (cross_internally, book_cross), :7126 (crossing_window)",
+      "backend/crates/edge/qip-edge/src/cell.rs:332-343,401,415 (crossing_interval defaults to None; with_crossing_interval)",
+      "grep -rn 'CrossingInterval\\|crossing_interval\\|with_crossing' backend/crates/apps --include=*.rs -> no hits",
+      "docs/adr/0046-the-internal-crossing-cap-is-measured-over-sixty-seconds-of-wall-time.md (Proposed; 'Nothing applied: no root sets an interval'; today's default 'is safe by refusing section 27.1's flagship case')",
+      "test a_booked_cross_moves_both_contributors_lots_and_cash_at_the_journaled_mid_and_the_cash_legs_cancel (backend/crates/edge/qip-edge/tests/crossing.rs:324) -- default config, 100 vs 40: 40 crossed, 60 still sent to the venue",
+      "test over_a_three_pass_interval_a_repeated_full_cancellation_crosses_on_the_second_pass_at_the_mid (tests/crossing.rs:209) -- only with an interval set by the test",
+      "test a_cross_with_two_strategies_on_one_side_is_refused_rather_than_settled_by_a_guess (tests/crossing.rs:472)"
+    ],
+    "gap": "Under the only configuration a composition root builds, a fully offsetting pair -- the requirement's own check case, where neither intent reaches the venue -- is always refused crossing (matched/gross = 1/2 > 40% by arithmetic) and is never filled internally; only partial offsets at or under 40% of gross cross in deployment, and those always send a residual net order to the venue. The full-offset internal fill is reachable only from tests that set a crossing interval. ADR 0046 proposes Span(60s) set at qip-edge-node's composition root and is unaccepted and unapplied.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-030"
+    ],
+    "blocked_by": "",
+    "verification": "Existing: qip-edge/tests/crossing.rs (partial cross under the default; full cross only with a test-set interval). Needed after ADR 0046 is decided: qip-edge-node sets the interval at its root, and a node-level test shows a fully offsetting pair filled internally at the journaled price with no order reaching the SimulatedGateway.",
+    "work_item": "E99",
+    "tier": "T1",
+    "size": "S",
+    "notes": "The blueprint does not set the internal-crossing price rule; this record sets and journals it as the book mid at cross time. verify: downgraded COMPLETE -> PARTIAL and e2e true -> false. The requirement's check (opposing intents filled internally, neither reaching the venue) depends on CellConfig::crossing_interval, which no composition root sets; under the deployed default a full cancellation is refused crossing (ADR 0046, Proposed, says so). E99 because the interval is an owner decision (DEC-D3 / ADR 0046); wiring it afterwards is E04. No e2e/node test exercises crossing."
+  },
+  {
+    "id": "REFLEX-032",
+    "status": "PARTIAL",
+    "current": "qip_edge::feasibility::assess (feasibility.rs:355-461) is a pure function of (VenueModel, FeasibilityConstraints, Intent, touch_size) with no I/O anywhere in qip-edge's hot path (on_bytes/work are memory-only by module doc); the no-model-call half is proven structurally by a dependency-graph test.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/feasibility.rs:329,355-461 (assess, pure)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:714-751 (no_edge_cell_can_reach_a_language_model)"
+    ],
+    "gap": "No literal property/replay test asserts the gate's verdict is byte-identical across repeated evaluation or with every network/model client disabled; purity is structural (no I/O anywhere in the crate) rather than demonstrated by a dedicated determinism test as REFLEX-032's own verification method (property) asks.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "no_edge_cell_can_reach_a_language_model (architecture.rs:714) covers 'no model'; a replay-determinism property test for feasibility::assess over generated (order, state, package) triples does not exist and must be written",
+    "work_item": "E02",
+    "tier": "T1",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "REFLEX-033",
+    "status": "PARTIAL",
+    "current": "qip_edge::feasibility::assess enforces GATE_MINIMUM_QUANTITY / GATE_LOT / GATE_TICK / GATE_MINIMUM_NOTIONAL / GATE_DEPTH / GATE_CONSTRAINT / GATE_WITHDRAWN_VENUE (feasibility.rs:88-96,355-461); the capital limit is enforced separately by Cell::hold_region_capital under gate 'region_reservation' (cell.rs:7376-7396) against qip_edge::reservation::RegionAllocation/RegionTable.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/feasibility.rs:88-96 (gate constants), :591-670 (paired boundary tests: a_size_below_the_minimum_quantity_is_refused_and_one_at_it_is_admitted, a_size_off_the_lot_grid_is_refused_rather_than_rounded, etc.)",
+      "backend/crates/edge/qip-edge/src/cell.rs:7376-7396 (hold_region_capital, gate 'region_reservation')",
+      "test a_second_hold_against_the_same_capital_is_refused_whole_rather_than_reduced (backend/crates/edge/qip-edge/tests/reservation.rs:633)",
+      "backend/crates/edge/qip-edge/src/cell.rs:3508-3517 (CapitalGrant::Reduced resizes rather than vetoes), :1759,5207 (inventory_targets band, mirrored path only)",
+      "test a_second_node_under_the_same_regions_grant_cannot_exceed_it_with_the_first (backend/crates/apps/qip-edge-node/tests/pass.rs:1407) -- the region capital refusal through run_pass"
+    ],
+    "gap": "No general 'available inventory' (holdings/short-sale) veto exists for every order. The only inventory-aware check is the section 31.1 mirrored-inventory band (Cell::inventory_targets / mirror_extension_for, cell.rs:1759,5207), which gates only cross-region mirrored cycles. Separately, the per-strategy capital envelope does not veto an over-envelope order: CapitalGrant::Reduced (cell.rs:3508-3517) shrinks it to what the envelope has left, journaled as a 'capital_reduced' refusal while the reduced order still proceeds -- only the region allocation (hold_region_capital) refuses whole. Whether that resize satisfies 'veto any order that would breach a capital limit' (and the house refuse-not-clamp rule) should be stated in a record.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": true,
+    "depends_on": [
+      "REFLEX-032"
+    ],
+    "blocked_by": "",
+    "verification": "qip-edge/src/feasibility.rs's per-gate boundary tests plus qip-edge/tests/reservation.rs::a_second_hold_against_the_same_capital_is_refused_whole_rather_than_reduced",
+    "work_item": "E07",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: status PARTIAL upheld; gap corrected -- an inventory band does exist but only for the mirrored-inventory path, and the envelope limit resizes (CapitalGrant::Reduced) rather than vetoes. e2e kept true on the strength of qip-edge-node pass.rs:1407 driving the region-capital refusal through the node's pass."
+  },
+  {
+    "id": "REFLEX-034",
+    "status": "PARTIAL",
+    "current": "For arbitrage cycles: qip_arbitrage::netedge::NetEdgeCalculator (9 deductions) plus scan.rs's net_edge.is_positive() gate (scan.rs:256-261), and qip_edge::feasibility::assess_cycle_cost/fixed_cost_fraction (feasibility.rs:478,523) refusing under GATE_FEE_FLOOR/GATE_GAS_FLOOR. For ordinary directional intents: Cell::admit_feasible (cell.rs:7233-7262) calls feasibility::assess, which checks only hard constraints (qty/lot/tick/notional/depth) -- it computes no fee/slippage net-edge term.",
+    "evidence": [
+      "backend/crates/edge/qip-arbitrage/src/scan.rs:256-261",
+      "backend/crates/edge/qip-arbitrage/src/netedge.rs:118-172",
+      "backend/crates/edge/qip-edge/src/feasibility.rs:478,523; test a_cycle_whose_fixed_costs_consume_its_edge_is_refused_under_the_fee_gate (feasibility.rs:776)",
+      "backend/crates/edge/qip-edge/src/cell.rs:7233-7262 (admit_feasible; no net-edge term for plain intents)",
+      "test a_figure_the_cell_cannot_evaluate_refuses_under_a_named_gate_and_sends_nothing (backend/crates/edge/qip-edge/tests/unevaluated.rs:293) -- covers pricing/venue-data refusal, not fee/slippage edge",
+      "backend/crates/edge/qip-edge/src/cell.rs:5619,5665 (fixed_cost_fraction / assess_cycle_cost called from the cycle path)",
+      "grep -rln 'GATE_FEE_FLOOR\\|feasibility_fee_floor' backend/crates/*/*/tests backend/crates/tests -> none; the fee/gas floor refusal is proven only by feasibility.rs's own unit tests, and the scanner's NetEdge refusal by no test (see REFLEX-027)"
+    ],
+    "gap": "A plain (non-cycle) strategy order is never vetoed for non-positive expected edge after fees/slippage; only arbitrage-cycle legs get a net-edge check.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-032"
+    ],
+    "blocked_by": "",
+    "verification": "qip-edge/src/feasibility.rs::a_cycle_whose_fixed_costs_consume_its_edge_is_refused_under_the_fee_gate; qip-arbitrage/tests/arbitrage.rs::the_calculator_considers_every_deduction_kind",
+    "work_item": "E07",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: PARTIAL upheld; e2e true -> false. No qip-edge-node pass test or qip-acceptance e2e test drives a net-edge or fee-floor refusal; the only evidence is crate/unit tests. Added the cell.rs call sites of the cycle cost gate."
+  },
+  {
+    "id": "REFLEX-035",
+    "status": "PARTIAL",
+    "current": "qip_routing::ordertype::{OrderTypeKind, RoutedOrderType, select_order_type} implement the full venue order-type mapping (Market/Limit/ImmediateOrCancel/FillOrKill/Peg) but are called only from qip-routing's own tests and router.rs (router.rs:503, itself unreached in production). The live send path -- cell::Placer::place (cell.rs:8051-8067) -- carries only price+quantity, no order-type field; Cell only ever prices Marketable or RestAtMid (cell.rs:953-969), and qip-edge-node's reprice.rs always constructs RoutedOrderType::Limit (reprice.rs:377,693).",
+    "evidence": [
+      "backend/crates/edge/qip-routing/src/ordertype.rs:37,70,211 (OrderTypeKind, RoutedOrderType, select_order_type)",
+      "backend/crates/edge/qip-routing/src/router.rs:503 (only caller, itself unused in production)",
+      "test order_type_selection_works_a_large_order_rather_than_taking_the_book (qip-routing/tests/routing.rs:492)",
+      "test an_all_or_none_order_is_sent_fill_or_kill (qip-routing/tests/routing.rs:551)",
+      "backend/crates/edge/qip-edge/src/cell.rs:8051-8067 (Placer::place has no order-type parameter)",
+      "backend/crates/apps/qip-edge-node/src/reprice.rs:377,693 (only RoutedOrderType::Limit is ever constructed in production)"
+    ],
+    "gap": "select_order_type/RoutedOrderType's richer mapping is never wired into the live send path; the node can only ever place a resting or marketable limit order, so order types beyond Limit are exercised only inside qip-routing's own tests.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "qip-routing/tests/routing.rs::order_type_selection_works_a_large_order_rather_than_taking_the_book, ::an_all_or_none_order_is_sent_fill_or_kill -- neither is reachable from qip-edge-node's own tests",
+    "work_item": "E04",
+    "tier": "T1",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "REFLEX-036",
+    "status": "PARTIAL",
+    "current": "Cell::venue_for (cell.rs:7314-7355) chooses deterministically among configured, reachable, non-stale, order-accepting venues by tightest quoted top-of-book spread, BTreeMap tie-break on VenueId, journaled as Decision::VenueChosen with every candidate's spread. Fees and depth are not in the comparison (its own doc: 'a fee floor from policy slot 11 may join later'). qip_routing::router::Router, which compares venues on an all-in figure including depth and order-type selection, has zero production constructors.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:7314-7355 (venue_for: spread-only comparison)",
+      "backend/crates/edge/qip-edge/src/cell.rs:7291-7313 (doc: 'Best is the tightest quoted top-of-book spread ... a fee floor from policy slot 11 may join later')",
+      "backend/crates/edge/qip-routing/src/router.rs:485-520 (all-in comparator with depth/order-type selection; no non-test constructor)",
+      "test two_strategies_on_one_instrument_net_into_one_order_at_the_venue_with_the_tighter_spread (backend/crates/edge/qip-edge/tests/best_venue.rs:197)",
+      "test a_tie_on_spread_is_broken_by_venue_id_order_and_not_by_configured_order (best_venue.rs:268)",
+      "test a_venue_with_no_usable_book_is_not_a_candidate_even_though_it_would_have_won_on_spread (best_venue.rs:301)"
+    ],
+    "gap": "Selection is on quoted spread alone, not net execution: a venue with a tighter touch but a higher fee, or too little depth for the order's size, still wins, so the check's 'when a different venue offers the better net execution, the choice changes to it' is not met. The choice is made per instrument per pass before the intent exists and is independent of order size. The all-in comparator that would close this (qip_routing::router::Router) is test-only.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Existing: qip-edge/tests/best_venue.rs (determinism, tie-break, unusable book excluded, tighter spread wins). Needed: a test where the tighter-spread venue loses on fees or depth for the order's size and the choice moves to the better all-in venue, mutation-verified by dropping the fee/depth term.",
+    "work_item": "E04",
+    "tier": "T2",
+    "size": "M",
+    "notes": "qip_routing::router::Router (a separate, more general venue-cost comparator) has zero production constructors anywhere in the workspace; venue selection in production lives entirely in Cell::venue_for instead. verify: downgraded COMPLETE -> PARTIAL and e2e true -> false. venue_for compares top-of-book spread only; fees and depth -- named in the statement and implied by 'better net execution' in the check -- are not considered, and the qip-routing all-in Router is unwired. Tests are qip-edge crate tests; the only node pass test touching venue selection (pass.rs:555) has one venue."
+  },
+  {
+    "id": "REFLEX-037",
+    "status": "PARTIAL",
+    "current": "Cell::place_cycle sends an admitted cycle either all at once in plan order, or passive-first (the measured-slow leg rests alone and the rest follow on its fill), chosen by qip_edge::passive::choose from measured venue fill times; qip_edge::dispersion::ReleaseSchedule (ADR 0084) staggers releases so legs arrive together; qip_edge::decomposition sizes later legs to a short fill and stops the cycle below the minimum viable fraction (cell.rs:6036-6038). Reached from qip-edge-node through the installed arbitrage desk.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/decomposition.rs:1-77 (module doc: 'A leg the venue has said nothing about is Completion::Unanswered, and it does not reduce anything'), :78-198",
+      "backend/crates/edge/qip-edge/src/dispersion.rs:405 (ReleaseSchedule)",
+      "backend/crates/edge/qip-edge/src/cell.rs:6030-6040 (decomposition + passive::choose in place_cycle)",
+      "test the_slowest_venue_is_released_first_and_every_leg_arrives_together (backend/crates/edge/qip-edge/tests/release.rs:395)",
+      "test a_cycle_whose_first_leg_fills_under_the_minimum_viable_fraction_sends_no_further_leg (tests/decomposition.rs:465) -- a 25% fill, not a zero fill",
+      "test a_resting_leg_that_fills_nothing_is_withdrawn_and_the_near_leg_is_never_crossed (backend/crates/edge/qip-edge/tests/passive.rs:549) -- two legs, passive-first only; its own comment: 'the one the all-at-once discipline cannot reach'",
+      "test a_cycle_at_a_gateway_that_answers_nothing_is_sent_whole_and_says_so_on_the_series (tests/decomposition.rs:509)"
+    ],
+    "gap": "In the default all-at-once discipline (any cycle whose venues are unmeasured or inside the dispersion bound), a first leg the venue accepts but does not fill produces no execution report, is read as Completion::Unanswered, and the later legs are sent at full size -- the opposite of the check's 'when the first leg fails to fill, the later legs are not sent'. Only passive-first (a measured-slow venue) withholds later legs on a zero fill. There is no per-opportunity sequencing policy: the mode is chosen by the cell from venue measurements, not carried by the cycle. No test runs a three-leg cycle through a zero-fill first leg.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Existing: qip-edge/tests/release.rs, decomposition.rs, passive.rs (crate tests). Needed: a three-leg cycle against a simulated venue whose first leg is accepted and fills nothing, asserting legs two and three are not sent under the cycle's declared sequencing policy, and every placed order is stamped simulated.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "M",
+    "notes": "verify: downgraded COMPLETE -> PARTIAL and e2e true -> false. The cited decomposition test covers a 25% first fill; by the decomposition module's documented design a zero-fill first leg is 'Unanswered' and the rest of the cycle goes out whole under all-at-once, and passive.rs:549 (the only zero-fill test) says so itself. All evidence is qip-edge crate tests; no node pass test sends a cycle."
+  },
+  {
+    "id": "REFLEX-038",
+    "status": "PARTIAL",
+    "current": "qip-edge-node's Requoter/RequotingPlacer (reprice.rs) withdraws a resting order whose touch has drifted past the QIP_REPRICE threshold and re-sends its remainder at the touch, charged against qip_edge::quoting::QuoteBudget (per-venue token bucket and message-to-trade floor). By its own module doc it has 'no quoting strategy, no fair value, no inventory skew'. The quote engine (qip_execution_engine::quoting::quote: fair value, spread, skew, size) runs only in the central kernel's quote loop, which creates no order and no fill; nothing under backend/crates/edge or qip-edge-node calls it.",
+    "evidence": [
+      "backend/crates/apps/qip-edge-node/src/reprice.rs:1-13 ('This module is that caller, and nothing more: no quoting strategy, no fair value, no inventory skew')",
+      "backend/crates/apps/qip-edge-node/src/reprice.rs:72,396-441,537,575,607",
+      "backend/crates/edge/qip-edge/src/quoting.rs:1-40 (message budget, not a quote generator)",
+      "grep -rn 'quoting::quote\\|QuotePolicy\\|QuotePair\\|QuoteInputs' backend/crates/edge backend/crates/apps/qip-edge-node --include=*.rs | grep -v /tests/ -> none",
+      "backend/crates/tests/qip-acceptance/tests/quote_loop.rs::a_real_platform_pass_prices_a_quote_and_creates_no_order_and_no_fill (the engine is central and order-free)",
+      "grep -n QIP_REPRICE infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl -> none (requoter off in the committed node config)",
+      "test a_node_pass_reprices_a_stale_resting_child_after_draining_gateway_events_first (backend/crates/apps/qip-edge-node/tests/pass.rs:874)",
+      "test a_fresh_resting_child_is_not_repriced (pass.rs:1158)"
+    ],
+    "gap": "The node maintains orders it already sent (requote on drift, within a message budget) but hosts no quote engine that places quotes: nothing in the node computes fair value, spread, skew or size or places two-sided quotes. The engine that does (qip_execution_engine::quoting) is central and order-free. The requoter is also not enabled by the execution-node startup template.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": true,
+    "depends_on": [
+      "REFLEX-035"
+    ],
+    "blocked_by": "",
+    "verification": "Existing: qip-edge-node/tests/pass.rs::a_node_pass_reprices_a_stale_resting_child_after_draining_gateway_events_first and ::a_fresh_resting_child_is_not_repriced prove requote maintenance through run_pass. Needed: the node places quotes computed by a quote engine against the simulated venue, keeps them resting across passes, and replaces them past the threshold, every quote stamped simulated.",
+    "work_item": "E11",
+    "tier": "T3",
+    "size": "L",
+    "notes": "verify: downgraded COMPLETE -> PARTIAL. What exists in the node is a repricer for resting orders, which its own doc says has no quoting strategy; the quote engine the statement requires the router to include lives only in the central, order-free quote loop. e2e kept true for the requote half (node run_pass tests)."
+  },
+  {
+    "id": "REFLEX-039",
+    "status": "PARTIAL",
+    "current": "Cancel: Cell::withdraw_expired (TTL, cell.rs:4139) and Cell::mass_cancel (halt, cell.rs:4175), journaled as Decision::OrderExpired / Decision::MassCancelled, counted by qip_edge_orders_expired_total / qip_edge_orders_mass_cancelled_total. Replace: qip_routing::reprice::Repricer (withdraw-then-replace, never amend) driven by qip-edge-node's Requoter beneath the cell's Placer seam (RequotingPlacer); the cell keeps one OpenOrder id per intention and the replacement is not journaled.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:4139 (withdraw_expired), :4175 (mass_cancel)",
+      "backend/crates/edge/qip-edge/src/journal.rs:377-408 (Decision::kind: order_expired and mass_cancelled exist; no replace/requote decision)",
+      "backend/crates/apps/qip-edge-node/src/reprice.rs:1-60 (requoter beneath the Placer; only reads cell.open_orders and spends the quote budget)",
+      "backend/crates/edge/qip-routing/src/reprice.rs (Repricer, RepriceDecision)",
+      "test an_order_that_filled_while_its_cancel_was_in_flight_yields_no_replacement (backend/crates/edge/qip-routing/tests/reprice.rs:260)",
+      "test the_repricer_refuses_to_mint_a_replacement_until_the_cancel_is_acknowledged (qip-routing/tests/reprice.rs:159)",
+      "test a_node_pass_reprices_a_stale_resting_child_after_draining_gateway_events_first (backend/crates/apps/qip-edge-node/tests/pass.rs:874) -- asserts venue state and stats, no journal entry",
+      "test a_partial_fill_on_an_order_that_later_expires_is_counted_once (qip-edge-node/tests/pass.rs:701)"
+    ],
+    "gap": "Cancel is journaled but replace is not: no Decision variant records a replacement or its acknowledgement, the requote outcome is only a stdout line in main.rs and a PassStats counter, and no test asserts a journal entry for either half of a requote -- so the check's 'open-order state and the journal reflect each acknowledgement' is unmet for replace. A replacement changes size only by the filled remainder and price only to the touch on drift; the cell has no path to cancel or re-price a chosen order on any other decision. QIP_REPRICE is not set by the execution-node template.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": true,
+    "depends_on": [
+      "REFLEX-035"
+    ],
+    "blocked_by": "",
+    "verification": "Existing: qip-routing/tests/reprice.rs (cancel/fill race, ack gate), qip-edge-node/tests/pass.rs:701,874 through run_pass. Needed: the replacement and its cancel acknowledgement sealed into the cell's journal, and a node test asserting both journal entries alongside open-order state.",
+    "work_item": "E04",
+    "tier": "T1",
+    "size": "M",
+    "notes": "verify: downgraded COMPLETE -> PARTIAL. The replace half runs beneath the cell and leaves no record in the hash-chained journal (journal.rs has no such Decision), which the requirement's check requires; e2e kept true because qip-edge-node run_pass tests drive both the expiry withdrawal and the requote."
+  },
+  {
+    "id": "REFLEX-040",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "grep -rn OpportunityToken backend/crates -> no hits",
+      "backend/crates/edge/qip-edge/src/mesh.rs (cell<->centre only, no peer struct)"
+    ],
+    "gap": "No token type, TTL or epoch exchange exists between cells; the only mesh in the tree is cell<->centre, never cell<->cell.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-003"
+    ],
+    "blocked_by": "",
+    "verification": "none exists; requirement's own check (a token raised by one cell reaching its peer with the same id/epoch, refused past TTL or from a stale epoch) has no fixture",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "REFLEX-041",
+    "status": "MISSING",
+    "current": "Only same-region sharing exists: qip_edge::reservation::RegionTable (reservation.rs:18-24) is 'one table per region, given to every cell in that region by the composition root' -- an in-process/same-region ledger, not a network exchange with peer nodes in other regions.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/reservation.rs:18-24",
+      "backend/crates/edge/qip-edge/tests/region_table.rs (10 tests, all same-region)",
+      "grep -rn -i 'peer.*reservation|reservation.*peer' backend/crates/edge -> no hits"
+    ],
+    "gap": "No peer mesh client requests, grants or releases a reservation across regions/nodes; RegionTable is a shared same-region structure the composition root hands to cells, not a message exchanged with a peer.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-022",
+      "REFLEX-040"
+    ],
+    "blocked_by": "",
+    "verification": "none exists for cross-node exchange; RegionTable's own tests (region_table.rs) prove a different, same-region capability",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "REFLEX-042",
+    "status": "MISSING",
+    "current": "nothing",
+    "evidence": [
+      "grep -rn -i saga backend/crates/edge -> no hits"
+    ],
+    "gap": "No resize/hedge/reroute/unwind saga machinery exists at all; a cycle whose later leg the venue refuses after an earlier one filled cannot be recovered across a peer (qip-edge's own arbitrage.rs module doc states the cell 'cannot send a compensating order').",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-040",
+      "REFLEX-041"
+    ],
+    "blocked_by": "",
+    "verification": "none exists",
+    "work_item": "E11",
+    "tier": "T3",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "REFLEX-043",
+    "status": "MISSING",
+    "current": "nothing typed as a learning episode. Adjacent, not this: the cell's CellStateDelta (qip_edge::mesh, uplinked by qip-edge-node's MeshLink outside Cell::work) carries orders, fills, refusals and halts to the centre, where Platform::ingest_cell_report (qip-kernel platform.rs:5488) settles fills and admits feasibility refusals into the venue-withdrawal window. That is operational state over the cell<->centre mesh, not a RegionalEpisode/ReflexDelta reaching a global learning store through the Fabric; the kernel's episodic memory holds only its own resolved theses.",
+    "evidence": [
+      "grep -rn 'RegionalEpisode|ReflexDelta' backend/crates -> no hits",
+      "backend/crates/edge/qip-edge/src/mesh.rs:201 (CellStateDelta: orders, fills, refusals, halted -- no episode fields)",
+      "backend/crates/runtime/qip-kernel/src/central/episodic.rs:1-26 (central episodes are resolved theses from the LEARN stage, not cell experience)"
+    ],
+    "gap": "No typed episode/delta artifact or Fabric propagation path exists from a cell to global learning.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-044"
+    ],
+    "blocked_by": "",
+    "verification": "none exists",
+    "work_item": "E08",
+    "tier": "T2",
+    "size": "L",
+    "notes": "verify: MISSING confirmed. Searched for RegionalEpisode/ReflexDelta and for any path by which cell experience reaches learning; the cell->centre delta and the venue-review window are the nearest mechanism and are recorded in 'current' as the base an implementation would extend, but they carry no typed episode and do not go through a Fabric (E03 does not exist yet)."
+  },
+  {
+    "id": "REFLEX-044",
+    "status": "MISSING",
+    "current": "qip_edge::journal::Decision (journal.rs:25-120) records operational facts (SignalRaised, EdgePriced, OrderSent, Filled, OrderExpired, MassCancelled, Refused, ReconciliationBreak, HaltChanged) but nothing groups or types these as a learning 'episode' of microstructure drift, missed-fill anomaly, latency spike or venue anomaly distinct from the operational record.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/journal.rs:25-120 (Decision enum)",
+      "grep -rn -i episode backend/crates/edge/qip-edge/src -> no hits outside test fixtures for an unrelated policy slot (EpisodicDigest, a value the cell only receives, never produces)"
+    ],
+    "gap": "No Episode type labels local learning-relevant facts (drift, missed fills, queue behaviour, venue anomalies) as a distinct artifact from the plain operational journal.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "none exists",
+    "work_item": "E08",
+    "tier": "T1",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "REFLEX-045",
+    "status": "PARTIAL",
+    "current": "Binary half holds: qip-acceptance architecture.rs::no_edge_cell_can_reach_a_language_model proves by transitive Cargo reachability that no edge crate, nor qip-edge-node, reaches qip-ai. Egress half does not: the execution node's qip-egress.service runs the single committed Envoy bootstrap (infrastructure/terraform/main.tf:706 passes infrastructure/egress/envoy.yaml), which declares a 'vertex' listener on 127.0.0.1:9102 routing /v1/projects/ to europe-west2-aiplatform.googleapis.com:443, and the node's google_apis firewall rule allows tcp/443 to the restricted Google APIs VIP.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:715-751 (no_edge_cell_can_reach_a_language_model; names qip-ai only)",
+      "infrastructure/egress/envoy.yaml:300-336 (vertex listener -> cluster vertex_aiplatform, host europe-west2-aiplatform.googleapis.com), :630-631 (upstream address)",
+      "infrastructure/terraform/main.tf:706 (execution node gets the same bootstrap as the Cloud Run sidecars)",
+      "infrastructure/terraform/modules/execution-node/variables.tf:344-350 (egress_bootstrap: 'the node and the services cannot carry different allowlists')",
+      "infrastructure/terraform/modules/execution-node/main.tf:510-527 (google_apis egress allow, tcp/443 to var.google_apis_range, default restricted VIP 199.36.153.8/30)",
+      "test an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else (backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1807) -- expects google_apis among the allows and does not inspect the proxy's listeners"
+    ],
+    "gap": "The node's egress configuration contains a route to a model-serving endpoint (Vertex AI via the loopback proxy and the Google APIs allow), which the requirement's inspection check says it must not. The binary constructs no Vertex client today, so nothing calls the route, but the guarantee rests on the binary alone rather than on egress. The architecture test names only qip-ai, so a model client in another crate (the Vertex client lives in qip-training) would not fail it. Closing this conflicts with the module's deliberate one-bootstrap design and needs a decision (a node-specific listener set, or an ADR 0024 amendment) plus a test that the node's bootstrap has no model-endpoint listener.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Existing: architecture.rs::no_edge_cell_can_reach_a_language_model (binary half). Needed: an infrastructure test that parses the bootstrap the execution node actually receives and fails on any listener whose upstream is a model endpoint (aiplatform, generativelanguage, and the like), mutation-verified by re-adding the vertex listener.",
+    "work_item": "E14",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: downgraded COMPLETE -> PARTIAL. The egress half of the requirement's check is contradicted by committed config: the node renders the shared Envoy bootstrap, which routes to europe-west2-aiplatform.googleapis.com, and its firewall permits Google APIs; the cited infra test admits google_apis and never looks at listeners."
+  },
+  {
+    "id": "REFLEX-046",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/execution-node validates machine_type against exactly {c3-highcpu-8, c3-highcpu-22, c3d-highcpu-8, c3d-highcpu-16} (variables.tf:118-146) on a dedicated google_compute_instance_template with isolated cores and no other declared workload -- 'dedicated, non-shared, non-K8s' is satisfied, but the class enforced is C3/C3D (citing an earlier spec's Sec41.4), not the C4D/C4 class the later, authoritative GCP v2.1 doc requires.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node/variables.tf:118-146",
+      "infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars (execution_nodes = {} in every environment)"
+    ],
+    "gap": "Machine-type allowlist enforces the superseded C3/C3D class instead of C4D/C4 -- an open, explicitly-flagged doc disagreement (M says C3/C3D, G says C4D/C4; README precedence gives G authority) not yet settled by a record; and no environment ever enables the module, so nothing is provisioned to check against either class.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "infrastructure/terraform/modules/execution-node/tests/affinity.tftest.hcl; a plan against a real environment would be the only way to see the module actually reject or admit a machine_type",
+    "work_item": "E14",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: integrated true -> false. For Terraform, 'integrated' means an environment enables it; the module is wired in infrastructure/terraform/main.tf but every environment sets execution_nodes = {} (dev's example block is commented out at dev/terraform.tfvars:200), so no instance is ever planned. affinity.tftest.hcl proves the C3/C3D allowlist admits c3-highcpu-8 and refuses c3-highcpu-4 -- the wrong class per G p6. Status PARTIAL upheld."
+  },
+  {
+    "id": "REFLEX-047",
+    "status": "PARTIAL",
+    "current": "templates/startup.sh.tftpl writes /etc/systemd/system/qip-execution-node.service with ExecStart=/usr/local/bin/qip-edge-node (startup.sh.tftpl:41,335); the boot image installs no container runtime or kubelet.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:41,335",
+      "test the_execution_node_has_no_external_address_and_no_container_runtime (backend/crates/tests/qip-acceptance/tests/infrastructure.rs:661)"
+    ],
+    "gap": "Never enabled in any environment (execution_nodes = {} everywhere) and the boot-image bake has never been run, so the systemd unit has never actually started a process on a real host.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-046"
+    ],
+    "blocked_by": "",
+    "verification": "qip-acceptance/tests/infrastructure.rs::the_execution_node_has_no_external_address_and_no_container_runtime",
+    "work_item": "E14",
+    "tier": "T1",
+    "size": "S",
+    "notes": "verify: integrated true -> false (no environment enables the execution-node module; execution_nodes = {} everywhere). ExecStart=/usr/local/bin/qip-edge-node at startup.sh.tftpl:335 and the no-container-runtime test at infrastructure.rs:661 confirmed. Status PARTIAL upheld."
+  },
+  {
+    "id": "REFLEX-048",
+    "status": "PARTIAL",
+    "current": "infrastructure/images/execution-node/provision.sh sets isolcpus/nohz_full/rcu_nocbs plus 1G huge pages on the kernel command line (provision.sh:212-231); startup.sh.tftpl refuses to start the unit without isolcpus and without the huge-page count present (startup.sh.tftpl:67-85), pins the process with CPUAffinity to the first isolated core, and grants CAP_IPC_LOCK with LimitMEMLOCK=infinity (:353-357) so that mlockall could succeed -- but the binary never calls mlockall.",
+    "evidence": [
+      "infrastructure/images/execution-node/provision.sh:212-231",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:67-85,353",
+      "test the_unit_pins_the_node_onto_the_first_isolated_core_so_the_isolcpus_refusal_guards_something (backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1761)",
+      "grep -rn -i 'mlockall\\|mlock' backend/crates --include=*.rs -> no hits; startup.sh.tftpl:353-357 ('the call itself is the binary's')"
+    ],
+    "gap": "IRQ/RPS/XPS steering and busy polling are not implemented anywhere in provision.sh, the startup template or the binary (no smp_affinity/rps_cpus/xps_cpus/irqbalance/busy_poll hits); 'bounded background services' and an explicit allocator/profile choice are absent. mlockall is never called: grep -rn mlockall backend/crates finds nothing, and the workspace forbids unsafe and permits no libc binding, so the call the unit comment says 'is the binary's' cannot be written in-tree without an ADR (C2-adjacent). The preallocated huge pages are reserved but nothing maps them. No environment enables the module.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-046",
+      "REFLEX-047"
+    ],
+    "blocked_by": "",
+    "verification": "qip-acceptance/tests/infrastructure.rs::the_unit_pins_the_node_onto_the_first_isolated_core_so_the_isolcpus_refusal_guards_something",
+    "work_item": "E14",
+    "tier": "T1",
+    "size": "M",
+    "notes": "docs/architecture/current-state/edge-cell.json's own gap note flags a documented 16-core thread assignment that does not fit the module's 8-vCPU shapes. verify: integrated true -> false (execution_nodes = {} in every environment). Corrected 'current'/'gap': the unit only permits mlockall; nothing in the binary calls it, and it cannot without unsafe FFI or a new crate. Status PARTIAL upheld."
+  },
+  {
+    "id": "REFLEX-049",
+    "status": "MISSING",
+    "current": "nothing; no replay-comparison record (same decisions, with vs. without a tuning, plus a measured latency delta) exists anywhere in the tree.",
+    "evidence": [
+      "docs/blueprint/traceability-matrix.md:359 (REFLEX-049 listed UNASSESSED)",
+      "grep -rn 'validated under replay' infrastructure docs -> only the requirement text itself"
+    ],
+    "gap": "No mechanism records a replay run with and without a given host tuning and compares decisions and latency; the configuration check the requirement asks for (a tuning with no such record fails) does not exist.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-048"
+    ],
+    "blocked_by": "",
+    "verification": "none exists",
+    "work_item": "E14",
+    "tier": "T2",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "REFLEX-050",
+    "status": "BLOCKED",
+    "current": "Permitted (simulated) form built and wired: cell::Placer (cell.rs:8051) is the crate's only order-sending seam; qip-edge-node's SimulatedGateway implements it directly over qip_brokers::exchange::SimulatedExchange in the same process (gateway.rs:590), with no Fabric, proxy or broker in between, and run_pass is typed to SimulatedGateway. GATE_LIVE_VENUE refuses any live-class venue before Placer is called (cell.rs:3864). The node also carries a plaintext RestGateway (gateway.rs:786, selected only by QIP_VENUE_ADAPTER=rest plus a typed endpoint acknowledgement, venue.rs) that NodeGateway::open can construct but that never drives a pass; on an execution node it could reach a venue only through the loopback Envoy egress proxy.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:8051 (trait Placer), :3842-3870 (Cell::send; GATE_LIVE_VENUE at :3864)",
+      "backend/crates/apps/qip-edge-node/src/gateway.rs:590 (impl Placer for SimulatedGateway), :786,929 (RestGateway), :1075-1167 (NodeGateway)",
+      "backend/crates/apps/qip-edge-node/src/main.rs:417,883-895 (gateway opened; only gateway.simulated_mut() reaches run_pass)",
+      "test the_send_seam_refuses_a_live_class_venue_and_the_gateway_is_never_called (backend/crates/edge/qip-edge/src/cell.rs:8473, a #[cfg(test)] unit test in cell.rs, not in tests/paper_boundary.rs)",
+      "test a_cell_handed_a_live_class_gateway_places_nothing_and_names_the_gate (backend/crates/edge/qip-edge/tests/paper_boundary.rs:203)",
+      "test the_platform_walks_from_a_discovered_source_to_a_learned_lesson (backend/crates/tests/qip-acceptance/tests/e2e.rs:471) -- Cell::work places one order straight onto a paper Placer and asserts order.simulated",
+      "test a_marketable_order_fills_on_the_pass_it_is_sent_once_the_venue_has_a_touch_to_take (backend/crates/apps/qip-edge-node/tests/pass.rs:472)"
+    ],
+    "gap": "The requirement is order submission over the venue's native session. That is live order submission (C1, ADR 0003) and needs a TLS client (C2, ADR 0009), so it cannot be completed in this repository. The permitted form -- a direct in-process Placer call to the simulated venue with no Fabric/proxy/broker hop -- is built, wired and tested. Note that the only non-simulated order path in the tree (RestGateway) would traverse the execution node's egress proxy, which this requirement forbids (see REFLEX-073).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": true,
+    "depends_on": [
+      "REFLEX-016"
+    ],
+    "blocked_by": "C1",
+    "verification": "Permitted form: qip-edge/tests/paper_boundary.rs::a_cell_handed_a_live_class_gateway_places_nothing_and_names_the_gate, qip-acceptance e2e.rs::the_platform_walks_from_a_discovered_source_to_a_learned_lesson (order placed directly and stamped simulated), qip-edge-node/tests/pass.rs::a_marketable_order_fills_on_the_pass_it_is_sent_once_the_venue_has_a_touch_to_take. The native-session form has no test and may not have one (ADR 0003).",
+    "work_item": "E04",
+    "tier": "T4",
+    "size": "L",
+    "notes": "A real venue session is out of scope by product decision (paper trading is absolute). verify: COMPLETE -> BLOCKED (C1; the native session also needs C2 TLS). The status rules require BLOCKED when the refused capability is the reason the statement cannot be met, with the permitted form recorded -- consistent with REFLEX-016 (the inbound half) in REFLEX-b1. Corrected the cell.rs:8473 test's location, and added the RestGateway/egress-proxy conflict."
+  }
+]
