@@ -1,0 +1,1936 @@
+[
+  {
+    "id": "FABRIC-001",
+    "domain": "FABRIC",
+    "title": "Internal messaging runs on the native Rust fabric, never Pub/Sub or Kafka",
+    "statement": "Internal publish/subscribe, durable event journals, control propagation and replay must use the Algorik Rust Event & Control Fabric through its SDK and schema model. Google Pub/Sub and Kafka (including Managed Service for Apache Kafka) must not be internal runtime dependencies: neither may sit on the internal core path for service-to-service control, tick journaling, outcomes or replay.",
+    "rationale": "The fabric exists so that control semantics, replay, partitioning, backpressure and regional independence are designed around the platform rather than around a generic broker's defaults. A managed broker on the internal path reintroduces semantics somebody else can change and a dependency the platform cannot fence per region.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — 'Native Rust nervous system'"},
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Native event/control fabric row ('No Google Pub/Sub or Kafka on the internal core path')"},
+      {"doc": "M", "page": "35", "section": "§26.1 Native Rust Event & Control Fabric — introduction ('replaces Google Pub/Sub and core Kafka dependencies')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist — 'Google Pub/Sub and core Kafka are not internal runtime dependencies'"},
+      {"doc": "G", "page": "2", "section": "§1 Executive Architecture — plane table, Rust Event & Control Fabric row ('replaces core Pub/Sub/Kafka')"},
+      {"doc": "G", "page": "2", "section": "§1 Executive Architecture — 'Explicitly removed from the core runtime'"},
+      {"doc": "G", "page": "18", "section": "§19.1 Deliberately not used as core internal messaging — Google Pub/Sub row"},
+      {"doc": "G", "page": "18", "section": "§19.1 Deliberately not used as core internal messaging — Managed Service for Apache Kafka row"},
+      {"doc": "G", "page": "23", "section": "§27 Architecture Acceptance Criteria — 'Google Pub/Sub and Managed Kafka are absent from core internal messaging/dataflow'"}
+    ],
+    "verification": {"method": "acceptance", "check": "An architecture acceptance test fails if any workspace crate other than a designated edge bridge declares a Pub/Sub or Kafka client, or any Terraform module enables the Pub/Sub or Managed Kafka API or declares a topic, subscription or Kafka cluster, and it asserts every internal asynchronous contract is a registered fabric schema."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["ARCH", "GCP"],
+    "notes": "Merges the §1.1 identity statement (M p3), the placement row's exclusion (M p34), §26.1's 'replaces Google Pub/Sub and core Kafka' (M p35), the §31 checklist item (M p44), v2.1's plane-table row and 'Explicitly removed' box (G p2), the Pub/Sub and Managed Kafka rows of §19.1 (G p18) and the §27 acceptance criterion (G p23); the two raw §19.1 rows and the two acceptance items were near-duplicates. The edge-bridge exception is split out as FABRIC-014. COST and MULTI_REGION, carried in from the placement row, are removed: this is a dependency posture, not a placement. NEW_DEPENDENCY is kept because the native fabric both blueprints describe needs transport, schema and consensus crates outside ADR 0002's two (ADR 0099 conflict C2); until those records exist the fabric is built on what the workspace permits and the gap is scored."
+  },
+  {
+    "id": "FABRIC-002",
+    "domain": "FABRIC",
+    "title": "Reflex Nodes publish through a non-blocking local ring/journal writer",
+    "statement": "Each Reflex Node must embed a non-blocking fabric client: the decision thread writes durable outcomes, journals, telemetry and control acknowledgments into a preallocated, bounded local ring/append-only journal serviced on a separate core, and a separate drain forwards them asynchronously to the regional fabric. The fabric SDK must provide this local ring-buffer integration.",
+    "rationale": "A publish call that can block moves the broker's latency and availability into the order path. Writing to a preallocated local structure and draining separately is what lets the fabric be durable without being on the hot path.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "23", "section": "§16 Regional Reflex Nodes — 'embeds a non-blocking Rust fabric client and local append-only event journal'"},
+      {"doc": "M", "page": "36", "section": "§26.1 component table — Rust SDK row ('local ring-buffer integration')"},
+      {"doc": "M", "page": "36-37", "section": "§26.1 Hot-path contract — 'non-blocking local ring/journal writer running on a separate core'"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist — 'Reflex Nodes use non-blocking local journal/ring writers'"}
+    ],
+    "verification": {"method": "integration", "check": "With the regional fabric stalled (accepting connections but never acknowledging), drive a paper Reflex Node through a burst of decisions and assert every publish call on the decision thread returns without waiting, the local journal holds every record, and the drain forwards all of them in order once the fabric resumes."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["REFLEX"],
+    "notes": "Split from the §31 checklist item (M p44), whose outage half is FABRIC-003 and whose cached-package half is FABRIC-054, and from the Rust SDK row's 'local ring-buffer integration' (M p36, stated twice in the raw extraction). M p23 §16 is cited on verification against the source text; the raw extraction did not carry it. v11.6 says 'preallocated lock-free queues'; under unsafe_code = forbid that means std's bounded channels or a crate, so NEW_DEPENDENCY is kept to mark the decision. MULTI_REGION, carried in from the region-loss row, is removed. What happens when the bounded journal fills is FABRIC-054."
+  },
+  {
+    "id": "FABRIC-003",
+    "domain": "FABRIC",
+    "title": "The fabric is never on the path from venue event to order",
+    "statement": "No fabric acknowledgement, fetch or other synchronous call may sit between a venue market event and a local order decision or venue send: venue market data must reach the Reflex adapter directly and orders must go directly to the venue, never through a fabric topic. Control, outcomes, journals and telemetry are written after or beside the reflex decision, so a fabric outage, stall or failover cannot block, delay or retroactively stall market-event-to-order execution.",
+    "rationale": "A fast broker in front of the hot path is still a dependency: its failover, a full quorum or a stalled segment becomes an order that went out late or not at all. Keeping the fabric beside the decision confines a fabric incident to journaling lag.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "23", "section": "§16 Regional Reflex Nodes — 'The decision thread never waits on the fabric'"},
+      {"doc": "M", "page": "24", "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage — 'A fabric outage must not stall a live local decision'"},
+      {"doc": "M", "page": "35", "section": "§26.1 Native Rust Event & Control Fabric — introduction ('intentionally not the execution hot path')"},
+      {"doc": "M", "page": "36-37", "section": "§26.1 Hot-path contract — 'never wait on a broker acknowledgement'"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist — 'A fabric outage cannot block market-event-to-order execution'"},
+      {"doc": "M", "page": "45", "section": "§33 Final Definition of Algorik — 'the local Reflex hot path and direct Reflex Mesh remain independent'"},
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 2 'Async does not mean unimportant'"},
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Reflex Node → Regional Fabric row ('failure cannot block order')"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 3 ('A Fabric outage cannot retroactively stall the order')"},
+      {"doc": "G", "page": "23", "section": "§27 Architecture Acceptance Criteria — broker/zone failure 'or stopping Reflex execution'"},
+      {"doc": "G", "page": "23", "section": "§28 Explicit Anti-Patterns — 'Putting the Rust Fabric in front of venue market data or order submission'"},
+      {"doc": "H", "page": "L128-138", "section": "§01 Global Platform Topology — Reflex Cell → Rust Fabric 'async journal' edges"},
+      {"doc": "H", "page": "L189-190", "section": "§03 Native Rust Event & Control Fabric — subtitle ('never a synchronous dependency of the trading hot path')"}
+    ],
+    "verification": {"method": "chaos", "check": "Kill, partition and stall the regional brokers in turn while a paper Reflex cell replays a recorded tick stream, and assert every order decision and simulated venue send is identical to a run with a healthy fabric and that decision-to-send latency percentiles are unchanged within measurement noise."},
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "EXEC"],
+    "notes": "Merges eleven raw items stating one invariant from different sides. The §28 anti-pattern (G p23) is merged rather than kept separate because a fabric in front of market data is exactly a synchronous dependency between venue event and order. G p23 §27's 'without ... stopping Reflex execution' is this requirement; its no-loss half is FABRIC-077. Flags removed: LIVE_CAPITAL (from the anti-pattern) because the invariant concerns the path's shape and is testable against the simulated venue under ADR 0003, needing no live capital; NEW_DEPENDENCY and MULTI_REGION as inapplicable. The check must be run against the edge cell rather than inferred from ADR 0008. M p23 and M p45 are cited on verification against the text."
+  },
+  {
+    "id": "FABRIC-004",
+    "domain": "FABRIC",
+    "title": "Reflex Nodes journal their decision history to regional fabric P1/P2 topics",
+    "statement": "Each Reflex Node must asynchronously journal to its regional fabric every tick it acted on, feature snapshot, decision and decision trace, order, fill/cancel and outcome, and every control/policy/model acknowledgment: fills, cancels and outcomes to P1 Financial Outcomes topics; ticks, features and decision traces to P2 Market Journal topics; acknowledgments to the class their topic declares.",
+    "rationale": "Replay and attribution can only reconstruct what was journaled. A cell whose fills reach the ledger but whose ticks and decision traces do not leaves every outcome unexplained.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "23", "section": "§16 Regional Reflex Nodes — 'Durable outcomes, telemetry and policy/model acknowledgments are drained asynchronously to the regional fabric'"},
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Reflex Node → Regional Fabric row"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 3"},
+      {"doc": "H", "page": "L128-138", "section": "§01 Global Platform Topology — Reflex Cell → Rust Fabric 'async journal' edges"},
+      {"doc": "H", "page": "L196-221", "section": "§03 Native Rust Event & Control Fabric — Reflex Nodes node ('P1/P2 producer: Outcomes, journals, decision traces') and data edge"}
+    ],
+    "verification": {"method": "replay", "check": "Run a paper Reflex cell over a recorded session, rebuild the session from the fabric's P1/P2 partitions alone, and assert every order, fill/cancel and decision trace is present with its tick and feature snapshot and sits in the class its kind requires."},
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "TICK", "LEDGER"],
+    "notes": "Merges the G p19 connection row, the §21.1 step (G p20) and the diagram's P1/P2 producer node and async-journal edges (H); M p23 is cited on verification. The row's QUIC/mTLS transport is FABRIC-009 and its 'failure cannot block order' FABRIC-003. Neither blueprint states which class carries control acknowledgments, so the statement leaves it to the topic's declared class (FABRIC-057). NEW_DEPENDENCY (the transport's, carried by FABRIC-009) and MULTI_REGION (each cell journals to its own region) are removed."
+  },
+  {
+    "id": "FABRIC-005",
+    "domain": "FABRIC",
+    "title": "Reflex Mesh coordination stays off the fabric",
+    "statement": "Latency-sensitive peer coordination between Reflex Nodes (the Reflex Mesh) must travel directly peer-to-peer and must not be broker-mediated through the fabric, which carries only durable control, journal and outcome records; a fabric outage must not stop mesh coordination, and a mesh outage must not prevent durable journaling or control distribution.",
+    "rationale": "Mesh messages are short-lived state whose value decays in milliseconds; fabric records are durable history. Carrying either on the other's path makes one pay for the other's guarantees and couples their failures.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "23", "section": "§16 Regional Reflex Nodes — 'remains direct peer-to-peer Reflex Mesh traffic rather than broker-mediated messaging'"},
+      {"doc": "M", "page": "24", "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage — 'The Reflex Mesh and the Event & Control Fabric are deliberately separate'"},
+      {"doc": "M", "page": "35", "section": "§26.1 Native Rust Event & Control Fabric — introduction ('direct peer Reflex Mesh coordination remain independent')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist — 'Direct Reflex Mesh traffic remains separate from durable event fabric traffic'"},
+      {"doc": "M", "page": "45", "section": "§33 Final Definition of Algorik"},
+      {"doc": "G", "page": "20", "section": "§21.3 Multi-region arbitrage — step 2 ('exchanged directly over Reflex Mesh, not through Fabric')"}
+    ],
+    "verification": {"method": "chaos", "check": "In a two-cell paper topology, stop the fabric and assert mesh opportunity/reservation exchange continues; then sever the mesh links and assert both cells keep journaling to, and receiving control from, their regional fabric."},
+    "policy_flags": [],
+    "secondary_domains": ["MESH", "REFLEX"],
+    "notes": "Split from M p35's 'local market-event-to-order decisions and direct peer Reflex Mesh coordination remain independent', whose first half is FABRIC-003. The M p23, M p24, M p44, M p45 and G p20 citations were found on verification against the text; the raw extraction carried only M p35. P1 because the Reflex Mesh arrives in master Phase 4 / GCP Phase 7."
+  },
+  {
+    "id": "FABRIC-006",
+    "domain": "FABRIC",
+    "title": "Fabric records are durable and replayable",
+    "statement": "Fabric messages must be durable, replayable records of control, journals and outcomes, under one native contract that also carries backpressure: every record accepted on a durable topic class must remain readable by partition and offset for that class's retention and be replayable to any authorised consumer, not delivered once and forgotten.",
+    "rationale": "The platform's promise is that every decision is reproducible from the log. A bus that delivers and forgets can move control but cannot answer 'what did the cell know when it acted'.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage — 'Fabric messages are durable/replayable control, journal and outcome records'"},
+      {"doc": "M", "page": "45", "section": "§33 Final Definition of Algorik — 'regionally independent, replayable, backpressure-aware and selectively mirrored'"},
+      {"doc": "G", "page": "2", "section": "§1 Executive Architecture — plane table, Rust Event & Control Fabric row ('One native contract for durable pub/sub, journals, replay, backpressure, control and outcomes')"},
+      {"doc": "H", "page": "L189-190", "section": "§03 Native Rust Event & Control Fabric — subtitle ('Durable, replayable and regional-first')"}
+    ],
+    "verification": {"method": "integration", "check": "Publish a sequence of records on each durable class, restart every broker, replay each partition from offset zero with a fresh consumer, and assert the replayed records are byte-identical to, and in the same order as, what was acknowledged."},
+    "policy_flags": [],
+    "secondary_domains": ["TICK"],
+    "notes": "Merges M p24, the §33 definition (M p45), v2.1's plane-table contract and its backpressure clause (two raw items from G p2) and the diagram subtitle's first half. §33 is a summary of four requirements: its replayability is this one, and the others are FABRIC-021 (regional independence), FABRIC-049 to FABRIC-051 (backpressure) and FABRIC-011 (selective mirroring). The placement half of the G p2 row is FABRIC-008 and its 'replaces core Pub/Sub/Kafka' FABRIC-001. MULTI_REGION and COST, carried by that row's placement, are removed."
+  },
+  {
+    "id": "FABRIC-007",
+    "domain": "FABRIC",
+    "title": "The fabric distributes capital, risk and strategy control to Reflex Cells",
+    "statement": "Capital grants, risk envelopes and strategy/model package activations decided centrally must reach each Regional Reflex Cell as P0 critical-control records delivered by its regional fabric — a centre-to-edge control path distinct from the cell's own asynchronous outcome reporting back to the fabric.",
+    "rationale": "A cell can act only within an envelope it has actually received. Control that travels on an undeclared side channel has no offset, no replay and no record of what the cell was told and when.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage — 'a Reflex Mesh outage must not prevent durable journaling or control distribution'"},
+      {"doc": "H", "page": "L393-395", "section": "§08 End-to-End Operating Flow — Rust Fabric → Regional Reflex Cells control edge"}
+    ],
+    "verification": {"method": "integration", "check": "Publish a risk envelope and a capital grant on P0 control topics and assert a subscribed paper Reflex cell applies each exactly once, records the offset it applied, and that replaying the control partition reproduces the same applied sequence."},
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "CAPITAL", "RISK"],
+    "notes": "From the §08 end-to-end flow edge (H). M p24 is cited on verification as the prose statement that the fabric distributes control. The class is P0 per v2.1 §7.2 (FABRIC-045); signature verification before acting is FABRIC-081. MULTI_REGION is removed: each cell is served by its own region's fabric. P0 because deterministic risk and capital/risk envelope contracts are foundation phases (master Phase 1, GCP Phase 4)."
+  },
+  {
+    "id": "FABRIC-008",
+    "domain": "FABRIC",
+    "title": "Each region runs its fabric on dedicated broker VMs across three zones",
+    "statement": "Each execution region must run its own fabric cluster — brokers and the metadata controller quorum — on dedicated regional Compute Engine VMs not shared with Reflex or warm-service workloads, spread across three zones so that the region has a three-zone quorum.",
+    "rationale": "A broker sharing a host with trading compute or warm services shares their failures and noisy neighbours, and a quorum spread over fewer than three zones cannot survive a zone. A cluster per region is what makes one region's fabric independent of every other's.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Native event/control fabric row ('dedicated regional GCE broker/controller nodes across three zones')"},
+      {"doc": "M", "page": "41", "section": "§30 Build Order — Phase 0 Foundations ('3-zone regional quorum')"},
+      {"doc": "G", "page": "2", "section": "§1 Executive Architecture — plane table, Rust Event & Control Fabric row ('Dedicated Rust broker VMs per region')"},
+      {"doc": "G", "page": "8", "section": "§7.3 Fabric placement on GCP — Brokers ('spread across three zones')"},
+      {"doc": "G", "page": "22", "section": "§26 Recommended Build Order — Phase 2 Rust Fabric MVP ('Single region 3 brokers')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "terraform plan for a region shows broker and controller instances on dedicated instance templates in the fabric project, at least one in each of exactly three zones, with no Reflex or warm-service workload scheduled on them."},
+    "policy_flags": ["COST", "MULTI_REGION"],
+    "secondary_domains": ["GCP"],
+    "notes": "Merges the placement row's first clause (M p34, stated twice in the raw extraction), the Phase 0 exit (M p41), v2.1's plane table (G p2) and the three-zone half of §7.3 Brokers (G p8). The placement row's transport, replication, mirroring, archival, SDK, exclusion and bridge clauses are FABRIC-009 to FABRIC-014 and FABRIC-001; Phase 0's contracts, SDK and benchmark harness are FABRIC-022, FABRIC-013 and FABRIC-029; five production brokers is FABRIC-084. G p22 is cited for the MVP exit criterion that sets P0. NEW_DEPENDENCY is removed as inapplicable to placement. ADR 0099 C8 puts broker VMs behind an owner cost ceiling and a deployment record; ADR 0024's Cloud Run plus one execution node per region is the standing runtime until then."
+  },
+  {
+    "id": "FABRIC-009",
+    "domain": "FABRIC",
+    "title": "Fabric sessions use QUIC with mutual TLS",
+    "statement": "Every fabric session — producer and consumer (broker/client), inter-broker replication and cross-region mirror — must run over QUIC with TLS 1.3 mutual authentication by default, and a peer that cannot present a valid workload certificate must be refused.",
+    "rationale": "The fabric carries risk envelopes, capital grants and fills. An unauthenticated session is a way to inject control or read financial outcomes; mutual TLS makes every session attributable to a workload identity.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 placement table — Native event/control fabric row ('QUIC/mTLS native protocol')"},
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Transport"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Transport"},
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Reflex Node, GKE control service and GKE consumers rows (QUIC/mTLS)"}
+    ],
+    "verification": {"method": "integration", "check": "Open producer, consumer and inter-broker sessions to a test broker with no client certificate, with a certificate from an untrusted CA and with a valid one, and assert only the valid mutual-TLS 1.3 session is admitted on each session type."},
+    "policy_flags": ["NEW_DEPENDENCY", "MULTI_REGION"],
+    "secondary_domains": ["SEC", "GCP"],
+    "notes": "Merges both blueprints' transport clauses and the protocol column of three G p19 connection rows. G p8 says 'QUIC over gVNIC'; the NIC is an instance-template attribute left to FABRIC-008. v2.1's TCP benchmark for bulk mirror flows (FABRIC-074) qualifies 'by default'. KUBERNETES (from the GKE rows) is removed because the transport does not depend on where the client runs. NEW_DEPENDENCY is kept: ADR 0009 forbids an in-tree TLS stack, so QUIC/mTLS is the transport-security class of ADR 0099 C2, to be weighed against the egress-proxy alternative that record names."
+  },
+  {
+    "id": "FABRIC-010",
+    "domain": "FABRIC",
+    "title": "Durable partitions replicate RF3 across three zones",
+    "statement": "Every partition of a durable topic profile must be replicated with replication factor 3, the partition leader replicating to followers in the two other zones, so that each zone holds one replica.",
+    "rationale": "Replicas that share a zone share its failure. RF3 across zones is what lets a whole zone go without taking a quorum-acknowledged record with it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 placement table — Native event/control fabric row ('replicated partition logs')"},
+      {"doc": "G", "page": "3-4", "section": "§3 Global Region and Failure-Domain Strategy — Zonal failure bullet ('Fabric RF3 partition replicas across zones')"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Partitioning ('leaders replicate to followers in other zones')"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Durability ('RF3 across zones for durable profiles')"},
+      {"doc": "G", "page": "22", "section": "§26 Recommended Build Order — Phase 2 Rust Fabric MVP ('RF3 journal')"},
+      {"doc": "H", "page": "L218-221", "section": "§03 Native Rust Event & Control Fabric — Broker A→B→C→A replication edges"}
+    ],
+    "verification": {"method": "integration", "check": "Create a durable topic on a three-zone test cluster and assert from fabric metadata that every partition has exactly three in-sync replicas on brokers in three distinct zones, including after a forced leader move."},
+    "policy_flags": ["COST"],
+    "secondary_domains": ["RES"],
+    "notes": "Merges the placement row's 'replicated partition logs', §3's zonal-failure bullet, §7.1's partitioning and durability clauses and the diagram's replication ring. 'Durable profiles' means P0 to P2 and any P3 topic configured RF3: P3 may run RF2 (FABRIC-059) and P4 best-effort or RF2 (FABRIC-048). The diagram's A→B→C→A ring depicts each broker replicating to the others, not a literal chain; replication is leader-to-follower per partition (G p8). The quorum-acknowledgement meaning and no-loss guarantee are FABRIC-077. KUBERNETES (the GKE control plane in the same bullet), MULTI_REGION and NEW_DEPENDENCY are removed as inapplicable; COST is kept because RF3 triples journal storage."
+  },
+  {
+    "id": "FABRIC-011",
+    "domain": "FABRIC",
+    "title": "Only configured critical topics mirror across regions",
+    "statement": "fabric-mirror must replicate across regions only the topics/partitions explicitly configured for mirroring — critical control and outcome streams — reading them from the local segment store; every other topic must stay in its region.",
+    "rationale": "Mirroring everything turns each region's market journal into every other region's egress bill and backlog and makes a remote outage everyone's problem. Selective mirroring keeps what another region must know available there and nothing more.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 placement table — Native event/control fabric row ('selective cross-region mirrors')"},
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-mirror row ('Selective asynchronous cross-region replication')"},
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Cross-region behavior ('selected streams mirror')"},
+      {"doc": "M", "page": "41", "section": "§30 Build Order — Phase 4 Multi-Region Reflex Mesh ('selective cross-region fabric mirroring for outcomes/control')"},
+      {"doc": "G", "page": "4", "section": "§3 Global Region and Failure-Domain Strategy — Regional failure bullet ('critical Fabric topics have selective cross-region mirrors')"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-mirror ('Mirror only configured topics/partitions')"},
+      {"doc": "H", "page": "L196-221", "section": "§03 Native Rust Event & Control Fabric — Cross-Region Mirror node ('Only selected topics mirror')"},
+      {"doc": "H", "page": "L218-221", "section": "§03 Native Rust Event & Control Fabric — Segment Store → Cross-Region Mirror and Mirror → Remote Fabric Regions edges ('Critical controls/outcomes selectively mirrored')"}
+    ],
+    "verification": {"method": "integration", "check": "In a two-region test topology with one P0, one P1 and one P2 topic and only the first two configured for mirroring, assert the remote region receives every record of the mirrored topics and none of the unmirrored one."},
+    "policy_flags": ["MULTI_REGION", "COST"],
+    "secondary_domains": ["RES", "GCP"],
+    "notes": "Merges the selectivity clauses of both blueprints and three diagram items. The asynchronous, never-blocking half is FABRIC-021 and the lag budget FABRIC-056. M p41 Phase 4 and G p4's regional-failure bullet are cited on verification against the text; Phase 4 sets P1. NEW_DEPENDENCY is removed as inapplicable; COST (from the placement row) is kept because what is mirrored is billed as inter-region egress."
+  },
+  {
+    "id": "FABRIC-012",
+    "domain": "FABRIC",
+    "title": "Sealed segments are archived to Cloud Storage",
+    "statement": "fabric-archive must export every closed (sealed, immutable) segment of every archived topic, from whichever broker holds it, to Cloud Storage / the Tick Lake, asynchronously and never on a broker's commit path.",
+    "rationale": "Hot retention is bounded; the archive is what keeps 'replay from the log' true beyond a broker's disk and what a lost region is rebuilt from.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 placement table — Native event/control fabric row ('GCS archival')"},
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-archive row ('Sealed segment export to Cloud Storage/Tick Lake')"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-archive ('Segment compaction/archive to GCS')"},
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Fabric Archive → Cloud Storage row ('Immutable segment archive/replay source')"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 4 ('Fabric sinks archive market/decision segments to GCS')"},
+      {"doc": "G", "page": "22", "section": "§26 Recommended Build Order — Phase 2 Rust Fabric MVP ('GCS archive')"},
+      {"doc": "H", "page": "L128-138", "section": "§01 Global Platform Topology — Rust Fabric → Cloud Storage 'segments' edges"},
+      {"doc": "H", "page": "L178-184", "section": "§02 Regional Cell — Broker A/B/C → Fabric Archiver edges"}
+    ],
+    "verification": {"method": "integration", "check": "Roll segments on all three brokers of a test cluster, run the archiver against an object-store fake, and assert every sealed segment of each archived topic appears exactly once, no open segment is exported, and broker append latency is unaffected while the archiver is stalled."},
+    "policy_flags": ["MANAGED_SERVICE", "NEW_DEPENDENCY", "COST"],
+    "secondary_domains": ["TICK", "DATA", "GCP"],
+    "notes": "Merges eight raw items across all three documents. The manifest/hash/entitlement/index contract is FABRIC-026, content addressing FABRIC-090, residency lifecycle FABRIC-091, replay hydration FABRIC-068 and the private-access route FABRIC-106. NEW_DEPENDENCY is kept because writing to Cloud Storage needs an authenticated Google API client that ADR 0009 forbids writing in-tree (ADR 0099 C2/C4). MULTI_REGION (one §01 edge per region) is removed because each region archives only its own segments."
+  },
+  {
+    "id": "FABRIC-013",
+    "domain": "FABRIC",
+    "title": "Producers and consumers use a typed Rust SDK",
+    "statement": "Services must produce to and consume from the fabric only through the typed Rust SDK (fabric-client), whose API accepts and returns the Rust types generated from registered schemas rather than untyped byte payloads.",
+    "rationale": "An untyped publish is a schema violation the compiler cannot see and the registry learns about only in production.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 placement table — Native event/control fabric row ('typed Rust SDK')"},
+      {"doc": "M", "page": "41", "section": "§30 Build Order — Phase 0 Foundations ('Rust SDK')"},
+      {"doc": "G", "page": "22", "section": "§26 Recommended Build Order — Phase 2 Rust Fabric MVP ('schemas/client')"},
+      {"doc": "G", "page": "23", "section": "§27 Architecture Acceptance Criteria — 'all internal async contracts use the Rust Fabric SDK/schema model'"}
+    ],
+    "verification": {"method": "unit", "check": "compile_fail doctests assert that publishing a value whose type was not generated from a registered schema, or publishing to a topic bound to a different schema, does not compile."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["CONTRACT"],
+    "notes": "Split from the placement row (M p34) and the Phase 0 exit (M p41). The SDK's other capabilities are FABRIC-031 to FABRIC-035, FABRIC-066 and FABRIC-067, and FABRIC-002 carries its ring-buffer integration. COST and MULTI_REGION (from the placement row and the Phase 0 item) are removed; NEW_DEPENDENCY is kept because generated Protobuf types come from the wire-schema class of ADR 0099 C2."
+  },
+  {
+    "id": "FABRIC-014",
+    "domain": "FABRIC",
+    "title": "Kafka and Pub/Sub compatibility exists only as a stateless edge bridge",
+    "statement": "A Kafka, Pub/Sub or webhook compatibility adapter (fabric-bridge) may exist only where an external partner or client integration requires it, only at an external boundary and only as a stateless translator; internal services must use the native fabric protocol, and a bridge must not define or alter platform semantics (ordering, delivery, retention), which remain the fabric's.",
+    "rationale": "A bridge that keeps state or that internal services can reach becomes the internal broker by the back door, and its semantics start to leak into contracts the fabric is supposed to own.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 placement table — Native event/control fabric row ('optional compatibility bridges are edge adapters only')"},
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-bridge row"},
+      {"doc": "G", "page": "2", "section": "§1 Executive Architecture — 'Explicitly removed from the core runtime' ('a stateless bridge may exist at an external boundary')"},
+      {"doc": "G", "page": "18", "section": "§19.1 Deliberately not used as core internal messaging — Managed Service for Apache Kafka row ('Optional external compatibility bridge only if a partner/client requires Kafka protocol')"}
+    ],
+    "verification": {"method": "acceptance", "check": "An architecture test asserts that the bridge is the only crate permitted a Kafka or Pub/Sub client, that no internal crate depends on the bridge, and that the bridge holds no durable state of its own beyond the fabric consumer offsets it commits."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["API", "ARCH"],
+    "notes": "Merges the bridge clauses of the placement row, the fabric-bridge row, v2.1's 'Explicitly removed' box and its Kafka row. v2.1's 'stateless' is the more specific wording and is kept. A bridge talks to an external party's system, so building one would also need the external-action review ADR 0099 describes; P0 here is for the prohibition, not for building a bridge. NEW_DEPENDENCY is kept: a bridge needs the external system's client, which would still need its own record."
+  },
+  {
+    "id": "FABRIC-015",
+    "domain": "FABRIC",
+    "title": "fabricd brokers lead and follow partitions as append-only logs",
+    "statement": "fabricd brokers must act as regional partition leaders and followers, providing producer ingress, partition routing, append-only partition logs persisted as indexed segments, subscriptions and consumer fetch, and enforcement of each topic's declared retention.",
+    "rationale": "The append-only log is what every other guarantee (offsets, replay, archival, fencing) is defined against; a broker that rewrites or reorders its log breaks all of them at once.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26.1 component table — fabricd brokers row"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabricd ('ingress, partition routing, journal replication, consumer fetch')"},
+      {"doc": "H", "page": "L196-221", "section": "§03 Native Rust Event & Control Fabric — Segment Store node ('Append-only segments, indexes, checksums, retention')"}
+    ],
+    "verification": {"method": "property", "check": "Property test over random produce, fetch and crash sequences against one broker: every fetched range is a slice of the append order, offsets are dense and never reused, and records older than the topic's retention are gone while younger ones remain."},
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Merges the broker rows of both blueprints and the diagram's segment-store node. Replication, backpressure and consumer checkpoints, also in the M p35 row, are FABRIC-010, FABRIC-049 to FABRIC-051 and FABRIC-016; v2.1's implementation direction (Tokio, bounded pools, I/O mode) is FABRIC-062 to FABRIC-064 and its QUIC/mTLS FABRIC-009; segment checksums are FABRIC-037. The diagram labels the segment store 'local PD / Local SSD cache' where v2.1 §7.3 says persistent Hyperdisk; FABRIC-085 carries the storage choice. COST and MULTI_REGION (M p35) and NEW_DEPENDENCY (G p7) are removed as inapplicable to the broker's functional responsibilities."
+  },
+  {
+    "id": "FABRIC-016",
+    "domain": "FABRIC",
+    "title": "Consumers checkpoint per-partition offsets and resume or replay from them",
+    "statement": "Every consumer, including every fabric sink, must commit per-partition offsets (consumer checkpoints) to the fabric; after a restart or broker failover it must resume from its last committed offset, and any consumer must be able to replay a partition from any retained offset.",
+    "rationale": "Offsets are what make at-least-once finite: without them a restart either loses records or replays the world. Replay by offset is how a sink recovers from a destination outage without a bespoke backfill.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26.1 component table — fabricd brokers row ('consumer checkpoints')"},
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Regional Event Fabric broker loss ('consumers resume from committed offsets')"},
+      {"doc": "G", "page": "8", "section": "§7 Rust Fabric component rows — fabric-sink-* ('restart/replay by offset')"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Delivery ('per-partition offsets provide replay')"},
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Regional Fabric → GKE consumers row ('consume ordered partitions and replay')"},
+      {"doc": "G", "page": "22", "section": "§26 Recommended Build Order — Phase 2 Rust Fabric MVP ('consumer offsets')"}
+    ],
+    "verification": {"method": "integration", "check": "Kill a consumer mid-batch after it commits offset N and assert it resumes at N+1 with no gap and only the uncommitted tail redelivered; then seek a fresh consumer to an arbitrary retained offset and assert it reads the same records the original consumer saw."},
+    "policy_flags": [],
+    "secondary_domains": ["TICK"],
+    "notes": "Merges the checkpoint clause of the broker row with the offset clauses of v2.1's sink row (stated twice in the raw extraction), §7.1 Delivery and the GKE-consumer connection row. M p40 is cited on verification. Flags carried by those rows (COST, MULTI_REGION, MANAGED_SERVICE, NEW_DEPENDENCY, KUBERNETES) are removed as inapplicable to offset semantics."
+  },
+  {
+    "id": "FABRIC-017",
+    "domain": "FABRIC",
+    "title": "A three-zone metadata quorum owns fabric metadata",
+    "statement": "fabric-controller (fabric-meta) must run a three-zone replicated metadata quorum that is authoritative for cluster membership, stream/topic definitions, partition placement and maps, partition leadership, broker epochs, consumer leases, quotas and ACL metadata, and every broker must take these from it.",
+    "rationale": "Two brokers that disagree about who leads a partition will both accept writes. One quorum-held source of placement and epochs is what makes leadership, fencing and ACLs mean the same thing on every broker.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-controller row"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-meta ('Cluster membership, partition maps, epochs, consumer leases, quotas')"},
+      {"doc": "H", "page": "L202", "section": "VIEWS.fabric — 03 · Native Rust Event & Control Fabric, node 'f_meta' ('Topic/partition map, schemas, ACLs, producer fencing')"},
+      {"doc": "H", "page": "L218-221", "section": "§03 Native Rust Event & Control Fabric — Meta → Broker A/B/C control edges"}
+    ],
+    "verification": {"method": "chaos", "check": "On a three-zone test cluster, kill the metadata leader and then a whole zone and assert a new leader is elected, no committed metadata change is lost or reordered, and brokers converge on one partition map and epoch set; with two zones lost, assert metadata changes are refused rather than applied by a minority."},
+    "policy_flags": [],
+    "secondary_domains": ["RES"],
+    "notes": "Merges the controller and fabric-meta rows and the diagram's Meta/Schema/ACL authority. The Raft-implementation choice is FABRIC-019, the no-cloud-database invariant FABRIC-020, separation from the data log FABRIC-065, ACL enforcement FABRIC-018, schema gating FABRIC-024 and producer fencing FABRIC-058. NEW_DEPENDENCY moves to FABRIC-019."
+  },
+  {
+    "id": "FABRIC-018",
+    "domain": "FABRIC",
+    "title": "Every broker enforces topic ACLs from fabric metadata",
+    "statement": "Every broker must authorise each produce, consume and admin request against the ACLs held in fabric metadata for the requesting workload identity and must refuse any request those ACLs do not grant.",
+    "rationale": "An ACL recorded but enforced only at some brokers is enforced at none, because a client chooses its broker. Refusal by default is what stops an analytics workload writing to a P0 control topic.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-controller row ('ACL metadata')"},
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabricctl / fabric-inspect row ('ACLs')"},
+      {"doc": "H", "page": "L202", "section": "VIEWS.fabric — node 'f_meta' ('ACLs')"},
+      {"doc": "H", "page": "L218-221", "section": "§03 Native Rust Event & Control Fabric — Meta → Broker A/B/C control edges"}
+    ],
+    "verification": {"method": "integration", "check": "For each broker in turn, attempt produce and consume on a P0 topic with an identity granted only a P3 topic and assert refusal at every broker; then grant the ACL in metadata and assert admission at every broker without a restart."},
+    "policy_flags": [],
+    "secondary_domains": ["SEC"],
+    "notes": "Derived from the controller holding ACL metadata (M p36) and the diagram's Meta/Schema/ACL authority over every broker (H); both blueprints name ACLs without stating enforcement. Refusal by default is the house fail-closed rule, not blueprint text. NEW_DEPENDENCY (from the controller row) is removed."
+  },
+  {
+    "id": "FABRIC-019",
+    "domain": "FABRIC",
+    "title": "The metadata quorum uses a mature Rust Raft implementation",
+    "statement": "The fabric metadata quorum must use an existing, mature Rust Raft implementation for consensus rather than a hand-rolled one.",
+    "rationale": "Consensus fails under partitions and timing that no fixture reproduces; a mature implementation has already met those failures in other people's clusters.",
+    "kind": "nfr",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-controller row ('Metadata uses a Rust Raft implementation')"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-meta ('mature Raft implementation')"}
+    ],
+    "verification": {"method": "inspection", "check": "Inspection of the dependency record and the controller crate shows consensus delegated to the recorded Raft crate, and fabric-chaos (FABRIC-030) exercises leader loss, partitions and log truncation against it."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["ARCH"],
+    "notes": "Merges three raw items (the controller row and the fabric-meta row, the latter stated twice). v2.1's 'mature' is the more specific wording and is kept; v11.6 says only 'a Rust Raft implementation'. This is the consensus class of ADR 0099 C2: until a record admits a Raft crate, ADR 0002 stands and this requirement is scored blocked on that record, not met by an in-tree implementation, because an in-tree Raft is what 'mature' excludes."
+  },
+  {
+    "id": "FABRIC-020",
+    "domain": "FABRIC",
+    "title": "Regional fabric operation needs no cloud database",
+    "statement": "A region's fabric (metadata quorum and brokers) must continue to operate with no cloud database reachable; fabric metadata must live only in its own quorum.",
+    "rationale": "A fabric whose metadata sits in a managed database inherits that service's failure modes, and a database outage becomes a trading-region outage.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-controller row ('no cloud database is required for continued regional operation')"}
+    ],
+    "verification": {"method": "chaos", "check": "With egress to every Google API denied on a regional test cluster, create a topic, move a leader, produce and consume, and assert all succeed."},
+    "policy_flags": [],
+    "secondary_domains": ["RES", "GCP"],
+    "notes": "The raw extraction stated this twice from the same row. NEW_DEPENDENCY is removed: the requirement forbids a dependency rather than adding one. Archival to Cloud Storage is asynchronous (FABRIC-012) and so does not contradict this."
+  },
+  {
+    "id": "FABRIC-021",
+    "domain": "FABRIC",
+    "title": "Each region stays independently writable; mirroring never blocks a local commit",
+    "statement": "There must be no global or cross-region synchronous write quorum: each region's fabric must remain independently writable and operational, no local commit or acknowledgement may wait on a remote region's acknowledgement, and cross-region mirroring must be asynchronous, so that a remote-region or mirror-link outage cannot stop local execution, local journaling or control consumption.",
+    "rationale": "A write that waits on another continent is only as available as the worst link in between. v11.6's stated reason: a remote outage must not stop local execution or control consumption.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-mirror row ('No global write quorum; each region remains independently writable/operational')"},
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Cross-region behavior ('A regional cluster never blocks on remote acknowledgement')"},
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Cross-region fabric mirror down ('Local streams remain writable ... no cross-region synchronous quorum is attempted')"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-mirror ('never blocks local commit')"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Durability ('Cross-region mirroring is normally asynchronous')"},
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Entire Fabric region row ('healthy regions continue')"},
+      {"doc": "H", "page": "L196-221", "section": "§03 Native Rust Event & Control Fabric — Cross-Region Mirror node ('never global synchronous quorum')"}
+    ],
+    "verification": {"method": "chaos", "check": "In a two-region test topology, black-hole the mirror link and then the whole remote region, and assert local produce-acknowledgement latency, local consumption and local control application are unchanged while mirror lag grows instead."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["RES", "REFLEX"],
+    "notes": "Merges the fabric-mirror rows of both blueprints (v2.1's stated twice), v11.6's cross-region behaviour, §7.1's asynchronous mirroring, the region-loss row's 'healthy regions continue' and the diagram's 'never global synchronous quorum'. v2.1 says 'normally asynchronous', leaving room for an exception v11.6 and the diagram do not; the stricter wording is kept because v2.1 names no case for the exception. MANAGED_SERVICE (private networking) moves to FABRIC-052 and NEW_DEPENDENCY is removed. P0 although mirroring lands in Phase 4: the commit path must be designed so that no remote acknowledgement can enter it. M p40 is cited on verification."
+  },
+  {
+    "id": "FABRIC-022",
+    "domain": "FABRIC",
+    "title": "Fabric contracts are versioned Protobuf schemas with immutable IDs",
+    "statement": "Every fabric contract must be a versioned Protobuf descriptor held in the schema registry (fabric-schema) under an immutable schema ID and a schema hash, and every record on the wire must be encoded in the versioned Protobuf wire format (via prost) of the schema it names.",
+    "rationale": "A record whose schema can be edited in place cannot be replayed faithfully. An immutable ID and hash are what let a replay decode last year's record with last year's contract.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-schema row ('Versioned Protobuf descriptors/contracts ... schema hashes')"},
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Wire format ('versioned Protobuf via prost')"},
+      {"doc": "M", "page": "41", "section": "§30 Build Order — Phase 0 Foundations ('Native Rust Event & Control Fabric contracts')"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-schema ('Protobuf/prost wire schema with immutable schema IDs')"},
+      {"doc": "G", "page": "22", "section": "§26 Recommended Build Order — Phase 2 Rust Fabric MVP ('schemas')"}
+    ],
+    "verification": {"method": "unit", "check": "Registering a descriptor returns an ID and hash; re-registering identical bytes returns the same ID; any attempt to change the descriptor behind an existing ID is refused; and a record encoded under ID n decodes only with descriptor n."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["CONTRACT"],
+    "notes": "Merges the fabric-schema rows (v11.6's stated twice) and the Phase 0 contracts clause with the wire-format clause. Compatibility gates are FABRIC-023 and FABRIC-024, code generation FABRIC-025. Protobuf via prost is the wire-schema class of ADR 0099 C2; ADR 0002 stands until its record exists, and the workspace's serde_json contracts are the permitted substitute to be scored against this."
+  },
+  {
+    "id": "FABRIC-023",
+    "domain": "FABRIC",
+    "title": "CI rejects an incompatible schema change",
+    "statement": "CI must check every fabric schema change against the backward/forward compatibility policy of the topic it serves and fail the build on an incompatible change.",
+    "rationale": "Consumers of a topic are deployed independently of its producers; an incompatible change that merges breaks every consumer still on the old contract, and replay of old records with it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-schema row ('compatibility checks')"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-schema ('compatibility gates')"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Schema evolution ('at CI and runtime registration')"}
+    ],
+    "verification": {"method": "acceptance", "check": "Submit fixture schema changes (remove a required field, renumber a field, change a field's type, add an optional field) and assert CI fails the first three and passes the fourth, proving the gate both refuses and admits."},
+    "policy_flags": [],
+    "secondary_domains": ["CICD", "CONTRACT"],
+    "notes": "Split from v2.1 §7.1's 'at CI and runtime registration' because each gate is testable alone and each catches what the other misses: CI catches the reviewed change, runtime registration the one that never went through CI (FABRIC-024). v2.1 §25's 'Bad schema' game day (G p22) exercises both. NEW_DEPENDENCY (from the schema rows) is attributed to FABRIC-022 and removed here."
+  },
+  {
+    "id": "FABRIC-024",
+    "domain": "FABRIC",
+    "title": "The runtime registry refuses an incompatible schema before any production topic sees it",
+    "statement": "The schema registry must refuse, at runtime registration, any schema incompatible with the topic's compatibility policy, and every broker must refuse a record whose schema ID is not registered and compatible for that topic, so that no incompatible schema ever reaches a production topic.",
+    "rationale": "CI is not the only way a schema reaches production. The runtime gate is what holds when a producer was built outside the pipeline or against a stale registry.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-schema row ('compatibility checks')"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-schema ('compatibility gates')"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Schema evolution ('rejected incompatible schemas never reach production topics')"},
+      {"doc": "H", "page": "L202", "section": "VIEWS.fabric — node 'f_meta' ('schemas')"},
+      {"doc": "H", "page": "L218-221", "section": "§03 Native Rust Event & Control Fabric — Meta → Broker A/B/C control edges"}
+    ],
+    "verification": {"method": "integration", "check": "Against a running registry and broker, register an incompatible descriptor directly (bypassing CI) and assert it is refused; then produce a record carrying an unregistered schema ID and assert the broker refuses it and no consumer receives it."},
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT", "SEC"],
+    "notes": "The runtime half of the §7.1 schema-evolution clause, with the diagram's Meta/Schema authority over every broker as the enforcement point. See FABRIC-023 for the CI half."
+  },
+  {
+    "id": "FABRIC-025",
+    "domain": "FABRIC",
+    "title": "Rust types are generated from the registered schemas",
+    "statement": "fabric-schema must generate the Rust types producers and consumers use from the registered Protobuf descriptors, so the types in code and the descriptors in the registry cannot drift.",
+    "rationale": "Hand-written types for a schema drift from it silently; generation makes the registry the one source of the contract.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-schema row ('generated Rust types')"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-schema ('generated Rust types')"}
+    ],
+    "verification": {"method": "acceptance", "check": "A CI check regenerates the Rust types from the registry's descriptors and fails if the result differs from the committed generated code."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["CONTRACT", "CICD"],
+    "notes": "Stated in both blueprints' schema rows (three raw items). Code generation from Protobuf belongs to the wire-schema class of ADR 0099 C2."
+  },
+  {
+    "id": "FABRIC-026",
+    "domain": "FABRIC",
+    "title": "Every archived segment carries a manifest, hashes, entitlements and a replay index",
+    "statement": "Each segment fabric-archive exports must carry a manifest recording its topic, partition, offset range, content hash/checksum and entitlements, together with a replay index that locates records by offset without scanning the segment.",
+    "rationale": "An archive that cannot prove its bytes are the ones the broker sealed, or say who may read them, is a pile of files; the index is what makes replaying one partition window cheap.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-archive row ('manifests, hashes, entitlements and replay indexes')"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-archive ('Closed immutable segments + manifest/checksum')"}
+    ],
+    "verification": {"method": "integration", "check": "Archive a segment, then verify from its manifest alone that the stored object's hash matches, the offset range is complete and contiguous with its neighbours, entitlements are present, and the replay index resolves a sampled offset to the correct record; corrupt one byte and assert verification fails."},
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "DATA"],
+    "notes": "Merges the fabric-archive rows (four raw items, two pairs of duplicates). Entitlements carry market-data licensing into the archive; licensing posture is evaluated before a source is used (data domain rule). MANAGED_SERVICE is removed: the manifest contract does not depend on where the object is stored."
+  },
+  {
+    "id": "FABRIC-027",
+    "domain": "FABRIC",
+    "title": "Operators administer and inspect the fabric through a Rust CLI and admin API",
+    "statement": "The fabric must provide a Rust operator CLI and internal admin API (fabricctl / fabric-inspect / fabric-admin) to create topics, set quotas and retention, and inspect stream and partition health, consumer lag, ACLs, mirroring state, replay progress and diagnostics.",
+    "rationale": "A process nothing can see is a process nobody can operate. Operators need one tool that reads the same metadata the brokers act on, not a console view reconstructed from logs.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabricctl / fabric-inspect row"},
+      {"doc": "G", "page": "8", "section": "§7 Rust Fabric component rows — fabric-admin ('Create topics, quotas, retention ... diagnostics')"}
+    ],
+    "verification": {"method": "integration", "check": "Drive every CLI command against a test cluster and assert each read reports the partition health, lag and ACLs the metadata quorum holds, and each write (topic creation, quota and retention change) is reflected in metadata and enforced by the brokers."},
+    "policy_flags": [],
+    "secondary_domains": ["OBS"],
+    "notes": "Merges the fabricctl row with the create/inspect half of v2.1's fabric-admin row. Partition moves, drain, repair and compaction are FABRIC-070, emergency isolation FABRIC-028, authenticated admin access FABRIC-071; NEW_DEPENDENCY and MANAGED_SERVICE move with the IAM clause to FABRIC-071. P1: operator tooling is not a named foundation exit, and the MVP can declare topics in configuration."
+  },
+  {
+    "id": "FABRIC-028",
+    "domain": "FABRIC",
+    "title": "Operators can isolate a stream or partition in an emergency",
+    "statement": "fabricctl must be able to isolate a stream or partition in an emergency — stopping further produce and/or consume on it without deleting it or its retained records — with the isolation recorded as an attributable operator action and reversible.",
+    "rationale": "A poisoned producer or runaway consumer on one stream must be stoppable without stopping the cluster, and deleting the stream would destroy the evidence of what went wrong.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabricctl / fabric-inspect row ('emergency isolation')"}
+    ],
+    "verification": {"method": "integration", "check": "Isolate a partition while producers and consumers are active and assert produce is refused with an isolation error, other partitions are unaffected, retained records are intact, the action is recorded with the operator identity, and lifting isolation restores service."},
+    "policy_flags": [],
+    "secondary_domains": ["SEC", "RES"],
+    "notes": "The raw extraction stated this twice from the same row. v11.6 names the capability without its semantics: 'without deleting retained records' follows from the hash-chained log rule (nothing may edit sealed history) and 'recorded as an attributable operator action' from the house auditability rule; both are readings, not blueprint text. P0 because it is a safety control."
+  },
+  {
+    "id": "FABRIC-029",
+    "domain": "FABRIC",
+    "title": "A latency and throughput benchmark harness runs in CI",
+    "statement": "fabric-bench must measure fabric latency (publish-to-quorum-acknowledgement and publish-to-consume) and throughput per topic class, and must run in CI and in game days so a regression is visible before merge.",
+    "rationale": "The fabric exists partly for performance; without a measured baseline in CI, every design choice about it is an assertion.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-bench / fabric-chaos row"},
+      {"doc": "M", "page": "41", "section": "§30 Build Order — Phase 0 Foundations ('benchmark harness')"}
+    ],
+    "verification": {"method": "benchmark", "check": "The harness runs in CI against a three-broker test cluster, publishes p50/p99/p99.9 publish-to-ack and end-to-end latency and sustained throughput per class, and fails the job when a figure regresses beyond a committed threshold."},
+    "policy_flags": [],
+    "secondary_domains": ["CICD", "OBS"],
+    "notes": "Split from the fabric-bench / fabric-chaos row (the chaos half is FABRIC-030) and from the Phase 0 exit (M p41), which sets P0. v2.1's Fabric SLO row (G p15, 'publish quorum p99') names a figure the harness should publish. MULTI_REGION and NEW_DEPENDENCY, carried by the Phase 0 item, are removed."
+  },
+  {
+    "id": "FABRIC-030",
+    "domain": "FABRIC",
+    "title": "Deterministic fault and partition testing gates fabric adoption",
+    "statement": "fabric-chaos must inject broker, zone and network-partition faults deterministically (reproducible from a seed) in CI and in game days, and application services must not adopt the fabric until its chaos suite passes.",
+    "rationale": "A fault test that cannot be reproduced cannot be debugged, and a fabric adopted before its failure behaviour is proven moves its unknowns into trading.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — fabric-bench / fabric-chaos row ('deterministic fault/partition testing used in CI and game days')"},
+      {"doc": "G", "page": "22", "section": "§26 Recommended Build Order — Phase 2 Rust Fabric MVP ('chaos tests before application adoption')"}
+    ],
+    "verification": {"method": "chaos", "check": "Run the chaos suite twice from the same seed and assert identical fault schedules and outcomes, and assert the adoption gate blocks any application service wiring to the fabric while the suite is red."},
+    "policy_flags": [],
+    "secondary_domains": ["RES", "CICD"],
+    "notes": "Split from the fabric-bench / fabric-chaos row. G p22 is cited on verification for the MVP exit criterion that sets P0 and adds the adoption gate."
+  },
+  {
+    "id": "FABRIC-031",
+    "domain": "FABRIC",
+    "title": "The SDK's producer and consumer APIs are zero-copy friendly",
+    "statement": "fabric-client must offer zero-copy-friendly producer and consumer APIs over Rust-first buffers, so a record is not copied between the caller's buffer, the batch and the socket where the protocol allows.",
+    "rationale": "Copies per record are the dominant cost at P2 market-journal rates; an API shape that forces them cannot be optimised later without breaking callers.",
+    "kind": "nfr",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — Rust SDK row ('Zero-copy-friendly producer/consumer APIs')"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-client ('Rust-first zero-copy buffers')"}
+    ],
+    "verification": {"method": "benchmark", "check": "Benchmark the publish and fetch paths with an allocation and copy counter and assert bytes copied per record stay within the committed budget."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": [],
+    "notes": "Split from the SDK rows of both blueprints. P3: a throughput optimisation with no correctness content; FABRIC-013 carries the typed API. NEW_DEPENDENCY is kept because 'zero-copy buffers' usually means a buffer crate, which would need a record."
+  },
+  {
+    "id": "FABRIC-032",
+    "domain": "FABRIC",
+    "title": "Idempotent producers: sequence numbers make retries duplicate-free",
+    "statement": "Every producer must carry a producer ID and a per-partition sequence number on each record, and the broker must discard a retried record whose sequence it has already appended and refuse an out-of-sequence gap, so producer retries never create duplicates in the log.",
+    "rationale": "Retries are how at-least-once survives a lost acknowledgement; without sequence numbers every retry is a potential duplicate fill in the log.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — Rust SDK row ('idempotent producer sequencing')"},
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Delivery ('idempotent producer IDs/sequence numbers')"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-client ('idempotent producer sequence')"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Delivery ('producer epoch/sequence prevents stale duplicate producers')"}
+    ],
+    "verification": {"method": "property", "check": "Property test: for any interleaving of sends, lost acknowledgements and retries from one producer, the partition log contains each sequence number exactly once and in order."},
+    "policy_flags": [],
+    "secondary_domains": ["LEDGER"],
+    "notes": "Merges the idempotent-producer clauses of both blueprints. Fencing of a stale producer epoch is FABRIC-058; consumer-side deduplication by event ID is FABRIC-042. NEW_DEPENDENCY (from the SDK rows) is removed: sequence numbers need no crate."
+  },
+  {
+    "id": "FABRIC-033",
+    "domain": "FABRIC",
+    "title": "Consumer groups share partitions under metadata-held leases",
+    "statement": "fabric-client must support consumer groups: a topic's partitions are divided among a group's members under consumer leases held by fabric metadata, each partition consumed by at most one member at a time and reassigned when its owner's lease lapses.",
+    "rationale": "Two members consuming one partition apply its records twice and out of order; leases held by the quorum, not by the members, are what prevent it after a pause or partition.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — Rust SDK row ('consumer groups')"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-meta ('consumer leases')"}
+    ],
+    "verification": {"method": "property", "check": "Property test over member joins, leaves and lease expiries: at every instant each partition has at most one owner, and every partition regains an owner within one lease period after its owner leaves."},
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Merges the SDK's consumer groups (stated twice) with fabric-meta's consumer leases. P1: consumer scaling is GCP Phase 6. NEW_DEPENDENCY is removed as inapplicable."
+  },
+  {
+    "id": "FABRIC-034",
+    "domain": "FABRIC",
+    "title": "Consumers subscribe without polling on the caller's thread",
+    "statement": "fabric-client must offer asynchronous (push-style) subscriptions that deliver records to a consumer as they arrive, without the caller polling in a blocking loop.",
+    "rationale": "A consumer that must poll trades latency against wasted fetches; a subscription lets delivery latency follow arrival.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — Rust SDK row ('async subscriptions')"}
+    ],
+    "verification": {"method": "integration", "check": "A subscriber registered on a partition receives each newly appended record within the delivery budget without issuing fetches, and a slow subscriber is paced by flow control (FABRIC-080) rather than blocking the SDK's other subscriptions."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["ARCH"],
+    "notes": "Stated twice in the raw extraction. NEW_DEPENDENCY is kept: 'async' implies an async runtime, which this repository has refused deliberately (blocking I/O with explicit timeouts; ADR 0099 C2 names the class). Until that record exists a blocking subscription on a dedicated thread is the permitted shape and the difference is scored."
+  },
+  {
+    "id": "FABRIC-035",
+    "domain": "FABRIC",
+    "title": "The SDK emits OpenTelemetry signals for every produce and consume",
+    "statement": "fabric-client must provide OpenTelemetry hooks so every produce and consume emits metrics and carries trace context, letting a trace cross a fabric hop.",
+    "rationale": "A trace that stops at the fabric cannot explain a slow decision whose cause sat on the other side of it.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 component table — Rust SDK row ('OpenTelemetry hooks')"},
+      {"doc": "G", "page": "22", "section": "§26 Recommended Build Order — Phase 2 Rust Fabric MVP ('OTel')"}
+    ],
+    "verification": {"method": "integration", "check": "Produce and consume through the SDK with an in-memory telemetry sink and assert the produce and consume counters and latency histograms moved and the consumer's span has the producer's span as parent."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["OBS"],
+    "notes": "Stated twice in the raw extraction; G p22 is cited on verification for the MVP exit criterion. ADR 0026 rejected an OpenTelemetry crate; the hooks must be met through the export path ADR 0028 and ADR 0032 settled on, or through a new record. The flag marks that decision rather than presuming a crate."
+  },
+  {
+    "id": "FABRIC-036",
+    "domain": "FABRIC",
+    "title": "Durable records use QUIC streams; datagrams only for lossy telemetry",
+    "statement": "Durable records must travel on long-lived, reliable QUIC streams; unreliable QUIC datagrams may be used only for topic classes explicitly declared lossy telemetry.",
+    "rationale": "A datagram can be lost without either side knowing; a control or outcome record sent that way has no durability guarantee whatever its topic says.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Transport ('long-lived streams for durable records and QUIC datagrams only for explicitly lossy telemetry classes')"}
+    ],
+    "verification": {"method": "integration", "check": "Assert the SDK refuses to open a datagram channel for any topic whose class is not declared lossy telemetry, and that P0 to P2 records are only ever written to streams."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": [],
+    "notes": "Stated twice in the raw extraction (the transport bullet and a split of it). NEW_DEPENDENCY is kept with FABRIC-009's transport class."
+  },
+  {
+    "id": "FABRIC-037",
+    "domain": "FABRIC",
+    "title": "Records and segments carry CRC and content-hash integrity protection",
+    "statement": "Records and segments must carry CRC protection and BLAKE3/content hashes, verified on append, replication, fetch and archival; a broker, replica, consumer or archiver that finds a mismatch must refuse the record or segment rather than pass it on or repair it silently.",
+    "rationale": "A flipped bit in a fill record replays as a different fill forever. Integrity checked at every hop localises corruption to the hop that caused it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Wire format ('BLAKE3/content hashes and CRC protection on records/segments')"},
+      {"doc": "H", "page": "L196-221", "section": "§03 Native Rust Event & Control Fabric — Segment Store node ('checksums')"}
+    ],
+    "verification": {"method": "property", "check": "Property test: flipping any single bit of a record or segment, at rest or in flight, is detected at the next verification point and the corrupted unit is refused, while unmodified units always verify."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["SEC", "TICK"],
+    "notes": "Split from the wire-format bullet (whose Protobuf half is FABRIC-022 and whose memory-format half is FABRIC-038), merged with the diagram's segment checksums. v2.1 §7.1's frame header (G p8) names CRC32C; it is noted here rather than cited because the raw extraction left the frame header to the contract domain. NEW_DEPENDENCY is kept for BLAKE3: ADR 0002 authorises in-tree SHA-256 and HMAC by name, not BLAKE3 (ADR 0099 C2), so a SHA-256 content hash would satisfy 'content hashes' without a record and BLAKE3 specifically would not."
+  },
+  {
+    "id": "FABRIC-038",
+    "domain": "FABRIC",
+    "title": "Unversioned in-memory layouts never reach the network",
+    "statement": "Hot in-process structures may use Rust-native zero-copy layouts, but only the versioned wire format may cross the network; no unversioned memory layout may be written to a socket.",
+    "rationale": "A raw struct layout on the wire is a schema nobody registered; it changes with a compiler or field reorder and breaks every peer and every replay.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Wire format ('never leak unversioned memory formats onto the network')"}
+    ],
+    "verification": {"method": "acceptance", "check": "An architecture test asserts every type written by the SDK's send path and the brokers' replication and mirror paths is a generated schema type encoded by the wire codec, with no raw byte reinterpretation of in-memory structs on those paths."},
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT"],
+    "notes": "Stated twice in the raw extraction. NEW_DEPENDENCY is removed as inapplicable."
+  },
+  {
+    "id": "FABRIC-039",
+    "domain": "FABRIC",
+    "title": "Order is strict within a partition and never promised globally",
+    "statement": "The fabric must deliver records in strict append order within each partition and must not promise, expose or imply a total order across partitions or regions; a consumer needing cross-partition order must derive it from record metadata (FABRIC-040).",
+    "rationale": "A total global order is either false or a global quorum. Promising it invites consumers to depend on an ordering the system cannot keep.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Ordering ('strict per-partition order. No false promise of a total global order')"}
+    ],
+    "verification": {"method": "property", "check": "Property test over concurrent producers and consumer restarts: each consumer observes each partition's records in exactly offset order; inspection of the SDK API finds no call that claims a cross-partition order."},
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from the ordering bullet, whose metadata half is FABRIC-040. MULTI_REGION is removed: the property holds within one region."
+  },
+  {
+    "id": "FABRIC-040",
+    "domain": "FABRIC",
+    "title": "Every record carries time, placement, epoch and hybrid-logical-clock metadata",
+    "statement": "Every fabric record must carry its source event time, receive time, region, partition, leader epoch, offset and hybrid logical clock (HLC) timestamp.",
+    "rationale": "Without the source/receive pair a replay cannot say what was knowable when; without leader epoch and offset it cannot say which leader wrote a record; without an HLC it cannot order records across partitions honestly.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Ordering ('Every record carries source event time, receive time, region, partition, leader epoch, offset and hybrid logical clock metadata')"},
+      {"doc": "M", "page": "38", "section": "§27 Core Contracts Between Brains — FabricEnvelope"}
+    ],
+    "verification": {"method": "property", "check": "Property test: every record read back from any partition has all seven fields populated, offsets are dense per partition, leader epoch never decreases along a partition, and HLC timestamps never decrease along a partition across leader changes."},
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT", "TICK"],
+    "notes": "Stated twice in the raw extraction. M p38's FabricEnvelope restates these fields among others (producer ID/sequence, priority/QoS, trace ID, idempotency key, payload hash, auth context) and is cited on verification; the envelope as a whole is left to the contract domain. v2.1's Rule 3 (G p3) and frame header (G p8) give overlapping field lists. The source/receive pair is what the data domain's bitemporal rule needs. MULTI_REGION is removed."
+  },
+  {
+    "id": "FABRIC-041",
+    "domain": "FABRIC",
+    "title": "Durable streams deliver at least once; at-most-once is for telemetry only",
+    "statement": "Delivery on every durable stream must be at-least-once to consumers by default, and at-most-once delivery may be configured only for telemetry classes.",
+    "rationale": "At-most-once loses records by design. That is acceptable for a debug trace and never for a fill or a risk envelope.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Delivery ('at-most-once allowed only for telemetry; at-least-once is default for durable streams')"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Delivery ('at-least-once to consumers')"}
+    ],
+    "verification": {"method": "property", "check": "Property test over crashes of producer, leader and consumer at arbitrary points: every quorum-acknowledged record on a durable topic is delivered to each consumer group at least once; and topic creation refuses an at-most-once profile on any non-telemetry class."},
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Merges v11.6's delivery bullet (stated twice in the raw extraction) with v2.1 §7.1's at-least-once clause."
+  },
+  {
+    "id": "FABRIC-042",
+    "domain": "FABRIC",
+    "title": "Records carry deterministic event IDs and consumers deduplicate on them",
+    "statement": "Every record must carry a deterministic event ID, stable across retries of the same source event, and consumers must deduplicate redelivered records by event ID together with partition sequence and fencing epoch.",
+    "rationale": "At-least-once delivery means duplicates are normal; a deterministic ID is what lets every consumer recognise one without shared state.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Delivery ('deterministic event IDs')"},
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 4 ('Consumers use event IDs, partition sequence and fencing epochs')"}
+    ],
+    "verification": {"method": "property", "check": "Property test: re-producing the same source event yields the same event ID, and a consumer fed any sequence with duplicates and replays applies each event ID's effect exactly once."},
+    "policy_flags": [],
+    "secondary_domains": ["LEDGER"],
+    "notes": "Merges v11.6's deterministic event IDs with v2.1 Rule 4's consumer mechanism (two raw items). Financial writers' transactional uniqueness is FABRIC-044."
+  },
+  {
+    "id": "FABRIC-043",
+    "domain": "FABRIC",
+    "title": "No global exactly-once claim: effectively-once comes from idempotency and fencing",
+    "statement": "Neither the fabric nor any documentation or API built on it may claim global exactly-once delivery; effectively-once processing must be achieved only as at-least-once transport plus idempotent producers, deterministic event IDs, idempotent state transitions and sinks, and fencing.",
+    "rationale": "A claimed exactly-once guarantee makes consumers skip deduplication, and the first lost acknowledgement then books a fill twice.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Delivery ('provide effectively-once processing with idempotent sinks')"},
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 4 ('Do not claim magical global exactly-once')"},
+      {"doc": "G", "page": "23", "section": "§28 Explicit Anti-Patterns — 'Claiming global exactly-once delivery'"}
+    ],
+    "verification": {"method": "inspection", "check": "Inspection of the SDK, broker and sink documentation and API names finds no exactly-once delivery claim, and the effectively-once property is instead proven by the tests of FABRIC-042 and FABRIC-044."},
+    "policy_flags": [],
+    "secondary_domains": ["LEDGER"],
+    "notes": "Merges v2.1 Rule 4 (stated twice in the raw extraction), the §28 anti-pattern and v11.6's 'effectively-once'. NEW_DEPENDENCY (from the anti-pattern) is removed as inapplicable. A mechanical documentation check would need to match the delimited claim, not the substring (house testing rule), which is why the method is inspection."
+  },
+  {
+    "id": "FABRIC-044",
+    "domain": "FABRIC",
+    "title": "Financial outcome consumers commit each event once in effect, transactionally",
+    "statement": "Every consumer that writes financial state — the ledger writer/sink above all — must be idempotent, enforcing uniqueness of the event ID transactionally in the same commit as the state change, so a financial outcome delivered any number of times is committed exactly once in effect.",
+    "rationale": "The ledger is where a duplicate becomes money. Uniqueness enforced outside the transaction leaves a window in which a crash commits the change without the guard.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Delivery ('idempotent sinks')"},
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 4 ('financial writers enforce uniqueness transactionally')"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Delivery ('Financial consumers are idempotent')"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 4 ('commit financial outcomes idempotently to Spanner')"}
+    ],
+    "verification": {"method": "property", "check": "Property test: feed the ledger sink every P1 record of a session with arbitrary duplication, partition replays and crashes between the state write and the offset commit, and assert the resulting positions and cash equal those from a single clean delivery."},
+    "policy_flags": ["MANAGED_SERVICE", "NEW_DEPENDENCY"],
+    "secondary_domains": ["LEDGER"],
+    "notes": "Merges the financial-writer clauses of Rule 4, §7.1 Delivery, v11.6's idempotent sinks and §21.1 step 4. G p23 §27's 'committed exactly once in effect to Spanner' is the ledger domain's acceptance criterion and is not cited here. MANAGED_SERVICE and NEW_DEPENDENCY come from the Spanner step and are kept for that target; ADR 0099 C4 leaves the ledger store to its own record, and this invariant holds for whatever store that record picks."
+  },
+  {
+    "id": "FABRIC-045",
+    "domain": "FABRIC",
+    "title": "P0 Critical Control topics: RF3 quorum, persistent WAL, long retention and archive",
+    "statement": "Topics of class P0 Critical Control — risk envelopes, model activation, kill/fence commands and capital grants — must acknowledge a write only after an RF3 three-zone quorum has persisted it, with control metadata and the log held in a persistent write-ahead log, and must be retained long-term with every sealed segment archived to Cloud Storage.",
+    "rationale": "These records decide what a cell may do. Losing one leaves a cell trading on an envelope that was withdrawn, and not keeping them makes 'what was the cell allowed to do' unanswerable afterwards.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Durability classes ('Control uses three-zone quorum plus persistent metadata/WAL')"},
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 6 ('Control and outcomes get quorum durability')"},
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P0 Critical Control row"}
+    ],
+    "verification": {"method": "chaos", "check": "Write to a P0 topic while killing one zone at random points and assert no acknowledged record is lost, no acknowledgement is issued with fewer than two replicas persisted, and every sealed segment appears in the archive."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["RISK", "CAPITAL"],
+    "notes": "Merges v11.6's control durability class and Rule 6's control clause (each stated twice in the raw extraction) with the §7.2 P0 row. The row's 'signed payload' is FABRIC-081, its 'producer fencing' FABRIC-058 and its 'never intentionally dropped' FABRIC-050; NEW_DEPENDENCY moves with the signature to FABRIC-081. 'Long retention' is not quantified by either blueprint, so the topic's declared retention (FABRIC-057) must state it. ADR 0089 already makes every event-log topic declare a retention class; the kill-switch engagement/release pair it fixed are P0 records in this taxonomy."
+  },
+  {
+    "id": "FABRIC-046",
+    "domain": "FABRIC",
+    "title": "P1 Financial Outcomes topics: RF3 quorum, idempotent IDs, long hot retention and immutable archive",
+    "statement": "Topics of class P1 Financial Outcomes — fills, cancels, position deltas and settlement events — must acknowledge only on an RF3 quorum, carry idempotent (deterministic) event IDs, keep long hot retention and archive every sealed segment immutably.",
+    "rationale": "Outcomes must outlive a ledger outage in the fabric (v2.1 §22: outcome partitions accumulate durably while Spanner is down) and must remain provable afterwards from an archive nobody can edit.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Durability classes ('financial outcomes use quorum replication and archival')"},
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 6"},
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P1 Financial Outcomes row"}
+    ],
+    "verification": {"method": "chaos", "check": "Kill the P1 partition leader and one follower's zone during a burst of fills and assert every acknowledged fill is readable from the new leader and from the archive with its original event ID."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER", "EXEC"],
+    "notes": "Merges v11.6's financial-outcome durability class and Rule 6 (each stated twice in the raw extraction) with the §7.2 P1 row. The row's 'ledger sink retries indefinitely' is FABRIC-082. MANAGED_SERVICE is kept for the archive's Cloud Storage target."
+  },
+  {
+    "id": "FABRIC-047",
+    "domain": "FABRIC",
+    "title": "P2 Market Journal topics: RF3 regional quorum, batch producers, tiered hot retention, GCS archive",
+    "statement": "Topics of class P2 Market Journal — ticks, books, features and decision traces — must replicate on an RF3 regional quorum with batching producers as high-throughput replicated segments, keep hours to days of hot retention set by instrument tier, and archive sealed segments to Cloud Storage.",
+    "rationale": "The market journal is the platform's largest stream and the input to every replay; it needs throughput-shaped replication and a tiered hot window rather than control-grade retention on every tick.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Durability classes ('market journals use high-throughput replicated segments')"},
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P2 Market Journal row"}
+    ],
+    "verification": {"method": "integration", "check": "Publish a recorded tick session through batching producers and assert each instrument tier's hot window matches its declared retention, older segments are present only in the archive, and a replay from archive plus hot log reproduces the session."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["TICK", "DATA"],
+    "notes": "Merges v11.6's market-journal durability class (stated twice in the raw extraction) with the §7.2 P2 row. The row's 'throttles mirror before local ingest' is FABRIC-083. P0 because canonical tick capture and deterministic replay are mandatory in master Phase 1."
+  },
+  {
+    "id": "FABRIC-048",
+    "domain": "FABRIC",
+    "title": "P4 Telemetry topics: best effort or RF2, sampled or dropped oldest-first under pressure",
+    "statement": "Topics of class P4 Telemetry — metrics-derived events and debug traces — may be acknowledged best-effort or on RF2, and under pressure must be sampled or drop their oldest records first, with every drop counted.",
+    "rationale": "Telemetry is the pressure valve: it is the class that gives way so control and outcomes do not. Dropping oldest-first keeps the most current picture, and counting drops keeps the loss visible.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Durability classes ('telemetry can be sampled/dropped under pressure')"},
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 6 ('telemetry can be sampled/dropped')"},
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P4 Telemetry row"}
+    ],
+    "verification": {"method": "integration", "check": "Saturate a broker with P4 traffic beyond its quota and assert P4 records are sampled or dropped oldest-first, the drops are counted, and no P0 to P2 record on the same broker is delayed beyond its budget."},
+    "policy_flags": [],
+    "secondary_domains": ["OBS"],
+    "notes": "Merges v11.6's telemetry durability class and Rule 6's telemetry clause (each stated twice in the raw extraction) with the §7.2 P4 row. The row's 'direct OTel remains primary health path' is FABRIC-073, which carries its NEW_DEPENDENCY. 'Every drop counted' is the house observability rule, not blueprint text. P0 because telemetry shedding is what protects the control path (FABRIC-051)."
+  },
+  {
+    "id": "FABRIC-049",
+    "domain": "FABRIC",
+    "title": "Every stream has explicit byte and message quotas, lag limits and an overload policy",
+    "statement": "Every stream must be configured with explicit byte and message quotas (including per-producer quotas), consumer lag limits and a declared overload policy, and the brokers must enforce them.",
+    "rationale": "A stream with no quota lets one runaway producer consume the broker every other stream depends on; an undeclared overload policy means the broker decides what to lose.",
+    "kind": "nfr",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Backpressure ('every stream has explicit byte/message quotas, lag limits and overload policy')"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Backpressure ('per-producer quotas')"}
+    ],
+    "verification": {"method": "integration", "check": "Exceed a producer's byte quota, then its message quota, and let a consumer fall past its lag limit, and assert each triggers the stream's declared overload action, is counted, and leaves other streams unaffected."},
+    "policy_flags": [],
+    "secondary_domains": ["RES"],
+    "notes": "Split from v11.6's backpressure bullet, merged with v2.1's per-producer quotas. v2.1's bounded queues are FABRIC-063, its credit/window flow control FABRIC-080 and its topic priority FABRIC-051."
+  },
+  {
+    "id": "FABRIC-050",
+    "domain": "FABRIC",
+    "title": "Critical control and outcome records are never silently dropped",
+    "statement": "Under backpressure or overload, P0 control and P1 outcome records must never be silently dropped: when the fabric cannot accept one, the producer must receive an explicit refusal it can act on, and nothing already acknowledged may be discarded.",
+    "rationale": "A silently dropped kill command or fill is worse than a refused one, because the producer believes it was delivered and nothing downstream knows to look for it.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Backpressure ('Critical control/outcomes cannot be silently dropped')"},
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P0 Critical Control row ('never intentionally dropped')"}
+    ],
+    "verification": {"method": "chaos", "check": "Drive a broker into overload with mixed traffic and, by reconciling producer-side send logs against the partitions, assert every P0 and P1 send either appears in the log or received an explicit refusal — none vanished."},
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "LEDGER"],
+    "notes": "Merges v11.6's backpressure clause (stated twice in the raw extraction) with the P0 row's 'never intentionally dropped'. MANAGED_SERVICE and NEW_DEPENDENCY, carried by the P0 row, are removed as inapplicable to this clause."
+  },
+  {
+    "id": "FABRIC-051",
+    "domain": "FABRIC",
+    "title": "Telemetry and ambient signals are shed before control or outcomes are starved",
+    "statement": "Topic priority must order shedding: under pressure, P4 telemetry and low-value ambient signals must be sampled or shed before any P0 control or P1 outcome traffic is delayed or starved.",
+    "rationale": "Starvation is loss by another name: a risk envelope that arrives after the move it was meant to constrain did not arrive.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Backpressure ('telemetry and low-value ambient signals can be sampled or shed')"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Backpressure ('Low-priority telemetry is sampled/dropped before control/outcome traffic is starved')"}
+    ],
+    "verification": {"method": "chaos", "check": "Freeze a sink and flood P3 and P4 topics (v2.1 §25's broker-backpressure game day, G p22) and assert P0 and P1 publish-to-acknowledgement latency stays within budget while P4 sampling engages first."},
+    "policy_flags": [],
+    "secondary_domains": ["OBS", "AMBIENT"],
+    "notes": "Merges v11.6's shedding clause with v2.1 §7.1's topic-priority clause (stated twice in the raw extraction). FABRIC-050 is the no-silent-loss half; this is the no-starvation half, and each is testable alone."
+  },
+  {
+    "id": "FABRIC-052",
+    "domain": "FABRIC",
+    "title": "Cross-region mirror traffic stays on private networking",
+    "statement": "Cross-region mirror traffic must travel only over Google private networking, with the mirror prefixes explicitly exported through the latency NCC hub and no other cross-region route.",
+    "rationale": "Control and outcomes crossing the public internet are exposed and their latency unbounded; exporting only the mirror prefixes keeps the rest of each fabric network unreachable from other regions.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "36", "section": "§26.1 Protocol and semantics — Cross-region behavior ('over Google private networking')"},
+      {"doc": "G", "page": "8", "section": "§7.3 Fabric placement on GCP — IP identity ('Cross-region mirror prefixes are explicitly exported through the latency NCC hub')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "terraform plan shows the mirror prefixes as the only fabric prefixes exported to the latency NCC hub, and no public route or external IP on any mirror endpoint."},
+    "policy_flags": ["MULTI_REGION", "MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "SEC"],
+    "notes": "Split from v11.6's cross-region bullet (whose non-blocking half is FABRIC-021) and v2.1's IP-identity bullet (whose internal-address half is FABRIC-089). P1 with multi-region (master Phase 4, GCP Phase 7)."
+  },
+  {
+    "id": "FABRIC-053",
+    "domain": "FABRIC",
+    "title": "The fabric carries package announcements, never the packages",
+    "statement": "For model and policy packages the fabric must carry only version, digest, availability and activation messages; the packages themselves must be stored as immutable signed artifacts in object/artifact storage and never carried on the fabric.",
+    "rationale": "Large artifacts on the fabric would compete with control traffic for quota and replication, and would make the log, rather than signed storage, the place a package's integrity is established.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36-37", "section": "§26.1 Hot-path contract — 'the fabric carries only version/digest/availability/activation messages'"}
+    ],
+    "verification": {"method": "acceptance", "check": "An acceptance test asserts every schema registered for a package topic holds only version, digest, availability and activation fields within a bounded record size, and a node activates a package only after fetching the artifact from storage and verifying its digest and signature."},
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "CICD", "SEC"],
+    "notes": "From v11.6's hot-path contract. Who may publish activations is FABRIC-111. P0 because Reflex runs signed packages from master Phase 1."
+  },
+  {
+    "id": "FABRIC-054",
+    "domain": "FABRIC",
+    "title": "When the fabric is unavailable a node runs on its last valid package within a bounded local journal",
+    "statement": "If its regional fabric is unavailable (including loss of quorum or of the whole regional fabric), a Reflex Node must continue under its last valid cached signed control package and its local journal, stop accepting new control changes, queue durable publications locally within a bounded disk budget, and degrade as policy defines before the journal is exhausted and no later than the package's TTL or the point its risk policy requires.",
+    "rationale": "Stopping on a fabric outage would put the fabric back on the hot path by another route; carrying on forever would trade on a stale envelope and fill the disk. A bounded, policy-driven degradation is the middle the blueprint asks for.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "36-37", "section": "§26.1 Hot-path contract — 'a node continues under its last valid package and local journal until the package TTL or risk policy requires degradation'"},
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Regional Event Fabric quorum lost row"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist — 'cached signed control packages'"},
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Entire Fabric region row ('Reflex can continue under cached policy')"}
+    ],
+    "verification": {"method": "chaos", "check": "Cut a paper Reflex cell off from its fabric and assert it keeps deciding under its cached package, journals locally, refuses new control, degrades on the configured trigger before its journal budget is reached and halts new exposure at package TTL; restore the fabric and assert the spool drains in order with no duplicates."},
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "RES", "RISK"],
+    "notes": "Merges the hot-path contract's fallback, the §31 cached-package clause (split from the item whose other halves are FABRIC-002 and FABRIC-003) and the region-loss row's Reflex clause. M p40's quorum-lost row is cited on verification and supplies 'new control changes stop' and 'bounded disk budgets'; v2.1 §22's Fabric row (G p21) says the same and is left to the resilience domain. Fail-closed reading: an expired package narrows or halts; it is never extended. MULTI_REGION and NEW_DEPENDENCY, carried by the region-loss item, are removed."
+  },
+  {
+    "id": "FABRIC-055",
+    "domain": "FABRIC",
+    "title": "Broker loss moves leadership to an in-sync follower; producers and consumers carry on",
+    "statement": "On the loss of a broker, leadership of each partition it led must move to an in-sync follower in another zone; producers must refresh the partition map from metadata and retry by producer epoch, consumers must resume from their committed offsets, and Reflex execution must not wait for the failover.",
+    "rationale": "A broker will be lost; what matters is that leadership moves to a replica that has every acknowledged record, and that clients follow it without duplicates or gaps.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Regional Event Fabric broker loss row"},
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Fabric broker row"}
+    ],
+    "verification": {"method": "chaos", "check": "Kill a broker leading partitions of every class during steady produce and consume and assert new leaders are in-sync followers in other zones, producers resume after refreshing the map with no duplicates and no loss of acknowledged records, and consumers continue from committed offsets."},
+    "policy_flags": [],
+    "secondary_domains": ["RES"],
+    "notes": "M p40 is cited on verification and is the more specific wording ('in-sync replica in another zone', 'retry by epoch', 'resume from committed offsets'). v2.1's recovery half ('replace broker and rebalance') is FABRIC-098 and its 'quorum-acked records preserved' FABRIC-077. NEW_DEPENDENCY is removed as inapplicable."
+  },
+  {
+    "id": "FABRIC-056",
+    "domain": "FABRIC",
+    "title": "Mirror lag has an independent, visible, bounded budget",
+    "statement": "Each cross-region mirror must run to its own lag budget — its lag never back-pressures local commit or other mirrors — and its lag must be measured, visible and bounded, with a breach of the budget raised rather than absorbed.",
+    "rationale": "A mirror that lags silently makes other regions act on stale control while believing it current; a budget turns lag into an alarm.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Cross-region fabric mirror down row ('Mirror lag is visible and bounded')"},
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-mirror ('independent lag budget')"}
+    ],
+    "verification": {"method": "chaos", "check": "Throttle one mirror link and assert its lag metric rises and trips its budget alarm while local commit latency and the other mirror's lag are unchanged."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["OBS", "RES"],
+    "notes": "Split from the fabric-mirror row (stated twice in the raw extraction); M p40 is cited on verification. Its consumer half ('Global consumers mark remote knowledge stale and replay ... when connectivity returns') is left to the resilience domain. NEW_DEPENDENCY is removed as inapplicable."
+  },
+  {
+    "id": "FABRIC-057",
+    "domain": "FABRIC",
+    "title": "Every stream declares its class and semantics; nothing rests on broker defaults",
+    "statement": "Every durable stream must be created with an explicit QoS class (P0 to P4) and declared partitioning key, ordering, retention, replication, overload and mirroring semantics, and the fabric must refuse to create a stream that leaves any of them to an unspecified broker default; durability is set per topic by its class, never globally.",
+    "rationale": "A default is a decision nobody made. A stream whose retention or overload behaviour is whatever the broker ships with will lose the wrong records on the worst day.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist — 'Every durable event stream declares partitioning, ordering, retention, replication, overload and mirroring semantics'"},
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 6 ('Durability is per topic')"},
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes"}
+    ],
+    "verification": {"method": "unit", "check": "Topic creation with any of the seven declarations missing is refused with an error naming the missing one; with all present it succeeds and the stored definition round-trips every declared value."},
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT"],
+    "notes": "Merges the §31 checklist item with Rule 6's 'durability is per topic' (the rule's per-class consequences are split into FABRIC-045 to FABRIC-048 and FABRIC-059). ADR 0089 already makes every event-log topic declare a retention class, which is one of the declarations required here, on the log the repository has."
+  },
+  {
+    "id": "FABRIC-058",
+    "domain": "FABRIC",
+    "title": "Producer fencing: a stale producer epoch is refused",
+    "statement": "Fabric metadata must assign each producer an epoch, and every broker must refuse writes from a producer whose epoch is older than the current one for its producer ID, so a zombie or superseded producer cannot append after its successor has started; P0 control topics must require producer fencing.",
+    "rationale": "A paused process that wakes and resumes writing is how a superseded risk envelope or a withdrawn capital grant comes back. Fencing makes the successor's first write the predecessor's last.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 4 ('fencing epochs')"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Delivery ('producer epoch/sequence prevents stale duplicate producers')"},
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P0 Critical Control row ('producer fencing')"},
+      {"doc": "G", "page": "23", "section": "§28 Explicit Anti-Patterns — 'idempotent state transitions and fencing'"},
+      {"doc": "H", "page": "L202", "section": "VIEWS.fabric — node 'f_meta' ('producer fencing')"},
+      {"doc": "H", "page": "L218-221", "section": "§03 Native Rust Event & Control Fabric — Meta → Broker A/B/C control edges"}
+    ],
+    "verification": {"method": "property", "check": "Property test: for any schedule in which producer instance A is superseded by B for the same producer ID, including A resuming after a pause, no record from A under the old epoch is appended after B's first append."},
+    "policy_flags": [],
+    "secondary_domains": ["SEC", "REFLEX"],
+    "notes": "Merges two diagram items (H L202 and the Meta authority edges) with the fencing clauses of four v2.1 passages. v11.6 has no explicit producer fencing; its nearest is 'Producers retry by epoch' (M p40, FABRIC-055). MANAGED_SERVICE and NEW_DEPENDENCY, carried by the P0 row and the anti-pattern, are removed as inapplicable."
+  },
+  {
+    "id": "FABRIC-059",
+    "domain": "FABRIC",
+    "title": "P3 Intelligence/Research topics: configurable RF2/3, throughput batching, replayable backlog",
+    "statement": "Topics of class P3 Intelligence/Research — evidence deltas, episodes and training candidates — must be replicated RF2 or RF3 by configuration, batched for throughput, replayable, allowed to accumulate backlog within their declared retention rather than shed, and served by consumers that scale out.",
+    "rationale": "Research streams are large and tolerant of delay but not of loss: an episode dropped under pressure is a lesson the platform never learns.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 6 ('research streams optimize throughput')"},
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P3 Intelligence/Research row"}
+    ],
+    "verification": {"method": "integration", "check": "Stall P3 consumers for a sustained interval and assert no P3 record is shed, the backlog stays within the topic's retention, and adding consumers drains it."},
+    "policy_flags": [],
+    "secondary_domains": ["EVID", "WORLD", "MODEL"],
+    "notes": "Merges Rule 6's research clause (stated twice in the raw extraction) with the §7.2 P3 row. 'Backlog allowed' is read within the house bounded-retention rule: consumers may lag within the declared retention, not without limit. P1 because the cognitive data loop is master Phase 2."
+  },
+  {
+    "id": "FABRIC-060",
+    "domain": "FABRIC",
+    "title": "Each region's fabric lives in its own project: VPC, broker VMs, journal disks, archiver identities",
+    "statement": "Each region's fabric must be provisioned in a dedicated prod/fabric-<region> project holding the fabric VPC, broker VMs, journal disks and archiver service identities, separate from the execution (Reflex) and services projects, so that a messaging failure or misconfiguration cannot directly reconfigure trading compute.",
+    "rationale": "v2.1's stated reason: messaging failure cannot directly reconfigure trading compute. A project boundary is an IAM boundary, which a shared project is not.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — prod/fabric-<region> row"}
+    ],
+    "verification": {"method": "infra-plan", "check": "terraform plan shows one fabric project per region containing the fabric VPC, broker VMs, journal disks and archiver identities, and no IAM grant giving a fabric identity any role on that region's execution project."},
+    "policy_flags": [],
+    "secondary_domains": ["GCP", "SEC"],
+    "notes": "P0 because the project model is GCP Phase 0 (org/folders/projects). ADR 0099 C8 governs when any fabric VM exists. The per-region Fabric VPC is also named in §3 (G p3)."
+  },
+  {
+    "id": "FABRIC-061",
+    "domain": "FABRIC",
+    "title": "The fabric implements only the semantics the platform needs, each proven by fault or property tests",
+    "statement": "The fabric must implement only the semantics the platform requires — it is not a feature-for-feature Kafka clone — and each semantic guarantee it offers must be proven by a fault-injection or property test before anything relies on it.",
+    "rationale": "Every guarantee copied without need is surface to maintain and a guarantee someone will eventually depend on without its having been proven.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "7", "section": "§7 Algorik Rust Event & Control Fabric — introduction ('not a clone of Kafka feature-for-feature. It implements only the semantics the platform needs')"},
+      {"doc": "G", "page": "23", "section": "§28 Explicit Anti-Patterns — 'Rebuilding Kafka semantics blindly'"}
+    ],
+    "verification": {"method": "inspection", "check": "Inspection maps every guarantee in the fabric's specification (ordering, delivery, durability per class, fencing, backpressure, mirroring) to at least one named property or chaos test that has been mutation-verified; a guarantee without one fails review."},
+    "policy_flags": [],
+    "secondary_domains": ["ARCH"],
+    "notes": "G p7's introduction is cited on verification; it states the same rule as the §28 anti-pattern. The mutation clause is the house testing rule. NEW_DEPENDENCY (from the anti-pattern) is removed as inapplicable."
+  },
+  {
+    "id": "FABRIC-062",
+    "domain": "FABRIC",
+    "title": "fabricd is directed onto the Tokio async runtime",
+    "statement": "fabricd must be built on an async runtime, which v2.1's implementation direction names as Tokio.",
+    "rationale": "v2.1 chooses an async runtime for a broker holding many concurrent sessions; the choice decides the shape of every broker and SDK API, so it has to be settled before either is written.",
+    "kind": "nfr",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabricd ('Tokio async runtime')"}
+    ],
+    "verification": {"method": "inspection", "check": "Inspection of the dependency record admitting an async runtime and of fabricd's crate: the runtime is the recorded one and no other executor is present."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["ARCH"],
+    "notes": "Stated twice in the raw extraction. Conflicts with standing decisions: the workspace has no async runtime by choice (blocking I/O with explicit timeouts) and permits serde and serde_json only (ADR 0002, ADR 0009). ADR 0099 C2 names this class; until its record exists the broker is built on blocking I/O with timeouts and this requirement is scored blocked rather than quietly substituted. It is an implementation direction, not a correctness property, and is P0 only because the broker is a GCP Phase 2 deliverable and the choice must be settled first."
+  },
+  {
+    "id": "FABRIC-063",
+    "domain": "FABRIC",
+    "title": "Broker memory is bounded: pooled buffers and bounded queues",
+    "statement": "fabricd must allocate from bounded memory pools and hold every in-flight queue to a fixed bound, so overload produces backpressure or refusal rather than unbounded memory growth.",
+    "rationale": "A broker that absorbs overload in memory fails all at once, taking every stream on it down together, which is the failure backpressure exists to prevent.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabricd ('bounded memory pools')"},
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Backpressure ('bounded queues')"}
+    ],
+    "verification": {"method": "chaos", "check": "Freeze a sink and fill consumer lag (v2.1 §25's broker-backpressure game day, G p22) and assert broker resident memory stays under its configured ceiling throughout."},
+    "policy_flags": [],
+    "secondary_domains": ["RES"],
+    "notes": "Split from the fabricd row and the §7.1 backpressure bullet. Bounded working sets are a standing house rule; this is that rule for the broker. NEW_DEPENDENCY (from the fabricd row) is removed as inapplicable."
+  },
+  {
+    "id": "FABRIC-064",
+    "domain": "FABRIC",
+    "title": "Journal I/O mode is chosen by benchmark",
+    "statement": "Whether fabricd uses direct or buffered I/O for its journal must be decided by benchmark on the target disks, with the choice and its measurement recorded.",
+    "rationale": "The right I/O mode depends on the disk and the workload; choosing it by assumption leaves throughput or tail latency on the table in a way nobody can see.",
+    "kind": "nfr",
+    "priority": "P3",
+    "sources": [
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabricd ('direct/buffered I/O chosen by benchmark')"}
+    ],
+    "verification": {"method": "benchmark", "check": "fabric-bench runs append and fetch workloads under both I/O modes on the target disk type, and the recorded choice matches the better measured p99 at the required throughput."},
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from the fabricd row. P3: an optimisation."
+  },
+  {
+    "id": "FABRIC-065",
+    "domain": "FABRIC",
+    "title": "Metadata is kept separate from the data log",
+    "statement": "Fabric metadata (membership, partition maps, epochs, leases, quotas, ACLs) must live in the metadata quorum's own replicated log, separate from partition data logs.",
+    "rationale": "Metadata sharing a log with data would queue a leader election behind a burst of ticks and lose control of the cluster exactly when data pressure is highest.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-meta ('metadata separated from data log')"}
+    ],
+    "verification": {"method": "integration", "check": "With a data partition's disk full, assert metadata operations (leader election, ACL change) still commit; and inspection shows no metadata record type in any partition log."},
+    "policy_flags": [],
+    "secondary_domains": ["RES"],
+    "notes": "Split from the fabric-meta row (stated twice in the raw extraction). NEW_DEPENDENCY is removed as inapplicable."
+  },
+  {
+    "id": "FABRIC-066",
+    "domain": "FABRIC",
+    "title": "Producers batch records for throughput",
+    "statement": "fabric-client must batch records per partition in the background of the caller, within a bounded batch size and a bounded linger time.",
+    "rationale": "Per-record round trips cannot carry P2 market-journal rates; unbounded batching would turn throughput into latency without limit.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-client ('async batching')"}
+    ],
+    "verification": {"method": "benchmark", "check": "A throughput benchmark shows batched produce reaching the P2 class's target rate, and a test asserts no batch exceeds its size bound or lingers past its time bound."},
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "'Async' is read as asynchronous to the caller (a bounded background flush), which a blocking-I/O thread can provide without an async runtime; the runtime question is FABRIC-062's, so NEW_DEPENDENCY is removed. P2 Market Journal's batch producers (FABRIC-047) depend on this."
+  },
+  {
+    "id": "FABRIC-067",
+    "domain": "FABRIC",
+    "title": "Producers choose an explicit acknowledgement profile no weaker than their topic's class",
+    "statement": "Every produce must use an explicit acknowledgement profile (for example quorum, leader-only or none), and the SDK must refuse a profile weaker than the topic class's declared durability requires.",
+    "rationale": "Without the refusal a producer could publish P0 control at leader-only acknowledgement and the class's RF3 quorum would be a label.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-client ('explicit ack profile')"}
+    ],
+    "verification": {"method": "unit", "check": "For each class, the SDK accepts the profile the class requires and refuses every weaker one (for example leader-only on P0) with an error naming the class."},
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from the fabric-client row. The refusal of a weaker profile is the house fail-closed reading of 'explicit'. NEW_DEPENDENCY is removed as inapplicable."
+  },
+  {
+    "id": "FABRIC-068",
+    "domain": "FABRIC",
+    "title": "Replay can hydrate from the GCS archive",
+    "statement": "Replay must be able to hydrate partitions and read records from archived segments in Cloud Storage, through their manifests and replay indexes, once those segments are no longer on any broker.",
+    "rationale": "Hot retention is hours to days for the market journal; a backtest or incident review older than that exists only if the archive is readable as a log.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "7", "section": "§7 Rust Fabric component rows — fabric-archive ('replay can hydrate from GCS')"}
+    ],
+    "verification": {"method": "replay", "check": "Let a partition's early segments age out of broker retention, replay the partition from offset zero, and assert the archived portion is read from the archive and the combined stream equals the original."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["TICK"],
+    "notes": "Split from the fabric-archive row (stated twice in the raw extraction). G p23 §27's replay acceptance criterion, not in the raw extraction, depends on it. P0 because replay is master Phase 1 and the archive is in the GCP Phase 2 MVP."
+  },
+  {
+    "id": "FABRIC-069",
+    "domain": "FABRIC",
+    "title": "Sinks isolate destination backpressure from the brokers",
+    "statement": "Fabric sinks (fabric-sink-* for Bigtable, BigQuery, Spanner and GCS) must run as consumers outside the brokers, so a slow or failed destination backs up only that sink's consumer lag and never slows broker ingest or other consumers.",
+    "rationale": "An analytics outage must not become a control outage; a sink inside the broker would pass its destination's backpressure straight onto P0 traffic.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7 Rust Fabric component rows — fabric-sink-* ('Isolate destination backpressure from brokers')"}
+    ],
+    "verification": {"method": "chaos", "check": "Freeze each destination fake in turn and assert broker append latency and other consumers' throughput are unchanged while only the frozen sink's lag grows (v2.1 §25 broker-backpressure game day)."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA", "LEDGER"],
+    "notes": "Split from the fabric-sink-* row (stated twice in the raw extraction); its restart/replay-by-offset clause is FABRIC-016 and isolation between sinks is FABRIC-097. NEW_DEPENDENCY moves to the destination-specific sinks (FABRIC-012, FABRIC-044, FABRIC-107, FABRIC-108)."
+  },
+  {
+    "id": "FABRIC-070",
+    "domain": "FABRIC",
+    "title": "Admin tooling moves partitions, drains leadership, repairs and compacts",
+    "statement": "The fabric's admin/repair/rebalance component must be able, on every broker, to move partitions, drain leadership from a broker, enforce retention, repair under-replicated partitions and perform offline compaction.",
+    "rationale": "Upgrades, scaling and recovery all need leadership to move deliberately; without these operations each becomes a failure injected on purpose.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7 Rust Fabric component rows — fabric-admin ('partition moves, drain')"},
+      {"doc": "H", "page": "L208", "section": "VIEWS.fabric — 03 · Native Rust Event & Control Fabric, node 'f_admin' ('Partition moves, retention, repair, offline compaction')"},
+      {"doc": "H", "page": "L218-221", "section": "§03 Native Rust Event & Control Fabric — Admin → Broker A/B/C control edges"}
+    ],
+    "verification": {"method": "integration", "check": "Under live traffic, move a partition between brokers, drain a broker's leadership and repair a partition with a missing replica, and assert after each that no acknowledged record is lost, RF3 is restored and consumers see no gap."},
+    "policy_flags": [],
+    "secondary_domains": ["RES"],
+    "notes": "Merges two diagram items (the admin node and its edges, which the raw extraction stated twice) with the partition-move and drain half of v2.1's fabric-admin row. The upgrade procedure (FABRIC-093) depends on drain."
+  },
+  {
+    "id": "FABRIC-071",
+    "domain": "FABRIC",
+    "title": "Admin access requires mutual TLS and an IAM-bound identity",
+    "statement": "Every fabric admin API or CLI call must be authenticated with mutual TLS and authorised against an IAM-bound workload or operator identity, and must be refused otherwise.",
+    "rationale": "Admin operations can move leadership, change retention and isolate streams; an unauthenticated admin surface is a way to rewrite what the platform remembers.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7 Rust Fabric component rows — fabric-admin ('mTLS and IAM-bound access')"}
+    ],
+    "verification": {"method": "integration", "check": "Call each admin operation without a client certificate, with a valid certificate but an identity lacking the IAM binding, and with a bound identity, and assert only the last succeeds and every attempt is audited."},
+    "policy_flags": ["NEW_DEPENDENCY", "MANAGED_SERVICE"],
+    "secondary_domains": ["SEC", "GCP"],
+    "notes": "Split from the fabric-admin row. Fabric admin access grants no authority over autonomy or risk limits (risk and execution domain rule). NEW_DEPENDENCY follows FABRIC-009's TLS class; MANAGED_SERVICE is for IAM."
+  },
+  {
+    "id": "FABRIC-072",
+    "domain": "FABRIC",
+    "title": "The fabric exports native OpenTelemetry metrics, traces and health",
+    "statement": "fabric-observe must export broker, metadata and mirror metrics, traces and health natively in OpenTelemetry form, each metric recorded at the seam where its fact becomes known.",
+    "rationale": "Lag, under-replication and quorum latency are the fabric's early warnings; without them the first sign of trouble is a consumer that fell behind.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7 Rust Fabric component rows — fabric-observe ('Native OTel metrics')"},
+      {"doc": "G", "page": "22", "section": "§26 Recommended Build Order — Phase 2 Rust Fabric MVP ('OTel')"}
+    ],
+    "verification": {"method": "integration", "check": "Run a test cluster with an in-memory telemetry receiver and assert every documented fabric metric has at least one data point after a produce/consume/failover cycle, recorded by a non-test caller."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["OBS"],
+    "notes": "Split from the fabric-observe row, whose liveness clause is FABRIC-073; G p22 is cited on verification for the MVP exit. ADR 0026 rejected an OpenTelemetry crate and ADR 0028/0032 settled the export path; the flag marks that native OTel emission needs that in-tree path or a record. House observability rule: a metric an alert names must have a recording site, which is what the check asserts."
+  },
+  {
+    "id": "FABRIC-073",
+    "domain": "FABRIC",
+    "title": "Fabric health never depends on the fabric's own topics",
+    "statement": "Fabric liveness and health must be observable through direct OpenTelemetry export and health endpoints and must not rely on the fabric's own event topics; the P4 Telemetry class is never the primary health path.",
+    "rationale": "A monitor carried by the thing it monitors goes silent exactly when it is needed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7 Rust Fabric component rows — fabric-observe ('does not rely on its own event topics for liveness')"},
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P4 Telemetry row ('direct OTel remains primary health path')"}
+    ],
+    "verification": {"method": "chaos", "check": "Stop every broker in a test cluster and assert the fabric's health endpoints and telemetry exporter still report the outage."},
+    "policy_flags": [],
+    "secondary_domains": ["OBS"],
+    "notes": "Merges the fabric-observe liveness clause with the P4 row's health-path clause. NEW_DEPENDENCY is removed: the invariant concerns the path, and export is FABRIC-072's concern."
+  },
+  {
+    "id": "FABRIC-074",
+    "domain": "FABRIC",
+    "title": "Bulk mirror transport is chosen by benchmark, TCP included",
+    "statement": "For specific long-lived bulk mirror flows, TCP must be benchmarked against QUIC and the transport chosen by measurement rather than by assuming one protocol wins everywhere; mutual TLS is required either way.",
+    "rationale": "Long-lived bulk flows are where QUIC's advantages matter least and a kernel TCP path may win; measuring avoids paying for an assumption.",
+    "kind": "nfr",
+    "priority": "P3",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Transport ('Benchmark TCP for specific long-lived bulk mirror flows')"}
+    ],
+    "verification": {"method": "benchmark", "check": "fabric-bench compares mutually authenticated QUIC and TCP on a representative cross-region bulk mirror flow, and the recorded choice matches the measured throughput and tail latency."},
+    "policy_flags": [],
+    "secondary_domains": ["GCP"],
+    "notes": "Stated twice in the raw extraction. Differs from v11.6, which names QUIC/mTLS for cross-region mirror traffic without qualification (M p36, FABRIC-009). v2.1 is the more specific and governs how the platform runs on Google Cloud (blueprint precedence), so a measured TCP choice for bulk mirror flows is permitted. NEW_DEPENDENCY is removed as inapplicable to the benchmark."
+  },
+  {
+    "id": "FABRIC-075",
+    "domain": "FABRIC",
+    "title": "Partitions are chosen by an explicit ordering key",
+    "statement": "Every produce must name an explicit ordering key, and all records with the same key on a topic must land in the same partition.",
+    "rationale": "Ordering is only per partition (FABRIC-039); an explicit key is how a producer says which records must stay ordered, rather than hoping a default partitioner agrees.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Partitioning ('explicit ordering key')"}
+    ],
+    "verification": {"method": "property", "check": "Property test: for any set of keys and any sequence of produces, all records sharing a key sit in one partition and appear in produce order."},
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §7.1 Partitioning, whose leader-assignment clause is FABRIC-076 and replication clause FABRIC-010."
+  },
+  {
+    "id": "FABRIC-076",
+    "domain": "FABRIC",
+    "title": "Partition leaders are placed by rendezvous or consistent assignment",
+    "statement": "Partition leadership must be assigned to brokers by rendezvous or consistent-hash assignment, so adding or removing a broker moves only the partitions that must move.",
+    "rationale": "A naive modulo assignment reshuffles every partition when a broker is added, turning a scale-out into a cluster-wide failover.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Partitioning ('rendezvous/consistent assignment to partition leaders')"}
+    ],
+    "verification": {"method": "property", "check": "Property test: adding one broker to an n-broker cluster moves roughly 1/(n+1) of leaderships, and no leadership moves between two brokers present both before and after."},
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Stated twice in the raw extraction. P1: it matters when brokers are added (FABRIC-092), which the single-region MVP does not require."
+  },
+  {
+    "id": "FABRIC-077",
+    "domain": "FABRIC",
+    "title": "A quorum ack means a majority persisted it, and no quorum-acked record is lost to a broker or zone failure",
+    "statement": "A quorum acknowledgement must be issued only after a majority of the partition's RF3 replicas has persisted the record, so that a single broker or a whole zone can fail without losing any quorum-acknowledged P0, P1 or P2 record.",
+    "rationale": "An acknowledgement is a promise producers act on: a fill acknowledged and then lost is a position the ledger never sees.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Durability ('A quorum acknowledgment means the record survived on a majority of replicas')"},
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Fabric broker row ('Quorum-acked records preserved')"},
+      {"doc": "G", "page": "23", "section": "§27 Architecture Acceptance Criteria — 'A Fabric broker/zone can fail without losing quorum-acknowledged P0/P1/P2 records'"}
+    ],
+    "verification": {"method": "chaos", "check": "On a three-zone cluster under random broker kills, zone partitions and restarts, record every acknowledged write and assert after healing that each is present in its partition, in order, on the current leader."},
+    "policy_flags": [],
+    "secondary_domains": ["RES", "LEDGER"],
+    "notes": "Merges §7.1's quorum definition, the broker-failure row's recovery clause and the §27 acceptance criterion; they state one guarantee from its definition and its consequence. The §27 item's 'or stopping Reflex execution' is FABRIC-003. MULTI_REGION, NEW_DEPENDENCY and KUBERNETES, carried by those items, are removed as inapplicable."
+  },
+  {
+    "id": "FABRIC-078",
+    "domain": "FABRIC",
+    "title": "Append batches are atomic within one partition",
+    "statement": "A batch appended to one partition must become visible atomically: consumers see all of its records or none, never a prefix.",
+    "rationale": "A producer batches records that belong together; a torn batch replays as half an event.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Atomicity ('atomic append batches within one partition')"}
+    ],
+    "verification": {"method": "property", "check": "Property test: crash the leader at arbitrary points during batch appends and assert no consumer ever observes a strict prefix of a batch."},
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from the §7.1 Atomicity bullet, whose cross-partition clause is FABRIC-079."
+  },
+  {
+    "id": "FABRIC-079",
+    "domain": "FABRIC",
+    "title": "Cross-partition business transactions are sagas, not broker transactions",
+    "statement": "A business transaction spanning partitions must be represented as an explicit saga of commands and compensations recorded as ordinary records; the fabric must not offer, and nothing may rely on, hidden cross-partition broker transactions.",
+    "rationale": "A hidden broker transaction hides its partial failures; an explicit saga leaves every step and every compensation in the log where a replay can see it.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Atomicity ('Cross-partition business transactions are represented as sagas/commands, not hidden broker transactions')"}
+    ],
+    "verification": {"method": "inspection", "check": "Inspection of the fabric API finds no multi-partition transaction primitive, and each cross-partition flow in the platform has a documented saga with a replay test of its compensation path."},
+    "policy_flags": [],
+    "secondary_domains": ["LEDGER", "CAPITAL"],
+    "notes": "Split from the §7.1 Atomicity bullet."
+  },
+  {
+    "id": "FABRIC-080",
+    "domain": "FABRIC",
+    "title": "Credit/window flow control paces every session",
+    "statement": "The fabric must use credit/window flow control on every session, so a sender transmits only within credit its receiver has granted.",
+    "rationale": "Without receiver-granted credit, the only backpressure is a full buffer somewhere, and the buffer that fills is usually the broker's.",
+    "kind": "nfr",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.1 Wire, ordering and delivery semantics — Backpressure ('credit/window flow control')"}
+    ],
+    "verification": {"method": "integration", "check": "Stop a consumer from granting credit and assert the broker sends nothing beyond the outstanding window; likewise a producer beyond its window is paused rather than buffered without bound."},
+    "policy_flags": [],
+    "secondary_domains": ["RES"],
+    "notes": "Split from §7.1's backpressure bullet (quotas are FABRIC-049, bounded queues FABRIC-063, priority FABRIC-051)."
+  },
+  {
+    "id": "FABRIC-081",
+    "domain": "FABRIC",
+    "title": "P0 control payloads are signed and verified before they are acted on",
+    "statement": "Every P0 Critical Control payload must be signed by its authorised producer, and every consumer must verify the signature against the expected signer before acting on it, refusing an unsigned or badly signed record.",
+    "rationale": "ACLs stop an unauthorised writer at the broker; a signature lets the cell itself prove who issued a risk envelope, including after a broker or mirror has handled it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P0 Critical Control row ('signed payload')"}
+    ],
+    "verification": {"method": "integration", "check": "Deliver a validly signed, an unsigned and a wrongly signed risk envelope to a paper Reflex cell and assert only the first is applied and the other two are refused and journaled."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["SEC", "RISK", "CAPITAL"],
+    "notes": "Split from the §7.2 P0 row. ADR 0043: asymmetric signing is one of the three gaps no in-tree code may close, so until a record admits a signing primitive this is scored blocked; an HMAC-keyed assertion (in-tree HMAC is authorised by ADR 0002) authenticates a shared-key producer but is not a signature a consumer can verify without holding the signing key. Package artifacts are signed separately (FABRIC-053)."
+  },
+  {
+    "id": "FABRIC-082",
+    "domain": "FABRIC",
+    "title": "The ledger sink retries indefinitely and never drops a financial outcome",
+    "statement": "The ledger sink consuming P1 Financial Outcomes must retry a failed commit indefinitely with backoff, never skipping or dropping the record, and must not advance its offset past a record until that record is committed; its retries and lag must be observable.",
+    "rationale": "A ledger that skips an outcome it could not write is wrong forever and silently; retrying indefinitely is safe only because commits are idempotent (FABRIC-044) and P1 retention outlasts an outage (FABRIC-046).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P1 Financial Outcomes row ('ledger sink retries indefinitely')"}
+    ],
+    "verification": {"method": "chaos", "check": "Deny writes to the ledger store for a sustained interval and assert the sink's committed offset does not advance, no P1 record is skipped, the retry and lag metrics move, and on restore every outcome commits once in effect (v2.1 §25 ledger-outage game day)."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER"],
+    "notes": "Split from the §7.2 P1 row. 'Retries and lag must be observable' is the house observability rule: an indefinite retry nobody can see is an outage nobody knows about."
+  },
+  {
+    "id": "FABRIC-083",
+    "domain": "FABRIC",
+    "title": "Market-journal mirroring is throttled before local ingest",
+    "statement": "Under pressure, mirroring of P2 Market Journal topics must be throttled before local P2 ingest is slowed.",
+    "rationale": "Local ingest is what the region's own replay and cells depend on; a remote copy of the market journal is worth less than the local original.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P2 Market Journal row ('throttles mirror before local ingest')"}
+    ],
+    "verification": {"method": "chaos", "check": "Saturate a broker with P2 ingest while mirroring and assert mirror throughput drops first and local append latency stays within budget."},
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "RES"],
+    "notes": "Split from the §7.2 P2 row. Only P2 is stated; P0 and P1 mirrors are critical and are not named as throttled first. MANAGED_SERVICE (the row's GCS archive) is removed as inapplicable. P1 with multi-region mirroring."
+  },
+  {
+    "id": "FABRIC-084",
+    "domain": "FABRIC",
+    "title": "Production regions start with five broker VMs across three zones",
+    "statement": "Each production region must initially run five C4D/C4-class broker VMs spread across three zones; three is the minimum, and five provides maintenance headroom and reduces correlated quorum pressure.",
+    "rationale": "v2.1's stated reason: with three brokers, one in maintenance and one failed leaves no quorum; five keeps a quorum through both.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.3 Fabric placement on GCP — Brokers ('five C4D/C4 VM instances per production region initially')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "terraform plan for a production region declares five C4D/C4-family broker instances across three zones, and a plan with fewer than three is refused by variable validation (the gate proven to refuse a bad value and admit a good one)."},
+    "policy_flags": ["COST", "MULTI_REGION"],
+    "secondary_domains": ["GCP", "FINOPS"],
+    "notes": "Split from §7.3 Brokers, whose three-zone clause is FABRIC-008. ADR 0099 C8 records five brokers per region as blocked on an owner cost ceiling and a deployment record. The MVP's single-region three-broker topology is FABRIC-008."
+  },
+  {
+    "id": "FABRIC-085",
+    "domain": "FABRIC",
+    "title": "Broker journals live on persistent Hyperdisk, with local SSD only as cache",
+    "statement": "Broker journal disks must be persistent Hyperdisk sized for sustained append and read throughput; local SSD and page cache may be used only for transient acceleration.",
+    "rationale": "A journal on local SSD disappears with its VM; persistent disk lets a replaced broker keep its log and shortens re-replication.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.3 Fabric placement on GCP — Journal disks"}
+    ],
+    "verification": {"method": "infra-plan", "check": "terraform plan attaches Hyperdisk journal volumes whose provisioned throughput meets the P2 class's sustained rate to every broker, and mounts any local SSD only as cache."},
+    "policy_flags": ["MANAGED_SERVICE", "COST"],
+    "secondary_domains": ["GCP", "FINOPS"],
+    "notes": "Split from §7.3 Journal disks, whose durability clause is FABRIC-086. The diagram labels the segment store 'local PD / Local SSD cache' (H L206); v2.1's Hyperdisk is the more specific and is kept."
+  },
+  {
+    "id": "FABRIC-086",
+    "domain": "FABRIC",
+    "title": "Journal durability derives from replication, never from one device",
+    "statement": "No durability guarantee may depend on a single local device: a record counts as durable only when replicated as its class requires (FABRIC-077), and the loss of any one broker's disk must lose no acknowledged record.",
+    "rationale": "Every disk fails eventually; a guarantee resting on one disk is a guarantee with a known expiry date nobody wrote down.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.3 Fabric placement on GCP — Journal disks ('Durability derives from replicated journal, not one local device')"}
+    ],
+    "verification": {"method": "chaos", "check": "Destroy one broker's journal disk and its local cache under load and assert every acknowledged record remains readable and the broker is rebuilt from replicas."},
+    "policy_flags": [],
+    "secondary_domains": ["RES"],
+    "notes": "Stated twice in the raw extraction. MANAGED_SERVICE and COST (the disk choice) stay with FABRIC-085."
+  },
+  {
+    "id": "FABRIC-087",
+    "domain": "FABRIC",
+    "title": "Clients bootstrap from Cloud DNS SRV records",
+    "statement": "Fabric clients must find bootstrap broker endpoints through Cloud DNS SRV records, optionally backed by Service Directory.",
+    "rationale": "Hard-coded broker addresses break on the first broker replacement; SRV bootstrap lets the fleet change without redeploying clients.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.3 Fabric placement on GCP — Discovery ('Cloud DNS SRV records and optionally Service Directory provide bootstrap endpoints')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "terraform plan declares a private Cloud DNS zone with SRV records for each region's fabric bootstrap endpoints, and a client configured only with the SRV name connects."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP"],
+    "notes": "Split from §7.3 Discovery, whose live-map half is FABRIC-088. v2.1's service catalogue Cloud DNS row ('Fabric bootstrap SRV', G p17) says the same."
+  },
+  {
+    "id": "FABRIC-088",
+    "domain": "FABRIC",
+    "title": "Clients take the live broker and partition map from fabric metadata",
+    "statement": "After bootstrap, clients must obtain the live broker/partition map from fabric metadata, not from DNS, and must send each partition's records to that partition's current leader, refreshing the map when leadership changes; a Reflex Node therefore holds a session to every broker that leads one of its partitions.",
+    "rationale": "DNS is cached and slow to change; a client that routes by DNS after a failover writes to a follower or to nothing.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.3 Fabric placement on GCP — Discovery ('clients obtain the live broker/partition map from Fabric metadata')"},
+      {"doc": "H", "page": "L178-184", "section": "§02 Regional Cell — algorik-node → Broker A, B and C data edges"}
+    ],
+    "verification": {"method": "integration", "check": "Move a partition's leadership while a producer is active and assert the producer's next send goes to the new leader after a map refresh, with no DNS change, and that no record is sent to a follower."},
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX"],
+    "notes": "Merges the diagram's node-to-all-three-brokers edges, which the raw extraction read as the node writing every record to all three brokers 'not only to a single partition leader'. That reading would make the producer do replication, contradicting v2.1 §7.1 (G p8: leaders replicate to followers), which governs how the system runs; the edges are read here as the node holding a session to each broker because each leads some of its partitions. The conflict is recorded rather than resolved silently."
+  },
+  {
+    "id": "FABRIC-089",
+    "domain": "FABRIC",
+    "title": "Brokers have stable internal addresses and no public endpoint",
+    "statement": "Every broker must have a stable internal address and no public endpoint or external IP.",
+    "rationale": "A public broker endpoint puts control topics one credential leak away from the internet.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.3 Fabric placement on GCP — IP identity ('stable internal addresses, no public broker endpoints')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "terraform plan shows a static internal address on every broker and no external IP, public load balancer or firewall rule admitting 0.0.0.0/0 to any broker port."},
+    "policy_flags": [],
+    "secondary_domains": ["SEC", "GCP"],
+    "notes": "Split from §7.3 IP identity; MANAGED_SERVICE and MULTI_REGION move with its NCC half to FABRIC-052."
+  },
+  {
+    "id": "FABRIC-090",
+    "domain": "FABRIC",
+    "title": "Archived segments are content-addressed in regional landing buckets",
+    "statement": "Each closed segment must be written to its region's Cloud Storage landing bucket under a content address (its hash), so an archived object's name proves its content.",
+    "rationale": "A content address makes re-archiving idempotent and tampering evident without a separate index of hashes.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§7.3 Fabric placement on GCP — Archival ('closed segments are content-addressed and written to regional GCS landing buckets')"}
+    ],
+    "verification": {"method": "integration", "check": "Archive segments to a landing-bucket fake and assert every object name equals the hash of its bytes, re-archiving the same segment is a no-op, and a tampered object fails the name check."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["TICK", "SEC"],
+    "notes": "Split from §7.3 Archival (stated twice in the raw extraction), whose residency half is FABRIC-091."
+  },
+  {
+    "id": "FABRIC-091",
+    "domain": "FABRIC",
+    "title": "Archived segments move to research/archive locations only as residency policy allows",
+    "statement": "Segments must be lifecycled or copied from regional landing buckets to durable research/archive locations only as the applicable data-residency policy allows.",
+    "rationale": "Market data and execution history can carry jurisdictional residency obligations; a lifecycle rule that copies across a boundary is a compliance breach done by automation.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§7.3 Fabric placement on GCP — Archival ('lifecycle/copied to durable research/archive locations according to residency policy')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "terraform plan shows lifecycle and copy rules from each landing bucket only to locations the residency policy permits for that region, and a fixture policy forbidding a destination removes that rule."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA", "GOV"],
+    "notes": "Split from §7.3 Archival. P1 with the data plane (GCP Phase 5)."
+  },
+  {
+    "id": "FABRIC-092",
+    "domain": "FABRIC",
+    "title": "Brokers are scaled deliberately, partitions ahead of peak — never by reactive autoscaling",
+    "statement": "Fabric capacity must be scaled by adding brokers and rebalancing leaders and followers, and by increasing partitions per domain ahead of expected peaks; brokers must not be autoscaled reactively like stateless pods.",
+    "rationale": "Adding a broker moves partitions, which costs replication bandwidth at the moment load is highest; reactive scaling does that work exactly when it hurts most.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§7.3 Fabric placement on GCP — Scaling"},
+      {"doc": "G", "page": "16", "section": "§18 Scaling and Performance Model — Fabric row ('Add brokers, move leaders/followers, increase partitions by domain')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "terraform plan attaches no autoscaler to the broker instance group, and a rebalance drill adding one broker moves leaderships with no loss of acknowledged records."},
+    "policy_flags": ["COST"],
+    "secondary_domains": ["FINOPS", "GCP"],
+    "notes": "Merges §7.3 Scaling with the §18 Fabric row's scale unit. The row's headroom clause is FABRIC-101."
+  },
+  {
+    "id": "FABRIC-093",
+    "domain": "FABRIC",
+    "title": "Brokers are upgraded one at a time: drain, verify, replace, rejoin, advance",
+    "statement": "Broker upgrades must proceed one broker at a time: drain its leadership, verify replica health, replace its immutable image or binary, let it rejoin, and only then advance to the next.",
+    "rationale": "An upgrade is a planned failure; doing it one broker at a time, with health verified in between, keeps it from becoming an unplanned one.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§7.3 Fabric placement on GCP — Upgrade"}
+    ],
+    "verification": {"method": "integration", "check": "Rolling-upgrade a three-zone test cluster under live traffic and assert no two brokers are ever out of service together, replica health is verified before each advance, and no acknowledged record is lost."},
+    "policy_flags": [],
+    "secondary_domains": ["CICD", "RES"],
+    "notes": "Split from §7.3 Upgrade, whose quorum prohibition is FABRIC-094. v2.1 §14.2 step 9 (G p13, 'Reflex/Fabric use component-specific drain/stage/epoch') says the same and is left to CI/CD."
+  },
+  {
+    "id": "FABRIC-094",
+    "domain": "FABRIC",
+    "title": "An upgrade never takes enough replicas down to lose quorum",
+    "statement": "No upgrade or maintenance action may take down, at the same time, enough replicas of any partition or of the metadata quorum to lose quorum, and a rollout must refuse to advance while any partition is under-replicated.",
+    "rationale": "A rollout that advances on schedule rather than on health will eventually take the last in-sync replica with it.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§7.3 Fabric placement on GCP — Upgrade ('Never upgrade enough replicas simultaneously to lose quorum')"}
+    ],
+    "verification": {"method": "property", "check": "With one partition under-replicated, attempt to advance the rollout and assert it refuses; a property test over rollout schedules asserts no schedule the controller accepts ever leaves a partition or the metadata quorum below quorum."},
+    "policy_flags": [],
+    "secondary_domains": ["RES", "CICD"],
+    "notes": "Split from §7.3 Upgrade. The refusal while under-replicated is the house fail-closed reading. P0 as a safety invariant."
+  },
+  {
+    "id": "FABRIC-095",
+    "domain": "FABRIC",
+    "title": "Fabric consumers and sinks run on dedicated node pools",
+    "statement": "Fabric consumers and sink workers must run on dedicated GKE node pools that no other warm service shares.",
+    "rationale": "A sink catching up after an outage is a CPU and network burst; on a shared pool it starves the warm services that compute risk envelopes.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Fabric consumers/sinks row ('Dedicated node pools')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "terraform plan and the workload manifests place every sink and consumer on a dedicated, tainted node pool that no other workload tolerates."},
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["GCP"],
+    "notes": "Split from the §8 row, whose lag-scaling and isolation clauses are FABRIC-096 and FABRIC-097. ADR 0099 C3: GKE was retired for Cloud Run (ADR 0024), and until a runtime record decides this is scored against the Cloud Run shape, where the equivalent is a dedicated service per sink."
+  },
+  {
+    "id": "FABRIC-096",
+    "domain": "FABRIC",
+    "title": "Sink and consumer capacity scales on consumer lag",
+    "statement": "Fabric consumer and sink capacity must scale on consumer lag, up to the partition count, rather than on CPU alone.",
+    "rationale": "A sink waiting on a slow destination uses little CPU while falling hours behind; lag is the signal that measures the thing that matters.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Fabric consumers/sinks row ('Scale from consumer lag')"}
+    ],
+    "verification": {"method": "integration", "check": "Grow a sink's lag past its scaling threshold and assert the autoscaler adds consumers up to the partition count and removes them once lag drains."},
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["GCP", "OBS"],
+    "notes": "Split from the §8 row. Needs the lag metric emitted by FABRIC-072. P1 with GCP Phase 6 (Fabric consumer scaling)."
+  },
+  {
+    "id": "FABRIC-097",
+    "domain": "FABRIC",
+    "title": "Each sink's failure and backpressure are isolated from the others",
+    "statement": "Each sink (Spanner, Bigtable, BigQuery, GCS) must have its own consumer, backpressure and failure isolation, so one slow or failing destination cannot stall any other sink.",
+    "rationale": "A BigQuery quota error must not delay the ledger sink; a single shared throttle would make the slowest destination everyone's pace.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Fabric consumers/sinks row ('destination-specific failure isolation')"},
+      {"doc": "H", "page": "L172", "section": "VIEWS.regional — 02 · Regional Cell, node 'sink' ('Spanner/Bigtable/BQ/GCS sinks with independent backpressure')"}
+    ],
+    "verification": {"method": "chaos", "check": "Freeze the BigQuery destination fake and assert the Spanner, Bigtable and GCS sinks keep their throughput and lag unchanged."},
+    "policy_flags": [],
+    "secondary_domains": ["DATA", "LEDGER"],
+    "notes": "Merges the §8 row's isolation clause with the diagram's per-sink backpressure. Distinct from FABRIC-069 (sink versus broker). KUBERNETES (the §8 placement) is removed as inapplicable to the isolation property."
+  },
+  {
+    "id": "FABRIC-098",
+    "domain": "FABRIC",
+    "title": "A lost broker is replaced and partitions rebalanced back to full replication",
+    "statement": "After a broker failure, the broker must be replaced from its immutable image and partitions rebalanced so that every durable partition returns to RF3 across three zones without data loss.",
+    "rationale": "After a failover the cluster runs one failure from losing quorum; restoration is what returns it to the state its guarantees assume.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Fabric broker row (recovery: 'replace broker and rebalance')"}
+    ],
+    "verification": {"method": "chaos", "check": "Kill a broker permanently, run the replacement procedure, and assert every durable partition returns to three in-sync replicas across three zones with no loss of acknowledged records."},
+    "policy_flags": [],
+    "secondary_domains": ["RES"],
+    "notes": "Split from the §17 broker row; the failover half is FABRIC-055 and the preserved-records half FABRIC-077."
+  },
+  {
+    "id": "FABRIC-099",
+    "domain": "FABRIC",
+    "title": "Critical mirrored topics stay readable elsewhere when a region's fabric is lost",
+    "statement": "When an entire regional fabric is lost, its critical mirrored topics (control and outcomes) must remain readable in other regions, up to the mirror lag at the moment of loss.",
+    "rationale": "Mirroring exists for this case: without it, the loss of one region's fabric would erase what the rest of the platform knew about that region's outcomes.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Entire Fabric region row ('critical mirrored topics available elsewhere')"}
+    ],
+    "verification": {"method": "game-day", "check": "Remove one region's fabric in a multi-region staging game day and assert its mirrored P0 and P1 topics are readable in each surviving region up to the recorded mirror lag."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["RES"],
+    "notes": "Split from the region-loss row. Its 'GKE async workflows lose local bus' is a consequence rather than a requirement and is dropped as narrative. Reflex continuing under cached policy is FABRIC-054 and healthy regions continuing FABRIC-021. NEW_DEPENDENCY is removed as inapplicable."
+  },
+  {
+    "id": "FABRIC-100",
+    "domain": "FABRIC",
+    "title": "A lost regional fabric is rebuilt from surviving replicas and GCS archives",
+    "statement": "A lost regional fabric must be rebuildable from surviving replicas and its Cloud Storage segment archive while healthy regions continue.",
+    "rationale": "A region that cannot be rebuilt from what survived is a region whose history was lost with it.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "15", "section": "§17 Availability, Resilience and Disaster Recovery — Entire Fabric region row (recovery: 'Bring region back from surviving replicas/GCS archives')"}
+    ],
+    "verification": {"method": "game-day", "check": "Rebuild a nonprod regional fabric from zero using only Terraform, surviving replicas and its archive (v2.1 §25's rebuild-from-zero drill, G p22) and assert every archived offset range is present and consumers resume."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["RES", "GCP"],
+    "notes": "Split from the region-loss row."
+  },
+  {
+    "id": "FABRIC-101",
+    "domain": "FABRIC",
+    "title": "Fabric keeps capacity headroom for a zone loss and for maintenance",
+    "statement": "Fabric capacity must keep enough headroom to absorb the loss of one zone and a broker under maintenance at peak load.",
+    "rationale": "Headroom sized for normal operation fails on the day a zone goes during a maintenance window, which is the day it was bought for.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "16", "section": "§18 Scaling and Performance Model — Fabric row ('keep headroom for zone loss and maintenance')"}
+    ],
+    "verification": {"method": "benchmark", "check": "With one zone's brokers removed and one further broker drained, fabric-bench at the recorded peak rate keeps every class within its latency budget."},
+    "policy_flags": ["COST"],
+    "secondary_domains": ["FINOPS", "RES"],
+    "notes": "Split from the §18 Fabric row, whose scale-unit clause is FABRIC-092."
+  },
+  {
+    "id": "FABRIC-102",
+    "domain": "FABRIC",
+    "title": "Eventarc is not part of core internal eventing",
+    "statement": "Eventarc must not be used for core internal eventing; it may be used only for peripheral Google-service automation that does not become an application dependency.",
+    "rationale": "An Eventarc trigger is a second event path with its own delivery semantics; once an application depends on it, the fabric no longer defines internal eventing.",
+    "kind": "prohibition",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "18", "section": "§19.1 Deliberately not used as core internal messaging — Eventarc row"}
+    ],
+    "verification": {"method": "acceptance", "check": "An architecture test fails if any workspace service is the target of an Eventarc trigger, and inspection of Terraform finds Eventarc triggers only on peripheral automation targets."},
+    "policy_flags": [],
+    "secondary_domains": ["GCP"],
+    "notes": "P1: a GCP-plane exclusion that matters once warm services exist."
+  },
+  {
+    "id": "FABRIC-103",
+    "domain": "FABRIC",
+    "title": "Cloud Tasks is not an internal general queue",
+    "statement": "Cloud Tasks must not be used as an internal general-purpose queue; it may be used only by isolated customer-facing workflows whose task semantics specifically fit.",
+    "rationale": "A general queue beside the fabric splits internal work across two delivery models, and the one without replay becomes where things are lost.",
+    "kind": "prohibition",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "18", "section": "§19.1 Deliberately not used as core internal messaging — Cloud Tasks row"}
+    ],
+    "verification": {"method": "acceptance", "check": "An architecture test fails if any internal service enqueues to, or is invoked by, Cloud Tasks outside an allow-list of isolated customer-facing workflows."},
+    "policy_flags": [],
+    "secondary_domains": ["GCP", "COMMERCE"],
+    "notes": "P1: a GCP-plane exclusion."
+  },
+  {
+    "id": "FABRIC-104",
+    "domain": "FABRIC",
+    "title": "Regional warm services publish policy, envelopes, grants and research events to the fabric",
+    "statement": "Regional warm (GKE) services must publish policy, risk-envelope and capital-grant events as P0 control, the financial outcome events they originate (such as settlement events) as P1, and research, world and knowledge events as P3, to their regional fabric asynchronously.",
+    "rationale": "Control that reaches cells by any path other than the fabric has no offset, no replay and no record of issue; research events published the same way become replayable inputs to learning.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — GKE control service → Regional Fabric row ('Publish policy, research, capital/risk envelope events')"},
+      {"doc": "H", "page": "L196-221", "section": "§03 Native Rust Event & Control Fabric — GKE Services node ('P0/P1/P3: Risk envelopes, capital grants, world/knowledge events') and control edge"}
+    ],
+    "verification": {"method": "integration", "check": "Run the capital and risk services against a test fabric and assert each envelope and grant appears on a P0 topic and each research event on a P3 topic, and that no publish blocks the service's request path."},
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["CAPITAL", "RISK", "WORLD"],
+    "notes": "Merges the G p19 connection row with the diagram's GKE-services producer node. Neither source names what warm services publish at P1; 'settlement events' is taken from the §7.2 P1 examples. ADR 0099 C3/C7: warm services are Cloud Run services composed into five binaries today, and 'GKE services' is read as warm services wherever they run. NEW_DEPENDENCY (the transport) is FABRIC-009's."
+  },
+  {
+    "id": "FABRIC-105",
+    "domain": "FABRIC",
+    "title": "Regional warm services consume ordered partitions from the fabric in consumer groups",
+    "statement": "Regional warm services — Risk Brain, Capital/Treasury, Asset/Strategy, Evidence/World Model, Ambient/Causal agents and the sink workers — must consume the fabric's ordered partitions by asynchronous pull/stream in consumer groups, with replay.",
+    "rationale": "Consuming from the fabric, rather than from each other, is what lets warm services scale, restart and be replayed independently of the cells that produced their inputs.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Regional Fabric → GKE consumers row"},
+      {"doc": "H", "page": "L128-138", "section": "§01 Global Platform Topology — Regional Fabric → Regional GKE edges"},
+      {"doc": "H", "page": "L178-184", "section": "§02 Regional Cell — Broker A → Risk Brain, Capital/Treasury, Asset/Strategy, Evidence/World Model, Ambient/Causal Agents and Fabric Sink Workers edges"},
+      {"doc": "H", "page": "L218-221", "section": "§03 Native Rust Event & Control Fabric — Broker A → Regional GKE Consumers edge"}
+    ],
+    "verification": {"method": "integration", "check": "Run two instances of the risk service in one consumer group against a test fabric and assert each partition is consumed by one instance in offset order, and that restarting one instance resumes from its committed offsets."},
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["RISK", "CAPITAL", "ASSET", "EVID"],
+    "notes": "Merges the G p19 row with three diagram items (the §01 edges, the §03 consumer edge and the consumer list of the §02 edges). The §02 item's 'never directly from the Reflex Cell' is split out as FABRIC-109. NEW_DEPENDENCY (the transport) and MULTI_REGION (one edge per region) are removed. ADR 0099 C3/C7 as for FABRIC-104."
+  },
+  {
+    "id": "FABRIC-106",
+    "domain": "FABRIC",
+    "title": "The archiver reaches Cloud Storage over private Google API access",
+    "statement": "fabric-archive must write to Cloud Storage only through private Google API access, with no public-internet path.",
+    "rationale": "Archived segments carry financial outcomes and licensed market data; a public path exposes them in transit and needs egress the fabric network should not have.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Fabric Archive → Cloud Storage row ('Google API private access')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "terraform plan enables Private Google Access (or a PSC endpoint) on the fabric subnet with no NAT or external route the archiver could use, and an archiver run with only the private path succeeds."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "SEC"],
+    "notes": "Split from the G p19 row, whose archive-as-replay-source role is FABRIC-012 and FABRIC-068. In this repository outbound HTTPS goes through the egress proxy (data domain rule); the private-access route and that proxy must be reconciled in the record ADR 0099 C2/C4 call for. P0 with the MVP archive and GCP Phase 0 networking."
+  },
+  {
+    "id": "FABRIC-107",
+    "domain": "FABRIC",
+    "title": "The Bigtable sink maintains recent features, time series and replay indexes",
+    "statement": "A Bigtable sink must consume fabric partitions asynchronously and maintain recent features, time series and replay indexes in Bigtable over gRPC.",
+    "rationale": "Warm services and replay need recent features at a rate a log scan cannot serve; a sink keeps that derived state current from the log it is derived from.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Fabric Bigtable Sink row"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 4 ('update recent features in Bigtable')"}
+    ],
+    "verification": {"method": "integration", "check": "Replay a recorded session through the Bigtable sink against an emulator and assert the recent-feature rows and replay-index entries match those derived directly from the partitions, and that a restart resumes by offset without duplicate rows."},
+    "policy_flags": ["MANAGED_SERVICE", "NEW_DEPENDENCY"],
+    "secondary_domains": ["DATA", "TICK"],
+    "notes": "Merges the G p19 row with the Bigtable clause of §21.1 step 4. ADR 0099 C4 (a storage record per store) and C2 (managed-service clients) govern. P1 with the data plane (GCP Phase 5)."
+  },
+  {
+    "id": "FABRIC-108",
+    "domain": "FABRIC",
+    "title": "The BigQuery sink streams research and analytics data and may lag",
+    "statement": "A BigQuery sink must stream research and analytics records to BigQuery through the Storage Write API asynchronously, and its lag must have no trading impact.",
+    "rationale": "Analytics is the most delay-tolerant consumer; the requirement that it may lag is what lets it never be allowed to slow anything that trades.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Fabric BigQuery Sink row ('can lag without trading impact')"}
+    ],
+    "verification": {"method": "chaos", "check": "Stop the BigQuery destination for a sustained interval and assert trading-path latency and every P0 and P1 consumer are unaffected, and that the sink catches up by offset without gaps once restored."},
+    "policy_flags": ["MANAGED_SERVICE", "NEW_DEPENDENCY"],
+    "secondary_domains": ["DATA"],
+    "notes": "ADR 0099 C4 and C2 govern, as for FABRIC-107. P1 with the data plane (GCP Phase 5)."
+  },
+  {
+    "id": "FABRIC-109",
+    "domain": "FABRIC",
+    "title": "Warm services receive Reflex outputs only through the fabric",
+    "statement": "Regional warm services must receive Reflex Cell outcomes, journals and decision traces only through the fabric, never by a direct connection to a Reflex Cell.",
+    "rationale": "A direct service-to-cell connection is a dependency the cell has to serve, which puts warm-service load on the hot host and bypasses the log.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {"doc": "H", "page": "L178-184", "section": "§02 Regional Cell — Broker A → service edges, with no Reflex-node → service edge"}
+    ],
+    "verification": {"method": "acceptance", "check": "An architecture test asserts no warm-service crate opens a connection to a Reflex or edge-node endpoint, and inspection of firewall rules finds no service-to-Reflex ingress."},
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["REFLEX", "ARCH"],
+    "notes": "Split from the §02 diagram item whose consumer list is merged into FABRIC-105. Inferred from the edge set: every service edge in the Regional Cell view comes from Broker A and none from the Reflex node. v2.1's separate execution and services projects (G p4) are consistent with it."
+  },
+  {
+    "id": "FABRIC-110",
+    "domain": "FABRIC",
+    "title": "Ambient and development agents publish only at P3/P4",
+    "statement": "Ambient and development agents must publish their research, operations and engineering events into the fabric at the P3 Intelligence/Research and P4 Telemetry classes only, and ACLs must refuse them P0 control and P1 outcome topics.",
+    "rationale": "An agent that can write a control topic can escalate its own authority; confining agents to P3/P4 keeps their output as evidence for decisions rather than decisions.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {"doc": "H", "page": "L196-221", "section": "§03 Native Rust Event & Control Fabric — Ambient / Dev Agents node ('P3/P4: Research, operations and engineering events') and knowledge-class edge"}
+    ],
+    "verification": {"method": "integration", "check": "With an agent identity, publish to a P3 and a P4 topic and assert both are admitted, then publish to a P0 and a P1 topic and assert both are refused by ACL at every broker."},
+    "policy_flags": [],
+    "secondary_domains": ["AMBIENT", "AGENCY", "SEC"],
+    "notes": "The diagram labels the agents P3/P4; the refusal of P0/P1 is the house reading that no model output or agent finding may escalate into control (risk and execution domain rule; ADR 0004), enforced by FABRIC-018. P2 because ambient cognition and autonomous development are master Phases 5 to 8 / GCP Phases 8 and 9."
+  },
+  {
+    "id": "FABRIC-111",
+    "domain": "FABRIC",
+    "title": "The release/package controller announces activations as P0 control through Fabric Meta",
+    "statement": "Model, policy and package activation announcements must be published by the Release/Package Controller, and by no other producer, as P0 critical-control records admitted through Fabric Meta's schema, ACL and producer-fencing authority.",
+    "rationale": "Package activation changes what every cell runs. One accountable publisher, fenced and schema-checked, is what makes an activation attributable to an approved release.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "H", "page": "L196-221", "section": "§03 Native Rust Event & Control Fabric — Release / Package Controller node ('P0: Model/policy/package activation announcements') and deploy-class edge to Fabric Meta"}
+    ],
+    "verification": {"method": "integration", "check": "Publish an activation announcement as the release controller and as another identity and assert only the first is admitted, and that a Reflex node activates only announced packages whose digest matches the artifact it fetched."},
+    "policy_flags": [],
+    "secondary_domains": ["CICD", "MODEL", "SEC"],
+    "notes": "The diagram draws this producer's edge to Fabric Meta rather than to a broker, while v2.1 §7.2 lists model activation among P0 topics on the brokers (G p8). The edge is read as admission through the metadata/schema/ACL authority onto P0 topics, not as a second store: the raw extraction's 'not into a broker partition' reading is not adopted because it would give activations no offset and no replay. 'By no other producer' is the house fail-closed reading. P0 because Reflex runs signed packages from master Phase 1."
+  }
+]

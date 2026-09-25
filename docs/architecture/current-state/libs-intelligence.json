@@ -1,0 +1,249 @@
+[
+  {
+    "name": "qip-agents",
+    "path": "backend/crates/libs/qip-agents",
+    "kind": "lib",
+    "purpose": "Governs what an agent may do (capability enum + CapabilitySet), what it may spend (Budget/BudgetLedger charging tokens/tool-calls/wall-clock before work runs), what it produces (NumericFact/AgentFinding, where every number is either 'observed' or 'computed' and a language model can supply neither), and whether a roster of such agents satisfies separation-of-duties (Roster::validate / GovernanceFinding).",
+    "key_contracts": [
+      "capability::Capability (27-variant enum: read/compute/production/authority tiers)",
+      "capability::CapabilitySet::require/is_subset_of/excess_over",
+      "manifest::AgentManifest::validate / ::authorisation (refuses e.g. a proposer holding the veto)",
+      "budget::Budget / BudgetLedger::charge_tool_call / charge_language_model / charge_tokens_only",
+      "runtime::Agent trait (fn analyse(&self, &mut AgentContext, &AgentBrief) -> Result<AgentFinding>)",
+      "runtime::AgentHost::run (produces AgentRunRecord whatever happens, refusal included)",
+      "runtime::Gated<T> / Upstream<T> (capability-gated read access, no write path exposed on Gated)",
+      "finding::NumericFact::validate / NumericProvenance::{Observed,Computed}",
+      "finding::AgentFinding / FindingStatus / Direction",
+      "governance::Roster::review / ::validate, GovernanceFinding, Severity",
+      "governance::AuditTrail::permission_violations / ::failures",
+      "memory::ResearchMemory::record_episode/record_lesson/promote/applicable_lessons",
+      "memory::PromotionPolicy"
+    ],
+    "workspace_deps": ["qip-core", "qip-ai"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:4278 constructs `Organisation::standard(desk, ..., Some(language_model), ..., config.quantum_enabled)`, which internally builds `AgentHost::new(seed)` (qip-investment-agents/src/chief.rs:244) and every agent manifest; platform.rs:10998 calls `self.organisation.dispatch(&brief, now, lineage)` inside the REASON stage of every cycle. qip-kernel is a direct dependency of qip-api, qip-cli, qip-deepbrain and qip-fastbrain (backend/crates/apps/*/Cargo.toml). qip_agents::runtime::RunStatus and governance::Severity are also read directly by qip-api (console.rs:661-666, routes.rs:2682) and qip-cli (main.rs:361-370) to render agent-run status.",
+    "io_and_state": "No I/O in the crate (workspace rule: libs perform none; verified no std::fs/std::net/std::env in crates/libs/qip-agents/src). All state (BudgetLedger, AuditTrail, ResearchMemory, Roster) is in-process only, held inside qip-kernel's Platform for the life of the process; no persistence call to qip-storage found from this crate or from platform.rs for ResearchMemory/AuditTrail. AgentContext::rng is a seeded Xoshiro256 (runtime.rs:471, forked per run_id) and `now`/`started_at` are passed in rather than read from a clock (runtime.rs comment at :424-426), so the crate performs no I/O and no ambient-clock reads.",
+    "tests": {
+      "count": 52,
+      "notable": [
+        "a_proposer_cannot_hold_the_veto_that_checks_it",
+        "the_ledger_refuses_the_call_that_would_exceed_the_budget",
+        "a_number_computed_from_nothing_is_rejected"
+      ]
+    },
+    "status": ["exists", "hardened", "partial"],
+    "status_reason": "Core governance/budget/finding machinery is tested and reached from every cycle; but the WriteResearchMemory capability it defines is granted (qip-investment-agents/src/manifests.rs:492) and never exercisable in production (see gaps_observed), so one declared capability is structurally dead.",
+    "blueprint_capabilities": ["AGENCY", "GOV", "EVID", "SEC"],
+    "gaps_observed": [
+      "capability.rs:44 defines Capability::WriteResearchMemory and manifests.rs:492 grants it to the LearningAttribution agent, but no call site in the workspace ever calls `ctx.authorise(Capability::WriteResearchMemory, ...)` (grep across crates/agents and crates/libs/qip-agents/src found only the enum definition, Capability::all(), and the single grant). runtime.rs's `Gated<T>` (used to expose ResearchMemory on the Desk) offers no write method at all ('there is no method here that yields the slot, the upstream, or a mutable borrow' — runtime.rs:40-41), so even if authorised there is no facility through which a write could happen. This is the same shape of defect the repo's own rules name as the template to avoid (a control that cannot fire).",
+      "memory.rs's ResearchMemory::record_episode/record_lesson/promote/supersede (memory.rs:135-253) have no call site anywhere outside this crate's own tests/agents.rs — confirmed by grep for those method names across crates/runtime and crates/agents."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-agents/src/lib.rs:1-46",
+      "backend/crates/libs/qip-agents/src/runtime.rs:43-100,402-480",
+      "backend/crates/libs/qip-agents/src/capability.rs:23-53,237-260",
+      "backend/crates/libs/qip-agents/src/budget.rs:159-260",
+      "backend/crates/libs/qip-agents/src/manifest.rs:209-345",
+      "backend/crates/libs/qip-agents/src/governance.rs:88-300",
+      "backend/crates/libs/qip-agents/src/finding.rs:78-150,410-520",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4278,10998",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs:231-260",
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs:480-503",
+      "backend/crates/agents/qip-investment-agents/src/desk.rs:71-137"
+    ]
+  },
+  {
+    "name": "qip-ai",
+    "path": "backend/crates/libs/qip-ai",
+    "kind": "lib",
+    "purpose": "Model infrastructure: a versioned model registry with lineage/eligibility (ModelCard/ModelRegistry), an embedding+lexical retrieval index (SearchIndex), a language-model port with a numeric-hallucination guard (LanguageModel/NumericGuard/DeterministicModel/RemoteModel), a served-model port for in-tree distilled models (ModelProvider/ServedModel), drift/calibration scoring (evaluation.rs), and bounded episodic memory with deterministic approximate-nearest-neighbour recall (memory/*).",
+    "key_contracts": [
+      "language::LanguageModel trait (fn complete(&self, &ModelRequest, Timestamp) -> Result<Completion>)",
+      "language::DeterministicModel (template-based, always available, no network)",
+      "language::RemoteModel::new/is_available/complete (hosted adapter; is_available() hardcoded false)",
+      "language::FallbackChain::active/complete (tries models in order, falls back)",
+      "language::NumericGuard (rejects a model output flowing into a calculation)",
+      "registry::ModelRegistry / ModelCard / ModelStage / PublishedArtifact",
+      "serving::ModelProvider trait / ServedModel trait / NoProvider (default, serves nothing)",
+      "embedding::Embedder trait / HashingEmbedder",
+      "retrieval::SearchIndex / Document / RetrievalResult",
+      "evaluation::Calibration / DriftReport::compare",
+      "memory::store::EpisodicMemory::new/remember/recall/experience",
+      "memory::episode::Episode / EpisodeOutcome / MarketState / ClaimRecord / EpisodeQuery",
+      "memory::sampler::EpisodeSampler / EpisodeGrade",
+      "memory::experience::ExperienceReport / RegimeExperience"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:67-73 imports EpisodicMemory/SearchIndex/ModelProvider/NoProvider and platform.rs:4272,4516 constructs `SearchIndex::new()` and `EpisodicMemory::default()` inside every Platform; platform.rs:11566 calls `self.episodes.remember(episode)` in the LEARN stage. qip-deepbrain/src/language.rs:41,182-219 assembles a `FallbackChain` of a real HuggingFace adapter (from qip-reasoning-engine) plus `DeterministicModel`, and qip-deepbrain/src/main.rs:222 hands `language_model.chain.clone()` and `Box::new(qip_training::serve::InTreeProvider)` into `Platform::with_model_provider`, so both the language-model port and the model-serving port carry a real (non-NoProvider) implementation in that one composition root. qip-world-model/src/world.rs:4-5,100 builds its `SearchIndex` with a `HashingEmbedder`.",
+    "io_and_state": "No I/O in the crate itself (no std::fs/std::net; RemoteModel reads a credential only via the caller-supplied qip_core::secret resolver, not directly). EpisodicMemory is bounded (`EpisodicMemory::new` refuses capacity=0 or candidate_bound=0, store.rs:220-230; default capacity via DEFAULT_CAPACITY/DEFAULT_CANDIDATE_BOUND). All state held in-process inside qip-kernel's Platform; no persistence to qip-storage found for EpisodicMemory from qip-kernel (grep for replay/rebuild/restore/from-style constructors against EpisodicMemory/ResearchMemory in qip-kernel/src found none), so episodic memory does not survive a process restart.",
+    "tests": {
+      "count": 75,
+      "notable": [
+        "(model_infrastructure.rs, 46 tests covering registry/serving/language/retrieval/evaluation)",
+        "(episodic.rs, 19 tests covering EpisodicMemory bounds and recall)",
+        "serving.rs and memory/experience.rs each carry inline unit tests (5 each) for canonical_payload/digest_of and RegimeExperience"
+      ]
+    },
+    "status": ["exists", "hardened", "partial"],
+    "status_reason": "Registry/serving/language/retrieval/memory are all reached from at least one deployed binary (qip-deepbrain) and are well tested; the hosted LanguageModel adapter defined in this crate (RemoteModel) is structurally always unavailable and is not the adapter actually wired in qip-deepbrain (which uses qip-reasoning-engine's HuggingFace adapter instead).",
+    "blueprint_capabilities": ["MODEL", "REASON", "EVID", "AMBIENT"],
+    "gaps_observed": [
+      "language.rs:518-521 — `RemoteModel::is_available(&self) -> bool { false }` is unconditional ('Even with a credential, the transport is absent in this build'), so this crate's own hosted-model type can never serve a request; production instead reaches a hosted model through a different adapter (qip_reasoning_engine::providers::huggingface::HuggingFaceModel) constructed in qip-deepbrain/src/language.rs, not through qip_ai::language::RemoteModel.",
+      "language.rs:462-535 RemoteModel is exercised only in this crate's own tests (grep for `RemoteModel::new` outside qip-ai/src and qip-ai/tests found no hits), so the port it stands for is untested against any real caller."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-ai/src/lib.rs:1-38",
+      "backend/crates/libs/qip-ai/src/language.rs:330-365,440-535",
+      "backend/crates/libs/qip-ai/src/registry.rs:23-230",
+      "backend/crates/libs/qip-ai/src/serving.rs:197-260",
+      "backend/crates/libs/qip-ai/src/memory/store.rs:184-230",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:67-73,4272,4516,11566",
+      "backend/crates/apps/qip-deepbrain/src/language.rs:41,182-224",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:214-229",
+      "backend/crates/services/qip-world-model/src/world.rs:4-5,100"
+    ]
+  },
+  {
+    "name": "qip-quantum",
+    "path": "backend/crates/libs/qip-quantum",
+    "kind": "lib",
+    "purpose": "Quantum provider port (QuantumProvider trait) with an in-tree 24-qubit statevector simulator and QAOA solver that actually run, an IBM Quantum hosted-adapter shape (HostedProvider/HostedTransport, real blocking HTTP client, no TLS by design) that is honestly unusable in this build, and a separate solver/benchmark family (ClassicalSolver, QuantumInspiredSolver, IbmQuantumSolver, SolverBenchmark) that always computes a classical baseline alongside any quantum candidate (ADR 0006).",
+    "key_contracts": [
+      "provider::QuantumProvider trait (fn solve_qubo(&self, &Qubo, &QaoaSettings) -> Result<QaoaResult>)",
+      "provider::SimulatedProvider::new/solve_qubo (always available, seeded RNG)",
+      "provider::HostedProvider::new/connected/with_credential (IBM Quantum port; real HTTP client, no TLS)",
+      "provider::ProviderCapabilities::simulator",
+      "qaoa::solve / QaoaSettings / QaoaResult::approximation_ratio",
+      "statevector::StateVector::hadamard/cnot/rotate_x/rotate_z/expectation/sample",
+      "solver::QuboSolver trait, ClassicalSolver::new/annealing/descent/exhaustive",
+      "solver::QuantumInspiredSolver, ProviderSolver, IbmQuantumSolver::production_requirement",
+      "benchmark::SolverBenchmark::run / ClassicalValidator::validate / BenchmarkReport::measured_advantage"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-transport"],
+    "reached_from_production": "partial",
+    "production_evidence": "qip-kernel/src/platform.rs:175,4324-4325 constructs a `ComputeRouter::classical(seed).with_policy(...)` and only calls `.with_quantum(Arc::new(SimulatedProvider::new(config.seed)))` when `config.quantum_enabled` is true; `PlatformConfig::quantum_enabled` defaults to `false` (qip-kernel/src/config.rs:534) and its only setter, `PlatformConfig::with_quantum()` (config.rs:573-575), has zero call sites anywhere in crates/apps/**/src (grep confirmed). qip-kernel's own test crates/runtime/qip-kernel/tests/solver_routing.rs:231-232 states this explicitly in a comment: 'A deployment with no quantum provider configured — which is every deployment, `quantum_enabled` being off by default'. Separately, qip-optimization-engine's `ComputeRouter::solve` (reached from platform.rs:2631/2682 via `qip_optimization_engine::router::ComputeRouter`) is real production wiring for the classical-vs-quantum routing decision, but its own `solve_classical` (router.rs:399-438) calls `qip_numerics::anneal`/`qip_numerics::qp` directly rather than this crate's solver.rs ClassicalSolver, so solver.rs and benchmark.rs are not reached from production at all — only from qip-quantum's own tests and qip-optimization-engine's tests (optimization.rs).",
+    "io_and_state": "provider.rs's HostedProvider/HostedTransport perform real blocking HTTP I/O through `qip_transport::{HttpClient, HttpRequest, Method, Url}` (provider.rs:104-105) speaking plaintext HTTP/1.1 by design (no TLS in this build; needs an egress proxy in front per platform rules) — but this path is constructed only in tests (grep for `HostedProvider::new/::connected/::with_credential` outside tests/ found zero hits). SimulatedProvider and the statevector/QAOA path do no I/O; StateVector is bounded to MAX_QUBITS=24 (statevector.rs:23) and all randomness is a seeded Xoshiro256 fork (provider.rs:202). No persistence anywhere in the crate.",
+    "tests": {
+      "count": 57,
+      "notable": [
+        "the_hosted_provider_reports_exactly_what_is_missing",
+        "the_benchmark_computes_a_classical_baseline_even_when_a_quantum_solver_is_available",
+        "an_https_endpoint_is_refused_because_this_transport_has_no_tls"
+      ]
+    },
+    "status": ["exists", "hardened", "unused", "partial"],
+    "status_reason": "The simulator/QAOA path is real, tested and wired into qip-kernel, but is dark in every current deployment because `quantum_enabled` defaults off and nothing turns it on outside tests; the hosted IBM Quantum adapter is a deliberately-honest, tested stub reached only from tests; the solver/benchmark module family (the crate's actual ADR-0006 'always compute a classical baseline' machinery) is not reached from production at all — the production classical baseline is computed independently in qip-optimization-engine using qip-numerics.",
+    "blueprint_capabilities": ["QUANT", "EVID", "GCP"],
+    "gaps_observed": [
+      "config.rs:534 `quantum_enabled: false` default and config.rs:573-575 `with_quantum()` builder have no caller in crates/apps/**/src (grep confirmed), so platform.rs:4324's `if config.quantum_enabled { router = router.with_quantum(...) }` branch never executes in any deployed binary today; corroborated by qip-kernel/tests/solver_routing.rs:231-232's own comment.",
+      "provider.rs:807-810 `IbmQuantumSolver.transport_present` field doc: 'Whether an HTTPS transport and a Qiskit Runtime client exist in this build. Always false.' — structural, deliberate, but confirms the IBM Quantum path can never become available in this build regardless of configuration.",
+      "solver.rs (ClassicalSolver, QuantumInspiredSolver, IbmQuantumSolver, ProviderSolver — 1029 lines) and benchmark.rs (SolverBenchmark, ClassicalValidator — 664 lines) have no call site outside crates/libs/qip-quantum/tests and crates/services/qip-optimization-engine/tests (grep across crates/runtime, crates/apps, crates/services/*/src found none)."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-quantum/src/lib.rs:35-55",
+      "backend/crates/libs/qip-quantum/src/provider.rs:140-210,393-500,807-880",
+      "backend/crates/libs/qip-quantum/src/solver.rs:741-880",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:175,4278-4326",
+      "backend/crates/runtime/qip-kernel/src/config.rs:252,534,573-575",
+      "backend/crates/runtime/qip-kernel/tests/solver_routing.rs:230-245",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:19-27,399-464"
+    ]
+  },
+  {
+    "name": "qip-investment-agents",
+    "path": "backend/crates/agents/qip-investment-agents",
+    "kind": "lib",
+    "purpose": "Assembles and dispatches the eighteen-agent machine investment organisation (Organisation::standard) against a shared, capability-gated Desk, then produces an OrganisationReport combining every agent's finding with coverage/contestation metrics; the manifests encode separation of duties (research cannot reach the market, the sole order-submitter publishes no theses, the adversarial reviewer reports to a different owner and cannot publish, no agent can raise its own autonomy level).",
+    "key_contracts": [
+      "chief::Organisation::standard(desk, reviewed_at, now, seed, language_model, licensed_datasets, quantum_backend_available)",
+      "chief::Organisation::dispatch / review_governance / roster / audit",
+      "chief::OrganisationReport::directional/balance/coverage/is_contested",
+      "desk::Desk::new/empty (Gated<MarketView|WorldModel|BookView|RiskView|ComplianceView|ResearchMemory|SearchIndex>)",
+      "manifests::roster(reviewed_at) -> Roster (the 18-agent set) and manifests::ids::*",
+      "analysts::{MacroAnalyst,EquityAnalyst,CreditAnalyst,DerivativesAnalyst,CommoditiesAnalyst,FxRatesAnalyst,AlternativeDataAnalyst}",
+      "fast::MicrostructureAnalyst (Budget::fast_path — zero language-model calls, 50ms)",
+      "reasoning::CausalAnalyst, review::AdversarialReviewer, simulation::SimulationAnalyst",
+      "construction::{PortfolioConstruction,QuantumOptimization}",
+      "control::{RiskControl,ComplianceControl} (the two veto-holding agents)",
+      "execution::ExecutionTrader, learning::LearningAttribution",
+      "vocabulary::{reads,structurally_blind}"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-events", "qip-financial", "qip-market", "qip-portfolio", "qip-risk", "qip-ai", "qip-agents", "qip-world-model", "qip-quant", "qip-reasoning-engine (dev-only)"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:142-143 imports `Organisation` and `desk::{BookView,ComplianceView,Desk,MarketView,RiskView}`; platform.rs:4278-4291 calls `Organisation::standard(desk.clone(), now, now, config.seed, Some(language_model), config.licensed_datasets.clone(), config.quantum_enabled)`; platform.rs:10998 calls `self.organisation.dispatch(&brief, now, lineage)` every cycle's REASON stage. qip-kernel is a dependency of qip-api/qip-cli/qip-deepbrain/qip-fastbrain. qip-fastbrain/src/roster.rs and qip-deepbrain/src/roster.rs both import `qip_agents::capability::Capability` and `qip_investment_agents::manifests` to build/clear the roster at those composition roots; qip-deepbrain/src/status.rs:585 reads `qip_investment_agents::manifests::ids::EXECUTION`.",
+    "io_and_state": "No I/O in the crate itself. All facilities are read through `Desk`'s `Gated<T>` wrappers, which are RwLock-backed in-process state (qip-agents::runtime::Gated); `Desk::new`'s `memory` field is built with `Gated::new(memory, ...)` rather than `Upstream::gate` (desk.rs:105), so it is fixed for the organisation's lifetime and platform.rs never rebuilds it with fresh content after `ResearchMemory::new()` at construction (platform.rs:4271). Deterministic seeded RNG only (`AgentContext::rng`); `now`/`brief.as_of` are passed in, never read from a system clock.",
+    "tests": {
+      "count": 47,
+      "notable": [
+        "no_research_side_agent_can_reach_the_market",
+        "exactly_one_agent_can_submit_orders_and_it_publishes_nothing",
+        "the_quantum_agent_recommends_the_classical_solver_without_a_backend"
+      ]
+    },
+    "status": ["exists", "hardened", "partial"],
+    "status_reason": "The 18-agent organisation is fully wired, dispatched every cycle, and its separation-of-duties properties are directly tested against the live roster; but the ResearchMemory facility two of its agents (AdversarialReviewer, LearningAttribution) read is permanently empty in production because nothing in the codebase ever writes to it (see gaps_observed), so those two agents' precedent/hit-rate reasoning is currently always a no-op in a running deployment even though the code paths are exercised and pass in tests using a populated ResearchMemory built by hand.",
+    "blueprint_capabilities": ["AGENCY", "REASON", "RISK", "EXEC", "CAPITAL", "GOV"],
+    "gaps_observed": [
+      "desk.rs:105 `memory: Gated::new(memory, Capability::ReadResearchMemory, \"research-memory\")` — built with `Gated::new`, not `Upstream::gate`, so per qip-agents/src/runtime.rs's own doc comment ('what it holds is fixed for its lifetime') the desk's ResearchMemory can never be updated after `Desk::new` runs; platform.rs:4271 supplies `ResearchMemory::new()` (empty) and no later code writes to it. learning.rs:62 and review.rs:62 both call `self.desk.memory.get(ctx)?` (a read of `Capability::ReadResearchMemory`), so in a running deployment `LearningAttribution::analyse` always takes the `agents.is_empty()` branch (learning.rs:65-71) and returns a 'no episodes have been recorded' finding rather than ever scoring a hit rate.",
+      "construction.rs:228 `const QUANTUM_MINIMUM_ASSETS: usize = 50` gates `QuantumOptimization`'s recommendation, but per the qip-quantum gap above the quantum backend it reasons about is never actually reachable in a deployed process (`config.quantum_enabled` is always false), so this agent's 'benchmark the annealing formulation' recommendation branch (construction.rs:288-292) is unreachable in production even though it is unit-tested."
+    ],
+    "evidence": [
+      "backend/crates/agents/qip-investment-agents/src/lib.rs:1-35",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs:113-260,330-360",
+      "backend/crates/agents/qip-investment-agents/src/desk.rs:69-137",
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs:507-531",
+      "backend/crates/agents/qip-investment-agents/src/learning.rs:60-72",
+      "backend/crates/agents/qip-investment-agents/src/review.rs:60-73",
+      "backend/crates/agents/qip-investment-agents/src/construction.rs:225-295",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:142-143,4271,4278-4291,10998",
+      "backend/crates/apps/qip-fastbrain/src/roster.rs:12,15",
+      "backend/crates/apps/qip-deepbrain/src/roster.rs:19,22",
+      "backend/crates/apps/qip-deepbrain/src/status.rs:585"
+    ]
+  },
+  {
+    "name": "qip-quant",
+    "path": "backend/crates/quant/qip-quant",
+    "kind": "lib",
+    "purpose": "Defines a Signal (a scalar view on one instrument, horizon-tagged, cost-aware) and Strategy (turns signals + state into target weights) as separable primitives, plus stateless factor scoring (FactorLibrary/FactorDefinition) and a handful of free signal functions (momentum, mean_reversion, realised_volatility, carry) actually used by other crates.",
+    "key_contracts": [
+      "signal::Horizon / SignalKind / Signal::new",
+      "signal::SignalSet (composite blending, confidence weighting, standardisation)",
+      "signal::momentum / mean_reversion / realised_volatility / carry (free functions)",
+      "factor::FactorLibrary::standard/new / FactorDefinition::new / FactorScore",
+      "strategy::Strategy trait (fn decide(&self, &StrategyContext) -> StrategyDecision)",
+      "strategy::SignalWeightedStrategy::default",
+      "strategy::TargetWeights (gross/net reporting, turnover)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events", "qip-financial", "qip-numerics", "qip-portfolio"],
+    "reached_from_production": "partial",
+    "production_evidence": "`qip_quant::signal::Horizon` and the module `signal` are imported by production, non-test code in qip-investment-agents (construction.rs:18 `TargetWeights`; analysts.rs:24 `use qip_quant::signal;`), qip-deepbrain/src/learning.rs:132 (`use qip_quant::signal::Horizon;`), qip-training/src/job.rs:24 (`use qip_quant::signal::Horizon;`), and qip-feature-dag/src/features.rs:307 directly calls `qip_quant::signal::realised_volatility(...)`. By contrast `factor::{FactorLibrary,FactorDefinition,FactorScore}` and `strategy::{Strategy,SignalWeightedStrategy}` have no call site anywhere outside this crate's own tests/quant.rs (grep across crates/agents, crates/apps, crates/services, crates/edge found none) — the strategy SDK this crate's own doc comment describes ('A Strategy turns signals and state into target weights') is not the code path production portfolio construction actually uses (that is qip-investment-agents::construction::PortfolioConstruction, a hand-written Agent, not a `qip_quant::strategy::Strategy` impl).",
+    "io_and_state": "No I/O; pure functions and stateless structs (no std::fs/std::net/std::env in the crate). No persisted state — FactorLibrary/SignalSet are constructed fresh by each caller.",
+    "tests": {
+      "count": 22,
+      "notable": [
+        "a_signal_that_cannot_cover_its_costs_is_not_traded",
+        "a_restricted_instrument_is_never_targeted",
+        "the_factor_library_records_what_goes_wrong_with_each_factor"
+      ]
+    },
+    "status": ["exists", "hardened", "partial", "unused"],
+    "status_reason": "signal.rs's free functions and types are genuinely used by four other crates including two deployable-binary paths; factor.rs and strategy.rs are fully tested but have never been adopted by a caller — the strategy abstraction they define is parallel to, not used by, the actual portfolio-construction agent.",
+    "blueprint_capabilities": ["QUANT", "REASON"],
+    "gaps_observed": [
+      "strategy.rs's `Strategy` trait and `SignalWeightedStrategy` (strategy.rs:225-363) and factor.rs's `FactorLibrary`/`FactorDefinition` (factor.rs:14-210) are reached only from crates/quant/qip-quant/tests/quant.rs; no production or other-crate caller was found (grep -rln for FactorLibrary|SignalWeightedStrategy|qip_quant::strategy::Strategy across crates/agents, crates/apps, crates/services, crates/edge returned nothing outside this crate)."
+    ],
+    "evidence": [
+      "backend/crates/quant/qip-quant/src/lib.rs:1-19",
+      "backend/crates/quant/qip-quant/src/signal.rs:16-113,313-355",
+      "backend/crates/quant/qip-quant/src/factor.rs:14-90",
+      "backend/crates/quant/qip-quant/src/strategy.rs:20-247",
+      "backend/crates/agents/qip-investment-agents/src/construction.rs:18",
+      "backend/crates/agents/qip-investment-agents/src/analysts.rs:24",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:132",
+      "backend/crates/services/qip-training/src/job.rs:24",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:307"
+    ]
+  }
+]

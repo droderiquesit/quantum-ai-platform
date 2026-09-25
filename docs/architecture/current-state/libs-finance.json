@@ -1,0 +1,672 @@
+[
+  {
+    "name": "qip-financial",
+    "path": "backend/crates/libs/qip-financial",
+    "kind": "lib",
+    "purpose": "Defines a common FinancialObject base (identity, currency, venue, liquidity, cost, risk) plus one typed Extension per instrument kind, so equities, bonds, loans, options, private-equity commitments, FX and physical/DEX instruments share one cross-asset model instead of nullable-field structs or unrelated per-asset types.",
+    "key_contracts": [
+      "FinancialObject, ObjectBuilder (object.rs:23,257)",
+      "Extension enum, 20+ typed *Details structs (extensions.rs:18)",
+      "AssetClass, InstrumentType, Sector (asset_class.rs:13,101,335)",
+      "Universe, CatalogueOrigin (universe.rs:29,40)",
+      "LoadedCatalogue::load, record_manifest (catalogue.rs:168,262)",
+      "SourceManifest (manifest.rs:63)",
+      "Identifiers, is_valid_isin/cusip/sedol (identifiers.rs:111,209,239,270)",
+      "TradingCalendar, MarketHours, Session (calendar.rs:12,46,153)",
+      "RegulatoryConstraints, Jurisdiction, TradingRestriction (constraints.rs:14,47,101)",
+      "DataQuality, Provenance, LicensingClass (quality.rs:15,43,110)",
+      "RiskCharacteristics, FactorExposures, Greeks (risk_profile.rs:10,69,158)",
+      "Sentiment, NewsItem, MacroObservation, AlternativeDataPoint (intelligence.rs:21,121,276,333)",
+      "SourceCategory (category.rs:26)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:69-70 (use AssetClass, FinancialObject); backend/crates/runtime/qip-kernel/src/quote_loop.rs:574-577,605 (Universe, FinancialObject, LiquidityProfile constructed per cycle); backend/crates/runtime/qip-kernel/src/hedge_review.rs:478-482; qip-kernel is composed by backend/crates/apps/qip-api/src/main.rs:228 (Platform::new_serving), qip-fastbrain/src/main.rs:212, qip-deepbrain/src/main.rs:1301",
+    "io_and_state": "None. Pure in-memory types; Timestamp/Decimal/Error come from qip-core. LoadedCatalogue::load (catalogue.rs:168) parses a manifest string the caller supplies and record_manifest (catalogue.rs:262) writes through an injected dyn KeyValueStore trait object -- the crate itself opens no socket or file.",
+    "tests": {
+      "count": 207,
+      "notable": [
+        "the_loaded_universe_names_its_catalogue_until_it_is_edited",
+        "a_private_record_with_a_required_yield_is_discounted_rather_than_taken_at_face_value",
+        "a_horizon_before_the_present_is_refused_rather_than_projected"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "20 modules, 207 tests (27 embedded + 180 in tests/), no unwrap/panic outside #[cfg(test)] except one documented convenience wrapper (costs.rs); reached from every composition root via qip-kernel.",
+    "blueprint_capabilities": ["ASSET", "CONTRACT", "DATA", "LEDGER", "MODEL"],
+    "gaps_observed": [
+      "costs.rs:463-471 TransactionCostModel::estimate() panics on an unpriceable model instead of returning Result (checked_estimate is the safe alternative); called from production non-test code at backend/crates/services/qip-capital-fabric/src/transfer.rs:472 inside TransferCostModel::price, which otherwise returns Result<TransferCost> and refuses every other invalid input -- a panic here would abort the process rather than refuse the transfer.",
+      "physical.rs (1072 lines, PhysicalArbitrage/LandedCost/LogisticsTerms/Customs/Spoilage/MarketplaceFees/Returns, 11 embedded tests) has zero references anywhere in the workspace outside qip-financial's own src and tests -- `grep -rl PhysicalArbitrage backend/crates` outside qip-financial returns nothing."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/lib.rs:17-36",
+      "backend/crates/libs/qip-financial/src/costs.rs:454-471",
+      "backend/crates/services/qip-capital-fabric/src/transfer.rs:364,440-472",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:168 (qip_portfolio) and :154-156 (qip_market) show the sibling wiring pattern qip_financial shares"
+    ]
+  },
+  {
+    "name": "qip-financial::cashflow",
+    "path": "backend/crates/libs/qip-financial/src/cashflow.rs",
+    "kind": "lib",
+    "purpose": "Bitemporal cashflow forecasting and private-capital commitment tracking: ForecastCashflow/CashflowForecast hold what was known and when, CapitalCall/Commitment/CallSchedule model capital calls against an LP commitment with default-penalty arithmetic, and every accessor refuses a fact that was not yet knowable at the query instant rather than reading it early.",
+    "key_contracts": [
+      "CashflowForecast::new/with_flow/expected_between/present_value/j_curve_trough (cashflow.rs:200,223,300,477,558)",
+      "ForecastCashflow::new/expected_signed (cashflow.rs:102,162)",
+      "CashflowForecast::guard_knowable/is_knowable_at (cashflow.rs:274,285)",
+      "CallSchedule::published, CallConsequence::penalty_on (cashflow.rs:809,652)",
+      "CapitalCall::notice/is_overdue_at/penalty_at (cashflow.rs:927,1031,1053)",
+      "Commitment::unscheduled/record_call/settle_call/withdraw_call/obligation (cashflow.rs:1113,1300,1379,1421,1458)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs (cashflow module doc references at :125); backend/crates/runtime/qip-kernel/src/platform.rs references CashflowForecast/Commitment machinery; backend/crates/apps/qip-api/src/ledger_views.rs uses qip_financial::cashflow types to render ledger views served by the API composition root.",
+    "io_and_state": "None; pure Decimal/Timestamp arithmetic, no ambient clock (every method takes `as_of` or `now` explicitly).",
+    "tests": {
+      "count": 37,
+      "notable": [
+        "a_horizon_before_the_present_is_refused_rather_than_projected",
+        "an_exit_time_that_is_not_a_number_of_days_is_refused_rather_than_carried",
+        "the_j_curve_trough_is_the_point_before_which_every_later_point_recovers"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "Largest single file in the crate (1785 lines), 37 tests in tests/cashflow.rs, no inline #[test]; reached from qip-kernel and qip-api's ledger views.",
+    "blueprint_capabilities": ["LEDGER", "CAPITAL", "ASSET"],
+    "gaps_observed": [
+      "cashflow.rs:1107 doc comment: 'A commitment whose call timing is not yet modelled' -- a named, acknowledged modelling gap for unscheduled commitments rather than a code defect."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/cashflow.rs:19,1107,1281,1680",
+      "backend/crates/apps/qip-api/src/ledger_views.rs"
+    ]
+  },
+  {
+    "name": "qip-financial::ladder",
+    "path": "backend/crates/libs/qip-financial/src/ladder.rs",
+    "kind": "lib",
+    "purpose": "Prices an orderly exit from a position as a LiquidityLadder of time-bucketed Rungs, each carrying a participation-limited quote; LiquidationPlan sequences PlanLegs across rungs so a MinLiquidity/MaxDaysToLiquidate risk limit has an actual horizon to read rather than a single ADV number.",
+    "key_contracts": [
+      "LiquidationHorizon enum (ladder.rs:52)",
+      "Rung enum, prove_quotes_can_coexist (ladder.rs:123,321)",
+      "LadderEntry (ladder.rs:379)",
+      "PlanLeg, LiquidationPlan (ladder.rs:464,475)",
+      "LiquidityLadder (ladder.rs:493)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/platform.rs constructs/reads LiquidityLadder for the liquidity-floor evaluation gating sign-off (see platform.rs:13400-13440 sign_off_problems / unevaluated liquidity path); backend/crates/services/qip-optimization-engine/src/lib.rs uses the ladder for sizing.",
+    "io_and_state": "None; pure Decimal arithmetic over rungs supplied by the caller.",
+    "tests": {
+      "count": 35,
+      "notable": [
+        "a_holdings_own_stated_exit_time_beats_the_boundary_of_its_rungs_bucket",
+        "a_level_this_platform_assumed_cannot_be_breached_and_says_so_in_its_own_sentence"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "953 lines, 35 tests in tests/ladder.rs, no embedded tests; its output feeds the MinLiquidity/MaxDaysToLiquidate limits the risk-and-execution domain rule names as load-bearing.",
+    "blueprint_capabilities": ["RISK", "EXEC", "ASSET"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/ladder.rs:52,321,493",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13413-13440",
+      "backend/crates/services/qip-optimization-engine/src/lib.rs"
+    ]
+  },
+  {
+    "name": "qip-financial::credit",
+    "path": "backend/crates/libs/qip-financial/src/credit.rs",
+    "kind": "lib",
+    "purpose": "Models loan/credit covenants (Covenant, CovenantState, CovenantKind) and a CreditProfile carrying default priors and indicative recovery rates by seniority, used to price and monitor credit-sensitive instruments distinct from the general FinancialObject risk profile.",
+    "key_contracts": [
+      "CovenantKind, CovenantSource, CovenantState (credit.rs:53,94,121)",
+      "Covenant (credit.rs:144)",
+      "DefaultPrior, indicative_recovery_rate (credit.rs:330,351)",
+      "CreditProfile (credit.rs:367)",
+      "LOAN_LEVERAGE_COVENANT constant (credit.rs:841)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/valuation.rs and backend/crates/runtime/qip-kernel/src/platform.rs both reference qip_financial::credit for CreditProfile-driven valuation paths.",
+    "io_and_state": "None; pure types.",
+    "tests": {
+      "count": 18,
+      "notable": [
+        "against a placeholder (credit.rs:215, refusal-message test context)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "841 lines, 18 tests in tests/credit.rs, reached from qip-kernel valuation path.",
+    "blueprint_capabilities": ["RISK", "ASSET"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/credit.rs:144,367",
+      "backend/crates/runtime/qip-kernel/src/valuation.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs"
+    ]
+  },
+  {
+    "name": "qip-financial::valuation_and_costs",
+    "path": "backend/crates/libs/qip-financial/src/{valuation.rs,costs.rs}",
+    "kind": "lib",
+    "purpose": "valuation.rs prices an AssetValuation by one of several ValuationMethods (with IlliquidValuator as the explicit refuse-rather-than-mark path); costs.rs models LiquidityProfile and TransactionCostModel so an order's expected slippage/borrow cost is computed from stated participation and rate figures rather than assumed.",
+    "key_contracts": [
+      "ValuationMethod, ValuationInput, AssetValuation (valuation.rs:68,158,280)",
+      "IlliquidValuator (valuation.rs:419)",
+      "LiquidityProfile (costs.rs:59)",
+      "TransactionCostModel::checked_estimate/estimate (costs.rs:215, method decl ~costs.rs:454-471)",
+      "MAX_TRADE_COST_BPS, MAX_BORROW_BPS_ANNUAL (costs.rs:277,286)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:89 (valuation doc reference), backend/crates/services/qip-optimization-engine/src/families.rs and backend/crates/services/qip-capital/src/compounding.rs use qip_financial::valuation; backend/crates/services/qip-capital-fabric/src/transfer.rs:364,472 constructs and calls TransactionCostModel.",
+    "io_and_state": "None; pure Decimal/f64 pricing arithmetic, the f64 crossing point stated in-line (costs.rs uses f64 for bps rates, Decimal for notional/money).",
+    "tests": {
+      "count": 42,
+      "notable": [
+        "a_record not yet knowable at read_at is refused (valuation.rs:785 area)",
+        "cost tests in tests/costs.rs covering MAX_TRADE_COST_BPS boundary"
+      ]
+    },
+    "status": ["exists", "hardened", "partial"],
+    "status_reason": "907+514 lines, 24+18=42 tests in tests/valuation.rs and tests/costs.rs; hardened overall but costs.rs:estimate() is a panicking convenience wrapper reachable from a Result-returning production caller (see qip-financial gaps_observed).",
+    "blueprint_capabilities": ["MODEL", "ASSET", "EXEC"],
+    "gaps_observed": [
+      "costs.rs pub fn estimate (~costs.rs:463-471) panics rather than returning Result; production caller at backend/crates/services/qip-capital-fabric/src/transfer.rs:472 uses this panicking path inside a Result-returning function."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/valuation.rs:68,158,280,419",
+      "backend/crates/libs/qip-financial/src/costs.rs:59,215,277,286,454-471",
+      "backend/crates/services/qip-capital-fabric/src/transfer.rs:364,440-472"
+    ]
+  },
+  {
+    "name": "qip-financial::physical_and_pool",
+    "path": "backend/crates/libs/qip-financial/src/{physical.rs,pool.rs}",
+    "kind": "lib",
+    "purpose": "physical.rs prices physical/commodity arbitrage (LandedCost, Customs, Spoilage, LogisticsTerms, delivered_price across Legs); pool.rs models an AMM/DEX PoolState (constant-product and other PoolCurves), block-level MEV exposure (MevEstimate, BlockExecution) and smart-contract risk (ContractRisk) for on-chain venues.",
+    "key_contracts": [
+      "PhysicalArbitrage, LandedCost, delivered_price (physical.rs:356,260,669)",
+      "Spoilage, Customs, LogisticsTerms (physical.rs:149,129,244)",
+      "PoolState, PoolCurve, PoolQuote (pool.rs:134,98,316)",
+      "BlockExecution, MevEstimate (pool.rs:336,452)",
+      "ContractRisk, DexModel, DexQuote (pool.rs:534,621,759)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events"],
+    "reached_from_production": "partial",
+    "production_evidence": "pool.rs types (PoolState/DexQuote/MevEstimate) are used in production by backend/crates/services/qip-chain/src/{lib.rs,state.rs}, backend/crates/services/qip-lifecycle/src/venue_ladder.rs and backend/crates/services/qip-brokers/src/dex.rs, all of which reach qip-kernel/qip-api/qip-edge-node/qip-cli. physical.rs has NO callers anywhere in the workspace outside its own file (`grep -rl PhysicalArbitrage backend/crates` returns only qip-financial/src/physical.rs and qip-financial/tests coverage is also absent -- physical.rs's 11 tests are embedded #[cfg(test)] at physical.rs:685).",
+    "io_and_state": "None; pure pricing/quoting arithmetic.",
+    "tests": {
+      "count": 22,
+      "notable": [
+        "pool.rs: complete DEX quote composes slippage+MEV+contract-risk cost (pool.rs:~961-977)",
+        "physical.rs: delivered_price handles negative-cost legs (physical.rs:1029-1033)"
+      ]
+    },
+    "status": ["exists", "hardened", "unused"],
+    "status_reason": "pool.rs (11 embedded tests) is reached from production via qip-chain/qip-brokers/qip-lifecycle; physical.rs (11 embedded tests, 1072 lines) is fully tested in isolation but has zero cross-crate callers, so it is dead code from a whole-workspace reachability standpoint though internally correct.",
+    "blueprint_capabilities": ["ASSET", "EXPAND", "COMMERCE"],
+    "gaps_observed": [
+      "backend/crates/libs/qip-financial/src/physical.rs: no production or cross-crate caller of PhysicalArbitrage/LandedCost/delivered_price anywhere in the workspace outside this file's own module and its embedded tests."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/physical.rs:356,669,685",
+      "backend/crates/libs/qip-financial/src/pool.rs:68,134,336,452,534,785",
+      "backend/crates/services/qip-chain/src/lib.rs",
+      "backend/crates/services/qip-brokers/src/dex.rs",
+      "backend/crates/services/qip-lifecycle/src/venue_ladder.rs"
+    ]
+  },
+  {
+    "name": "qip-market",
+    "path": "backend/crates/libs/qip-market",
+    "kind": "lib",
+    "purpose": "Market-structure types shared between the domain object model and the event bus: Quote/Trade/Tick, an OrderBook of BookLevels, Bar/BarSeries, CorporateAction adjustment, a VolatilitySurface/Smile, and MarketSnapshot/InstrumentState as the sensed-state-of-the-world record the kernel's SENSE stage fills.",
+    "key_contracts": [
+      "Bar, BarSeries, Interval (bar.rs:11,68,169)",
+      "OrderBook, BookLevel, Side (book.rs:14,46,73)",
+      "CorporateAction, CorporateActionKind, adjust_prices (corporate_action.rs:15,43,294)",
+      "CurvePoint, TermStructure (curve.rs:17,42)",
+      "MicrostructureMetrics (microstructure.rs:16)",
+      "Quote, Trade, Tick, TradeCondition (quote.rs:13,138,163,223)",
+      "InstrumentState, MarketSnapshot (snapshot.rs:17,47)",
+      "VolPoint, Smile, VolatilitySurface, implied_correlation (volatility.rs:68,110,197,524)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-financial", "qip-events"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/platform.rs:154-156 (use qip_market::bar::{Bar,Interval}, corporate_action, snapshot); quote_loop.rs:92-93,419,438 uses OrderBook/InstrumentState/Quote::mid/Quote::imbalance every SENSE-stage pass; platform.rs:9607 apply_corporate_action ingests CorporateAction records into bar history.",
+    "io_and_state": "None; pure market-structure types. Prices/quantities are qip_core::Decimal, derived statistics f64, per the module doc's stated crossing point.",
+    "tests": {
+      "count": 75,
+      "notable": [
+        "a_negative_implied_volatility_is_refused_rather_than_floored",
+        "a_zero_implied_volatility_is_refused_because_it_prices_every_option_at_intrinsic",
+        "an_index_quoted_far_above_its_components_is_refused_rather_than_clamped_to_one"
+      ]
+    },
+    "status": ["exists", "hardened", "partial"],
+    "status_reason": "8 modules, 75 tests (all in tests/, none embedded); CorporateAction and its ex-date/quantity-factor methods are wired into production, but the standalone convenience function adjust_prices(&[Bar], &[CorporateAction]) has no caller outside its own tests/structure.rs -- apply_corporate_action in platform.rs reimplements the per-bar loop using CorporateAction::price_adjustment_factor directly rather than calling adjust_prices.",
+    "blueprint_capabilities": ["TICK", "WORLD", "ASSET"],
+    "gaps_observed": [
+      "corporate_action.rs:294 pub fn adjust_prices has no production caller; grep -rn 'adjust_prices(' backend/crates outside qip-market/src and qip-market/tests/structure.rs (3 call sites, all tests) returns nothing. qip-kernel's platform.rs:9607-9657 apply_corporate_action reimplements the same per-bar adjustment inline using CorporateAction::price_adjustment_factor instead."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-market/src/corporate_action.rs:294",
+      "backend/crates/libs/qip-market/tests/structure.rs:486,579,629",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9607-9657,154-156",
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs:92-93,419,438"
+    ]
+  },
+  {
+    "name": "qip-numerics",
+    "path": "backend/crates/libs/qip-numerics",
+    "kind": "lib",
+    "purpose": "In-tree, deterministic linear algebra, statistics and optimisation primitives (no threading, no FMA contraction) so two runs on the same data produce identical bits -- what makes backtests and risk numbers reproducible; DEFAULT_TOL/DEFAULT_MAX_ITERS are the shared convergence constants every iterative solver in the crate honours.",
+    "key_contracts": [
+      "Matrix, Vector (re-exported at lib.rs:23-24)",
+      "DEFAULT_TOL, DEFAULT_MAX_ITERS (lib.rs:26,28)",
+      "vector::dot/norm2/project_simplex/project_box_sum (vector.rs:12,17,71,102)",
+      "interpolate::Curve, Method (interpolate.rs:12,25)",
+      "search::bisect/newton_bracketed/golden_section/nelder_mead (search.rs:9,46,84,115)"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/{feature_statistics.rs,falsification.rs,family_review.rs,counterfactual_trial.rs,quote_loop.rs,platform.rs} all reference qip_numerics::; qip-kernel is composed into qip-api/qip-fastbrain/qip-deepbrain/qip-cli main.rs (see qip-financial record for citations).",
+    "io_and_state": "None; deterministic pure math, no threading, no wall clock. Dev-dependency serde_json is test-only (Cargo.toml comment at qip-numerics/Cargo.toml:11-13).",
+    "tests": {
+      "count": 139,
+      "notable": [
+        "singular_matrices_are_reported_not_silently_wrong",
+        "solve_needs_pivoting_when_the_first_pivot_is_zero",
+        "a_non_finite_control_observation_is_refused_rather_than_filtered"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "13 modules, 139 tests (16 embedded in sketch.rs/streaming.rs + 123 in tests/); zero I/O, zero non-test unwrap/expect/panic except two literal panic! inside #[test] fns (sketch.rs, streaming.rs -- verified in-test).",
+    "blueprint_capabilities": ["QUANT", "MODEL"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/libs/qip-numerics/src/lib.rs:9-29",
+      "backend/crates/libs/qip-numerics/Cargo.toml:11-13",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (qip_numerics usage)"
+    ]
+  },
+  {
+    "name": "qip-numerics::matrix",
+    "path": "backend/crates/libs/qip-numerics/src/matrix.rs",
+    "kind": "lib",
+    "purpose": "Dense Matrix type (523 lines) with solve/inverse/eigendecomposition (Eigen), the linear-algebra substrate every other numerics module (stats' covariance_matrix, qp's quadratic programs, online's streaming PCA) builds on.",
+    "key_contracts": [
+      "Matrix (matrix.rs:15)",
+      "Eigen (matrix.rs:497)"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip_numerics::Matrix is re-exported at lib.rs:23 and consumed by stats::covariance_matrix/correlation_from_covariance/shrink_covariance (stats.rs:181,204,234) and online::StreamingPca (online.rs:677), both reached from qip-kernel's feature_statistics.rs / falsification.rs paths.",
+    "io_and_state": "None; pure numeric.",
+    "tests": {
+      "count": 21,
+      "notable": [
+        "singular_matrices_are_reported_not_silently_wrong",
+        "inverse_times_original_is_identity",
+        "solve_recovers_the_right_hand_side"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "21 tests in tests/linalg.rs, no embedded tests; foundational to stats and qp modules.",
+    "blueprint_capabilities": ["QUANT"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/libs/qip-numerics/src/matrix.rs:15,497",
+      "backend/crates/libs/qip-numerics/src/stats.rs:181,204,234",
+      "backend/crates/libs/qip-numerics/src/online.rs:677",
+      "backend/crates/libs/qip-numerics/tests/linalg.rs"
+    ]
+  },
+  {
+    "name": "qip-numerics::optimisation",
+    "path": "backend/crates/libs/qip-numerics/src/{lp.rs,qp.rs,anneal.rs}",
+    "kind": "lib",
+    "purpose": "Three solver families: lp.rs a simplex-style LinearProgram solver reporting LpStatus (including unboundedness), qp.rs a QuadraticProgram solver with box/budget-constrained variants (solve_box_budget), and anneal.rs a QUBO simulated annealer (anneal) plus an exact brute-force solver (solve_exact) used as the classical baseline ADR 0006 requires alongside any quantum path.",
+    "key_contracts": [
+      "LinearProgram, Sense, LpStatus, LpSolution, solve (lp.rs:22,14,57,65,73)",
+      "QuadraticProgram, QpSolution, QpSettings, solve/solve_default/solve_box_budget (qp.rs:83,181,194,223,346,353)",
+      "Qubo, AnnealSettings, AnnealResult, anneal, solve_exact (anneal.rs:13,111,130,138,188)"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/services/qip-optimization-engine/src/{router.rs,problem.rs} construct and route Qubo/anneal::solve_exact; qip-optimization-engine is a dependency of backend/crates/runtime/qip-kernel/Cargo.toml, composed into every app.",
+    "io_and_state": "None; deterministic solvers, no RNG seeded from wall-clock (anneal's Rng is caller-supplied).",
+    "tests": {
+      "count": 32,
+      "notable": [
+        "lp_detects_unboundedness",
+        "lp_rejects_a_mismatched_constraint_width",
+        "box_sum_projection_respects_bounds_and_budget"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "916 combined lines, 32 tests in tests/optimisation.rs; anneal::solve_exact is exactly the classical baseline ADR 0006 mandates be computed every time a quantum QAOA path runs.",
+    "blueprint_capabilities": ["QUANT", "EXEC"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/libs/qip-numerics/src/lp.rs:22,73",
+      "backend/crates/libs/qip-numerics/src/qp.rs:83,223,353",
+      "backend/crates/libs/qip-numerics/src/anneal.rs:13,138,188",
+      "backend/crates/services/qip-optimization-engine/src/router.rs",
+      "backend/crates/services/qip-optimization-engine/src/problem.rs"
+    ]
+  },
+  {
+    "name": "qip-numerics::stats",
+    "path": "backend/crates/libs/qip-numerics/src/{stats.rs,distributions.rs,hmm.rs}",
+    "kind": "lib",
+    "purpose": "stats.rs: descriptive statistics, OLS regression, Granger causality (with and without controls), returns transforms; distributions.rs: normal/student-t/F/chi-square CDFs and inverse-CDFs plus the gamma/beta special functions they depend on; hmm.rs: GaussianHmm for regime detection.",
+    "key_contracts": [
+      "mean/variance/stddev/skewness/excess_kurtosis/quantile (stats.rs:12,20,37,42,58,77)",
+      "ols, linear_fit, Regression (stats.rs:301,329,393)",
+      "granger_causality, granger_causality_controlling_for (stats.rs:459,515)",
+      "simple_returns/log_returns/cumulative_growth, RunningStats (stats.rs:658,666,717,733)",
+      "normal_cdf, normal_inv_cdf, student_t_cdf, chi_square_cdf (distributions.rs:19,33,115,172)",
+      "GaussianHmm (hmm.rs:18)"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/services/qip-opportunity-engine/src/detector.rs and backend/crates/services/qip-simulation-engine/src/baseline.rs construct GaussianHmm; qip-kernel's platform.rs and feature_statistics.rs consume stats:: functions for the REASON/LEARN stages.",
+    "io_and_state": "None; pure math.",
+    "tests": {
+      "count": 51,
+      "notable": [
+        "a_gaussian_series_is_not_flagged_as_fat_tailed",
+        "granger_controls tests in tests/granger_controls.rs (7 tests)",
+        "equity_returns tests in tests/equity_returns.rs (5 tests)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "1468 combined lines, 51 tests across tests/statistics.rs (39), tests/granger_controls.rs (7), tests/equity_returns.rs (5); reached from opportunity-engine and simulation-engine, both composed into qip-kernel.",
+    "blueprint_capabilities": ["QUANT", "MODEL", "REASON"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/libs/qip-numerics/src/stats.rs:301,459,733",
+      "backend/crates/libs/qip-numerics/src/hmm.rs:18",
+      "backend/crates/services/qip-opportunity-engine/src/detector.rs",
+      "backend/crates/services/qip-simulation-engine/src/baseline.rs"
+    ]
+  },
+  {
+    "name": "qip-numerics::streaming",
+    "path": "backend/crates/libs/qip-numerics/src/{streaming.rs,online.rs,sketch.rs}",
+    "kind": "lib",
+    "purpose": "Bounded-memory streaming primitives: streaming.rs's TDigest (quantile sketch), HyperLogLog (cardinality) and Reservoir<T> (bounded reservoir sampling, capped at RESERVOIR_MAX_ROWS); online.rs's EwCovariance/RecursiveLeastSquares/StreamingPca for exponentially-weighted online estimation; sketch.rs's CountMinSketch for approximate frequency counting -- the concrete mechanism behind the platform's 'bounded retention, bounded working sets, always' rule.",
+    "key_contracts": [
+      "TDigest, Compression, Centroid (streaming.rs:255,85,226)",
+      "HyperLogLog, Precision, HLL_MIN/MAX_PRECISION (streaming.rs:747,637,621,631)",
+      "Reservoir<T>, RESERVOIR_MAX_ROWS (streaming.rs:937,907)",
+      "ForgettingFactor, EwCovariance, RecursiveLeastSquares, StreamingPca (online.rs:92,253,469,677)",
+      "CountMinSketch, ErrorBound, MAX_COUNTERS (sketch.rs:193,78,62)"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/services/qip-training/src/estimators.rs and backend/crates/runtime/qip-kernel/src/feature_statistics.rs construct TDigest/HyperLogLog/Reservoir/CountMinSketch; backend/crates/services/qip-data-finder/src/campaign.rs uses sketch::CountMinSketch.",
+    "io_and_state": "None; all bounds are explicit constructor arguments (capacity/precision/compression), refused rather than clamped when out of range -- e.g. Reservoir::new refuses capacity 0 or > RESERVOIR_MAX_ROWS (proven by a_reservoir_refuses_an_unbounded_capacity_and_holds_its_row_count_against_a_long_stream).",
+    "tests": {
+      "count": 35,
+      "notable": [
+        "a_reservoir_refuses_an_unbounded_capacity_and_holds_its_row_count_against_a_long_stream",
+        "streaming_pca_keeps_its_components_apart",
+        "a_non_finite_control_observation_is_refused_rather_than_filtered"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "3401 combined lines (largest module cluster in the crate), 35 tests (16 embedded: 5 in sketch.rs, 11 in streaming.rs; 19 in tests/online.rs); directly implements the platform's 'Bounded retention' standing product decision.",
+    "blueprint_capabilities": ["DATA", "QUANT"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/libs/qip-numerics/src/streaming.rs:255,747,937,1108",
+      "backend/crates/libs/qip-numerics/src/online.rs:92,253,469,677",
+      "backend/crates/libs/qip-numerics/src/sketch.rs:193,395",
+      "backend/crates/services/qip-training/src/estimators.rs",
+      "backend/crates/runtime/qip-kernel/src/feature_statistics.rs"
+    ]
+  },
+  {
+    "name": "qip-portfolio",
+    "path": "backend/crates/libs/qip-portfolio",
+    "kind": "lib",
+    "purpose": "Exact double-entry portfolio accounting where equity = cash + sum(position market value) holds to the last unit after any sequence of fills; realised profit is computed by closing specific tax Lots (never an average price) so the lot a sale closes is an explicit, auditable choice.",
+    "key_contracts": [
+      "Exposure, ExposureBreakdown (exposure.rs:14,85)",
+      "PositionLifecycle enum (lifecycle.rs:19)",
+      "LotMethod, LotSelection, Lot, RealisedTrade, close_lots_with/close_lots_under (lot.rs:41,187,226,282,338,370)",
+      "HoldingTerm, HoldingPeriodTest (lot.rs:75,111)",
+      "Valuation, Portfolio, PortfolioSnapshot (portfolio.rs:17,46,453)",
+      "PositionSide, Position, PositionUpdated (position.rs:14,40,419)"
+    ],
+    "workspace_deps": ["qip-core", "qip-events", "qip-financial"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/platform.rs:168 `use qip_portfolio::portfolio::Portfolio;` -- Portfolio is the book the kernel carries across every cycle; hedge_review.rs:64,384 uses qip_portfolio::exposure::{ExposureBreakdown,Exposure}; qip-kernel is composed into every app (see qip-financial record).",
+    "io_and_state": "None; pure Decimal accounting, no ambient clock.",
+    "tests": {
+      "count": 51,
+      "notable": [
+        "property_the_accounting_identity_survives_any_sequence_of_fills",
+        "equity_equals_cash_plus_positions_exactly",
+        "closing_more_than_is_open_consumes_everything_available"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "5 modules, 51 tests (3 embedded in lifecycle.rs + 48 in tests/); lot.rs has no direct external caller by name but is used internally by position.rs:8 (use crate::lot::{...}) and portfolio.rs:214, both of which are reached from qip-kernel -- so it reaches production transitively rather than directly.",
+    "blueprint_capabilities": ["LEDGER", "ASSET", "CAPITAL"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/libs/qip-portfolio/src/position.rs:8",
+      "backend/crates/libs/qip-portfolio/src/portfolio.rs:214",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:168",
+      "backend/crates/runtime/qip-kernel/src/hedge_review.rs:64,384"
+    ]
+  },
+  {
+    "name": "qip-risk",
+    "path": "backend/crates/libs/qip-risk",
+    "kind": "lib",
+    "purpose": "Three parts composed for the risk-and-execution domain: metrics/factor/shared_cause measure risk (VaR two ways, expected shortfall, drawdown, factor decomposition, three shared-cause envelope axes); limits decides what is allowed via deterministic, never-model-routed checks; hedge proposes (never submits) orders that reduce a named exposure toward a declared target.",
+    "key_contracts": [
+      "AggregateFigures, RiskAggregates, FactorRisk, RiskDecomposition (lib.rs re-exports)",
+      "HedgeAxis, HedgeEngine, HedgePolicy, HedgeProposal, HedgeRefusal, propose_hedge (lib.rs re-exports)",
+      "Limit, LimitBreach, LimitCheck, LimitKind, LimitSet, RiskState, Severity (lib.rs re-exports)",
+      "DrawdownProfile, RiskMetrics, TailRisk (lib.rs re-exports)",
+      "CAUSAL_DRIVER_AXIS, FACTOR_AXIS, FAMILY_AXIS, SHARED_CAUSE_AXES, SharedCauseExposure (lib.rs re-exports)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-portfolio"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/{rule_review.rs,shared_cause.rs,hedge_review.rs,adversary_review.rs,references.rs,cross_margin.rs,central/plane.rs,platform.rs} all import qip_risk::; deployed via qip-api/qip-fastbrain/qip-deepbrain/qip-cli which all depend on qip-risk directly (Cargo.toml) as well as transitively via qip-kernel.",
+    "io_and_state": "None; RiskState::with_tail_risk (limits.rs:794) takes a returns slice and each limit's own confidence, no ambient clock.",
+    "tests": {
+      "count": 142,
+      "notable": [
+        "a_book_inside_the_expected_shortfall_limit_passes",
+        "a_long_and_a_short_that_share_one_driver_do_not_net_each_other_away",
+        "a_producer_may_not_write_an_axis_the_reference_data_vouches_for"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "7 modules, 142 tests, all in tests/ (none embedded); the historical MaxExpectedShortfall-can-never-fire defect the domain rule names is confirmed fixed -- RiskState::with_tail_risk fills expected_shortfall per limit, wired at backend/crates/runtime/qip-kernel/src/platform.rs:15135, proven by the_expected_shortfall_limit_can_actually_fire at platform.rs:18759.",
+    "blueprint_capabilities": ["RISK", "CAPITAL"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/libs/qip-risk/src/limits.rs:604,794,833",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:15135,18759",
+      "backend/crates/apps/qip-api/Cargo.toml, qip-fastbrain/Cargo.toml, qip-deepbrain/Cargo.toml, qip-cli/Cargo.toml (direct qip-risk deps)"
+    ]
+  },
+  {
+    "name": "qip-risk::limits",
+    "path": "backend/crates/libs/qip-risk/src/limits.rs",
+    "kind": "lib",
+    "purpose": "The deterministic pre-trade limit engine: LimitKind enumerates every checkable limit (including MaxExpectedShortfall, MaxConcentration, counterparty/manager/vintage axis limits), RiskState carries the figures a check reads (value_at_risk, expected_shortfall, volatility maps plus an `unevaluated` refusal map), and LimitSet/LimitCheck run the checks and report which limit bound and by how much.",
+    "key_contracts": [
+      "LimitKind enum incl. MaxExpectedShortfall{confidence,limit} (limits.rs:118,161)",
+      "Limit, LimitBreach (limits.rs:447,579)",
+      "RiskState, RiskState::with_tail_risk (limits.rs:604,794)",
+      "LimitCheck, LimitSet (limits.rs:850,942)",
+      "VALUE_AT_RISK_FIGURE, EXPECTED_SHORTFALL_FIGURE, VOLATILITY_FIGURE, COUNTERPARTY_AXIS, MANAGER_AXIS, VINTAGE_AXIS (limits.rs:66,70,74,39,52,58)",
+      "RISK_LIMITS_PATH_VARIABLE (limits.rs:30, the env-var name a composition root in crates/apps reads -- limits.rs itself does not read std::env)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-portfolio"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/platform.rs:13413-13440 gates order sign-off on RiskState/LimitCheck outcomes every DECIDE-stage cycle; rule_review.rs:40 `use qip_risk::limits::LimitKind`; the_expected_shortfall_limit_can_actually_fire (platform.rs:18759) proves the veto fires.",
+    "io_and_state": "None in this file; RISK_LIMITS_PATH_VARIABLE names an env var a composition root (crates/apps) reads per the architecture rule that only apps read std::env.",
+    "tests": {
+      "count": 64,
+      "notable": [
+        "a_budget_that_admits_nothing_refuses_even_a_flat_strategy",
+        "a_book_inside_the_expected_shortfall_limit_passes",
+        "a_holding_marked_faster_than_the_ceiling_is_admitted_through_the_same_state"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "1740 lines (largest file in the crate), tests split across tests/risk.rs (64, shared with metrics/factor) and tests/limit_fixtures.rs (36); the veto is proven to actually fire, not merely declared.",
+    "blueprint_capabilities": ["RISK", "CAPITAL"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/libs/qip-risk/src/limits.rs:118,161,604,794,850,942",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13413-13440,15135,18759",
+      "backend/crates/runtime/qip-kernel/src/rule_review.rs:40"
+    ]
+  },
+  {
+    "name": "qip-risk::hedge",
+    "path": "backend/crates/libs/qip-risk/src/hedge.rs",
+    "kind": "lib",
+    "purpose": "HedgeEngine/propose_hedge sizes a HedgeProposal that reduces a named HedgeAxis exposure toward a HedgePolicy target -- explicitly a proposal the execution engine may act on, never an order this crate submits itself; HedgeRefusal enumerates why a proposal was not made (e.g. exposure inside a de-minimis threshold).",
+    "key_contracts": [
+      "HedgeAxis, HedgeSide (hedge.rs:94,317)",
+      "HedgeExposures, HedgeInstrument, HedgePolicy (hedge.rs:124,160,215)",
+      "HedgeProposal, HedgeRefusal, HedgeOutcome (hedge.rs:347,383,440)",
+      "HedgeEngine, propose_hedge (hedge.rs:463,507)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-portfolio"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/hedge_review.rs:1 module doc states it is 'The production caller of qip_risk::hedge: blueprint section 31.4's hedge sizing'; imports at hedge_review.rs:65,69.",
+    "io_and_state": "None; sizing is pure arithmetic over supplied exposures/policy.",
+    "tests": {
+      "count": 16,
+      "notable": [
+        "an_exposure_inside_the_de_minimis_threshold_produces_no_proposal"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "787 lines, 16 tests in tests/hedge.rs; explicitly documented as never submitting an order (only proposing), consistent with the paper-trading boundary and the risk-and-execution domain rule that limits are checked before an order object exists.",
+    "blueprint_capabilities": ["RISK", "EXEC"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/libs/qip-risk/src/hedge.rs:314,463,507",
+      "backend/crates/runtime/qip-kernel/src/hedge_review.rs:1,65,69"
+    ]
+  },
+  {
+    "name": "qip-risk::measurement",
+    "path": "backend/crates/libs/qip-risk/src/{metrics.rs,factor.rs,market_factor.rs,shared_cause.rs}",
+    "kind": "lib",
+    "purpose": "metrics.rs computes historical_var and parametric_var side by side (deliberately not presenting one as *the* answer), expected_shortfall, DrawdownProfile and beta/alpha/tracking-error/information-ratio; factor.rs decomposes risk by factor; market_factor.rs is the single MARKET_FACTOR the platform fits overlap against; shared_cause.rs produces three envelope axes (family/factor/causal-driver) charged to the same axis mechanism sector/country caps already read.",
+    "key_contracts": [
+      "historical_var, parametric_var, expected_shortfall (metrics.rs:24,37,52)",
+      "DrawdownProfile, drawdown_profile (metrics.rs:70,91)",
+      "TailRisk, RiskMetrics (metrics.rs:149,198)",
+      "beta, alpha, tracking_error, information_ratio (metrics.rs:352,361,367,377)",
+      "FactorRisk, RiskDecomposition (factor.rs:17,180)",
+      "MarketFactor, MARKET_FACTOR, MINIMUM_OVERLAP (market_factor.rs:93,43,66)",
+      "SharedCauseExposure, FAMILY_AXIS, FACTOR_AXIS, CAUSAL_DRIVER_AXIS, SHARED_CAUSE_AXES, is_shared_cause_axis (shared_cause.rs:194,105,109,117,128,131)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-portfolio"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/shared_cause.rs:72-74 imports RiskState, MarketFactor, SharedCauseExposure/CAUSAL_DRIVER_AXIS/FACTOR_AXIS; backend/crates/runtime/qip-kernel/src/platform.rs uses factor/metrics/market_factor directly.",
+    "io_and_state": "None; pure statistics over caller-supplied return series.",
+    "tests": {
+      "count": 75,
+      "notable": [
+        "a_long_and_a_short_that_share_one_driver_do_not_net_each_other_away",
+        "a_gaussian_series_is_not_flagged_as_fat_tailed (numerics-adjacent, exercised via risk.rs)",
+        "the_drawdown_profile_locates_the_peak_the_trough_and_the_recovery"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "1353 combined lines, tests split across tests/risk.rs (shared with limits, 64 total) and tests/shared_cause.rs (11); shared_cause.rs is explicitly the mechanism that fixes a previously-undetectable correlated-exposure gap by reusing the sector/country veto rather than adding a second, unproven one.",
+    "blueprint_capabilities": ["RISK"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/libs/qip-risk/src/metrics.rs:24,37,52,198",
+      "backend/crates/libs/qip-risk/src/shared_cause.rs:105,109,117,194",
+      "backend/crates/runtime/qip-kernel/src/shared_cause.rs:72-74"
+    ]
+  },
+  {
+    "name": "qip-risk::aggregate",
+    "path": "backend/crates/libs/qip-risk/src/aggregate.rs",
+    "kind": "lib",
+    "purpose": "AggregateFigures trait plus RiskAggregates keeps running per-strategy counters updated per fill, so a limit check reads an aggregate rather than a strategy list and costs the same at ten strategies as at ten thousand.",
+    "key_contracts": [
+      "AggregateFigures trait (aggregate.rs:51)",
+      "RiskAggregates (aggregate.rs:84)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-portfolio"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/{cross_margin.rs,shared_cause.rs,central/plane.rs,platform.rs} and backend/crates/apps/qip-api/src/main.rs all reference qip_risk::aggregate/RiskAggregates.",
+    "io_and_state": "None; counters updated in-memory per fill, no I/O.",
+    "tests": {
+      "count": 15,
+      "notable": []
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "380 lines, 15 tests in tests/aggregate.rs; referenced directly in qip-api's own main.rs as well as via qip-kernel.",
+    "blueprint_capabilities": ["RISK", "CAPITAL"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/libs/qip-risk/src/aggregate.rs:51,84",
+      "backend/crates/apps/qip-api/src/main.rs",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs"
+    ]
+  },
+  {
+    "name": "qip-compliance",
+    "path": "backend/crates/libs/qip-compliance",
+    "kind": "lib",
+    "purpose": "The cross-cutting governance/safety plane: six controls (point-in-time truth, licensing, model risk, capital approval, signed provenance, kill switch) each built as an enforcement mechanism whose test demonstrates the unsafe action is impossible or refused, not that the safe path merely works. CompliancePlane composes all six into a ComplianceReport that states whether each is enforced and by what, including honest caveats rather than a blanket 'compliant' claim.",
+    "key_contracts": [
+      "PointInTime<T>, LeakageDetector, LeakageFinding, LeakageReport (pit.rs:32,224,161,182)",
+      "LicensedData<T>, EntitlementRegistry, EntitlementCheck (licensing.rs:210,49,34)",
+      "AdmittedOutput, Explanation, ModelRiskRegister, ModelReview, PerformanceBoundary (model_risk.rs:505,390,542,181,99)",
+      "ApprovedCapital, ApprovalChain, CapitalRequest, OperatorCredential, MAXIMUM_CREDENTIAL_AGE (approval.rs:142,192,108,50,37)",
+      "ArtifactStore, ProvenanceChain, ChainBreak, StoredArtifact (artifacts.rs:162,86,64,30)",
+      "IncidentLog, Incident, Halt, HaltScope, Clearance, ResponsePolicy (incident.rs:251,66,227,32,239,160)",
+      "SigningKey (signing.rs:40)",
+      "CompliancePlane, ComplianceReport, ControlStatus, require_fully_enforced (plane.rs:168,58,39,133)"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-ai"],
+    "reached_from_production": "yes",
+    "production_evidence": "backend/crates/runtime/qip-kernel/src/central/plane.rs:709 field `compliance: CompliancePlane`, constructed at central/plane.rs:934 `CompliancePlane::new(...)`, read via CentralPlane::compliance_report at central/plane.rs:1550; backend/crates/runtime/qip-kernel/src/platform.rs:5457-5458 Platform::compliance_report delegates to it, and platform.rs:13435 gates order sign-off on report.require_fully_enforced() every DECIDE-stage cycle; qip-compliance is a direct dependency of backend/crates/apps/qip-api/Cargo.toml.",
+    "io_and_state": "None; every check takes an explicit timestamp (no ambient clock, per the module doc's stated house rule); limits and contributions are qip_core::Decimal.",
+    "tests": {
+      "count": 74,
+      "notable": [
+        "a_dataset_nobody_recorded_a_licence_for_is_treated_as_unlicensed",
+        "the_report_states_its_own_gaps_rather_than_claiming_there_are_none",
+        "an_artifact_signed_under_a_different_key_is_rejected"
+      ]
+    },
+    "status": ["exists", "hardened", "partial"],
+    "status_reason": "8 modules, 74 tests, all in tests/ (none embedded); five of six controls are structurally enforced (no public constructor bypasses them), but signing.rs is explicitly documented as symmetric HMAC rather than asymmetric signing -- the module doc itself lists four missing production requirements (asymmetric signing, identity binding, key rotation/revocation, countersigned timestamping) and states 'None of those are in this build.'",
+    "blueprint_capabilities": ["GOV", "SEC", "EVID", "DATA"],
+    "gaps_observed": [
+      "signing.rs:1-30 module doc: HMAC-SHA256 is symmetric -- whoever can verify can also sign, so a signature proves only that someone holding the key produced the artifact, never which person or service did. No KMS, no asymmetric key material in this build; ADR 0043 (proposed, per .claude/rules/architecture/00-boundaries.md) names this as one of three gaps no in-tree code may close.",
+      "plane.rs:53 ControlStatus.caveats is the mechanism that records this gap on every generated ComplianceReport rather than hiding it -- so the gap is surfaced, not silent."
+    ],
+    "evidence": [
+      "backend/crates/libs/qip-compliance/src/signing.rs:1-30,40",
+      "backend/crates/libs/qip-compliance/src/plane.rs:53,133,168",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:41-44,709,934,1550",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:5457-5458,13435"
+    ]
+  }
+]

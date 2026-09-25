@@ -1,0 +1,369 @@
+[
+  {
+    "name": "qip-arbitrage",
+    "path": "backend/crates/edge/qip-arbitrage",
+    "kind": "edge",
+    "purpose": "Finds payoff cycles across venues/instruments (cross-venue, triangular, synthetic) in a conversion graph, then narrows each candidate through book-walked pricing, a nine-deduction net-edge calculation and a leg plan, refusing anything it cannot price or size honestly. Produces `CycleLeg`s typed so they cannot be merged into netting.",
+    "key_contracts": [
+      "graph::ArbitrageGraph (Node/ConversionEdge/EdgeKind; add_trade/add_transfer/add_synthetic/refresh_trade)",
+      "search::{PathCandidate, ExactConfirmation} + Bellman-Ford negative-cycle search (f64, never decides alone)",
+      "pricing::{PathPricing, PricedConversion, price_path} (walks the real book at real size)",
+      "netedge::{NetEdgeCalculator, EdgeAssumptions} (the nine deductions; NetEdge)",
+      "plan::{LegPlanner, PlanSettings, PlannedTrade, LegRanking} (least-reversible-first ordering, residual-exposure budget)",
+      "scan::{OpportunityScanner, ScanReport, Opportunity, Rejection, RejectionStage, SizePolicy}",
+      "legs::Opportunity::cycle_legs / cycle_id (produces the no-net-eligible CycleLeg)",
+      "liquidity::{LiquiditySource trait, StaticLiquidity} (the seam a live cell supplies real books behind)"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core", "qip-market"],
+    "reached_from_production": "partial",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/arbitrage.rs:192 constructs OpportunityScanner/ArbitrageGraph via ArbitrageDesk::new and backend/crates/apps/qip-edge-node/src/arbitrage.rs:316 calls Cell::install_arbitrage(desk); backend/crates/apps/qip-edge-node/src/main.rs:55,577 wires ArbitrageInstaller from QIP_ARBITRAGE_STRATEGY. backend/crates/edge/qip-edge/src/cell.rs:3141 calls Cell::place_cycle for a surviving opportunity, and backend/crates/edge/qip-edge/src/arbitrage.rs:1-52 documents that before this wiring 'nothing deployed ever called the scanner'. But qip-edge-node itself is never deployed -- execution_nodes = {} in every environment (infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars) -- so the call chain exists in a deployable binary's source but runs nowhere outside `cargo test`/`qip-edge-node/tests/pass.rs`.",
+    "io_and_state": "No I/O (grep for std::net/std::fs/std::env/SystemTime in src/*.rs returns nothing). Pure in-memory graph plus arena vectors rebuilt each pass from CellLiquidity; `now` is always a parameter, never read from a clock.",
+    "tests": {
+      "count": 30,
+      "notable": [
+        "triangular_detection_finds_a_genuine_cycle_and_the_book_confirms_it",
+        "a_market_with_consistent_cross_rates_offers_nothing",
+        "exact_arithmetic_rejects_a_candidate_that_the_log_space_search_proposed"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Fully tested, structurally sound (Decimal-exact confirmation of an f64-search candidate) and wired into a real composition root (qip-edge-node), but that binary is never deployed, so the wiring is proven only by tests, not by a running process.",
+    "blueprint_capabilities": ["EXEC", "RISK", "CAPITAL", "TICK"],
+    "gaps_observed": [
+      "No deployed execution node: infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars all set execution_nodes = {}, so ArbitrageDesk never scans a live process.",
+      "backend/crates/edge/qip-edge/src/arbitrage.rs:8-11 itself documents that before the qip-edge-node installer existed 'every cycle in the tree was still found by a test and taken by nobody' -- the crate's own module doc names this as a historical gap now closed only at the source level."
+    ],
+    "evidence": [
+      "backend/crates/edge/qip-arbitrage/src/lib.rs:47-64",
+      "backend/crates/edge/qip-edge/src/arbitrage.rs:57-58,1353,1367,3141",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:32-40,192,316",
+      "backend/crates/apps/qip-edge-node/src/main.rs:55,577",
+      "infrastructure/environments/dev/terraform.tfvars:227"
+    ]
+  },
+  {
+    "name": "qip-feature-dag",
+    "path": "backend/crates/edge/qip-feature-dag",
+    "kind": "edge",
+    "purpose": "An incremental feature computation graph keyed by qip_contracts::FeatureKey: registers pure FeatureDefinitions once, dirties only nodes a message can actually move, and evaluates deterministically from a Timestamp parameter so replays are bit-identical. Ships a standard_suite of twelve market-microstructure feature definitions (mid, spread, microprice, realised vol, EMA, order-flow imbalance, etc.).",
+    "key_contracts": [
+      "engine::FeatureEngine::{new, register, ingest, evaluate, dirty_count, value, revision}",
+      "definition::FeatureDefinition trait + FeatureContext",
+      "graph::{FeatureGraph, FeatureId} (cycle-refusing registration graph)",
+      "state::{MarketState, InstrumentState, MarketReads, TradePrint} (bounded fixed-capacity history buffers)",
+      "features::standard_suite(subject) -> Vec<Box<dyn FeatureDefinition>> (Mid, Spread, Microprice, MicropriceDeviation, BookPressure, RealisedVolatility, ExponentialMovingAverage, OrderFlowImbalance, TradeSignAutocorrelation, RollingCorrelation, TimeSinceLastTrade, SpreadPercentile)"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core", "qip-market", "qip-numerics", "qip-quant"],
+    "reached_from_production": "partial",
+    "production_evidence": "backend/crates/edge/qip-edge/src/cell.rs:1008 holds a FeatureEngine field, and cell.rs:2829/3015 call self.features.ingest(message) and self.features.evaluate(now) on every Cell::work pass. backend/crates/apps/qip-edge-node/src/main.rs:360 constructs the production FeatureEngine (`FeatureEngine::new(MarketState::default(), Duration::from_secs(5))`). But no production call site anywhere registers a single feature: `grep -rn standard_suite backend/crates` matches only qip-feature-dag/src/features.rs:735 (the definition) and its own doc example in lib.rs:38; `.register(` is never called against a FeatureDefinition in qip-edge-node or qip-edge outside `#[cfg(test)]`. The deployed-shape FeatureEngine is therefore permanently empty: evaluate() always returns an empty FeatureVector.",
+    "io_and_state": "No I/O. state::MarketState holds fixed-capacity ring-style buffers (push_capped at state.rs:447,452) sized by a `history` constructor argument, clamped to a minimum of 2 at state.rs:166.",
+    "tests": {
+      "count": 23,
+      "notable": [
+        "twenty_consumers_of_one_feature_produce_one_node_and_one_computation",
+        "a_message_about_one_instrument_leaves_another_instruments_features_untouched",
+        "dirtiness_reaches_every_feature_computed_from_a_changed_one"
+      ]
+    },
+    "status": ["exists", "partial", "hardened"],
+    "status_reason": "The DAG engine itself is well-tested and reached from Cell::work in a deployable binary's source, but no composition root ever registers a feature definition, so the production graph is structurally empty; the crate's own standard_suite has zero production callers.",
+    "blueprint_capabilities": ["TICK", "WORLD", "QUANT"],
+    "gaps_observed": [
+      "backend/crates/apps/qip-edge-node/src/main.rs:360 builds FeatureEngine::new(...) and never calls .register(); no strategy-feature wiring exists between qip-edge-node and qip-feature-dag::features::standard_suite.",
+      "backend/crates/apps/qip-edge-node/src/strategies.rs:355 compiles every deployed strategy with `StrategyCompiler::new(FeatureCatalogue::new())` -- an empty catalogue -- so any StrategySpec referencing Expr::Feature(key) is refused at compile with 'feature {key} is not registered in the feature graph' (backend/crates/edge/qip-strategy/src/compile.rs:437-441); only feature-free strategies can deploy on the edge node today.",
+      "qip-deepbrain's training/backtest path (evolution.rs, succession.rs) compiles strategies against a completely separate, non-empty catalogue built by qip_simulation_engine::harness::bar_catalogue, which shares no code with qip-feature-dag (qip-simulation-engine does not depend on qip-feature-dag per cargo metadata) -- so the features a strategy is trained against and the features it could evaluate live are two independent implementations, and the live one is unpopulated."
+    ],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:1008,2829,3015",
+      "backend/crates/apps/qip-edge-node/src/main.rs:360",
+      "backend/crates/apps/qip-edge-node/src/strategies.rs:355",
+      "backend/crates/edge/qip-strategy/src/compile.rs:437-441",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:1047",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:735"
+    ]
+  },
+  {
+    "name": "qip-orderbook",
+    "path": "backend/crates/edge/qip-orderbook",
+    "kind": "edge",
+    "purpose": "In-memory venue book state rebuilt message-by-message from qip_contracts::MarketMessage, in two flavours sharing one BookView read surface: L3Book tracks individual resting orders (queue position), L2Book holds published aggregate levels only. Reports crossed/reset conditions explicitly rather than serving a derived price computed from bad data.",
+    "key_contracts": [
+      "venue::VenueState (per-instrument book + LastTrade, the type Cell actually holds)",
+      "book::Book (enum wrapping L2Book/L3Book behind one interface)",
+      "l3::{L3Book, RestingOrder, QueuePosition, queue_position}",
+      "l2::L2Book",
+      "view::{BookView trait, Sweep, Level, BookCondition, mid, microprice}",
+      "snapshot::{BookSnapshot, VenueSnapshot, BookKind}",
+      "auction::AuctionState (not wired to any production caller -- see gaps)"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "backend/crates/edge/qip-edge/src/seam.rs:19-20 and cell.rs:43 import qip_orderbook::venue::VenueState/view::BookView; CellLiquidity (seam.rs:60) is the type Cell::liquidity (cell.rs:1007) holds, populated per message in apply_batch (cell.rs:2825-2828). backend/crates/apps/qip-edge-node/src/feed.rs:73 imports VenueState for the simulated feed publisher. A second production dependent, qip-market-ingestion (depth.rs:134-136), is used by the deployed qip-api/qip-fastbrain/qip-deepbrain binaries as a workspace dependency, but its only caller of qip_orderbook types -- IngestionService -- is constructed exclusively inside `#[cfg(test)] mod tests` (qip-market-ingestion/src/service.rs:378-554); no qip-api/fastbrain/deepbrain src/ file constructs an IngestionService or references depth::. So the market-ingestion path is tests-only, and the qip-edge path runs only inside the undeployed qip-edge-node.",
+    "io_and_state": "No I/O. State is in-memory: L3Book keeps `orders: BTreeMap<u64, RestingOrder>` for replay-stable iteration order (l3.rs:101); no book-side size cap -- depth is bounded only by what a venue actually publishes.",
+    "tests": {
+      "count": 43,
+      "notable": [
+        "applying_a_stream_twice_from_a_fresh_book_gives_byte_identical_snapshots",
+        "a_reset_discards_the_book_and_withholds_every_price_until_resynchronisation",
+        "a_hundred_thousand_order_by_order_messages_apply_through_venue_state"
+      ]
+    },
+    "status": ["exists", "partial", "hardened"],
+    "status_reason": "VenueState/BookView is the platform's one production book implementation and is heavily tested (including a throughput/replay suite), but its two production call chains both terminate in undeployed or tests-only code, and the auction module has no production caller at all.",
+    "blueprint_capabilities": ["TICK", "WORLD"],
+    "gaps_observed": [
+      "auction::AuctionState has zero non-test references anywhere in backend/crates (grep for AuctionState/auction:: across qip-edge, qip-edge-node, qip-market-ingestion non-test src returns nothing) -- the auction model exists and is tested but is wired to no caller.",
+      "qip-market-ingestion's only consumer of this crate (depth.rs) is reached solely through IngestionService, which backend/crates/services/qip-market-ingestion/src/service.rs constructs only after the `#[cfg(test)]` boundary at line 378 -- confirmed no qip-api/qip-fastbrain/qip-deepbrain src file calls IngestionService::new or references qip_market_ingestion::depth."
+    ],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/seam.rs:19-20,60",
+      "backend/crates/edge/qip-edge/src/cell.rs:43,1007,2825-2828",
+      "backend/crates/apps/qip-edge-node/src/feed.rs:73",
+      "backend/crates/services/qip-market-ingestion/src/depth.rs:134-136",
+      "backend/crates/services/qip-market-ingestion/src/service.rs:378,453,516,529,554",
+      "backend/crates/edge/qip-orderbook/src/l3.rs:95-102"
+    ]
+  },
+  {
+    "name": "qip-protocols",
+    "path": "backend/crates/edge/qip-protocols",
+    "kind": "edge",
+    "purpose": "Decodes venue wire formats (FIX tag=value, big-endian ITCH, SBE with schema-version tolerance, newline/length-prefixed JSON framing) into qip_contracts::MarketMessage, attributed by venue/feed/sequence, so the rest of the platform never branches on which dialect a venue spoke.",
+    "key_contracts": [
+      "decoder::Decoder trait + Diagnostics/SkipReason/SkipRecord/message_id",
+      "fix::{FixDecoder, FixFields}",
+      "itch::ItchDecoder",
+      "sbe::{SbeDecoder, SbeSchema, SbeMessage, SbeField, SbeGroup, FieldRole}",
+      "framing::{Framing, JsonFrameDecoder, StreamAssembler}",
+      "registry::{ProtocolRegistry, FeedKey}",
+      "bytes::{Reader, ByteOrder}"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "backend/crates/edge/qip-edge/src/cell.rs:44,1005,1202 hold and construct a ProtocolRegistry field on every Cell. backend/crates/apps/qip-edge-node/src/feed.rs:74-75 imports the Decoder trait, FeedKey, Diagnostics, SkipReason/SkipRecord. But the only type ever registered against the `Decoder` trait in production is a locally-defined `DepthDecoder` (feed.rs:349-399) that reads from the simulated venue's own SimulatedDepth -- `grep -rln 'FixDecoder|ItchDecoder|SbeDecoder|JsonFrameDecoder' backend/crates` matches only files inside qip-protocols itself (its own src and tests).",
+    "io_and_state": "Pure byte decoding, no I/O. Stateless per call except StreamAssembler's internal reassembly buffer for a partial frame (framing.rs), which is per-connection and not persisted.",
+    "tests": {
+      "count": 51,
+      "notable": [
+        "a_stream_split_at_every_single_offset_decodes_to_exactly_what_the_whole_stream_does",
+        "a_newer_schema_with_extra_trailing_fields_decodes_identically_rather_than_failing",
+        "a_full_refresh_tells_the_book_to_discard_before_it_states_the_levels"
+      ]
+    },
+    "status": ["exists", "hardened", "unused"],
+    "status_reason": "The decoder implementations (FIX/ITCH/SBE/framing) are extensively tested against the four documented invariants but have never been instantiated outside their own crate's tests; only the trait/registry scaffolding is production-wired, feeding a synthetic decoder instead.",
+    "blueprint_capabilities": ["TICK", "CONTRACT"],
+    "gaps_observed": [
+      "No production caller of FixDecoder, ItchDecoder, SbeDecoder or JsonFrameDecoder anywhere in backend/crates outside qip-protocols' own src/tests -- the actual venue-protocol decoders this crate exists to provide are dead code from a deployment standpoint; qip-edge-node's only wired decoder is its own DepthDecoder over a simulated venue (backend/crates/apps/qip-edge-node/src/feed.rs:349-399)."
+    ],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:44,1005,1202",
+      "backend/crates/apps/qip-edge-node/src/feed.rs:74-75,349-399"
+    ]
+  },
+  {
+    "name": "qip-routing",
+    "path": "backend/crates/edge/qip-routing",
+    "kind": "edge",
+    "purpose": "Four routing decisions and two path-classification subsystems: venue selection on all-in cost (router.rs), order-type selection (ordertype.rs), parent/child fill accounting (children.rs), venue health scoring (health.rs), resting-order repricing by cancel-plus-new (reprice.rs), rate limiting (ratelimit.rs), unspecified-venue consolidation (consolidate.rs), a venue-facing Gateway trait with simulated/native implementations (gateway.rs), an eight-path arbitrage-cycle classifier (path.rs/pathcycle.rs), and a cross-region direction gate (mirror.rs/extension.rs). At 9,073 src lines it is the largest of the seven crates and its modules split sharply into reached and unreached halves (see sub-records).",
+    "key_contracts": [
+      "router::{Router, RouterSettings, RoutingDecision, VenueCandidate, VenueExclusion} -- unreached in production",
+      "ordertype::{select_order_type, OrderTypeSelection, RoutedOrderType} -- unreached directly, RoutedOrderType type flows through reprice",
+      "health::{HealthTracker, HealthAssessment, HealthVerdict, VenueHealth} -- unreached in production",
+      "consolidate::{Consolidator, Consolidation, UNSPECIFIED_VENUE} -- unreached in production (constant is referenced)",
+      "gateway::{Gateway trait, SimulatedGateway, NativeGateway, GatewayCredential} -- only GatewayCredential (a data type) reused; the trait/implementations are superseded by qip-edge-node's own gateway.rs",
+      "path::{ExecutionPath, assign, eligible_paths, Composition, PathPolicy} -- reached via Cell::place_cycle",
+      "pathcycle::{CycleRouter, VenueRegions, RepresentationClasses} -- reached, constructed at Cell::install_arbitrage",
+      "mirror::{direction_gate, Direction, InventoryBand, DistributedReference, MirrorPermission} -- reached transitively via extension::check",
+      "extension::{check, PathExtensions, ExtensionVerdict, MirrorExtension, HedgeExtension} -- reached via Cell (aliased check_extension)",
+      "reprice::{Repricer, RepricePolicy, RepriceDecision, PendingReplace} -- reached via qip-edge-node's own Requoter",
+      "children::{ParentOrder, ChildOrder, ChildState}",
+      "ratelimit::{RateLedger, RateLimits} -- reached via qip-brokers::exchange",
+      "venue::{FeeSchedule, FeeTier, Liquidity, VenueProfile} -- reached via qip-brokers::exchange"
+    ],
+    "workspace_deps": ["qip-arbitrage", "qip-contracts", "qip-core", "qip-market"],
+    "reached_from_production": "partial",
+    "production_evidence": "Mixed at the module level -- see sub-records. Summary: path/pathcycle/mirror/extension are exercised from Cell::place_cycle in the same (undeployed) qip-edge-node chain as qip-arbitrage; reprice/children/ratelimit/venue reach a deployable binary's source via qip-edge-node/src/reprice.rs and qip-brokers/src/exchange.rs (qip-brokers itself is depended on only by qip-edge-node, also undeployed); router/ordertype/health/consolidate/gateway have zero production call sites anywhere -- confirmed by grepping for Router::new, Consolidator::new, HealthTracker::new and Gateway trait usages restricted to qip-routing's own tests plus crates/tests/qip-acceptance/tests/path_router.rs (which only exercises path/pathcycle).",
+    "io_and_state": "No I/O in src/. gateway.rs's SimulatedGateway (unused) would model in-memory venue matching; reprice/children hold in-memory parent/child order maps.",
+    "tests": {
+      "count": 130,
+      "notable": [
+        "routing_picks_the_best_net_cost_and_not_the_best_quote",
+        "two_strategies_that_named_no_venue_become_one_order_rather_than_two",
+        "the_repricer_refuses_to_mint_a_replacement_until_the_cancel_is_acknowledged"
+      ]
+    },
+    "status": ["exists", "partial", "hardened", "unused"],
+    "status_reason": "A single crate containing one fully-wired-but-undeployed subsystem (cycle path routing), one genuinely reached subsystem (reprice/rate-limit/fee schedule via qip-brokers), and one entirely unreached subsystem (venue selection, order-type selection, health scoring, consolidation, the Gateway trait) that exists only to satisfy its own 130 tests.",
+    "blueprint_capabilities": ["EXEC", "RISK", "FABRIC", "MESH"],
+    "gaps_observed": [
+      "router::Router (the venue all-in-cost comparator the crate's lib.rs doc names as its first bullet) has zero production constructors: grep -rn 'Router::new' across qip-edge/qip-edge-node/qip-brokers src non-test files returns nothing (the only Router::new hit anywhere is an unrelated HTTP Router in qip-api/src/main.rs:453).",
+      "consolidate::Consolidator, health::HealthTracker and ordertype::select_order_type likewise have zero non-test call sites in backend/crates.",
+      "gateway::{Gateway,SimulatedGateway,NativeGateway} are unused: qip-edge-node defines its own independent SimulatedGateway/NodeGateway (backend/crates/apps/qip-edge-node/src/gateway.rs:179,1077) built on qip_brokers::exchange::SimulatedExchange instead of reusing qip_routing::gateway; only the GatewayCredential data type crosses (qip-brokers/src/credential.rs:27)."
+    ],
+    "evidence": [
+      "backend/crates/edge/qip-routing/src/lib.rs:1-118",
+      "backend/crates/edge/qip-edge/src/cell.rs:46-54,1454,5041-5107",
+      "backend/crates/apps/qip-edge-node/src/reprice.rs:75-77",
+      "backend/crates/services/qip-brokers/src/exchange.rs:56-57,337",
+      "backend/crates/apps/qip-edge-node/src/gateway.rs:47-65,179,1077,1160",
+      "backend/crates/tests/qip-acceptance/tests/path_router.rs"
+    ]
+  },
+  {
+    "name": "qip-routing::path+pathcycle",
+    "path": "backend/crates/edge/qip-routing/src/path.rs, pathcycle.rs",
+    "kind": "edge",
+    "purpose": "Blueprint's eight-path execution-path classifier: assign()/eligible_paths() pick one ExecutionPath from a candidate cycle's EdgeClasses and venue facts, refusing a cycle no table row covers; CycleRouter (pathcycle.rs) wraps that against a cell's VenueRegions/RepresentationClasses. Both only classify -- neither produces an order or a size.",
+    "key_contracts": [
+      "path::{ExecutionPath, assign, eligible_paths, Composition, CompositionEdge, EdgeClass, PathPolicy, MAX/MIN_COMPOSITION_EDGES}",
+      "pathcycle::{CycleRouter, VenueRegions::all_in, RepresentationClasses}"
+    ],
+    "workspace_deps": ["qip-arbitrage", "qip-contracts", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "backend/crates/edge/qip-edge/src/cell.rs:50-54 imports path::{...} and pathcycle::{CycleRouter,...}; cell.rs:1454 constructs `CycleRouter::new(PathPolicy::default(), regions, RepresentationClasses::new())` inside install_arbitrage; PathExtensions built per ExecutionPath arm at cell.rs:5041-5068. Reached only through the undeployed qip-edge-node chain (see qip-arbitrage record).",
+    "io_and_state": "No I/O, pure classification.",
+    "tests": {"count": 0, "notable": []},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Reached from Cell::install_arbitrage/place_cycle in source; test count is folded into the parent crate's routing.rs/acceptance suites (crates/tests/qip-acceptance/tests/path_router.rs exercises this module specifically) rather than a dedicated tests/ file, so it is not double-counted here.",
+    "blueprint_capabilities": ["EXEC", "FABRIC"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-routing/src/path.rs:825,928",
+      "backend/crates/edge/qip-routing/src/pathcycle.rs:58-149",
+      "backend/crates/edge/qip-edge/src/cell.rs:50-54,1454,5041-5068",
+      "backend/crates/tests/qip-acceptance/tests/path_router.rs"
+    ]
+  },
+  {
+    "name": "qip-routing::mirror+extension",
+    "path": "backend/crates/edge/qip-routing/src/mirror.rs, extension.rs",
+    "kind": "edge",
+    "purpose": "mirror.rs's direction_gate implements blueprint SS31.1: a region below its inventory target may only buy, one above may only sell. extension.rs's check() is SS33.1's per-path refusal table (one arm per ExecutionPath: Mirror, Hedge, Anchor, FirmQuote, Basis, Payoff), calling direction_gate internally for the mirrored-inventory path. Both can only refuse.",
+    "key_contracts": [
+      "mirror::{direction_gate, Direction, RegionState, PermittedDirection, InventoryBand, RegionPosture, DistributedReference, MirrorPermission}",
+      "extension::{check, PathExtensions, ExtensionVerdict, MirrorExtension, HedgeExtension, AnchorExtension, FirmQuoteExtension, BasisExtension, PayoffExtension}"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "backend/crates/edge/qip-edge/src/mirror.rs:42 imports DistributedReference/InventoryBand and feeds qip_edge::mirror::MirrorArrangement into `qip_routing::extension::check` (documented at qip-edge/src/mirror.rs:35-36). cell.rs:46-49 imports extension types and mirror::Direction; cell.rs:5107 calls `check_extension(path, &PathExtensions::new(), now)`. extension.rs:589 calls direction_gate internally, so mirror.rs's gate is reached transitively even though qip-edge never calls direction_gate by name.",
+    "io_and_state": "No I/O; MirrorArrangement bands live only in qip-edge's own in-memory config (deliberately never arriving over the policy wire -- qip-edge/src/mirror.rs:10-19).",
+    "tests": {"count": 0, "notable": []},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Reached transitively through extension::check in the same undeployed qip-edge-node chain; the crate's own tests/routing.rs and acceptance path_router.rs cover it, folded into the parent's test count.",
+    "blueprint_capabilities": ["EXEC", "RISK", "MESH"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/mirror.rs:1-42",
+      "backend/crates/edge/qip-edge/src/cell.rs:46-49,5107",
+      "backend/crates/edge/qip-routing/src/extension.rs:77-79,589"
+    ]
+  },
+  {
+    "name": "qip-routing::reprice+children+ratelimit+venue",
+    "path": "backend/crates/edge/qip-routing/src/reprice.rs, children.rs, ratelimit.rs, venue.rs",
+    "kind": "edge",
+    "purpose": "reprice.rs decides when a resting child has drifted too far from the touch and withdraws-then-replaces (never amends) under requote budgets; children.rs tracks a ParentOrder's four-way split (filled/working/released/unassigned) so shares always reconcile; ratelimit.rs/venue.rs give a venue's message budget and fee schedule.",
+    "key_contracts": [
+      "reprice::{Repricer, RepricePolicy, RepriceDecision, PendingReplace, ThrottleScope, Drift, HoldReason}",
+      "children::{ParentOrder, ChildOrder, ChildState}",
+      "ratelimit::{RateLedger, RateLimits, MAX_TRACKED_PER_WINDOW}",
+      "venue::{FeeSchedule, FeeTier, Liquidity, VenueProfile}"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "backend/crates/apps/qip-edge-node/src/reprice.rs:75-77 imports children::{ChildOrder,ParentOrder}, ordertype::{RoutedOrderType,Touch}, reprice::{RepriceDecision,RepricePolicy,Repricer,ThrottleScope} and wraps them in its own Requoter, wired from main.rs:76,583 (`Requoter` used at pass.rs:892 inside run_pass). backend/crates/services/qip-brokers/src/exchange.rs:56-57,337 constructs `RateLedger::new()` inside SimulatedExchange, and qip-brokers is a real dependency of qip-edge-node (venue.rs/gateway.rs). Still gated by the same execution_nodes = {} non-deployment as the rest of the edge chain.",
+    "io_and_state": "No I/O; in-memory parent/child maps and per-venue token-bucket-style rate ledgers.",
+    "tests": {"count": 0, "notable": []},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "The one qip-routing subsystem reached from two independent production call chains (qip-edge-node's Requoter and qip-brokers' SimulatedExchange), both still gated by qip-edge-node's non-deployment.",
+    "blueprint_capabilities": ["EXEC", "RISK"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/apps/qip-edge-node/src/reprice.rs:75-77",
+      "backend/crates/apps/qip-edge-node/src/main.rs:76,583",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:892",
+      "backend/crates/services/qip-brokers/src/exchange.rs:56-57,337"
+    ]
+  },
+  {
+    "name": "qip-sequencing",
+    "path": "backend/crates/edge/qip-sequencing",
+    "kind": "edge",
+    "purpose": "Stands between a decoded feed and a book that is quietly wrong: Sequencer/SequenceTracker reorder within a bounded window and drop duplicates, ClockDiscipline estimates venue-to-local clock offset, LineArbiter merges redundant A/B feed lines, FailoverReconciler swaps source mid-stream without drop or double-apply.",
+    "key_contracts": [
+      "tracker::{Sequencer, SequenceTracker, SequencedBatch, SequenceEvent, GapReason, ReorderPolicy, StreamStats, delivery_units}",
+      "clock::{ClockDiscipline, ClockEstimate, ClockObservation} -- unreached in production",
+      "arbitration::{LineArbiter, ArbitrationEvent, ArbitrationOutcome, LineHealth} -- unreached in production",
+      "failover::{FailoverReconciler, FailoverEvent, FailoverOutcome, FailoverStats} -- unreached in production",
+      "identity::{reset_message, synthetic_id}"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core", "qip-numerics"],
+    "reached_from_production": "partial",
+    "production_evidence": "backend/crates/edge/qip-edge/src/cell.rs:55,1006,1203 hold and construct `Sequencer` (`sequencer: Sequencer::new(ReorderPolicy::default())`), used at cell.rs:2803 (`self.sequencer.accept(decoded, now)`) on every Cell::on_bytes call. backend/crates/services/qip-streaming/src/sequencing.rs:43 and processing.rs:45 use Sequencer/SequenceEvent in a service depended on by qip-deepbrain (a deployed Cloud Run app). backend/crates/services/qip-market-ingestion/src/depth.rs:137 also imports SequenceTracker, but (as in qip-orderbook) that path is reached only from IngestionService, which is constructed exclusively in service.rs's own #[cfg(test)] block. ClockDiscipline/LineArbiter/FailoverReconciler have no non-test references anywhere in backend/crates.",
+    "io_and_state": "No I/O; bounded reorder buffer (`max_buffered_messages`, default 1,024, tracker.rs:53) that triggers a gap timeout rather than growing unbounded.",
+    "tests": {
+      "count": 36,
+      "notable": [
+        "a_watermark_names_the_highest_contiguous_position_and_stops_at_a_hole",
+        "a_message_delivered_twice_is_applied_once",
+        "a_backup_resuming_exactly_where_the_primary_stopped_loses_nothing_and_needs_no_reset"
+      ]
+    },
+    "status": ["exists", "partial", "hardened"],
+    "status_reason": "Sequencer/SequenceTracker is genuinely production-wired (Cell::on_bytes, qip-streaming), but three of the crate's four disciplines -- clock offset estimation, dual-line arbitration and failover reconciliation -- are fully implemented and tested yet called from nowhere outside their own crate tests.",
+    "blueprint_capabilities": ["TICK", "RES"],
+    "gaps_observed": [
+      "clock::ClockDiscipline, arbitration::LineArbiter and failover::FailoverReconciler each have zero non-test call sites in backend/crates -- confirmed by grep across qip-edge, all crates/apps, and all crates/services src trees."
+    ],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:55,1006,1203,2803",
+      "backend/crates/services/qip-streaming/src/sequencing.rs:43",
+      "backend/crates/services/qip-streaming/src/processing.rs:45",
+      "backend/crates/services/qip-market-ingestion/src/depth.rs:137",
+      "backend/crates/services/qip-market-ingestion/src/service.rs:378",
+      "backend/crates/edge/qip-sequencing/src/tracker.rs:53"
+    ]
+  },
+  {
+    "name": "qip-strategy",
+    "path": "backend/crates/edge/qip-strategy",
+    "kind": "edge",
+    "purpose": "A typed IR (ir::Expr, no network/file/model-call variant exists structurally) compiled by StrategyCompiler into a flat, shared, backwards-only arena and evaluated by StrategyRuntime at a cost bounded before deployment. Exact (Decimal) and statistical (f64) values are distinct types that cannot silently convert.",
+    "key_contracts": [
+      "ir::{Expr, Rule, StrategySpec, Type, ArithmeticOp, CompareOp, ExtremumOp, LogicalOp}",
+      "compile::{StrategyCompiler, CompiledStrategy, CompilerReport, CompilerLimits}",
+      "catalogue::FeatureCatalogue (declare/type_of -- the vocabulary the compiler checks Expr::Feature against)",
+      "runtime::StrategyRuntime",
+      "program::{Program, Node, NodeRef, Op}",
+      "model::{DistilledModel, ModelForm, TreeNode} -- the one learned function the IR admits"
+    ],
+    "workspace_deps": ["qip-contracts", "qip-core"],
+    "reached_from_production": "partial",
+    "production_evidence": "Two independent, non-overlapping production chains. (1) Live execution: backend/crates/edge/qip-edge/src/cell.rs:56-58 imports compile::CompiledStrategy, program::{Node,Op,Program}, runtime::StrategyRuntime, used by Cell::deploy_with_pricing; backend/crates/apps/qip-edge-node/src/strategies.rs:55-57,355 (StrategyInstaller, wired from main.rs:66-68,583) compiles StrategySpecs with an EMPTY FeatureCatalogue::new(), gated by qip-edge-node's non-deployment. (2) Training/backtest: backend/crates/apps/qip-deepbrain/src/evolution.rs:1047,1189,1208,2078 and succession.rs:69,480 call StrategyCompiler::new(bar_catalogue(...)) with a real, non-empty catalogue from qip_simulation_engine::harness -- qip-deepbrain is a deployed Cloud Run app (crates/apps/qip-deepbrain/Cargo.toml) and this call is outside any #[cfg(test)] block (first test mod starts at evolution.rs:1523).",
+    "io_and_state": "No I/O; arena-based compiled program, pure evaluation over a FeatureVector handed in.",
+    "tests": {
+      "count": 36,
+      "notable": [
+        "a_strategy_naming_a_feature_the_graph_does_not_have_is_refused",
+        "comparing_an_exact_quantity_to_a_statistic_is_refused_and_both_types_are_named",
+        "a_strategy_with_no_rules_is_refused"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible", "partial"],
+    "status_reason": "The compiler/runtime is reached from a genuinely deployed binary (qip-deepbrain, for training/backtest compilation), which is the strongest production evidence among the seven crates -- but the live execution path's own compiler always receives an empty feature catalogue, so no feature-referencing strategy can compile on the (undeployed) edge node either way.",
+    "blueprint_capabilities": ["EXEC", "QUANT", "MODEL"],
+    "gaps_observed": [
+      "backend/crates/apps/qip-edge-node/src/strategies.rs:355 -- `StrategyCompiler::new(FeatureCatalogue::new())` -- see qip-feature-dag record for the consequence (every feature-referencing StrategySpec is refused).",
+      "The training catalogue (qip_simulation_engine::harness::bar_catalogue) and the live catalogue (qip-feature-dag) are built by unrelated code paths with no shared source, so a strategy proven in backtesting is not proven against the same feature implementation it would run against live."
+    ],
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:56-58",
+      "backend/crates/apps/qip-edge-node/src/strategies.rs:55-57,355",
+      "backend/crates/apps/qip-edge-node/src/main.rs:66-68,583",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:1040-1047,1523",
+      "backend/crates/apps/qip-deepbrain/src/succession.rs:69,480",
+      "backend/crates/edge/qip-strategy/src/compile.rs:437-441"
+    ]
+  }
+]

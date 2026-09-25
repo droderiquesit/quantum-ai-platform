@@ -1,0 +1,784 @@
+[
+  {
+    "id": "GOV-001",
+    "domain": "GOV",
+    "title": "AI and AGI originate hypotheses, models, strategies, forecasts, explanations, opportunity intents and capital recommendations",
+    "statement": "AI and AGI components can originate hypotheses, models, strategies, forecasts, explanations, opportunity intents and capital recommendations.",
+    "rationale": "The blueprint lets the intelligence widen what it may originate so that the authority to act can stay narrow. Origination is the half of §1.2 that grows; GOV-002 is the half that does not.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary ('AI and AGI can originate hypotheses, models, strategies, forecasts, explanations, opportunity intents and capital recommendations')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "On a replayed research window the cognitive layer emits at least one record of each of the seven kinds, each naming its originating model and version, and none of them is an order or an action intent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COGNITION",
+      "MODEL",
+      "CAPITAL"
+    ],
+    "notes": "Split from the raw item 'AI/AGI acts only inside a pre-authorized envelope' (M p4). Its statement joined this origination capability to the envelope bound, and the two are proven by different tests; the bound is GOV-002. P1 because originating hypotheses, models, strategies and forecasts is master Phase 2's exit capability (model/strategy foundry) and capital recommendations arrive with Phase 3. The AGI-generalist form of the same capability arrives with Phase 8 (P2). Kept in GOV because §1.2 states origination and bound as a pair."
+  },
+  {
+    "id": "GOV-002",
+    "domain": "GOV",
+    "title": "AI and AGI act automatically only inside a pre-authorized operating envelope",
+    "statement": "AI and AGI components act automatically only inside a pre-authorized operating envelope. An automatic action outside that envelope, or by a component that holds no envelope, is refused before it has any effect.",
+    "rationale": "M §1.2: this 'preserves the ability to make the intelligence more general without making the blast radius general'. An envelope that is not checked at the point of action is advice, not a bound.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary ('They may also act automatically inside a pre-authorized operating envelope')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated automatic actions and envelopes, every action outside its actor's envelope is refused with a named reason and no side effect, an actor with no envelope has every automatic action refused, and no accepted action widens any envelope."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "SEC",
+      "AGENCY"
+    ],
+    "notes": "Split from the same raw item as GOV-001. The next sentence of §1.2 (money movement, leverage, exposure, settlement and venue access remain bounded by deterministic, testable controls) belongs to RISK and is not restated here. ARCH-006 (M p3) states the same bound for every autonomous activity class. 'Refused before it has any effect' is the house fail-closed reading; the blueprint says only 'inside'. In this repository the envelope's ceiling is paper trading, held by the three layers (Terraform's refusal in variables.tf, AutonomyLevel::deployable in the composition roots, the Cell's paper-only constructor), and autonomy changes only through AutonomyController::request_change with an authenticated operator identity. Nothing here permits an envelope above paper trading (ADR 0021)."
+  },
+  {
+    "id": "GOV-003",
+    "domain": "GOV",
+    "title": "Ambient models proactively originate research, warnings, opportunity candidates, simulations and proposed actions",
+    "statement": "Ambient models may proactively originate research, warnings, opportunity candidates, simulations and proposed actions, without waiting for a prompt.",
+    "rationale": "Unprompted, continuous origination is what makes the ambient mesh worth running. GOV-004 is what keeps it from being dangerous.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary ('Ambient models may proactively originate research, warnings, opportunity candidates, simulations and proposed actions')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With no prompt and no strategy tick, an ambient model running over replayed inputs emits research tasks, warnings, opportunity candidates, simulation requests and proposed actions as records, and none of them is an executed action."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AMBIENT",
+      "AGENCY"
+    ],
+    "notes": "Split from the raw item 'Ambient models' continuous operation must not raise authority' (M p4), whose statement opened with this capability before stating the bound (GOV-004). AMBIENT-001 and AMBIENT-005 state the same unprompted operation from §9.5; this is the §1.2 summary of it. P2 because the Ambient Model Mesh is master Phase 8's exit capability (GCP Phase 8, cognitive/AI plane)."
+  },
+  {
+    "id": "GOV-004",
+    "domain": "GOV",
+    "title": "Continuous operation never raises an ambient model's authority",
+    "statement": "An ambient model's continuous operation does not increase its authority. Symbolic verification, evidence policy, risk envelopes and deterministic money-moving controls still define what can execute, and they admit or refuse an ambient proposal exactly as they would the same proposal from any other origin.",
+    "rationale": "A model that is always on accumulates proposals, not permission. If uptime or volume of output could buy authority, the least-reviewed component would become the most trusted by accretion.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary ('their continuous operation does not increase their authority')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Across generated runs of one to N continuous cycles, the ambient model's granted authority is identical at start and end, and every proposal it emits gets the same admit/refuse outcome from symbolic verification, evidence policy, risk envelopes and money-moving controls as the identical proposal submitted once from a non-ambient origin."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AMBIENT",
+      "RISK",
+      "REASON",
+      "EVID"
+    ],
+    "notes": "Split from the raw item M p4 described at GOV-003. The comparison with a non-ambient origin is how the invariant is made testable; the blueprint says only that the four controls 'still define what can execute'. AGENCY-040 ('No model acts directly: every action goes through the engine') is the component-level form. P0 as a safety invariant that must hold from the first ambient model, although the mesh itself is P2. GOV-025 is the route authority does take: a signed, promoted package."
+  },
+  {
+    "id": "GOV-005",
+    "domain": "GOV",
+    "title": "Regulated functions require a legal entity, a counterparty and a jurisdictional permission together",
+    "statement": "Deposit-taking, lending to third parties, brokerage, derivatives dealing and similar regulated functions are enabled only through an appropriate legal entity, an appropriate counterparty and a jurisdictional permission, all three together. Legal-entity status alone does not enable the function, and a function missing any of the three is refused.",
+    "rationale": "A gate that checks only for a legal entity would let a regulated action through with the wrong counterparty, or in a jurisdiction where it is not permitted. The source names all three as required together.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§13 Capital Brain & Capital Bank (opening paragraph)"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For every regulated function and every combination in which the legal entity, the counterparty or the jurisdictional permission is missing or inappropriate, the function is refused before any counterparty is contacted. With all three recorded it is admitted against a simulated counterparty, and with an empty permission registry every regulated function is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "COMPLIANCE",
+      "TREASURY"
+    ],
+    "notes": "Merges two raw extractions of the same §13 sentence. The second's wording ('together -- legal-entity status alone is not sufficient') is kept because it is more specific. LIVE_CAPITAL and EXTERNAL_ACTION were removed: the requirement is a refusal, which can be built and proven without live capital or external action, and under ADR 0021 it must refuse every live function. Flagging it would score a compliance control BLOCKED and hide whether it exists; CAPITAL-019 removed the same flags for the same reason. CAPITAL-019 carries this sentence from the Capital Bank's side (financing functions); this is the general governance gate for every regulated function. The §25 opening (M p33), 'without assuming one legal entity is allowed to do all of them', states the same principle and was not in this domain's input."
+  },
+  {
+    "id": "GOV-006",
+    "domain": "GOV",
+    "title": "Legal permission gates are separate from technical capability gates",
+    "statement": "Legal permission and technical capability are separate gates. Technical capability (a connected adapter, a supported instrument) never implies legal permission to execute, and legal permission never implies technical capability. An action executes only when both admit it, and a refusal names which gate refused.",
+    "rationale": "M §25: 'Technical capability and legal permission are separate dimensions.' A platform that infers permission from connectivity executes wherever it happens to have an adapter.",
+    "kind": "acceptance",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "33",
+        "section": "§25 Governance, Legal Isolation & Authority (opening paragraph: 'Technical capability and legal permission are separate dimensions')"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist ('Legal capability gates are separate from technical capability')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A venue with a connected simulated adapter and a supported instrument but no eligibility record is refused by the legal gate; an eligibility record for a venue with no adapter is refused by the technical gate; each refusal names its gate; and only the pair together admits a paper order."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMPLIANCE",
+      "EXEC",
+      "ARCH"
+    ],
+    "notes": "From the raw item 'Legal gates separate from technical capability gates' (M p43, a §31 COMPLETE TARGET). The §25 opening sentence on p33, quoted as the rationale of raw 'Require eligibility metadata...', is the earlier statement of the same separation and fixes this item's place in source order. The checklist's purpose clause, 'so the same brain can research more broadly than it can execute', is GOV-008."
+  },
+  {
+    "id": "GOV-007",
+    "domain": "GOV",
+    "title": "Every venue, product, user/entity, jurisdiction and strategy carries eligibility metadata",
+    "statement": "Every venue, product, user or entity, jurisdiction and strategy carries eligibility metadata, and that metadata is the structural basis for what the execution layer may act on. An item whose eligibility metadata is absent is ineligible.",
+    "rationale": "Technical capability and legal permission are separate dimensions, and this metadata is how the platform tracks the difference per venue, product, user/entity, jurisdiction and strategy.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "33",
+        "section": "§25 Governance, Legal Isolation & Authority (opening paragraph)"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Registering a venue, product, user/entity, jurisdiction or strategy without eligibility metadata is refused. For generated items whose metadata is removed after registration, the execution layer's eligibility query answers ineligible rather than defaulting to eligible."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET",
+      "COMPLIANCE",
+      "CONTRACT",
+      "EXEC"
+    ],
+    "notes": "Treating absent metadata as ineligible follows house principle 3 ('Fail closed'); the blueprint says the metadata is carried, not what its absence means. .claude/rules/10-product-direction.md requires licensing posture to be checked before a data source is used; this is the same rule applied to the things the platform acts on."
+  },
+  {
+    "id": "GOV-008",
+    "domain": "GOV",
+    "title": "Research and simulation may evaluate opportunities outside the executable scope",
+    "statement": "Research and simulation may evaluate opportunities broader than the execution layer's permitted scope. The same cognitive core can evaluate an opportunity that the execution layer is prohibited from acting on, and eligibility gates do not filter what research may study.",
+    "rationale": "M §31: legal gates are separate 'so the same brain can research more broadly than it can execute'. Filtering research by execution scope would blind the platform to exactly the opportunities an eligibility change would open.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "33",
+        "section": "§25 Governance, Legal Isolation & Authority (opening paragraph: 'The same cognitive core can evaluate an opportunity that the execution layer is prohibited from acting on')"
+      },
+      {
+        "doc": "M",
+        "page": "33",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 5: 'Research/simulation may be broader than executable scope')"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist ('so the same brain can research more broadly than it can execute')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A research and simulation run over an opportunity at a venue or jurisdiction with no eligibility completes and records its results, while the same opportunity submitted to the execution layer is refused by the eligibility gate."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COGNITION",
+      "REASON"
+    ],
+    "notes": "Merges raw 'Keep unsupported opportunities shadow-only' and 'Allow research/simulation broader than executable scope' (both M p33, §25 bullet 5), then splits them: the breadth of research is this item, and the shadow-only bound on what it finds is GOV-016. The §25 opening applies the same separation to causal agency ('a cognitive model may analyze an intervention that the acting identity, entity, channel or jurisdiction is not permitted to perform'). That clause was not in this domain's input, and AGENCY holds the intervention side. P1 because research and simulation over the cognitive data loop is master Phase 2's exit capability."
+  },
+  {
+    "id": "GOV-009",
+    "domain": "GOV",
+    "title": "A jurisdiction/product eligibility gate runs before any strategy is deployed",
+    "statement": "No strategy is deployed until a jurisdiction/product eligibility gate has admitted it. A strategy whose jurisdiction or product eligibility is not established is refused deployment.",
+    "rationale": "Eligibility checked after deployment is a breach discovered, not a breach prevented.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "33",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 1: 'Jurisdiction/product eligibility gate before strategy deployment')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Deploying a strategy with no recorded jurisdiction/product eligibility is refused before it is activated and before any order object exists; recording the eligibility and resubmitting admits it to paper trading."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMPLIANCE",
+      "MODEL",
+      "RISK"
+    ],
+    "notes": "Split from raw 'Gate strategy/venue eligibility by jurisdiction before deployment' (M p33), which states two gates at two different moments; the venue/instrument gate is GOV-010. LIVE_CAPITAL was removed: a deployment gate is a refusal and is proven entirely in paper, and under ADR 0021 'deployed' means deployed to paper trading."
+  },
+  {
+    "id": "GOV-010",
+    "domain": "GOV",
+    "title": "A venue or instrument becomes executable only after passing the eligibility gate",
+    "statement": "Every new venue and every new instrument passes the jurisdiction/product eligibility gate before it becomes executable, independently of any strategy deployment. Until it passes, no order to it can be created.",
+    "rationale": "Without a per-venue, per-instrument gate, a strategy admitted once would inherit every venue and instrument added after its review, none of which were checked.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "33",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 1: 'before every new venue/instrument becomes executable')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Adding a venue or instrument to the registry leaves it non-executable. An order for it from an already-deployed strategy is refused before an order object exists until its eligibility gate passes, after which a paper order is admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMPLIANCE",
+      "ASSET",
+      "EXEC",
+      "REFLEX"
+    ],
+    "notes": "Merges the venue/instrument half of raw 'Gate strategy/venue eligibility by jurisdiction before deployment' with raw 'Gate eligibility at every new venue/instrument, not only deployment' (both M p33, §25 bullet 1). .claude/rules/domains/risk-and-execution.md ('Limits checked before an order object exists') fixes where the refusal happens. This gate opens no live-venue path: every venue here stays simulated or a provider sandbox, and the Cell refuses live-class venues under GATE_LIVE_VENUE."
+  },
+  {
+    "id": "GOV-011",
+    "domain": "GOV",
+    "title": "Trading, custody/transfer, market creation, banking/financing and commerce purchasing use separate identities and credentials",
+    "statement": "Trading, custody/transfer, market creation, banking/financing and commerce purchasing each act under their own identity with their own credentials. No identity or credential is shared between two of these functions, and none can read another's credential.",
+    "rationale": "A compromised or misused trading identity must not be able to move custody, create a market or spend on commerce. Shared credentials give the narrowest function the blast radius of the widest.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "33",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 2)"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares a distinct workload identity and distinct Secret Manager secrets for each of the five functions that exists, and no IAM binding grants one function's identity accessor on another function's secret or impersonation of another function's identity."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC",
+      "CUSTODY",
+      "TREASURY",
+      "COMMERCE"
+    ],
+    "notes": "LIVE_CAPITAL and EXTERNAL_ACTION were removed. Separation is a restriction that can be declared and proven for paper and sandbox identities. A function that does not exist here (custody, banking, purchasing) satisfies it by having no identity, not a shared one. AGENCY-052 states the same segregation for public/channel adapters (M p35). .claude/rules/01-security-and-safety.md already requires the venue credential to be readable only where the ceiling could use it, and secrets reach processes as files, never environment values (ADR 0024). P0 because identity/security is a master Phase 0 exit capability."
+  },
+  {
+    "id": "GOV-012",
+    "domain": "GOV",
+    "title": "Authority envelopes take effect only when human-signed or governance-signed",
+    "statement": "An authority envelope takes effect only when it is signed by a human or by governance. An unsigned envelope, one signed by a model or agent identity, or one whose content no longer matches its signature is refused, and the envelope previously in force stays in force.",
+    "rationale": "An envelope a model can write for itself bounds nothing. The signature is what makes the authority attributable to someone accountable for it.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "33",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 3: 'Human-signed or governance-signed authority envelopes')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated envelopes, an unsigned one, one signed by a model or agent identity, and one altered after signing are each refused and leave the prior envelope active; only a valid human or governance signature activates a new envelope."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC",
+      "RISK",
+      "CAPITAL"
+    ],
+    "notes": "Merges raw 'Sign authority envelopes for destinations, leverage, product classes' and 'Cover regulated functions in authority envelopes' (both M p33, §25 bullet 3), then splits them: the signature is this item, and what an envelope must cover is GOV-013. LIVE_CAPITAL was removed: an envelope is a bound, and signing or refusing one needs no live capital. Asymmetric signing is one of the three gaps ADR 0043 says no in-tree code may close. Until a record resolves it, 'signed' can only mean the authenticated operator identity that AutonomyController::request_change already requires. That is a divergence to score, not a reason to hand-roll a signature scheme."
+  },
+  {
+    "id": "GOV-013",
+    "domain": "GOV",
+    "title": "Authority envelopes bound destinations, leverage, product classes and regulated functions",
+    "statement": "Every authority envelope states the destinations, leverage, product classes and regulated functions it grants, and any dimension it does not grant is denied. An action that needs a destination, leverage, product class or regulated function outside the envelope is refused.",
+    "rationale": "An envelope silent on a dimension would otherwise be read as permission on it. These four dimensions are the ones through which capital leaves its bounds.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "33",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 3: 'for destinations, leverage, product classes and regulated functions')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The envelope contract carries all four dimensions, and for each dimension an action outside what the envelope grants is refused, including under an envelope that leaves that dimension empty."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "CAPITAL",
+      "CONTRACT",
+      "EXEC"
+    ],
+    "notes": "Regulated functions are named explicitly because raw 'Cover regulated functions in authority envelopes' was extracted to stop that fourth dimension being lost. GOV-005 is the entity, counterparty and jurisdiction test that the same functions must also pass. Denying an unstated dimension is the house fail-closed reading. GCP Phase 4 names 'capital/risk envelope contracts' as an exit criterion. Merge and split history is at GOV-012."
+  },
+  {
+    "id": "GOV-014",
+    "domain": "GOV",
+    "title": "The per-decision audit record is immutable once written",
+    "statement": "The audit record of each decision is immutable. Once written it cannot be edited or deleted, and any alteration is detected when the record is verified.",
+    "rationale": "An audit that can be rewritten after the fact records what someone later wished had happened.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "33",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 4: 'Immutable audit')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying the event log verifies its hash chain end to end; altering, reordering or deleting any sealed decision record makes verification fail at that record; and no API offers an edit or delete of a sealed record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "SEC",
+      "REPLAY"
+    ],
+    "notes": "Split from raw 'Immutably audit model/data/policy/code/control versions per decision' (M p33). Immutability and the contents of the record are proven separately; the contents are GOV-015. The repository's event log is hash-chained for this reason (.claude/rules/00-enterprise-governance.md: 'nothing may edit history that has been sealed'). Anchoring the chain outside the process is one of the three gaps ADR 0043 names, so tamper-evidence against an actor who can rewrite the whole chain cannot yet be claimed. GOV-023 (G p10) is the storage-level retention lock for the same kind of evidence."
+  },
+  {
+    "id": "GOV-015",
+    "domain": "GOV",
+    "title": "Every decision records the model, data, policy, code and control versions involved",
+    "statement": "The audit record of each decision names the versions of every model, dataset, policy, code artifact and control involved in it.",
+    "rationale": "A decision whose inputs cannot be named by version cannot be reproduced from the log, and a decision that cannot be reproduced cannot be explained.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "33",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 4: 'model, data, policy, code and control versions involved in each decision')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "For every decision in a replayed window, the audit record names model, data, policy, code and control versions, and re-running the decision with exactly those versions reproduces it; writing a decision record that lacks any of the five is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "CICD",
+      "REPLAY",
+      "OBS"
+    ],
+    "notes": "Split from the same raw item as GOV-014. G p23 §27 states the Reflex-side form: every model/policy executing in Reflex can be traced to source commit, data/evaluation manifest, signature, approval/promotion event and activation epoch. That criterion was not in this domain's input. .claude/rules/10-product-direction.md makes 'every decision reproducible from the log alone' a mandatory concern."
+  },
+  {
+    "id": "GOV-016",
+    "domain": "GOV",
+    "title": "Opportunities outside the executable scope remain shadow-only",
+    "statement": "An opportunity that research or simulation finds outside the executable scope remains shadow-only. It may be recorded, simulated and scored, but it never produces an order or action intent that reaches a venue adapter or an action tool.",
+    "rationale": "GOV-008 widens what the platform may study. This keeps that width from becoming width of action.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "33",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 5: 'unsupported opportunities remain shadow-only')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated opportunities outside the executable scope, the only records produced are shadow records, and no order, action intent or adapter call is emitted on any path, including after the opportunity is re-scored."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC",
+      "AGENCY",
+      "RISK"
+    ],
+    "notes": "Merge and split history is at GOV-008. LIVE_CAPITAL was removed: shadow-only is the opposite of live capital and is fully provable in paper. ADR 0099 cites this sentence as the blueprint's own mandate for shadow forms. ARCH-042 (M p42, Phase 10) applies the same shadow-first order to causal agency."
+  },
+  {
+    "id": "GOV-017",
+    "domain": "GOV",
+    "title": "Every action tool is registered with identity, scope, disclosure, channel rules, limits and a revocation path",
+    "statement": "Every action tool has a registration naming its acting identity, permission scope, disclosure policy, audience/channel rules, rate/budget limits and revocation path. A tool whose registration lacks any of the six cannot act, and a revoked tool's next action is refused.",
+    "rationale": "An action tool is authority in executable form. Without a registered identity and scope nobody can say who acted or under what permission; without a revocation path, a misbehaving tool can only be stopped by stopping everything.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 6: 'Every action tool has a registered acting identity...')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Registering an action tool with any of the six fields missing is refused; an unregistered tool's action is refused; a tool over its rate or budget limit is refused; and after revocation the tool's next action is refused and the refusal is audited."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY",
+      "SEC",
+      "COMMERCE"
+    ],
+    "notes": "Merges raw 'Register acting identity and scope per action tool' and 'Register disclosure, channel rules, budgets and revocation per action tool' (both M p34), which divided one bullet's six fields into two lists. AGENCY-026 states the same contract from M p8, p32, p35, p45 and G p11 ('action identity, jurisdiction/channel policy, rate limits, immutable audit and rollback/stop controls'). G's list adds jurisdiction and immutable audit, which are GOV-010 and GOV-014 here. EXTERNAL_ACTION was removed: a registry refuses, and registration, limits and revocation are provable against shadow tools. The tools' external effects stay BLOCKED under ADR 0021 in their own requirements."
+  },
+  {
+    "id": "GOV-018",
+    "domain": "GOV",
+    "title": "Goal approval, plan approval and action execution are audited separately",
+    "statement": "Goal approval, plan approval and action execution are each recorded as a separate audit event with its own actor, time and subject, so that each can be attributed and reviewed on its own.",
+    "rationale": "An approved goal is not an approved plan, and an approved plan is not an executed action. Collapsing them into one record makes it impossible to say which approval an action actually relied on.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 7: 'Goal approval, plan approval and action execution are separately auditable')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "One simulated intervention produces three distinct audit records (goal approval, plan approval, execution), each naming its approver or executor and time, with the execution record referencing the plan approval it relied on and that record referencing the goal approval."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY",
+      "OBS",
+      "LEDGER"
+    ],
+    "notes": "The source bullet also says sensitive intervention classes can require stronger approval; the raw extraction already divided the two, and that half is GOV-019. AGENCY-034 fixes the order of the stages; this item is about their records. P0 as an auditability invariant that must hold from the first intervention, although causal agency itself is master Phase 10 (P3)."
+  },
+  {
+    "id": "GOV-019",
+    "domain": "GOV",
+    "title": "Sensitive intervention classes can require stronger approval than ordinary research",
+    "statement": "Approval requirements are set per intervention class, and a class designated sensitive can require stronger approval than ordinary research. An intervention in such a class is refused until its stronger approval is present.",
+    "rationale": "One approval threshold for everything is either too weak for the dangerous classes or too heavy for research. Per-class strength lets both be right.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 7: 'sensitive intervention classes can require stronger approval than ordinary research')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated interventions, one in a class configured to require stronger approval is refused with only ordinary approval and admitted with the stronger one, while ordinary research proceeds with ordinary approval."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY",
+      "SEC"
+    ],
+    "notes": "EXTERNAL_ACTION was removed: the approval check is a refusal and is provable on shadow interventions. The blueprint does not say what counts as 'stronger' (a second approver, a governance signature, a human rather than an agent), and that needs a decision before this can be built. AGENCY-017 requires each action class's authority in general. P0 for the same reason as GOV-018."
+  },
+  {
+    "id": "GOV-020",
+    "domain": "GOV",
+    "title": "Public communications and market-facing actions are cross-checked for market-conduct risk",
+    "statement": "Every public communication and every market-facing action is cross-checked for market-conduct and manipulation risk before release, and the result of the check is recorded with the action.",
+    "rationale": "Conduct risk has to be judged before the act, because a manipulative communication or order cannot be withdrawn from the market that has already seen it.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 8: 'cross-checked for market-conduct/manipulation risk')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every simulated public communication and paper market-facing action carries a recorded conduct-check result before release; one with no check is refused; and fixtures of known manipulation patterns (layered spoof orders, wash pairs, coordinated rumor) are refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY",
+      "RISK",
+      "COMPLIANCE",
+      "EXEC"
+    ],
+    "notes": "'Before release' and 'recorded' are the house reading of 'cross-checked'. AGENCY-037 and AGENCY-039 place the check in the Conduct Brain, and AGENCY-011 prohibits wash trading, spoofing and pump-and-dump. P0 because market-facing actions include the orders the first Reflex Cell places (master Phase 1), even though public communications arrive only with causal agency (Phase 10). EXTERNAL_ACTION was removed: the check is exercised fully on paper orders and unsent drafts. Sending a communication is what ADR 0021 blocks, and that is a different requirement."
+  },
+  {
+    "id": "GOV-021",
+    "domain": "GOV",
+    "title": "No public communication or market-facing action is justified solely by expected profit or desired price impact",
+    "statement": "A public communication or market-facing action cannot be justified solely by expected profit or desired price impact. One whose recorded justification consists only of those is refused.",
+    "rationale": "An action whose only purpose is the price move it causes is the shape that market-manipulation rules target, whatever channel it goes through.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "§25 Governance, Legal Isolation & Authority (bullet 8: 'cannot be justified solely by expected profit or desired price impact')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated actions, one whose justification record names only expected profit, desired price impact or both is refused by the conduct gate, and the same action carrying an independent, evidence-backed justification goes on to the ordinary conduct checks."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY",
+      "RISK",
+      "COMPLIANCE"
+    ],
+    "notes": "Split from the same §25 bullet as GOV-020. The check needs a justification record that separates profit and price impact from other grounds. The ActionIntent contract as extracted (CONTRACT-029) records the policy decisions that authorized an action but no such justification, which is a gap to score. EXTERNAL_ACTION was removed for the same reason as at GOV-020."
+  },
+  {
+    "id": "GOV-022",
+    "domain": "GOV",
+    "title": "The durable research/archive store is fed by lifecycle from the landing store",
+    "statement": "The Cloud Storage durable research/archive tier, holding curated internal/tick datasets, compact knowledge snapshots, model weights, manifests/hashes and legally required internal evidence, is populated by lifecycle from the regional landing tier.",
+    "rationale": "With one entry point (landing, written by fabric-archive) and one lifecycle path, the archive's contents stay traceable to the closed Fabric segments they came from.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers, store table (Cloud Storage durable research/archive row: 'Lifecycle from landing')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares lifecycle configuration that carries retained object classes from the regional landing bucket to the durable research/archive tier, for the object classes the §9.2 table lists."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "TICK",
+      "GCP"
+    ],
+    "notes": "Split from raw 'Immutable archive retention uses Bucket Lock/versioning' (G p10), whose statement also carried this tiering; the retention lock is GOV-023. This is DATA's substance and is kept here only because it arrived in this domain's input. Adopting Cloud Storage tiers as a store falls under ADR 0099's conflict C4, which needs a storage record before adoption. P1 because the retained archive is GCP Phase 5 (data plane)."
+  },
+  {
+    "id": "GOV-023",
+    "domain": "GOV",
+    "title": "Archive buckets whose retention must be immutable use Bucket Lock with versioning",
+    "statement": "Where retention of durable research/archive content must be immutable, including legally required internal evidence and manifests/hashes, the Cloud Storage bucket holding it enforces that with Bucket Lock (a locked retention policy) and object versioning.",
+    "rationale": "Evidence that a privileged operator can delete is not immutable. A locked retention policy is the one control on the bucket that its own administrators cannot relax.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers, store table (Cloud Storage durable research/archive row: 'Bucket Lock/versioning where retention must be immutable')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every bucket declared to hold an immutable-retention class shows a retention policy with is_locked = true and a non-zero period, plus versioning enabled. A plan declaring such a bucket without the lock fails validation, and one declaring a bucket outside those classes without it passes."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "SEC",
+      "LEDGER",
+      "GCP"
+    ],
+    "notes": "G writes 'Bucket Lock/versioning'. Versioning alone keeps prior generations but lets a principal with delete permission remove them, so it cannot make retention immutable. The statement therefore requires the lock and keeps versioning beside it. G p11 §10 states the ledger's form (immutable ledger export/audit manifests to locked GCS, GCP Phase 4), which LEDGER holds; EVID-027 records each observation as immutable evidence in Cloud Storage. Locking a retention policy cannot be undone for its period, so applying one is an irreversible operation that needs explicit approval under .claude/rules/02-change-management.md. P1 because the durable archive is GCP Phase 5 (data plane)."
+  },
+  {
+    "id": "GOV-024",
+    "domain": "GOV",
+    "title": "A validated cognitive result becomes a strategy, model, risk or capital proposal",
+    "statement": "A validated result of the world-event-to-cognitive-response flow is emitted as a strategy, model, risk or capital proposal.",
+    "rationale": "A proposal can be reviewed, attributed and refused. A result applied directly can be none of those.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.2 World event to cognitive response, step 5 ('Validated result becomes a strategy/model/risk/capital proposal')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Driving a world event through the flow end to end in simulation produces a typed strategy, model, risk or capital proposal record linked to the validated result and evidence it came from."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COGNITION",
+      "MODEL",
+      "WORLD",
+      "EVID"
+    ],
+    "notes": "Split from raw 'World event flow step 5: promotion gate for proposals' (G p20); the promotion-gate invariant is GOV-025. P2 because the flow belongs to GCP Phase 8 (cognitive/AI plane)."
+  },
+  {
+    "id": "GOV-025",
+    "domain": "GOV",
+    "title": "Proposals reach the hot path only as signed packages through promotion gates",
+    "statement": "Promotion gates convert an accepted proposal into a signed policy or model package. A proposal never reaches the hot path as an unreviewed direct call, and the hot path activates nothing that is not a signed, promoted package.",
+    "rationale": "The cognitive plane is the least deterministic part of the platform and the most exposed to untrusted content. A direct call from it into the hot path would let that exposure act at reflex speed with nobody reviewing it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.2 World event to cognitive response, step 5 ('Promotion gates convert it into signed policy/model packages, never an unreviewed direct hot-path call')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test finds no call path from cognitive-plane crates into the hot path other than signed package activation, and the reflex package manager refuses an unsigned package, a package whose signature does not verify, and a package with no promotion event."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "CICD",
+      "REFLEX",
+      "SEC"
+    ],
+    "notes": "Split from the same G p20 step as GOV-024. CICD-054 signs release, model and policy manifests with Cloud KMS/HSM, CICD-082 promotes Reflex packages through the package controller, and G p23 §27 requires every model/policy in Reflex to trace back to its approval/promotion event. The ADR 0043 signing gap applies here as it does at GOV-012. GOV-004 says continuous operation raises no authority; this is the route authority does take."
+  },
+  {
+    "id": "GOV-026",
+    "domain": "GOV",
+    "title": "Autonomous agents cannot obtain production capital or custody authority",
+    "statement": "No autonomous agent can obtain production capital authority or custody authority.",
+    "rationale": "An agent that can grant itself capital authority is an unbounded actor with a bounded-sounding name. Capital and custody authority must come from an accountable, authenticated human operator.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§27 Architecture Acceptance Criteria ('Autonomous agents cannot obtain production capital/custody authority')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Requests from each autonomous-agent identity to raise the autonomy ceiling, grant capital or perform a custody operation are refused; AutonomyController::request_change refuses any request without an authenticated operator identity; and no agent identity holds an IAM role on capital or custody resources."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC",
+      "CAPITAL",
+      "CUSTODY",
+      "CICD"
+    ],
+    "notes": "Split from raw 'Autonomous agents cannot obtain capital/custody authority' (G p23), which states three prohibitions proven by three different means; the other two are GOV-027 and GOV-028. LIVE_CAPITAL was removed: the prohibition is proven without live capital, and under ADR 0021 nobody holds production capital authority. In this repository the ceiling is paper trading at all three layers, autonomy changes only through AutonomyController::request_change with an authenticated operator identity, and escalating autonomy from a model output or agent finding is prohibited (.claude/rules/domains/risk-and-execution.md)."
+  },
+  {
+    "id": "GOV-027",
+    "domain": "GOV",
+    "title": "Autonomous agents cannot merge or deploy around policy",
+    "statement": "No autonomous agent can merge a change or deploy an artifact except through the same policy-gated review, CI and promotion path that every other change takes.",
+    "rationale": "A policy an agent can route around is advice. The merge and deploy gates are where every other supply-chain guarantee is enforced.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§27 Architecture Acceptance Criteria ('cannot merge/deploy around policy')"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "In the agent-compromise simulation, an autonomous development agent given a malicious instruction tries to merge without required review, push to a protected branch and deploy an unattested digest. Branch protection, Binary Authorization or the promotion gate refuses each attempt, and each refusal is audited."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CICD",
+      "SEC"
+    ],
+    "notes": "Split from the same G p23 criterion as GOV-026. CICD-007 (agent changes reach production only through the same gated pipeline) and CICD-023 (no kubectl, SSH or console changes) are the pipeline-side statements; this is the acceptance criterion they jointly satisfy. The game day is G p22 §25 'Agent compromise simulation'. Merging and deploying also need explicit human approval under .claude/rules/02-change-management.md."
+  },
+  {
+    "id": "GOV-028",
+    "domain": "GOV",
+    "title": "Autonomous agents cannot access long-lived cloud keys",
+    "statement": "No autonomous agent can access a long-lived cloud key.",
+    "rationale": "A long-lived key taken by a compromised agent keeps working after the agent is stopped. A short-lived federated credential expires with the task.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§27 Architecture Acceptance Criteria ('cannot access long-lived cloud keys')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares no service-account key and no storage HMAC key, enforces the organization policy that disables service-account key creation, and grants agent and CI identities access only through Workload Identity Federation; ./scripts/check-secrets.sh reports nothing found."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC",
+      "CICD",
+      "GCP"
+    ],
+    "notes": "Split from the same G p23 criterion as GOV-026. CICD-046 (CI authenticates to GCP only through short-lived WIF credentials) and CICD-013 (agent workers hold no production secrets) are the mechanisms. .claude/rules/01-security-and-safety.md already forbids downloaded service-account keys in any file, including examples."
+  }
+]

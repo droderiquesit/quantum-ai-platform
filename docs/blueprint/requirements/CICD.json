@@ -1,0 +1,3019 @@
+[
+  {
+    "id": "CICD-001",
+    "domain": "CICD",
+    "title": "Every deploy passes five gates before promotion",
+    "statement": "Every deploy runs simulation, integration, security, performance and paper-trading gates, and is promoted only when all five pass.",
+    "rationale": "A deploy promoted on a subset of the gates reaches the next environment with the untested dimension unexamined. The gate set is the precondition for promotion, not a checklist.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The promotion policy names all five gates, and it refuses to promote an artifact that lacks any one gate verdict or carries a failing one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS",
+      "EXEC"
+    ],
+    "notes": "GCP v2.1 states the same gates in more detail and at different pipeline points: build gates in §14.2 step 3 (CICD-049), pre-acceptance scans in step 4 (CICD-050), and replay and paper as promotion stages in step 8 (CICD-058). This row is kept as the master blueprint's promotion precondition, and the GCP rows say where each gate runs. The paper-trading gate does not imply a later live stage here, because ADR 0021 keeps every environment paper-only. P0 because master Phase 0 names CI/CD/GitOps as a foundation exit."
+  },
+  {
+    "id": "CICD-002",
+    "domain": "CICD",
+    "title": "Engineering/Control plane runs on the named supply-chain services",
+    "statement": "The Engineering/Control plane's primary runtime is GitHub, Cloud Build private pools, Artifact Registry, Config Sync, and Argo CD with Kargo and Argo Rollouts.",
+    "rationale": "Naming one toolchain for the plane ties each supply-chain guarantee to a specific enforcement point instead of a generic 'CI'.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture — plane table, Engineering/Control row"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Terraform and the workflow definitions place build, artifact storage and GitOps reconciliation on exactly these services, and no second build or deploy path exists beside them."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "The same table row lists the plane's capabilities: an immutable supply chain, GitOps promotion, progressive delivery and autonomous development through the same controls. Each has an atomic row: CICD-003, CICD-051 and CICD-052 for the supply chain, CICD-057 and CICD-058 for promotion, CICD-059 for progressive delivery, and CICD-007 for autonomous development. The separately extracted 'progressive delivery' item from this row was merged here as a duplicate. ADR 0099 conflict C3: Config Sync, Argo CD, Kargo and Argo Rollouts assume GKE. ADR 0024 retired GKE for Cloud Run, and ADR 0036 and ADR 0093 confine and suspend the Argo cluster. Those standing decisions keep their force until C3's record exists. P0 because GCP Phase 1 (supply chain) names these tools."
+  },
+  {
+    "id": "CICD-003",
+    "domain": "CICD",
+    "title": "Deployments reference immutable digests, never mutable tags",
+    "statement": "Every deployment reference names an immutable, signed artifact digest. No environment manifest, image reference or package pin refers to a mutable tag such as 'latest'.",
+    "rationale": "A policy that trusts a tag trusts whoever can push that tag. A digest makes what runs identical to what was reviewed and attested.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 8"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§28 Explicit Anti-Patterns — mutable latest tags"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A scan of every environment manifest, Terraform image reference and package pin finds only digest references, and admission refuses a workload specified by tag."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "Rule 8 says 'no mutable tags', and §28 names 'mutable latest tags' as an anti-pattern. Rule 8's headline, 'Git and signed digests are deployment truth', is carried by two rows: this one for signed digests and CICD-004 for Git."
+  },
+  {
+    "id": "CICD-004",
+    "domain": "CICD",
+    "title": "No console-only or undocumented emergency changes",
+    "statement": "Every change to deployed infrastructure or configuration, including an emergency change, is declared in Git. No change exists only in a console or as undocumented emergency configuration.",
+    "rationale": "A change made in a console has no review, no history and no rebuild path. The next reconcile or rebuild silently reverts it or loses it.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 8"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§28 Explicit Anti-Patterns — undocumented emergency config"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Rebuilding an environment from Terraform, Git and artifacts alone reproduces its running configuration, and drift detection reports no resource whose state is undeclared in Git."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV",
+      "GCP"
+    ],
+    "notes": "Rule 8 says 'console-only changes', and §28 says 'undocumented emergency config'. §25's 'rebuild from zero' game day (G p22) is the blueprint's own test for this row: it must prove 'no undocumented console dependency'."
+  },
+  {
+    "id": "CICD-005",
+    "domain": "CICD",
+    "title": "No hand-copied model files",
+    "statement": "Model weights and manifests reach a runtime only as signed packages delivered through the supply chain. No model file is copied by hand onto a host or into a serving location.",
+    "rationale": "A hand-copied model has no provenance, so no decision it makes can be attributed to a reviewed, evaluated version.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 8"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§28 Explicit Anti-Patterns — hand-copied model files"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every model load path verifies a package signature, and a digest recorded in the environment repository. A model file placed out of band is refused at load."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "Rule 8 says 'hand-copied models', and §28 says 'hand-copied model files'. The signed package lifecycle itself is CICD-065. P0 because this is a non-negotiable rule. It holds trivially until models ship."
+  },
+  {
+    "id": "CICD-006",
+    "domain": "CICD",
+    "title": "No secret values in Git",
+    "statement": "No secret value is committed to any Git repository. Git carries only references to secrets held in the secret store.",
+    "rationale": "A secret committed to Git remains in every clone, fork and CI log for as long as the history exists.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 8"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A secret scanner run over the full history of every repository finds nothing, and CI fails any commit that introduces a secret value."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "The repository's own rule (.claude/rules/01-security-and-safety.md) adds two requirements: committed integrations use environment-variable placeholders, and secrets reach processes as files."
+  },
+  {
+    "id": "CICD-007",
+    "domain": "CICD",
+    "title": "Agent changes reach production only through the same gated pipeline",
+    "statement": "Autonomous agents may open PRs, run experiments and diagnose incidents. Any production change they originate reaches production only through Git, tests, attestation, promotion policy and a rollback path, as a human change does. This includes changes to capital, risk and strategy packages and any capability change a Learning Agent proposes.",
+    "rationale": "An agent with a path around the pipeline is an unreviewed production operator. The pipeline is a control only if nothing can bypass it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 9"
+      },
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — introduction"
+      },
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Learning Agent row (hard boundary)"
+      },
+      {
+        "doc": "H",
+        "page": "L393-395",
+        "section": "§08 End-to-End Operating Flow (edges) — Autonomous Engineering → Capital/Risk/Strategy"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "An agent-compromise simulation (G §25) gives an agent a malicious instruction. It confirms the agent cannot merge, promote or deploy without passing tests, attestation and promotion policy, and that every agent-originated deploy has a recorded rollback target."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV",
+      "SEC",
+      "RISK",
+      "CAPITAL"
+    ],
+    "notes": "Four sources were merged. Rule 9 states the gate as 'tests, attestations, promotion policy and rollback'. §13's introduction says agents 'do not bypass Git, test, attestation or deployment policy'. The Learning Agent's hard boundary says 'promotion still gated'. The diagram draws the Autonomous Engineering → Capital/Risk/Strategy edge as a direct deploy, but its node text ('through governed CI/GitOps') limits it to the pipeline, so the edge grants no separate path. §27 (G p23) repeats this as a completion target, 'cannot merge/deploy around policy'. That bullet's clauses on capital/custody authority and long-lived keys belong to SEC and CAPITAL. The diagram's CI/CD view subtitle says the same thing: production changes 'still traverse the same versioned, attested and reversible supply chain'."
+  },
+  {
+    "id": "CICD-008",
+    "domain": "CICD",
+    "title": "prod/engineering is the software supply-chain boundary",
+    "statement": "Cloud Build private pools, Artifact Registry, signing/attestation and the GitOps management cluster live in the prod/engineering folder, and that folder forms the software supply-chain boundary.",
+    "rationale": "Build, storage, signing and reconciliation decide what runs. Keeping them inside one isolated boundary means a compromised workload project cannot reach them.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model — prod/engineering row"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The Terraform plan creates each named resource in a prod/engineering project, and puts no build pool, registry, signing key or GitOps controller in any workload project."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "SEC"
+    ],
+    "notes": "The separately extracted 'GitOps management cluster' item came from the same row and was merged as a duplicate. ADR 0099 C3 applies to the management cluster: ADR 0036 confines Argo to a control-plane cluster, and ADR 0093 suspended that cluster on cost."
+  },
+  {
+    "id": "CICD-009",
+    "domain": "CICD",
+    "title": "GitOps ownership is split across four controllers",
+    "statement": "Config Sync owns the cluster baseline, policies and CRDs. Argo CD owns applications. Kargo owns environment promotion. Argo Rollouts owns progressive rollout inside a target cluster. No object is owned by two of these controllers.",
+    "rationale": "Two controllers reconciling the same object fight each other, and each reads the other's revert as drift.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane — GitOps split"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every managed object carries exactly one owning controller, and the set of objects each controller manages matches its part of the split."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "'No object is owned by two' is this catalogue's reading of 'split'. It is what makes the row checkable. ADR 0099 C3. The direction of reconciliation, from Git, is CICD-056."
+  },
+  {
+    "id": "CICD-010",
+    "domain": "CICD",
+    "title": "Planner decomposes goals into a plan across the agent roles",
+    "statement": "The Planner, the diagram's Agent Orchestrator, reads architecture, the repository, issues and telemetry. It decomposes a goal into work, allocates that work across coding, test/replay, security and architecture agents, and produces a plan.",
+    "rationale": "Decomposition by one accountable role keeps the evaluating roles separate from the authoring role, and gives every task a traceable origin.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Planner row"
+      },
+      {
+        "doc": "H",
+        "page": "L364-366",
+        "section": "§07 CI/CD, GitOps & Autonomous Development (edges) — orch → code/test/secagent/archagent"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Given a scoped goal, the planner emits a plan in which each task is assigned to one of the four roles and traces back to the goal."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "G calls the role 'Planner'. The diagram calls the node 'Agent Orchestrator', with the subtitle 'planner'. The diagram adds that the node tracks evidence and fans out to four named roles. The orchestrator's direct input from Architecture Contracts is merged into CICD-036. P2 because GCP Phase 9 delivers the agent loop."
+  },
+  {
+    "id": "CICD-011",
+    "domain": "CICD",
+    "title": "Planner cannot merge or deploy",
+    "statement": "The Planner holds no permission to merge a change or to deploy an artifact.",
+    "rationale": "A planner that can merge can approve the output of its own plan.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Planner row (hard boundary)"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The planner's identity has no merge right on any protected branch, no write access to the environment repository, and no deploy API permission."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC",
+      "GOV"
+    ],
+    "notes": "Every §13 'hard boundary' is scored P0 as a safety invariant, and every 'allowed action' is scored P2 with the Phase 9 agent loop. G §25's agent-compromise game day names merge and prod-deploy among the boundaries that must hold."
+  },
+  {
+    "id": "CICD-012",
+    "domain": "CICD",
+    "title": "Coder agents author branches, code and tests",
+    "statement": "Coder agents create a branch or PR, edit Rust, Terraform, Kubernetes and model code, and add tests for the change.",
+    "rationale": "The coder is the only role that authors code. It writes the tests together with the change, so no change arrives untested.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Coder row"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 2"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An agent-authored PR is on a branch the coder created, and it contains both the change and tests that exercise the change."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [],
+    "notes": "§21.4 step 2 says 'planner/coder agents create a branch/PR and tests'. Its second clause, independent evaluation, is merged into CICD-021. Per-agent worktree isolation is CICD-101."
+  },
+  {
+    "id": "CICD-013",
+    "domain": "CICD",
+    "title": "Agent workers use scoped, sandboxed credentials with no production secrets",
+    "statement": "Agent execution workers run under scoped service accounts, with sandboxed credentials that grant no access to production secrets.",
+    "rationale": "An agent that holds a production secret turns any prompt injection into a leaked production credential.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Coder row (hard boundary)"
+      },
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — Agent runtime bullet"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "An agent-compromise simulation confirms that a worker's service account cannot read any production secret, and that its IAM bindings are limited to its sandbox project."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "The Coder row says 'sandboxed credentials; no prod secrets', and the runtime bullet says workers use 'scoped service accounts'. The runtime bullet's placement and ephemerality clauses are CICD-027 and CICD-028. G §27 adds that agents 'cannot access long-lived cloud keys', which is scored in SEC."
+  },
+  {
+    "id": "CICD-014",
+    "domain": "CICD",
+    "title": "Test/Replay Agent runs the full test taxonomy against baselines",
+    "statement": "The Test/Replay Agent runs unit, integration, property, fuzz, replay, performance and model tests, and compares the results against baselines.",
+    "rationale": "Naming fuzz, replay and model tests as separate categories keeps them from disappearing into a generic 'tests passed'.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Test/Replay Agent row"
+      },
+      {
+        "doc": "H",
+        "page": "L350",
+        "section": "VIEWS.cicd — 07 · CI/CD, GitOps & Autonomous Development (node 'test')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For a change, the agent's evidence gives a result for each of the seven categories, plus a baseline comparison for the replay and performance results."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "G lists unit/integration/property/fuzz/replay/perf tests. The diagram lists unit/integration/fuzz/replay/performance/model tests, so it adds model tests. NEW_DEPENDENCY: a fuzzing harness crate (for example libfuzzer-sys) is outside ADR 0002's two dependencies and needs its own record."
+  },
+  {
+    "id": "CICD-015",
+    "domain": "CICD",
+    "title": "Test/Replay Agent cannot waive a failing risk or performance gate",
+    "statement": "The Test/Replay Agent cannot waive a failing risk gate or a failing performance gate.",
+    "rationale": "A gate that its own runner can waive is only advisory.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Test/Replay Agent row (hard boundary)"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The gate configuration grants no agent identity an override, and a PR whose risk or performance gate failed cannot merge, whichever agent ran the gate."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": "The NEW_DEPENDENCY flag on the raw item applies to the fuzz tests the agent runs (CICD-014), not to this boundary, so it was removed here."
+  },
+  {
+    "id": "CICD-016",
+    "domain": "CICD",
+    "title": "Security Agent reviews code, dependencies, IaC, secrets and threats",
+    "statement": "The Security Agent performs SAST, SCA, secret, IaC, policy and threat review, and triages SBOMs and vulnerabilities.",
+    "rationale": "Security review needs a role whose output feeds promotion directly, rather than being a comment on a PR.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Security Agent row"
+      },
+      {
+        "doc": "H",
+        "page": "L351",
+        "section": "VIEWS.cicd — 07 · CI/CD, GitOps & Autonomous Development (node 'secagent')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For a change, the agent's evidence gives a result for each named check and a triage decision for every vulnerability found."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "G lists SAST/SCA/secrets/IaC/policy review plus SBOM and vulnerability triage. The diagram adds threat checks."
+  },
+  {
+    "id": "CICD-017",
+    "domain": "CICD",
+    "title": "Security finding severity controls promotion",
+    "statement": "A severity policy over security findings decides promotion. A finding at or above the policy's blocking severity stops promotion.",
+    "rationale": "Without a severity policy, a finding is only a comment, and an artifact with a critical vulnerability promotes anyway.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Security Agent row (hard boundary)"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An artifact carrying a seeded finding at blocking severity is refused promotion, and one carrying a finding below the threshold is admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "CICD-018",
+    "domain": "CICD",
+    "title": "Architecture Agent checks dependency, ownership and invariant rules",
+    "statement": "The Architecture Agent checks dependency rules, hot-path violations, state and service ownership, latency and failure invariants, and conformance with ADRs.",
+    "rationale": "Structural rules that no one checks are eroded one reasonable-looking change at a time.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Architecture Agent row"
+      },
+      {
+        "doc": "H",
+        "page": "L352",
+        "section": "VIEWS.cicd — 07 · CI/CD, GitOps & Autonomous Development (node 'archagent')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The agent flags, before merge, any change that breaks a seeded dependency rule, crosses a state-ownership boundary, or adds a blocking call on the hot path."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": "G lists dependency rules, hot-path violations, state ownership and ADRs. The diagram lists dependencies, service ownership and latency/failure invariants."
+  },
+  {
+    "id": "CICD-019",
+    "domain": "CICD",
+    "title": "No agent redefines a non-negotiable rule silently",
+    "statement": "No agent changes or excepts a non-negotiable architecture rule silently. A proposal that excepts a rule cites the rule it changes, and the Architecture Agent cannot redefine a non-negotiable.",
+    "rationale": "A rule redefined without a citation leaves no record that the rule ever moved.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Architecture Agent row (hard boundary)"
+      },
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — Architecture memory bullet"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every merged exception or rule change cites the rule by identifier. Review policy refuses a change that edits a non-negotiable without that citation."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV",
+      "ARCH"
+    ],
+    "notes": "Merged two sources: the Architecture Agent's hard boundary ('cannot redefine non-negotiables silently') and the architecture-memory bullet ('agents must cite the rule they are changing when proposing an exception')."
+  },
+  {
+    "id": "CICD-020",
+    "domain": "CICD",
+    "title": "Reviewer Agent reviews independently and summarises diff risk",
+    "statement": "The Reviewer Agent reviews each change independently, writes a diff risk summary, and can request changes.",
+    "rationale": "A risk summary tells the human approver where a change needs a closer look.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Reviewer Agent row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each agent-authored PR carries a reviewer risk summary, and a review that requests changes blocks merge until the changes are addressed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "The independence requirement is split out as CICD-021."
+  },
+  {
+    "id": "CICD-021",
+    "domain": "CICD",
+    "title": "Evaluating agents are independent of the authoring agent",
+    "statement": "Agents that review or evaluate a change are independent of the agent that authored it. The Reviewer uses a separate model and context from the primary coder. Test, security and architecture evaluation is done in sandbox by agents other than the author.",
+    "rationale": "An author that reviews its own change in its own context repeats its own blind spots.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Reviewer Agent row (hard boundary)"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 2"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "For every agent-authored PR, the recorded identities, models and contexts of the reviewer and evaluators all differ from the author's."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "§13 states independence only for the Reviewer ('separate model/context from primary coder for independence'). §21.4 step 2 extends it to 'independent test/security/architecture agents' evaluating 'in sandbox'. Scored P0 because independent review is also a merge precondition (CICD-045)."
+  },
+  {
+    "id": "CICD-022",
+    "domain": "CICD",
+    "title": "Release Agent pins exact digests in the environment repository after gates",
+    "statement": "After the gates pass, the Release Agent updates the environment repository (algorik-env) with the exact immutable digests to release.",
+    "rationale": "A release made by pinning digests in Git keeps the desired state reviewable, and makes it revertible with one commit.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Release Agent row"
+      },
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 7"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A release produces an environment-repository commit, authored by the Release Agent after the gate results for those digests are recorded, whose only change is digest pins."
+    },
+    "policy_flags": [
+      "MULTI_REPO"
+    ],
+    "secondary_domains": [],
+    "notes": "The attestation precondition on environment-repository updates is CICD-102. The Release Agent's write-scope boundary is CICD-023. Step 7's reconciliation clause is CICD-056. ADR 0099 C6 maps algorik-env to a directory of the monorepo."
+  },
+  {
+    "id": "CICD-023",
+    "domain": "CICD",
+    "title": "No agent changes production by kubectl, SSH or console",
+    "statement": "No AI agent changes production with kubectl, SSH or console actions. The Release Agent writes only to the environment Git repository. Any other agent-originated production change is either a GitOps change or a pre-approved, audited runbook action.",
+    "rationale": "Direct access skips review, attestation and rollback, and it leaves the desired state in Git wrong.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Release Agent row (hard boundary)"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 5"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§28 Explicit Anti-Patterns — AI agent changing production outside GitOps"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Agent identities hold no Kubernetes, SSH or console write access to production, and an agent-compromise simulation that attempts each route fails on each."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "The Release Agent row says 'no direct kubectl/SSH to prod'. §21.4 step 5 says the 'Release agent changes only the environment Git repository'. §28 extends the prohibition to any AI agent, and names a 'pre-approved audited runbook' as the only other route. The MULTI_REPO flag on the Release Agent item belongs to CICD-022."
+  },
+  {
+    "id": "CICD-024",
+    "domain": "CICD",
+    "title": "SRE Agent observes rollouts and triggers bounded rollback",
+    "statement": "The SRE Agent observes rollouts and SLOs, diagnoses regressions, and triggers bounded rollback or runbook actions.",
+    "rationale": "A rollout watched by an agent can be reversed faster than a human can be paged, provided the reversal is bounded.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — SRE Agent row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "When an SLO regression is injected during a rollout, the SRE Agent records a diagnosis and triggers the bounded rollback defined for that component."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS",
+      "RES"
+    ],
+    "notes": "The diagram combines SRE and Learning into one 'SRE / Learning Agent' node, which 'analyzes deployment/runtime outcomes; proposes remediations and new tests'."
+  },
+  {
+    "id": "CICD-025",
+    "domain": "CICD",
+    "title": "Automatic remediation is limited to signed runbooks and approved actions",
+    "statement": "Automatic remediation is limited to signed runbooks and approved actions.",
+    "rationale": "An agent free to improvise a remediation is an unreviewed production operator at exactly the moment the system is least stable.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — SRE Agent row (hard boundary)"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The remediation executor refuses an unsigned or unapproved runbook and runs a signed, approved one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS",
+      "SEC",
+      "RES"
+    ],
+    "notes": "M §29 (p41) has a broader form: autonomous remediation 'may restart, rollback, scale, fail over, quarantine or disable a capability inside pre-approved runbooks'. G's 'signed runbooks' is the more specific wording and is kept here."
+  },
+  {
+    "id": "CICD-026",
+    "domain": "CICD",
+    "title": "Learning Agent turns incidents and benchmarks into future tasks",
+    "statement": "The Learning Agent analyses incidents, reviews and benchmarks, and raises future tasks as Blueprint/Issue/Goal items.",
+    "rationale": "This closes the loop, so that a lesson from production becomes a tracked item rather than a memory.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development agent roles — Learning Agent row"
+      },
+      {
+        "doc": "H",
+        "page": "L364-366",
+        "section": "§07 CI/CD, GitOps & Autonomous Development (edges) — sreagent → issue"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "After an incident, the issue/goal tracker holds a task, authored by the Learning Agent, that references the incident's evidence."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": "The Learning Agent's hard boundary ('promotion still gated') is merged into CICD-007. The diagram's knowledge-class edge runs from the SRE/Learning Agent to Blueprint/Issue/Goal. Its deploy-class edge into the monorepo is merged into CICD-037."
+  },
+  {
+    "id": "CICD-027",
+    "domain": "CICD",
+    "title": "Agent orchestration runs on the management cluster or a managed agent runtime",
+    "statement": "Agent control and orchestration run on the management GKE cluster, on a managed agent runtime, or on both.",
+    "rationale": "Keeping agent control on the management plane keeps it out of the clusters that serve production traffic.",
+    "kind": "placement",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — Agent runtime bullet"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan places the agent orchestrator in the management cluster or the managed agent runtime, and in no workload cluster."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "ADR 0099 C3."
+  },
+  {
+    "id": "CICD-028",
+    "domain": "CICD",
+    "title": "Agent execution is ephemeral",
+    "statement": "Agent execution workers are ephemeral GKE Jobs or Cloud Build workers. They run in ephemeral namespaces or projects that are created for a task and removed after it.",
+    "rationale": "A worker that outlives its task accumulates state and access that the next task inherits.",
+    "kind": "security_control",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — Agent runtime bullet"
+      },
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — Sandboxing bullet"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "After a task completes, its worker and its namespace or project no longer exist, and a later task cannot read state the earlier one left behind."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "The runtime bullet says 'execution workers are ephemeral GKE Jobs/Cloud Build workers'. The sandboxing bullet says 'ephemeral namespaces/projects'."
+  },
+  {
+    "id": "CICD-029",
+    "domain": "CICD",
+    "title": "Agent sandboxes are confined by network and egress policy",
+    "statement": "Agent sandboxes are confined by NetworkPolicy and egress policy.",
+    "rationale": "A sandbox without network confinement can reach production services, or send what it has read to anywhere.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — Sandboxing bullet"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "From inside an agent sandbox, connections to production services and to external hosts that are not allow-listed fail."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "G §25's agent-compromise game day names the network boundary as one of four boundaries that must hold (secret, network, merge, prod-deploy). That is why this row is P0."
+  },
+  {
+    "id": "CICD-030",
+    "domain": "CICD",
+    "title": "Agent work runs under quotas that protect source APIs and budgets",
+    "statement": "Agent sandboxes and workers run under quotas, and concurrency quotas protect source APIs and budgets.",
+    "rationale": "Unbounded parallel agents exhaust API rate limits and spend budget faster than anyone notices.",
+    "kind": "nfr",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — Sandboxing bullet"
+      },
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model — Autonomous dev row"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Agent tasks launched beyond the concurrency quota are queued or refused, and neither API rate limits nor the budget are exceeded."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "FINOPS"
+    ],
+    "notes": "The sandboxing bullet says 'quota'. §18's scaling rule says 'concurrency quotas protect source APIs and budgets'. GCP §26 Phase 9 includes 'budget controls' in its exit test. §18's independent-scaling clause is CICD-079."
+  },
+  {
+    "id": "CICD-031",
+    "domain": "CICD",
+    "title": "Agent access to production telemetry is read-only by default",
+    "statement": "By default, agents have read-only access to production telemetry.",
+    "rationale": "Diagnosis needs reading. A default write grant makes every diagnosis session a way to change production.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — Sandboxing bullet"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Default agent roles hold only read permissions on production monitoring, logging and tracing, and any broader grant is explicit and audited."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC",
+      "OBS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "CICD-032",
+    "domain": "CICD",
+    "title": "Agent sandboxes use synthetic or test data where possible",
+    "statement": "Agent sandboxes use synthetic or test data wherever it can serve the task, in preference to production data.",
+    "rationale": "Production-derived data in a sandbox widens the blast radius of a compromised agent.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — Sandboxing bullet"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Sandbox data sources are synthetic data or test fixtures, unless a recorded justification says why production-derived data was needed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA",
+      "SEC"
+    ],
+    "notes": "This bullet was extracted twice and the two items were merged."
+  },
+  {
+    "id": "CICD-033",
+    "domain": "CICD",
+    "title": "Agents reach models only through one policy-enforcing gateway",
+    "statement": "Agents call Gemini, Claude, OpenAI or other approved models only through one policy-enforcing model gateway.",
+    "rationale": "With one gateway there is one place to enforce the approved-model list and data-handling policy.",
+    "kind": "security_control",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — Model gateway bullet"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An agent's direct call to a model provider endpoint fails at egress, and a call through the gateway to an unapproved model is refused."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "MODEL",
+      "SEC"
+    ],
+    "notes": "The credential and audit clauses of the same bullet are CICD-034 and CICD-035."
+  },
+  {
+    "id": "CICD-034",
+    "domain": "CICD",
+    "title": "Model provider credentials stay in Secret Manager, not with agents",
+    "statement": "Model provider credentials remain in Secret Manager and are used by the gateway. Agents do not hold them.",
+    "rationale": "A provider key in an agent's context can be leaked by the first prompt that asks for it.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — Model gateway bullet"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No agent identity can access the model-provider secrets, and the gateway's service account is the only principal that can."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "P0 because this is one of the secret boundaries named by G §25's agent-compromise game day."
+  },
+  {
+    "id": "CICD-035",
+    "domain": "CICD",
+    "title": "Every model-gateway request is audited",
+    "statement": "Every request an agent makes through the model gateway is audited.",
+    "rationale": "Without an audit record, there is no way to show what an agent was told or what it sent out.",
+    "kind": "security_control",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — Model gateway bullet"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each gateway request produces an audit record naming the calling agent, the model and the policy decision. Over a test window, the number of audit records equals the number of requests."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV",
+      "OBS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "CICD-036",
+    "domain": "CICD",
+    "title": "Architecture memory is machine-readable and feeds the orchestrator",
+    "statement": "ADRs, contracts, the service catalog, SLOs, runbooks and the blueprint are indexed as architecture memory for agents. The agent orchestrator takes these architecture contracts as a direct input, alongside the issue tracker and the repository.",
+    "rationale": "An agent that plans without the recorded decisions reopens them by accident.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — Architecture memory bullet"
+      },
+      {
+        "doc": "H",
+        "page": "L364-366",
+        "section": "§07 CI/CD, GitOps & Autonomous Development (edges) — docs/issue/gh → orch"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named document class is present in the agent index, and a planner run cites the contracts it read."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH",
+      "GOV"
+    ],
+    "notes": "The diagram's 'Architecture Contracts' node reads 'machine-readable contracts, SLOs and design decisions'. The citation clause of the same G bullet is merged into CICD-019."
+  },
+  {
+    "id": "CICD-037",
+    "domain": "CICD",
+    "title": "No autonomous change is invisible",
+    "statement": "An autonomous repair that changes code or configuration becomes a normal Git commit or PR, or a pre-approved runtime action whose event is durably audited. No autonomous change is invisible.",
+    "rationale": "A change that nobody can see cannot be reviewed, attributed or reverted.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§13 Autonomous Development and AI Engineering — No invisible changes bullet"
+      },
+      {
+        "doc": "H",
+        "page": "L364-366",
+        "section": "§07 CI/CD, GitOps & Autonomous Development (edges) — sreagent → gh"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every change observed in production over a window is explained by either a merged commit or an audited event for a pre-approved runtime action."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV",
+      "OBS"
+    ],
+    "notes": "The diagram's deploy-class edge from the SRE/Learning Agent to the GitHub Monorepo is the commit route for a repair. That commit enters the pipeline through branch protection (CICD-045), not by a direct push to a protected branch."
+  },
+  {
+    "id": "CICD-038",
+    "domain": "CICD",
+    "title": "algorik-app owns the Rust services and shared crates",
+    "statement": "The algorik-app repository owns the Rust services, Reflex, Fabric, the APIs, the shared crates, and the tests.",
+    "rationale": "The runtime code and its tests share one gate, so a change and the test that proves it land together.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§14.1 Repository model — algorik-app row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named content class lives in the app repository, or in the directory that ADR 0099 C6 maps to it, and nowhere else."
+    },
+    "policy_flags": [
+      "MULTI_REPO"
+    ],
+    "secondary_domains": [],
+    "notes": "ADR 0099 C6 declines the seven-repository split as a deliberate divergence: the monorepo keeps one gate, one history and one review surface, and each named repository maps to a directory. P1 rather than P0: no phase exit names the repository split, and ADR 0099 C6 records that nothing in either blueprint depends on it; the content this repository owns is held to P0 by its own rows."
+  },
+  {
+    "id": "CICD-039",
+    "domain": "CICD",
+    "title": "algorik-models owns training, evaluation and model manifests",
+    "statement": "The algorik-models repository owns the training code, evaluation, feature definitions, distillation and model manifests.",
+    "rationale": "Keeping model provenance in one place means a model manifest can be traced to the code that trained it.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§14.1 Repository model — algorik-models row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named content class lives in the models repository, or in the directory that ADR 0099 C6 maps to it, and nowhere else."
+    },
+    "policy_flags": [
+      "MULTI_REPO",
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "ADR 0099 C6 (monorepo divergence) and C5 (research runtime outside Rust). P2 because GCP §26 Phase 8 delivers model training."
+  },
+  {
+    "id": "CICD-040",
+    "domain": "CICD",
+    "title": "algorik-infra owns the Terraform stacks",
+    "statement": "The algorik-infra repository owns the Terraform modules and stacks for the organization, projects, network, GKE, Spanner, data, build and security.",
+    "rationale": "One owner for infrastructure code keeps plan and apply behind a single gate.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§14.1 Repository model — algorik-infra row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every Terraform root and module lives in the infra repository, or in the directory that ADR 0099 C6 maps to it."
+    },
+    "policy_flags": [
+      "MULTI_REPO",
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "ADR 0099 C6. The GKE and Spanner stacks it names also carry conflicts C3 and C4. P1 rather than P0: no phase exit names the repository split, and ADR 0099 C6 records that nothing in either blueprint depends on it; the content this repository owns is held to P0 by its own rows."
+  },
+  {
+    "id": "CICD-041",
+    "domain": "CICD",
+    "title": "algorik-platform-config owns the GitOps cluster baseline",
+    "statement": "The algorik-platform-config repository owns the Config Sync cluster baseline, policies, CRDs, observability agents and GitOps controllers.",
+    "rationale": "Separating the cluster baseline from the application state keeps a platform-policy change from riding along with an application release.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "12",
+        "section": "§14.1 Repository model — algorik-platform-config row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Config Sync's source is the platform-config repository or its mapped directory, and that source holds every baseline object, policy and CRD."
+    },
+    "policy_flags": [
+      "MULTI_REPO",
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "OBS"
+    ],
+    "notes": "ADR 0099 C6 and C3. P1 rather than P0: no phase exit names the repository split, and ADR 0099 C6 records that nothing in either blueprint depends on it; the content this repository owns is held to P0 by its own rows."
+  },
+  {
+    "id": "CICD-042",
+    "domain": "CICD",
+    "title": "algorik-env owns environment desired state",
+    "statement": "The algorik-env repository owns the environment desired state: application, model and policy digests, and per-region rollout declarations.",
+    "rationale": "A single desired-state source makes 'what is running where' answerable from Git alone.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.1 Repository model — algorik-env row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every deployed digest and every regional rollout declaration can be read from the environment repository or its mapped directory."
+    },
+    "policy_flags": [
+      "MULTI_REPO",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": "ADR 0099 C6. P1 rather than P0: no phase exit names the repository split, and ADR 0099 C6 records that nothing in either blueprint depends on it. The deployment truth this repository holds is P0 in its own rows (CICD-003, CICD-004, CICD-057)."
+  },
+  {
+    "id": "CICD-043",
+    "domain": "CICD",
+    "title": "algorik-schemas owns Fabric schemas and generated clients",
+    "statement": "The algorik-schemas repository owns the Fabric event schemas, compatibility rules, generated Rust clients and types, and data contracts.",
+    "rationale": "Schemas with their own owner and compatibility rules evolve on a contract, not on whichever producer changed last.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.1 Repository model — algorik-schemas row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every Fabric schema and its compatibility rule lives in the schemas repository or its mapped directory, and the Rust clients are generated from it."
+    },
+    "policy_flags": [
+      "MULTI_REPO"
+    ],
+    "secondary_domains": [
+      "CONTRACT",
+      "FABRIC"
+    ],
+    "notes": "ADR 0099 C6, and C2 bears on the wire-schema tooling. P1 rather than P0: no phase exit names the repository split, and ADR 0099 C6 records that nothing in either blueprint depends on it. The schema discipline itself is P0 in CICD-069 to CICD-072."
+  },
+  {
+    "id": "CICD-044",
+    "domain": "CICD",
+    "title": "algorik-runbooks owns runbooks, game days and architecture acceptance tests",
+    "statement": "The algorik-runbooks repository owns the SRE runbooks, game-day definitions, remediation policy and architecture acceptance tests.",
+    "rationale": "Signed runbooks and remediation policy need a reviewed home before automatic remediation can be limited to them.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.1 Repository model — algorik-runbooks row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every runbook, game-day definition and remediation policy lives in the runbooks repository or its mapped directory, with the architecture acceptance tests."
+    },
+    "policy_flags": [
+      "MULTI_REPO"
+    ],
+    "secondary_domains": [
+      "RES",
+      "OBS",
+      "ARCH"
+    ],
+    "notes": "ADR 0099 C6. P1: the repository split is named by no phase exit, and the game-day failover programme it holds belongs to GCP Phase 7."
+  },
+  {
+    "id": "CICD-045",
+    "domain": "CICD",
+    "title": "Branch protection requires tests and independent review by risk class",
+    "statement": "A change enters through a GitHub branch or PR created by a human or an authorized agent. Branch protection requires tests, and independent review scaled to the change's risk class, before merge.",
+    "rationale": "A merge gate that the author can satisfy alone is not a gate.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Protected-branch rules require the test checks and a number and kind of independent reviews set by risk class. A PR from an unauthorized identity, or without the required checks and reviews, cannot merge."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "The clause 'created by a human or authorized agent' is kept here because branch protection is where it is enforced."
+  },
+  {
+    "id": "CICD-046",
+    "domain": "CICD",
+    "title": "CI authenticates to GCP only through short-lived WIF credentials",
+    "statement": "CI obtains GCP credentials only by exchanging a GitHub OIDC token, through Workload Identity Federation, for short-lived credentials. No service-account key is stored anywhere.",
+    "rationale": "A stored key is a long-lived credential that outlives every rotation policy, and anyone who reads it can use it.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 2"
+      },
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§20 Critical Service-to-Service Connection Matrix — GitHub Actions → GCP WIF row"
+      },
+      {
+        "doc": "H",
+        "page": "L128-138",
+        "section": "§01 Global Platform Topology (edges) — github → build 'OIDC/WIF'"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every workflow that reaches GCP authenticates through the WIF provider, and a search of repositories, CI secrets and settings finds no service-account key."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "SEC",
+      "GCP"
+    ],
+    "notes": "§14.2 step 2 and the §20 WIF row were missing from the raw extraction. They were added after checking the source text, and the raw item came from the diagram's edge label. GCP §26 Phase 0 names 'GitHub WIF'. The trigger half of the diagram edge is CICD-080."
+  },
+  {
+    "id": "CICD-047",
+    "domain": "CICD",
+    "title": "Builds run in Cloud Build private pools on private networking",
+    "statement": "Builds run in Cloud Build private pools, inside private networking.",
+    "rationale": "A build on a shared public worker can be reached, and its inputs substituted, from outside the platform's network.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 3"
+      },
+      {
+        "doc": "G",
+        "page": "18",
+        "section": "§19 Complete GCP Service Catalog for This Platform — Cloud Build private pools"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 3"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan defines private pools peered to the private network with no public egress, and every build trigger names a private pool."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "SEC"
+    ],
+    "notes": "The diagram's Cloud Build node reads 'hermetic/private builds using WIF'. ADR 0099 C8 notes that billing on the dev project currently blocks image push."
+  },
+  {
+    "id": "CICD-048",
+    "domain": "CICD",
+    "title": "Builds are reproducible from locked dependencies",
+    "statement": "Builds are reproducible and deterministic: the same source revision, built with locked dependencies, produces the same artifact digest.",
+    "rationale": "If a rebuild can produce a different binary, the digest that was reviewed is not evidence about the one that runs.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 3"
+      },
+      {
+        "doc": "G",
+        "page": "18",
+        "section": "§19 Complete GCP Service Catalog for This Platform — Cloud Build private pools"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 3"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Building the same commit twice, in separate private-pool runs with the lockfile enforced, yields byte-identical artifacts."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "Step 3 says 'reproducible builds' and 'locked dependencies'. §21.4 step 3 says 'deterministic artifacts'. §19 says 'private reproducible CI/build/test workers'. The NEW_DEPENDENCY flag on the raw step-3 item belongs to the fuzz gate in CICD-049."
+  },
+  {
+    "id": "CICD-049",
+    "domain": "CICD",
+    "title": "Rust builds pass the deny, audit, lint, test, replay and benchmark gates",
+    "statement": "Every Rust build runs, and must pass, cargo-deny, cargo-audit, clippy, unit, property and fuzz tests, and the replay and benchmark gates.",
+    "rationale": "Each of these gates catches a class of defect that the others do not: licence and advisory, lint, logic, adversarial input, and behavioural or latency regression.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 3"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 3"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The build definition runs each named gate as a blocking step, and a seeded failure in any one of them stops the build."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "§21.4 step 3 names 'Rust replay/performance/fuzz'. NEW_DEPENDENCY: a fuzzing harness crate is outside ADR 0002's two dependencies. cargo-deny and cargo-audit are tools, not workspace dependencies. The master blueprint's promotion-gate form is CICD-001."
+  },
+  {
+    "id": "CICD-050",
+    "domain": "CICD",
+    "title": "Policy and scan gates run before an artifact is accepted",
+    "statement": "Terraform plan, Kubernetes policy checks, secret scan, SAST/SCA, container scan and architecture rule tests run, and must pass, before an artifact is accepted.",
+    "rationale": "A vulnerability or policy breach found after acceptance is already a candidate for promotion.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 4"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 3"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Each named check runs as a blocking step, and a seeded violation for each check prevents the artifact from being accepted."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "SEC",
+      "ARCH"
+    ],
+    "notes": "§21.4 step 3 names these as 'security/IaC gates'. The diagram's Quality Gates node adds schema compatibility, which is CICD-070. Scanning a container before acceptance implies scanning inside the build or in a quarantine repository, not after publication. The ordering invariant (nothing reaches the registry before these gates) is CICD-051."
+  },
+  {
+    "id": "CICD-051",
+    "domain": "CICD",
+    "title": "Nothing reaches Artifact Registry except from a gated Cloud Build",
+    "statement": "Only Cloud Build publishes to Artifact Registry, over HTTPS, and only after the build and quality gates have passed. No artifact reaches the registry by any other path.",
+    "rationale": "If anything other than the gated build can write to the registry, the registry no longer certifies anything.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 4"
+      },
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§20 Critical Service-to-Service Connection Matrix — Cloud Build → Artifact Registry row"
+      },
+      {
+        "doc": "H",
+        "page": "L128-138",
+        "section": "§01 Global Platform Topology (edges) — build → ar"
+      },
+      {
+        "doc": "H",
+        "page": "L364-366",
+        "section": "§07 CI/CD, GitOps & Autonomous Development (edges) — gh → build → tests → ar"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Only the Cloud Build service account holds registry write permission, and every stored artifact has build provenance that names a gated build."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "The diagram's path is GitHub → Cloud Build → Quality Gates → Artifact Registry. Its second half, that nothing updates desired state without attestation, is CICD-102. §20 describes the push as a 'signed/provenance-bearing artifact'. The provenance attachment is CICD-053."
+  },
+  {
+    "id": "CICD-052",
+    "domain": "CICD",
+    "title": "Artifact Registry stores images, packages and bundles by immutable digest",
+    "statement": "Artifact Registry stores container images, Rust packages and OCI deployment bundles, addressed by immutable digest.",
+    "rationale": "A registry that allows an existing version to be overwritten turns every digest pin into a guess.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 5"
+      },
+      {
+        "doc": "G",
+        "page": "18",
+        "section": "§19 Complete GCP Service Catalog for This Platform — Artifact Registry"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 4"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Repositories are configured as immutable, every artifact can be retrieved by digest, and an attempt to overwrite an existing version is refused."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": "The diagram's registry node holds 'images, Rust binaries, SBOMs and model/reflex packages'."
+  },
+  {
+    "id": "CICD-053",
+    "domain": "CICD",
+    "title": "Every stored artifact carries its SBOM, provenance and scan results",
+    "statement": "Every stored artifact carries its SBOM, build provenance and vulnerability-scan results. Artifact Analysis performs the scanning.",
+    "rationale": "Without the SBOM and provenance beside the digest, an advisory published later cannot be traced to the artifacts it affects.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 5"
+      },
+      {
+        "doc": "G",
+        "page": "18",
+        "section": "§19 Complete GCP Service Catalog for This Platform — Artifact Analysis"
+      },
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§20 Critical Service-to-Service Connection Matrix — Cloud Build → Artifact Registry row"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 4"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "For a sample of stored digests, the SBOM, provenance and scan attachments exist, and each references the same digest."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "GCP §26 Phase 1 names 'provenance/SBOM' as a supply-chain exit."
+  },
+  {
+    "id": "CICD-054",
+    "domain": "CICD",
+    "title": "Cloud KMS/HSM signs release, model and policy manifests",
+    "statement": "Cloud KMS/HSM signs release, model and policy manifests, and creates the signing evidence and attestation for each artifact.",
+    "rationale": "An attestation is only as trustworthy as the key that signed it. An HSM-held key cannot be copied off a build worker.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 6"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 4"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A released manifest verifies against a key held in KMS/HSM, and a manifest altered after signing fails verification."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "§14.2 step 6 was missing from the raw extraction and was added after checking the source text. The repository's architecture rules name asymmetric signing as a gap that no in-tree code may close (ADR 0043, proposed), so this requirement needs the managed key service."
+  },
+  {
+    "id": "CICD-055",
+    "domain": "CICD",
+    "title": "Only attested artifacts are admitted to run",
+    "statement": "Only attested artifacts are admitted to run. Binary Authorization and admission policy require trusted attestations before a GKE workload starts, along the trust path Artifact Registry → Artifact Analysis/SBOM → Binary Authorization → admission and NetworkPolicy. Prod runs signed artifacts only.",
+    "rationale": "Signing that nothing checks at admission is decoration. The check at the cluster door is what makes the signature a control.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 6"
+      },
+      {
+        "doc": "G",
+        "page": "18",
+        "section": "§19 Complete GCP Service Catalog for This Platform — Binary Authorization"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§24 Environment and Promotion Topology — prod row ('signed artifacts only')"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§27 Architecture Acceptance Criteria — production GKE admitted only when supply-chain policy is satisfied"
+      },
+      {
+        "doc": "H",
+        "page": "L328-330",
+        "section": "§06 Network, Security & Trust Boundaries (edges) — artifact → analysis → binauth → policy"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "Deploying an unsigned or unattested image to a GKE cluster is refused at admission, and deploying the same image after it is attested succeeds."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "The other half of §27's completion target, reconciliation from Git, is CICD-056. The prod row's 'signed artifacts only' also covers components delivered to VMs, whose package signature check is part of CICD-060. The repository's infrastructure rule already requires Binary Authorization on every deployed image. The diagram's Binary Authorization node reads 'only attested artifacts may deploy'. §14.2 step 6 was missing from the raw extraction and was added from the source text."
+  },
+  {
+    "id": "CICD-056",
+    "domain": "CICD",
+    "title": "Production workloads are reconciled from Git",
+    "statement": "Production GKE workloads are reconciled from Git. Config Sync reconciles the platform baseline and Argo CD reconciles the application desired state, and both pull from the environment repository over Git/HTTPS.",
+    "rationale": "With pull-based reconciliation, no push credential into a cluster exists, and any drift is reverted to what Git says.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 7"
+      },
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§20 Critical Service-to-Service Connection Matrix — Environment Git → Config Sync / Argo CD row"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§27 Architecture Acceptance Criteria — production GKE reconciled from Git"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "A manual change to a reconciled object is reverted to the Git state within the reconcile interval. A commit to the environment repository appears in the cluster without any push credential into the cluster."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "Step 7's Release Agent clause is CICD-022. The ownership split between the two controllers is CICD-009. ADR 0099 C3."
+  },
+  {
+    "id": "CICD-057",
+    "domain": "CICD",
+    "title": "The same digest is promoted through every environment without rebuilding",
+    "statement": "Promotion moves the same immutable digest, with the same schema and model versions, through every environment. Kargo promotes that exact digest. Rebuilding per environment is prohibited.",
+    "rationale": "A per-environment rebuild ships code that no earlier stage tested.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 8"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 5"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§24 Environment and Promotion Topology — Promotion invariant"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The digest deployed at each stage of a release is identical, and the pipeline has no build step after the first environment."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "CONTRACT",
+      "MODEL"
+    ],
+    "notes": "Step 8 says 'the same immutable artifact' and 'rebuild-per-environment is prohibited'. §24's promotion invariant adds 'schema/model version'. §21.4 step 5 says 'Kargo promotes the exact digest'. MULTI_REGION and MANAGED_SERVICE were removed from the merged flags, because this invariant holds in one region and needs no managed service. The invariant's clause on signed configuration is CICD-096."
+  },
+  {
+    "id": "CICD-058",
+    "domain": "CICD",
+    "title": "Promotion follows the fixed stage sequence",
+    "statement": "Kargo promotes each release through the fixed sequence dev → integration → replay → paper → staging → prod regions, and no stage is skipped.",
+    "rationale": "Each stage exercises something the one before it cannot: contracts, historical replay, live data, then scale and failure.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 8"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Kargo's stage graph is exactly this chain, and it refuses to promote a digest to a stage whose predecessor has not verified that digest."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": "Step 8 was extracted twice and the two items were merged. The prod stage is refused by infra.yml and the deploy gate (.claude/rules/02-change-management.md). Prod, as live bounded execution (CICD-093), is BLOCKED under ADR 0021. The sequence through paper and staging stands on its own."
+  },
+  {
+    "id": "CICD-059",
+    "domain": "CICD",
+    "title": "GKE services roll out progressively through Argo Rollouts",
+    "statement": "GKE services are delivered through Argo CD and Kargo into Argo Rollouts. Argo Rollouts runs either a canary rollout, by traffic or replica share, or a blue-green rollout.",
+    "rationale": "A canary limits a bad release to a fraction of traffic while its SLOs are measured.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 9"
+      },
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.3 Component-specific release mechanics — GKE services row"
+      },
+      {
+        "doc": "H",
+        "page": "L359",
+        "section": "VIEWS.cicd — 07 · CI/CD, GitOps & Autonomous Development (node 'roll')"
+      },
+      {
+        "doc": "H",
+        "page": "L364-366",
+        "section": "§07 CI/CD, GitOps & Autonomous Development (edges) — cfg → argo → roll"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "A new digest for a GKE service first serves a canary share, and full traffic moves to it only after the rollout's analysis passes."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [],
+    "notes": "The engineering-plane row (G p2) names progressive delivery as a capability. In the diagram this is one of two parallel paths out of the environment repository, and the other is CICD-082. The GKE row's 'SLO gate' is CICD-062, and its 'instant previous digest rollback' is CICD-063. ADR 0099 C3. P0 because GCP Phase 1 names Argo Rollouts."
+  },
+  {
+    "id": "CICD-060",
+    "domain": "CICD",
+    "title": "Reflex releases through standby, shadow and epoch activation",
+    "statement": "The Reflex binary ships as an immutable VM image or binary through a package manager, not as a generic pod canary. It rolls out in the order standby first → replay shadow → drain/fence → activate epoch → compare → expand. The Reflex Package Controller activates signed packages by cohort/canary rollout, with instant rollback.",
+    "rationale": "The hot path cannot be canaried by traffic share without splitting a book. A shadow run and an epoch switch keep one authoritative owner at every instant.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 9"
+      },
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.3 Component-specific release mechanics — Reflex binary row"
+      },
+      {
+        "doc": "H",
+        "page": "L360",
+        "section": "VIEWS.cicd — 07 · CI/CD, GitOps & Autonomous Development (node 'pkg')"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "A release rehearsal on a paper cell runs each step in order, records a shadow comparison before activation, and shows a rollback that restores the previous epoch."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": "The diagram calls this 'cohort/canary rollout and instant rollback'. It separates the controller's promotion from the regional Reflex Package Agent's atomic swap of an already-promoted package. The package signature check is where the prod row's 'signed artifacts only' (CICD-055) applies to VMs. KUBERNETES was removed from the step-9 flags because this path involves no Kubernetes. P0 because GCP Phase 3 (One Reflex Cell) and master Phase 1 deliver it."
+  },
+  {
+    "id": "CICD-061",
+    "domain": "CICD",
+    "title": "Fabric brokers are replaced one at a time with replication verified",
+    "statement": "Fabric brokers ship as immutable VM images and are replaced one at a time, in the order: drain leaders and partitions, verify the replication factor, replace one broker, rejoin, and repeat.",
+    "rationale": "Replacing more than one broker at a time, or replacing one without first verifying the replication factor, can drop a partition below quorum and lose acknowledged records.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 9"
+      },
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.3 Component-specific release mechanics — Fabric broker row"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "A rolling replacement under produce/consume load never drops a partition below its replication factor and loses no acknowledged record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "P0 because GCP §26 Phase 2 (Rust Fabric MVP) delivers the broker quorum. KUBERNETES was removed from the step-9 flags for the same reason as in CICD-060."
+  },
+  {
+    "id": "CICD-062",
+    "domain": "CICD",
+    "title": "Rollouts are gated on SLOs and replay comparators",
+    "statement": "Rollouts are gated on SLOs. Cloud Monitoring, Prometheus and replay comparators evaluate each rollout against its SLOs, and the rollout proceeds only while the SLOs hold.",
+    "rationale": "A rollout that advances on a timer promotes a regression as readily as a fix.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 10"
+      },
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.3 Component-specific release mechanics — GKE services row ('SLO gate')"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 6"
+      },
+      {
+        "doc": "H",
+        "page": "L359",
+        "section": "VIEWS.cicd — 07 · CI/CD, GitOps & Autonomous Development (node 'roll')"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "A canary with an injected SLO breach halts, and a canary within SLO proceeds."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": "§14.2 step 10 was missing from the raw extraction and was added from the source text. The diagram says 'canary/blue-green with SLO gates'. KUBERNETES was removed because the gate also applies to the Reflex and model rollouts, which are not on Kubernetes."
+  },
+  {
+    "id": "CICD-063",
+    "domain": "CICD",
+    "title": "A rollout regression rolls back automatically to the previous digest",
+    "statement": "A rollout regression automatically and instantly rolls back to the previous digest, without a rebuild.",
+    "rationale": "A rollback that needs a rebuild or a human decision runs on incident time, not rollout time.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 10"
+      },
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.3 Component-specific release mechanics — GKE services row ('instant previous digest rollback')"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 6"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "After an injected regression, the service returns to the previous digest without human action and within the rollback objective."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": "Rule 9 (CICD-007) requires rollback for every production change. This row is the mechanism."
+  },
+  {
+    "id": "CICD-064",
+    "domain": "CICD",
+    "title": "Regression evidence returns to the autonomous development loop",
+    "statement": "A rollout regression creates an incident or task for the autonomous development loop, and feeds the rollout's evidence back to it.",
+    "rationale": "A rollback without a follow-up task leaves the defect in the next release candidate.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.2 Source-to-production flow, step 10"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 6"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An injected regression produces an incident or task that links to the rolled-back digest and the SLO evidence."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": "The loop's entry point is CICD-081."
+  },
+  {
+    "id": "CICD-065",
+    "domain": "CICD",
+    "title": "Models and policies release as signed manifests with shadow scoring and atomic activation",
+    "statement": "Models and policies ship as a signed OCI manifest with weights in GCS. They roll out in the order shadow score → paper/replay → stage locally → atomic epoch activation.",
+    "rationale": "A model that activates without a shadow score has been evaluated on nothing the platform actually saw.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.3 Component-specific release mechanics — Models/policy row"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "A candidate model is scored in shadow and on replay before activation, and activation switches every consumer to the new epoch atomically."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "GCP §26 Phase 8 names the 'signed model package lifecycle', hence P2. §28 also prohibits model promotion without replay/calibration/classical baseline and deterministic risk-envelope compatibility tests. That prohibition is scored in MODEL. The rollback clause of the same row is CICD-066."
+  },
+  {
+    "id": "CICD-066",
+    "domain": "CICD",
+    "title": "The previous model or policy epoch is retained for rollback",
+    "statement": "After a model or policy epoch activates, the previous epoch is retained so that the activation can be rolled back.",
+    "rationale": "A rollback that has to re-fetch or rebuild the prior model is slow when it is most needed, and may fail.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.3 Component-specific release mechanics — Models/policy row"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "Rolling back after activation restores the prior epoch's exact manifest digest, without re-fetching or rebuilding it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "This was extracted both as part of the row and on its own, and the two items were merged."
+  },
+  {
+    "id": "CICD-067",
+    "domain": "CICD",
+    "title": "Terraform changes run as a CI plan and a gated apply of that plan",
+    "statement": "Every Terraform change is planned in CI, through GitHub Actions or Cloud Build, and applied only through a gated apply of that plan. The plan artifact is retained.",
+    "rationale": "An apply that has no reviewed plan can change resources that no one has looked at.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.3 Component-specific release mechanics — Terraform row"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Apply jobs consume a saved plan artifact from the same run, and no apply path exists without a preceding plan and approval."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "The repository's infrastructure rule already prohibits applying without showing the plan. The change-window clause of the same row is CICD-068."
+  },
+  {
+    "id": "CICD-068",
+    "domain": "CICD",
+    "title": "Folder, project, network and database changes use explicit change windows",
+    "statement": "Folder, project, network and database changes are applied only inside explicit change windows.",
+    "rationale": "These are the changes with the widest blast radius, and a change window ensures someone is watching when they land.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.3 Component-specific release mechanics — Terraform row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The apply gate refuses a change that touches these resource types outside a declared window."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GCP",
+      "GOV"
+    ],
+    "notes": "P1 because this is an operating control that matters once there are production-scale environments to protect."
+  },
+  {
+    "id": "CICD-069",
+    "domain": "CICD",
+    "title": "Every schema is versioned in a schema registry",
+    "statement": "Every schema is versioned and registered in a schema registry. No unversioned schema is used.",
+    "rationale": "Without a version, compatibility cannot be checked, and a consumer cannot say which schema it reads.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.3 Component-specific release mechanics — Schemas row"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§28 Explicit Anti-Patterns — unversioned schemas"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every schema that a producer or consumer uses resolves to a registered version."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CONTRACT",
+      "FABRIC"
+    ],
+    "notes": "§28 names 'unversioned schemas' as an anti-pattern. P0 because GCP Phase 2 (Rust Fabric MVP) delivers 'schemas/client'."
+  },
+  {
+    "id": "CICD-070",
+    "domain": "CICD",
+    "title": "A CI compatibility gate rejects incompatible schema changes",
+    "statement": "A CI compatibility gate checks each schema change against the registry, and rejects an incompatible change before it merges.",
+    "rationale": "An incompatible schema found in production has already broken a consumer.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.3 Component-specific release mechanics — Schemas row"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An incompatible Fabric schema change fails CI, and an additive change passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CONTRACT",
+      "FABRIC"
+    ],
+    "notes": "The Schemas row was extracted twice and the two items were merged. G §25's 'bad schema' game day expects the CI/runtime registry to reject the change 'before production consumer breakage'. The diagram's Quality Gates node lists schema compatibility among its gates."
+  },
+  {
+    "id": "CICD-071",
+    "domain": "CICD",
+    "title": "Schema changes land additive first and migrate by dual read/write",
+    "statement": "Schema changes land additive-compatible first. A breaking change migrates through dual read and dual write before the old form is removed.",
+    "rationale": "A single-step breaking change requires every producer and consumer to deploy at the same instant, which never happens.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.3 Component-specific release mechanics — Schemas row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "During a migration, producers write both forms and consumers read both, and a consumer on the old version keeps working."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CONTRACT",
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "CICD-072",
+    "domain": "CICD",
+    "title": "A schema version retires only after a consumer inventory proves it is safe",
+    "statement": "A schema version is retired only after a consumer inventory proves that no consumer still depends on it.",
+    "rationale": "Retiring a version on the assumption that no one reads it breaks the one consumer no one remembered.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "13",
+        "section": "§14.3 Component-specific release mechanics — Schemas row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Retirement is refused while the inventory lists any consumer of the version."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CONTRACT",
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "CICD-073",
+    "domain": "CICD",
+    "title": "Losing the GitOps management plane pauses reconciliation only",
+    "statement": "When the GitOps management plane is lost, running workloads keep running, and only desired-state reconciliation pauses.",
+    "rationale": "The control plane for change must not also be a runtime dependency. If it were, its outage would take production down with it.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "15",
+        "section": "§17 Availability, Resilience and Disaster Recovery — GitOps management plane row"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With the management cluster stopped, workloads keep serving and no pod restarts. Reconciliation resumes when the cluster returns."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": "P0 because this is a design invariant of the Phase 1 supply chain. The recovery clause of the same row is CICD-074."
+  },
+  {
+    "id": "CICD-074",
+    "domain": "CICD",
+    "title": "The GitOps management plane can be recreated from Git",
+    "statement": "The GitOps management plane can be recreated from Git, and fails over to a standby management cluster when required.",
+    "rationale": "A management plane that cannot be rebuilt from Git holds undocumented state.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "15",
+        "section": "§17 Availability, Resilience and Disaster Recovery — GitOps management plane row"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "The management cluster is rebuilt from Terraform and Git alone, and it reconciles every environment to its declared state."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": "G §25's 'rebuild from zero' game day covers the same ground for regional clusters."
+  },
+  {
+    "id": "CICD-075",
+    "domain": "CICD",
+    "title": "Losing the Artifact Registry region pauses only new rollouts",
+    "statement": "When the Artifact Registry region is lost, existing nodes keep running from their local images and packages, and only new rollouts pause.",
+    "rationale": "A registry outage must stop change, not stop trading.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "15",
+        "section": "§17 Availability, Resilience and Disaster Recovery — Artifact Registry region row"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With the registry unreachable, running nodes keep serving, and a new rollout waits rather than degrading running workloads."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": "The recovery clause of the same row is CICD-076."
+  },
+  {
+    "id": "CICD-076",
+    "domain": "CICD",
+    "title": "Release artifacts are replicated to a secondary repository before prod promotion",
+    "statement": "Release artifacts are replicated to a designated secondary repository before they are promoted to prod.",
+    "rationale": "An artifact that exists in one region only cannot be redeployed while that region is down.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "15",
+        "section": "§17 Availability, Resilience and Disaster Recovery — Artifact Registry region row"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Promotion to prod is refused for any digest that is not present in the secondary repository."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": "P1 because this belongs with the multi-region work (GCP Phase 7)."
+  },
+  {
+    "id": "CICD-077",
+    "domain": "CICD",
+    "title": "Losing the autonomous development plane stops only autonomous change",
+    "statement": "When the autonomous development plane is lost, production keeps running, and only autonomous changes stop.",
+    "rationale": "Agents are a convenience. If production depended on them, their outage would become a production outage.",
+    "kind": "failure_behavior",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§17 Availability, Resilience and Disaster Recovery — Autonomous dev plane row"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With all agent infrastructure stopped, production SLOs hold and no production component reports a dependency failure."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "CICD-078",
+    "domain": "CICD",
+    "title": "The human pipeline remains available without agents",
+    "statement": "The human/manual pipeline remains available when the agents are down. Agents are a convenience, not an availability dependency.",
+    "rationale": "If only agents can drive the pipeline, an agent outage freezes every fix, including the fix for the agents.",
+    "kind": "failure_behavior",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§17 Availability, Resilience and Disaster Recovery — Autonomous dev plane row"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "With the agent plane down, a human takes a change from PR to promotion through the same gates."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "CICD-079",
+    "domain": "CICD",
+    "title": "Agent workers and build pools scale independently",
+    "statement": "Agent workers and the build private pools scale independently of each other.",
+    "rationale": "A burst of agent work must not starve a human's hotfix build, and a burst of builds must not starve the agents.",
+    "kind": "nfr",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model — Autonomous dev row"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Raising agent-worker concurrency does not change build-pool capacity or the queue time of human builds, and raising build load does not change agent-worker capacity."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "The quota clause of the same row is merged into CICD-030."
+  },
+  {
+    "id": "CICD-080",
+    "domain": "CICD",
+    "title": "GitHub Actions triggers private-pool builds through the Cloud Build API",
+    "statement": "GitHub Actions starts builds on the Cloud Build private pool through the Cloud Build API, for reproducible private build and test.",
+    "rationale": "GitHub orchestrates the workflow, but the build itself runs inside the platform's own private boundary.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§20 Critical Service-to-Service Connection Matrix — GitHub Actions → Cloud Build private pool row"
+      },
+      {
+        "doc": "H",
+        "page": "L128-138",
+        "section": "§01 Global Platform Topology (edges) — github → build"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A push produces a Cloud Build run on the private pool whose trigger identity is the GitHub Actions workflow, authenticated through WIF."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "The diagram labels this edge 'OIDC/WIF'. The authentication half is CICD-046."
+  },
+  {
+    "id": "CICD-081",
+    "domain": "CICD",
+    "title": "Every autonomous change starts from a scoped engineering goal",
+    "statement": "Every autonomous development change starts from a scoped engineering goal, created by an incident, a backlog item or an Intelligence Expansion gap.",
+    "rationale": "An agent change with no originating goal cannot be judged against what it was meant to achieve.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each agent-authored PR links to exactly one goal, whose origin is an incident, a backlog item or an expansion gap."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPAND",
+      "GOV"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "CICD-082",
+    "domain": "CICD",
+    "title": "Reflex packages are promoted by the package controller, not through Argo",
+    "statement": "Reflex packages are promoted from the environment repository directly by the Reflex Package Controller, not through Argo. Rollout mechanics are chosen by component type.",
+    "rationale": "Reflex runs on VMs and activates by epoch. Routing it through a pod-oriented controller would impose the wrong rollout semantics.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.4 Autonomous development change, step 5"
+      },
+      {
+        "doc": "H",
+        "page": "L364-366",
+        "section": "§07 CI/CD, GitOps & Autonomous Development (edges) — cfg → pkg"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The package controller consumes the Reflex package pins in the environment repository, and no Argo application manages a Reflex host."
+    },
+    "policy_flags": [
+      "MULTI_REPO"
+    ],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": "§21.4 step 5 says 'Argo/rollout mechanics depend on component type'. The diagram draws two parallel paths out of the environment repository. The GKE path is CICD-059. KUBERNETES was removed from the diagram item's flags, because this is the path that does not use Kubernetes."
+  },
+  {
+    "id": "CICD-083",
+    "domain": "CICD",
+    "title": "A dev environment exists for fast iteration on mock venues",
+    "statement": "A dev environment exists for fast engineer and agent iteration. It uses synthetic or mock venues and reduced GKE and data capacity.",
+    "rationale": "Iteration against real venues or at full scale is slow and expensive, and it puts real state at risk.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§24 Environment and Promotion Topology — dev row"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The dev tfvars define mock venue adapters and reduced cluster and data sizes."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "ADR 0099 C3 on GKE. The row's secrets clause is CICD-084."
+  },
+  {
+    "id": "CICD-084",
+    "domain": "CICD",
+    "title": "The dev environment holds no production secrets",
+    "statement": "The dev environment holds no production secrets.",
+    "rationale": "Dev is where untested code and agents run, so a production secret there is one mistake away from being leaked.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§24 Environment and Promotion Topology — dev row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No secret in dev's secret store is a version of a production secret, or grants access equivalent to one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "CICD-085",
+    "domain": "CICD",
+    "title": "An integration environment validates contracts on the full Fabric topology",
+    "statement": "An integration environment validates cross-service contracts and schemas on the full Rust Fabric topology at small scale, fed by deterministic integration feeds.",
+    "rationale": "Contracts break at the seams between services, and only a full topology fed deterministically makes a seam failure reproducible.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§24 Environment and Promotion Topology — integration row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The contract and schema suites run against a small full-topology Fabric with deterministic feeds, and two runs of the same feed produce identical results."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "CONTRACT"
+    ],
+    "notes": "NEW_DEPENDENCY was removed: the environment itself adds no crate. The Fabric's own dependency questions are ADR 0099 C2 and belong to FABRIC."
+  },
+  {
+    "id": "CICD-086",
+    "domain": "CICD",
+    "title": "A replay environment runs historical replay over governed, read-only data",
+    "statement": "A replay environment runs historical tick and world replay and performance regression, over read-only, curated, governed production-derived data.",
+    "rationale": "Replay is the only way to test a change against what actually happened, and it must not be able to alter that record.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§24 Environment and Promotion Topology — replay row"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying a recorded session in the replay environment reproduces its recorded outcomes, and the environment's data access is read-only."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "TICK",
+      "DATA"
+    ],
+    "notes": "P0 because master Phase 1 makes deterministic replay mandatory for the first market. The row's order-route clause is CICD-087."
+  },
+  {
+    "id": "CICD-087",
+    "domain": "CICD",
+    "title": "The replay environment has no live order routes",
+    "statement": "The replay environment has no live order routes.",
+    "rationale": "A replay that could reach a venue would re-send history as new orders.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§24 Environment and Promotion Topology — replay row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The replay environment's network policy and configuration contain no route to any venue order endpoint, and an attempted order is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "CICD-088",
+    "domain": "CICD",
+    "title": "A paper environment runs live market data against simulated orders",
+    "statement": "A paper environment consumes live market data with real feed behaviour, and executes only simulated orders.",
+    "rationale": "Paper is the last stage where real market behaviour meets the decision loop with no capital at risk.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§24 Environment and Promotion Topology — paper row"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "In paper, orders from a cycle over live market data reach only the simulator."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC",
+      "DATA"
+    ],
+    "notes": "LIVE_CAPITAL was removed: this environment is the paper boundary itself, and meeting it needs no live capital (ADR 0021). The row's ledger clause is CICD-089."
+  },
+  {
+    "id": "CICD-089",
+    "domain": "CICD",
+    "title": "The paper ledger is isolated from real capital",
+    "statement": "The paper environment's ledger is isolated from real capital.",
+    "rationale": "A paper ledger that can reach a real account is not paper.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§24 Environment and Promotion Topology — paper row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The paper ledger has no credential for, or route to, any custody, treasury or venue account that holds real capital."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "CAPITAL"
+    ],
+    "notes": "LIVE_CAPITAL is not flagged, because this row is the isolation from live capital, not a use of it."
+  },
+  {
+    "id": "CICD-090",
+    "domain": "CICD",
+    "title": "A staging environment validates scale, failure and game days with canary packages",
+    "statement": "A staging environment validates production-like scale, failure handling and game days, using canary packages.",
+    "rationale": "Failure modes that appear only at scale must be found somewhere other than prod.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§24 Environment and Promotion Topology — staging row"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Scheduled game days run in staging at production-like scale, and canary packages are exercised there before prod."
+    },
+    "policy_flags": [
+      "COST",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": "ADR 0099 C8 and ADR 0093's cost instruction apply to production-like scale. The row's credential and capital clauses are CICD-091 and CICD-092."
+  },
+  {
+    "id": "CICD-091",
+    "domain": "CICD",
+    "title": "Staging uses accounts and credentials separate from prod",
+    "statement": "Staging uses accounts and credentials that are separate from production.",
+    "rationale": "Shared credentials make a staging compromise a production compromise.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§24 Environment and Promotion Topology — staging row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No staging principal or secret is valid in production, and no production principal or secret is valid in staging."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "CICD-092",
+    "domain": "CICD",
+    "title": "Staging holds no uncontrolled live capital",
+    "statement": "Staging holds no uncontrolled live capital.",
+    "rationale": "Staging runs candidates that have not been proven at scale, so capital there must never be outside a controlled grant.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§24 Environment and Promotion Topology — staging row"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Staging holds no venue, custody or treasury credential that can move real capital outside an explicit, bounded grant."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "EXEC"
+    ],
+    "notes": "Under ADR 0021 this platform holds no live capital in any environment, which is stricter than this row. The row can be met without live capital, so LIVE_CAPITAL is not flagged."
+  },
+  {
+    "id": "CICD-093",
+    "domain": "CICD",
+    "title": "A prod environment runs live, bounded execution",
+    "statement": "A prod environment runs live, bounded execution.",
+    "rationale": "The blueprint's end state executes against real venues, inside capital bounds.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§24 Environment and Promotion Topology — prod row"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "Execution in prod is live against venues within its capital grant's bounds, and an order beyond those bounds is refused."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "EXEC",
+      "CAPITAL"
+    ],
+    "notes": "BLOCKED: this row needs live capital, which ADR 0021 and .claude/rules/01-security-and-safety.md refuse (ADR 0099 C1). The prod stage is also refused by infra.yml and the deploy gate. It is built only in its paper form. The row's other clauses are CICD-094, CICD-095, and CICD-055 ('signed artifacts only')."
+  },
+  {
+    "id": "CICD-094",
+    "domain": "CICD",
+    "title": "Prod enforces strict region and project isolation",
+    "statement": "Prod enforces strict isolation between regions and between projects.",
+    "rationale": "Isolation keeps a fault or compromise in one region or project from spreading to the others.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§24 Environment and Promotion Topology — prod row"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Each prod region's workloads live in their own projects, with no cross-region or cross-project access beyond the declared connections."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "CICD-095",
+    "domain": "CICD",
+    "title": "Prod runs on reserved capacity",
+    "statement": "Prod runs on reserved capacity.",
+    "rationale": "Without reserved capacity, a zonal stock-out can prevent the execution path from being scheduled.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§24 Environment and Promotion Topology — prod row"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares capacity reservations for every prod execution machine type."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "FINOPS"
+    ],
+    "notes": "ADR 0099 C8 and ADR 0093's cost instruction apply."
+  },
+  {
+    "id": "CICD-096",
+    "domain": "CICD",
+    "title": "Environment behaviour comes only from signed configuration and authorized secrets",
+    "statement": "Environment-specific behaviour comes only from signed configuration and authorized secrets, never from building different code.",
+    "rationale": "With behaviour carried in configuration, the digest tested earlier is the digest that runs, and the differences between environments are visible and signed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§24 Environment and Promotion Topology — Promotion invariant"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The same digest runs in two environments with different behaviour, driven only by configuration whose signature verifies, and unsigned configuration is refused at start-up."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "The same-digest half of the promotion invariant is CICD-057."
+  },
+  {
+    "id": "CICD-097",
+    "domain": "CICD",
+    "title": "Signed artifacts deploy from Artifact Registry to every regional GKE cluster",
+    "statement": "Signed artifacts deploy from Artifact Registry to each regional GKE cluster: Americas, Europe and APAC.",
+    "rationale": "One registry feeding every region means every region runs artifacts from the same attested source.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L128-138",
+        "section": "§01 Global Platform Topology (edges) — ar → am_gke/eu_gke/ap_gke"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Each regional cluster pulls only from the registry, and its admission policy trusts no other source."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "KUBERNETES",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "ADR 0099 C3 and C8. P1 because this is multi-region (GCP Phase 7)."
+  },
+  {
+    "id": "CICD-098",
+    "domain": "CICD",
+    "title": "Signed artifacts deploy from Artifact Registry to every regional Reflex cell",
+    "statement": "Signed artifacts deploy from Artifact Registry to each regional Reflex cell: Americas, Europe and APAC.",
+    "rationale": "The hot path must run only packages that came from the attested store.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L128-138",
+        "section": "§01 Global Platform Topology (edges) — ar → am_reflex/eu_reflex/ap_reflex"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each Reflex cell's package source is the registry, and a package from any other source is refused."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REGION",
+      "COST"
+    ],
+    "secondary_domains": [
+      "REFLEX",
+      "MESH"
+    ],
+    "notes": "Three regional Reflex cells fall under ADR 0099 C8, which covers the cost ceiling and the fact that execution_nodes = {} in every environment. The promotion path to the cells is CICD-082."
+  },
+  {
+    "id": "CICD-099",
+    "domain": "CICD",
+    "title": "Vertex AI publishes trained model packages to Artifact Registry",
+    "statement": "Vertex AI publishes trained model packages to Artifact Registry.",
+    "rationale": "Model packages enter the same attested store as code, so the same admission rules apply to them.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L128-138",
+        "section": "§01 Global Platform Topology (edges) — vertex → ar 'model package'"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A completed training job produces a model package in the registry, with provenance that names the job."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "ADR 0099 C5 (research runtime). P2 because GCP Phase 8 delivers model training."
+  },
+  {
+    "id": "CICD-100",
+    "domain": "CICD",
+    "title": "Binary Authorization takes reviewed GitOps desired state as an input",
+    "statement": "Binary Authorization takes the reviewed GitOps desired state as an input, in addition to image scan results, so deploy-policy and approval changes reach admission only after review.",
+    "rationale": "If admission policy could change outside Git, one console edit could loosen every other supply-chain control.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L328-330",
+        "section": "§06 Network, Security & Trust Boundaries (edges) — gitops → binauth"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The Binary Authorization policy and approval attestations are generated from the environment repository, and a policy change made outside it is reverted or refused."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "The diagram's GitOps Desired State node reads 'environment manifests and policy changes through review'. P0 because GCP Phase 1 names Binary Authorization."
+  },
+  {
+    "id": "CICD-101",
+    "domain": "CICD",
+    "title": "Each coding agent works in its own isolated worktree",
+    "statement": "Each coding agent implements its scoped change in its own isolated worktree or environment, never in a working tree shared with another agent.",
+    "rationale": "Parallel agents in one working tree overwrite each other's half-written files and commit each other's changes.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L339,349",
+        "section": "VIEWS.cicd — 07 · CI/CD, GitOps & Autonomous Development (zone 'AUTONOMOUS ENGINEERING', node 'code')"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Concurrent agent tasks run in distinct worktrees, and no task's uncommitted change is visible to another task."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "The repository's governance rule (.claude/rules/00-enterprise-governance.md) currently assumes that parallel agents share one checkout. Meeting this row would change that assumption."
+  },
+  {
+    "id": "CICD-102",
+    "domain": "CICD",
+    "title": "Desired state is updated only with attested artifacts",
+    "statement": "The environment/GitOps repository is updated only with artifacts whose attestation has been issued. Nothing updates desired state without attestation.",
+    "rationale": "If an unattested digest can be pinned, admission is the only line of defence left, and it is bypassed wherever admission does not run, such as on VMs.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L364-366",
+        "section": "§07 CI/CD, GitOps & Autonomous Development (edges) — ar → attest → cfg"
+      },
+      {
+        "doc": "H",
+        "page": "L365",
+        "section": "VIEWS.cicd — 07 · CI/CD, GitOps & Autonomous Development (edge attest → cfg)"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An environment-repository change that pins a digest without a valid attestation fails the repository's required check, and the same change with a valid attestation passes."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REPO"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "Two diagram items were merged: the second half of the strict pipeline edge chain, and the attest → cfg edge. The Release Agent's write (CICD-022) is the normal author of these updates."
+  }
+]

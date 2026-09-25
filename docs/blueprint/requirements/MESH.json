@@ -1,0 +1,1492 @@
+[
+  {
+    "id": "MESH-001",
+    "domain": "MESH",
+    "title": "Regional Reflex nodes coordinate multi-leg opportunities with their peers over the Reflex Mesh",
+    "statement": "Regional Reflex nodes exchange latency-sensitive state directly with peer regional nodes, and coordinate distributed multi-leg opportunities of 2 to 20 legs (MESH-010) over the Reflex Mesh (peer reflex messaging). That coordination is not routed through the global brain.",
+    "rationale": "v11.6 retires v10.1's 'policy down, outcomes up only' and 'regional nodes are independent' because a cross-region opportunity must be coordinated faster than the global brain works. The mesh is what lets regions that each decide alone still act together.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary ('Regional nodes communicate through a low-latency Reflex Mesh, enabling coordinated 2-20-leg opportunities')"
+      },
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1 — 'Policy down, outcomes up only' row ('add peer reflex messaging')"
+      },
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Reflex mesh row ('Peer-to-peer regional state/opportunity exchange')"
+      },
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage ('reflex nodes may exchange latency-sensitive state and coordinate distributed opportunities')"
+      },
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture — plane table, Reflex Mesh row ('Fast bounded coordination for 2–20-leg opportunities')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two paper Reflex cells in different regions, connected only by the peer mesh and with the global brain unreachable, exchange edge state and carry a 2-leg cross-region paper cycle from opportunity token to completion. The trace must show every coordination message on the direct peer link."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "REFLEX",
+      "ARCH"
+    ],
+    "notes": "Merges five sources: the §1 summary sentence (M p2); the peer-reflex-messaging clause of the §2 row (M p4); the §3 Reflex mesh row's peer-to-peer exchange (M p7); the second half of §17's corrected rule (M p24); and the purpose column of v2.1's plane table (G p2). The other clauses of those sources are split out: local autonomy (MESH-002), reservations (MESH-004), epochs and tokens (MESH-005), outcome exchange (MESH-006), clocks (MESH-007), sagas (MESH-008, MESH-009), the QUIC runtime (MESH-038) and ephemerality (MESH-017). ARCH-011 states the architectural principle; this requirement is the mechanism. Priority is P1 because master Phase 4 (M p41) and GCP Phase 7 (G p22) deliver the peer mesh, with 2-5-leg cycles; 6-20 legs come in Phase 5 (MESH-010). NEW_DEPENDENCY is kept because authenticated cross-region transport needs a transport-security crate the workspace does not permit (ADR 0099 C2; ADR 0002 and ADR 0009). There is a naming collision to keep in view. The repository's existing 'mesh' (ADR 0011: qip-edge::mesh, qip-api::mesh, qip-transport) is a centre-to-cell spine that carries state up and capital and policy down over plaintext HTTP/1.1. It is not a peer mesh and does not satisfy this requirement. ADR 0008 (cells decide alone) stays compatible as long as MESH-002 holds."
+  },
+  {
+    "id": "MESH-002",
+    "domain": "MESH",
+    "title": "No local hot-path decision depends on the Reflex Mesh or on a peer",
+    "statement": "Coordination over the Reflex Mesh preserves each node's local execution autonomy. No local hot-path decision requires a remote dependency: a node decides its own single-region opportunities without waiting on, or needing, any peer or the Mesh. Only decisions that belong to a distributed cycle depend on peers.",
+    "rationale": "Peer coordination is added to cells that already decide alone (ADR 0008). If a local decision could block on a peer, one slow or partitioned region would stall trading in every other region, and the mesh would turn regional independence into a global single point of failure.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary ('while preserving local execution autonomy')"
+      },
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage ('no remote dependency is required for a local hot-path decision')"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Sever a node's mesh links and kill every peer mid-run. The node keeps deciding and sending its local paper orders, with decision latency inside its pre-fault envelope and no thread blocked on a peer. Distributed cycles that need the missing peers are not fired."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "REFLEX",
+      "RES",
+      "ARCH"
+    ],
+    "notes": "The M p24 clause is the first half of the sentence whose second half is MESH-001. The raw extraction kept only the second half, so the first is cited here. The degraded behaviour is outside the raw set and belongs to RES. It appears in three places: M p39 §28 ('Peer reflex mesh degraded: Local trading continues; distributed cycles requiring coordination are disabled or reduced to pre-positioned directional bands'); G p21 §22's cross-region network row; and G p23 §27's target that cross-region cycles depending on failed peers are disabled explicitly. P0 because Lane 0's 'No remote dependency' (M p9) is already a Phase 1 invariant, and this requirement is its Mesh instance. ARCH-044 is the Fabric instance. Candidate home for the degraded half: qip-edge::region already tracks dark peers and suspends mirrors whose other side has gone."
+  },
+  {
+    "id": "MESH-003",
+    "domain": "MESH",
+    "title": "Signed policy and artifacts reach a cell only from above; peers never carry them",
+    "statement": "Signed model, strategy, belief, capital and risk packs continue to flow downward from global cognition to every regional Reflex cell (Americas, Europe and APAC). Peer reflex messaging is added alongside that downward path and never replaces it. No message from a peer can install, change or revoke a pack, a policy or a capital grant on the receiving cell.",
+    "rationale": "A cell's authority must trace to a signed, promoted package (CONTRACT-004). If a peer could hand a cell policy, one compromised or misconfigured region could re-arm every other region, and the composition roots' ceiling checks would have a side door.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1 — 'Policy down, outcomes up only' row ('Keep signed policy/artifacts downward')"
+      },
+      {
+        "doc": "M",
+        "page": "11",
+        "section": "§5 End-to-End System Path (signed model + strategy + belief + capital + risk packs -> Global Reflex Mesh -> Americas/Europe/APAC Reflex)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Deliver a well-formed, correctly signed pack over a peer mesh connection: the receiving cell refuses and journals it, and its active pack set is unchanged. Deliver the same pack over the signed downward path: it verifies and activates."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "CONTRACT",
+      "REFLEX",
+      "SEC"
+    ],
+    "notes": "Merges the first clause of the §2 row (M p4) with the §5 path diagram (M p11). The diagram draws the packs passing through a 'GLOBAL REFLEX MESH' box on their way to the regions. v2.1 is more specific about the carrier and puts it elsewhere. Packages go from Artifact Registry to the Reflex nodes (H §01 deploy edges; H §02 pkg->node), and activation is announced on the Fabric (G §20). §17 (M p24) also says a Reflex Mesh outage must not prevent control distribution (MESH-018), which could not hold if packs rode the Mesh. Under the README precedence the requirement therefore keeps the diagram's content (the packs reach all three regions) and not its carrier. The 'peers never carry policy' clause reads 'keep signed policy/artifacts downward' together with the Peer mesh client's message list in M p24 §16 (fast state summaries, opportunity tokens, reservations and saga messages), which names no policy. Two flags are dropped: LIVE_CAPITAL (from the p11 item), because distributing packs commits no capital; and NEW_DEPENDENCY (from the p4 item), because it belonged to the peer-messaging clause. ADR 0008 describes seven cells rather than three regions (see ARCH-034). The existing ADR 0011 spine (qip-edge::policy VerifiedPolicy, qip-edge::envelope VerifiedEnvelope) is this downward path: it runs centre-to-cell, not peer-to-peer."
+  },
+  {
+    "id": "MESH-004",
+    "domain": "MESH",
+    "title": "Each node reserves its legs' inventory and capital atomically inside its own region",
+    "statement": "Reservations for a distributed opportunity are distributed across its nodes. Each participating node reserves the inventory and capital its own legs require, atomically and inside its own region. A reservation is taken whole or not at all, and a unit reserved for one opportunity cannot be reserved again by another opportunity or by a local strategy.",
+    "rationale": "If a reservation can be half-taken or taken twice, two cycles (or a cycle and a local strategy) can each believe they hold the same capital. The first to fire spends it and the second fires unfunded, and that is how a hedged cycle becomes an unhedged position.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1 — 'Policy down, outcomes up only' row ('distributed reservations')"
+      },
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Reflex mesh row ('distributed reservations')"
+      },
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol, step 4 ('reserves required inventory/capital atomically inside its region')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Generate interleavings of concurrent reservation requests from several epochs and local strategies against one region's inventory and capital. Every reservation is all-or-nothing, the reserved total never exceeds what is available, and releasing an epoch's reservation restores exactly what it took."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "CAPITAL",
+      "RISK",
+      "REFLEX"
+    ],
+    "notes": "Step 4 also requires a local feasibility check before the reservation, which is split out as MESH-028. How far a reservation may extend in amount and lifetime is MESH-044 (G p20). Distributed reservations are a master Phase 4 exit item (M p41), but atomicity is a correctness invariant from the first reservation onward, so P0. Two flags are removed. NEW_DEPENDENCY (p4 and p7 items) is removed because reservation logic needs no crate. LIVE_CAPITAL (step 4 item) is removed because a reservation is in-process bookkeeping, fully demonstrable in paper, and ADR 0099 reserves LIVE_CAPITAL for what cannot be met without live capital. M §18.1 (p25) asks for arbitrage and market making to share 'one reservation fabric'; that part belongs to the market-making domain. Candidate home: qip-edge::reservation, which holds the region's single commitment between feasibility and order."
+  },
+  {
+    "id": "MESH-005",
+    "domain": "MESH",
+    "title": "Opportunity epoch contract",
+    "statement": "Every distributed opportunity is identified by an opportunity epoch that names seven things: the cycle, its legs, the size, the minimum edge, the model versions, the TTL and the unwind policy. The opportunity tokens that peers exchange carry that epoch. An epoch missing any of the seven is refused.",
+    "rationale": "All participants must act on the same definition of the opportunity. The epoch is that definition, and it is what the saga, the journal and the ledger attribute each leg to. Without the model versions, a cycle cannot be replayed or attributed afterwards.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1 — 'Policy down, outcomes up only' row ('opportunity tokens')"
+      },
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Reflex mesh row ('opportunity epochs')"
+      },
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol, step 3"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing an epoch without any one of the seven fields is refused, with a message naming the missing field. A token survives a serialization round-trip with its epoch unchanged. Two epochs that differ in any field have different identities."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "CONTRACT",
+      "MODEL"
+    ],
+    "notes": "v11.6 uses two names for this. It says 'opportunity epoch' in §3, §17 and §17.2, and 'opportunity token' in §2, in §4, and in the §27 OpportunityToken contract (M p37), which CONTRACT-015 owns. The field lists differ. The token adds reservations, execution policy and version lineage, and says 'edge' where the epoch says 'minimum edge'. The epoch adds model versions. Whether the token embeds the epoch, or one type serves both, is for the contract owner to decide; this requirement fixes the epoch's minimum. Related requirements: synchronisation and fencing by epoch are MESH-021, TTL enforcement is MESH-022, and the Lane 1 placement of tokens is MESH-013. P1 because master Phase 4 lists opportunity tokens (M p41), matching CONTRACT-015. NEW_DEPENDENCY is removed because serde covers the contract."
+  },
+  {
+    "id": "MESH-006",
+    "domain": "MESH",
+    "title": "Regions exchange outcomes and state with each other, not only upward",
+    "statement": "Regions exchange outcomes and state directly with each other, replacing v10.1's 'policy down, outcomes up only'. An outcome or state record produced in one region reaches the peer regions it concerns without being relayed through global cognition.",
+    "rationale": "A region that sees a peer's outcome only after it has gone up to the global tier and back down cannot hedge on it or learn from it within the window that matters. v11.6 names the one-way flow as a limitation to remove.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1 — 'Policy down, outcomes up only' row ('cross-region outcome/state exchange')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With the global brain stopped throughout, an outcome record produced by region A's paper cell reaches region B's cell and B applies it. Live cycle state travels over the Mesh and durable outcomes over the mirrored Fabric."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "FABRIC",
+      "ARCH"
+    ],
+    "notes": "Split from the §2 row. The row implies two carriers. Latency-sensitive cycle state and fills travel on the Mesh (MESH-031). Durable outcomes travel on the 'selective cross-region fabric mirroring for outcomes/control' that master Phase 4 adds (M p41) and GCP Phase 7 lists (G p22); that mirror belongs to FABRIC. ARCH-011 states the fast-state principle. NEW_DEPENDENCY is kept because cross-region transport needs transport security the workspace does not yet permit (ADR 0099 C2)."
+  },
+  {
+    "id": "MESH-007",
+    "domain": "MESH",
+    "title": "Mesh participants run synchronized clocks",
+    "statement": "Nodes that take part in the Reflex Mesh run synchronized clocks with a measured, bounded offset, so that an epoch's TTL and the event times peers exchange mean the same instant in every region. A node whose offset is unknown, or beyond the bound, does not join a distributed epoch.",
+    "rationale": "TTLs, epoch fencing and cross-region replay all compare timestamps taken on different machines. If clocks are not synchronized, one region can treat an epoch as live after another has let it expire, and a replay orders cross-region events wrongly.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Reflex mesh row ('synchronized clocks')"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Skew one paper node's clock past the configured bound. The node is excluded from new distributed epochs with a reason that names its offset, while nodes inside the bound keep coordinating. Every node exports its measured offset."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "REFLEX",
+      "NET",
+      "OBS",
+      "TICK"
+    ],
+    "notes": "The blueprint names neither an offset bound nor a synchronisation source. Both are deployment decisions and must be recorded. Excluding a node whose offset is unknown is the house 'fail closed' reading, not blueprint text. Master Phase 4's cross-region tick alignment (M p41) relies on the same property and belongs to TICK. NEW_DEPENDENCY, inherited from the raw row, is removed: clock discipline is a host or infrastructure matter (such as chrony or PTP on the VM), not a crate."
+  },
+  {
+    "id": "MESH-008",
+    "domain": "MESH",
+    "title": "A partially completed cycle is recovered by an explicit saga",
+    "statement": "A multi-leg cycle that completes only partially is recovered by an explicit saga, never by assumption. Every partial-fill state has a defined next transition (resize, hedge, reroute or unwind), chosen by the cycle's unwind policy, and no cycle is ever left in a state without one.",
+    "rationale": "Distant legs cannot be atomic (MESH-019), so partial completion is a normal outcome, not an exception. A partial state with no defined next step is an unhedged position that nobody owns.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Reflex mesh row ('bounded-loss multi-leg sagas')"
+      },
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage ('saga-style recovery')"
+      },
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol, step 7 ('partial fills trigger resize, hedge, reroute or unwind state transitions')"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.3 Multi-region arbitrage, step 4 ('Partial completion follows explicit hedge/unwind saga rules')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Generate 2-to-20-leg cycles in the simulator, and drive each through every reachable vector of per-leg fill fractions, rejects and peer losses. From every state the saga yields a defined transition, and each cycle ends either complete or flat/hedged within its unwind policy. Deleting any one transition makes the property fail."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "EXEC",
+      "RISK"
+    ],
+    "notes": "Merged from four sources; both v2.1's word 'explicit' and v11.6's list of transitions are kept. The loss bound is split out as MESH-009, and fill streaming (the other half of step 7) as MESH-031. Master Phase 5 lists 'saga recovery' as an exit capability (M p42, ARCH-035). This requirement is P0 all the same, because a 2-leg cycle in Phase 4 already has a partial state, and leaving that state undefined is a capital-protection failure. The full set of reroute and resize transitions may land with Phase 5. Flags removed: LIVE_CAPITAL (step 7 and §17 items), because the state machine is fully demonstrable against the simulator; NEW_DEPENDENCY and COST (§3 and §17 items), because COST belonged to pre-positioning (MESH-020). Candidate homes: qip-edge::decomposition, which completes a short leg at reduced size (the resize transition), and qip-edge::passive."
+  },
+  {
+    "id": "MESH-009",
+    "domain": "MESH",
+    "title": "Every multi-leg saga has a loss bound fixed before FIRE",
+    "statement": "Multi-leg sagas are bounded-loss. Before FIRE, each cycle's unwind policy fixes the most its recovery may lose. Under the platform's cost model, no sequence of partial fills, rejects or peer losses takes the saga's realized recovery loss past that bound.",
+    "rationale": "Without a bound, a saga can turn a small missed edge into an open-ended loss. The bound makes a cycle's worst case something the risk gate can size before anything is sent.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Reflex mesh row ('bounded-loss multi-leg sagas')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Across generated cycles and adversarial sequences of partial fills and peer losses in the simulator, realized recovery loss never exceeds the bound declared before FIRE. A mutation that skips the bound check produces a counterexample."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "RISK",
+      "EXEC"
+    ],
+    "notes": "Split from the §3 row. The bound can be proved in a simulator. At a real venue it is only a modeled bound, because gaps and outages can exceed any model, so the requirement is stated against the platform's cost model; the replay and digital twin keep that model honest (M p15 §8.3). Related: MESH-035 prices unwind cost, and MESH-036 rejects cycles whose guarantees cannot be met. NEW_DEPENDENCY is removed because it belonged to the transport. Candidate home: qip-edge::dispersion, whose pre-trade admission already bounds worst-case unwind cost."
+  },
+  {
+    "id": "MESH-010",
+    "domain": "MESH",
+    "title": "Cycles have 2 to 20 legs",
+    "statement": "The arbitrage engine represents, values and coordinates cycles of 2 to 20 legs. The maximum leg count in force is configuration and is never above 20 (master Phase 4 runs 2-5). A candidate cycle with more legs than the maximum in force is refused, not truncated to fit.",
+    "rationale": "The leg count is the product scope v11.6 sets. Truncating an over-long cycle would produce a different trade from the one that was valued, which is exactly the kind of silent correction the house rules forbid.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Arbitrage row ('2-20 leg')"
+      },
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17.1 Arbitrage Graph ('Cycles of 2-20 legs')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "With the maximum at 20, cycles of 2 and 20 legs are accepted and candidates of 1 and 21 legs are refused. With the maximum at 5, a 6-leg candidate is refused with a message naming the limit, and nothing is sent."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": "The 2-20 bound also appears in the §1 summary (M p2), §8.3 replay (M p15), §31 (M p43) and the v2.1 plane table (G p2). Those citations stay on the items that state them. The §17 heading says '3-20-Leg' while every sentence in the body says 2-20; the body is taken. 'Refused, not truncated' and 'never above 20' apply the house refuse-rather-than-clamp principle to the range. P2 because 3-20-leg arbitrage is master Phase 5 (M p42); Phase 4's ceiling of 5 is part of ARCH-034."
+  },
+  {
+    "id": "MESH-011",
+    "domain": "MESH",
+    "title": "A cycle may cross venues, regions, assets, currencies and representations",
+    "statement": "One arbitrage graph lets a cycle cross venues, regions, assets and currencies, and pass through spot, derivative, tokenized, physical and event representations of an asset.",
+    "rationale": "The edges worth finding usually sit between representations or places that no single venue's book shows. A graph confined to one representation or one region cannot see them.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Arbitrage row ('cross-venue, cross-region, cross-asset, cross-currency, spot/derivative/tokenized/physical/event representations')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In the simulator, build one cycle on one graph that crosses two venues, two regions, two assets and two currencies, and passes through at least three representations (for example spot, derivative and tokenized). The cycle is constructed, valued and replayed, and nodes that differ only in representation stay distinct (MESH-024)."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "ASSET",
+      "COMMERCE",
+      "EVENT",
+      "SETTLEMENT"
+    ],
+    "notes": "Split from the §3 Arbitrage row. The leg count is MESH-010, and the size-aware costs are merged into MESH-012. MESH-024's node tuple is what makes these crossings representable. Physical and event representations depend on commerce and event markets (master Phase 7). P2 therefore covers the first three representations; the last two cannot arrive before Phase 7. The repository already has cross-region mirror edges (qip-edge-node cross_region.rs, qip-edge::mirror)."
+  },
+  {
+    "id": "MESH-012",
+    "domain": "MESH",
+    "title": "Arbitrage graph edge contract, with size-dependent costs",
+    "statement": "Every edge of the arbitrage graph carries ten attributes: price/rate, fees, size-dependent slippage, carry/funding, borrow cost, transfer/bridge/logistics cost, tax/duty estimate, settlement risk, probability of fill, and time. Edge costs are evaluated at the size actually traded, not at the top of the book.",
+    "rationale": "A cycle's value depends on every cost its legs incur, at the size they will trade. An edge that omits a cost, or is priced at top-of-book size, makes a large cycle look as profitable as a small one.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map — Arbitrage row ('with size-aware graph costs')"
+      },
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17.1 Arbitrage Graph (edge attributes)"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An edge missing any of the ten attributes is refused at construction. Evaluating one edge at two sizes against a finite-depth book gives a cost that does not fall as size grows. Money attributes are Decimal, and the Decimal-to-f64 crossing for probability of fill is stated in a comment where it happens."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CONTRACT",
+      "EXEC",
+      "SETTLEMENT",
+      "TREASURY"
+    ],
+    "notes": "Merges v11.6's §3 phrase 'size-aware graph costs' with the §17.1 attribute list, which is the more specific wording. The house rule is Decimal for money and f64 only for statistics, with the crossing point stated in a comment (core-rust domain rule). P1 because master Phase 4's 2-5-leg cycles are valued on these edges; 'graph optimization' over them is Phase 5 (MESH-026). MULTI_REGION, inherited from the §3 item, is removed because the contract is identical for a single-region cycle. Candidate homes: qip-arbitrage (the scanner's graph) and qip-edge::seam's CellLiquidity."
+  },
+  {
+    "id": "MESH-013",
+    "domain": "MESH",
+    "title": "Mesh coordination runs in Lane 1 (Coordinated Fast)",
+    "statement": "Five functions run in Lane 1 (Coordinated Fast, about 1 ms to seconds), where a cross-region round trip is an accepted and explicit cost: peer reflex messages, multi-region opportunity tokens, distributed inventory reservations, multi-leg coordination, and hedge/unwind commands. None of them runs in Lane 0, whose decisions take no remote dependency.",
+    "rationale": "Giving cross-region work its own lane is what lets Lane 0 promise no remote dependency while Lane 1 accepts the round trip openly. There the latency is a cost the cycle is priced for (MESH-035), not something hidden inside a local decision.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture — Lane 1 (Coordinated Fast): responsibilities, and 'Cross-region latency is accepted explicitly'"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each of the five message and command kinds is registered as Lane 1 in the message registry, and a static check shows that no Lane 0 code path awaits any of them."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "ARCH",
+      "REFLEX"
+    ],
+    "notes": "Merges the Lane 1 row's list of responsibilities with its sentence 'Cross-region latency is accepted explicitly' (both M p9). The lane's time scale is ARCH-015. The functions themselves are specified elsewhere: tokens in MESH-005, reservations in MESH-004, hedge/unwind in MESH-008. LIVE_CAPITAL is removed because placing a function in a lane commits no capital."
+  },
+  {
+    "id": "MESH-014",
+    "domain": "MESH",
+    "title": "Replay models multi-leg arbitrage end to end",
+    "statement": "Market replay models 2-20-leg arbitrage end to end across regions. It covers seven things: opportunity discovery, reservation, legging risk, path decay, partial execution, hedge/unwind, and capital consumption.",
+    "rationale": "A multi-leg strategy that has only been evaluated as if all its legs filled together has not really been tested. Legging risk and path decay are where cross-region cycles lose money, and only a replay that models them can measure that.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience ('Multi-leg arbitrage replay')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a recorded two-region paper cycle, and a synthetic 20-leg cycle, twice each from the log; each pair of runs gives identical output. For every leg, the output reports when the opportunity was discovered and reserved, its legging exposure, the path decay between discovery and fill, any partial fills, any hedge/unwind actions, and the capital consumed in each region."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "REPLAY",
+      "TICK",
+      "CAPITAL"
+    ],
+    "notes": "Kept as one requirement because the seven elements are facets of one simulated lifecycle; the check names each of them. M §3's replay row (M p7) asks for 'multi-leg saga simulation' in the same terms, and belongs to REPLAY. P1 because master Phase 4 adds 'distributed opportunity replay' (M p41). Replay of 6-20-leg cycles follows master Phase 5. Counterfactual scoring of outcomes is MESH-034."
+  },
+  {
+    "id": "MESH-015",
+    "domain": "MESH",
+    "title": "Latency-sensitive coordination travels peer to peer, never through a broker",
+    "statement": "Truly latency-sensitive cross-region arbitrage coordination, such as compressed opportunity and reservation state, travels directly peer to peer over the Reflex Mesh. It never goes through the Fabric or any other broker.",
+    "rationale": "A broker hop adds queueing and a failure domain to a message whose value decays in milliseconds. v2.1's connection matrix gives the peer path no durable-replay requirement (G p19), so a broker would add nothing that coordination needs.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§16 Regional Reflex Nodes ('remains direct peer-to-peer Reflex Mesh traffic rather than broker-mediated messaging')"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.3 Multi-region arbitrage, step 2 ('exchanged directly over Reflex Mesh, not through Fabric')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Trace a two-region paper cycle: every epoch, reservation, FIRE and fill message crosses the direct peer link, and none is published to a Fabric topic or any broker. With the Fabric brokers stopped, the cycle still completes."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "FABRIC",
+      "NET"
+    ],
+    "notes": "Merges M §16 with the routing half of G §21.3 step 2; the compression half is MESH-027. v2.1's anti-patterns also forbid routing Reflex traffic through a service mesh, proxy, Secure Web Proxy, Cloud NAT chain or general API gateway without benchmarked necessity (G p23 §28), which extends 'no broker' to middleboxes. P1, as for ARCH-028. NEW_DEPENDENCY is kept for the direct transport (MESH-038)."
+  },
+  {
+    "id": "MESH-016",
+    "domain": "MESH",
+    "title": "Reflex Mesh traffic is kept separate from Fabric traffic",
+    "statement": "Direct Reflex Mesh traffic stays separate from durable Event & Control Fabric traffic, on its own connections and queues. Multi-leg coordination can therefore be tuned for latency independently of replay and durability concerns.",
+    "rationale": "Durability and latency pull in opposite directions. On a shared channel, coordination would pay for acknowledgements and retention it does not need, and Fabric backpressure could delay a live cycle.",
+    "kind": "acceptance",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage ('The Reflex Mesh and the Event & Control Fabric are deliberately separate')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "§31 Capability Completeness Checklist ('Direct Reflex Mesh traffic remains separate from durable event fabric traffic')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Mesh and Fabric messages use distinct connections, ports and queues. Driving the Fabric into backpressure (a frozen sink with consumer lag) leaves Mesh coordination latency within its baseline noise, and saturating the Mesh leaves Fabric journaling throughput unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "ARCH"
+    ],
+    "notes": "The §31 target (M p44) is the acceptance form of §17's opening sentence (M p24), and both are cited. ARCH-028 holds the three-path principle for the whole platform; this requirement is the Mesh's side of it. The failure-isolation sentence in the same §17 paragraph is MESH-018. P1, matching ARCH-028."
+  },
+  {
+    "id": "MESH-017",
+    "domain": "MESH",
+    "title": "Reflex Mesh messages are ephemeral",
+    "statement": "Reflex Mesh messages are short-lived, latency-sensitive peer state, used to coordinate a live multi-leg opportunity. The Mesh does not store or replay them. The durable record of what they caused is the Fabric journal (MESH-046).",
+    "rationale": "Coordination state is worthless once its opportunity has passed. A durable Mesh would cost latency and create a second, weaker record next to the journal, and nothing may become a second source of truth for a fact the event log already holds.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage ('Reflex Mesh messages are short-lived, latency-sensitive peer state')"
+      },
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture — plane table, Reflex Mesh row ('ephemeral by design')"
+      },
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§20 Critical Service-to-Service Connection Matrix — Reflex Node -> Peer Reflex Node ('Fast ephemeral'; 'no durable replay requirement')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Mesh holds no persistent log or offsets. A peer that restarts receives none of the messages sent before it went down. A completed paper cycle can be reconstructed from the Fabric journal alone, with the Mesh's state discarded."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Merges v11.6's 'short-lived' with v2.1's 'ephemeral by design' and with the connection matrix row's mode and reason. The protocol column of the same matrix row is MESH-038. NEW_DEPENDENCY (from the G items) is removed, because it belongs to the transport rather than to how long a message lives. 'No second source of truth' is taken from the architecture boundaries rule."
+  },
+  {
+    "id": "MESH-018",
+    "domain": "MESH",
+    "title": "A Reflex Mesh outage does not stop durable journaling or control distribution",
+    "statement": "A Reflex Mesh outage must not prevent a node's durable journaling, or the distribution of control to that node. With every Mesh link down, the node keeps writing its local journal, keeps forwarding it to the Fabric, and keeps receiving control and package announcements.",
+    "rationale": "If losing the Mesh also cost the journal, a partition would leave the platform trading with no record. That is precisely the failure the composition-root ordering exists to prevent.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage ('a Reflex Mesh outage must not prevent durable journaling or control distribution')"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "During a paper run, sever every Mesh link of one node. Its journal sequence continues without a gap and reaches the Fabric, and a control announcement published during the outage is received and acted on."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "RES"
+    ],
+    "notes": "Not a raw item in its own right. It is split from the §17 separation passage that MESH-016 cites, because ARCH-028's notes assign this half of §17 to MESH and FABRIC. The converse, that a Fabric outage must not stall a live local decision, is ARCH-044. P0 because it guards the decision record, which the governance rules treat as non-negotiable ('Nothing may write a record that cannot be replayed')."
+  },
+  {
+    "id": "MESH-019",
+    "domain": "MESH",
+    "title": "Legs of a distant cycle are never treated as atomic, and no such cycle is riskless",
+    "statement": "The platform never treats the legs of a cycle that spans distant venues as atomic. Each leg is valued, reserved, executed and recovered as an action that can succeed or fail independently of the others. No cycle whose legs cannot be made atomic is valued, labeled or reported as riskless.",
+    "rationale": "The physics boundary (M p25) says: 'A 20-leg cycle spanning distant venues cannot be made truly atomic.' Cross-region physics cannot be removed. A design that pretends otherwise books a spread it has not captured and carries leg risk it has not priced.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage ('rather than pretending distant legs are atomic')"
+      },
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol — physics boundary ('cannot be made truly atomic'; 'rather than treated as riskless arbitrage')"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.3 Multi-region arbitrage, step 4 ('No path is considered riskless when atomicity is impossible')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated cycles whose legs sit on different venues or regions, the valuation's outcome set always includes states where some legs complete and others do not, each with non-zero probability. No cycle record carries a riskless or zero-risk label. Forcing all-or-nothing leg outcomes in the model makes the test fail."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "RISK",
+      "EXEC"
+    ],
+    "notes": "Merges §17's closing clause (which appears twice in the raw set, M p24), the physics-boundary premise (M p25) and the second sentence of G §21.3 step 4. The premise was extracted as an item of its own, but it states a fact about the world rather than a property of the system, so it is quoted as rationale and not counted as a requirement. The same §17 sentence names four mechanisms, each split out: pre-positioning (MESH-020), synchronized epochs (MESH-021), bounded TTLs (MESH-022) and saga recovery (MESH-008). LIVE_CAPITAL and COST (from the §17 item) are removed because they belonged to pre-positioning."
+  },
+  {
+    "id": "MESH-020",
+    "domain": "MESH",
+    "title": "Inventory and capital are pre-positioned for candidate cycles",
+    "statement": "The Global/Warm Arbitrage Brain pre-positions inventory and capital in the regions and venues of its candidate cycle templates. Each leg's local reservation then draws on holdings already in place, never on a cross-region transfer made at FIRE time.",
+    "rationale": "A leg that has to wait for a transfer misses its window. Pre-positioning turns a slow cross-region move into a standing position, so that only the fast coordination is left for FIRE time.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage ('pre-positioned capital/inventory')"
+      },
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17.2 Cross-Region Execution Protocol, step 1 ('prepositions inventory/capital')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "In a replayed multi-region paper cycle, every leg's reservation is met from holdings that were in place before its epoch opened, and no leg waits on a treasury transfer."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "LIVE_CAPITAL",
+      "COST"
+    ],
+    "secondary_domains": [
+      "CAPITAL",
+      "TREASURY"
+    ],
+    "notes": "Split from §17 (M p24, which appears twice in the raw set) and from §17.2 step 1; the discovery half of step 1 is MESH-026. CAPITAL-027 covers the capital side (the Capital Brain pre-positions capital for arbitrage); here the arbitrage brain decides where. P2 because 'pre-positioned inventory' is a master Phase 5 exit (M p42). LIVE_CAPITAL is kept because carrying out a pre-position moves real holdings, which ADR 0099 blocks beyond simulation. COST is kept because idle pre-positioned inventory is carried capital. Candidate home for the paper form: the existing mirrored-inventory rows (qip-edge::mirror, qip-edge-node cross_region.rs)."
+  },
+  {
+    "id": "MESH-021",
+    "domain": "MESH",
+    "title": "Participants act on one synchronized epoch, and stale epochs are fenced",
+    "statement": "Every participant in a distributed cycle acts on the same synchronized opportunity epoch, and the epoch fences out stale actors. A reservation, FIRE, fill or saga message whose epoch is not the current one for its opportunity is refused and journaled, and is never applied.",
+    "rationale": "Without fencing, a node that has restarted, or a message that arrives late, can reserve or fire against terms the other participants have already abandoned. That is the distributed form of acting on a stale order.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage ('synchronized opportunity epochs')"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.3 Multi-region arbitrage, step 3 ('using opportunity epoch/fencing')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Interleave generated messages from superseded epochs with current traffic, including messages from a node that restarts holding an old epoch. No stale message changes any reservation, execution or saga state, and each one is journaled as refused."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "CONTRACT",
+      "FABRIC"
+    ],
+    "notes": "Merges v11.6's 'synchronized' with v2.1's more specific 'epoch/fencing'. This is the Mesh counterpart of the Fabric's producer fencing (CONTRACT-049), and v2.1's rule 'Use at-least-once transport plus idempotent state transitions and fencing' (G p23 §28) applies here as well. The clock synchronisation that epoch TTLs depend on is MESH-007."
+  },
+  {
+    "id": "MESH-022",
+    "domain": "MESH",
+    "title": "Every epoch has a bounded TTL, and nothing fires after it",
+    "statement": "Every opportunity epoch has a finite TTL no longer than a configured ceiling; an epoch without one is refused. Once the TTL has elapsed, no leg of that epoch is fired, and messages bearing the epoch are discarded.",
+    "rationale": "An opportunity's edge decays over time. An unbounded or unenforced TTL lets a cycle fire on prices that no longer exist, and keeps reservations that other opportunities need.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage ('bounded TTLs')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "An epoch with no TTL, or with a TTL above the ceiling, is refused at construction. For generated schedules, including ones where FIRE arrives late, no leg is sent at or after its epoch's expiry instant as measured on the synchronized clock."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": "Split from §17's list of mechanisms (M p24, which appears twice in the raw set). The TTL field itself belongs to the epoch contract (MESH-005). What happens to reservations when an epoch expires is MESH-044. The blueprint gives no TTL ceiling; it is configuration and must be recorded. Kept as one requirement because 'bounded' covers both the ceiling and its enforcement."
+  },
+  {
+    "id": "MESH-023",
+    "domain": "MESH",
+    "title": "Every tradable conversion is a directed edge",
+    "statement": "Every tradable conversion is represented in the arbitrage graph as a directed edge.",
+    "rationale": "If a conversion is missing from the graph, the scanner cannot see the opportunity it creates. Edges are directed because bid and offer, and transfers in each direction, cost different amounts.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17.1 Arbitrage Graph ('Represent every tradable conversion as a directed edge')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For a registry fixture, every conversion the registry marks tradable appears as a directed edge in each direction it can be traded. A tradable conversion with no edge is reported as a gap, never silently skipped."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET"
+    ],
+    "notes": "P1 because master Phase 4's 2-5-leg cycles run on this graph; graph optimization is master Phase 5 (MESH-026). Candidate home: qip-arbitrage."
+  },
+  {
+    "id": "MESH-024",
+    "domain": "MESH",
+    "title": "Arbitrage graph node contract",
+    "statement": "A node of the arbitrage graph is identified by the tuple (asset, venue, representation, settlement stage, region). Two nodes that differ in any one component are different nodes.",
+    "rationale": "The same asset at another venue, in another representation, at another settlement stage or in another region is a different thing to hold. Collapsing any of those dimensions hides the transfer, conversion or settlement cost that the edge between the two nodes exists to price.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17.1 Arbitrage Graph ('A node is (asset, venue, representation, settlement stage, region)')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A node missing any component is refused at construction. Two nodes that differ only in settlement stage, or only in region, compare unequal and are joined by an edge rather than merged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET",
+      "SETTLEMENT",
+      "CONTRACT"
+    ],
+    "notes": "The §3 Arbitrage row lists the representation values: spot, derivative, tokenized, physical and event (MESH-011). Making settlement stage a node dimension is what makes 'leg one's proceeds fund leg two' checkable. Candidate home for that check: qip-edge::settlement."
+  },
+  {
+    "id": "MESH-025",
+    "domain": "MESH",
+    "title": "Cycles are judged on executable expected value, never on theoretical spread",
+    "statement": "Cycles are evaluated, ranked and accepted on executable expected value, never on theoretical (quoted) spread. Executable expected value is what remains after every edge cost in MESH-012, at the cycle's size, weighted by each leg's probability of fill.",
+    "rationale": "Quoted spread is the number that makes almost every cycle look profitable; executable value is the number that decides whether it is. Ranking on spread sends capital to whichever cycles hide their costs best.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17.1 Arbitrage Graph ('evaluated for executable expected value, not theoretical spread')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A generated cycle with a positive quoted spread but a negative value after costs at its size is never accepted. Whenever two cycles rank differently by spread and by executable expected value, the one with the higher executable expected value ranks first."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "EXEC"
+    ],
+    "notes": "Pricing the cross-region terms (coordination latency, leg risk and unwind cost) is split out as MESH-035. MULTI_REGION and LIVE_CAPITAL are removed: the rule applies to single-region cycles too, and it is demonstrable in paper. P0 as a correctness invariant of valuation. It is the cycle-level form of the 'expected edge after costs' check in the Reflex risk/feasibility gate (M p24 §16)."
+  },
+  {
+    "id": "MESH-026",
+    "domain": "MESH",
+    "title": "The Global/Warm Arbitrage Brain continuously discovers candidate cycle templates",
+    "statement": "A Global/Warm Arbitrage Brain continuously discovers candidate cycle templates on the arbitrage graph, off the Reflex hot path.",
+    "rationale": "Searching a graph of 2-20-leg cycles is too expensive for a hot-path decision and too slow to leave to a person. Discovery runs in the warm tier, so the Reflex nodes act on templates that have already been found.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17.2 Cross-Region Execution Protocol, step 1 ('continuously discovers candidate cycle templates')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Run the brain over a graph fixture with planted profitable 3-, 7- and 20-leg cycles and planted unprofitable ones. It emits templates containing each profitable cycle and none containing an unprofitable one, and no Reflex hot-path call reaches the brain."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "COGNITION",
+      "MODEL"
+    ],
+    "notes": "Split from step 1; its pre-positioning half is MESH-020. 'Off the hot path' reads the name 'Global/Warm' against the lane model (M p9-10). Templates reach a node by MESH-003's path, as signed packs through the Reflex 'Arbitrage scanner: whitelisted and discovered graph cycles' (M p24 §16). P2 because 'graph optimization' is a master Phase 5 exit (M p42); v2.1's 'larger arbitrage cycles' are GCP Phase 10. LIVE_CAPITAL and COST are removed because they belonged to pre-positioning."
+  },
+  {
+    "id": "MESH-027",
+    "domain": "MESH",
+    "title": "Nodes publish compressed executable edge states, never raw books or tick streams",
+    "statement": "Reflex nodes publish only compressed executable edge states to peers or regional coordinators. They never publish whole raw order books, and they never broadcast raw tick streams globally.",
+    "rationale": "Raw books and ticks are orders of magnitude larger than the executable edge a peer needs. Shipping them across regions spends the latency budget on data the receiver will only reduce again.",
+    "kind": "prohibition",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol, step 2 ('compressed executable edge states - not entire raw books')"
+      },
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model — Reflex Mesh row ('Exchange compressed state only'; 'do not broadcast raw tick streams globally')"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.3 Multi-region arbitrage, step 2 ('Compressed opportunity/reservation state')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Mesh message schema has no book-depth or raw-tick message type, and a publish carrying a raw book or tick payload is refused at the sender. A traced two-region paper cycle carries only edge-state, epoch, reservation, FIRE, fill and saga messages."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "TICK",
+      "MARKETDATA"
+    ],
+    "notes": "Merges step 2 (M p25, which appears twice in the raw set) with v2.1's scaling rule and routing step, and adopts v2.1's stricter 'only'. The scaling rule's other two bounds are split out: fan-out as MESH-041 and message size as MESH-042. The routing half of G §21.3 step 2 is MESH-015. NEW_DEPENDENCY (from the G p20 item) is removed. Compressed Reflex state already flows toward the centre in-tree (Cell::state_delta, CellStateDelta), which is a candidate shape."
+  },
+  {
+    "id": "MESH-028",
+    "domain": "MESH",
+    "title": "A node runs its local feasibility gate before it reserves",
+    "statement": "Before reserving anything for an epoch, each participating node runs its local risk/feasibility gate on its own legs, covering hard constraints, capacity, inventory, limits and expected edge after costs. If the gate refuses, the node reserves nothing and reports the refusal.",
+    "rationale": "Limits are checked before an order exists. A cycle that reserves capital before the gate runs can lock, and later spend, capital that the node's own limits would never have allowed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol, step 4 ('Each participating node performs local feasibility')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Send a paper epoch whose leg breaches one node's local limit. That node's gate refuses, the node reserves nothing, the refusal reaches the coordinator and is journaled, and FIRE is not declared."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "RISK",
+      "REFLEX"
+    ],
+    "notes": "Split from step 4; the atomic reservation is MESH-004. The gate's contents are those of the Reflex Node's Risk/feasibility gate module (M p24 §16). Pre-trade checks are deterministic and never routed to a model (risk domain rule). LIVE_CAPITAL is removed because the check is demonstrable in paper. Candidate home: qip-edge::feasibility."
+  },
+  {
+    "id": "MESH-029",
+    "domain": "MESH",
+    "title": "FIRE is declared only when the reservation condition is met",
+    "statement": "FIRE is declared, by a coordinator or by a deterministic distributed rule, only when the cycle's configured reservation condition is met. No leg of a cycle is sent before FIRE.",
+    "rationale": "After FIRE, a cycle's legs can no longer be recalled together. Declaring it before the cycle holds the reservations it needs is how a hedged cycle starts life as a naked leg.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol, step 5 ('declares FIRE only when the configured reservation condition is met')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Across generated reservation outcomes, including nodes that refuse, time out or hold only part of what they need, FIRE is declared if and only if the configured condition holds, and the simulator holds no leg order from before FIRE."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "RISK",
+      "EXEC"
+    ],
+    "notes": "The blueprint leaves the condition configurable ('the configured reservation condition'). The natural default, and the restrictive one, is that every participant holds its reservation. Any weaker condition must be priced as leg risk (MESH-035). A FIRE from a coordinator does not bypass a node's local deterministic risk gate (MESH-045)."
+  },
+  {
+    "id": "MESH-030",
+    "domain": "MESH",
+    "title": "Legs execute concurrently or in risk-ordered sequence, as the cycle's policy says",
+    "statement": "After FIRE, a cycle's legs execute either concurrently or in a risk-ordered sequence, according to the cycle's policy.",
+    "rationale": "Some cycles lose least when every leg goes at once. Others lose least when the riskiest or slowest leg goes first and the rest follow only once it fills. The cycle's policy decides which, not the node.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol, step 6 ('Legs execute concurrently or in risk-ordered sequence according to cycle policy')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In the simulator, a cycle with a concurrent policy sends all its legs in one dispatch. A cycle with a risk-ordered policy sends each leg in the order its policy ranks them, and only once the previous leg's fill state allows it."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": "LIVE_CAPITAL is removed: sequencing is demonstrable against the simulated venue, and sending to a real venue is blocked separately under ADR 0099. P1 because master Phase 4 already runs 2-5-leg cycles (M p41). Candidate homes: qip-edge::passive (which rests the slow leg first) and ADR 0084's release schedule in qip-edge::dispersion."
+  },
+  {
+    "id": "MESH-031",
+    "domain": "MESH",
+    "title": "Fills are streamed peer to peer to the cycle's other participants",
+    "statement": "Each participant streams the fills on its legs to the cycle's other participants as they happen, directly over the Reflex Mesh.",
+    "rationale": "The saga's next transition (MESH-008) depends on what the other legs have filled. A participant that hears about a peer's fill only through the durable Fabric hears too late to resize or hedge.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol, step 7 ('Fills are streamed peer-to-peer')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A partial fill on region A's leg of a paper cycle reaches region B's cell over the direct peer link, not through the Fabric, and B's saga state for that epoch reflects it."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": "Split from step 7; the partial-fill transitions are MESH-008. The durable record of the same fills is MESH-046. LIVE_CAPITAL is removed because streaming a fill message commits no capital."
+  },
+  {
+    "id": "MESH-032",
+    "domain": "MESH",
+    "title": "Cycle completion and every leg's economic events are recorded in the central ledger",
+    "statement": "Every cycle's completion is recorded in the central (global) ledger, together with every fill, hedge and unwind on its legs, each attributed to the cycle's epoch.",
+    "rationale": "A cross-region cycle is one economic act carried out across several regions. Unless the ledger records it as one attributed whole, nobody can say afterwards what the cycle made or lost.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol, step 8 ('Completion is recorded to the global ledger')"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.3 Multi-region arbitrage, step 5 ('ledgered centrally')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Run one paper cycle to completion and one to a partial unwind. The ledger holds a balanced economic event for each fill, hedge and unwind, each carrying the epoch. The cycle's net result computed from the ledger equals the result computed from the participants' journals."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": "Merges step 8's first clause with the ledger half of G §21.3 step 5; v2.1's list (intents, fills, hedges, outcomes) is the more specific. Journaling to the Fabric is split out as MESH-046, and step 8's drift clause as MESH-033. P0 because the ledger is financial truth (master Phase 0; GCP Phase 4). LIVE_CAPITAL is removed because recording is demonstrable in paper. NEW_DEPENDENCY is kept because v2.1 puts the central ledger in Spanner (ADR 0099 C4); until that record exists, the in-tree ledger is the target."
+  },
+  {
+    "id": "MESH-033",
+    "domain": "MESH",
+    "title": "Inventory drift left by a cycle becomes a rebalancing task",
+    "statement": "When a cycle leaves inventory drift behind, meaning holdings that are no longer where the placement wants them in each region or venue, that drift is raised as a treasury/capital rebalancing task citing the cycle's epoch.",
+    "rationale": "Completed cycles leave inventory wherever their legs happened to land. If nothing turns that drift into work, the next cycle starts from a position nobody chose, and pre-positioning (MESH-020) decays.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol, step 8 ('inventory drift becomes a treasury/capital rebalancing task')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A paper cycle that leaves +x in region A and -x in region B, relative to placement, raises exactly one rebalancing task that cites the epoch and both drifts. A cycle that leaves no drift raises no task."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "TREASURY"
+    ],
+    "notes": "Split from step 8. Carrying the task out is CAPITAL-020 (treasury rebalancing), which keeps LIVE_CAPITAL because it moves real holdings. The raw item's LIVE_CAPITAL is removed here: raising the task is fully demonstrable in paper, and ADR 0099 reserves the flag for requirements that cannot be met without live capital. P1 because treasury is master Phase 3, and drift from cycles begins in Phase 4."
+  },
+  {
+    "id": "MESH-034",
+    "domain": "MESH",
+    "title": "Every failed, declined, missed or partial cycle is counterfactually scored",
+    "statement": "Replay counterfactually scores every failed, declined, missed or partial cycle against what the alternative would have returned. The score records whether the coordination rule was too conservative.",
+    "rationale": "A coordination rule that declines too much never shows up as a loss. It shows up only as money not made, which only a counterfactual can see. Scoring every declined and missed cycle is how the platform learns whether its caution cost more than it saved.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol, step 9 ('Every failed/declined/partial cycle is counterfactually scored')"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.3 Multi-region arbitrage, step 5 ('replay evaluates missed/failed cycles and improves models')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "For a fixture of declined, failed, partial and missed paper cycles, replay from the log produces a counterfactual outcome for each, using only information available at decision time, and a verdict on whether the coordination rule was too conservative. Two runs give identical results."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "REPLAY",
+      "EVAL",
+      "MODEL"
+    ],
+    "notes": "Merges v11.6's list of cycles (failed, declined, partial) and its purpose (judging the coordination rule) with v2.1's 'missed' and 'improves models'. Feeding the scores into model improvement belongs to the learning loop, in MODEL and EVAL. The information-set rule comes from M §8.3's 'using the same information set available at that time' (M p15). NEW_DEPENDENCY (from the G item) is removed. The single-region precedent in-tree is Platform::score_declined and score_filled in the LEARN stage."
+  },
+  {
+    "id": "MESH-035",
+    "domain": "MESH",
+    "title": "Coordination latency, leg risk and unwind cost are priced into every opportunity",
+    "statement": "Before an opportunity is accepted, its value is reduced by the priced cost of three things: its coordination latency, its leg risk (the expected loss if some legs complete and others do not) and its unwind cost. An opportunity not priced for all three is not accepted.",
+    "rationale": "These three costs are what separate distributed arbitrage from the textbook version. Valuing an opportunity without them values it as if distant legs were atomic, which MESH-019 forbids.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol — physics boundary ('The platform must price coordination latency, leg risk and unwind cost into the opportunity')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Holding everything else fixed, increasing the coordination latency, a leg's failure probability or the unwind cost strictly lowers the opportunity's computed value. An opportunity whose value after all three falls below its epoch's minimum edge is declined."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": "The raw set stated this twice, once with all three costs and once with leg risk alone; the two are merged. The latency priced here is the one Lane 1 accepts explicitly (M p9, MESH-013). Candidate home: qip-edge::dispersion's dispersion-aware admission (worst-case unwind cost), extended to cover coordination latency."
+  },
+  {
+    "id": "MESH-036",
+    "domain": "MESH",
+    "title": "A cycle whose required guarantees cannot be achieved is rejected",
+    "statement": "When the guarantees a cycle requires cannot be achieved, the cycle is rejected. It is never executed as though it were riskless arbitrage.",
+    "rationale": "A cycle that needs a guarantee the physics or the venues cannot give has an undefined worst case. Rejecting it is the only option that stays inside the loss bound; trading it anyway is a bet presented as arbitrage.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§17.2 Cross-Region Execution Protocol — physics boundary ('When required guarantees cannot be achieved, the cycle is rejected rather than treated as riskless arbitrage')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A paper cycle whose configured reservation condition cannot be met within its TTL, or whose loss bound cannot be established, is rejected. The rejection is journaled with a reason naming the missing guarantee, and no leg is sent."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": "The blueprint does not list the 'required guarantees'. The ones this repository can check are the reservation condition (MESH-029), the TTL (MESH-022), the loss bound (MESH-009) and leg ordering (MESH-030). The phrase 'rather than treated as riskless' also supports MESH-019. The physics-boundary premise itself is quoted in MESH-019's rationale and is not counted as a requirement."
+  },
+  {
+    "id": "MESH-037",
+    "domain": "MESH",
+    "title": "2-20-leg arbitrage is an executable graph with reservation, coordination, hedging and unwind semantics",
+    "statement": "Complete target: 2-20-leg arbitrage is modeled as an executable graph with reservation, coordination, hedging and unwind semantics.",
+    "rationale": "This is the §31 test of the whole arbitrage capability. It asks for more than a scanner that finds cycles: the graph's cycles must be carried through reservation, FIRE, execution and recovery.",
+    "kind": "acceptance",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist ('2-20-leg arbitrage is modeled as an executable graph with reservations, coordination, hedging and unwind semantics')"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "In paper, against the simulated venues, run one 20-leg cycle spanning two or more regions through discovery, epoch, reservations, FIRE, leg execution, a forced partial fill with hedge/unwind, journal and ledger. Replaying it from the log reproduces every step."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REPLAY",
+      "LEDGER"
+    ],
+    "notes": "The composite acceptance test for MESH-004, MESH-005, MESH-008, MESH-010, MESH-012, MESH-023 to MESH-025 and MESH-029 to MESH-032. P2 because it is master Phase 5 (M p42, ARCH-035)."
+  },
+  {
+    "id": "MESH-038",
+    "domain": "MESH",
+    "title": "The Reflex Mesh runs on direct peer QUIC between regional Reflex Cells",
+    "statement": "The Reflex Mesh's primary runtime is a direct peer QUIC connection between regional Reflex Cells (Reflex Node to peer Reflex Node), in fast ephemeral mode.",
+    "rationale": "v2.1 chooses a transport that holds a connection open between fixed peers and multiplexes streams without TCP head-of-line blocking. Short bursts of coordination state crossing oceans need exactly those two properties.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture — plane table, Reflex Mesh row ('Direct peer QUIC between regional Reflex Cells')"
+      },
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§20 Critical Service-to-Service Connection Matrix — Reflex Node -> Peer Reflex Node ('Direct QUIC')"
+      },
+      {
+        "doc": "H",
+        "page": "L178-184",
+        "section": "§02 Regional Cell (edges) — Reflex Mesh Agent -> Other Regions ('direct QUIC/UDP/TCP')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two regional paper cells establish a direct QUIC connection between their Mesh agents with no intermediary hop, and coordination messages flow over it. Inspection of the deployment finds no proxy, broker or service-mesh sidecar on the path."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "NET",
+      "REFLEX"
+    ],
+    "notes": "Merges the runtime column of the plane table, the protocol column of the connection matrix and the diagram's Mesh-agent edge. The diagram lists 'QUIC/UDP/TCP' where v2.1 says QUIC. v2.1 is more specific and is taken; the diagram's UDP and TCP are read as permitted alternatives, not the primary transport. NEW_DEPENDENCY: a QUIC stack with its TLS 1.3 handshake is transport security. ADR 0009 forbids that in-tree and ADR 0002 permits no crate for it, which places it in ADR 0099 C2's transport-security class, so this requirement stays unmet until that record exists. The in-tree qip-transport speaks plaintext HTTP/1.1, and its module doc says production needs mutual TLS. The node-to-own-agent link is MESH-047 and the agent-to-agent topology is MESH-048."
+  },
+  {
+    "id": "MESH-039",
+    "domain": "MESH",
+    "title": "Cross-region Reflex and Fabric-mirror traffic uses a dedicated NCC mesh hub",
+    "statement": "Direct cross-region Reflex and Fabric-mirror traffic travels through a dedicated Network Connectivity Center hub in mesh topology. That hub is reserved for the Reflex and Fabric narrow prefixes and is separate from the service/data hub.",
+    "rationale": "Keeping the latency path on its own hub stops general service, data and inspection routing from being inserted into it. It also lets the path's routes stay as narrow as the peers it connects.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "5",
+        "section": "§5 Network and Connectivity Architecture — Latency mesh row ('Dedicated NCC mesh hub for Reflex/Fabric narrow prefixes')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "A plan for the three-region topology shows one NCC hub in mesh topology whose spokes are the regional Reflex and Fabric VPCs. It is distinct from the star/hybrid-inspection service/data hub, and no GKE, data or AI spoke is attached to it."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "NET",
+      "GCP"
+    ],
+    "notes": "Split from the Latency mesh row; its export rule is MESH-040. P1 because GCP Phase 7 lists the 'NCC latency mesh' (G p22). Under ADR 0099 C8, the three-region footprint first needs an owner cost decision, and execution_nodes = {} in every environment today."
+  },
+  {
+    "id": "MESH-040",
+    "domain": "MESH",
+    "title": "Only peer endpoints and ports are exported on the latency mesh",
+    "statement": "The latency mesh hub exports only the Reflex and Fabric peer endpoints and ports, as narrow prefixes, and nothing broader.",
+    "rationale": "Narrow export keeps the latency path from becoming a flat network between regions. A peer can reach only the peer ports it needs, which limits how far a compromised cell can reach.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "5",
+        "section": "§5 Network and Connectivity Architecture — Latency mesh row ('Only peer endpoints/ports are exported')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "A plan with the peer endpoint prefixes and ports is admitted and exports exactly those. A plan that adds a wider prefix, or a port outside the Mesh and Fabric-mirror set, is refused at validation. Together these show that the gate fires on a bad value and admits a good one."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "NET",
+      "SEC",
+      "GCP"
+    ],
+    "notes": "Split from the Latency mesh row. The check follows the infrastructure domain rule: a validation change must be shown both to fire on a bad value and to admit a good one."
+  },
+  {
+    "id": "MESH-041",
+    "domain": "MESH",
+    "title": "Mesh fan-out is bounded, and the Mesh scales by peer connections and opportunity domains",
+    "statement": "The Reflex Mesh scales by peer connections and opportunity domains. A node sends an update only to the peers in the opportunity domain it concerns, never to every node, and never beyond a configured fan-out bound.",
+    "rationale": "An all-to-all mesh grows quadratically with regions and venues, and its slowest link sets every node's latency. Bounding fan-out by opportunity domain keeps each update's cost proportional to the cycles that need it.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model — Reflex Mesh row ('peer connections / opportunity domains'; 'bound fan-out')"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Adding an opportunity domain adds connections only among that domain's members, and a node's update reaches exactly the members of the domain it concerns. A publish that would exceed the configured fan-out bound is refused. The benchmark reports fan-out per update."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "NET",
+      "REFLEX"
+    ],
+    "notes": "Split from the Reflex Mesh scaling row. Compressed-only exchange is MESH-027 and the message-size bound is MESH-042. The scale unit and the fan-out bound are kept together because the bound is stated per opportunity domain. v2.1 gives no figure, so the bound is configuration and must be recorded."
+  },
+  {
+    "id": "MESH-042",
+    "domain": "MESH",
+    "title": "Mesh message sizes are bounded",
+    "statement": "Every Reflex Mesh message has a bounded size. A message over the bound is refused by both the sender and the receiver.",
+    "rationale": "Without a bound, one oversized update can occupy a latency-critical link, and a faulty or hostile peer can exhaust a receiver's memory. Bounded working sets are a standing product decision.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model — Reflex Mesh row ('bound fan-out and message sizes')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A message exactly at the size bound encodes, sends and is accepted. The same message one byte over is refused at the sender, and a receiver fed an over-bound frame refuses it without allocating its declared length."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "SEC"
+    ],
+    "notes": "Split from the scaling row. It mirrors the bounded-body discipline qip-transport already applies to HTTP. v2.1 gives no figure."
+  },
+  {
+    "id": "MESH-043",
+    "domain": "MESH",
+    "title": "Each Reflex Cell computes its own local executable edges",
+    "statement": "Each Reflex Cell maintains its own local venue state, and from it computes the executable edges local to it, without any remote call.",
+    "rationale": "Only the cell next to a venue sees that venue's book fresh enough to price an executable edge. Everything the Mesh coordinates starts from these locally computed edges.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.3 Multi-region arbitrage, step 1 ('Each Reflex Cell maintains local venue state and computes local executable edges')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Given a local book fixture, a paper cell's executable edge states (rate at size, fees, fill probability) equal a reference computation. With every network interface except the venue feed disabled, the cell still produces them."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "MARKETDATA"
+    ],
+    "notes": "Publishing these edges to peers is MESH-027. LIVE_CAPITAL and MULTI_REGION (from the raw item) are removed: computing a cell's own edges commits no capital and needs no second region."
+  },
+  {
+    "id": "MESH-044",
+    "domain": "MESH",
+    "title": "Local reservations are bounded in amount and in time",
+    "statement": "The local reservations a coordinator or participant acquires for an epoch are bounded in two ways. In amount, each is no larger than its leg requires and stays within the node's capital grant. In time, none outlives its epoch: each is released when the epoch completes, is rejected, or reaches the end of its TTL.",
+    "rationale": "An unbounded reservation locks capital for an opportunity that may already be dead. Every other strategy in the region then trades against a smaller grant than it was given.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.3 Multi-region arbitrage, step 3 ('acquire bounded local reservations')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Across generated epochs, no reservation exceeds its leg's requirement or the node's remaining grant. After an epoch completes, is rejected or expires, its reservations are released, and the region's available capital returns to its prior value net of fills."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "CAPITAL",
+      "RISK"
+    ],
+    "notes": "Split from G §21.3 step 3. Its epoch-fencing clause is MESH-021, and its local-risk clause is MESH-045. v2.1 does not say what 'bounded' bounds. Amount (per leg and per grant) and lifetime (per epoch) are the two readings the rest of the protocol needs, and releasing on expiry is how MESH-022's TTL reaches the capital. Atomicity is MESH-004. These reservations sit inside ADR 0008's expiring, bounded CapitalEnvelope."
+  },
+  {
+    "id": "MESH-045",
+    "domain": "MESH",
+    "title": "Every leg executes under the sending node's local deterministic risk gate",
+    "statement": "Each leg of a distributed cycle executes under the local deterministic risk gate of the node that sends it, exactly as a local order would. A FIRE from a coordinator or a peer can neither bypass nor override that gate.",
+    "rationale": "FIRE can arrive after the market has moved. The last check before a leg becomes an order must be the local, deterministic one, which knows the node's current state, rather than the coordinator's view from before the move.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.3 Multi-region arbitrage, step 3 ('execute legs under local deterministic risk')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "After FIRE for a paper cycle, a leg that now breaches a local limit is refused by the sending node's gate, and the refusal enters the saga (MESH-008) as a failed leg. No message field a peer can set changes the gate's inputs or its outcome."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "RISK",
+      "EXEC"
+    ],
+    "notes": "Split from G §21.3 step 3. It complements MESH-028, which runs the gate before reservation, by checking each leg again at send time. Under the risk domain rule pre-trade checks are deterministic and never routed to a model, and qip-cost-router's Determinism::Required makes that structural. Candidate home: the Cell's existing pre-trade path, which every leg must pass like any ordinary order."
+  },
+  {
+    "id": "MESH-046",
+    "domain": "MESH",
+    "title": "Every intent, fill, hedge and outcome of a cycle is journaled to the Fabric",
+    "statement": "Every intent, fill, hedge and outcome of a distributed cycle is journaled to the Fabric by the node where it happened, and each entry carries the cycle's epoch.",
+    "rationale": "The Mesh keeps nothing (MESH-017), so the journal is the only place a distributed cycle can be reconstructed from. Every decision must be reproducible from the log alone.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.3 Multi-region arbitrage, step 5 ('All intents/fills/hedges/outcomes are journaled to Fabric')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Run a two-region paper cycle that includes a partial fill and a hedge. Each participant's Fabric journal then holds every intent, fill, hedge and outcome with the epoch, and replaying the journals alone reproduces the cycle's saga transitions and final state."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "FABRIC",
+      "REPLAY"
+    ],
+    "notes": "Split from G §21.3 step 5. The ledger half is MESH-032 and the replay-scoring half is MESH-034. NEW_DEPENDENCY is kept because v2.1's Reflex-to-Fabric link is QUIC/mTLS (G p19 §20), which falls under ADR 0099 C2. The current form is the in-tree journal, qip-edge::journal, which is hash-chained and flushed off the hot path."
+  },
+  {
+    "id": "MESH-047",
+    "domain": "MESH",
+    "title": "Each regional Reflex Cell reaches the Mesh through its own region's Mesh agent",
+    "statement": "Each regional Reflex Cell connects to its own region's Reflex Mesh agent over a hot-path link, and reaches peer regions only through that agent.",
+    "rationale": "With one agent per region, the cell has a single local hop for all peer coordination, and the region has a single place to bound, observe and cut its peer traffic.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L128-138",
+        "section": "§01 Global Platform Topology (edges am_reflex->am_mesh, eu_reflex->eu_mesh, ap_reflex->ap_mesh, class 'hot')"
+      },
+      {
+        "doc": "H",
+        "page": "L178-184",
+        "section": "§02 Regional Cell (edge node->mesh, class 'hot')"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The deployed topology shows each region's Reflex Cell connected, over a link classed as hot-path, to a Mesh agent in the same region. No cell is connected directly to another region's cell or agent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "NET"
+    ],
+    "notes": "NEW_DEPENDENCY (raw) is removed: the local link from cell to agent needs no crate beyond what the peer transport (MESH-038) already requires. The diagram draws the agent as a separate node. Whether it is a separate process or a module inside the Reflex node is a deployment choice the diagram does not settle."
+  },
+  {
+    "id": "MESH-048",
+    "domain": "MESH",
+    "title": "The three regional Mesh agents are linked directly, pairwise",
+    "statement": "The Americas, Europe and APAC Reflex Mesh agents are linked to each other directly and pairwise (Americas-Europe, Europe-APAC, APAC-Americas) over hot-path links. Any two regions therefore coordinate without relaying through the third.",
+    "rationale": "Relaying through a third region adds that region's latency and failure domain to a cycle that does not involve it. With pairwise links, losing one region leaves the other two able to coordinate directly.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L128-138",
+        "section": "§01 Global Platform Topology (edges am_mesh->eu_mesh, eu_mesh->ap_mesh, ap_mesh->am_mesh, class 'hot')"
+      },
+      {
+        "doc": "H",
+        "page": "L178-184",
+        "section": "§02 Regional Cell (edge mesh->peer 'Other Regions', class 'hot')"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "With three regional paper cells, each pair exchanges Mesh traffic over its own direct link. With one region removed, the remaining two still complete a two-region cycle, and none of its traffic touches the removed region."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "COST"
+    ],
+    "secondary_domains": [
+      "NET",
+      "RES"
+    ],
+    "notes": "The diagram draws a ring, which for three nodes is a full mesh. It does not say whether every pair stays linked as regions are added; v2.1's fan-out bounded by opportunity domain (MESH-041) suggests links follow domains rather than all pairs. NEW_DEPENDENCY is removed from both items because it belongs to the transport (MESH-038). COST is kept for the three-region footprint (ADR 0099 C8). G p22 §25's quarterly regional-loss game day covers the loss half."
+  }
+]

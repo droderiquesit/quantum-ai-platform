@@ -1,0 +1,525 @@
+[
+  {
+    "name": "qip-cost-router",
+    "path": "backend/crates/services/qip-cost-router",
+    "kind": "service",
+    "purpose": "Two things that are really one: a cost engine that converts data reads and compute work into the two self-charged deductions (ComputeCost, DataCost) NetEdge subtracts, and an intelligence-tier router (Router::select) that walks a 9-rung ladder from deterministic Rust to a solver and stops at the cheapest rung that is affordable, fast enough and strong enough. The ladder's bottom rung (Deterministic) is structurally the only one Determinism::Required can return, so a risk check can never be routed to a model.",
+    "key_contracts": [
+      "struct CostEngine, fn cost_deductions, fn charge_edge (src/engine.rs:37,60,80)",
+      "enum IntelligenceTier { LADDER: [Self; 9] } (src/tier.rs:28,60)",
+      "struct DecisionContext, fn validate (src/context.rs:210,255)",
+      "struct Router, fn select, fn assess, fn escalate (src/router.rs:384,441,410,526)",
+      "enum Routing, enum TierVerdict, enum Escalation (src/router.rs:268,94,361)",
+      "struct ComputeLedger, fn charge, fn charge_all (src/ledger.rs:60,146,183)",
+      "struct DataCostModel, fn charge (src/data.rs:132,176)",
+      "struct ModelReputation, struct ReputationBook, struct Judgement (src/reputation.rs:217,306,102) — unreached, see gaps",
+      "struct EscalationLimits, fn new (src/router.rs:337,345)"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-financial", "qip-agents", "qip-ai"],
+    "reached_from_production": "partial",
+    "production_evidence": "qip-kernel/src/platform.rs:120-125 imports ComputeLedger, Conditions, CostEngine, DataCostModel, DataReads, DecisionContext, Determinism, Horizon, IntelligenceTier, MarketRegime, Region, Router, Routing, TierCharge, VolatilityRegime and calls self.cost_router.select(&context) / .assess(PANEL, &context) at platform.rs:6549,6594 to decide whether the REASON-stage agent panel convenes. All four composition roots (qip-api, qip-cli, qip-fastbrain, qip-deepbrain main.rs) construct qip_kernel::Platform, which builds the Router (platform.rs field `cost_router: Router`). The reputation.rs module (ModelReputation/ReputationBook/Judgement/Rated — per-context model competence weighting) has zero references outside its own crate: `grep -rn \"ReputationBook\\|ModelReputation\\|Judgement\\b\" backend/crates/runtime/qip-kernel/src backend/crates/apps/*/src` matches only unrelated local enums (WalletJudgement, InvestmentJudgement) defined in platform.rs itself.",
+    "io_and_state": "No file, network or clock I/O. Every fn takes its inputs (Conditions, DecisionContext, Timestamp where needed) from the caller; no std::env, std::fs or SystemTime in src/. State (ComputeLedger, ReputationBook) is in-memory only, owned by whatever composes it — persistence is qip-events::EventLog in the kernel, not this crate.",
+    "tests": {
+      "count": 24,
+      "notable": [
+        "the_ladder_is_ordered_by_cost_latency_and_strength_at_once",
+        "exactly_one_rung_is_deterministic_and_it_is_the_bottom_one",
+        "an_edge_without_a_compute_and_data_cost_is_refused_by_name"
+      ]
+    },
+    "status": ["exists", "partial", "hardened", "blueprint-compatible"],
+    "status_reason": "The cost-charging and tier-routing halves are hardened and reached every cycle; the reputation/competence-weighting half (reputation.rs, 418 lines, ~1/5 of the crate) is fully implemented and tested but has no production caller anywhere in the kernel.",
+    "blueprint_capabilities": ["FINOPS", "MODEL", "GOV"],
+    "gaps_observed": [
+      "reputation.rs's ModelReputation/ReputationBook/Judgement/Rated (per-context model competence, Bayesian-shrunk) is exported from lib.rs but never constructed by qip-kernel or any app (src/reputation.rs:102,217,306)",
+      "No TODO/unimplemented!/panic! markers found in src/ (rg 'TODO|unimplemented!|todo!|panic!' returned nothing)"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-cost-router/src/lib.rs:1-40",
+      "backend/crates/services/qip-cost-router/src/reputation.rs:102,217,306",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:120-125,654,6549,6594",
+      "backend/crates/apps/qip-api/src/main.rs:30,228",
+      "backend/crates/apps/qip-cli/src/main.rs:32,147",
+      "backend/crates/apps/qip-fastbrain/src/main.rs:42,212",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:51"
+    ]
+  },
+  {
+    "name": "qip-evolution",
+    "path": "backend/crates/services/qip-evolution",
+    "kind": "service",
+    "purpose": "The evolution brain: a grammar writes candidate strategies over a declared feature vocabulary, a mutator turns a champion into challengers, a challenger test compares champion and challenger on the same out-of-sample window, and a winner walks the existing promotion ladder. Structurally defends against multiple-testing: Candidate has no public constructor (only a passed type-checker and cost bound produces one) and TrialLedger/TrialCount make the number of strategies tried a type rather than a number someone could forget to report.",
+    "key_contracts": [
+      "struct StrategyGenerator, fn generate (src/generate.rs:172,211)",
+      "struct Mutator, fn mutate (src/mutate.rs:178,205)",
+      "struct TrialLedger, struct ChallengerTest, fn evaluate (src/challenger.rs:96,350,366)",
+      "fn advance, fn advance_challenger, struct ChampionBook (src/promotion.rs:39,55,133)",
+      "struct Grammar, fn spec (src/grammar.rs:120,144)",
+      "struct Scoreboard (src/scoring.rs:265)",
+      "struct CostModelCalibration, fn propose_all (src/cost_model.rs:120,213)",
+      "struct FeatureScreen, fn screen (src/discovery.rs:158,179) — unreached, see gaps",
+      "struct AttributionLedger (src/attribution.rs:195) — unreached, see gaps"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-strategy", "qip-simulation-engine", "qip-lifecycle", "qip-numerics"],
+    "reached_from_production": "partial",
+    "production_evidence": "qip-kernel/src/central/foundry.rs:70-73 imports challenger::TrialLedger, generate::{Candidate, GenerationRun, StrategyGenerator}, grammar::Grammar, mutate::MutationRun and calls self.generator.generate(...) at foundry.rs:239. platform.rs holds a `claim_scores: qip_evolution::scoring::Scoreboard` field (platform.rs:899,4569) and observes outcomes into it (platform.rs:14622). qip-deepbrain/src/evolution.rs and src/succession.rs import promotion::* and cost_model::* and palette::*. discovery.rs (FeatureScreen, feature-candidate stability search) and attribution.rs (this crate's own cost-surprise AttributionLedger, distinct from qip-learning-engine's) have zero references outside qip-evolution's own tests: `grep -rn \"qip_evolution::discovery\\|qip_evolution::attribution\" backend --include='*.rs'` matches only files inside crates/services/qip-evolution/ itself.",
+    "io_and_state": "No file, network or clock I/O in src/. Xoshiro256 (deterministic, seeded) is the only randomness source. State (GenerationRun, TrialLedger, ChampionBook, Scoreboard) is in-memory, owned by whatever composes it (qip-kernel's central plane or qip-deepbrain's evolution loop).",
+    "tests": {
+      "count": 54,
+      "notable": [
+        "a_palette_refuses_a_subject_it_has_no_words_for",
+        "a_palette_offers_every_declared_feature_at_its_declared_type",
+        "a_generated_strategy_only_names_features_the_palette_declares"
+      ]
+    },
+    "status": ["exists", "partial", "hardened", "blueprint-compatible"],
+    "status_reason": "Generation, mutation, challenger-testing, promotion, grammar and cost-model calibration are hardened and reached from qip-deepbrain and qip-kernel's central plane. Feature discovery (discovery.rs) and the crate's own P&L-surprise attribution (attribution.rs) are fully implemented, tested, but never called outside the crate's own tests.",
+    "blueprint_capabilities": ["EXPAND", "MODEL", "EVID"],
+    "gaps_observed": [
+      "discovery::FeatureScreen (feature-candidate stability/selection-bar screening) has no caller outside qip-evolution/tests/evolution.rs (src/discovery.rs:158)",
+      "attribution::AttributionLedger (evolution's own cost-surprise ledger) has no caller outside qip-evolution/tests/evolution.rs (src/attribution.rs:195)",
+      "No TODO/unimplemented!/panic! markers found in src/"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-evolution/src/lib.rs:1-30",
+      "backend/crates/runtime/qip-kernel/src/central/foundry.rs:18,70-73,239",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:899,4569,14622,14638",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs",
+      "backend/crates/apps/qip-deepbrain/src/succession.rs"
+    ]
+  },
+  {
+    "name": "qip-learning-engine",
+    "path": "backend/crates/services/qip-learning-engine",
+    "kind": "service",
+    "purpose": "The LEARN stage: exact P&L attribution (Attribution::residual must be zero, enforced by construction), thesis grading that refuses to score before a claim's stated horizon closes and distinguishes RightForTheWrongReason from a real hit, calibration feedback and lesson candidates that need cross-episode/cross-agent support, and a bounded per-component self-model (SelfModel) the REASON stage weights on.",
+    "key_contracts": [
+      "struct Attribution, fn of, fn residual, fn identity_holds (src/attribution.rs:48,66,111,153)",
+      "struct Attributor, fn attribute (src/attribution.rs:371,386)",
+      "struct ThesisEvaluator, fn evaluate, fn evaluate_all (src/evaluation.rs:183,197,303)",
+      "enum Verdict { RightForTheWrongReason, ... } (src/evaluation.rs:77)",
+      "struct FeedbackEngine, fn calibrate, fn process (src/feedback.rs:185,199,351)",
+      "struct SelfModel, struct ComponentKey, const MINIMUM_SAMPLE (src/self_model.rs)",
+      "fn split_pro_rata (src/attribution.rs:266)"
+    ],
+    "workspace_deps": ["qip-core", "qip-ai"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:144-149 imports Attributor, evaluation::{ThesisClaim,...}, feedback::{CalibrationReport, FeedbackEngine, FeedbackReport}, self_model::{ComponentKey, SelfModel}. central/plane.rs:54 imports attribution::{Attribution, Attributor, PositionPeriod}. exploration.rs:95 and adversary_review.rs:131 use self_model::MINIMUM_SAMPLE to gate a venue/family review on sample size. falsification.rs:62,206,353,389 use evaluation::ThesisClaim. All four composition roots build Platform, which constructs and calls these paths in stage_learn (platform.rs:13828).",
+    "io_and_state": "No file, network or clock I/O in src/; every evaluation takes a Timestamp from the caller. State is in-memory (AttributionLedger-equivalent lives in the kernel, not here); this crate is pure computation over caller-supplied trades/evaluations.",
+    "tests": {
+      "count": 44,
+      "notable": [
+        "an_estimate_is_refused_below_the_minimum_sample_rather_than_reported_as_one_half",
+        "a_component_that_is_always_wrong_estimates_near_zero_and_one_always_right_near_one",
+        "the_window_is_bounded_and_keeps_the_newest_outcomes"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Every module (attribution, evaluation, feedback, self_model) is imported and called from qip-kernel's platform.rs LEARN stage and exploration/adversary review gates; no unreached module found.",
+    "blueprint_capabilities": ["EVID", "LEDGER", "REASON"],
+    "gaps_observed": [
+      "No TODO/unimplemented!/panic! markers found in src/"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-learning-engine/src/lib.rs:1-30",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:144-149,11631,14750-14752,21504",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:54",
+      "backend/crates/runtime/qip-kernel/src/exploration.rs:95",
+      "backend/crates/runtime/qip-kernel/src/adversary_review.rs:131",
+      "backend/crates/runtime/qip-kernel/src/falsification.rs:62,206,353,389"
+    ]
+  },
+  {
+    "name": "qip-opportunity-engine",
+    "path": "backend/crates/services/qip-opportunity-engine",
+    "kind": "service",
+    "purpose": "The DISCOVER stage: a registry of eight detectors (return, volatility, structural-break, regime, correlation-breakdown, liquidity, fundamental-observation, catalyst) each reporting a z-score and base rate rather than a boolean, ranked by importance x novelty so the fifth alert about the same instrument does not crowd out the first.",
+    "key_contracts": [
+      "struct OpportunityEngine, fn scan, fn new (src/engine.rs:47,93,65)",
+      "struct DetectorRegistry, fn standard (src/detector.rs, fn standard at line 923)",
+      "trait Detector, struct DetectionContext (src/detector.rs)",
+      "struct CatalystDetector (src/catalyst.rs)",
+      "struct Opportunity, struct OpportunityRank (src/opportunity.rs:95,67)",
+      "enum Investigation, fn estimated_cost (src/opportunity.rs:12,52)",
+      "fn supported_anomaly_kinds (src/engine.rs:334)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-events", "qip-financial"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:163-166 imports catalyst::MarketEvent, detector::{DetectionContext, DetectorRegistry}, engine::{EngineConfig, OpportunityEngine}, opportunity::Opportunity. platform.rs:4521 constructs `DetectorRegistry::standard()` (which registers CatalystDetector::default() among 8 detectors, per qip-opportunity-engine/src/detector.rs:923-937). stage_discover (platform.rs:10288) calls `self.opportunities.scan(&detection, &self.context)` at platform.rs:10412 every cycle, in all four composition roots.",
+    "io_and_state": "No file, network or clock I/O in src/; detectors operate on caller-supplied price/volume/spread/observation history and Timestamp. In-memory only.",
+    "tests": {
+      "count": 42,
+      "notable": [
+        "the_return_detector_finds_a_large_move_and_ignores_a_calm_series",
+        "the_return_detector_uses_robust_statistics",
+        "the_volatility_detector_finds_a_shift_in_dispersion"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Reached every DISCOVER pass via DetectorRegistry::standard(). One functional (not reach) gap: the registered CatalystDetector's ImpactHistory calibration data is never fed by qip-kernel, so it runs \"silent until its history has been fed\" per the crate's own comment.",
+    "blueprint_capabilities": ["TICK", "WORLD", "REASON"],
+    "gaps_observed": [
+      "CatalystDetector is registered and runs every cycle but its ImpactHistory is never constructed or fed by qip-kernel/platform.rs — `grep -n \"ImpactHistory\\|CatalystDetector\" backend/crates/runtime/qip-kernel/src/platform.rs` returns nothing besides the registry construction; detector.rs:933-935 documents this as by design (\"Silent until the context carries event visibility ... until its history has been fed\")",
+      "No TODO/unimplemented!/panic! markers found in src/"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-opportunity-engine/src/lib.rs:1-19",
+      "backend/crates/services/qip-opportunity-engine/src/detector.rs:923-937",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:163-166,4521,8752,8770,8781,8791,10288,10412"
+    ]
+  },
+  {
+    "name": "qip-optimization-engine",
+    "path": "backend/crates/services/qip-optimization-engine",
+    "kind": "service",
+    "purpose": "DECIDE: portfolio optimisation plus the compute router between classical and quantum solvers. ComputeRouter::solve always runs the classical path, tries a quantum path only where problem structure could justify it, and returns the quantum answer only when feasible and better than the classical one by a stated margin — a tie goes to classical (ADR 0006 enforced structurally). Also holds the three-level strategy decomposition: families (correlation clustering under stress), horizons (capital-pool reconciliation) and tiers/universe (evaluation cadence, alpha-family taxonomy).",
+    "key_contracts": [
+      "struct ComputeRouter, fn solve, fn classical, fn with_quantum (src/router.rs:196,290,204,219)",
+      "struct PortfolioProblem, fn to_qubo, fn to_quadratic_program (src/problem.rs:110,379,330)",
+      "struct RoutingDecision, fn measured_quantum_advantage (src/router.rs:96,131)",
+      "enum AlphaFamily { ALL: [Self;10] } (src/universe.rs:49,74)",
+      "enum AllocationRegime, fn stance, fn multiplier (src/regime.rs:63,207,240)",
+      "struct TierPlan, fn assign, const HOT_TIER_CAP (src/tiers.rs:200,217,56)",
+      "families/horizons modules: FamilyClustering::cluster, HorizonRegister::settle (src/families.rs, src/horizons.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-quantum"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-portfolio-engine/src/construction.rs:19-20,159,163,343,366 constructs PortfolioProblem and calls `self.router.solve(&problem)` inside PortfolioConstructor::size — the only place ComputeRouter::solve is actually invoked in non-test code. qip-kernel/src/platform.rs:167,4323 constructs the ComputeRouter (`ComputeRouter::classical(config.seed).with_policy(...)`, optionally `.with_quantum(...)`) and passes it into `PortfolioConstructor::new(config.mandate, router)` at platform.rs:4331 area. families/horizons/regime/tiers/universe are separately imported by qip-kernel's central/structure.rs, central/horizon.rs, regime_allocation.rs, adaptive_cadence.rs, asset_class_registry.rs, central/factory.rs.",
+    "io_and_state": "No file, network or clock I/O in src/. Quantum path goes through a qip-quantum QuantumProvider trait object (Arc<dyn QuantumProvider>) supplied by the caller — this crate performs no I/O itself. In-memory only.",
+    "tests": {
+      "count": 98,
+      "notable": [
+        "an_asymmetric_covariance_matrix_is_refused",
+        "a_negative_variance_is_refused",
+        "a_cardinality_beyond_the_asset_count_is_refused"
+      ]
+    },
+    "status": ["exists", "partial", "hardened", "blueprint-compatible"],
+    "status_reason": "The router/problem/families/horizons/regime/tiers/universe surface is hardened and reached from production through qip-portfolio-engine and qip-kernel. The crate's own module docs (lib.rs:93-121) name two specific unfed seams: CentralPlane::issue (in qip-kernel, feeds family_structure) has no production caller, and family_horizons/family_horizons_settled have no caller outside tests because no composition root attaches a HorizonAssurance to the LifecycleLedger yet.",
+    "blueprint_capabilities": ["CAPITAL", "QUANT", "ASSET"],
+    "gaps_observed": [
+      "lib.rs:93-95: \"CentralPlane::issue has no production caller — every call site is a test. Until a deployed process issues a grant, the calendar is empty, family_structure returns None\" (src/lib.rs:93-95)",
+      "lib.rs:116-121: \"family_horizons and family_horizons_settled still have no caller outside tests\" and \"no composition root attaches one [HorizonAssurance] yet, so in a deployment the gate is wired and unfed\" (src/lib.rs:110-121)"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-optimization-engine/src/lib.rs:1-40,93-121",
+      "backend/crates/services/qip-portfolio-engine/src/construction.rs:19-20,159,163,343,366",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:167,4323",
+      "backend/crates/runtime/qip-kernel/src/central/structure.rs:99",
+      "backend/crates/runtime/qip-kernel/src/central/horizon.rs:76-77",
+      "backend/crates/runtime/qip-kernel/src/regime_allocation.rs:43",
+      "backend/crates/runtime/qip-kernel/src/adaptive_cadence.rs:50-51"
+    ]
+  },
+  {
+    "name": "qip-prediction",
+    "path": "backend/crates/services/qip-prediction",
+    "kind": "service",
+    "purpose": "A prediction/event-market engine: structured resolution criteria distinct from prose, price-vs-probability spread bands, oracle dispute/settlement state machines, complete-set arbitrage sized against actual book depth, and Brier-score comparison of platform vs market probability. Distinct from a full venue integration, which the crate declares (VenueApiAdapter) but does not implement.",
+    "key_contracts": [
+      "enum ResolutionCriteria, fn evaluate (src/resolution.rs:115,148)",
+      "struct EventMarket, fn evaluate (src/market.rs:333,429) — tests-only, see gaps",
+      "struct MarketResolution, fn settle, trait Oracle, struct ScriptedOracle (src/oracle.rs:160,354,388,403) — tests-only",
+      "trait PredictionAdapter, struct SyntheticPredictionVenue, struct VenueApiAdapter (src/adapter.rs:71,205,403) — tests-only, no production venue",
+      "fn set_arbitrage, struct SetArbitrage (src/arbitrage.rs) — tests-only",
+      "fn compare, fn brier_score, struct ScoredForecast (src/scoring.rs) — tests-only",
+      "fn implied_from_ask, fn implied_from_bid, struct ProbabilityBand (src/pricing.rs) — tests-only",
+      "struct CrossMarketPair, struct CrossVenueArbitrage (src/cross.rs) — tests-only"
+    ],
+    "workspace_deps": ["qip-core", "qip-market", "qip-contracts"],
+    "reached_from_production": "partial",
+    "production_evidence": "Only the `resolution` module is reached: qip-kernel/src/falsification.rs:62 imports resolution::{Comparison, ResolutionCriteria} and platform.rs:171 imports resolution::{...} for hypothesis-falsification (grading REASON-stage claims against real-world observations), used in falsification.rs:206,353,389. Every other module — market, oracle, adapter, arbitrage, cross, pricing, scoring — has zero references outside qip-prediction's own tests: `grep -rln \"qip_prediction::market\\|qip_prediction::oracle\\|qip_prediction::adapter\\|qip_prediction::arbitrage\\|qip_prediction::cross\\|qip_prediction::pricing\\|qip_prediction::scoring\" backend --include='*.rs'` returns nothing. VenueApiAdapter::is_available() is `endpoint_present && credential_present`, both supplied only by the composition root, and no composition root constructs it (`grep -rln \"VenueApiAdapter\" backend/crates/apps` returns nothing).",
+    "io_and_state": "No file, network or clock I/O in src/; adapter.rs declares the venue port but its real implementation (VenueApiAdapter) is unimplemented I/O — every call is documented to return qip_core::Error::Unavailable (adapter.rs:11). SyntheticPredictionVenue is deterministic (seeded RNG), in-memory only.",
+    "tests": {
+      "count": 46,
+      "notable": [
+        "a_platform_closer_to_every_outcome_than_the_market_scores_better_with_a_negative_difference",
+        "a_market_closer_to_every_outcome_than_the_platform_wins_the_comparison_so_it_is_not_rigged",
+        "a_market_quote_known_after_the_platform_formed_its_probability_is_refused_as_leakage"
+      ]
+    },
+    "status": ["exists", "partial", "tests-only", "blueprint-compatible", "requires-migration"],
+    "status_reason": "The crate is a workspace dependency of qip-kernel (added per the Cargo.toml comment listing \"eleven service crates... until this change, reachable from no deployable binary\"), but only its resolution-criteria vocabulary is actually called; the entire prediction-market trading engine (markets, oracles, adapters, arbitrage, pricing, scoring) never runs in a deployed process — it is exercised only by the crate's own test suite.",
+    "blueprint_capabilities": ["COMMERCE", "EVID", "ASSET"],
+    "gaps_observed": [
+      "adapter.rs:11 (doc): \"No prediction venue is reachable from this build. VenueApiAdapter is declared so the shape of a real integration is reviewed, and every call returns qip_core::Error::Unavailable\"",
+      "market.rs, oracle.rs, adapter.rs, arbitrage.rs, cross.rs, pricing.rs, scoring.rs (9 of 9 non-resolution modules, ~3050 of ~3114 src lines) have no caller outside crates/services/qip-prediction/tests/",
+      "SyntheticPredictionVenue (the only working adapter) is also never constructed outside tests — no fixture or demo path wires a prediction market into a running cycle"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-prediction/src/lib.rs:1-32",
+      "backend/crates/services/qip-prediction/src/adapter.rs:1-13,400-424",
+      "backend/crates/runtime/qip-kernel/src/falsification.rs:62,206,353,389",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:24,171",
+      "backend/crates/runtime/qip-kernel/Cargo.toml (comment above the ten crates incl. qip-prediction)"
+    ]
+  },
+  {
+    "name": "qip-reasoning-engine",
+    "path": "backend/crates/services/qip-reasoning-engine",
+    "kind": "service",
+    "purpose": "The REASON stage: Bayesian belief update from named evidence (bayes::update), causal-chain hypothesis synthesis, and a twelve-challenge red-team review every hypothesis must survive before it counts as actionable. Also carries the one hosted-LLM adapter in the platform (providers::huggingface), used as an optional additional voice rather than a required one.",
+    "key_contracts": [
+      "struct ReasoningEngine, fn reason, fn red_team (src/engine.rs:108,165,137)",
+      "struct SynthesisInput, struct ReasoningOutcome, fn is_actionable (src/engine.rs:30,60,74)",
+      "struct RedTeam, struct ReviewPolicy, fn review (src/redteam.rs:252,164,292)",
+      "fn update (bayes), struct BeliefUpdate, struct EvidenceStrength (src/bayes.rs)",
+      "struct BeliefState (src/belief.rs:70-ish)",
+      "struct HuggingFaceModel, struct HuggingFaceConfig, const HF_TOKEN_VARIABLE (src/providers/huggingface.rs:250,147,63)",
+      "struct Claim, struct CausalChain (src/hypothesis.rs)"
+    ],
+    "workspace_deps": ["qip-core", "qip-agents", "qip-world-model", "qip-ai", "qip-transport"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:176-177 imports engine::{ReasoningEngine, ReasoningOutcome} and hypothesis::Claim; platform.rs:4519 constructs `ReasoningEngine::new(config.review)`; stage_reason (platform.rs:10794) drives it via SynthesisInput/Evidence/CausalChain at platform.rs:12282-12285. config.rs:19,254 wires redteam::ReviewPolicy into PlatformConfig. The HuggingFace adapter is separately, conditionally reached: qip-deepbrain/src/language.rs:193-217 constructs HuggingFaceConfig::new(...) and HuggingFaceModel::new(adapter_config, hosted.token.clone()) only when config.language_model is Some and a precondition (endpoint + token present) is met; otherwise a deterministic-only FallbackChain is used.",
+    "io_and_state": "providers/huggingface.rs performs blocking HTTP via qip_transport::HttpClient (src/providers/huggingface.rs:51,513) to the egress-proxy's `huggingface` listener (127.0.0.1) with an explicit ClientLimits deadline (DEFAULT_DEADLINE = 60s); no TLS in-crate by design, per the data-and-streaming domain rule. All other modules are pure in-memory computation with no I/O.",
+    "tests": {
+      "count": 60,
+      "notable": [
+        "log_odds_round_trips",
+        "no_finite_evidence_drives_a_belief_to_certainty",
+        "correlated_evidence_moves_a_belief_less_than_independent_evidence"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Core reasoning (bayes/belief/hypothesis/evidence/redteam/engine) is hardened and reached every REASON pass in all four composition roots. The HuggingFace LLM adapter is real, tested and wired into qip-deepbrain, but only activates when a language-model credential and endpoint are both configured — by default it falls back to the deterministic-only chain.",
+    "blueprint_capabilities": ["REASON", "EVID", "MODEL"],
+    "gaps_observed": [
+      "No TODO/unimplemented!/panic! markers found in src/",
+      "HuggingFaceModel activation is conditional on QIP_HF_TOKEN and a configured base_url; with neither present the chain is deterministic-only, so the hosted-model voice is not guaranteed present in any given deployment (qip-deepbrain/src/language.rs:184-192)"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-reasoning-engine/src/lib.rs:1-30",
+      "backend/crates/services/qip-reasoning-engine/src/providers/huggingface.rs:11-19,51,513",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:176-177,4519,12217,12282-12285",
+      "backend/crates/runtime/qip-kernel/src/config.rs:19,254,536",
+      "backend/crates/apps/qip-deepbrain/src/language.rs:180-225",
+      "backend/crates/apps/qip-deepbrain/src/config.rs:118,454,467-468"
+    ]
+  },
+  {
+    "name": "qip-simulation-engine (core: market, execution, backtest, agents, costs, scenario, harness, clock, venue, conditions)",
+    "path": "backend/crates/services/qip-simulation-engine",
+    "kind": "service",
+    "purpose": "The SIMULATE stage's core: point-in-time market replay (MarketSimulator/SimulationRun) that refuses lookahead by construction, an order book/matching layer (SimBook, venue.rs), transaction cost modelling, adversarial/causal stress scenarios (StressTester), and a compiled-strategy backtest harness the evolution brain scores candidates against.",
+    "key_contracts": [
+      "struct MarketSimulator, struct SimulationRun (src/market.rs:541,328)",
+      "struct Backtester, struct BacktestResult (src/backtest.rs:264)",
+      "struct SimOrder, struct ExecutionReport (src/execution.rs:37)",
+      "struct CounterpartyAgent (src/agents.rs:293)",
+      "struct CostModel, struct TradeCost (src/costs.rs:94)",
+      "struct Scenario, struct StressTester (src/scenario.rs:47,317)",
+      "struct CompiledHarness, const WARM_UP_BARS (src/harness.rs:169)",
+      "struct SimulationClock (src/clock.rs:167)",
+      "struct SimBook, enum VenueHealth (src/venue.rs:199)",
+      "struct ConditionSchedule, enum FeedFault (src/conditions.rs:534)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-financial", "qip-market", "qip-portfolio", "qip-risk", "qip-strategy", "qip-contracts"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/platform.rs:184-190 imports agents::CounterpartyAgent, costs::CostModel, execution::SimOrder, market::{...}, scenario::{...}, and stage_simulate (platform.rs:12559) drives them. qip-deepbrain/src/evolution.rs:53-56 imports backtest::{BacktestConfig, Backtester}, clock::{ExecutionAssumptions, SimulationClock}, harness::{CompiledHarness, WARM_UP_BARS, bar_catalogue}, and qip-deepbrain/src/succession.rs also imports harness. venue.rs and conditions.rs have no direct external import but are used internally by market.rs/execution.rs/agents.rs (`grep -rln \"venue::\\|conditions::\" src` shows callers inside the crate), which are themselves reached.",
+    "io_and_state": "No file, network or real-wall-clock I/O; SimulationClock is a caller-driven point-in-time view, not std::time. In-memory only; a backtest's fills/results are returned to the caller, not persisted by this crate.",
+    "tests": {
+      "count": 122,
+      "notable": [
+        "a_view_shows_only_bars_that_had_closed",
+        "a_bar_does_not_exist_until_its_session_ends",
+        "a_perfect_foresight_strategy_cannot_be_expressed"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "The largest src/ tree of the ten crates (~9,470 lines across 15 files); this sub-record covers the ~10 modules reached every SIMULATE pass and by qip-deepbrain's evolution/succession loops. See the sibling sub-records for validation (reached) and baseline+montecarlo (not reached).",
+    "blueprint_capabilities": ["WORLD", "RISK", "EXEC"],
+    "gaps_observed": [
+      "No TODO/unimplemented!/panic! markers found in src/ (one panic! exists but is inside a #[cfg(test)] fn, src/tiers.rs analogue not applicable here — see qip-optimization-engine)"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-simulation-engine/src/lib.rs:1-30",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:184-190,9272,12516,12559",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:53-56",
+      "backend/crates/apps/qip-deepbrain/src/succession.rs"
+    ]
+  },
+  {
+    "name": "qip-simulation-engine::validation",
+    "path": "backend/crates/services/qip-simulation-engine/src/validation.rs",
+    "kind": "service",
+    "purpose": "Purged k-fold cross-validation with an embargo, walk-forward evaluation, deflated Sharpe (correcting for the number of trials), and an overfitting-probability assessment — the statistical discipline that keeps evolved-strategy promotion from laundering multiple testing.",
+    "key_contracts": [
+      "struct DeflatedSharpe, fn deflated_sharpe (src/validation.rs:29,96)",
+      "struct PurgedSplit (src/validation.rs:210)",
+      "struct WalkForward (src/validation.rs:292)",
+      "fn assess_overfitting, struct OverfittingReport (src/validation.rs:392)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-kernel/src/family_review.rs:162 imports validation::deflated_sharpe and family_review.rs:339 returns a qip_simulation_engine::validation::DeflatedSharpe. qip-kernel/src/central/learning.rs:69 imports validation::assess_overfitting. qip-deepbrain/src/evolution.rs:56 imports validation::PurgedSplit for the challenger fold split.",
+    "io_and_state": "No I/O; pure statistics over caller-supplied return series.",
+    "tests": {
+      "count": 3,
+      "notable": [
+        "(approximate: validation-specific assertions live inside tests/simulation.rs, which mixes several modules; rg for deflated/purged/walk_forward/overfitting test fns found 3 directly named)"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Reached from qip-kernel's family review, central learning, and qip-deepbrain's evolution loop — the ADR-0006-style discipline this module exists to enforce for strategy promotion actually runs.",
+    "blueprint_capabilities": ["EVID", "RISK"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/services/qip-simulation-engine/src/validation.rs:29,96,210,292,392",
+      "backend/crates/runtime/qip-kernel/src/family_review.rs:63,162,339",
+      "backend/crates/runtime/qip-kernel/src/central/learning.rs:69",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:56"
+    ]
+  },
+  {
+    "name": "qip-simulation-engine::baseline+montecarlo",
+    "path": "backend/crates/services/qip-simulation-engine/src/{baseline,montecarlo}.rs",
+    "kind": "service",
+    "purpose": "baseline.rs runs regime-conditional allocation and the same sizing with the regime term removed on one pre-declared holdout, every cycle, applying ADR 0006's classical-baseline discipline to the regime-allocation path specifically (RegimeComparison). montecarlo.rs is a general Monte Carlo path generator with precision reporting on its own estimates (MonteCarlo, Distribution, Generator).",
+    "key_contracts": [
+      "struct RegimeComparison, fn size (src/baseline.rs:253,209)",
+      "struct SplitDeclaration, struct ComparisonPolicy (src/baseline.rs)",
+      "struct MonteCarlo, trait Distribution, struct Generator (src/montecarlo.rs:118)"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics"],
+    "reached_from_production": "tests-only",
+    "production_evidence": "`grep -rln \"qip_simulation_engine::baseline\\|qip_simulation_engine::montecarlo\" backend --include='*.rs'` matches only backend/crates/services/qip-simulation-engine/src/lib.rs (the re-export) and the crate's own tests/baseline.rs and tests/simulation.rs. Internal cross-module callers inside qip-simulation-engine itself are also absent (`grep -rln \"baseline::\\|montecarlo::\" src` outside lib.rs returns nothing) — unlike venue.rs/conditions.rs, these two modules are not even used by the crate's own other modules.",
+    "io_and_state": "No I/O; pure computation.",
+    "tests": {
+      "count": 10,
+      "notable": [
+        "(8 in tests/baseline.rs; 2 Monte Carlo tests inside tests/simulation.rs: a_monte_carlo_reports_the_precision_of_its_own_estimates, a_monte_carlo_with_too_few_paths_is_refused)"
+      ]
+    },
+    "status": ["exists", "tests-only", "unused", "blueprint-compatible", "requires-migration"],
+    "status_reason": "Fully implemented and tested but neither module is constructed by qip-kernel, qip-deepbrain, or any other app/service in this workspace outside the crate's own test suite.",
+    "blueprint_capabilities": ["RISK", "WORLD"],
+    "gaps_observed": [
+      "RegimeComparison (the ADR-0006-style baseline discipline applied to regime allocation) has no production caller: `grep -rln qip_simulation_engine::baseline backend --include='*.rs'` matches only lib.rs and the crate's own tests",
+      "MonteCarlo/Distribution/Generator likewise have no production caller"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-simulation-engine/src/lib.rs:1-11,52-64",
+      "backend/crates/services/qip-simulation-engine/src/baseline.rs:209,253",
+      "backend/crates/services/qip-simulation-engine/src/montecarlo.rs:118"
+    ]
+  },
+  {
+    "name": "qip-training (local: cadence, dataset, distill, estimators, local, serve)",
+    "path": "backend/crates/services/qip-training",
+    "kind": "service",
+    "purpose": "Model training, distillation and drift monitoring that actually run in a deployed process: TrainingDataset::select builds purge-width-aware folds, distil compresses a trained model into a DistilledModel (the strategy IR the hot path evaluates), StreamingDrift/FeatureEstimators track population drift with a floor, and InTreeProvider puts the in-tree distilled model behind qip_ai::serving::ModelProvider for serving.",
+    "key_contracts": [
+      "struct TrainingDataset (src/dataset.rs)",
+      "fn distil, struct Distillation, struct FidelityPolicy (src/distill.rs)",
+      "struct StreamingDrift, const DRIFT_BUCKETS, struct FeatureEstimators (src/estimators.rs)",
+      "struct LocalTrainer, struct TrainedTeacher, struct SkillPolicy (src/local.rs)",
+      "struct InTreeProvider, fn pack, fn pack_distilled (src/serve.rs:221,229,249)",
+      "struct TrainingCadence (src/cadence.rs)",
+      "struct TrainingSpec (src/job.rs:31) — only this one type from job.rs is used in production"
+    ],
+    "workspace_deps": ["qip-core", "qip-numerics", "qip-ai", "qip-strategy", "qip-quant", "qip-transport"],
+    "reached_from_production": "yes",
+    "production_evidence": "qip-apps/qip-deepbrain/src/main.rs:229 and qip-apps/qip-api/src/main.rs:234 both construct `Box::new(qip_training::serve::InTreeProvider)`. qip-deepbrain/src/learning.rs:133-138 imports dataset::TrainingDataset, distill::{Distillation, FidelityPolicy, StudentForm, distil}, estimators::{DRIFT_BUCKETS, FeatureEstimators, StreamingDrift, degraded_models}, job::TrainingSpec, local::{LocalTrainer, ModelFamily, SkillPolicy, TrainedTeacher}, serve::InTreeProvider, and calls InTreeProvider::pack at learning.rs:839. qip-kernel/src/feature_statistics.rs:56 imports estimators::{DRIFT_BUCKETS, FeatureEstimators, FeatureSummary, StreamingDrift}. qip-kernel/src/central/models.rs:44 imports local::{SkillPolicy, TrainedTeacher}.",
+    "io_and_state": "No file or network I/O in this half; StreamingDrift/dataset are pure in-memory statistics over caller-supplied series. serve.rs packs a TrainedTeacher into a ModelArtifact in-memory (no filesystem write).",
+    "tests": {
+      "count": 62,
+      "notable": [
+        "(50 in tests/training.rs covering dataset/distill/estimators/local/cadence/job; 12 in tests/serving.rs covering serve.rs/InTreeProvider)"
+      ]
+    },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Reached from both qip-deepbrain and qip-api composition roots; the local-training and in-tree-serving path is the one that actually runs, distinct from the Vertex managed-training port (see sibling sub-record).",
+    "blueprint_capabilities": ["MODEL", "EXPAND"],
+    "gaps_observed": [
+      "job.rs's TrainingProvider trait, TrainingJob, JobState and run_to_completion (the job-polling orchestration abstraction meant to unify local and managed-cloud training) has no production caller at all — `grep -n \"TrainingProvider\\|run_to_completion\\|TrainingJob\\b\" backend/crates/apps/qip-deepbrain/src/learning.rs` returns nothing; production code imports only job::TrainingSpec, bypassing the port entirely and calling LocalTrainer/distil directly"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-training/src/lib.rs:1-30",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:229",
+      "backend/crates/apps/qip-api/src/main.rs:234",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:133-138,839",
+      "backend/crates/runtime/qip-kernel/src/feature_statistics.rs:20-22,56",
+      "backend/crates/runtime/qip-kernel/src/central/models.rs:44"
+    ]
+  },
+  {
+    "name": "qip-training::vertex",
+    "path": "backend/crates/services/qip-training/src/vertex.rs",
+    "kind": "service",
+    "purpose": "The managed-training provider port: VertexAiProvider implements job.rs's TrainingProvider trait over Vertex AI's JSON REST API via qip_transport::HttpClient, carrying WorkloadIdentityBinding (no downloaded service-account keys) and reconciling job state from what Vertex actually reports rather than what was submitted.",
+    "key_contracts": [
+      "struct VertexAiProvider, fn connected, fn with_credentials (src/vertex.rs:389,439,425)",
+      "struct VertexAiConfig, struct VertexWorkload, struct WorkloadIdentityBinding (src/vertex.rs:94,115,179)",
+      "struct VertexTransport (src/vertex.rs:281)",
+      "fn reconcile, fn abandon_unresolved (src/vertex.rs:839,903)",
+      "fn production_requirements, fn requirement (src/vertex.rs:560,590)"
+    ],
+    "workspace_deps": ["qip-core", "qip-transport"],
+    "reached_from_production": "tests-only",
+    "production_evidence": "`grep -rn \"VertexAiProvider\" backend --include='*.rs'` matches only backend/crates/services/qip-training/src/lib.rs (the re-export), src/job.rs (a doc comment), and backend/crates/services/qip-training/tests/vertex.rs + tests/training.rs. No app main.rs or qip-kernel source constructs it; the only production Vertex reference is a comment in qip-deepbrain/src/openobserve.rs naming Vertex as one of the hosts an egress proxy would need to reach, not a construction site.",
+    "io_and_state": "Blocking HTTP via qip_transport::HttpClient (src/vertex.rs:84,399,416,451) to Vertex's JSON REST API, http not https by design (needs a TLS-terminating egress proxy in front, per src/vertex.rs:285,562 and the data-and-streaming domain rule). No filesystem or environment I/O in this crate (credentials/workload identity are passed in by the composition root).",
+    "tests": {
+      "count": 16,
+      "notable": [
+        "a_submitted_job_reports_the_state_vertex_stated_and_nothing_else",
+        "a_submit_the_service_never_answers_is_unresolved_rather_than_succeeded",
+        "a_poll_that_cannot_be_read_leaves_the_last_stated_state_untouched"
+      ]
+    },
+    "status": ["exists", "tests-only", "unused", "blueprint-compatible", "requires-migration"],
+    "status_reason": "A complete, carefully-tested managed-training adapter (1,380 src lines, largest file in the crate) with zero production callers; no composition root wires it up, so the platform's managed-cloud training path never runs outside the test suite.",
+    "blueprint_capabilities": ["MODEL", "GCP", "EXPAND"],
+    "gaps_observed": [
+      "VertexAiProvider is never constructed by qip-deepbrain, qip-api, or qip-kernel — only InTreeProvider (local training) is wired into production (see qip-training local sub-record)",
+      "job.rs's TrainingProvider port itself (which Vertex implements) also has no production caller, so there is no wiring in place to switch between local and managed training even if Vertex were constructed"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-training/src/vertex.rs:5,53,84,285,389,399,416,439,451,562",
+      "backend/crates/services/qip-training/src/job.rs:5,197",
+      "backend/crates/services/qip-training/tests/vertex.rs:28,93,99,542,671",
+      "backend/crates/apps/qip-deepbrain/src/openobserve.rs:24"
+    ]
+  },
+  {
+    "name": "qip-twin",
+    "path": "backend/crates/services/qip-twin",
+    "kind": "service",
+    "purpose": "The counterfactual digital twin: point-in-time market replay (TwinMarket/DecisionView) and a CounterfactualEngine that prices the alternatives a decision did not take, with type-level taint (Simulated<T>) that has no Add impl against a real Decimal and no accessor to unwrap it, so a simulated P&L cannot be reported as an actual one.",
+    "key_contracts": [
+      "struct TwinMarket, fn view_at (src/asof.rs:54,109)",
+      "struct OutcomeCapture, struct Decision, struct RealisedOutcome (src/capture.rs:442,284,201)",
+      "struct CounterfactualEngine, fn plan, fn settle, fn evaluate (src/counterfactual.rs:494,544,639,818)",
+      "enum Alternative, struct AlternativeMenu (src/counterfactual.rs:48,117)",
+      "struct Simulated<T>, fn as_f64_for_statistics (src/value.rs:43,69)",
+      "struct LearningRecord, fn to_json, fn from_json (src/record.rs:115,234,242) — unreached, see gaps",
+      "struct RegretAnalysis, struct AlternativeRegret (src/regret.rs:99,36) — unreached, see gaps"
+    ],
+    "workspace_deps": ["qip-core", "qip-contracts", "qip-numerics", "qip-financial", "qip-market", "qip-simulation-engine", "qip-learning-engine"],
+    "reached_from_production": "partial",
+    "production_evidence": "qip-kernel/src/platform.rs:201-206 imports asof::TwinMarket, capture::{Action, Decision, OutcomeCapture, RealisedOutcome}, counterfactual::{...}, value::Simulated — all used through platform.rs (e.g. Simulated referenced at platform.rs:16209,16211). rule_review.rs:41 and precedent_declines.rs:165 import value::Simulated. record.rs (LearningRecord, the persisted/JSON-serialisable outcome record) and regret.rs (RegretAnalysis/AlternativeRegret, systematic-regret detection across alternatives) have no caller anywhere outside qip-twin's own tests/twin.rs — not even internally from capture.rs or counterfactual.rs (`grep -rln \"record::\\|regret::\" src` outside their own files and lib.rs returns nothing).",
+    "io_and_state": "No file, network or clock I/O in src/; LearningRecord::to_json/from_json round-trip a string but do not write to disk themselves. All state is in-memory, owned by whatever composes it.",
+    "tests": {
+      "count": 30,
+      "notable": [
+        "a_simulated_figure_and_a_realised_one_are_totalled_separately",
+        "the_taint_on_a_simulated_figure_survives_serialization",
+        "planning_an_alternative_against_a_later_market_is_refused_and_names_the_leak"
+      ]
+    },
+    "status": ["exists", "partial", "hardened", "blueprint-compatible"],
+    "status_reason": "asof/capture/counterfactual/value are hardened and reached every cycle via qip-kernel's platform.rs. record.rs and regret.rs (LearningRecord, RegretAnalysis) are fully implemented and tested but have zero callers, internal or external, outside the crate's own tests.",
+    "blueprint_capabilities": ["EVID", "WORLD", "LEDGER"],
+    "gaps_observed": [
+      "record::LearningRecord (the JSON-serialisable persisted decision/outcome record, with_attribution/validate/to_json/from_json) has no caller outside crates/services/qip-twin/tests/twin.rs, not even internally (src/record.rs:115,174,197,234,242)",
+      "regret::RegretAnalysis/AlternativeRegret (systematic-regret-across-alternatives analysis) likewise has no caller outside the crate's own tests (src/regret.rs:36,99,113)"
+    ],
+    "evidence": [
+      "backend/crates/services/qip-twin/src/lib.rs:1-30",
+      "backend/crates/services/qip-twin/src/record.rs:115,174,197,234,242",
+      "backend/crates/services/qip-twin/src/regret.rs:36,99,113",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:29,201-206,16209,16211",
+      "backend/crates/runtime/qip-kernel/src/rule_review.rs:41",
+      "backend/crates/runtime/qip-kernel/src/precedent_declines.rs:165"
+    ]
+  }
+]

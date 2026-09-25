@@ -1,0 +1,2689 @@
+[
+  {
+    "name": "ci.yml",
+    "path": ".github/workflows/ci.yml",
+    "kind": "ci",
+    "purpose": "The gate workflow: fourteen jobs, ordered cheapest-first, run on every push to main/claude/** and every PR into main; every job is a hard failure with no warning suppressed.",
+    "key_contracts": [
+      "format: cargo fmt --all --check (backend/)",
+      "lint: cargo clippy --workspace --all-targets --all-features -D warnings (backend/)",
+      "test: cargo test --workspace --all-features --no-fail-fast (backend/)",
+      "release-build: cargo build --workspace --release --locked",
+      "dependency-policy: ./scripts/check-dependencies.sh",
+      "security-audit: cargo audit --deny warnings",
+      "dependency-supply-chain: cargo deny check (backend/deny.toml)",
+      "sbom: cargo cyclonedx --format json --all, uploaded as artifact",
+      "frontend-portal: npm ci, tokens:check, tsc --noEmit, lint, build, playwright (frontend/portal)",
+      "frontend-landing: npm ci, build, playwright (frontend/landing)",
+      "trivy: trivy fs --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed over the whole tree",
+      "trunk: trunk-io/trunk-action (actionlint+shellcheck+hadolint+gitleaks, scoped by .trunk/trunk.yaml)",
+      "infrastructure: terraform fmt/validate, tfvars parse, GitOps manifest parse, plan-the-gates, check-terraform-providers.sh",
+      "secrets: ./scripts/check-secrets.sh"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "GitHub-dispatched on push/pull_request (.github/workflows/ci.yml:9-11); deploy.yml's gate job requires this workflow's conclusion == success for the commit before any image is built or shipped (deploy.yml on: workflow_run triggers off ci).",
+    "io_and_state": "GitHub-hosted runners; cargo-audit and cargo-deny reach the network for the advisory database; trivy downloads its own apt repo key; no state persisted beyond the SBOM artifact (90-day retention) and the ephemeral runner.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "hardened"
+    ],
+    "status_reason": "Every job maps 1:1 to a Makefile target per the file's own header comment and both are exercised routinely per commit history.",
+    "blueprint_capabilities": [
+      "CICD",
+      "SEC",
+      "GOV"
+    ],
+    "gaps_observed": [
+      "deploy.yml only runs automatically off ci's workflow_run on branch \"main\" (deploy.yml:44-56) \u2014 but the current default branch history note in that same file records the branch filter was blank for a period and the automatic path was unreachable; nothing in ci.yml re-verifies that its own branch list still matches the repository's actual default branch.",
+      "ci.yml:393-399 secrets job runs ./scripts/check-secrets.sh with fetch-depth 0 but the script itself (scripts/check-secrets.sh) only greps the working tree, not history, despite the fetch-depth:0 checkout suggesting history scanning was intended."
+    ],
+    "evidence": [
+      ".github/workflows/ci.yml:9-11",
+      ".github/workflows/ci.yml:27-268",
+      ".github/workflows/ci.yml:269-393",
+      ".github/workflows/ci.yml:393-399"
+    ]
+  },
+  {
+    "name": "deploy.yml",
+    "path": ".github/workflows/deploy.yml",
+    "kind": "ci",
+    "purpose": "Builds, signs, attests and ships the catalogue of images, then replaces execution-node instances under their rolling policy. Runs automatically after ci succeeds on main, or by manual dispatch choosing dev/test/stage/prod.",
+    "key_contracts": [
+      "gate job: refuses prod unless workflow_dispatch; validates TARGET_ENVIRONMENT/DEPLOY_SHA charset before use; confirms the triggering ci run is this repo's own and succeeded for the exact commit",
+      "images job: derive-identity-from-tfvars, keyless auth, check-if-registry-already-holds-commit, build, scan, push, sign",
+      "deploy job: derive-identity-from-tfvars, keyless auth, read-the-catalogue, record-attested-digests, replace-every-execution-node-under-its-groups-rolling-policy"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "partial",
+    "production_evidence": "Dispatches automatically after ci succeeds on main (deploy.yml:44-56) or manually; the deploy job's last step provisions execution nodes, but every environment's execution_nodes = {} (per infrastructure tfvars), so the rolling-replace step has nothing to iterate in any currently-configured environment.",
+    "io_and_state": "Authenticates via Workload Identity Federation (no downloaded keys); pushes/signs images in Artifact Registry; reads Terraform tfvars for identity; no local state written by the workflow itself.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "partial"
+    ],
+    "status_reason": "Image build/sign/attest path is exercised; the execution-node rollout step has no nodes to roll in any environment because execution_nodes = {} everywhere.",
+    "blueprint_capabilities": [
+      "CICD",
+      "GCP",
+      "SEC"
+    ],
+    "gaps_observed": [
+      "deploy.yml:150 'replace every execution node under its group's rolling policy' iterates infrastructure execution-node groups, but every environment's tfvars sets execution_nodes = {} (per docs/DELIVERY-STATUS.md and .claude/rules/domains/observability.md), so this step is a no-op wherever it runs today."
+    ],
+    "evidence": [
+      ".github/workflows/deploy.yml:41-58",
+      ".github/workflows/deploy.yml:91-263",
+      ".github/workflows/deploy.yml:263-594",
+      ".github/workflows/deploy.yml:594-765"
+    ]
+  },
+  {
+    "name": "image.yml",
+    "path": ".github/workflows/image.yml",
+    "kind": "ci",
+    "purpose": "Manual-dispatch-only workflow that bakes the execution-node boot image (a GCE machine image) from attested pipeline artifacts, never from a push, so an image bake is always a deliberate, billed act.",
+    "key_contracts": [
+      "bake job, dispatch inputs: environment (dev/test/stage), machine_type, base_image (full self-link, no family), commit",
+      "steps: refuse-what-this-workflow-must-never-do, check-inputs, verify-source-files-are-reviewed, derive-identity, keyless-auth, install crane, verify-artifacts-were-attested, extract-binaries, stage-pinned-ops-agent, build-payload, create/wait/retire builder VM, create-image, release-builder-disk"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Manual workflow_dispatch only (image.yml:106); ADR 0035 authorises one node in dev and per .claude rules docs no execution node has ever been baked/deployed.",
+    "io_and_state": "Creates and destroys a transient GCE builder VM; writes a GCE machine image; reads attested container images from Artifact Registry by digest.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "unused"
+    ],
+    "status_reason": "The workflow exists and is structurally complete but ADR 0035 notes it has never been applied; no execution node exists in any environment to consume the baked image.",
+    "blueprint_capabilities": [
+      "CICD",
+      "GCP"
+    ],
+    "gaps_observed": [
+      "The whole workflow is 'never yet applied' per top-level CLAUDE.md: 'one Compute Engine execution node per region (ADR 0024, never yet applied)'."
+    ],
+    "evidence": [
+      ".github/workflows/image.yml:101-170",
+      ".github/workflows/image.yml:170-800",
+      "CLAUDE.md (GCP stack bullet)"
+    ]
+  },
+  {
+    "name": "infra.yml",
+    "path": ".github/workflows/infra.yml",
+    "kind": "ci",
+    "purpose": "The single Terraform operations workflow: one job, one action input selecting among plan/up/apps/suspend/down/teardown/force-unlock/diagnose, manually dispatched against dev/test/stage only (prod is not an option \u2014 it is applied only via scripts/bootstrap-deploy.sh by a person).",
+    "key_contracts": [
+      "terraform job, action=plan: read-only plan against provided var-files",
+      "action=up: terraform apply + bootstrap GitOps controllers (Argo CD, Config Connector, cert-manager, Kargo) + console IAP gate",
+      "action=apps: apply the Argo CD Application/Kargo chain onto an existing control plane, re-runnable alone",
+      "action=suspend / down / teardown: destroy control-plane cluster / execution nodes (no-op today) / full environment teardown sparing the running identity",
+      "action=force-unlock: release a stuck state lock by id",
+      "action=diagnose: read-only Cloud Run revision/condition/log dump"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "dev has been applied via this workflow's 'up' action (docs/DELIVERY-STATUS.md records run 52 applying 238 Terraform-managed resources) and later suspended by ADR 0093 because the Argo CD image fails the vendor scan gate.",
+    "io_and_state": "Applies/destroys real GCP resources (Cloud Run, KMS, IAM, buckets, GKE Autopilot control-plane cluster) via Workload Identity Federation; no service-account keys.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "partial",
+      "broken"
+    ],
+    "status_reason": "The 'up' path was applied in dev but its bootstrap step failed (docs/DELIVERY-STATUS.md: run 52 concludes 'failure' at the bootstrap step following a clean apply) because the GitOps controllers' images fail the vendor.yml Trivy scan gate; the environment is now suspended (ADR 0093).",
+    "blueprint_capabilities": [
+      "CICD",
+      "GCP",
+      "GOV"
+    ],
+    "gaps_observed": [
+      "infra.yml action=up's GitOps bootstrap step depends on vendor.yml successfully mirroring Argo CD's image, which vendor.yml refuses on CVE-2025-68121 with no available upstream fix (docs/DELIVERY-STATUS.md 'Argo CD fails the scan gate' row) \u2014 so 'up' cannot currently complete a working control plane in any environment."
+    ],
+    "evidence": [
+      ".github/workflows/infra.yml:120-164",
+      ".github/workflows/infra.yml:164-2050",
+      "docs/DELIVERY-STATUS.md (Argo CD fails the scan gate row)"
+    ]
+  },
+  {
+    "name": "vendor.yml",
+    "path": ".github/workflows/vendor.yml",
+    "kind": "ci",
+    "purpose": "Mirrors a fixed list of upstream vendor images (infrastructure/egress/vendored-images.txt) into the project's own Artifact Registry, verifying, scanning and attesting each \u2014 automatically for dev on a push to the vendored-images list, manually for test/stage/prod.",
+    "key_contracts": [
+      "mirror job: derive-identity, keyless-auth, install crane+trivy, 'mirror, verify, scan, attest' (per-image loop), 'derive, scan and attest the patched images', 'the gate's verdict' (final pass/fail summarising every image)"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "partial",
+    "production_evidence": "Runs automatically on push to main touching infrastructure/egress/vendored-images.txt (vendor.yml:32-39); its blocking severity-CRITICAL gate currently refuses the Argo CD image, which cascades to block cert-manager's images in the same fail-fast loop (docs/DELIVERY-STATUS.md).",
+    "io_and_state": "Pulls from public registries (quay.io etc.), pushes to project Artifact Registry, writes Binary Authorization attestations.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "broken"
+    ],
+    "status_reason": "Currently fails on CVE-2025-68121 in Argo CD's bundled kustomize/git-lfs with no fixed upstream version available; because the loop runs under set -euo pipefail, the failure stops cert-manager's images from mirroring too, per docs/DELIVERY-STATUS.md's own measurement.",
+    "blueprint_capabilities": [
+      "CICD",
+      "SEC",
+      "GCP"
+    ],
+    "gaps_observed": [
+      "Blocked entirely on an upstream fix; docs/DELIVERY-STATUS.md explicitly says 'Do not clear with a scanner exception, an .trivyignore, or a per-image acknowledgement'."
+    ],
+    "evidence": [
+      ".github/workflows/vendor.yml:27-61",
+      ".github/workflows/vendor.yml:61-450",
+      "docs/DELIVERY-STATUS.md (Argo CD fails the scan gate row)"
+    ]
+  },
+  {
+    "name": "Makefile",
+    "path": "Makefile",
+    "kind": "script",
+    "purpose": "The local counterpart of every ci.yml job, ordered cheapest-first, so a green `make` locally should not be surprised by CI; deliberately carries no `apply`/deploy target.",
+    "key_contracts": [
+      "check (default): fmt-check lint test deps secrets",
+      "all: check build audit deny sbom infra",
+      "fmt/fmt-check, lint, test, count, build/release, e2e, acceptance, doc",
+      "deps, secrets, audit, deny, sbom",
+      "infra: tf-fmt tf-tfvars tf-manifests tf-validate",
+      "help: prints every target's one-line description"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Local developer/agent entry point; ci.yml runs the underlying commands directly rather than shelling out to `make` (confirmed identical commands, e.g. ci.yml test job vs Makefile `test` target).",
+    "io_and_state": "Delegates to cargo/terraform/npm subprocesses; no state of its own.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "hardened"
+    ],
+    "status_reason": "Every target has a 1:1 ci.yml counterpart per its own header, with one drift: `make test` omits --no-fail-fast (present in ci.yml's test job and in `make count`/count-tests.sh).",
+    "blueprint_capabilities": [
+      "CICD"
+    ],
+    "gaps_observed": [
+      "Makefile:54-55 `test:` target runs `cargo test --workspace --all-features` without --no-fail-fast, while ci.yml's test job (ci.yml:79) and top-level CLAUDE.md's documented command both use --no-fail-fast; a local `make test` run can therefore abort at the first failing binary and under-report, exactly the failure mode the file's own `count` target and its comment (Makefile:57-62) warn about."
+    ],
+    "evidence": [
+      "Makefile:1-198"
+    ]
+  },
+  {
+    "name": "check-dependencies.sh",
+    "path": "scripts/check-dependencies.sh",
+    "kind": "script",
+    "purpose": "Enforces the two-dependency policy (ADR 0002/0009) by diffing every non-qip package name in backend/Cargo.lock against a hardcoded 11-name PERMITTED allowlist (serde/serde_json plus their transitive proc-macro closure).",
+    "key_contracts": [
+      "PERMITTED array (11 names)",
+      "exit 1 on any violation, exit 0 with a count on success"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Called from ci.yml's dependency-policy job (ci.yml:97-108), Makefile's `deps` target, and .claude/settings.json's allowlisted Bash commands.",
+    "io_and_state": "Reads backend/Cargo.lock only; no writes, no network.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "hardened"
+    ],
+    "status_reason": "Runs on every CI push and locally via `make deps`; fails closed if the lockfile is missing.",
+    "blueprint_capabilities": [
+      "CICD",
+      "GOV",
+      "SEC"
+    ],
+    "gaps_observed": [
+      "PERMITTED list (scripts/check-dependencies.sh:19-35) is hand-maintained text, duplicated in intent by backend/deny.toml's [bans] allowlist; the two are asserted to agree only by docs/DELIVERY-STATUS.md prose, not by a shared source."
+    ],
+    "evidence": [
+      "scripts/check-dependencies.sh:1-78"
+    ]
+  },
+  {
+    "name": "check-secrets.sh",
+    "path": "scripts/check-secrets.sh",
+    "kind": "script",
+    "purpose": "Greps the tracked working tree (git grep) for private-key headers, AWS/Google/GitHub/Hugging Face credential shapes, and key=value secret assignments, excluding target/, Cargo.lock, itself, and any tests/ directory.",
+    "key_contracts": [
+      "PATTERNS array (8 regexes)",
+      "EXCLUDE_PATHS array",
+      "one cert-manager annotation exemption",
+      "exit 1 on any match"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Called from ci.yml's secrets job (ci.yml:393-399, with fetch-depth 0) and Makefile's `secrets` target; also allowlisted in .claude/settings.json.",
+    "io_and_state": "git grep over the working tree only; no network, no writes.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "hardened"
+    ],
+    "status_reason": "Deliberately narrow patterns per its own header comment to avoid alert fatigue; its own module doc says the acceptance suite's security.rs carries a matching copy of the vendor-prefix patterns so the two cannot silently drift apart.",
+    "blueprint_capabilities": [
+      "SEC",
+      "GOV"
+    ],
+    "gaps_observed": [
+      "git grep with fetch-depth:0 in CI still only scans the current tree, not history, despite the full-history checkout \u2014 history scanning is not implemented here."
+    ],
+    "evidence": [
+      "scripts/check-secrets.sh:1-85"
+    ]
+  },
+  {
+    "name": "check-manifests.py",
+    "path": "scripts/check-manifests.py",
+    "kind": "script",
+    "purpose": "Parses every GitOps/Kubernetes YAML manifest under infrastructure/ with a real YAML parser and refuses one that does not parse, closing a gap where every prior gate (gitops.rs, console_route.rs, terraform fmt) only read manifests as text.",
+    "key_contracts": [
+      "parses every *.yaml/*.yml under infrastructure/",
+      "exit non-zero naming the file and the parser's own diagnostic"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Called from ci.yml's infrastructure job ('the GitOps manifests parse' step) and Makefile's tf-manifests target, part of the `infra` target.",
+    "io_and_state": "Reads infrastructure/ YAML files only.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "hardened"
+    ],
+    "status_reason": "Added after a real incident (an unquoted colon in a comment broke `kustomize build` ten minutes into an infra.yml apps dispatch) per its own module docstring.",
+    "blueprint_capabilities": [
+      "CICD",
+      "GCP",
+      "GOV"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "scripts/check-manifests.py:1-25",
+      "Makefile:161-162"
+    ]
+  },
+  {
+    "name": "check-terraform-providers.sh",
+    "path": "scripts/check-terraform-providers.sh",
+    "kind": "script",
+    "purpose": "Statically checks that every provider a Terraform module references (e.g. google-beta) is declared in that module's required_providers block, catching a class of error `terraform validate` misses because validate does not need provider credentials.",
+    "key_contracts": [
+      "static scan, no terraform init/credentials needed",
+      "exit non-zero naming the module and missing provider"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Called from ci.yml's infrastructure job ('provider declarations' step) and allowlisted directly in .claude/settings.json.",
+    "io_and_state": "Reads infrastructure/terraform/**/*.tf only.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "hardened"
+    ],
+    "status_reason": "Written after modules/ai used google-beta undeclared and only a real plan (needing credentials) caught it, per its own header.",
+    "blueprint_capabilities": [
+      "CICD",
+      "GCP"
+    ],
+    "gaps_observed": [
+      "Explicitly does not catch a resource type that exists only in a non-default provider without an explicit provider= argument, per its own header comment \u2014 a stated, accepted limitation."
+    ],
+    "evidence": [
+      "scripts/check-terraform-providers.sh:1-23"
+    ]
+  },
+  {
+    "name": "count-tests.sh",
+    "path": "scripts/count-tests.sh",
+    "kind": "script",
+    "purpose": "Runs the whole workspace test suite with --no-fail-fast and sums both the 'passed' and 'failed' columns from cargo's own output (rather than only the passed column), because a failed test binary prints nothing summable into a naive passed-only tally.",
+    "key_contracts": [
+      "cargo test --workspace --all-features --no-fail-fast",
+      "prints 'tests: N passed, M failed'",
+      "exit non-zero if any failed"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Makefile's `count` target; allowlisted in .claude/settings.json.",
+    "io_and_state": "Runs the full backend test suite (spawns cargo, writes to a temp file it cleans up on exit).",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "hardened"
+    ],
+    "status_reason": "Exists specifically because summing only 'test result: ok. N passed' lines under-reports silently when a binary fails outright, per its own header.",
+    "blueprint_capabilities": [
+      "CICD"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "scripts/count-tests.sh:1-45"
+    ]
+  },
+  {
+    "name": "worker-capacity.sh",
+    "path": "scripts/worker-capacity.sh",
+    "kind": "script",
+    "purpose": "Reports (does not gate) the actual concurrency this machine can sustain for the agent-orchestration harness \u2014 CPU, memory and disk ceilings \u2014 against a fixed 8/16/32/64/100 policy ladder, so the operating point is measured rather than aspirational.",
+    "key_contracts": [
+      "prints cpu/mem/disk ceilings and the binding constraint",
+      "always exits 0"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Operator/orchestrator tooling, not part of the platform's own deployable binaries.",
+    "io_and_state": "Reads /proc/cpuinfo, /proc/meminfo, df of cwd; no writes.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Advisory-only script for the delivery/orchestration harness, not a CI gate.",
+    "blueprint_capabilities": [
+      "CICD"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "scripts/worker-capacity.sh:1-30"
+    ]
+  },
+  {
+    "name": "audit-dead-code.py",
+    "path": "scripts/audit-dead-code.py",
+    "kind": "script",
+    "purpose": "Finds pub items in src/ whose name is referenced nowhere outside their own declaration (workspace-wide name matching), producing a CANDIDATE list for a human to sort into genuine dead code, deliberate public API, or an unwired control \u2014 the third being the dangerous one (its own example: MaxExpectedShortfall).",
+    "key_contracts": [
+      "name-based, workspace-wide reference scan",
+      "outputs a candidate list, not a defect list"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Developer/audit tooling; not invoked by any CI job found in .github/workflows/ or the Makefile.",
+    "io_and_state": "Reads backend/crates/**/src/**/*.rs; no writes.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "unused"
+    ],
+    "status_reason": "Not wired into ci.yml or the Makefile \u2014 a manually-invoked audit aid; its own docstring says matching is by name workspace-wide, which deliberately under-reports on short/common names.",
+    "blueprint_capabilities": [
+      "COVERAGE",
+      "GOV"
+    ],
+    "gaps_observed": [
+      "Not called from any CI job or Makefile target found (grep of both turned up nothing referencing this script by name)."
+    ],
+    "evidence": [
+      "scripts/audit-dead-code.py:1-30"
+    ]
+  },
+  {
+    "name": "audit-register.py",
+    "path": "scripts/audit-register.py",
+    "kind": "script",
+    "purpose": "Re-runs docs/DELIVERY-STATUS.md's own cited evidence commands and reports which claims have gone stale, specifically catching two classes: an 'EMPTINESS' claim (a command asserted to return nothing that now returns something) and an 'ONLY-TESTS' claim (a command asserted to hit only test code that now hits src/ after that file's last #[cfg(test)] marker).",
+    "key_contracts": [
+      "parses DELIVERY-STATUS.md rows for cited commands",
+      "EMPTINESS check",
+      "ONLY-TESTS check (position-based: hit after last top-level #[cfg(test)] in a src file counts as production)"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Documentation/register audit tooling; written after 4 false claims (understating the platform) were found by hand on 2026-09-16.",
+    "io_and_state": "Reads docs/DELIVERY-STATUS.md and re-executes its embedded shell/grep commands against the working tree; no writes observed in the header.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Purpose-built register-integrity tool; not confirmed wired into ci.yml or the Makefile from the workflow/Makefile scan performed.",
+    "blueprint_capabilities": [
+      "COVERAGE",
+      "GOV"
+    ],
+    "gaps_observed": [
+      "Not found referenced in .github/workflows/*.yml or the Makefile \u2014 appears to be run manually/by an agent lane rather than gated in CI."
+    ],
+    "evidence": [
+      "scripts/audit-register.py:1-40"
+    ]
+  },
+  {
+    "name": "terraform-undeletable.py",
+    "path": "scripts/terraform-undeletable.py",
+    "kind": "script",
+    "purpose": "Shared parser for the one list of Google resources Terraform cannot delete-and-recreate cleanly: 'addresses' (what teardown removes from state) and 'imports' (which of a plan's creates would collide with something teardown left behind), used to keep infra.yml's teardown and up actions from disagreeing about that list, after a real incident where they did.",
+    "key_contracts": [
+      "addresses subcommand",
+      "imports subcommand (reads a `terraform plan -json`)"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Invoked from infra.yml's teardown/up steps per its own module docstring (the two callers share this one parse); referenced by name in infra.yml around the 'reclaim what the teardown left standing' step.",
+    "io_and_state": "Parses Terraform module source files and a plan JSON; performs no Google API calls itself (the docstring is explicit: 'this file resolves nothing against Google and imports nothing').",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "hardened"
+    ],
+    "status_reason": "Directly motivated by a real incident: run 44 planned to create 184 resources against a project still holding 9 crypto keys, a keyring and 5 buckets from an aborted teardown.",
+    "blueprint_capabilities": [
+      "CICD",
+      "GCP"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "scripts/terraform-undeletable.py:1-30",
+      ".github/workflows/infra.yml:569 (reclaim what the teardown left standing)"
+    ]
+  },
+  {
+    "name": "bootstrap-deploy.sh",
+    "path": "scripts/bootstrap-deploy.sh",
+    "kind": "script",
+    "purpose": "The one-command first deployment / prod deployment path: enables project APIs, creates the bootstrap service account (impersonated, no downloaded key), creates the Terraform state bucket, runs terraform init+apply (always showing the plan, never auto-approving), grants scoped object-delete on the state bucket, and seeds generated secrets.",
+    "key_contracts": [
+      "idempotent, rerunnable after partial failure",
+      "never creates/downloads a service-account key",
+      "never auto-approves an apply"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Named in the Makefile's help text and docs/operations/deployment-path.md as the only path for a first apply and for prod (Makefile:174-176 comment: 'scripts/bootstrap-deploy.sh for the first apply and for prod').",
+    "io_and_state": "Applies real GCP resources; writes to Secret Manager; requires the caller's own gcloud identity (Cloud Shell or local).",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Deliberately outside CI/Makefile automation \u2014 a person-run script by design, per the Makefile's own comment that an `apply` Makefile target would be 'exactly the wrong affordance'.",
+    "blueprint_capabilities": [
+      "CICD",
+      "GCP",
+      "SEC"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "scripts/bootstrap-deploy.sh:1-35",
+      "Makefile:168-177"
+    ]
+  },
+  {
+    "name": "deploy-frontends.sh",
+    "path": "scripts/deploy-frontends.sh",
+    "kind": "script",
+    "purpose": "Builds and deploys the portal (first) and landing (second, inlining the portal's live URL at build time) to Cloud Run by digest, signing each with the pipeline's own attestor/key version and reading back the routed revision to confirm it serves those exact bytes.",
+    "key_contracts": [
+      "portal-before-landing ordering (NEXT_PUBLIC_* URL inlining)",
+      "digest-based deploy + Binary Authorization attestation",
+      "post-deploy revision verification"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Operator-run script (uses the caller's own gcloud login), not dispatched by any workflow found in .github/workflows/.",
+    "io_and_state": "gcloud builds submit, Cloud Run deploy, Secret Manager (session secret, generated once, never printed).",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "A manual operator path for the two Next.js frontends, parallel to but not gated by ci.yml/deploy.yml, which only handle the Rust backend images.",
+    "blueprint_capabilities": [
+      "CICD",
+      "GCP"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "scripts/deploy-frontends.sh:1-35"
+    ]
+  },
+  {
+    "name": "model-gateway.mjs",
+    "path": "scripts/model-gateway.mjs",
+    "kind": "script",
+    "purpose": "A zero-dependency Node worker-model gateway that routes bounded, low-risk agent-orchestration tasks to an external LLM provider, screening every payload for credential-shaped content and refusing (not scrubbing) the call if any is found; explicitly dev tooling that no backend/ or frontend/ crate may import.",
+    "key_contracts": [
+      "CLI: node scripts/model-gateway.mjs --task task.json",
+      "env-driven provider/model/key-file config",
+      "fails closed on missing config",
+      "credential screening refuses rather than scrubs"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Explicitly excluded by its own doc comment: 'Nothing in backend/crates/ or frontend/packages/ may import it, and the platform does not depend on it existing.'",
+    "io_and_state": "Node built-in fetch to an external model provider; reads an API key from a _FILE-indirected path.",
+    "tests": {
+      "count": 0,
+      "notable": [
+        "see model-gateway.test.mjs"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Delivery/orchestration tooling by design, structurally isolated from the platform's own dependency graph.",
+    "blueprint_capabilities": [
+      "CICD"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "scripts/model-gateway.mjs:1-35"
+    ]
+  },
+  {
+    "name": "model-gateway.test.mjs",
+    "path": "scripts/model-gateway.test.mjs",
+    "kind": "test",
+    "purpose": "Test coverage for model-gateway.mjs's credential screening and fail-closed configuration behaviour.",
+    "key_contracts": [],
+    "workspace_deps": [],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Test file for a dev-tooling script; not part of the platform's own test suites.",
+    "io_and_state": "n/a",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Not enumerated by #[test] (JS test file); size (139 lines) suggests meaningful coverage but was not read in full for this pass.",
+    "blueprint_capabilities": [
+      "CICD"
+    ],
+    "gaps_observed": [
+      "Not confirmed wired into ci.yml or a package.json test script during this pass \u2014 worth checking separately."
+    ],
+    "evidence": [
+      "scripts/model-gateway.test.mjs (139 lines)"
+    ]
+  },
+  {
+    "name": "venue-signup",
+    "path": "scripts/venue-signup/",
+    "kind": "script",
+    "purpose": "An operator-machine browser-automation job that performs a venue's signup form under the company's identity after a named operator has approved that venue's terms, refusing every step that must remain a person's act (captchas, identity documents, verification codes, any field a reviewed recipe does not list); explicitly dev tooling backend/ and frontend/ never import.",
+    "key_contracts": [
+      "signup.mjs (1053 lines): main job, origin-matching, ambiguous-selector refusal, credential-blanked screenshot on hand-back",
+      "browser.mjs: browser driver",
+      "recipes/alpaca.json, recipes/kalshi.json: reviewed per-venue field recipes"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Explicitly excluded per its own doc comment, same pattern as model-gateway.mjs: 'nothing in backend/ or frontend/ imports it and the platform does not depend on it existing.'",
+    "io_and_state": "Drives a real browser against a live venue signup page; writes a credential-blanked screenshot on any hand-back.",
+    "tests": {
+      "count": 0,
+      "notable": [
+        "signup.test.mjs, 748 lines"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Purpose-built operator tooling for venue onboarding, structurally separate from the trading platform per its own doc comment.",
+    "blueprint_capabilities": [
+      "CICD",
+      "GOV"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "scripts/venue-signup/signup.mjs:1-25",
+      "scripts/venue-signup/browser.mjs",
+      "scripts/venue-signup/recipes/alpaca.json",
+      "scripts/venue-signup/recipes/kalshi.json"
+    ]
+  },
+  {
+    "name": "claude-agents",
+    "path": ".claude/agents/",
+    "kind": "docs",
+    "purpose": "Thirteen role-scoped subagent definitions (frontmatter: name, description, allowed tools) used by the orchestration workflow to split delivery work by specialty; each is a short markdown mission statement, not executable code.",
+    "key_contracts": [
+      "backend-engineer (Read,Grep,Glob,Write,Edit,Bash)",
+      "chief-orchestrator (adds Agent,TaskCreate,TaskUpdate,TaskList)",
+      "cloud-platform-engineer",
+      "code-reviewer (no Write/Edit \u2014 read-only reviewer)",
+      "data-ai-engineer",
+      "frontend-engineer",
+      "product-manager (no Bash)",
+      "security-engineer (no Write/Edit \u2014 independent reviewer)",
+      "solution-architect (no Bash)",
+      "sre-release-engineer",
+      "technical-writer",
+      "test-engineer",
+      "ux-designer (no Bash)"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Harness-level configuration for Claude Code's own agent-dispatch, not part of the platform's deployable binaries.",
+    "io_and_state": "None; static markdown read by the harness.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "documentation.rs's the_documented_agent_count_matches_the_roster asserts the docs count matches this roster, per its test name found in the acceptance suite.",
+    "blueprint_capabilities": [
+      "CICD",
+      "GOV"
+    ],
+    "gaps_observed": [
+      "code-reviewer and security-engineer both explicitly withhold Write/Edit tools (read-only review by design) \u2014 consistent with each agent's description saying it 'must not review its own implementation'."
+    ],
+    "evidence": [
+      ".claude/agents/backend-engineer.md:1-5",
+      ".claude/agents/code-reviewer.md:1-5",
+      ".claude/agents/security-engineer.md:1-5",
+      "backend/crates/tests/qip-acceptance/tests/documentation.rs (the_documented_agent_count_matches_the_roster)"
+    ]
+  },
+  {
+    "name": "claude-skills",
+    "path": ".claude/skills/",
+    "kind": "docs",
+    "purpose": "Eight ~36-line skill playbooks (Trigger/Outcome plus a checklist) that standardise how the harness performs architecture-review, documentation-update, implement-slice, incident-diagnosis, release-readiness, security-review, test-change and vision-to-plan.",
+    "key_contracts": [
+      "architecture-review",
+      "documentation-update",
+      "implement-slice",
+      "incident-diagnosis",
+      "release-readiness",
+      "security-review",
+      "test-change",
+      "vision-to-plan"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Harness-level, invoked via the Skill tool by name; not part of the platform's deployable binaries.",
+    "io_and_state": "None.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Each file is short and uniformly shaped (Trigger/Outcome), all 8 confirmed present and non-empty (291 total lines across 8 files).",
+    "blueprint_capabilities": [
+      "CICD",
+      "GOV"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      ".claude/skills/architecture-review/SKILL.md:1-10",
+      ".claude/skills/security-review/SKILL.md:1-10"
+    ]
+  },
+  {
+    "name": "claude-hooks",
+    "path": ".claude/hooks/",
+    "kind": "script",
+    "purpose": "Two Python PreToolUse/PostToolUse hooks plus their own regression-test runner: guard-dangerous-command.py blocks a fixed list of destructive shell patterns (force push, rm -rf outside repo, terraform destroy/-auto-approve, gcloud/gsutil/kubectl deletes, destructive SQL) before Bash executes them; format-rust-after-edit.py runs rustfmt on any .rs file after Write/Edit and never blocks on failure.",
+    "key_contracts": [
+      "guard-dangerous-command.py: RULES list of (needle-tuple, description, alternative); strip_heredocs() so a heredoc merely documenting a dangerous command is not itself blocked; exit 2 blocks, exit 0 allows",
+      "format-rust-after-edit.py: rustfmt --edition 2024 on the edited path; always exit 0",
+      "test_hooks.py: 17 table-driven GUARD_CASES plus malformed-payload and formatter-safety checks, run via `python3 .claude/hooks/test_hooks.py`"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Wired directly in .claude/settings.json's hooks.PreToolUse (matcher Bash) and hooks.PostToolUse (matcher Edit|Write), so every Bash call and every file edit in this harness passes through them.",
+    "io_and_state": "guard reads the pending tool_input JSON from stdin; formatter shells out to rustfmt on the edited file; neither performs network I/O.",
+    "tests": {
+      "count": 0,
+      "notable": [
+        "test_hooks.py: 17 GUARD_CASES table (allow+block), 4 malformed-payload cases, 3 formatter-never-blocks cases \u2014 run as a standalone script, not via #[test] or pytest discovery"
+      ]
+    },
+    "status": [
+      "exists",
+      "hardened"
+    ],
+    "status_reason": "Both hooks document specific prior failures they were rewritten to fix (a heredoc quoting a dangerous command was wrongly blocked; an earlier shell version of the guard had a quoting bug that blocked every command), and test_hooks.py exercises both allow and block cases per its own stated principle that 'a guard that refuses everything is not secure, it is broken'.",
+    "blueprint_capabilities": [
+      "SEC",
+      "GOV"
+    ],
+    "gaps_observed": [
+      ".claude/rules/01-security-and-safety.md's own prose still names the file 'guard-dangerous-command.sh' (Destructive operations section) while the actual, current implementation on disk is guard-dangerous-command.py \u2014 the rules doc has not been updated for the Python rewrite the hook's own docstring describes."
+    ],
+    "evidence": [
+      ".claude/hooks/guard-dangerous-command.py:1-181",
+      ".claude/hooks/format-rust-after-edit.py:1-56",
+      ".claude/hooks/test_hooks.py:1-108",
+      ".claude/settings.json (hooks block)",
+      ".claude/rules/01-security-and-safety.md (Destructive operations section)"
+    ]
+  },
+  {
+    "name": "claude-rules",
+    "path": ".claude/rules/",
+    "kind": "docs",
+    "purpose": "The working agreement's normative rule tree: four root governance files (enterprise-governance, security-and-safety, change-management, product-direction) imported by CLAUDE.md via @-includes, plus architecture/ (boundaries, testing-strategy) and domains/ (core-rust, frontend, data-and-streaming, risk-and-execution, observability, infrastructure).",
+    "key_contracts": [
+      "00-enterprise-governance.md: evidence-not-assertion, scope limits, dependency/secrets policy",
+      "01-security-and-safety.md: the three paper-trading layers, secrets handling, destructive-op guard, untrusted-content rule",
+      "02-change-management.md: branch/commit rules, PR rules, Definition-of-Done gate table, test rules (incl. mutation verification), production rules",
+      "10-product-direction.md: standing product decisions and mandatory architecture concerns",
+      "architecture/00-boundaries.md, 01-testing-strategy.md",
+      "domains/{core-rust,frontend,data-and-streaming,risk-and-execution,observability,infrastructure}.md"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Loaded into every Claude Code session's system context via CLAUDE.md @-includes; not code, has no runtime caller.",
+    "io_and_state": "None; static markdown.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "hardened"
+    ],
+    "status_reason": "The observability.md and architecture/00-boundaries.md files are unusually self-correcting: both carry dated, superseded-in-place corrections of their own prior wrong figures (e.g. ADR count, acceptance-suite count, metrics-recording-site count) rather than restating a number, specifically to avoid the drift pattern this record documents elsewhere.",
+    "blueprint_capabilities": [
+      "GOV",
+      "SEC",
+      "OBS"
+    ],
+    "gaps_observed": [
+      "domains/observability.md is exceptionally long and includes multiple explicit 'this file was wrong until <date>' corrections about metric-recording-site counts, alert-policy counts and ADR references \u2014 the file itself states it should not be trusted for a bare figure and instructs the reader to run the cited grep/awk command instead.",
+      "01-security-and-safety.md names the hook file as guard-dangerous-command.sh; the actual file is guard-dangerous-command.py (see claude-hooks record)."
+    ],
+    "evidence": [
+      ".claude/rules/00-enterprise-governance.md",
+      ".claude/rules/01-security-and-safety.md",
+      ".claude/rules/02-change-management.md",
+      ".claude/rules/10-product-direction.md",
+      ".claude/rules/architecture/00-boundaries.md",
+      ".claude/rules/domains/observability.md"
+    ]
+  },
+  {
+    "name": "claude-settings",
+    "path": ".claude/settings.json",
+    "kind": "docs",
+    "purpose": "The harness's permission policy for this repository: an allowlist of safe read-only/build commands (cargo build/check/clippy/fmt/test/tree, make, the check-*.sh scripts, terraform fmt/validate/plan, npm lint/build/test, git status/diff/log/add/commit, rg/ls/cat/head/tail/wc/find), an ask-list for higher-risk commands (git push, gcloud, gsutil, kubectl, terraform apply, npm install, cargo add/remove), a deny-list for credential/state-file reads, and the PreToolUse/PostToolUse hook wiring.",
+    "key_contracts": [
+      "permissions.allow (24 patterns)",
+      "permissions.ask (8 patterns)",
+      "permissions.deny (16 patterns, incl. ~/.ssh, ~/.aws, ~/.config/gcloud, *.tfstate, *.pem/*.key)",
+      "hooks.PreToolUse -> guard-dangerous-command.py",
+      "hooks.PostToolUse -> format-rust-after-edit.py"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Read by the Claude Code harness itself at session start; not part of the deployed platform.",
+    "io_and_state": "None; static JSON.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "hardened"
+    ],
+    "status_reason": "deny-list matches the specific paths .claude/rules/01-security-and-safety.md names ('~/.ssh, ~/.aws, ~/.config/gcloud'), so the two are consistent as of this read.",
+    "blueprint_capabilities": [
+      "SEC",
+      "GOV"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      ".claude/settings.json:1-90"
+    ]
+  },
+  {
+    "name": "acceptance.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/acceptance.rs",
+    "kind": "test",
+    "purpose": "The end-to-end acceptance scenario: one test walks a synthetic market observation through all seven stages to a reviewed thesis, checked proposal, risk-gated order and exact attribution; the rest assert properties that only hold once every crate is wired together (paper-boundary refusal, halt propagation, determinism, event-log hash-chain survival).",
+    "key_contracts": [
+      "a_market_observation_travels_the_whole_loop",
+      "an_order_travels_the_control_path_and_produces_an_exact_attribution",
+      "a_fill_is_attributed_to_the_hypothesis_the_order_was_released_for",
+      "the_assembled_platform_cannot_be_talked_into_live_trading",
+      "a_halt_stops_the_assembled_platform_at_every_entry_point",
+      "every_number_the_organisation_produces_carries_a_provenance",
+      "the_whole_platform_is_deterministic",
+      "the_event_log_hash_chain_survives_a_full_run",
+      "a_proposal_cannot_reach_execution_without_both_controls",
+      "an_internal_cross_reaches_the_centre_rather_than_stopping_at_the_cell"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 16,
+      "notable": [
+        "a_market_observation_travels_the_whole_loop",
+        "an_order_travels_the_control_path_and_produces_an_exact_attribution",
+        "a_fill_is_attributed_to_the_hypothesis_the_order_was_released_for"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "ARCH",
+      "REASON",
+      "RISK",
+      "EXEC",
+      "EVID",
+      "LEDGER"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/acceptance.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "adversary.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/adversary.rs",
+    "kind": "test",
+    "purpose": "Blueprint \u00a715.2's AdversaryProfiles slot, proven through a real Platform driven through real fills: the counterfactual twin measures a venue filling the desk badly, the finding lands in the hash-chained log, and \u2014 the load-bearing claim \u2014 producing that finding moves nothing (ADR 0062: a venue is withdrawn on feasibility evidence and on nothing else, never on the twin's fill-error estimate).",
+    "key_contracts": [
+      "a_venue_the_twin_says_is_filling_the_desk_badly_is_measured_and_put_on_the_record",
+      "a_repeated_review_writes_no_second_record_for_a_posture_that_has_not_changed",
+      "the_adversary_slot_ships_produced_once_a_venue_has_been_measured_and_unproduced_before",
+      "a_platform_that_has_scored_no_fill_reports_nothing_rather_than_a_clean_bill_of_health"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 4,
+      "notable": [
+        "a_venue_the_twin_says_is_filling_the_desk_badly_is_measured_and_put_on_the_record",
+        "a_repeated_review_writes_no_second_record_for_a_posture_that_has_not_changed",
+        "the_adversary_slot_ships_produced_once_a_venue_has_been_measured_and_unproduced_before"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "RISK",
+      "EVID"
+    ],
+    "gaps_observed": [
+      "\u00a715.2's twelfth AdversaryProfiles slot has 'been declared and unproduced since the payload was written' per this file's own module doc."
+    ],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/adversary.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "api_boundary.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/api_boundary.rs",
+    "kind": "test",
+    "purpose": "Proves the application layer (qip-api/qip-web) is a thin interface, not a second domain: no execution/venue/capital/edge crate dependency, no order/transfer/envelope construction, money held only as text handed in and never as an owned numeric field, and every mutating route is enumerated with the single typed intent it raises.",
+    "key_contracts": [
+      "the_application_layer_depends_on_no_execution_venue_capital_or_edge_crate",
+      "the_application_layer_constructs_no_order_transfer_or_envelope",
+      "the_application_layer_signs_nothing_but_the_centres_policy_and_halt",
+      "the_api_owns_no_field_typed_as_money_and_every_store_it_holds_is_named_here",
+      "every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent",
+      "the_api_calls_no_platform_mutator_it_has_not_been_allowed"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 9,
+      "notable": [
+        "the_application_layer_depends_on_no_execution_venue_capital_or_edge_crate",
+        "the_application_layer_constructs_no_order_transfer_or_envelope",
+        "the_application_layer_signs_nothing_but_the_centres_policy_and_halt"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "API",
+      "ARCH",
+      "GOV"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/api_boundary.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "architecture.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/architecture.rs",
+    "kind": "test",
+    "purpose": "The largest suite: dependency-graph boundaries read from real `cargo metadata` resolution (not a hand-written TOML parser, deliberately, after four review rounds found live edges a parser missed) \u2014 no safety-critical engine reaches a language model, the execution engine is reachable from almost nothing, no edge cell can reach an LLM or issue its own capital, only the edge cell itself holds an order manager, etc.",
+    "key_contracts": [
+      "cargo_resolves_every_manifest_form_that_defeated_a_hand_written_parser",
+      "no_safety_critical_engine_can_reach_a_language_model",
+      "an_agent_that_holds_a_language_model_cannot_touch_the_market",
+      "the_execution_engine_is_reachable_from_almost_nothing",
+      "nothing_outside_a_composition_root_holds_an_order_manager",
+      "the_agent_organisation_cannot_reach_execution_at_all",
+      "no_edge_cell_can_reach_a_language_model",
+      "only_the_edge_cell_itself_holds_an_order_manager",
+      "no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 32,
+      "notable": [
+        "cargo_resolves_every_manifest_form_that_defeated_a_hand_written_parser",
+        "no_safety_critical_engine_can_reach_a_language_model",
+        "an_agent_that_holds_a_language_model_cannot_touch_the_market"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "ARCH",
+      "SEC",
+      "AGENCY",
+      "MODEL"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "blueprint_rules.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/blueprint_rules.rs",
+    "kind": "test",
+    "purpose": "Enforces blueprint \u00a72.1's language rule ('every application is written in Rust') by scanning the actual tree rather than restating a stale prose count \u2014 added because docs/DELIVERY-STATUS.md's own \u00a72.1 row had already drifted (glob-based counts in prose missed scripts/venue-signup/'s three .mjs and .claude/hooks/'s three .py files).",
+    "key_contracts": [
+      "every_source_file_in_the_backend_workspace_is_written_in_rust",
+      "the_non_rust_tooling_outside_the_browser_layer_is_exactly_the_accepted_set"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 2,
+      "notable": [
+        "every_source_file_in_the_backend_workspace_is_written_in_rust",
+        "the_non_rust_tooling_outside_the_browser_layer_is_exactly_the_accepted_set"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "ARCH",
+      "COVERAGE"
+    ],
+    "gaps_observed": [
+      "Written explicitly to correct a stale prose count in docs/DELIVERY-STATUS.md's \u00a72.1 row, per its own module doc."
+    ],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/blueprint_rules.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "chaos.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/chaos.rs",
+    "kind": "test",
+    "purpose": "One large randomised-fault-injection test asserting five invariants never break under chaos: builds a full platform/cell fixture then runs randomly_injected_faults_never_break_the_five_invariants.",
+    "key_contracts": [
+      "randomly_injected_faults_never_break_the_five_invariants"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 1,
+      "notable": [
+        "randomly_injected_faults_never_break_the_five_invariants"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "RES",
+      "RISK",
+      "REFLEX"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/chaos.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "cognition.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/cognition.rs",
+    "kind": "test",
+    "purpose": "Cross-cutting checks on the cognition stack (\u00a78.2 graph queries, \u00a79.1\u2013\u00a79.4 causal layer) spanning qip-numerics' statistics, qip-world-model's establishment method/graph, and qip-kernel's review pass \u2014 including a deliberately uncontrolled lead-lag scan that writes edges a controlled scan removes, to keep Platform::discover_temporal_precedence honest about which method it actually runs.",
+    "key_contracts": [
+      "an_uncontrolled_pairwise_scan_of_a_book_with_one_common_driver_writes_edges_a_control_removes",
+      "a_book_the_platform_cannot_build_a_factor_from_yields_no_finding_and_says_so",
+      "a_hidden_concentration_over_a_graph_the_platform_wrote_is_found_and_names_its_positions",
+      "an_unobserved_confounder_cannot_reach_a_regression_across_the_crate_boundary",
+      "the_causal_graph_still_has_a_production_writer_that_reaches_ingested_bars",
+      "every_new_cognition_surface_is_read_only_and_names_no_venue_or_order"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 7,
+      "notable": [
+        "an_uncontrolled_pairwise_scan_of_a_book_with_one_common_driver_writes_edges_a_control_removes",
+        "a_book_the_platform_cannot_build_a_factor_from_yields_no_finding_and_says_so",
+        "a_hidden_concentration_over_a_graph_the_platform_wrote_is_found_and_names_its_positions"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "WORLD",
+      "REASON"
+    ],
+    "gaps_observed": [
+      "Platform::discover_temporal_precedence runs an uncontrolled lead-lag test though \u00a79.2 specifies a controlled method \u2014 the suite documents rather than hides this gap, per its own module doc."
+    ],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/cognition.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "compliance_proof.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/compliance_proof.rs",
+    "kind": "test",
+    "purpose": "Checks qip-compliance's ComplianceReport against the crates it governs: every one of the six qip_contracts::Control mechanisms named in the report is a real path on disk (not a plausible string), the report states its own gaps, round-trips through JSON, and the two credential windows that claim to be one window actually agree.",
+    "key_contracts": [
+      "the_report_covers_all_six_controls_and_names_a_real_mechanism_for_each",
+      "the_report_still_states_its_own_gaps",
+      "the_report_round_trips_through_json_so_it_can_be_filed_as_evidence",
+      "a_dataset_the_catalogue_licenses_for_research_is_refused_a_trade_by_the_named_mechanism",
+      "the_two_credential_windows_that_claim_to_be_the_same_window_agree_on_the_same_credential",
+      "the_withdrawal_entitlement_still_has_exactly_one_arm_and_every_evaluation_refuses"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 7,
+      "notable": [
+        "the_report_covers_all_six_controls_and_names_a_real_mechanism_for_each",
+        "the_report_still_states_its_own_gaps",
+        "the_report_round_trips_through_json_so_it_can_be_filed_as_evidence"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "GOV",
+      "SEC",
+      "LEDGER"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/compliance_proof.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "console_route.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/console_route.rs",
+    "kind": "test",
+    "purpose": "Under ADR 0024 (no load balancer between console and API) checks the portal's remaining route-to-platform pieces stay wired: the Terraform-created subnet matches the one the deploy script attaches to, the console reaches qip-api only as a named invoker, qip-api is reachable only from inside the VPC with its address a Terraform output, and the deploy script derives that address rather than restating it.",
+    "key_contracts": [
+      "the_subnet_terraform_creates_for_the_console_is_the_one_the_script_attaches_to",
+      "the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may",
+      "the_api_is_reachable_only_from_inside_the_vpc_and_its_address_is_a_terraform_output",
+      "the_deploy_script_derives_the_api_address_rather_than_restating_it"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 4,
+      "notable": [
+        "the_subnet_terraform_creates_for_the_console_is_the_one_the_script_attaches_to",
+        "the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may",
+        "the_api_is_reachable_only_from_inside_the_vpc_and_its_address_is_a_terraform_output"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "API",
+      "GCP",
+      "SEC"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/console_route.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "cross_margin.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/cross_margin.rs",
+    "kind": "test",
+    "purpose": "Blueprint \u00a725.6's cross-margin read across the qip-kernel/qip-capital seam: a real Platform driven through a real order to a real fill carries counterparty exposure; a statement handed in through Platform::observe_statement closes the finding; and the read reaches no broker, venue or order.",
+    "key_contracts": [
+      "a_platform_that_has_actually_traded_reports_the_counterparty_it_has_never_seen_a_statement_for",
+      "a_statement_handed_in_closes_the_finding_and_a_thinner_one_turns_it_into_a_call",
+      "the_cross_margin_read_reaches_no_broker_no_venue_and_no_order"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 3,
+      "notable": [
+        "a_platform_that_has_actually_traded_reports_the_counterparty_it_has_never_seen_a_statement_for",
+        "a_statement_handed_in_closes_the_finding_and_a_thinner_one_turns_it_into_a_call",
+        "the_cross_margin_read_reaches_no_broker_no_venue_and_no_order"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "CAPITAL",
+      "RISK"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/cross_margin.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "decentralised_venue.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/decentralised_venue.rs",
+    "kind": "test",
+    "purpose": "Blueprint \u00a734.3/\u00a734.4 across qip-brokers::dex, qip-execution-engine's order manager, qip_lifecycle::venue_ladder and the OMS: proves a computed MEV estimate is the same number the feasibility gate refuses on, that no venue-ladder promotion can ever reach a live-class broker, and that a venue missing any of four required pieces stays observe-only.",
+    "key_contracts": [
+      "a_mev_estimate_a_decentralised_venue_computes_is_the_number_the_feasibility_gate_refuses_on",
+      "a_venue_promoted_to_the_simulator_still_cannot_receive_an_order_at_a_live_class_broker",
+      "a_decentralised_venues_contract_risk_is_its_own_exposure_axis_and_not_the_counterparty_one",
+      "a_decentralised_venue_missing_any_of_the_four_pieces_is_observe_only_and_prices_nothing",
+      "the_kernels_venue_admission_review_names_a_reachable_venue_that_never_earned_a_rung"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 8,
+      "notable": [
+        "a_mev_estimate_a_decentralised_venue_computes_is_the_number_the_feasibility_gate_refuses_on",
+        "a_venue_promoted_to_the_simulator_still_cannot_receive_an_order_at_a_live_class_broker",
+        "a_decentralised_venues_contract_risk_is_its_own_exposure_axis_and_not_the_counterparty_one"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "EXEC",
+      "RISK",
+      "SEC"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/decentralised_venue.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "documentation.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/documentation.rs",
+    "kind": "test",
+    "purpose": "Checks specific, checkable documentation claims against the code (counts, defaults, names, thresholds, endpoint existence, internal link resolution) rather than prose \u2014 e.g. the README's stage list matches the code's Stage enum, the documented agent count matches the roster, every documented endpoint exists.",
+    "key_contracts": [
+      "the_readme_names_the_stages_the_code_actually_has",
+      "the_architecture_document_lists_a_crate_for_every_stage",
+      "the_documented_default_autonomy_level_is_the_actual_default",
+      "the_readme_lists_a_control_for_every_control_the_code_enforces",
+      "the_documented_agent_count_matches_the_roster",
+      "the_documented_dependencies_are_the_ones_in_the_manifest",
+      "every_documented_endpoint_exists",
+      "the_runbook_describes_the_escalation_the_monitor_actually_performs"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 25,
+      "notable": [
+        "the_readme_names_the_stages_the_code_actually_has",
+        "the_architecture_document_lists_a_crate_for_every_stage",
+        "the_documented_default_autonomy_level_is_the_actual_default"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "COVERAGE",
+      "GOV"
+    ],
+    "gaps_observed": [
+      "docs/DELIVERY-STATUS.md's own provenance log records this suite's every_internal_link_resolves test failing on a dangling ADR 0096 link as recently as 2026-09-21 (that ADR now exists on disk, so this specific instance has since been fixed, but the class of failure \u2014 a claimed-but-unwritten ADR number breaking this test \u2014 recurs; ADR 0097 is currently claimed in docs/adr/README.md with no file on disk)."
+    ],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/documentation.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "e2e.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/e2e.rs",
+    "kind": "test",
+    "purpose": "The single automated run through all seven layers named by the Makefile's `e2e` target (`cargo test -p qip-acceptance --test e2e -- --nocapture`): source discovery through a realised fill to a counterfactual and a model update.",
+    "key_contracts": [
+      "(one large end-to-end #[test], name not captured in this pass \u2014 see fixture helpers at e2e.rs:125-205)"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 1,
+      "notable": [
+        "(one large end-to-end #[test], name not captured in this pass \u2014 see fixture helpers at e2e.rs:125-205)"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "ARCH",
+      "EXEC",
+      "LEDGER"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/e2e.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "e2e_live.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/e2e_live.rs",
+    "kind": "test",
+    "purpose": "An end-to-end scenario exercising the live-venue-adjacent path (HTTP client limits, risk-state fixtures) while remaining paper-only; distinct from e2e.rs per its own fixture set (ClientLimits, risk_limits, platform_risk_state).",
+    "key_contracts": [
+      "(one large #[test]; fixture helpers at e2e_live.rs:186-299 build ClientLimits/RiskState)"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 1,
+      "notable": [
+        "(one large #[test]; fixture helpers at e2e_live.rs:186-299 build ClientLimits/RiskState)"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "EXEC",
+      "RISK"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/e2e_live.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "egress.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/egress.rs",
+    "kind": "test",
+    "purpose": "Everything the egress proxy (infrastructure/egress/envoy.yaml, rendered as a Cloud Run sidecar and an execution-node systemd unit) is and is not allowed to reach: only named vendor hosts, one path per adapter, digest-pinned and attested proxy image, loopback-only listeners, no route to any venue, and no workload configured to leave an instance except through its own proxy.",
+    "key_contracts": [
+      "the_vendored_openobserve_image_is_pinned_and_every_environment_that_names_it_names_the_reviewed_digest",
+      "the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named",
+      "every_upstream_is_verified_against_a_named_certificate_and_not_merely_a_trusted_one",
+      "the_proxy_image_is_pinned_by_digest_and_attested_rather_than_exempted",
+      "no_workload_is_configured_with_an_address_that_leaves_the_instance_except_through_the_proxy",
+      "the_proxy_offers_no_route_to_a_venue_and_cannot_carry_an_order"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 25,
+      "notable": [
+        "the_vendored_openobserve_image_is_pinned_and_every_environment_that_names_it_names_the_reviewed_digest",
+        "the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named",
+        "every_upstream_is_verified_against_a_named_certificate_and_not_merely_a_trusted_one"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "SEC",
+      "GCP",
+      "DATA"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/egress.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "gitops.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/gitops.rs",
+    "kind": "test",
+    "purpose": "The largest-by-bytes suite (231KB): pins ADR 0036's GitOps control plane (Argo CD + Config Connector on a per-environment GKE Autopilot cluster reconciling Cloud Run RunService manifests) to the exact shape it records \u2014 Argo CD Application repo/env matching, only dev syncs automatically with prune+heal, Kargo's dev\u2192test\u2192stage\u2192prod chain, prod promoted by nobody until an ADR says otherwise, every RunService's paper-trading ceiling as a literal, no controller manifest publishing a public service.",
+    "key_contracts": [
+      "every_argo_cd_application_points_at_this_repository_and_at_one_environment_directory_that_exists",
+      "only_dev_syncs_automatically_and_it_prunes_and_heals",
+      "prod_is_promoted_by_nobody_until_an_adr_says_otherwise",
+      "every_run_service_takes_the_paper_trading_ceiling_as_a_literal_and_no_manifest_names_a_live_rung",
+      "no_controller_manifest_publishes_a_service_and_the_argo_server_is_cluster_ip",
+      "every_image_under_gitops_is_pinned_by_digest_and_is_either_attested_by_the_pipeline_or_vendored",
+      "the_prod_refusal_in_the_infrastructure_workflow_refuses_prod_when_it_is_run"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 28,
+      "notable": [
+        "every_argo_cd_application_points_at_this_repository_and_at_one_environment_directory_that_exists",
+        "only_dev_syncs_automatically_and_it_prunes_and_heals",
+        "prod_is_promoted_by_nobody_until_an_adr_says_otherwise"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "GCP",
+      "CICD",
+      "SEC",
+      "GOV"
+    ],
+    "gaps_observed": [
+      "This suite's own module doc says the design is 'pinned to the shape it records', but the control plane itself has never successfully bootstrapped (see infra.yml and vendor.yml records \u2014 Argo CD's own image fails the Trivy scan gate)."
+    ],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "infrastructure.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/infrastructure.rs",
+    "kind": "test",
+    "purpose": "By far the largest suite (426KB, 104 tests): string-level checks over every piece of Terraform/YAML infrastructure that `terraform validate` would pass while deploying something unsafe \u2014 no secret in Terraform text, venue credential unreadable where live trading is impossible, no ceiling reported as live-capable, every Cloud Run service internal with file-mounted secrets, execution node has no external address, boot-image supply-chain integrity (attested/pinned/reviewed-branch only), dispatch-input shell-injection refusal.",
+    "key_contracts": [
+      "no_secret_value_appears_in_the_terraform",
+      "the_venue_credential_is_unreadable_where_live_trading_is_impossible",
+      "no_ceiling_a_plan_can_carry_is_reported_as_live_capable",
+      "every_cloud_run_service_is_internal_and_mounts_secrets_as_files_never_as_environment",
+      "the_execution_node_has_no_external_address_and_no_container_runtime",
+      "every_file_the_boot_image_installs_is_attested_pinned_or_from_the_reviewed_branch",
+      "a_dispatch_input_cannot_carry_a_second_line_into_a_shell_the_bake_runs",
+      "no_workflow_pastes_a_dispatch_input_or_an_event_value_into_a_shell"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 104,
+      "notable": [
+        "no_secret_value_appears_in_the_terraform",
+        "the_venue_credential_is_unreadable_where_live_trading_is_impossible",
+        "no_ceiling_a_plan_can_carry_is_reported_as_live_capable"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "SEC",
+      "GCP",
+      "GOV"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "manifest_wiring.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs",
+    "kind": "test",
+    "purpose": "Closes the seam where a deployment sets an environment variable no binary reads (a real prior incident: QIP_AUTONOMY_CEILING set for three binaries none of which read it) or a binary reads one no deployment sets (QIP_MESH_CELLS/QIP_MESH_PEER, dead in every deployment while complete in-process) \u2014 every variable a deployment sets is checked against every variable the binary it runs actually reads, in both directions.",
+    "key_contracts": [
+      "every_variable_a_deployment_sets_is_one_the_binary_it_runs_actually_reads",
+      "every_variable_a_binary_refuses_to_start_without_is_set_by_the_deployment_that_runs_it",
+      "no_deployment_sets_a_variable_its_binary_refuses_to_start_with",
+      "every_allowlisted_variable_is_still_set_and_still_unread",
+      "only_the_deep_brain_reads_the_language_model_variables",
+      "the_catalogue_lets_an_operator_select_the_live_market_connector_without_editing_it"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 20,
+      "notable": [
+        "every_variable_a_deployment_sets_is_one_the_binary_it_runs_actually_reads",
+        "every_variable_a_binary_refuses_to_start_without_is_set_by_the_deployment_that_runs_it",
+        "no_deployment_sets_a_variable_its_binary_refuses_to_start_with"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "GCP",
+      "CICD",
+      "GOV"
+    ],
+    "gaps_observed": [
+      "This suite's own module doc names a real, already-happened incident (QIP_AUTONOMY_CEILING set for three binaries, read by none), which is the reason it maintains an explicit allowlist of known-orphaned variables rather than asserting a hard zero."
+    ],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "paper_boundary.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs",
+    "kind": "test",
+    "purpose": "Proves layer two of the three paper-trading layers (.claude/rules/01-security-and-safety.md): AutonomyLevel::deployable actually refuses a live rung rather than merely being defined, and every composition root reading QIP_AUTONOMY_CEILING routes the configured value through that refusal rather than through the more permissive AutonomyLevel::parse.",
+    "key_contracts": [
+      "a_configured_live_ceiling_stops_the_deployment_instead_of_being_lowered_to_paper",
+      "every_binary_that_reads_the_configured_ceiling_routes_it_through_the_refusal",
+      "a_composition_root_that_parsed_the_ceiling_without_refusing_is_found_by_this_scan",
+      "the_three_layers_the_safety_rules_name_each_still_have_a_test"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 5,
+      "notable": [
+        "a_configured_live_ceiling_stops_the_deployment_instead_of_being_lowered_to_paper",
+        "every_binary_that_reads_the_configured_ceiling_routes_it_through_the_refusal",
+        "a_composition_root_that_parsed_the_ceiling_without_refusing_is_found_by_this_scan"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "SEC",
+      "GOV"
+    ],
+    "gaps_observed": [
+      "Written specifically because, per its own module doc, `grep -rn deployable backend/crates/services/qip-risk-engine/` previously returned only the definition itself and nothing asserted it was actually wired through on every composition root."
+    ],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "path_router.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/path_router.rs",
+    "kind": "test",
+    "purpose": "Blueprint \u00a730.2's path router across two seams: the router's 8 execution paths and 6 edge classes are exactly what the blueprint document itself names (not just what the enum happens to have), and a real cycle qip-arbitrage's search found is assigned a path from the search's own edge order via the edge cell.",
+    "key_contracts": [
+      "the_routers_eight_execution_paths_are_exactly_the_eight_the_blueprint_names",
+      "the_routers_six_edge_classes_are_exactly_the_six_the_blueprint_names",
+      "the_path_router_names_nothing_that_could_place_an_order_or_name_a_venue_class",
+      "a_cycle_the_arbitrage_search_actually_found_is_assigned_a_path_from_the_searchs_own_edge_order",
+      "the_edge_cell_calls_the_path_router_and_carries_what_it_decided_out_of_a_pass"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 7,
+      "notable": [
+        "the_routers_eight_execution_paths_are_exactly_the_eight_the_blueprint_names",
+        "the_routers_six_edge_classes_are_exactly_the_six_the_blueprint_names",
+        "the_path_router_names_nothing_that_could_place_an_order_or_name_a_venue_class"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "MESH",
+      "EXEC"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/path_router.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "performance.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/performance.rs",
+    "kind": "test",
+    "purpose": "Measures what each hot-path stage actually costs against docs/performance/budgets.md, which is written from these numbers (not the reverse) \u2014 asserts a loose ceiling and prints the exact figure, and separately asserts per-message cost is constant regardless of how many messages the book/engine has already seen (no accidental O(n) growth).",
+    "key_contracts": [
+      "book_apply_costs_what_the_budget_says",
+      "book_apply_costs_the_same_per_message_however_many_it_is_fed",
+      "feature_evaluation_costs_what_the_budget_says",
+      "strategy_evaluation_costs_what_the_budget_says",
+      "arbitrage_detection_costs_what_the_budget_says",
+      "the_capital_decision_costs_what_the_budget_says",
+      "the_risk_decision_costs_what_the_budget_says",
+      "the_budgets_document_says_what_is_measured_and_what_is_not"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 33,
+      "notable": [
+        "book_apply_costs_what_the_budget_says",
+        "book_apply_costs_the_same_per_message_however_many_it_is_fed",
+        "feature_evaluation_costs_what_the_budget_says"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "OBS",
+      "FINOPS",
+      "COVERAGE"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/performance.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "quote_loop.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/quote_loop.rs",
+    "kind": "test",
+    "purpose": "Blueprint \u00a729.1's quoting boundary \u2014 described in its own module doc as 'the most dangerous row in the delivery register to close, because in every real venue quoting is order submission': no production line of the quoting arithmetic or origination gate reaches a broker/order/venue, and a real platform pass prices a quote while creating no order and no fill.",
+    "key_contracts": [
+      "no_production_line_of_the_quoting_arithmetic_can_reach_a_broker_an_order_or_a_venue",
+      "the_kernels_quote_loop_composition_reaches_no_broker_and_builds_no_order",
+      "a_real_platform_pass_prices_a_quote_and_creates_no_order_and_no_fill",
+      "an_origination_mandate_cannot_be_decoded_into_existence",
+      "the_act_stage_carries_the_quote_loop_so_the_wiring_and_not_only_the_module_is_proven"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 5,
+      "notable": [
+        "no_production_line_of_the_quoting_arithmetic_can_reach_a_broker_an_order_or_a_venue",
+        "the_kernels_quote_loop_composition_reaches_no_broker_and_builds_no_order",
+        "a_real_platform_pass_prices_a_quote_and_creates_no_order_and_no_fill"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "EXEC",
+      "SEC"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/quote_loop.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "regime_allocation.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/regime_allocation.rs",
+    "kind": "test",
+    "purpose": "Assembles four separately-tested blueprint sections (\u00a723.3, \u00a723.6, \u00a719.2, \u00a718.4) at their seams: the regime the cost router classifies is the regime the allocator reads, the desk's mandate in qip-kernel config is the same number qip-capital's compounding policy is built from (not a second copy), and the strategy population the foundry registers is the one \u00a719.2 tiers.",
+    "key_contracts": [
+      "the_compounding_policy_is_built_from_the_desks_own_mandate_and_not_from_a_second_copy_of_it",
+      "a_freshly_opened_book_runs_no_cadence_work_and_says_so_rather_than_falling_silent",
+      "a_family_name_that_is_not_an_alpha_family_is_tiered_cold_rather_than_guessed_at",
+      "the_regime_reader_narrows_a_bound_in_every_regime_and_widens_one_in_none"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 5,
+      "notable": [
+        "the_compounding_policy_is_built_from_the_desks_own_mandate_and_not_from_a_second_copy_of_it",
+        "a_freshly_opened_book_runs_no_cadence_work_and_says_so_rather_than_falling_silent",
+        "a_family_name_that_is_not_an_alpha_family_is_tiered_cold_rather_than_guessed_at"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "CAPITAL",
+      "QUANT",
+      "REASON"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/regime_allocation.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "region_share.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/region_share.rs",
+    "kind": "test",
+    "purpose": "ADR 0039 across the wire from qip-api::mesh::pending_policy (kernel-signed) to a real qip-edge Cell that verifies and re-bases its region table from it: a payload the centre built funds each cell to exactly its share and the two never sum past the grant, a cell driven past its share is refused before the grant is, and a replayed lower-sequence payload changes nothing.",
+    "key_contracts": [
+      "a_payload_the_centre_built_funds_each_cell_to_exactly_its_share_and_the_two_never_exceed_the_grant",
+      "each_cell_places_within_its_share_and_a_cell_driven_past_its_share_is_refused_before_the_grant_is",
+      "a_replayed_lower_sequence_payload_from_the_centre_changes_neither_cells_table",
+      "a_cell_funded_by_the_centres_share_is_still_assembled_paper_only"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 5,
+      "notable": [
+        "a_payload_the_centre_built_funds_each_cell_to_exactly_its_share_and_the_two_never_exceed_the_grant",
+        "each_cell_places_within_its_share_and_a_cell_driven_past_its_share_is_refused_before_the_grant_is",
+        "a_replayed_lower_sequence_payload_from_the_centre_changes_neither_cells_table"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "MESH",
+      "CAPITAL",
+      "SEC"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/region_share.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "resilience.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/resilience.rs",
+    "kind": "test",
+    "purpose": "Load, resilience and chaos over the assembled platform: a long run does not accumulate unbounded state, the queue is worked rather than merely grown, a wide universe completes a cycle intact, a degraded/duplicated/out-of-order feed is absorbed, an empty universe says so every cycle, a halt-and-recovery mid-run leaves the platform consistent, and the event-log chain verifies after a long chaotic run.",
+    "key_contracts": [
+      "a_long_run_does_not_accumulate_unbounded_state",
+      "the_queue_is_worked_rather_than_merely_grown",
+      "a_wide_universe_completes_a_cycle_with_every_stage_intact",
+      "a_degraded_feed_does_not_stop_the_loop",
+      "an_out_of_order_and_duplicated_feed_is_absorbed_without_loss_of_legibility",
+      "a_halt_and_a_recovery_mid_run_leave_the_platform_consistent",
+      "the_event_log_chain_verifies_after_a_long_chaotic_run"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 8,
+      "notable": [
+        "a_long_run_does_not_accumulate_unbounded_state",
+        "the_queue_is_worked_rather_than_merely_grown",
+        "a_wide_universe_completes_a_cycle_with_every_stage_intact"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "RES",
+      "REFLEX",
+      "DATA",
+      "LEDGER"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/resilience.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "security.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/security.rs",
+    "kind": "test",
+    "purpose": "Makes docs/security/threat-model.md's twelve named threats executable, each test asserting a refusal (not merely a happy path): hostile-page text cannot become a number a calculation depends on, an agent that read a hostile page still cannot reach a model or the market, a research agent cannot be granted market-touching capability, a capital envelope granted to another cell is refused when replayed, a path traversal is refused before reaching a route, an unauthenticated caller cannot reach a privileged route.",
+    "key_contracts": [
+      "text_from_a_hostile_page_cannot_become_a_number_a_calculation_depends_on",
+      "an_agent_that_has_read_a_hostile_page_still_cannot_reach_a_model_or_the_market",
+      "a_research_agent_cannot_be_granted_a_market_touching_capability",
+      "a_source_whose_licensing_is_undetermined_cannot_become_tradeable_input",
+      "a_capital_envelope_granted_to_another_cell_is_refused_when_replayed",
+      "an_expired_envelope_cannot_be_replayed_after_the_window_closes",
+      "a_path_traversal_is_refused_before_it_reaches_a_route",
+      "an_unauthenticated_caller_cannot_reach_a_privileged_route"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 28,
+      "notable": [
+        "text_from_a_hostile_page_cannot_become_a_number_a_calculation_depends_on",
+        "an_agent_that_has_read_a_hostile_page_still_cannot_reach_a_model_or_the_market",
+        "a_research_agent_cannot_be_granted_a_market_touching_capability"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "SEC",
+      "AGENCY",
+      "CAPITAL"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/security.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "slo.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/slo.rs",
+    "kind": "test",
+    "purpose": "Blueprint \u00a749.1's targets, which shipped as a type with no caller matching any actual target (grep for Slo::availability/latency/default_slos found only the module and its own unit test) \u2014 proves every \u00a749.1 row is declared with its own target in the blueprint's own units, and that an objective nothing measured is never reported as achieved.",
+    "key_contracts": [
+      "every_row_of_section_49_1_is_declared_as_an_objective_with_its_own_target",
+      "the_percentile_rows_carry_their_thresholds_in_the_unit_the_blueprint_states",
+      "an_objective_nothing_measured_is_never_reported_as_achieved",
+      "the_objectives_needing_a_deployment_are_named_and_are_a_strict_subset",
+      "a_missed_blueprint_target_is_actually_reported_as_missed"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 8,
+      "notable": [
+        "every_row_of_section_49_1_is_declared_as_an_objective_with_its_own_target",
+        "the_percentile_rows_carry_their_thresholds_in_the_unit_the_blueprint_states",
+        "an_objective_nothing_measured_is_never_reported_as_achieved"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "OBS",
+      "COVERAGE"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/slo.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "streaming_estimators.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/streaming_estimators.rs",
+    "kind": "test",
+    "purpose": "Three cross-crate seams on the streaming estimators (\u00a721.1/\u00a722.2) and capacity estimate (\u00a720.1): only one sketch implementation exists per question (no silent second count-min sketch elsewhere in the workspace), a drift finding must exceed what the estimators' own declared error bound can manufacture, and a feature that drifts degrades only the models that read it.",
+    "key_contracts": [
+      "every_streaming_estimator_refuses_a_configuration_past_its_named_memory_ceiling",
+      "the_drift_floor_sits_between_an_identical_redraw_and_a_genuine_shift",
+      "a_feature_that_drifts_past_its_bound_degrades_the_models_that_read_it_and_no_others",
+      "each_sketch_is_declared_exactly_once_in_the_workspace"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 4,
+      "notable": [
+        "every_streaming_estimator_refuses_a_configuration_past_its_named_memory_ceiling",
+        "the_drift_floor_sits_between_an_identical_redraw_and_a_genuine_shift",
+        "a_feature_that_drifts_past_its_bound_degrades_the_models_that_read_it_and_no_others"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "DATA",
+      "QUANT",
+      "MODEL"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/streaming_estimators.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "stress.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/stress.rs",
+    "kind": "test",
+    "purpose": "Named failure scenarios asked a harsher question than resilience.rs's load test: does the platform refuse or guess when something specific breaks \u2014 a region offline, regional network loss, a broker outage mid-arbitrage, an unfillable arbitrage leg, 10x wider slippage, stale data, a duplicated feed, a corrupt sequence, cash below buffer.",
+    "key_contracts": [
+      "a_very_high_synthetic_event_rate_is_absorbed_without_losing_an_event",
+      "a_region_that_goes_completely_offline_is_halted_by_scope_and_the_others_keep_trading",
+      "a_broker_outage_mid_arbitrage_stops_the_plan_and_names_the_exposure_it_stranded",
+      "an_arbitrage_leg_the_book_cannot_fill_is_refused_rather_than_part_executed",
+      "slippage_ten_times_wider_turns_a_profitable_path_into_a_recorded_refusal",
+      "stale_data_is_refused_as_a_price_rather_than_used_as_one",
+      "a_duplicated_market_feed_is_recognised_rather_than_applied_twice",
+      "a_corrupt_sequence_invalidates_the_book_rather_than_being_absorbed",
+      "cash_below_its_buffer_refuses_the_order_instead_of_borrowing_silently"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 16,
+      "notable": [
+        "a_very_high_synthetic_event_rate_is_absorbed_without_losing_an_event",
+        "a_region_that_goes_completely_offline_is_halted_by_scope_and_the_others_keep_trading",
+        "a_broker_outage_mid_arbitrage_stops_the_plan_and_names_the_exposure_it_stranded"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "RES",
+      "RISK",
+      "MESH"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/stress.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "terraform_contract.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/terraform_contract.rs",
+    "kind": "test",
+    "purpose": "The other half of infrastructure.rs: constructs that read as valid HCL to a person but that `terraform init`/`plan` reject outright (a real prior incident: modules/cloudrun declared `variable \"source\"`, a name Terraform reserves for a module's own address, and the whole suite passed while every plan failed) \u2014 checked statically since no Terraform binary runs in this environment.",
+    "key_contracts": [
+      "every_argument_a_module_block_passes_is_a_variable_the_module_declares",
+      "every_module_input_without_a_default_is_passed_by_every_block_that_calls_it",
+      "no_module_variable_is_named_one_of_the_words_terraform_reserves",
+      "every_lifecycle_argument_terraform_requires_to_be_literal_is_written_as_one",
+      "the_module_graph_stays_one_level_deep_and_entirely_local",
+      "no_deployment_points_telemetry_at_openobserve_while_it_is_anonymous"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 11,
+      "notable": [
+        "every_argument_a_module_block_passes_is_a_variable_the_module_declares",
+        "every_module_input_without_a_default_is_passed_by_every_block_that_calls_it",
+        "no_module_variable_is_named_one_of_the_words_terraform_reserves"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "GCP",
+      "CICD"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/terraform_contract.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "terraform_plan.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs",
+    "kind": "test",
+    "purpose": "What only a real `terraform plan` can prove, which infrastructure.rs's text checks cannot: a real prior incident had console_egress_cidr's null-guard evaluate both operands of `||` and die on a provider error before its error_message was reached, making `plan` impossible in three of four environments while never once reporting the bad value it was written for \u2014 every variable validation is now proven with a real plan on both a refusal and an admission.",
+    "key_contracts": [
+      "no_variable_validation_hands_the_null_it_is_guarding_against_to_a_function",
+      "every_plan_harness_proves_a_refusal_and_an_admission",
+      "the_four_gates_this_platform_cannot_read_from_text_each_have_a_plan",
+      "the_public_edge_attaches_every_backend_to_the_cloud_armor_policy",
+      "no_environment_opens_a_public_address"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 6,
+      "notable": [
+        "no_variable_validation_hands_the_null_it_is_guarding_against_to_a_function",
+        "every_plan_harness_proves_a_refusal_and_an_admission",
+        "the_four_gates_this_platform_cannot_read_from_text_each_have_a_plan"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "GCP",
+      "SEC"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs (module doc, first ~15 lines)"
+    ]
+  },
+  {
+    "name": "adr-register",
+    "path": "docs/adr/README.md",
+    "kind": "docs",
+    "purpose": "The index of every Architecture Decision Record: a claiming-protocol note (claim the number in its own commit before writing the body, to survive concurrent lanes \u2014 six ADRs collided into 0065-0074 in one afternoon before this protocol existed) followed by one table row per ADR number and decision title.",
+    "key_contracts": [
+      "'Claiming a number' protocol: unlinked plain-text row first, link added only once the body lands",
+      "one row per ADR 0001-0099 (with gaps)"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "documentation.rs's every_internal_link_resolves test checks every link in this file resolves to a real file, so it is checked by CI even though it has no runtime caller.",
+    "io_and_state": "None; static markdown index.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "partial"
+    ],
+    "status_reason": "98 numbered ADR files exist on disk (docs/adr/0001-...-0099-...), classified by each file's own Status field: approx. 60 accepted (incl. several 'accepted on delegated authority' variants and two whose Status line wraps the value in bold rather than the label), approx. 33 proposed, 2 explicitly superseded (0011 by 0024's Kubernetes half, 0017 by 0024 then re-taken in part by 0036), 1 resolved-not-by-this-record (0026), 1 applied (0029). ADR 0097 is claimed in this README's table (unlinked, 'body to follow') but no 0097 file exists anywhere in docs/adr/ \u2014 a genuine gap between the claimed number and a written record. ADR 0099's body file already exists on disk (185 lines, untracked per git status) but this README still carries it as an unlinked 'Number claimed 2026-09-25; body to follow' row, so the index is currently stale relative to the working tree for that one row.",
+    "blueprint_capabilities": [
+      "GOV",
+      "ARCH"
+    ],
+    "gaps_observed": [
+      "docs/adr/README.md:136 links ADR 0096 with prose still reading 'body to follow in the next commit' even though docs/adr/0096-....md already exists with 213 lines of real content \u2014 stale parenthetical, not a broken link.",
+      "docs/adr/README.md row for 0097 ('Number claimed 2026-09-21; body to follow') has no corresponding file anywhere under docs/adr/ \u2014 `ls docs/adr/ | grep -E '^0097'` returns nothing, a genuinely unwritten claimed ADR.",
+      "docs/adr/README.md row for 0099 is still the unlinked placeholder text even though docs/adr/0099-....md (185 lines) exists on disk, untracked in git \u2014 the index has not yet been updated to link it."
+    ],
+    "evidence": [
+      "docs/adr/README.md:1-40",
+      "docs/adr/README.md:136",
+      "docs/adr/README.md (0097, 0099 rows)",
+      "ls docs/adr/ (98 numbered files)"
+    ]
+  },
+  {
+    "name": "delivery-status",
+    "path": "docs/DELIVERY-STATUS.md",
+    "kind": "docs",
+    "purpose": "The single status document (3,245 lines), replacing 19 prior registers on 2026-09-07: scores all 181 numbered sections of the Algorik Master Blueprint v10.1 against the code, one row per section, on a fixed six-value bar (REACHED/UNREACHED/PARTIAL/ABSENT/BLOCKED/NARRATIVE), with every evidence cell a runnable command rather than a line number.",
+    "key_contracts": [
+      "'The shape' tally table: REACHED/PARTIAL/UNREACHED/ABSENT/NARRATIVE counts, re-derived by grep and required to sum to 181 before being written",
+      "'What cannot be delivered from this repository' \u2014 a table of hard external blockers",
+      "'Where the blueprint and the code disagree' \u2014 4 filed disagreements, 3 resolved by ADR",
+      "'Absences this document asserts, and CI re-checks' \u2014 4 machine-checked absence claims",
+      "'The 181 sections' \u2014 the full scored table (not itemised in this record per task scope: headline verdicts only)",
+      "'Provenance, and how to re-score' \u2014 dated re-scoring log with gate output quoted at each pass"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "audit-register.py re-executes this document's own cited commands to catch stale claims; qip-acceptance's the_delivery_status_counts_the_crates_that_are_actually_there and no_scored_plan_document_calls_a_search_empty_that_is_not run some of its claims as CI tests.",
+    "io_and_state": "None; a living markdown document updated by hand/by lane, with an explicit no-second-status-document rule.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": [
+      "exists",
+      "hardened"
+    ],
+    "status_reason": "Headline verdict as last recounted (multiple independent 2026-09-21 recounts agree): REACHED 46 (25%), PARTIAL 119 (66%), UNREACHED 1 (1%), ABSENT 0 (0%), NARRATIVE 15 (8%), total 181. The single governing fact stated at the top of the document: 'Nothing is deployed. No process of this platform has ever been observed running' \u2014 so REACHED means built+tested+has a non-test caller, never 'running in production'. Workspace gate quoted at first scoring (2026-09-07): cargo test --workspace --no-fail-fast exit 0, 4823 passed, 0 failed; clippy zero warnings; fmt clean; dependency policy 11 packages all permitted; secret scan nothing found.",
+    "blueprint_capabilities": [
+      "GOV",
+      "COVERAGE",
+      "ARCH"
+    ],
+    "gaps_observed": [
+      "'Crates: 58, Blueprint sections scored: 181' (Measured facts table) \u2014 both independently confirmed during this pass: `grep -c '^\\s*\"crates/' backend/Cargo.toml` = 58, matching `find backend/crates -name Cargo.toml | wc -l` = 58.",
+      "External, not-fixable-from-this-repo blockers listed: (1) No deployment \u2014 dev applied then torn down then re-applied (run 52), 238 resources, run concludes 'failure' at the bootstrap step; (2) Argo CD fails vendor.yml's Trivy scan gate on CVE-2025-68121 with no fixed upstream kustomize/git-lfs version available, cascading to block cert-manager's images too; (3) No Cloud Run metrics collector \u2014 Google's only published sidecar fails the same Trivy gate; (4) Option-quote licensing (ADR 0050) needs an owner-side vendor evaluation; (5) ADR 0038 (passkeys) is proposed, blocked on four owner-run checks; (6) Leptos (ADR 0022/0025) \u2014 resolved 2026-09-19 by ADR 0081: not authorised, retired as a deliberate non-goal, no longer a blocker; (7) Boot image never baked \u2014 image.yml has never been dispatched.",
+      "The document's own provenance log records, as of its latest entry read in this pass, one currently-open CI failure: qip-acceptance's every_internal_link_resolves failing because docs/adr/README.md linked ADR 0096 before its body existed \u2014 this specific instance is now resolved (0096's body exists on disk), but the same class of failure is live again via ADR 0097 (claimed in the README, no file on disk) per the adr-register record above.",
+      "The document explicitly refuses to produce a single delivered-percentage headline, arguing blueprint sections are not equal-weight units (\u00a75.6 bundles nine execution domains, \u00a746.2 is an 18-row control table, \u00a741.5 is 12 payload slots) \u2014 so 'PARTIAL at 66%' is the accurate shape of a platform with a defensible subset of nearly every table and the whole of few, not a hedge."
+    ],
+    "evidence": [
+      "docs/DELIVERY-STATUS.md:1-58",
+      "docs/DELIVERY-STATUS.md:86-93 (the shape)",
+      "docs/DELIVERY-STATUS.md:231-246 (what cannot be delivered)",
+      "docs/DELIVERY-STATUS.md:293-345 (blueprint vs code disagreements)",
+      "docs/DELIVERY-STATUS.md:348-372 (machine-checked absences)",
+      "docs/DELIVERY-STATUS.md:672-690 (provenance)"
+    ]
+  },
+  {
+    "name": "truth_loop.rs",
+    "path": "backend/crates/tests/qip-acceptance/tests/truth_loop.rs",
+    "kind": "test",
+    "purpose": "The Data Truth Loop (source event \u2192 state, 7 stages) that every later loop reads from: both bitemporal timestamps survive every stage, a record failing its quality gate is refused by name and never reaches the world model, a research-licensed dataset cannot be spent on a trade, written evidence cannot be revised, and every registry the platform acts on rebuilds byte-identically from the event log alone (one flipped byte refuses the replay).",
+    "key_contracts": [
+      "one_market_event_travels_all_seven_stages_of_the_truth_loop",
+      "both_timestamps_survive_every_stage_of_the_loop",
+      "a_record_that_fails_its_quality_gate_is_refused_by_name_and_never_reaches_the_world_model",
+      "a_dataset_licensed_for_research_cannot_be_spent_on_a_trade",
+      "the_evidence_written_by_the_loop_cannot_be_revised_afterwards",
+      "nothing_the_loop_wrote_is_visible_before_the_moment_it_became_known",
+      "two_journeys_through_the_loop_produce_byte_identical_outcomes",
+      "every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one_flipped_byte_refuses_the_replay"
+    ],
+    "workspace_deps": [
+      "qip-core",
+      "qip-kernel",
+      "qip-edge",
+      "qip-financial",
+      "qip-contracts",
+      "qip-risk-engine",
+      "qip-execution-engine",
+      "qip-portfolio-engine",
+      "qip-market-ingestion",
+      "qip-world-model",
+      "qip-compliance",
+      "qip-mesh",
+      "qip-observability",
+      "qip-api"
+    ],
+    "reached_from_production": "tests-only",
+    "production_evidence": "Cross-cutting acceptance test file; run via `cargo test -p qip-acceptance` / `make acceptance`, never called from a deployable binary itself \u2014 its purpose is to assert properties of production code assembled together.",
+    "io_and_state": "In-process only: constructs real Platform/Cell instances against fixture data and an in-memory/temp-file event log; no live network or venue calls.",
+    "tests": {
+      "count": 8,
+      "notable": [
+        "one_market_event_travels_all_seven_stages_of_the_truth_loop",
+        "both_timestamps_survive_every_stage_of_the_loop",
+        "a_record_that_fails_its_quality_gate_is_refused_by_name_and_never_reaches_the_world_model"
+      ]
+    },
+    "status": [
+      "exists"
+    ],
+    "status_reason": "Present in the workspace test tree; gated by ci.yml's `test` job (cargo test --workspace --all-features --no-fail-fast) and `make acceptance`.",
+    "blueprint_capabilities": [
+      "DATA",
+      "TICK",
+      "LEDGER",
+      "EVID"
+    ],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/truth_loop.rs (module doc, first ~15 lines)"
+    ]
+  }
+]

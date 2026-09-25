@@ -1,0 +1,594 @@
+[
+  {
+    "id": "AMBIENT-001",
+    "domain": "AMBIENT",
+    "title": "Ambient models run continuously without a prompt or a strategy tick",
+    "statement": "The Proactive Ambient Model Mesh runs as persistent background intelligence. Its models execute continuously, on their own schedule and on events. They do not wait to be invoked by a user prompt, a research or trading workflow, or a strategy tick.",
+    "rationale": "v11.6 corrects v10.1, where models ran mainly when a research or trading workflow invoked them. A model that runs only when asked cannot notice anything nobody asked about.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1 Executive Summary"},
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Ambient proactive intelligence"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 — models mainly invoked by research/trading workflows"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Ambient proactive model mesh"},
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Ambient model mesh"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "Run the platform for a fixed window with no user or API request and no strategy tick. Assert that the mesh's forecast and surprise state versions still advanced, and that each update is stamped with a schedule or event trigger rather than a caller."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["MODEL", "FINOPS"],
+    "notes": "M p18 §9.5 has the most specific wording ('do not wait for a user prompt or a strategy tick') and is kept. M p2 says the mesh 'runs continuously in the background'. M p5 frames the mesh as the replacement for models 'mainly invoked by research/trading workflows'. M p35 says 'continuously scheduled/streaming'. COST is carried from the M p35 placement row because an always-on mesh is standing compute, which ADR 0093's cost instruction governs. Priority P2: master Phase 8 (§30, p42) adds the Ambient Model Mesh and Attention Router, and GCP Phase 8 (§26, p22) adds ambient agents."
+  },
+  {
+    "id": "AMBIENT-002",
+    "domain": "AMBIENT",
+    "title": "Forecast models maintain multi-horizon expected-state distributions",
+    "statement": "Ambient forecast models continuously maintain stateful forecasts across the world and markets. Each forecast is an expected future-state distribution, and the horizons run from milliseconds to years.",
+    "rationale": "Surprise, assumption and opportunity detection are all measured against an expected state. Without a maintained forecast there is nothing to be surprised against.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1 Executive Summary"},
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Ambient proactive intelligence"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Ambient proactive model mesh"},
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh — lead paragraph and forecast-models bullet"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Ambient model mesh ('stateful forecasts')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"},
+      {"doc": "H", "page": "L280", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'amb' (forecast sentinel)"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a recorded world and market history. Assert that the forecast state holds a distribution for every configured horizon, from at least one sub-second horizon to at least one multi-year horizon, and that each horizon's state carries forward between updates instead of being recomputed from nothing."
+    },
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["MODEL", "WORLD"],
+    "notes": "M p18 §9.5 is the most specific source: it says 'expected-state distributions' and gives the millisecond-to-year horizons. M p35 adds 'stateful'. H names 'forecast' as one of its six sentinel types. MANAGED_SERVICE was removed because the statement names no placement; placement is AMBIENT-020. NON_RUST and NEW_DEPENDENCY are kept because long-horizon models may run in v11.6 §10's non-Rust research lane (ADR 0099 conflict C5). M p19 §10 says ambient forecasting and surprise models run in all lanes 'by distilled form', so the millisecond horizons are the Rust hot-lane distillation."
+  },
+  {
+    "id": "AMBIENT-003",
+    "domain": "AMBIENT",
+    "title": "Weak-signal detectors scan continuously",
+    "statement": "Ambient models continuously run weak-signal detectors over world and market state, and each weak signal they find is surfaced with its evidence without anyone asking for it.",
+    "rationale": "A signal worth trading usually starts out too faint for any strategy to act on, and the mesh exists to see it at that stage.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1 Executive Summary ('searching for weak signals')"},
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Ambient proactive intelligence"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Ambient proactive model mesh ('scan weak signals')"},
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh — lead paragraph ('weak-signal detectors')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a history containing a planted signal below every strategy's entry threshold. Assert that a weak-signal detection is recorded, with no request having been made, before any strategy signal on the same instrument."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "EVID"],
+    "notes": "MANAGED_SERVICE, carried in from the M p18 lead-paragraph extraction, was removed because the statement names no placement. M p29 §23's 'discover new weak signals' is split out as AMBIENT-017. Running the existing detectors is Phase 8 work; growing the detector set is Phase 9 work."
+  },
+  {
+    "id": "AMBIENT-004",
+    "domain": "AMBIENT",
+    "title": "Conditional scenario branches are simulated continuously",
+    "statement": "Ambient models continuously simulate future paths and maintain conditional scenarios across the world and markets. Each scenario branch records the condition it depends on.",
+    "rationale": "A scenario simulated only when someone asks for it describes the moment of the question, not the moment the condition changed.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1 Executive Summary ('generating scenarios')"},
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Ambient proactive intelligence ('simulate')"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 ('scenario branches')"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Ambient proactive model mesh ('simulate future paths')"},
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh — lead paragraph ('conditional scenarios')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Change a world-state input that a maintained scenario is conditioned on. Assert that the mesh re-simulates and updates that branch without a request, and that the branch records its condition."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "REASON"],
+    "notes": "The M p18 wording ('conditional scenarios') is kept. M p5 calls them 'scenario branches'. MANAGED_SERVICE was removed because no placement is named. Scenarios are one of the four output types on the World Model Federation link (AMBIENT-011)."
+  },
+  {
+    "id": "AMBIENT-005",
+    "domain": "AMBIENT",
+    "title": "Ambient signals wake specialist and research pathways without a prompt",
+    "statement": "A useful ambient signal automatically wakes the specialist brains or research pathways it concerns. It does so before any human prompt or strategy request, and without one.",
+    "rationale": "The mesh is worth having only if it notices first. A detection that waits for someone to ask is just a report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1 Executive Summary ('waking specialist brains before a human or strategy asks a question')"},
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Ambient proactive intelligence"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 ('wake specialist brains automatically')"},
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table, Ambient proactive expansion"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "With no human or API request in flight, inject a material ambient signal. Assert that a specialist or research activation occurs, and that its AttentionEvent names the ambient signal as its origin and records no human requester."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REASON", "MODEL"],
+    "notes": "M p29 also lets ambient signals create curriculum items without a prompt. That half is split out as AMBIENT-018 (Phase 9). Waking a pathway starts advisory work only, and nothing acts (AMBIENT-016). M p33 §24.7 routes ambient ActionOpportunity candidates to the Agency Brain through the Attention Router. That loop is not in this list and is expected under AGENCY."
+  },
+  {
+    "id": "AMBIENT-006",
+    "domain": "AMBIENT",
+    "title": "Surprise/novelty models score live observations against expected state",
+    "statement": "Surprise/novelty models compare each live observation with the expected state the forecasts hold. They surface the unexplained residual as a maintained surprise score.",
+    "rationale": "A surprise score is the mesh's measure of what the world models did not explain. Every escalation downstream starts from it.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1 Executive Summary ('surprise scores')"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 ('surprise scores, anomaly/opportunity scans')"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Ambient proactive model mesh ('detect novelty')"},
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh — lead paragraph ('surprise measures') and surprise/novelty bullet"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Ambient model mesh ('surprise scoring')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"},
+      {"doc": "G", "page": "20", "section": "§21.2 World event to cognitive response — step 3"},
+      {"doc": "H", "page": "L280", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'amb' (surprise sentinel)"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated pairs of observation and expected state, assert three things: the surprise score is minimal when the observation matches the expectation, it grows with the unexplained residual, and it is emitted together with the residual and the expected baseline it was measured against."
+    },
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["MODEL", "WORLD"],
+    "notes": "The M p18 bullet is the most specific source and is kept. G p20 §21.2 step 3 adds that detection also covers the 'causal implications' of a world event and ends in a task on the Fabric (AMBIENT-021, AMBIENT-026). M p5 calls these 'anomaly' scans. MANAGED_SERVICE was removed because no placement is named. NON_RUST and NEW_DEPENDENCY are kept for learned novelty models. A plain residual against an in-tree forecast needs neither."
+  },
+  {
+    "id": "AMBIENT-007",
+    "domain": "AMBIENT",
+    "title": "Assumption sentinels retest the premises of active strategies, beliefs and risk models",
+    "statement": "Assumption sentinels continuously test whether the premises behind every active strategy, belief and risk model still hold. When a premise has failed, they report it and name what depended on it.",
+    "rationale": "A strategy whose premise has quietly stopped holding keeps trading on a world that no longer exists, and nothing in its own P&L says so until the loss arrives.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Ambient proactive intelligence ('monitor assumptions')"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 ('assumption health')"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Ambient proactive model mesh ('monitor assumptions')"},
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh — assumption-sentinels bullet"},
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table, Ambient proactive expansion ('assumption failures')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"},
+      {"doc": "H", "page": "L280", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'amb' (assumption sentinel)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Register an active strategy with an explicit premise, then falsify that premise in the input stream. Assert that the assumption sentinel reports the premise as failed, naming the strategy, within its check interval."
+    },
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["RISK", "REASON", "MODEL"],
+    "notes": "This requirement presumes that premises are recorded explicitly against strategies, beliefs and risk models. Neither blueprint states that here, and it is expected under REASON and RISK. A failed premise reaches risk review through the Attention Router (AMBIENT-010)."
+  },
+  {
+    "id": "AMBIENT-008",
+    "domain": "AMBIENT",
+    "title": "Opportunity sentinels detect dislocation precursors before a trade signal exists",
+    "statement": "Opportunity sentinels look for precursors to five kinds of dislocation: cross-asset, cross-region, event, physical-product and multi-leg. They surface a precursor before a full trade signal exists.",
+    "rationale": "By the time a dislocation is a full signal, faster participants already hold it. Seeing its precursor is what buys preparation time.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity — Ambient proactive intelligence ('search for ... opportunities')"},
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1 ('anomaly/opportunity scans')"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Ambient proactive model mesh ('identify opportunity ... precursors')"},
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh — opportunity-sentinels bullet"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist"},
+      {"doc": "H", "page": "L280", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'amb' (opportunity sentinel)"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a recorded dislocation of each of the five named kinds. Assert that the opportunity sentinel recorded a precursor before the strategy layer produced a full signal for it."
+    },
+    "policy_flags": ["NEW_DEPENDENCY", "MULTI_REGION"],
+    "secondary_domains": ["ASSET", "MESH", "COMMERCE"],
+    "notes": "A precursor is advisory (AMBIENT-016). It is not a signal and never reaches the order path directly. Cross-region detection needs data from more than one region, which is why MULTI_REGION applies. Physical-product dislocations depend on COMMERCE (master Phase 7), and multi-leg dislocations depend on the Reflex Mesh arbitrage lane."
+  },
+  {
+    "id": "AMBIENT-009",
+    "domain": "AMBIENT",
+    "title": "Risk sentinels model tail conditions before hard limits are reached",
+    "statement": "Risk sentinels continuously model tail conditions, contagion, liquidity evaporation, crowding and correlated failure. They raise risk precursors before any hard limit is reached.",
+    "rationale": "A hard limit fires once the loss has happened. A sentinel exists to give the risk desk the warning before it does.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Ambient proactive model mesh ('identify ... risk precursors')"},
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh — risk-sentinels bullet"},
+      {"doc": "H", "page": "L280", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'amb' (risk sentinel)"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a stressed history that includes a liquidity withdrawal and a correlated drawdown. Assert that a risk-sentinel warning is recorded strictly before the first hard-limit breach the deterministic risk gate reports on the same history."
+    },
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["RISK"],
+    "notes": "Sentinels only warn. They never replace or relax the deterministic risk gate, and a hard limit still fires on its own arithmetic, because deterministic pre-trade checks never route to a model."
+  },
+  {
+    "id": "AMBIENT-010",
+    "domain": "AMBIENT",
+    "title": "The Attention Router escalates material deviations to the right pathway",
+    "statement": "An always-on Attention Router, the Ambient Attention Brain, combines surprise, opportunity, risk and assumption signals. It turns each material deviation into one of five outcomes: a research task, a specialist activation, a risk review, capital preparation or a reflex-model update. The outcome is routed to the correct specialist, research or reflex lane.",
+    "rationale": "Without routing, detections either flood every brain or reach none. The router is the one place where materiality is judged.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map — Ambient proactive model mesh ('route attention to the correct specialist or reflex lane')"},
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society — Ambient Attention Brain"},
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh — lead paragraph (Attention Router)"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Ambient model mesh ('attention routing')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated combinations of the four signal classes, assert two things. A deviation below the materiality threshold produces no activation. A material deviation produces exactly the pathway the routing policy names for its class, recorded as an AttentionEvent."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "CAPITAL", "REFLEX", "REASON"],
+    "notes": "M p16 names the component 'Ambient Attention Brain' and lists its four inputs. M p18 calls it the Attention Router and names the five outcome classes. Both are kept. COST from the M p35 placement row was removed because routing logic carries no cost conflict of its own; COST stays on AMBIENT-001, AMBIENT-020 and AMBIENT-022. A reflex-model update reaches a reflex cell only as a signed, promoted package (AMBIENT-016). Capital preparation is a recommendation, not a transfer. Neither blueprint quantifies the materiality threshold."
+  },
+  {
+    "id": "AMBIENT-011",
+    "domain": "AMBIENT",
+    "title": "The ambient mesh and the World Model Federation exchange typed state both ways",
+    "statement": "The Proactive Ambient Model Mesh consumes World Model Federation state. Everything it returns to the federation and the reasoning layer is typed as one of four things: surprise, hypotheses, scenarios or attention.",
+    "rationale": "The federation weighs competing world models, so what the mesh feeds back into it has to be distinguishable by kind. A surprise and a hypothesis carry different evidential weight.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path — diagram, World Model Federation <-> Proactive Ambient Model Mesh"},
+      {"doc": "H", "page": "L260", "section": "VIEWS.data — 04 · World Sensing, Tick History & Durable Knowledge, edge world -> ambient (knowledge)"},
+      {"doc": "H", "page": "L292", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, edge wm -> amb (knowledge)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Assert that world-model state published by the federation reaches the mesh. Assert that every message the mesh returns on that link carries one of the four types, and that a message of any other type is refused at the boundary."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "REASON"],
+    "notes": "This merges the M p11 interaction (arrows in both directions between the World Model Federation and the mesh) with the label on that link, 'surprise / hypotheses / scenarios / attention'. The diagram H shows only the federation-to-mesh direction. In view 05 the mesh's outbound edge goes to the Meta / Arbitration Brain (amb -> meta), not back to the federation, so the return path rests on M alone. Treating the label as a closed set of four types is this catalogue's interpretation. P2: both sides of the link land in master Phase 8 and GCP Phase 8."
+  },
+  {
+    "id": "AMBIENT-012",
+    "domain": "AMBIENT",
+    "title": "Counterfactual shadow models keep learning data for decisions not taken",
+    "statement": "Counterfactual shadow models continuously simulate the alternatives to actions the platform took. The simulated outcomes are retained as learning data for the decisions not taken.",
+    "rationale": "A system that learns only from what it did never learns what its refusals cost it.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh — counterfactual-shadow-models bullet"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a run that contains both taken and declined decisions. Assert that every declined alternative has a retained simulated-outcome record, linked to the decision it was an alternative to and reproducible from the log."
+    },
+    "policy_flags": ["NON_RUST", "NEW_DEPENDENCY"],
+    "secondary_domains": ["MODEL", "TICK"],
+    "notes": "Kept as one requirement because the only purpose of the simulation is the retained record, and checking the record exercises both halves. This model class is not among the six sentinel types H names (H L280)."
+  },
+  {
+    "id": "AMBIENT-013",
+    "domain": "AMBIENT",
+    "title": "Capital-readiness models anticipate collateral, cash, inventory and hedge needs",
+    "statement": "Capital-readiness models anticipate where collateral, cash, inventory or hedges may be needed, and recommend pre-positioning ahead of the need.",
+    "rationale": "Collateral found after the margin call, or a hedge found after the move, is a forced trade on the worst terms of the day.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh — capital-readiness-models bullet"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a history that ends in a margin, inventory or hedge demand. Assert that a capital-readiness recommendation naming the resource, the location and the horizon was recorded before the demand."
+    },
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["CAPITAL"],
+    "notes": "Split from its authority bound (AMBIENT-014). A recommendation is advisory. Carrying out a pre-positioning move is a treasury transfer, which needs live capital and is BLOCKED under ADR 0021 (ADR 0099 C1). Only the recommendation and its paper or shadow evaluation can be built. This model class is not among the six sentinel types H names."
+  },
+  {
+    "id": "AMBIENT-014",
+    "domain": "AMBIENT",
+    "title": "Pre-positioning recommendations stay within authority limits",
+    "statement": "Capital-readiness models may recommend pre-positioning only within authority limits. No emitted recommendation exceeds the authority envelope that governs the resource it names.",
+    "rationale": "A recommendation beyond authority is either ignored, which makes the model noise, or acted on, which makes it a breach. Bounding it at the source removes both outcomes.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh — capital-readiness-models bullet ('within authority limits')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated recommendations and authority envelopes, assert that no emitted recommendation exceeds its envelope. Assert also that an out-of-envelope candidate is refused with a named reason, not silently reduced to the limit."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CAPITAL", "GOV"],
+    "notes": "Split from AMBIENT-013 because the bound can be checked on its own and is a capital-protection invariant. That makes it P0 while the model itself is P2. NEW_DEPENDENCY was removed from the source item because a bound check needs no new crate. Refusing rather than clamping follows the house principle 'refuse rather than guess'; the blueprint itself says only 'within authority limits'."
+  },
+  {
+    "id": "AMBIENT-015",
+    "domain": "AMBIENT",
+    "title": "Curiosity models pursue high-value unknowns",
+    "statement": "Curiosity models search for high-value unknowns. To resolve one, they trigger new scouts, tools, simulations, specialists or symbolic hypotheses.",
+    "rationale": "Every other sentinel watches what the platform already models. Curiosity is the mesh's way to spend effort on what it does not model yet.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh — curiosity-models bullet"},
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table, Ambient proactive expansion ('high-value unknowns')"},
+      {"doc": "H", "page": "L280", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'amb' (curiosity sentinel)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Seed an unknown whose estimated value exceeds the curiosity threshold. Assert that a governed request for a scout, tool, simulation, specialist or hypothesis is emitted with the value estimate, and that nothing is created outside that governed path."
+    },
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["EXPAND", "WORLD", "REASON"],
+    "notes": "Creating new tools or specialists depends on master Phase 9's governed spawning (EXPAND). A new scout's source must have its licensing posture evaluated before use. M p29's 'high-value unknowns' is the same capability as it appears in the §23 expansion table."
+  },
+  {
+    "id": "AMBIENT-016",
+    "domain": "AMBIENT",
+    "title": "Ambient outputs stay advisory until promoted",
+    "statement": "Ambient outputs are advisory until promoted. Promotion runs through the same evidence, evaluation, authority and deterministic-control boundaries as any other model output, and an ambient output has no shorter path.",
+    "rationale": "An always-on model sees more than any other part of the system and is reviewed less than any other. If it could act on what it sees, it would be the least-governed path to an order.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "18", "section": "§9.5 Proactive Ambient Model Mesh — final bullet"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Assert that no ambient output type has a code path to the order path, a risk limit, the model/policy registry or an action adapter except through the promotion gate. Assert also that an ambient-originated proposal without evaluation evidence is refused at that gate."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "RISK", "MODEL", "AGENCY"],
+    "notes": "Two related statements outside this list are expected under AGENCY: M p35 §26 ('no direct path from ambient model to external action') and M p44 §31 ('Ambient models may propose action opportunities but cannot directly perform external actions'). In this repository the invariant sits inside the paper-trading boundary. A promoted ambient output still meets the deterministic risk gate and all three paper-trading layers."
+  },
+  {
+    "id": "AMBIENT-017",
+    "domain": "AMBIENT",
+    "title": "Ambient expansion discovers new weak signals and precursor relationships",
+    "statement": "Always-on models continuously discover weak signals and precursor relationships that the mesh does not yet track.",
+    "rationale": "A fixed set of detectors can only find what it was built to find. Expansion is how the detector set grows without waiting for a human to specify it.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table, Ambient proactive expansion"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a history containing a planted lead-lag relationship that no registered detector covers. Assert that the mesh records it as a discovered precursor relationship, with its evidence, without a human prompt."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPAND", "WORLD"],
+    "notes": "Split from AMBIENT-003, which covers running the existing detectors in Phase 8. The same row's 'assumption failures' is merged into AMBIENT-007 and its 'high-value unknowns' into AMBIENT-015. Priority P3: master Phase 9 enables 'ambient-signal-driven curricula' and open-ended expansion (§30, p42)."
+  },
+  {
+    "id": "AMBIENT-018",
+    "domain": "AMBIENT",
+    "title": "Useful ambient signals create curriculum items without a human prompt",
+    "statement": "A useful ambient signal can create a curriculum item for the Intelligence Expansion Engine without a human prompt.",
+    "rationale": "The gaps the mesh finds are the ones most worth learning. If they reach the curriculum only when a human notices them, the loop is only as fast as the human.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table, Ambient proactive expansion"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Inject an ambient signal classified as useful. Assert that a curriculum item is created, attributed to that signal, with no human requester."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPAND"],
+    "notes": "Split from AMBIENT-005, which covers waking specialists. Priority P3: master Phase 9 names 'ambient-signal-driven curricula' (§30, p42)."
+  },
+  {
+    "id": "AMBIENT-019",
+    "domain": "AMBIENT",
+    "title": "Ambient discoveries are recorded as AmbientSignal and AttentionEvent records",
+    "statement": "Ambient proactive discovery produces an AmbientSignal record, and every specialist, research or reflex activation it causes produces an AttentionEvent record.",
+    "rationale": "An activation with no record cannot be attributed afterwards. The platform would then be unable to say why a specialist woke, which the house rules forbid.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — mechanism table, Ambient proactive expansion (output column)"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Assert that each ambient detection serialises as an AmbientSignal and each activation as an AttentionEvent that references its originating signal. Assert also that both round-trip through the event log unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT", "EVENT"],
+    "notes": "M p38 §27, Core Contracts Between Brains, defines the fields. AmbientSignal carries signal class, observed deviation, expected baseline, horizon, novelty/surprise, affected entities/assets, urgency, suggested wake targets, evidence lineage and expiry. AttentionEvent carries the activation reason, the originating ambient/world/symbolic models, budget, priority, authority boundary and a completion/feedback link. Those field-level requirements are expected under CONTRACT. P2: the producers and consumers of these records land in master Phase 8 and GCP Phase 8."
+  },
+  {
+    "id": "AMBIENT-020",
+    "domain": "AMBIENT",
+    "title": "The ambient mesh runs as continuously scheduled services on the agent runtimes",
+    "statement": "The ambient model mesh is deployed as continuously scheduled or streaming model services. It runs on the managed Agent runtime (Gemini Enterprise Agent Platform) where appropriate, and on GKE for custom persistent agents.",
+    "rationale": "An always-on model placed on a runtime that scales to zero, or that shares a pool with the trading path, is either not always on or not isolated.",
+    "kind": "placement",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Ambient model mesh"},
+      {"doc": "G", "page": "11", "section": "§11 Cognitive, Model and Quantum Compute Plane — Foundation/generalist & ambient agents row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "A plan shows every ambient model as a continuously running service on one of the two named runtimes. None of the always-on components scales to zero, and each declares its own resource budget (AMBIENT-022)."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "KUBERNETES", "COST"],
+    "secondary_domains": ["GCP", "FINOPS"],
+    "notes": "G p11 is the more specific source because it names the runtimes, and under ADR 0099 it governs placement. M p35 says only 'continuously scheduled/streaming model services'. This conflicts with standing decisions. GKE was retired in favour of Cloud Run (ADR 0024; ADR 0099 C3). A managed agent runtime is a managed-service dependency and possibly a non-Rust one (ADR 0099 C4 and C5). G's row also covers foundation/generalist agents, which are outside this domain."
+  },
+  {
+    "id": "AMBIENT-021",
+    "domain": "AMBIENT",
+    "title": "World events wake ambient models",
+    "statement": "Ambient models are woken by events as well as run on a schedule. When evidence workers update the world model with a new observation, ambient models evaluate the update for surprise, novelty or causal implications.",
+    "rationale": "A mesh that only polls sees a world event at its next pass, which can be minutes after the event mattered.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Ambient model mesh ('event-driven wakeups')"},
+      {"doc": "G", "page": "20", "section": "§21.2 World event to cognitive response — step 3"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Publish a world-model update on the Fabric. Assert that the ambient models subscribed to the affected entities evaluate it within a bounded latency, not at their next scheduled pass."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "WORLD"],
+    "notes": "G p20 places this as step 3: after step 2, where evidence workers update Spanner Graph, and before step 4, where specialists and symbolic reasoners take over. 'Causal implications' appears only in G. COST, carried from the M p35 row, and NEW_DEPENDENCY, carried from G p20, were removed because waking on an in-tree Fabric subscription needs neither."
+  },
+  {
+    "id": "AMBIENT-022",
+    "domain": "AMBIENT",
+    "title": "Ambient cognition cannot starve the reflex, risk, ledger or custody paths",
+    "statement": "The ambient mesh runs under isolated resource budgets. Background cognition therefore cannot starve the reflex, risk, ledger or custody paths.",
+    "rationale": "The mesh is the one component designed to run all the time and to want more compute the more interesting the world gets, and the busiest markets are exactly when the trading path can least afford to lose capacity to it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — placement table, Ambient model mesh ('isolated resource budgets')"},
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist ('cannot starve the reflex, risk, ledger or custody paths')"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Drive the ambient mesh to exhaust its CPU, memory, I/O and Fabric quotas. Assert that reflex decision latency, risk-gate latency, ledger writes and custody operations stay within their SLOs, and that no ambient work lands on their resource pools."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["REFLEX", "RISK", "LEDGER", "CAPITAL", "RES"],
+    "notes": "M p44 is the more specific source because it names the four protected paths; M p35 says only 'trading paths'. Two supporting statements lie outside this list. M p36 §26.1 lets 'low-value ambient signals' be sampled or shed under backpressure, while control messages and outcomes cannot be dropped. H view 03 (L199) puts ambient agents in Fabric priority classes P3/P4. The attention budget is split out as AMBIENT-023."
+  },
+  {
+    "id": "AMBIENT-023",
+    "domain": "AMBIENT",
+    "title": "Ambient cognition has an explicit attention budget",
+    "statement": "Ambient cognition has an explicit attention budget that bounds the specialist, research and reflex activations it can cause. The Attention Router never exceeds that budget, however many material signals arrive.",
+    "rationale": "A noisy or drifting ambient model can wake specialists faster than they can work. Unbounded, that storm consumes the research capacity it was meant to direct.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "44", "section": "§31 Capability Completeness Checklist ('explicit attention/resource budgets')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Feed the router a storm of material signals. Assert that activations in any budget window never exceed the configured attention budget, and that the excess is recorded as deferred or shed, never silently lost."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["RES", "OBS"],
+    "notes": "Split from AMBIENT-022. An attention budget bounds activations and a resource budget bounds compute, and either can hold while the other fails. M p40 §28, 'Ambient model storm / noisy proactive alerts', prescribes the handling: rate-limit and budget attention, cluster duplicates, penalise low-value signal producers, and quarantine drifting ambient models. That row is not in this list and is expected under RES. AttentionEvent carries a budget field (M p38 §27)."
+  },
+  {
+    "id": "AMBIENT-024",
+    "domain": "AMBIENT",
+    "title": "Ambient-model state lives in the fast knowledge tier",
+    "statement": "Ambient-model state is held in the fast knowledge tier (K0, Bigtable), alongside high-rate derived features, entity and event state, and time-indexed knowledge deltas. It is compact derived state, retained for seconds to hours.",
+    "rationale": "Stateful forecasts and surprise scores must survive a restart and be readable at the rate they change. Holding them only in process memory loses the expected state that surprise is measured against.",
+    "kind": "placement",
+    "priority": "P2",
+    "sources": [
+      {"doc": "G", "page": "2", "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant — Fast Knowledge State bullet"},
+      {"doc": "G", "page": "10", "section": "§9.2 Durable Knowledge Tiers — Tier K0 live ambient state"},
+      {"doc": "H", "page": "L245", "section": "VIEWS.data — 04 · World Sensing, Tick History & Durable Knowledge, node 'bt' (K0 fast knowledge)"}
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Inspect the K0 schema for an ambient-model state family keyed by model and time, with a retention bound in the seconds-to-hours range and no field that holds a copied external source payload."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA", "GCP"],
+    "notes": "The page was corrected from 3 to 2. `pdftotext -f 2 -l 2` shows the Fast Knowledge State bullet on page 2 of G. G p10 adds the seconds-to-hours retention and places 'in-memory/GKE caches' alongside Bigtable. H's Bigtable node lists 'ambient-model state'. Bigtable conflicts with in-tree storage (ADR 0099 C4). The pass-through invariant itself (no copied source bodies) belongs to DATA and WORLD."
+  },
+  {
+    "id": "AMBIENT-025",
+    "domain": "AMBIENT",
+    "title": "Ambient agents consume evidence from the knowledge stores",
+    "statement": "Ambient agents consume evidence from the Knowledge Catalog, Spanner Graph and BigQuery.",
+    "rationale": "Ambient judgements must rest on the same corroborated evidence the rest of the platform uses. A private source would give the mesh a second, unaudited picture of the world.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {"doc": "G", "page": "11", "section": "§11 Cognitive, Model and Quantum Compute Plane — Foundation/generalist & ambient agents row, Interaction column"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Assert that ambient agents read evidence through the Knowledge Catalog, Spanner Graph and BigQuery interfaces, or their in-tree equivalents. Assert also that every item consumed carries its provenance reference into the signal it contributes to."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["EVID", "DATA", "WORLD"],
+    "notes": "Split from G p11's Interaction cell; the other half is AMBIENT-026. All three stores are managed services that conflict with in-tree storage (ADR 0099 C4). An in-tree equivalent satisfies the data flow but not the placement."
+  },
+  {
+    "id": "AMBIENT-026",
+    "domain": "AMBIENT",
+    "title": "Ambient agents publish research and opportunity tasks through the Fabric",
+    "statement": "Ambient agents publish the research and opportunity tasks they raise, and the results, through the Rust Event & Control Fabric.",
+    "rationale": "A task sent through the Fabric is journaled, replayable and attributable. A direct call from an ambient agent to a specialist is none of those.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {"doc": "G", "page": "11", "section": "§11 Cognitive, Model and Quantum Compute Plane — Foundation/generalist & ambient agents row, Interaction column"},
+      {"doc": "G", "page": "20", "section": "§21.2 World event to cognitive response — step 3"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Assert that each research or opportunity task, and each result, that an ambient agent raises appears on the Fabric as a typed message with producer identity. Assert also that its consumers (specialists, symbolic reasoners) receive it from the Fabric and not by a direct call."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC"],
+    "notes": "G p11 says 'research tasks/results' and G p20 says 'research/opportunity tasks'; the two are merged. MANAGED_SERVICE and KUBERNETES, from the placement half of G p11, were removed, and so was NEW_DEPENDENCY from G p20. Publishing to the native Fabric names no managed service, cluster or crate. The Fabric's own dependency question is ADR 0099 C2, under FABRIC."
+  },
+  {
+    "id": "AMBIENT-027",
+    "domain": "AMBIENT",
+    "title": "Ambient models can request a source re-fetch through the Source Manifest Registry",
+    "statement": "Ambient models can request a refresh of world data by sending a control-class 'request refresh' message to the Source Manifest Registry. The registry drives the scouts' re-fetch, and the ambient model does not fetch the source itself.",
+    "rationale": "External world data is pass-through, so a model that needs fresher evidence has to ask for the source again. Asking through the registry keeps entitlement and provenance on the only path that fetches.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "H", "page": "L253", "section": "VIEWS.data — 04 · World Sensing, Tick History & Durable Knowledge, node 'ambient' ('request re-fetch')"},
+      {"doc": "H", "page": "L260", "section": "VIEWS.data — 04 · World Sensing, Tick History & Durable Knowledge, edge ambient -> source (control, 'request refresh')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Assert that an ambient refresh request is a control message addressed to the Source Manifest Registry, and that the resulting fetch is issued by a scout from the registry's manifest. Assert also that a request naming a source with no evaluated entitlement is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "DATA"],
+    "notes": "This requirement comes from the diagram alone. The registry (G p2 §2.1) stores entitlement and re-fetch instructions, so a refresh inherits its licensing check, and ambient models get no egress of their own. The raw citation L257-261 was corrected to the node line (L253) and the edge line (L260)."
+  },
+  {
+    "id": "AMBIENT-028",
+    "domain": "AMBIENT",
+    "title": "The ambient mesh reads fast state directly, not only through the World Model Federation",
+    "statement": "The Ambient Proactive Mesh reads derived fast state from the Bigtable/Memory tier directly, over a knowledge-class edge. This is in addition to what it receives from the World Model Federation.",
+    "rationale": "Surprise at millisecond-to-minute horizons is measured on fast derived state. Routing every read through the federation would add its latency, and its availability, to the mesh's.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {"doc": "H", "page": "L275", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, node 'state' (Bigtable / Memory, 'Derived ambient state/features')"},
+      {"doc": "H", "page": "L292", "section": "VIEWS.ai — 05 · Cognitive / AGI / Quantum Plane, edge state -> amb (knowledge)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Assert that the mesh's fast-state reads go to the K0 store on the mesh's own read path. Assert also that surprise scoring on fast-state features continues while the World Model Federation is stopped."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA"],
+    "notes": "The raw extraction said the mesh 'bypasses' the federation. The diagram has both edges (state -> amb and wm -> amb, both on L292), so the direct read is in addition to the federation feed, not instead of it. View 04 (L260) shows only the federation feeding the ambient node. The raw citation L292-293 was narrowed to the node line (L275) and the edge line (L292)."
+  }
+]

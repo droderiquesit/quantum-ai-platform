@@ -1,0 +1,735 @@
+[
+  {
+    "id": "EXEC-001",
+    "domain": "EXEC",
+    "title": "Market making runs as continuous quoting",
+    "statement": "The platform must support market making as an execution mode in which it quotes continuously at a venue. Its quotes are held and maintained as conditions change, not placed once and left.",
+    "rationale": "Market making earns from quotes that stay in the market. A quote placed once and left becomes a stale free option for anyone better informed. Continuous quoting is the capability that EXEC-002 to EXEC-005 and EXEC-021 to EXEC-023 each constrain.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Market making row ('Continuous quoting')"},
+      {"doc": "M", "page": "25", "section": "§18 Execution, Market Making & Market Creation — supported-modes sentence ('market making')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a simulated venue, the quote engine keeps its quotes resting across consecutive passes and replaces them when its inputs move past the requote threshold. Every quote the adapter receives is stamped simulated."
+    },
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["REFLEX"],
+    "notes": "Merges the 'Continuous quoting' clause of the M p7 Market making row with 'market making' in the M p25 §18 list of supported modes. The other clauses of the p7 row are merged elsewhere: EXEC-002 (inventory skew, dynamic spread), EXEC-003 (adverse-selection models), EXEC-004 (rate control) and EXEC-005 (portfolio-aware quoting). Master Phase 5 names the 'quote engine' as an exit capability (M p42), hence P2. At every real venue, quoting is order submission. The live form is therefore BLOCKED under ADR 0003/0021 and ADR 0099 and is built only against the simulated venue. In-tree, qip_execution_engine::quoting prices a quote pair and qip_kernel::quote_loop reports it as an intent that reaches no venue. That is the paper form of the arithmetic, not this capability. The completeness target is EXEC-028."
+  },
+  {
+    "id": "EXEC-002",
+    "domain": "EXEC",
+    "title": "Fair value, spread, skew and size are computed from volatility, inventory, queue value, adverse selection and confidence",
+    "statement": "Each quote's fair value, spread, skew and size must be computed dynamically from volatility, inventory, queue value, adverse selection and confidence. Inventory must skew the quote, and the spread must move with conditions rather than being a configured constant.",
+    "rationale": "A static spread is mispriced whenever volatility or toxicity changes. A quote that ignores inventory lets a one-sided position grow until a limit stops it, when it should have leaned against the position first.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Market making row ('inventory skew', 'dynamic spread')"},
+      {"doc": "M", "page": "25", "section": "§18.1 Market Making — first bullet"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Each of the five inputs is varied alone with the others held fixed, and each moves at least one of the four outputs: spread widens with volatility and with the adverse-selection estimate, skew leans against held inventory, and size falls as confidence falls. No input is inert. A quote whose inputs are missing or invalid is refused, not defaulted."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["RISK"],
+    "notes": "The blueprint lists the inputs and outputs but not which input drives which output. The directions in the check are the conventional ones, to be fixed by whichever record implements this. LIVE_CAPITAL and EXTERNAL_ACTION, carried by the raw p7 and p25 items, were removed. This is a pricing function, fully met and provable with no order sent. In-tree, qip_execution_engine::quoting already computes the following, paper-only by construction: fair value; a half spread of base plus volatility and adverse-selection terms; skew from inventory against target; and size from budget, volatility, queue position value and confidence."
+  },
+  {
+    "id": "EXEC-003",
+    "domain": "EXEC",
+    "title": "Market making maintains adverse-selection models",
+    "statement": "Market making must maintain adverse-selection models that estimate the expected cost of being filled by better-informed flow. That estimate must be the adverse-selection input to quote pricing (EXEC-002).",
+    "rationale": "The adverse-selection term is the part of the spread that pays for trading against someone who knows more. Without a model the term is a guess, and a guess that is too low loses on every informed fill.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Market making row ('adverse-selection models')"},
+      {"doc": "M", "page": "25", "section": "§18.1 Market Making — first bullet ('adverse-selection' as an input)"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Over replayed tape with simulated fills, the model's estimate at each fill is recorded beside the realised post-fill price move. The estimate must rise where realised adverse moves are larger. A model whose estimate does not move with realised outcomes is reported, not used."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REPLAY", "MODEL"],
+    "notes": "Split from the p7 row because the model can be verified apart from the pricing function that consumes it. The model is scored against outcomes; the pricing function is checked by its arithmetic. LIVE_CAPITAL and EXTERNAL_ACTION were removed because the model is built and scored on replayed market data and simulated fills. It cannot be calibrated on the platform's own live fills under ADR 0021. Wherever its results are reported, that limit should be stated. In-tree, QuoteInputs carries adverse_selection_bps as a supplied statistic. Nothing in this record established what produces it."
+  },
+  {
+    "id": "EXEC-004",
+    "domain": "EXEC",
+    "title": "Quoting stays within per-venue quote-rate and message-to-trade limits",
+    "statement": "Quoting at each venue must stay within a configured quote rate (messages per unit of time) and a configured message-to-trade ratio for that venue. The platform must refuse a quote that would exceed either limit before sending it, not discover the limit when the venue enforces it.",
+    "rationale": "A venue throttles or disconnects a session that exceeds its message rate or ratio. That happens at a moment the platform did not choose, and it can leave resting orders the platform can no longer withdraw. Running out of budget on the platform's own arithmetic is a failure it can recover from.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Market making row ('rate control')"},
+      {"doc": "M", "page": "25", "section": "§18.1 Market Making — third bullet ('Quote-rate/message-ratio controls')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Quotes are driven at a simulated venue faster than its configured rate, and with fewer trades than its ratio allows. The excess placements are refused before the adapter is called and each refusal is recorded. A stream within both limits is admitted in full, which shows the limit working rather than refusing everything."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "COMPLIANCE"],
+    "notes": "Split from the p25 bullet, which also names cancel/replace budgets (EXEC-021) and venue-specific microstructure models (EXEC-022). Two raw items extracted that bullet, and both are merged here for this clause. Rated P0 because this control must exist before any quoting path, simulated or otherwise. P0 does not claim that market making ships in the foundation phases. LIVE_CAPITAL and EXTERNAL_ACTION were removed because the control is fully met against a simulated venue. In-tree, the qip-edge quoting module holds a message bucket per venue and a tumbling message-to-trade monitor that narrows quoting. It keeps a withdrawal reserve so that a mass cancel is still fundable after a burst of quoting. Refusals are recorded under GATE_QUOTE_BUDGET. The blueprint says nothing about the reserve, but it is the reading that fails safe."
+  },
+  {
+    "id": "EXEC-005",
+    "domain": "EXEC",
+    "title": "Hedges and correlated exposure size a quote before it can fill",
+    "statement": "When a quote is priced, its size must take account of the portfolio's existing hedges and correlated exposure. The portfolio effect of a fill is then reflected before the fill occurs rather than corrected after it.",
+    "rationale": "A quote sized only on its own instrument lets a fill stack correlated exposure the portfolio already holds. Correcting after the fill meets the limit with a hedge trade instead of by not taking the risk. This is the quoting form of checking limits before an order exists.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Market making row ('portfolio-aware quoting')"},
+      {"doc": "M", "page": "25", "section": "§18.1 Market Making — second bullet"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "With identical instrument inputs, the quote side that adds to exposure the portfolio already holds in a correlated instrument is smaller than the same side priced with no such exposure. The side that offsets it is not reduced. The difference is visible on the priced quote before any fill is simulated."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "ASSET"],
+    "notes": "Rated P0 as a capital-protection invariant (limits are checked before an order exists, per 10-product-direction.md), not as a claim that market making ships early. LIVE_CAPITAL and EXTERNAL_ACTION were removed because the property is provable on a priced quote with no order sent. In-tree, QuoteInputs carries the instrument's own inventory, target, limit, budget, volatility, adverse selection, imbalance, persistence, confidence and queue position. It has no portfolio-correlation or hedge term, so today's quote arithmetic does not meet this requirement."
+  },
+  {
+    "id": "EXEC-006",
+    "domain": "EXEC",
+    "title": "The Market Factory can create or list a market or instrument",
+    "statement": "Where a venue and jurisdiction allow it, the Market Factory must be able to create or list a new market or instrument on that venue.",
+    "rationale": "Some opportunities exist only as markets nobody has listed yet, and the Factory turns a priced opportunity into a listed one. This is the most external action in the domain, so its permission gate (EXEC-007) and its governed workflow (EXEC-027) are separate requirements.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Market creation row ('Create/list/seed markets or instruments')"},
+      {"doc": "M", "page": "25", "section": "§18.2 Market Creation / Market Factory"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Against a simulated venue that supports listing, an approved creation request (EXEC-027) produces a listed market with the requested definition. The event log records the listing with the approval that authorised it."
+    },
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["GOV", "COMPLIANCE", "PREDICTION"],
+    "notes": "ADR 0099's paper-trading section names market creation as not authorised (conflict C1). The requirement is scored BLOCKED under ADR 0021 and is built only against a simulated venue. The 'seed' in the p7 row is EXEC-008. Master Phase 7 names 'market creation workflows' (M p42), hence P2. M p25 §19 extends market creation to prediction and event markets 'where permitted'; that extension is owned by PREDICTION."
+  },
+  {
+    "id": "EXEC-007",
+    "domain": "EXEC",
+    "title": "No market is created where venue, product or legal governance does not permit it",
+    "statement": "A market or instrument may be created, listed or seeded only where the venue, the product rules and the jurisdiction's law all permit it. A creation request that lacks a recorded permission for any of the three must be refused before any venue call. With no permissions recorded, every creation is refused.",
+    "rationale": "Being able to represent a market is not authority to create one. A gate that defaults to open turns technical ability into legal exposure the moment a model proposes a market.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Market creation row ('only where venue and jurisdiction permit')"},
+      {"doc": "M", "page": "25", "section": "§18.2 Market Creation / Market Factory ('Where a venue and jurisdiction allow it')"},
+      {"doc": "M", "page": "27", "section": "§21 Asset & Market Coverage — class table, Created markets/instruments row ('Only where supported by venue/product/legal governance')"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A creation request for a venue and jurisdiction with no recorded permission is refused with no adapter call and no market record. The request stays refused as each of the three permissions is recorded in turn, until all three are present. The same request is then admitted against a simulated venue."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["COMPLIANCE", "GOV"],
+    "notes": "Merges three statements of one gate. The p27 wording is kept because it is the most specific: it adds product governance to the venue and jurisdiction named on p7 and p25. The raw items carried EXTERNAL_ACTION, and LIVE_CAPITAL through the p7 row. Both were removed because the gate is a refusal, fully met and provable against a simulated venue. Flagging it would score the control BLOCKED and leave the capability it guards to be built first. Rated P0 as a fail-closed refusal that must come before EXEC-006. It is the market-creation instance of M p43's target 'Legal capability gates are separate from technical capability', which is owned by COMPLIANCE. EXEC-026 is its continuing half."
+  },
+  {
+    "id": "EXEC-008",
+    "domain": "EXEC",
+    "title": "The Market Factory seeds initial liquidity in a created market",
+    "statement": "When the Market Factory creates a market, it must be able to seed initial liquidity in it and so bootstrap liquidity in the new market.",
+    "rationale": "A new market with no resting liquidity attracts no flow, so seeding is what makes a created market tradable. Seeding also commits the platform's own capital and inventory to that market.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Market creation row ('seed', 'bootstrap liquidity')"},
+      {"doc": "M", "page": "25", "section": "§18.2 Market Creation / Market Factory ('seed initial liquidity')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In simulation, a created market receives the Factory's seed orders within their approved size. The capital and inventory they commit are reserved through the shared reservation fabric (EXEC-023) before the orders exist. Seeding beyond the approved size is refused."
+    },
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["CAPITAL"],
+    "notes": "p7's 'seed' and 'bootstrap liquidity' and p25's 'seed initial liquidity' describe one act and are merged. Seeding a real market is live order submission, which is BLOCKED under ADR 0021."
+  },
+  {
+    "id": "EXEC-009",
+    "domain": "EXEC",
+    "title": "A created market's inventory and risk are managed continuously",
+    "statement": "The Market Factory must manage the inventory it holds in each market it created. It must also continuously risk-manage that market for as long as the platform participates in it.",
+    "rationale": "The creator of a market is usually its largest and least diversified participant. A market left unmanaged after creation builds up exactly the exposure its creator is least able to exit.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map — Market creation row ('continuously risk-manage the market')"},
+      {"doc": "M", "page": "25", "section": "§18.2 Market Creation / Market Factory ('manage inventory')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In a simulated created market driven by one-sided flow, the Factory's inventory stays within its limits. Its quotes lean or withdraw before any limit is breached, and each action is recorded against the market."
+    },
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["RISK", "CAPITAL"],
+    "notes": "p7's 'continuously risk-manage' and p25's 'manage inventory' are merged as one continuing obligation on a created market. The continuous validity measurements are separate: EXEC-025 (economic) and EXEC-026 (legal). The blueprint names no specific control; the quoting controls of EXEC-002 to EXEC-005 are the natural means."
+  },
+  {
+    "id": "EXEC-010",
+    "domain": "EXEC",
+    "title": "Execution is a venue mesh, not a broker-specific layer",
+    "statement": "Execution must be built as a mesh of venues reached through adapters, with no execution logic specific to one broker. Adding or removing a venue must not change the execution layer above the adapters.",
+    "rationale": "An execution layer shaped around one broker builds that broker's order model, failure modes and outages into everything above it. A second venue then means a rewrite, and the first venue's outage becomes the platform's outage.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18 Execution, Market Making & Market Creation — first sentence"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test asserts that no crate above the adapter layer names a specific venue or broker type. It also asserts that a second simulated venue can be added with only configuration and an adapter."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX"],
+    "notes": "The second sentence of the statement makes 'not broker-specific' testable. LIVE_CAPITAL was removed because the invariant is a property of the code's shape. Master Phase 0 lists the 'venue adapter SDK' among the foundation exit capabilities (M p41), hence P0. In-tree, qip-brokers defines a VenueAdapter trait whose AdapterClass has only Simulated and Sandbox variants. qip-edge's Placer trait is the only order-sending seam in a cell."
+  },
+  {
+    "id": "EXEC-011",
+    "domain": "EXEC",
+    "title": "Venue adapters expose a common capability contract",
+    "statement": "Every venue adapter must implement one common contract. The contract declares which capabilities the venue supports and presents orders, cancels, fills and session state to the layers above in one common shape.",
+    "rationale": "Routing, risk and replay can only reason about venues they can compare. When an adapter declares its capabilities, the router can refuse a venue that lacks one instead of learning it from a reject.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18 Execution, Market Making & Market Creation ('Venue adapters expose a common capability contract')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A conformance suite runs against every adapter and checks three things. The adapter declares its capabilities. An order needing a capability it does not declare is refused before it is sent. Orders, cancels and fills round-trip through the common types."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX"],
+    "notes": "Split from 'expose a common capability contract but retain native features'; the native-features half is EXEC-012. LIVE_CAPITAL was removed because the contract is met and tested against simulated and sandbox adapters. Rated P0 because the venue adapter SDK is a master Phase 0 exit capability (M p41). COVERAGE-018 relies on this contract for its CEX and DEX adapters."
+  },
+  {
+    "id": "EXEC-012",
+    "domain": "EXEC",
+    "title": "Venue adapters retain venue-native features",
+    "statement": "The common contract must not reduce a venue to the lowest common denominator. A feature native to one venue, such as an order type or a session feature, must stay reachable through that venue's adapter as a declared native extension rather than being dropped.",
+    "rationale": "Native order types and session features are often where execution quality comes from. A contract that erases them makes every venue as poor as the weakest one.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18 Execution, Market Making & Market Creation ('but retain native features')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A simulated venue has a native order type that the common contract lacks, and its adapter exposes that type as a declared extension. An order using it reaches the venue unchanged. The same order sent to an adapter without the extension is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Two raw extractions of the same M p25 clause are merged here, one labelled an invariant and the other a contract. Rated P1 rather than P0 because the single venue of master Phase 1 has nothing to be a lowest common denominator of. The requirement becomes testable with a second venue (Phase 3, multiple asset classes). The extension mechanism should still be part of the Phase 0 adapter SDK, so that adding native features later does not change the contract in EXEC-011."
+  },
+  {
+    "id": "EXEC-013",
+    "domain": "EXEC",
+    "title": "Order taking is a supported execution mode",
+    "statement": "The platform must support order taking through the venue adapters: sending orders that take liquidity already resting at a venue.",
+    "rationale": "Taking liquidity is the base execution mode every strategy needs. Every other mode in §18 is built on the order path it establishes.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18 Execution, Market Making & Market Creation — supported-modes sentence ('order taking')"}
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "A paper order generated by the cycle crosses a simulated venue's resting liquidity. The fill returns through the adapter and the ledger records it as simulated."
+    },
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["REFLEX", "LEDGER"],
+    "notes": "Split from the eight-mode list in M p25 §18; the modes are EXEC-001 and EXEC-013 to EXEC-019. The legal and operational qualifier on the list is EXEC-020. Rated P0 in its paper form because master Phase 1 (One Reflex Cell: local fast path, paper trading) and GCP Phase 3 require it. The live form is BLOCKED under ADR 0003/0021 and is never built. In-tree, the cell refuses an order bound for a live-class venue under GATE_LIVE_VENUE."
+  },
+  {
+    "id": "EXEC-014",
+    "domain": "EXEC",
+    "title": "Liquidity provision is a supported execution mode",
+    "statement": "The platform must support liquidity provision, meaning resting liquidity at a venue for others to trade against, as a mode distinct from order taking and from market making.",
+    "rationale": "Resting liquidity is paid, whether through rebates, spread or pool fees, for a different risk than taking it: being filled while the price moves against it. It must be modelled as that risk.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18 Execution, Market Making & Market Creation — supported-modes sentence ('liquidity provision')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In simulation, liquidity the platform rests at a venue is recorded as resting and is filled only by other participants' flow. Its fills are attributed as liquidity provision rather than as taking."
+    },
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": [],
+    "notes": "The blueprint lists liquidity provision separately from market making without defining the difference. One likely reading is supplying liquidity to pools or programmes where the platform does not quote continuously, such as pools on decentralised venues (EXEC-018). A record should settle the meaning before implementation. Rated P2 alongside market making (master Phase 5)."
+  },
+  {
+    "id": "EXEC-015",
+    "domain": "EXEC",
+    "title": "Orders are routed across venues",
+    "statement": "The platform must route an order across venues. For each order, or each child of a split order, it chooses the venue or venues from those able to execute it.",
+    "rationale": "The same instrument trades at different prices, depths and costs on different venues. An order always sent to a fixed venue pays that difference on every trade.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18 Execution, Market Making & Market Creation — supported-modes sentence ('cross-venue routing')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two simulated venues quote the same instrument at different prices and depths. The router sends the order, or its children, to the venues with the better all-in cost and records why it chose each venue."
+    },
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["ARBITRAGE", "REFLEX"],
+    "notes": "Rated P1 because routing needs more than one venue, which master Phase 3 (multiple asset classes) and Phase 4 (multi-region mesh) bring. Multi-leg cross-venue arbitrage cycles (M §17) belong to ARBITRAGE. In-tree, qip-routing (the router, path, children and consolidate modules) routes against simulated venues only."
+  },
+  {
+    "id": "EXEC-016",
+    "domain": "EXEC",
+    "title": "Derivatives are executed through the venue mesh",
+    "statement": "The platform must support executing derivative contracts through venue adapters in the same mesh as other instruments.",
+    "rationale": "Derivatives carry margin, expiry and settlement behaviour that spot orders do not. An execution layer that cannot place them cannot hedge, and several other requirements assume hedging.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18 Execution, Market Making & Market Creation — supported-modes sentence ('derivatives execution')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A paper order for a registered, permitted derivative is placed through a simulated derivatives venue adapter. Its fill carries the contract's margin and settlement terms into the ledger."
+    },
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["COVERAGE", "ASSET", "LEDGER"],
+    "notes": "Which derivative types can be registered and are permitted is covered by COVERAGE-012 and COVERAGE-013. This requirement covers only executing them. Rated P1 with master Phase 3 (multiple asset classes)."
+  },
+  {
+    "id": "EXEC-017",
+    "domain": "EXEC",
+    "title": "Event contracts are executed through the venue mesh",
+    "statement": "The platform must support executing event contracts (prediction and event markets) through venue adapters.",
+    "rationale": "M §19 makes prediction markets first-class. They need an execution path of their own because a resolution, not an opposing trade, closes the position.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18 Execution, Market Making & Market Creation — supported-modes sentence ('event contracts')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A paper order for an event contract is placed through a simulated event-venue adapter and filled. The position is later closed by the contract's resolution rather than by an opposing trade."
+    },
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["PREDICTION"],
+    "notes": "Rated P2 with master Phase 7 (Prediction/Market Factory/Commerce). M p25 §19 treats regulated wagering venues as a separate venue type with jurisdiction and eligibility controls; that is owned by PREDICTION."
+  },
+  {
+    "id": "EXEC-018",
+    "domain": "EXEC",
+    "title": "Decentralised venues are reachable through the venue mesh",
+    "statement": "The platform must support executing on decentralised venues through venue adapters that present them in the common capability contract (EXEC-011).",
+    "rationale": "Decentralised venues settle on-chain, with confirmation delay, gas costs and slippage bounds that a central order book lacks. Unless they sit inside the same mesh, their liquidity cannot be compared with other venues' or routed to.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18 Execution, Market Making & Market Creation — supported-modes sentence ('decentralized venues')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A paper order routed to a simulated decentralised-venue adapter produces a fill in the common contract. The fill carries the confirmation delay and fee the adapter modelled."
+    },
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["COVERAGE", "CUSTODY"],
+    "notes": "COVERAGE-018 states the same for crypto and tokenized instruments on DEX venues (M p26 §21), and the two should be scored together. Rated P1 to match it. Signing an on-chain transaction requires custody of a key, which the paper-trading boundary does not permit, so the live form is BLOCKED."
+  },
+  {
+    "id": "EXEC-019",
+    "domain": "EXEC",
+    "title": "Physical marketplaces are reachable through the venue mesh",
+    "statement": "The platform must support physical marketplaces as execution venues, reached through venue adapters in the same mesh.",
+    "rationale": "Physical commerce buys and sells through marketplaces with their own listing, payment and fulfilment semantics. Placing them in the mesh keeps one execution contract across financial and physical venues.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18 Execution, Market Making & Market Creation — supported-modes sentence ('physical marketplaces')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A simulated marketplace adapter accepts a listing or a purchase through the common contract. It reports the outcome as a fill-equivalent event, which the ledger records."
+    },
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["COMMERCE"],
+    "notes": "Rated P2 with master Phase 7 (commerce and logistics adapters). The purchase and resale flows over these adapters are COMMERCE-012, COMMERCE-019 and COMMERCE-020, each BLOCKED under ADR 0021 in its live form."
+  },
+  {
+    "id": "EXEC-020",
+    "domain": "EXEC",
+    "title": "An execution mode is enabled only where legally and operationally supported",
+    "statement": "Each execution mode (EXEC-001 and EXEC-013 to EXEC-019) may be enabled for a venue only where it is legally and operationally supported for that venue and for the trading entity's jurisdiction. An order in a mode that is not enabled must be refused before the order object exists. With nothing enabled, every mode is refused.",
+    "rationale": "Research and simulation may reach further than execution is allowed to. A mode that is implemented but not legally or operationally supported must stay research-only, and only a fail-closed gate makes that hold.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18 Execution, Market Making & Market Creation — supported-modes sentence ('where legally and operationally supported')"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "For a simulated venue with no mode enabled, an order in each mode is refused before an order object exists. Enabling one mode admits orders in that mode only; the other modes stay refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["COMPLIANCE"],
+    "notes": "One raw item stated the modes and another stated the qualifier 'where legally and operationally supported', which applies to every mode. The qualifier is merged here as its own requirement. Both raw items carried LIVE_CAPITAL and EXTERNAL_ACTION. Both flags were removed because a refusal is met and provable in simulation. Rated P0 as a fail-closed gate. The gate sits beneath the paper-trading boundary, not in place of it: an enabled mode still reaches only simulated or sandbox venues (ADR 0003/0021). COVERAGE-013 is the derivatives instance of this gate. The general target that legal capability gates are separate from technical capability is M p43 §31, owned by COMPLIANCE."
+  },
+  {
+    "id": "EXEC-021",
+    "domain": "EXEC",
+    "title": "Cancel/replace traffic is held to a budget per venue",
+    "statement": "Cancel and replace messages at each venue must count against a cancel/replace budget for that venue. A replace the budget cannot fund must be refused before it is sent.",
+    "rationale": "A requote sends two messages for one change of mind. Without a budget, requoting in a fast market becomes the largest source of message traffic and the first thing a venue throttles.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18.1 Market Making — third bullet ('cancel/replace budgets')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "At a simulated venue, requotes beyond the configured budget are refused before the adapter is called and recorded as budget refusals. A pure cancel is still admitted after the budget for replaces is spent. Requotes within the budget are all admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["RISK"],
+    "notes": "Split from the bullet shared with EXEC-004 and EXEC-022; two raw extractions of that bullet are merged here for this clause. The blueprint does not say what happens to a pure cancel once the budget is spent. Refusing the cancel would leave exposure resting at a venue the platform had decided to leave. This record therefore reads the budget as limiting replaces and keeping withdrawals fundable, which is also the in-tree design: Cell::spend_requote charges a requote the two messages it sends and refuses under GATE_QUOTE_BUDGET when it cannot fund both. Rated P0 for the same reason as EXEC-004. LIVE_CAPITAL and EXTERNAL_ACTION were removed."
+  },
+  {
+    "id": "EXEC-022",
+    "domain": "EXEC",
+    "title": "Market making uses venue-specific microstructure models",
+    "statement": "Market making must use a microstructure model specific to each venue it quotes on, not one model assumed to hold for every venue.",
+    "rationale": "Queue priority, matching rules, fee tiers and latency differ between venues. Queue value, an input to EXEC-002, means nothing outside the venue whose queue it is.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18.1 Market Making — third bullet ('venue-specific microstructure models')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "The same order flow is replayed against two simulated venues with different microstructure parameters. Each venue gets its own queue-value and fill-probability estimates, and each venue's model is scored against that venue's replayed fills."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REPLAY", "MARKETDATA"],
+    "notes": "Split from the bullet shared with EXEC-004 and EXEC-021. A separate raw item that led with this clause is merged here. LIVE_CAPITAL and EXTERNAL_ACTION were removed because the models are built and scored on replayed data. The venue microstructure the replay harness needs is owned by REPLAY: M p7 §3's 'Historical replay & market simulation' row lists venue microstructure, latency/queue/fill assumptions, fees, rejects and partial fills."
+  },
+  {
+    "id": "EXEC-023",
+    "domain": "EXEC",
+    "title": "Market making and arbitrage reserve capital and inventory through one fabric",
+    "statement": "Capital and inventory used by market making and by arbitrage must be reserved through one shared reservation fabric, so that an amount reserved by one cannot also be reserved by the other.",
+    "rationale": "With two reservation systems over one pool of capital, each believes it holds what the other has already promised, and both can commit it. One fabric makes a second hold against the same capital fail.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18.1 Market Making — fourth bullet"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Market-making and arbitrage reservation requests are interleaved against one pool. The sum of held reservations never exceeds the pool, and a request that would exceed it is refused rather than reduced."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CAPITAL", "ARBITRAGE"],
+    "notes": "Rated P0 as a capital-protection invariant, not as a claim that market making ships early. COMMERCE-018 is the inventory analogue for commerce. LIVE_CAPITAL was removed because the property holds on paper capital. In-tree, qip-edge's reservation module (RegionTable and RegionAllocation) holds one ledger per region that every cell in the region consults, and it refuses rather than reduces. This record did not check whether market making reserves through it, because no market-making path sends an order yet."
+  },
+  {
+    "id": "EXEC-024",
+    "domain": "EXEC",
+    "title": "The Market Factory publishes a created market's pricing rules",
+    "statement": "For each market it creates, the Market Factory must publish that market's pricing rules.",
+    "rationale": "Participants in a market the platform created are trading against the platform. Published rules are what make that market fair to them and auditable afterwards.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18.2 Market Creation / Market Factory ('publish pricing rules')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A created simulated market has a pricing-rule document that is versioned and recorded in the event log. Every quote the Factory makes in that market can be reproduced from the rule version in force at the time."
+    },
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["COMPLIANCE"],
+    "notes": "Split from the M p25 §18.2 list of Factory duties. LIVE_CAPITAL was removed because publishing rules commits no capital. EXTERNAL_ACTION is kept because publishing to outside parties is an external action; ADR 0099 lists public communications under conflict C1."
+  },
+  {
+    "id": "EXEC-025",
+    "domain": "EXEC",
+    "title": "A created market's economic validity is measured continuously",
+    "statement": "The Market Factory must continuously measure whether each market it created remains economically valid, meaning its activity and costs and the platform's risk in it still justify continuing. Each measurement must be recorded.",
+    "rationale": "A created market that no longer pays for its capital and risk costs money every day it stays open. Nothing notices unless the measurement runs without being asked.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18.2 Market Creation / Market Factory ('continuously measure whether the market remains economically ... valid')"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "A simulated created market is replayed while its volume decays until its economics turn negative. Measurements appear at a fixed cadence, and an 'invalid' finding is recorded at the point the economics turn."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CAPITAL"],
+    "notes": "Split from 'continuously measure whether the market remains economically and legally valid'. Two raw items stated that clause; legal validity is EXEC-026. The blueprint does not say what follows an 'invalid' finding. A governed wind-down through EXEC-027 is the reading consistent with it. LIVE_CAPITAL and EXTERNAL_ACTION were removed because the measurement commits no capital and takes no external action. The market it measures is what is BLOCKED (EXEC-006)."
+  },
+  {
+    "id": "EXEC-026",
+    "domain": "EXEC",
+    "title": "A created market's legal validity is re-evaluated continuously",
+    "statement": "The Market Factory must continuously re-evaluate whether each market it created is still legally valid under the venue, product and jurisdiction permissions that admitted it (EXEC-007). A lapsed permission must be recorded as an invalid finding.",
+    "rationale": "A permission checked once at creation goes stale when a rule, a venue term or a jurisdiction changes. A market that stays open after its legal basis lapses is a violation the platform commits every day it stays open.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18.2 Market Creation / Market Factory ('continuously measure whether the market remains ... legally valid')"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Revoking one of the three permissions for a simulated created market produces an invalid finding within one measurement cycle, and restoring the permission clears it. With permissions unchanged, no finding is raised."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["COMPLIANCE"],
+    "notes": "Split from the same clause as EXEC-025. Rated P0 because this is the continuing half of the fail-closed gate in EXEC-007: a gate that checks only at creation cannot fire again. LIVE_CAPITAL and EXTERNAL_ACTION were removed for the same reason as in EXEC-007."
+  },
+  {
+    "id": "EXEC-027",
+    "domain": "EXEC",
+    "title": "Market creation is a governed workflow, never an unrestricted model action",
+    "statement": "Creating, listing or seeding a market must go through a governed product workflow with recorded approval. A model or agent may propose a market, but no model or agent output may create, list or seed one directly.",
+    "rationale": "Market creation is the most external action in the domain. A model that could take it directly could create legal and capital exposure faster than any review could see it.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "25", "section": "§18.2 Market Creation / Market Factory ('a governed product workflow, not an unrestricted model action')"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test asserts that the create, list and seed operations are reachable only from the governed workflow. A creation proposal from a model or agent with no recorded approval is refused with no adapter call. The same proposal with an approval recorded is admitted against a simulated venue."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "COMPLIANCE"],
+    "notes": "EXTERNAL_ACTION was removed. The workflow's governance (proposal, approval and refusal) is met and provable in simulation, and it guards EXEC-006 rather than being the action itself. Rated P0 as a safety invariant, consistent with risk-and-execution.md's prohibition on escalating autonomy from a model output, an agent finding or a config value."
+  },
+  {
+    "id": "EXEC-028",
+    "domain": "EXEC",
+    "title": "Completeness target: market making is supported",
+    "statement": "The capability checklist target 'market making is supported' must be met. Continuous quoting (EXEC-001) must work end to end together with dynamic pricing, adverse-selection and microstructure models, rate and cancel/replace controls, portfolio-aware sizing and a shared reservation fabric (EXEC-002 to EXEC-005, EXEC-021 to EXEC-023).",
+    "rationale": "Each market-making requirement can pass on its own while the loop they form does not work. The checklist target is the test of the whole loop.",
+    "kind": "acceptance",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist ('Market making and governed market creation are supported')"}
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "A simulated session quotes continuously on two simulated venues for a replayed day and stays within every rate, budget and reservation limit. Its quotes lean and resize as inventory and correlated exposure change, and every quote and fill can be reproduced from the event log."
+    },
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["REPLAY"],
+    "notes": "Split from the p43 target, which names two capabilities that can be verified independently; governed market creation is EXEC-029. The raw item carried only EXTERNAL_ACTION. LIVE_CAPITAL is added because market making at a real venue is order submission, and ADR 0099 requires that to be flagged. The target is met in full only in its live form, which is BLOCKED under ADR 0021; the check above tests its paper form."
+  },
+  {
+    "id": "EXEC-029",
+    "domain": "EXEC",
+    "title": "Completeness target: governed market creation is supported",
+    "statement": "The capability checklist target 'governed market creation is supported' must be met. The Market Factory's duties must work end to end: creation, seeding, publishing pricing rules, managing inventory and measuring validity (EXEC-006, EXEC-008, EXEC-009, EXEC-024 to EXEC-026). They must be entered only through the governed workflow (EXEC-027) and only behind the permission gate (EXEC-007).",
+    "rationale": "Each Factory duty and each gate can pass on its own while a proposal still reaches a venue by some path that skips one of them. The checklist target is the test of the whole path.",
+    "kind": "acceptance",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist ('Market making and governed market creation are supported')"}
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "In simulation, a proposed market passes the permission gate and the governed approval, is created and seeded, and publishes its rules. It is risk-managed under one-sided flow and found invalid when a permission is revoked, with each step in the event log. The same proposal without approval or without permission stops at the first gate it fails."
+    },
+    "policy_flags": ["LIVE_CAPITAL", "EXTERNAL_ACTION"],
+    "secondary_domains": ["GOV", "COMPLIANCE"],
+    "notes": "Split from the same p43 target as EXEC-028. LIVE_CAPITAL is added beside the raw EXTERNAL_ACTION because seeding a created market commits capital (EXEC-008). Market creation is named in ADR 0099's conflict C1. The live target is BLOCKED under ADR 0021 until the owner supersedes ADR 0003."
+  },
+  {
+    "id": "EXEC-030",
+    "domain": "EXEC",
+    "title": "Latency-sensitive venue traffic does not go through a generic proxy",
+    "statement": "Latency-sensitive traffic between a Reflex node and a venue must take a direct venue path, over the internet where no private path exists. It must not be routed through a generic proxy.",
+    "rationale": "A shared proxy puts an extra hop, a queue and a failure mode shared with every other workload's egress between a venue event and the order that answers it.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Market/custody connectivity row ('Direct venue internet path where necessary'; 'Avoid generic proxy path for latency-sensitive venue traffic')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "In the plan, the execution node's venue egress reaches venue endpoints without passing a Secure Web Proxy or a shared egress proxy. The crawler and agent egress path (Cloud NAT or Secure Web Proxy) is separate from it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["NET", "REFLEX"],
+    "notes": "Split from the G p5 row, which also names private connectivity for private providers (EXEC-031, EXEC-032). The Controlled Internet egress row on the same page says 'Reflex venue egress is separately governed'. LIVE_CAPITAL was removed because a network path carries no capital, and the same path serves market data and venue sandbox sessions. MANAGED_SERVICE was removed because the requirement is met by not using a proxy. Rated P0 because the Reflex cell's venue path is part of GCP Phase 3. CONFLICT, not in ADR 0099's register: the in-tree HTTP client speaks plaintext HTTP/1.1 and needs the egress proxy in front of it for TLS, because ADR 0009 forbids an in-tree TLS stack. The execution-node startup template runs that Envoy as a systemd unit beside the binary (ADR 0024). Whether a loopback Envoy on the node itself counts as a 'generic proxy path' in G's sense needs a record. It adds a hop and a TLS termination on the order path but no queue shared with other workloads. The closest register row is C2 (transport security)."
+  },
+  {
+    "id": "EXEC-031",
+    "domain": "EXEC",
+    "title": "Private providers are reached over Cloud Interconnect with Cloud Router",
+    "statement": "Where a venue, custodian or other market provider supports private connectivity, the platform must reach it over Dedicated or Partner Cloud Interconnect with Cloud Router rather than over the public internet.",
+    "rationale": "Private hybrid connectivity gives a custody or prime-broker link a known path, known bandwidth and a known exposure, which an internet path cannot.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Market/custody connectivity row ('Dedicated/Partner Cloud Interconnect + Cloud Router for private providers'; 'private hybrid connectivity when counterparties support it')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "For a provider marked in committed configuration as supporting private connectivity, the plan contains an Interconnect attachment and a Cloud Router for it. No such resources exist for providers not so marked."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "COST"],
+    "secondary_domains": ["NET", "CUSTODY"],
+    "notes": "LIVE_CAPITAL was removed because a network link carries no capital. What would flow over the link to a custodian is BLOCKED under its own requirements. COST is added because Interconnect bills per attachment-hour whether or not traffic flows, which ADR 0093's owner cost instruction governs. The requirement has nothing to apply to until a counterparty that supports private connectivity is configured. In-tree, modules/connectivity declares a Partner Interconnect VLAN attachment and a Cloud Router, off by default, for colocation back-haul. It has no Dedicated Interconnect. Rated P1 with GCP Phase 7 (multi-region, NCC latency mesh) and master Phase 3 (custody corridors)."
+  },
+  {
+    "id": "EXEC-032",
+    "domain": "EXEC",
+    "title": "HA VPN is the fallback for private provider connectivity",
+    "statement": "HA VPN must be the fallback path for private provider connectivity. Where Interconnect is not available to a provider, or has failed, the provider is reached over HA VPN.",
+    "rationale": "A private link with no fallback turns an Interconnect outage into a custody or venue outage.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Market/custody connectivity row ('HA VPN as fallback')"}
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "A provider's Interconnect attachment is withdrawn in a non-production environment. Traffic to the provider fails over to the HA VPN tunnels, and the switch is visible in the routing and connectivity logs."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "CUSTODY"],
+    "notes": "Split from EXEC-031 because a fallback is proven by a failover exercise, not by the plan. The source could mean fallback where Interconnect is not offered or failover when it fails; the statement covers both. LIVE_CAPITAL was removed as in EXEC-031. In-tree, modules/connectivity declares no HA VPN resources."
+  },
+  {
+    "id": "EXEC-033",
+    "domain": "EXEC",
+    "title": "Venue sessions use direct native adapters, with no generic HTTP service between Reflex and venue",
+    "statement": "A Reflex node must hold its venue sessions itself, through direct FIX, WebSocket or venue-native protocol adapters running in the Reflex process. No generic HTTP service may sit between the Reflex node and the venue.",
+    "rationale": "Each service between the decision and the venue adds a hop, a queue and an independent failure. A generic service also puts its own latency tail on the order path.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell - Speed-Critical Execution — Venue sessions bullet"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test asserts that the edge node's venue sessions are opened by adapter code linked into the Reflex process, and that the order path makes no HTTP request to another service."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "NET"],
+    "notes": "Two raw extractions of the G p6 Venue sessions bullet are merged here for the adapter and no-HTTP-service clauses. The same bullet's per-venue pools and pre-allocated buffers are EXEC-034 and EXEC-035. The diagram labels the Order Gateways node 'FIX/native' (H §02). LIVE_CAPITAL was removed because the property is structural and holds against a simulated venue. This has the same conflict as EXEC-030: TLS to a venue today depends on the egress proxy beside the execution node (ADR 0009, ADR 0024), and whether a loopback Envoy counts as a 'generic HTTP service' needs a record. In-tree, qip-protocols decodes venue wire formats (FIX, ITCH, SBE, WebSocket JSON) inside the cell. qip-edge-node runs passes only with QIP_VENUE_FEED=simulated."
+  },
+  {
+    "id": "EXEC-034",
+    "domain": "EXEC",
+    "title": "Each venue has its own connection pool",
+    "statement": "The Reflex node must keep a separate connection pool for each venue's sessions.",
+    "rationale": "With a shared pool, a reconnect storm at one venue can starve the sessions at another. Per-venue pools keep each venue's trouble confined to that venue.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell - Speed-Critical Execution — Venue sessions bullet ('per-venue connection pools')"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With two simulated venues, repeated forced disconnects at one venue leave the other venue's session count and order latency unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX"],
+    "notes": "Split from the G p6 Venue sessions bullet; two raw extractions of that bullet named this clause. Rated P1 because the single venue of GCP Phase 3 has nothing to separate from, so the property becomes meaningful with a second venue."
+  },
+  {
+    "id": "EXEC-035",
+    "domain": "EXEC",
+    "title": "Venue session buffers are pre-allocated",
+    "statement": "Buffers that venue sessions use on the order path must be allocated before trading starts, so that sending an order or reading a fill performs no heap allocation.",
+    "rationale": "An allocation on the order path adds the allocator's worst case to the latency between a venue event and the order that answers it.",
+    "kind": "nfr",
+    "priority": "P3",
+    "sources": [
+      {"doc": "G", "page": "6", "section": "§6 Regional Reflex Cell - Speed-Critical Execution — Venue sessions bullet ('pre-allocated buffers')"}
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "A benchmark of the order-send and fill-decode path after warm-up shows a latency distribution with no allocator-driven tail. Inspection confirms that the session buffers are constructed at session setup and reused, not created per message."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX"],
+    "notes": "Split from the same bullet as EXEC-034. Rated P3 as a latency optimisation. G p6 lists it with the host's OS tuning (mlockall, huge pages), which REFLEX owns. The workspace forbids unsafe code, and counting allocations directly needs a GlobalAlloc wrapper, which requires it. The check therefore pairs a latency benchmark with inspection."
+  },
+  {
+    "id": "EXEC-036",
+    "domain": "EXEC",
+    "title": "Venue execution never runs on Cloud Run",
+    "statement": "No venue-execution path may run on Cloud Run.",
+    "rationale": "Cold starts and request-scoped instances would put unbounded latency and lost session state between a venue event and an order.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Burst stateless endpoints row ('not for venue execution')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "No Cloud Run service in the plan runs the edge-node binary or holds a venue session. Venue execution resolves only to the execution-node Compute Engine module."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["API", "GCP", "REFLEX"],
+    "notes": "The same source row yields API-010 (this prohibition) and API-009 (the allowance for webhooks and control APIs). This item duplicates API-010 and the two must be scored together. ADR 0024 already places execution on a Compute Engine node. execution_nodes = {} in every environment, so no such node exists yet."
+  },
+  {
+    "id": "EXEC-037",
+    "domain": "EXEC",
+    "title": "Orders, cancels and fills move between node and venue on the hot path",
+    "statement": "Orders and cancels from algorik-node to a venue's order gateway, and fills from the gateway back to the node, must travel directly on the hot path in both directions. No Fabric broker, regional service or other region may sit in between.",
+    "rationale": "A synchronous hop through the Fabric or a regional service makes the order path depend on something the cell is meant to survive losing (ADR 0008). The Fabric journals the round trip asynchronously and never carries it.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "H", "page": "L178-184", "section": "§02 Regional Cell — edges Order Gateways <-> algorik-node (hot, both directions)"},
+      {"doc": "H", "page": "L393-395", "section": "§08 End-to-End Operating Flow — edges Regional Reflex Cells <-> Venues / Markets (hot, both directions)"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "The Fabric journal sink and every regional service are made unreachable. A node against a simulated gateway still sends orders and cancels and books fills, and the journal catches up when the sink returns."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "FABRIC"],
+    "notes": "Merges the §02 edges between Order Gateways and algorik-node with the §08 edges between Regional Reflex Cells and Venues/Markets. The §02 edges are drawn both ways, and the gateway node is labelled 'FIX/native' and 'Orders, cancels, fills'. The §08 return edge is unlabelled. The raw item read it as 'market data/fills back'; the market-data half corresponds to §02's Market Data Feeds -> gVNIC -> algorik-node hot edges, which MARKETDATA owns. The first acceptance target in G p23 §27 states the same property for the whole path: no synchronous call to Fabric, GKE, Spanner and the rest between a venue event and a local order. That target belongs to REFLEX. LIVE_CAPITAL and EXTERNAL_ACTION were removed because the path's shape holds against a simulated gateway."
+  },
+  {
+    "id": "EXEC-038",
+    "domain": "EXEC",
+    "title": "Physical and event venues feed algorik-node directly on the hot path",
+    "statement": "Physical and event venues (commerce, prediction and other permitted venues) must connect to algorik-node directly on the hot path, not through the Fabric or a regional service.",
+    "rationale": "Keeping every permitted venue type inside the cell means one decision loop sees all of them at the same freshness. A slower tier in front of some venues would leave their data stale next to the rest.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {"doc": "H", "page": "L178-184", "section": "§02 Regional Cell — edge Physical / Event Venues -> algorik-node (hot)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In the cell's wiring, the node's own adapter consumes a simulated event venue's messages on the pass that receives them. No Fabric or regional service call happens on the way."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["PREDICTION", "COMMERCE", "REFLEX"],
+    "notes": "The diagram draws this edge in one direction only (Physical / Event Venues -> algorik-node, hot), unlike the Order Gateways edge, and labels the venue node 'APIs'. It does not say whether orders to these venues leave on the hot path. Rated P2 with master Phase 7 (prediction and commerce). LIVE_CAPITAL and EXTERNAL_ACTION were removed for the same reason as in EXEC-037."
+  }
+]

@@ -1,0 +1,752 @@
+[
+  {
+    "name": "portal (app shell)",
+    "path": "frontend/portal",
+    "kind": "frontend",
+    "purpose": "The authenticated Next.js console (and installed PWA) for the research/risk desk: renders what qip-api decided, holds no trading or risk logic itself, and is the one browser surface deployed to Cloud Run today.",
+    "key_contracts": [
+      "next.config.ts:13 output:\"standalone\" (Cloud Run container)",
+      "next.config.ts:22-34 transpilePackages: 11 @algorik/* workspace packages",
+      "next.config.ts:39-48 security headers (X-Content-Type-Options, Referrer-Policy, X-Frame-Options: DENY)",
+      "src/proxy.ts:44 proxy(request) edge gate (cookie-presence redirect only, not the security boundary)",
+      "src/proxy.ts:26-33 PUBLIC_PREFIXES allowlist (marketing + auth + api/auth + PWA assets)",
+      "src/app/manifest.ts:16-49 installable PWA manifest, shortcuts to /risk /signals /orders",
+      "public/sw.js:17-33 service worker: caches app shell only, passes /api/* straight through, never caches a platform answer",
+      "src/app/global-error.tsx, src/app/layout.tsx (root boot: theme script, chrome)"
+    ],
+    "workspace_deps": [
+      "@algorik/auth", "@algorik/validation", "@algorik/brand", "@algorik/design-tokens (build-time only)",
+      "@algorik/analytics (declared, unused)", "@algorik/feature-flags (declared, unused)",
+      "@algorik/shared-types (declared, unused)", "@algorik/api-client (declared, unused)",
+      "@algorik/charts (declared, unused)", "@algorik/ui (declared, unused)", "@algorik/testing (declared, unused)"
+    ],
+    "reached_from_production": "yes",
+    "production_evidence": "infrastructure/gitops/envs/dev/portal.yaml (Config Connector RunService \"qip-dev-portal\", live_capable: 'false' label); infrastructure/terraform/catalogue.tf:876-946 provisions the portal's deploy/logging/telemetry IAM grants against the pre-existing console service account; .github/workflows/deploy.yml:279-291 builds the \"qip-portal\" image from infrastructure/docker/portal.Dockerfile; infrastructure/environments/dev/terraform.tfvars:138 gitops_enabled=true, :571 cites a live URL \"https://qip-dev-portal-95200532413.us-east4.run.app\" from a prior apply. Terraform/GitOps declare and wire the deployment; current live health was not checked here (tfstate is out of scope/denied).",
+    "io_and_state": "No direct DB/file state of its own beyond Next.js build cache. All platform reads/writes proxy through its own route handlers (see sub-records) to QIP_API_BASE_URL over HTTP with an explicit timeout (default 10s, upstream.ts:96). Session state lives in a signed cookie (ADR 0019 — no server-side session store).",
+    "tests": { "count": 182, "notable": [
+      "no_surface_in_this_console_composes_or_submits_an_order (tests/boundary.spec.ts)",
+      "the_whole_journey:_sign_up,_verify,_sign_in,_use_the_portal,_sign_out (tests/auth.spec.ts)",
+      "the_hamburger_opens_the_off-canvas_navigation_and_the_overlay_closes_it (tests/mobile.spec.ts)"
+    ]},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Deployed (dev, behind IAP), 182 Playwright tests across 39 spec files, real gateway/session boundary; four of its eleven workspace packages are declared dependencies with zero call sites anywhere in its own source.",
+    "blueprint_capabilities": ["API", "SEC", "GOV", "OBS", "GCP"],
+    "gaps_observed": [
+      "next.config.ts:22-34 transpiles @algorik/api-client, @algorik/charts, @algorik/ui, @algorik/testing, @algorik/analytics, @algorik/feature-flags, @algorik/shared-types — none is imported by any file under src/ (grep '@algorik/(ui|api-client|charts|testing|analytics|feature-flags|shared-types)' frontend/portal/src → 0 hits); portal code imports the same components via relative @/ paths instead.",
+      "frontend/landing/README.md:44-52: the portal's (marketing) route group and the landing site duplicate the same eleven/twelve pages word-for-word; the README calls this 'a holding position, not a design: the duplication is real and one of the two must go' and names the portal's (marketing) group as the one that should become redirects — that change has not been made."
+    ],
+    "evidence": [
+      "frontend/portal/package.json:5",
+      "frontend/portal/next.config.ts:1-52",
+      "frontend/portal/src/proxy.ts:1-89",
+      "frontend/portal/src/app/manifest.ts:1-65",
+      "frontend/portal/public/sw.js:1-33",
+      "infrastructure/gitops/envs/dev/portal.yaml:38-51",
+      "infrastructure/terraform/catalogue.tf:876-946",
+      ".github/workflows/deploy.yml:239-291"
+    ]
+  },
+  {
+    "name": "portal BFF routes (api/*)",
+    "path": "frontend/portal/src/app/api",
+    "kind": "frontend",
+    "purpose": "The Node-runtime server surface: a REST gateway that proxies /api/gateway/* to qip-api with the deployment credential attached and an allowlist for writes, an SSE relay for /api/stream/*, and nine auth routes (sign-up/in/out, verify, reset, csrf, session).",
+    "key_contracts": [
+      "src/app/api/gateway/[...path]/route.ts:74-191 forward() — GET/POST/DELETE proxy, 401 unauthenticated, 405 undeclared write, 500 misconfigured, 502/504 unreachable/timeout",
+      "src/app/api/gateway/[...path]/route.ts:98-116 undeclared-write refusal via declaresWrite() before the credential is even read",
+      "src/app/api/gateway/[...path]/route.ts:160 redactBody() strips sensitive fields, names them in x-qip-redacted",
+      "src/app/api/stream/[channel]/route.ts:33-90 GET — SSE relay, Last-Event-ID forwarded, byte-for-byte passthrough, no buffering",
+      "src/app/api/auth/{sign-up,sign-in,sign-out,verify-email,resend-verification,forgot-password,reset-password,session,csrf}/route.ts"
+    ],
+    "workspace_deps": ["@algorik/validation (in reset-password, sign-up routes)"],
+    "reached_from_production": "yes",
+    "production_evidence": "These route handlers ARE the portal's server surface; reached whenever the deployed portal.yaml Cloud Run revision serves any /api/* request (see portal app-shell record for deployment evidence). runtime=\"nodejs\", dynamic=\"force-dynamic\" on both gateway and stream routes (route.ts:32-33).",
+    "io_and_state": "Outbound HTTPS/HTTP to QIP_API_BASE_URL for every call, explicit AbortController timeout (upstream.ts:96, default 10_000ms); reads QIP_API_TOKEN via qip_core-style _FILE indirection (lib/server/secret.ts); mints a Google identity token via the metadata server when QIP_API_AUDIENCE is set (google-credentials.ts). No local persistence in these route files themselves.",
+    "tests": { "count": 8, "notable": [
+      "the_gateway_refuses_a_write_this_console_does_not_declare,_before_it_reaches_the_platform (tests/boundary.spec.ts)",
+      "the_gateway_forwards_the_approval_for_exactly_one_source_segment (tests/registrations-gateway.spec.ts)",
+      "the_gateway_still_forwards_each_of_the_three_writes_the_console_declares (tests/gateway-writes.spec.ts)"
+    ]},
+    "status": ["exists", "hardened"],
+    "status_reason": "Write allowlist is structural (checked before the credential is read), redaction is field-declared and legible via a header, and the route table's own comment documents a real incident (a fifth write shipped in the UI/backend and was 405'd here for a whole wave) that the current declaresWrite()-derived tests now guard against.",
+    "blueprint_capabilities": ["API", "SEC", "EVID"],
+    "gaps_observed": [
+      "src/lib/hooks/useTreasury.ts:196-227 INFLOW_ROUTES (declare/cancel expected inflows) is deliberately NOT added to REST's declaresWrite allowlist — documented as intentional because qip-api itself refuses both routes today for every credential this console holds (no per-person attested principal, ADR 0065/0075/0076); the UI renders the contract text rather than a form."
+    ],
+    "evidence": [
+      "frontend/portal/src/app/api/gateway/[...path]/route.ts:1-196",
+      "frontend/portal/src/app/api/stream/[channel]/route.ts:1-90",
+      "frontend/portal/src/lib/server/upstream.ts:73-152",
+      "frontend/portal/src/lib/hooks/useTreasury.ts:196-227"
+    ]
+  },
+  {
+    "name": "portal (auth) route group",
+    "path": "frontend/portal/src/app/(auth)",
+    "kind": "frontend",
+    "purpose": "The full sign-up/sign-in/verify/reset/session journey UI: forms, client-side validation via @algorik/validation, and the failure-state pages (access-denied, account-locked, session-expired).",
+    "key_contracts": [
+      "src/app/(auth)/sign-in/sign-in-form.tsx — email+password form, safeRedirect() open-redirect guard",
+      "src/app/(auth)/sign-up/page.tsx — account-type + agreements capture",
+      "src/app/(auth)/_lib/api.ts — typed client for the nine /api/auth/* routes",
+      "src/app/(auth)/verify-email, forgot-password, reset-password/page.tsx",
+      "src/app/(auth)/access-denied, account-locked, session-expired/page.tsx — terminal states"
+    ],
+    "workspace_deps": ["@algorik/validation", "@algorik/auth", "@algorik/brand"],
+    "reached_from_production": "yes",
+    "production_evidence": "Part of the deployed portal image; proxy.ts:26-33 lists every one of these paths in PUBLIC_PREFIXES so they are reachable pre-session.",
+    "io_and_state": "Calls only its own /api/auth/* BFF routes (never qip-api directly); no direct backend or cloud I/O from these page files.",
+    "tests": { "count": 26, "notable": [
+      "a_wrong_password_is_refused_with_words,_and_account_existence_is_not_revealed (tests/auth.spec.ts)",
+      "a_verified_iap_assertion_signs_a_person_in_with_no_cookie_having_been_set_at_all (tests/iap.spec.ts)",
+      "an_assertion_signed_by_a_key_google_never_published_is_refused (tests/iap.spec.ts)"
+    ]},
+    "status": ["exists", "hardened"],
+    "status_reason": "26 Playwright tests covering the whole journey plus IAP/development-provider/lockout edge cases; account existence is deliberately never revealed by sign-in or forgot-password (identity.ts doc comment + auth.spec.ts).",
+    "blueprint_capabilities": ["SEC", "API"],
+    "gaps_observed": [],
+    "evidence": [
+      "frontend/portal/src/app/(auth)/sign-in/sign-in-form.tsx:1-20",
+      "frontend/portal/src/proxy.ts:26-33",
+      "frontend/portal/tests/auth.spec.ts",
+      "frontend/portal/tests/iap.spec.ts"
+    ]
+  },
+  {
+    "name": "portal (marketing) route group",
+    "path": "frontend/portal/src/app/(marketing)",
+    "kind": "frontend",
+    "purpose": "A second, independently hand-written public marketing surface (welcome/platform/technology/security/institutional/developers/company/contact/legal) served from inside the portal app, reachable without a session.",
+    "key_contracts": [
+      "src/app/(marketing)/welcome/page.tsx — home page, restates the eight kernel stages from cycle.rs",
+      "src/app/(marketing)/ui.tsx — this group's own Card/Section/CtaBand primitives (not shared with landing)",
+      "src/app/(marketing)/layout.tsx, AuthCta.tsx",
+      "src/app/(marketing)/legal/{privacy,terms,risk-disclosures}/page.tsx"
+    ],
+    "workspace_deps": ["@algorik/brand"],
+    "reached_from_production": "yes",
+    "production_evidence": "Deployed with the rest of the portal image; every path is in proxy.ts's PUBLIC_PREFIXES (welcome, platform, technology, security, institutional, developers, company, contact, legal).",
+    "io_and_state": "Static content only; no API calls.",
+    "tests": { "count": 4, "notable": ["tests/marketing.spec.ts (4 tests)"] },
+    "status": ["exists", "obsolete", "requires-replacement"],
+    "status_reason": "Functions correctly today but is explicitly scheduled for removal by the sibling app's own README: frontend/landing/README.md:44-52 states the copy here is the word-for-word source landing currently copies from, calls the duplication 'real' and says the portal's (marketing) group should become redirects to the landing origin — not yet done.",
+    "blueprint_capabilities": ["COMMERCE"],
+    "gaps_observed": [
+      "frontend/landing/README.md:44-52 — named, acknowledged duplication with frontend/landing; no redirect shim exists yet (grep for redirect in this directory: none)."
+    ],
+    "evidence": [
+      "frontend/portal/src/app/(marketing)/welcome/page.tsx:1-30",
+      "frontend/landing/README.md:16-52",
+      "frontend/portal/tests/marketing.spec.ts"
+    ]
+  },
+  {
+    "name": "portal (portal) — core & market pages",
+    "path": "frontend/portal/src/app/(portal)",
+    "kind": "frontend",
+    "purpose": "The executive dashboard and the single-page feature areas (agents, markets, models, orders, signals, strategies, system, topology, integrations, portfolio, offline) — the console's home screen and its smaller read-only panels, all polling qip-api directly via useResource(platform.X).",
+    "key_contracts": [
+      "src/app/(portal)/page.tsx:39-60 ExecutiveDashboard — platform.systemMetrics, .opportunities, .fills, .governance polled every 10-15s",
+      "src/app/(portal)/portfolio/{page,pnl,positions}/page.tsx",
+      "src/app/(portal)/orders/page.tsx, signals/page.tsx, strategies/page.tsx, agents/page.tsx",
+      "src/app/(portal)/topology/page.tsx — assembled client-side from /system+/mesh+/regions+/agents (no single backend route)",
+      "src/app/(portal)/system/page.tsx — autonomy, halt, cycles, event-chain integrity",
+      "src/app/(portal)/error.tsx, not-found.tsx, offline/page.tsx"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Deployed with the portal image; every page calls platform.* (lib/api/client.ts) which goes through the deployed /api/gateway route. Endpoint-use census (grep 'platform\\.[A-Za-z]+' across (portal)): systemStatus x13, regions x9, mesh x6, governance x6, systemMetrics x5, system x5, orders x5, portfolio x4, opportunities x4.",
+    "io_and_state": "Read-only qip-api polling via useResource (10-30s intervals); one write path (platform.runCycle, tripKillSwitch/clearKillSwitch) lives in components/chrome, not these pages. No local persistence.",
+    "tests": { "count": 33, "notable": [
+      "the_console_can_halt_the_platform_and_offers_no_way_to_clear_a_halt_it_did_not_cause (tests/boundary.spec.ts)",
+      "a_halted_platform_is_shown_as_halted_rather_than_as_quiet (tests/boundary.spec.ts)",
+      "shell.spec.ts (6), wire.spec.ts (5), theme.spec.ts (3)"
+    ]},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Every page reads a real, named qip-api route; zero use of the simulated-data path (lib/sim) anywhere in this tree (grep 'lib/sim|SimulatedBanner|SimChip' under src/app → 0 hits) despite portal/CLAUDE.md documenting simulation as an approved fallback for subsystems with no platform surface.",
+    "blueprint_capabilities": ["API", "OBS", "MESH", "ASSET", "COVERAGE"],
+    "gaps_observed": [
+      "src/app/(portal)/topology/page.tsx assembles a topology view client-side because 'the platform serves no single topology document' (lib/api/endpoints.ts:225-231, NOT_YET_SERVED.topology)."
+    ],
+    "evidence": [
+      "frontend/portal/src/app/(portal)/page.tsx:39-60",
+      "frontend/portal/src/lib/api/client.ts:245-306",
+      "frontend/portal/src/lib/api/endpoints.ts:225-231"
+    ]
+  },
+  {
+    "name": "portal (portal)/treasury — the ledger plane",
+    "path": "frontend/portal/src/app/(portal)/treasury",
+    "kind": "frontend",
+    "purpose": "Accounts, wallet, corridors, mandates, products, transfer-gate and eligibility pages over the ledger platform: four viewer reads (/ledger/users, /wallet, /corridors, /transfer-gate) and the console's fifth and last declared write (POST /ledger/users/{user}/eligibility).",
+    "key_contracts": [
+      "src/lib/hooks/useTreasury.ts:64 GET /ledger/users, :230 GET /wallet, :281 GET /corridors, :344 GET /transfer-gate",
+      "src/app/(portal)/treasury/ledger/EligibilityPanel.tsx — the operator decision UI for the one write",
+      "src/app/(portal)/treasury/accounts/page.tsx, wallet/page.tsx, corridors/page.tsx, mandates/page.tsx, products/page.tsx, transfer-gate/page.tsx",
+      "src/lib/hooks/useTreasury.ts:196-227 INFLOW_ROUTES — documented-but-unreachable operator routes (see gaps)"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Deployed with the portal image; EligibilityPanel is the caller of POST /api/v1/ledger/users/{user}/eligibility, which lib/api/endpoints.ts:128-133 declares in REST specifically because it was found missing from the gateway's allowlist for 'a whole wave' after shipping (endpoints.ts:107-121).",
+    "io_and_state": "Read via platform gateway; one POST write per eligibility decision, CSRF-protected (auth-http.ts requireCsrf).",
+    "tests": { "count": 31, "notable": [
+      "each_user_row_carries_the_ledger's_verdict,_and_a_refused_row_carries_the_token_and_the_reason_it_gave (tests/treasury-eligibility.spec.ts)",
+      "granting_posts_the_attested_terms_and_re-renders_the_row_as_eligible,_naming_no_person_as_the_decider_the_platform_recorded (tests/treasury-eligibility.spec.ts)",
+      "a_viewer's_decision_panel_is_disabled_with_the_reason,_and_nothing_is_posted (tests/treasury-eligibility.spec.ts)"
+    ]},
+    "status": ["exists", "hardened", "requires-migration"],
+    "status_reason": "31 tests including a documented near-miss (missing gateway declaration for eligibility) that is now covered; the expected-inflows declare/cancel routes are UI-visible as text but structurally unreachable until a per-person (non-bearer-token) credential exists on the backend (ADR 0065/0075/0076).",
+    "blueprint_capabilities": ["LEDGER", "CAPITAL", "GOV", "EVID"],
+    "gaps_observed": [
+      "src/lib/hooks/useTreasury.ts:196-227 — expected-inflow declare/cancel is rendered read-only because qip-api refuses both routes for every credential this console can hold today (no attested Principal::authentication_instant); requires-migration once ADR 0076's per-person credential lands."
+    ],
+    "evidence": [
+      "frontend/portal/src/lib/hooks/useTreasury.ts:64,196-230,281,344",
+      "frontend/portal/src/lib/api/endpoints.ts:107-133",
+      "frontend/portal/tests/treasury-eligibility.spec.ts"
+    ]
+  },
+  {
+    "name": "portal (portal) — risk, capital, execution, compliance, data-sources",
+    "path": "frontend/portal/src/app/(portal)/{risk,capital,execution,compliance,data-sources}",
+    "kind": "frontend",
+    "purpose": "The risk-desk control surface: exposure/limits/kill-switch (risk), envelope and exploration spend (capital), arbitrage/fills/venues/withdrawals (execution), obligations and attestations (compliance), and vendor health/licensing (data-sources) — read-only except for the kill switch, which lives in chrome, not here.",
+    "key_contracts": [
+      "src/app/(portal)/risk/{page,limits,audit,recalibrations}/page.tsx",
+      "src/app/(portal)/capital/{page,exploration}/page.tsx",
+      "src/app/(portal)/execution/{arbitrage,fills,venues,withdrawals}/page.tsx",
+      "src/app/(portal)/compliance/page.tsx — obligations table + chain-integrity-vs-attestation distinction",
+      "src/app/(portal)/data-sources/{page,health,registrations}/page.tsx",
+      "src/lib/hooks/useSelfCorrection.ts:165,167 GET /risk/recalibrations, GET /venues/withdrawals"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Deployed with the portal image; every page calls a named platform.* route (risk x3, capital x4, dataSources x2) or a hook-level GET (useSelfCorrection).",
+    "io_and_state": "Read-only against qip-api; no writes from these pages (the kill switch control lives in components/chrome/KillSwitch.tsx, reused across every route).",
+    "tests": { "count": 59, "notable": [
+      "the_credential-slot_column_states_the_refusal_when_the_operator_route_is_denied,_and_never_as_an_em_dash (tests/compliance.spec.ts)",
+      "the_chain_result_is_shown_as_a_live_integrity_check_and_never_as_an_attestation,_and_both_missing_routes_are_named (tests/compliance.spec.ts)",
+      "registrations-page.spec.ts (10 tests), governance.spec.ts (7), capital-exploration.spec.ts (7)"
+    ]},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "59 tests, the largest single test cluster in the portal; compliance.spec.ts specifically guards against conflating the hash-chain integrity check with a real attestation, matching qip-api's own documented absence of an attestation route.",
+    "blueprint_capabilities": ["RISK", "CAPITAL", "GOV", "SEC", "COMMERCE"],
+    "gaps_observed": [
+      "lib/api/endpoints.ts:176-207 NOT_YET_SERVED lists three routes these pages cannot show: /data-sources/health (per-source latency/freshness — data-sources/health page renders the gap by name), /compliance and /compliance/attestations (no attestation route exists at all; compliance page distinguishes 'chain intact' from 'somebody signed this'), /kill-switch/history (risk page can show only the current trip, not halt history)."
+    ],
+    "evidence": [
+      "frontend/portal/src/lib/api/endpoints.ts:176-224",
+      "frontend/portal/src/lib/hooks/useSelfCorrection.ts:54-181",
+      "frontend/portal/tests/compliance.spec.ts"
+    ]
+  },
+  {
+    "name": "portal (portal) — intelligence, cognition, loop, command, research, operations, admin",
+    "path": "frontend/portal/src/app/(portal)/{intelligence,cognition,loop,command,research,operations,admin}",
+    "kind": "frontend",
+    "purpose": "The reasoning/ops surfaces: intelligence (correlation, decisions, explanations, news, predictions, regimes), cognition (self-model, precedents), loop (cycle stages + dataflow), command (alerts, regions), research (backtesting, quantum), operations (mesh, telemetry), admin (access, autonomy).",
+    "key_contracts": [
+      "src/app/(portal)/intelligence/{correlation,decisions,explanations,news,predictions,regimes}/page.tsx",
+      "src/lib/hooks/useCognition.ts:80-81 GET /cognition/self-model, GET /cognition/precedents",
+      "src/app/(portal)/loop/{page,dataflow}/page.tsx",
+      "src/app/(portal)/research/{backtesting,quantum}/page.tsx — quantum page reads T.Quantum incl. classical-baseline field",
+      "src/app/(portal)/admin/{access,autonomy}/page.tsx"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Deployed with the portal image; endpoint census shows quantum x3, proposals x3, predictions x2, correlation x1, backtests x1, regimes x1, news x1 all called from platform.* in these pages.",
+    "io_and_state": "Read-only against qip-api.",
+    "tests": { "count": 29, "notable": [
+      "research.spec.ts (6 tests)",
+      "topology.spec.ts (5 tests)",
+      "dataflow.spec.ts (3 tests)"
+    ]},
+    "status": ["exists", "hardened", "requires-migration"],
+    "status_reason": "29 tests; three explanation pages (position/sizing/selection) are named in NOT_YET_SERVED and, per endpoints.ts's own comment, no route in routes.rs matches the word 'explanation' at all — the explanations page necessarily renders absence rather than data for those three questions.",
+    "blueprint_capabilities": ["REASON", "AMBIENT", "MODEL", "QUANT", "COMMERCE"],
+    "gaps_observed": [
+      "lib/api/endpoints.ts:279-299 explanationPosition/explanationSizing/explanationSelection — none exists on the backend (grep explanation backend/crates/apps/qip-api/src/routes.rs returns nothing per the source comment); intelligence/explanations/page.tsx renders the named absence rather than data for all three.",
+      "lib/api/endpoints.ts:225-231 topology has no single backend route; assembled client-side from four separate reads."
+    ],
+    "evidence": [
+      "frontend/portal/src/lib/hooks/useCognition.ts:80-90",
+      "frontend/portal/src/lib/api/endpoints.ts:279-299",
+      "frontend/portal/tests/research.spec.ts"
+    ]
+  },
+  {
+    "name": "portal lib/server (session, identity, IAP)",
+    "path": "frontend/portal/src/lib/server",
+    "kind": "frontend",
+    "purpose": "Everything server-only: session cookie sealing/verification, CSRF, the identity service (two providers — a file-backed development store and Google Cloud Identity Platform), IAP assertion verification, and the qip-api credential/token machinery.",
+    "key_contracts": [
+      "session.ts:65 SESSION_TTL_MS (12h), :182/195 sealClaims/unsealClaims, :238/251 hashPassword/verifyPassword (scrypt), :309 csrfAccepted",
+      "identity.ts:211,286,413,459,479 signUp/signIn/verifyEmail/forgotPassword/resetPassword — same failure for 'no account' and 'wrong password' (identity.ts doc comment)",
+      "identity-store.ts:102 identityStore — dev-only JSON file, atomic rename writes, scrypt hashes + HMAC one-time codes only",
+      "identity-platform.ts:96,114 gipSignUp/gipSignIn — production provider over Google Identity Toolkit REST, server-side only",
+      "iap.ts:292,379 verifyIapAssertion/iapIdentityFrom — ECDSA verification against Google's published keys for ADR 0094's IAP front door",
+      "secret.ts:54 resolveSecret — the _FILE indirection contract (mirrors qip_core::secret on the backend)",
+      "google-credentials.ts:74,157 accessToken/identityToken — Cloud Run metadata-server credential minting, cached"
+    ],
+    "workspace_deps": ["@algorik/auth"],
+    "reached_from_production": "yes",
+    "production_evidence": "Imported by every /api/auth/* route handler and by /api/gateway and /api/stream for session verification (auth-http.ts sessionForRequest).",
+    "io_and_state": "node:crypto (scrypt, HMAC, randomBytes); identity-store.ts performs fs I/O (mkdirSync/readFileSync/writeFileSync) but only in the development-provider path — identity-store.ts:13-17 states 'Nothing deployed reaches this file' since the prior /tmp-backed Cloud Run config was replaced by Identity Platform custom claims; outbound HTTPS to identitytoolkit.googleapis.com (identity-platform.ts) and the GCE/Cloud Run metadata server (google-credentials.ts), both with a 10s timeout.",
+    "tests": { "count": 26, "notable": [
+      "a_tampered_session_cookie_reads_nothing (tests/auth.spec.ts)",
+      "an_assertion_signed_by_a_key_google_never_published_is_refused (tests/iap.spec.ts)",
+      "an_assertion_whose_header_claims_no_algorithm_is_refused_even_though_its_signature_is_genuine (tests/iap.spec.ts)"
+    ]},
+    "status": ["exists", "hardened"],
+    "status_reason": "Account-enumeration and lockout-tuning are both deliberately withheld from responses (identity.ts doc comment); IAP verification is tested against forged-key, wrong-audience and no-algorithm attacks (iap.spec.ts, 9 tests). identity-store.ts is explicitly documented dead weight in the deployed path now that Identity Platform holds accounts.",
+    "blueprint_capabilities": ["SEC", "GOV"],
+    "gaps_observed": [
+      "identity-store.ts:13-17 — the development file-backed store is retained in the tree 'so the whole journey works... against no Google project at all' but is explicitly not reached by any deployed process; its prior deployment (Cloud Run /tmp) is documented as a fixed defect (accounts went anonymous on scale-to-zero) rather than a current gap."
+    ],
+    "evidence": [
+      "frontend/portal/src/lib/server/session.ts:65,182-270",
+      "frontend/portal/src/lib/server/identity.ts:26-58,211-286",
+      "frontend/portal/src/lib/server/identity-store.ts:1-30",
+      "frontend/portal/src/lib/server/iap.ts:292-379"
+    ]
+  },
+  {
+    "name": "portal lib/api (client, endpoints, redaction, types)",
+    "path": "frontend/portal/src/lib/api",
+    "kind": "frontend",
+    "purpose": "The typed browser-side client over the BFF gateway: the platform.* call table, the REST/NOT_YET_SERVED endpoint declarations (also the gateway's write allowlist source), response redaction rules, and every platform response shape.",
+    "key_contracts": [
+      "client.ts:17 GATEWAY_PREFIX, :20-56 ApiOutcome (ok|unavailable|missing|denied|unreachable|error — five states, never a substituted value)",
+      "client.ts:245-306 platform — one function per REST route, three writes (runCycle, tripKillSwitch, clearKillSwitch)",
+      "endpoints.ts:20-134 REST — the gateway's own write allowlist source (also read by declaresWrite/describeWrites)",
+      "endpoints.ts:153-300 NOT_YET_SERVED — 11 named backend gaps with reasons, each cited to routes.rs behaviour",
+      "redaction.ts — server-side response field redaction (mesh address etc.), declared via x-qip-redacted",
+      "types.ts — 669 lines of response shapes (Health, SystemStatus, Portfolio, Risk, Capital, Quantum, ...)"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "client.ts's platform object is the sole call surface used by all (portal) and (auth) pages; endpoints.ts's declaresWrite() is called directly by the deployed gateway route handler.",
+    "io_and_state": "client.ts performs the browser-side fetch to /api/gateway/*; no direct backend contact (that happens server-side in the route handler).",
+    "tests": { "count": 0, "notable": ["Exercised indirectly by every page-level Playwright spec rather than unit-tested directly."] },
+    "status": ["exists", "hardened"],
+    "status_reason": "endpoints.ts's own comments document a real production incident (a write shipped without a table entry, causing every real-world decision to 405) and the fix (deriving the gateway refusal message from the table instead of restating it by hand).",
+    "blueprint_capabilities": ["API", "CONTRACT", "COVERAGE"],
+    "gaps_observed": [
+      "endpoints.ts:153-300 NOT_YET_SERVED enumerates 11 routes the platform does not serve: positions, cash, data-sources/health, compliance, compliance/attestations, kill-switch/history, topology, account/me, ledger/users/{user}, explanations/positions/sizing/selection (three) — see the sub-records above for where each surfaces in the UI."
+    ],
+    "evidence": [
+      "frontend/portal/src/lib/api/client.ts:17-56,245-306",
+      "frontend/portal/src/lib/api/endpoints.ts:20-134,153-300,327-331"
+    ]
+  },
+  {
+    "name": "portal lib/hooks (data fetching)",
+    "path": "frontend/portal/src/lib/hooks",
+    "kind": "frontend",
+    "purpose": "Every page's data-fetching primitive: polling with staleness accounting (useResource), SSE subscription with resume/backoff (useEventStream), and eight domain-specific hooks (cognition, treasury, registrations, exploration, self-correction, cycle reports, series history, a shared clock).",
+    "key_contracts": [
+      "useResource.ts:44-173 useResource<D>(fetcher, {key,label,intervalMs,staleAfterMs}) — loading/refreshing/stale/attempts state machine",
+      "useEventStream.ts — SSE lifecycle: connect/resume/backoff",
+      "connections.ts — single registry of every feed's state, backing the chrome's ConnectionIndicator",
+      "useSeries.ts — client-side rolling history over polled counters (\"the platform serves counters, not curves\")",
+      "useNow.ts — one shared ticking clock for every age/freshness render"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "useResource is called from 46 files under src/app/(portal) (grep -rl useResource); it is the load-bearing data primitive for the whole authenticated app.",
+    "io_and_state": "Browser-side only: fetch/AbortController via lib/api/client, setInterval polling, EventSource for SSE. No server or filesystem I/O.",
+    "tests": { "count": 0, "notable": ["Covered indirectly by every page spec (wire.spec.ts, telemetry.spec.ts exercise the poll/stream lifecycle directly)."] },
+    "status": ["exists", "hardened"],
+    "status_reason": "useResource distinguishes loading/refreshing/stale/error explicitly rather than collapsing to one error state, per its own doc comment; used pervasively (46 call sites) and behaviorally tested via wire.spec.ts/telemetry.spec.ts.",
+    "blueprint_capabilities": ["API", "OBS", "TICK"],
+    "gaps_observed": [],
+    "evidence": [
+      "frontend/portal/src/lib/hooks/useResource.ts:44-173",
+      "frontend/portal/tests/wire.spec.ts",
+      "frontend/portal/tests/telemetry.spec.ts"
+    ]
+  },
+  {
+    "name": "portal lib/sim (deterministic simulation)",
+    "path": "frontend/portal/src/lib/sim",
+    "kind": "frontend",
+    "purpose": "A seeded pseudo-random generator (seeded/simWalk/simPick/simBetween) meant to back SimulatedBanner-labelled illustration for subsystems with no platform surface, per portal/CLAUDE.md's rule that simulated data must be deterministic and labelled.",
+    "key_contracts": ["src/lib/sim/index.ts:1-73 seeded, simWalk, simPick, simBetween"],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Its only consumer in the whole repository is components/data/Simulated.tsx (SimulatedBanner, SimChip), and grep for SimulatedBanner|SimChip across src/app and src/components/chrome returns zero results — no page currently renders it. @algorik/testing re-exports the same three functions and is itself an unused package dependency (see portal app-shell record).",
+    "io_and_state": "None — pure functions.",
+    "tests": { "count": 0, "notable": [] },
+    "status": ["exists", "unused"],
+    "status_reason": "Built to spec (seeded, deterministic) but has zero call sites in any page as of this snapshot; every current (portal) page reads real qip-api data instead of falling back to this mechanism.",
+    "blueprint_capabilities": ["COVERAGE"],
+    "gaps_observed": [
+      "src/lib/sim/index.ts and src/components/data/Simulated.tsx (SimulatedBanner/SimChip) — implemented, exported via @algorik/testing, zero import sites anywhere under src/app."
+    ],
+    "evidence": [
+      "frontend/portal/src/lib/sim/index.ts:1-9",
+      "frontend/portal/src/components/data/Simulated.tsx"
+    ]
+  },
+  {
+    "name": "portal components/chrome",
+    "path": "frontend/portal/src/components/chrome",
+    "kind": "frontend",
+    "purpose": "The app shell present on every route: navigation, the paper-trading banner, the kill switch, the environment badge, account menu, command palette, PWA install affordance, and the PlatformProvider that centralises health/status/halt state.",
+    "key_contracts": [
+      "PaperTradingBanner.tsx:18-49 — renders \"PAPER TRADING\" unconditionally, plus a live health.data.live_capable/status.data.live_capable check that turns the strip red if the deployment itself reports live-capable",
+      "KillSwitch.tsx:19-49 — POST /kill-switch (reason required, two clicks + typed reason), DELETE /kill-switch, surfaced via 409 verbatim rather than retried",
+      "PlatformProvider.tsx — usePlatform() context: health, status, halted, busy, trip/clear, lastAction",
+      "AppShell.tsx — desktop sidebar + phone off-canvas nav (mobile.spec.ts)",
+      "EnvironmentBadge.tsx (referenced in CLAUDE.md; simulation blue / paper purple / staging amber / live red)",
+      "CommandPalette.tsx, AccountMenu.tsx, InstallApp.tsx, ThemeSync.tsx/ThemeToggle.tsx"
+    ],
+    "workspace_deps": ["@algorik/brand"],
+    "reached_from_production": "yes",
+    "production_evidence": "AppShell/PaperTradingBanner/KillSwitch render on every authenticated route (layout.tsx); data-testid=\"paper-trading-banner\" is asserted by tests/theme.spec.ts per portal/CLAUDE.md.",
+    "io_and_state": "PlatformProvider polls /health and /system/status; KillSwitch performs the console's two operational writes (trip/clear).",
+    "tests": { "count": 15, "notable": [
+      "the_console_can_halt_the_platform_and_offers_no_way_to_clear_a_halt_it_did_not_cause (tests/boundary.spec.ts)",
+      "the_kill_switch_stays_reachable_when_the_header_has_no_room (tests/mobile.spec.ts)",
+      "shell.spec.ts (6 tests, nav/shell composition)"
+    ]},
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "The paper-trading label is unconditional per its own doc comment (\"never conditional on state, a preference or a page\") and is live-checked against the platform's own live_capable field rather than asserted statically — the fourth structural layer beyond the three named in .claude/rules/01-security-and-safety.md, though that file names only Terraform/composition-roots/type-system as the three that hold the line; this banner is presentation only and adds no new enforcement.",
+    "blueprint_capabilities": ["SEC", "GOV", "OBS"],
+    "gaps_observed": [],
+    "evidence": [
+      "frontend/portal/src/components/chrome/PaperTradingBanner.tsx:1-49",
+      "frontend/portal/src/components/chrome/KillSwitch.tsx:1-49",
+      "frontend/portal/tests/theme.spec.ts",
+      "frontend/portal/tests/mobile.spec.ts"
+    ]
+  },
+  {
+    "name": "portal components/data + components/viz",
+    "path": "frontend/portal/src/components/{data,viz}",
+    "kind": "frontend",
+    "purpose": "The shared rendering primitives every page composes: Panel/Kpi/Bits (chips, freshness, key-value), the four-state ResourceView (loading/empty/unavailable/error), EventFeed, and hand-drawn SVG chart primitives (Sparkline/AreaChart/Gauge/Bars/Heatmap) plus a Chart.js wrapper.",
+    "key_contracts": [
+      "components/data/States.tsx — StateBlock/LoadingBlock/EmptyBlock/UnavailableBlock/MissingEndpointBlock/RouteMissingBlock/UnreachableBlock/DeniedBlock/ErrorBlock/ResourceView — one component per ApiOutcome kind",
+      "components/data/Bits.tsx — Chip/StatusChip/Metric/Freshness/StreamControls, FEED_TONE/FEED_LABEL",
+      "components/data/Panel.tsx — Panel/PanelHead/PanelBody/TableWell layout primitives",
+      "components/viz/primitives.tsx — Sparkline/AreaChart/Gauge/Bars/Heatmap, hand-drawn SVG, no charting library",
+      "components/viz/ChartJs.tsx — the one place chart.js (a portal devDependency) is used"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Imported by 57 files under src/app (grep for components/data/{Panel,Kpi,Bits,States,Simulated,EventFeed} across src) — the single most-reused layer in the portal.",
+    "io_and_state": "None — pure presentational components taking Resource<D>/ApiOutcome as props.",
+    "tests": { "count": 0, "notable": ["Exercised indirectly by every page-level spec."] },
+    "status": ["exists", "hardened"],
+    "status_reason": "ResourceView's one-component-per-ApiOutcome-kind design means a route the platform doesn't serve, a denied credential, and an unreachable platform each render distinguishably rather than collapsing to a generic error — directly implementing the design intent stated in lib/api/client.ts's own doc comment.",
+    "blueprint_capabilities": ["OBS", "COVERAGE"],
+    "gaps_observed": [],
+    "evidence": [
+      "frontend/portal/src/components/data/States.tsx",
+      "frontend/portal/src/components/viz/primitives.tsx:1-13",
+      "frontend/portal/src/lib/api/client.ts:20-56"
+    ]
+  },
+  {
+    "name": "landing",
+    "path": "frontend/landing",
+    "kind": "frontend",
+    "purpose": "The public, unauthenticated marketing site (JavaScript/Next.js, its own dependency tree, built on the licensed Fortradex template) — the front door a search engine and a regulator reach, linking out to the portal for sign-in. Currently built and tested by CI but not deployed to any environment.",
+    "key_contracts": [
+      "app/page.js — home; app/{platform,technology,security,institutional,developers,company,contact}/page.js",
+      "app/legal/{index,terms,privacy,risk-disclosures}/page.js",
+      "lib/site.js:10-21 PORTAL/SIGN_IN/SIGN_UP — the only integration point with the portal (a URL, via NEXT_PUBLIC_ALGORIK_PORTAL_URL)",
+      "lib/claims.mjs — CLAIM_STATUSES (architecture/target/demo/measured), QUANTITY_PATTERN, data-claim-status/data-numeral DOM contract",
+      "scripts/lint.mjs — replaces next lint (removed in Next 16); checks absolute asset paths, dead hrefs, no <form>, PAPER TRADING label, claim-status coverage"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "infrastructure/terraform: zero resources reference \"landing\" anywhere under infrastructure/terraform/*.tf (grep 'landing' across catalogue.tf, outputs.tf, modules/cloudrun/main.tf, variables.tf, main.tf → no hits); infrastructure/gitops contains no landing manifest; .github/workflows/deploy.yml never builds a landing image (only ci.yml has a 'landing' lint/build/test job). infrastructure/docker/landing.Dockerfile exists but nothing invokes it outside local use. environments/dev/terraform.tfvars:455 pre-authorizes an Identity Platform domain \"algorik-landing-rgxpsss2lq-uk.a.run.app\" for a service that has never been created (tfvars:478-482 states plainly: 'frontend/landing and frontend/portal exist in the tree and are in no catalogue, no image matrix and no manifest').",
+    "io_and_state": "No backend calls at all (grep fetch|axios|QIP_API across app/components/lib → 0 hits); fully static marketing content. Only NEXT_PUBLIC_ALGORIK_PORTAL_URL is read from the environment (enforced by scripts/lint.mjs per its own README).",
+    "tests": { "count": 13, "notable": [
+      "tests/landing.spec.mjs (8 tests) — broken-image/404 crawl across every published route",
+      "tests/claims.spec.mjs (5 tests) — DOM sweep asserting every quantitative statement on every page carries a data-claim-status or data-numeral annotation"
+    ]},
+    "status": ["exists", "requires-migration"],
+    "status_reason": "Fully built, linted and Playwright-tested in CI (ci.yml frontend-landing job) but has no deployment path in Terraform, GitOps or deploy.yml — 'exists' as code, 'n/a' in production. Its own README documents that next lint silently stopped running after a Next 16 upgrade and nothing noticed until a custom script replaced it.",
+    "blueprint_capabilities": ["COMMERCE", "COVERAGE"],
+    "gaps_observed": [
+      "No Terraform/GitOps resource of any kind creates a Cloud Run service for this app; identity_authorized_domains pre-registers a run.app hostname that does not exist (infrastructure/environments/dev/terraform.tfvars:455,478-482).",
+      "README.md:44-52 — its marketing copy is duplicated word-for-word from frontend/portal/src/app/(marketing), described by its own README as 'a holding position, not a design' with the portal's copy slated to become redirects to this app instead.",
+      "README.md:56-60 — next lint silently no-op'd after the Next 16 upgrade ('the landing's CI job never ran it, so nothing noticed'); fixed by scripts/lint.mjs, a project-local replacement."
+    ],
+    "evidence": [
+      "frontend/landing/README.md:1-84",
+      "frontend/landing/lib/site.js:1-21",
+      "frontend/landing/lib/claims.mjs:1-40",
+      "infrastructure/environments/dev/terraform.tfvars:450-482",
+      ".github/workflows/ci.yml:196-208"
+    ]
+  },
+  {
+    "name": "mobile",
+    "path": "frontend/mobile",
+    "kind": "frontend",
+    "purpose": "Not an implementation — a placeholder directory documenting a product decision: the phone experience is the portal installed as a PWA, not a second codebase, so this directory has nowhere to point except the portal's own manifest/service-worker/AppShell files.",
+    "key_contracts": [
+      "README.md — table mapping every mobile concern to its real location in frontend/portal"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "No source files exist here (find frontend/mobile -type f → README.md only); the actual mobile behavior is implemented and deployed inside frontend/portal (manifest.ts, public/sw.js, components/chrome/AppShell.tsx, components/chrome/InstallApp.tsx).",
+    "io_and_state": "None.",
+    "tests": { "count": 8, "notable": ["frontend/portal/tests/mobile.spec.ts — the actual mobile behavioural coverage, run against the Pixel 7 viewport (devices[\"Pixel 7\"])"] },
+    "status": ["placeholder"],
+    "status_reason": "By design: README.md states this directory becomes non-empty only 'when the desk decides to list in a store' (a TWA/store-packaging project); until then it deliberately holds only documentation.",
+    "blueprint_capabilities": ["COMMERCE"],
+    "gaps_observed": [],
+    "evidence": [
+      "frontend/mobile/README.md:1-31",
+      "frontend/portal/src/app/manifest.ts:16-49",
+      "frontend/portal/tests/mobile.spec.ts"
+    ]
+  },
+  {
+    "name": "@algorik/analytics",
+    "path": "frontend/packages/analytics",
+    "kind": "frontend",
+    "purpose": "A privacy-aware analytics abstraction with no vendor SDK: consent-gated recording, a hard property-name denylist (password/token/email/balance/pnl/position/...), and a no-op default sink.",
+    "key_contracts": [
+      "src/index.ts:35-39 FORBIDDEN property-name denylist",
+      "src/index.ts:47-59 screen(event) — strips forbidden properties, returns what was dropped",
+      "src/index.ts:70-88 class Analytics — consent defaults withheld; grantConsent/withdrawConsent/record",
+      "src/index.ts:62 noopSink — the default, records nothing with no consent"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Listed in portal's package.json and next.config.ts transpilePackages, but zero import sites: grep '@algorik/analytics' across frontend/portal/src and frontend/landing → 0 hits.",
+    "io_and_state": "None (pure module); by design admits no third-party SDK at all.",
+    "tests": { "count": 0, "notable": [] },
+    "status": ["exists", "unused"],
+    "status_reason": "88-line, fully-formed abstraction (consent gate, key-based screening) with zero call sites anywhere in the portal or landing today.",
+    "blueprint_capabilities": ["SEC", "COVERAGE"],
+    "gaps_observed": ["Zero import sites in frontend/portal/src or frontend/landing (grep '@algorik/analytics')."],
+    "evidence": ["frontend/packages/analytics/src/index.ts:1-89", "frontend/portal/next.config.ts:31"]
+  },
+  {
+    "name": "@algorik/api-client",
+    "path": "frontend/packages/api-client",
+    "kind": "frontend",
+    "purpose": "Declared as 'the typed client and hooks for the Algorik platform surface', but its src/index.ts is a pure re-export shim pointing at the portal's own lib/api/client.ts, lib/api/endpoints.ts and lib/hooks/* — it defines nothing of its own.",
+    "key_contracts": [
+      "src/index.ts:14-23 re-exports platform, request, isOk, describeOutcome, REST, useResource, useEventStream, useSeries, useNow, connections — all from ../../../portal/src/lib/**"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Listed in transpilePackages (next.config.ts:28) but grep '@algorik/api-client' across frontend/portal/src and frontend/landing → 0 hits; the portal's own pages import the same functions via relative @/lib paths instead of this package.",
+    "io_and_state": "None of its own — forwards to portal internals, which perform the actual fetch/EventSource I/O.",
+    "tests": { "count": 0, "notable": [] },
+    "status": ["exists", "unused"],
+    "status_reason": "Structurally a re-export-only shim (23 lines, no logic) with zero consumers; the boundary it names in its own doc comment ('every surface reaches the platform through this package') is not yet true for the portal itself.",
+    "blueprint_capabilities": ["API", "COVERAGE"],
+    "gaps_observed": ["Entire package body is `export {...} from \"../../../portal/src/lib/...\"`; zero consumers anywhere in the workspace."],
+    "evidence": ["frontend/packages/api-client/src/index.ts:1-24"]
+  },
+  {
+    "name": "@algorik/auth",
+    "path": "frontend/packages/auth",
+    "kind": "frontend",
+    "purpose": "The identity type contract: Session/AlgorikUser/AuthFailure/IdentityProvider shapes, plus two enforced security properties as functions — requiresStepUp (5-minute step-up window) and safeRedirect (open-redirect refusal for the post-sign-in destination).",
+    "key_contracts": [
+      "src/index.ts:128-147 interface IdentityProvider — signUp/signIn/signOut/currentSession/submitMfaChallenge/reauthenticate etc., all return AuthResult<T> rather than throw",
+      "src/index.ts:158-168 HighRiskAction — deliberately has no activateLiveTrading member (ADR 0014)",
+      "src/index.ts:180-182 requiresStepUp(session, now)",
+      "src/index.ts:194-198 canView(state, roles) — rendering only, never a permission",
+      "src/index.ts:214-220 safeRedirect(next, fallback) — refuses scheme/host/protocol-relative/backslash payloads"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Imported by 10+ files: lib/server/identity.ts, app/(auth)/{sign-in,sign-up,verify-email,reset-password,forgot-password,session-expired}/page.tsx (grep '@algorik/auth' frontend/portal/src → 10 hits).",
+    "io_and_state": "None — pure types and two pure functions.",
+    "tests": { "count": 0, "notable": ["Exercised indirectly by tests/auth.spec.ts's open-redirect and step-up assertions."] },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "One of only three @algorik/* packages actually consumed by the portal's application code (with @algorik/validation and @algorik/brand); the type contract explicitly omits any live-trading action per ADR 0014.",
+    "blueprint_capabilities": ["SEC", "GOV"],
+    "gaps_observed": [],
+    "evidence": ["frontend/packages/auth/src/index.ts:128-220", "frontend/portal/src/lib/server/identity.ts:2"]
+  },
+  {
+    "name": "@algorik/brand",
+    "path": "frontend/packages/brand",
+    "kind": "frontend",
+    "purpose": "The one approved source for the Algorik mark/wordmark (real shipped raster assets, not redrawn SVG), the product vocabulary glossary, and a regex-based forbidden-claims list for marketing copy review.",
+    "key_contracts": [
+      "src/index.tsx:23-34 brandAssets — real asset paths under /brand/",
+      "src/index.tsx:66-79 AlgorikMark, :96-135 AlgorikWordmark",
+      "src/index.tsx:145-163 glossary — one canonical noun per platform concept (opportunity/strategy/position/fill/...)",
+      "src/index.tsx:189-197 forbiddenClaims — regex list incl. \"guaranteed return\", \"quantum advantage\", \"risk-free\", \"fully autonomous live trading\"",
+      "src/index.tsx:200-207 auditCopy(copy) — returns every forbidden claim found"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "AlgorikMark/AlgorikWordmark imported in components/chrome/Nav.tsx, app/(auth)/layout.tsx, app/(marketing)/layout.tsx, app/(marketing)/welcome/page.tsx (grep '@algorik/brand' frontend/portal/src → 4 files).",
+    "io_and_state": "None.",
+    "tests": { "count": 0, "notable": ["auditCopy is not wired into any test in this package or the portal; landing implements its own separate, independently-tested claims mechanism (lib/claims.mjs + claims.spec.mjs) rather than importing this one."] },
+    "status": ["exists", "hardened", "requires-migration"],
+    "status_reason": "The mark/wordmark half is used in production; the auditCopy/forbiddenClaims half is not wired to any test or CI gate in this package, while landing independently reimplements the same 'no false quantitative/regulatory claim' concern as lib/claims.mjs with its own DOM-based enforcement, tested by claims.spec.mjs.",
+    "blueprint_capabilities": ["COMMERCE", "GOV"],
+    "gaps_observed": [
+      "src/index.tsx:200-207 auditCopy() has no caller anywhere in the workspace (grep auditCopy → definition only); landing's independent lib/claims.mjs is the mechanism actually enforced by a test."
+    ],
+    "evidence": [
+      "frontend/packages/brand/src/index.tsx:189-207",
+      "frontend/portal/src/components/chrome/Nav.tsx:6",
+      "frontend/landing/lib/claims.mjs:1-30"
+    ]
+  },
+  {
+    "name": "@algorik/charts",
+    "path": "frontend/packages/charts",
+    "kind": "frontend",
+    "purpose": "Declared as 'financial chart primitives, drawn by hand in SVG', but its entire body is a 12-line re-export of the portal's own components/viz/primitives.tsx.",
+    "key_contracts": ["src/index.ts:9-12 re-exports Sparkline, AreaChart, Gauge, Bars, Heatmap from ../../../portal/src/components/viz/primitives"],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Listed in transpilePackages (next.config.ts:26) but grep '@algorik/charts' across frontend/portal/src and frontend/landing → 0 hits; the portal's own pages import components/viz/primitives directly.",
+    "io_and_state": "None.",
+    "tests": { "count": 0, "notable": [] },
+    "status": ["exists", "unused"],
+    "status_reason": "Pure re-export shim, zero consumers, identical pattern to @algorik/api-client and @algorik/ui.",
+    "blueprint_capabilities": ["COVERAGE"],
+    "gaps_observed": ["Entire package body is a re-export; zero consumers anywhere in the workspace."],
+    "evidence": ["frontend/packages/charts/src/index.ts:1-13"]
+  },
+  {
+    "name": "@algorik/design-tokens",
+    "path": "frontend/packages/design-tokens",
+    "kind": "frontend",
+    "purpose": "The single source of truth for color/type/space/radius/elevation/motion tokens, sourced verbatim from the licensed SignalAIX template palette (ADR 0015); consumed not via TypeScript import but by a build-time script that parses this file's source text and generates the portal's globals.css.",
+    "key_contracts": [
+      "src/index.ts:36-76 interface ColorScale — canvas/surface/border/text*/brand*/success/warning/critical/gain/loss/simulation/paper/stage/live/focus/disabled",
+      "src/index.ts:82-115 dark (primary theme), :122-155 light",
+      "src/index.ts:164-168 financialState — gain/loss/flat as {token,glyph,label} triples, never color-only",
+      "src/index.ts:257-261 cssVariables(scale) — emits CSS custom properties"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Not imported by any .ts/.tsx file (grep 'from \"@algorik/design-tokens\"' → 0 hits) — instead frontend/scripts/generate-theme-css.mjs regex-parses packages/design-tokens/src/index.ts's source text directly (readFileSync + RegExp on 'export const dark: ColorScale = {...}') and writes the result into frontend/portal/src/app/globals.css between ALGORIK-TOKENS:BEGIN/END markers, checked by `npm run tokens:check` in CI.",
+    "io_and_state": "None from the package itself; the generator script performs file I/O (readFileSync/writeFileSync) against this file and globals.css.",
+    "tests": { "count": 0, "notable": ["Enforced by npm run tokens:check (drift check) rather than a unit test."] },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "Consumed in production, but through a regex-based source-text parser rather than a module import or a build step — the generator's own comment acknowledges this ('rather than add a compiler to read it, the two theme objects are parsed out of it directly. A malformed parse throws loudly here rather than emitting half a theme.').",
+    "blueprint_capabilities": ["ARCH", "COMMERCE"],
+    "gaps_observed": [
+      "Consumption mechanism is a regex parse of this file's TypeScript source text (frontend/scripts/generate-theme-css.mjs:27-35), not a type-checked import; a change to the export syntax that a compiler would accept could silently break the parser."
+    ],
+    "evidence": [
+      "frontend/packages/design-tokens/src/index.ts:36-115,257-261",
+      "frontend/scripts/generate-theme-css.mjs:1-36",
+      "frontend/portal/src/app/globals.css:24,33"
+    ]
+  },
+  {
+    "name": "@algorik/feature-flags",
+    "path": "frontend/packages/feature-flags",
+    "kind": "frontend",
+    "purpose": "Seven typed feature flags (signUpEnabled, googleSignIn, passkeys, enterpriseSso, partnerPortal, developerPortal, kycOnboarding), every default false, with resolveFlags() dropping unknown keys rather than passing them through.",
+    "key_contracts": [
+      "src/index.ts:19-43 FLAGS — seven flags, each {description, fallback:false}",
+      "src/index.ts:56-63 resolveFlags(source) — typed booleans only, unknown keys dropped",
+      "src/index.ts:66-68 enabledFlags(values)"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Listed in transpilePackages (next.config.ts:32) but grep '@algorik/feature-flags' across frontend/portal/src and frontend/landing → 0 hits.",
+    "io_and_state": "None.",
+    "tests": { "count": 0, "notable": [] },
+    "status": ["exists", "unused"],
+    "status_reason": "Every capability it would gate (sign-up, Google sign-in, passkeys, enterprise SSO, partner/developer portals, KYC onboarding) is either always-on or entirely absent in the shipped app rather than flag-controlled.",
+    "blueprint_capabilities": ["GOV", "COVERAGE"],
+    "gaps_observed": ["Zero import sites anywhere in frontend/portal/src or frontend/landing."],
+    "evidence": ["frontend/packages/feature-flags/src/index.ts:1-69"]
+  },
+  {
+    "name": "@algorik/shared-types",
+    "path": "frontend/packages/shared-types",
+    "kind": "frontend",
+    "purpose": "Two exported types only: EnvironmentMode and TradingPosture (the latter including a 'live' member that exists solely so the platform can be seen reporting it, never selected by any surface, per ADR 0014).",
+    "key_contracts": [
+      "src/index.ts:12 EnvironmentMode = local|development|test|stage|production",
+      "src/index.ts:21 TradingPosture = simulation|paper|stage|live"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Listed in transpilePackages (next.config.ts:29) but grep '@algorik/shared-types' across frontend/portal/src and frontend/landing → 0 hits. Its own doc comment records that a prior export (readConfig/describeProblems/AlgorikConfig) was deleted after a search found zero importers.",
+    "io_and_state": "None.",
+    "tests": { "count": 0, "notable": [] },
+    "status": ["exists", "unused"],
+    "status_reason": "21-line package, already once trimmed for the same reason (an unused config reader was removed after a zero-importer search); the two remaining exported types have no current importer either.",
+    "blueprint_capabilities": ["CONTRACT", "COVERAGE"],
+    "gaps_observed": ["Zero import sites; the package's own comment documents having already removed one unused export set for the identical reason."],
+    "evidence": ["frontend/packages/shared-types/src/index.ts:1-22"]
+  },
+  {
+    "name": "@algorik/testing",
+    "path": "frontend/packages/testing",
+    "kind": "frontend",
+    "purpose": "A 9-line re-export of the portal's own lib/sim (seeded, simWalk, simPick, simBetween) — shared test/simulation helpers.",
+    "key_contracts": ["src/index.ts:9 re-exports seeded, simWalk, simPick, simBetween from ../../../portal/src/lib/sim"],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Listed in transpilePackages (next.config.ts:33) but grep '@algorik/testing' across frontend/portal/src and frontend/landing → 0 hits; the underlying lib/sim itself also has zero page-level consumers (see portal lib/sim record).",
+    "io_and_state": "None.",
+    "tests": { "count": 0, "notable": [] },
+    "status": ["exists", "unused"],
+    "status_reason": "Re-export of an already-unused module (lib/sim); doubly disconnected from any current call path.",
+    "blueprint_capabilities": ["COVERAGE"],
+    "gaps_observed": ["Zero import sites; re-exports a module (lib/sim) that itself has zero page-level consumers."],
+    "evidence": ["frontend/packages/testing/src/index.ts:1-9"]
+  },
+  {
+    "name": "@algorik/ui",
+    "path": "frontend/packages/ui",
+    "kind": "frontend",
+    "purpose": "Declared as 'accessible component primitives built over the design tokens', but is a 31-line re-export of the portal's own components/data/{Bits,Panel,Kpi,States,Simulated,EventFeed} and lib/format — no independent implementation.",
+    "key_contracts": [
+      "src/index.ts:16-31 re-exports Chip/StatusChip/Metric/Panel/Kpi/StateBlock family/SimulatedBanner/EventFeed/format* from ../../../portal/src/components/data/** and lib/format"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "n/a",
+    "production_evidence": "Listed in transpilePackages (next.config.ts:25) but grep '@algorik/ui' across frontend/portal/src and frontend/landing → 0 hits; the portal's own 57 consumer files import components/data/* directly via relative @/ paths instead.",
+    "io_and_state": "None.",
+    "tests": { "count": 0, "notable": [] },
+    "status": ["exists", "unused"],
+    "status_reason": "Its own doc comment states the intent precisely ('the day the files move here, no consumer changes an import... the boundary is what matters, and the boundary is real from here on'), but as of this snapshot the boundary is declared, not crossed: zero files use it.",
+    "blueprint_capabilities": ["COVERAGE"],
+    "gaps_observed": ["Entire package body is a re-export; zero consumers anywhere in the workspace despite the underlying components (Panel, Kpi, Bits, States) being the portal's most-reused layer (57 direct consumers via relative import)."],
+    "evidence": ["frontend/packages/ui/src/index.ts:1-32"]
+  },
+  {
+    "name": "@algorik/validation",
+    "path": "frontend/packages/validation",
+    "kind": "frontend",
+    "purpose": "In-tree form/field validation (no schema library, ADR 0013): required/email/minLength/maxLength/password/matches/accepted rule builders plus a validate() composer that collects every field's first failure with a human-readable message.",
+    "key_contracts": [
+      "src/index.ts:25-31 required<T>(message)",
+      "src/index.ts:41-47 email(message) — shallow check, deliberately not stricter (delivery is the only real verifier)",
+      "src/index.ts:71-81 password(message) — length-based (>=12 chars) per NIST guidance, not composition rules",
+      "src/index.ts:93-110 validate(values, rules) — one message per field",
+      "src/index.ts:113-119 errorFor(result, field)"
+    ],
+    "workspace_deps": [],
+    "reached_from_production": "yes",
+    "production_evidence": "Imported by app/api/auth/{reset-password,sign-up}/route.ts and app/(auth)/{forgot-password,reset-password,sign-in/sign-in-form,sign-up,verify-email}/page.tsx (grep '@algorik/validation' frontend/portal/src → 8 files).",
+    "io_and_state": "None — pure functions.",
+    "tests": { "count": 0, "notable": ["Exercised indirectly by tests/auth.spec.ts's sign-up/reset-password field-validation assertions."] },
+    "status": ["exists", "hardened", "blueprint-compatible"],
+    "status_reason": "One of the three genuinely-consumed @algorik/* packages; used on both the client (form pages) and server (API routes) sides of the same validation rules, so client and server cannot silently diverge on what a valid password or email looks like.",
+    "blueprint_capabilities": ["SEC", "CONTRACT"],
+    "gaps_observed": [],
+    "evidence": [
+      "frontend/packages/validation/src/index.ts:25-119",
+      "frontend/portal/src/app/api/auth/sign-up/route.ts:2",
+      "frontend/portal/src/app/(auth)/sign-in/sign-in-form.tsx:9"
+    ]
+  }
+]

@@ -1,0 +1,1306 @@
+[
+  {
+    "id": "TICK-001",
+    "domain": "TICK",
+    "title": "Raw market events never enter the cognitive context window",
+    "statement": "Raw ticks and order-book messages are stored apart from the Financial AGI / cognitive layer and are never passed into its context window. The cognitive layer receives market information only after it has been normalized, reconstructed, replayed and converted into learned or distilled representations (TICK-028).",
+    "rationale": "A generalist model fed billions of low-value events spends its context and budget on noise and still cannot be replayed against the exact bytes it saw. Keeping raw events in the lake and handing cognition a bounded representation preserves every event for replay without making the slowest, most expensive component the one that reads them.",
+    "kind": "prohibition",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "2", "section": "§1 Executive Summary"},
+      {"doc": "M", "page": "13", "section": "§8 Market Intelligence & Tick Learning Fabric"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test traces every input of the cognitive-layer context builder and finds no path from a raw or canonical tick topic or a Tick Lake partition, only from the typed representations of TICK-028."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REASON", "ARCH"],
+    "notes": "Merges §1's 'raw ticks are not poured indiscriminately into the largest AGI model' with §8's 'deliberately separates raw market-event storage from the Financial AGI context window' and the 'rather than raw tick events' half of the separately extracted §8 distilled-state contract. The positive half, what the cognitive layer does receive, is TICK-028. §1's processing chain (normalized, reconstructed, replayed, distilled) is expanded in TICK-014, -015, -017 and -019."
+  },
+  {
+    "id": "TICK-002",
+    "domain": "TICK",
+    "title": "World and market streams meet in a time-aligned fusion layer",
+    "statement": "World intelligence and market intelligence are learned as two streams and joined only through a time-aligned fusion layer. The world side supplies events, entities, causal hypotheses, beliefs, uncertainty and expected propagation paths; the market side supplies observed reaction, microstructure regime, liquidity, flow, lead/lag structure, pricing dislocation, execution feasibility, and the learned state, embeddings and outcome labels produced by the microstructure models. Every fused record aligns both sides to one as-of instant.",
+    "rationale": "World data explains why a market might move and tick data shows how it actually moved. Joined without time alignment, a model can learn a 'reaction' that preceded its cause; joined without a declared contract, neither side can be tested or replaced independently.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "3", "section": "§1.1 Product Identity"},
+      {"doc": "M", "page": "8", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path"},
+      {"doc": "M", "page": "15", "section": "§8.4 World + Market Intelligence Fusion"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated world and market streams, every fused record carries fields from both the world-side and market-side lists, and contains no input from either side whose knowable time is after the record's as-of instant."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "MODEL"],
+    "notes": "Merges the §1.1 dual-stream learner, the §3 capability-map row, the §5 edge 'Microstructure Models -> learned state / embeddings / labels -> World + Market Intelligence Fusion', the §8.4 field lists (kept as the most specific wording) and the first clause of the §31 checklist item. The second clause of that checklist item, comparing causality with propagation, is TICK-054. That both streams are required at all is ARCH-025. Master Phase 2 (M p41) includes world+market fusion; GCP places 'world+tick fusion' in its Phase 8 (G p22). P1 follows the master phase."
+  },
+  {
+    "id": "TICK-003",
+    "domain": "TICK",
+    "title": "Event, receive and normalized time are never collapsed",
+    "statement": "Every captured and canonical market event keeps its source/exchange event time, receive time, normalized time, clock uncertainty, source sequence number and venue identity as distinct fields from capture through training and replay. No stage collapses them into a single timestamp or overwrites one with another.",
+    "rationale": "One collapsed timestamp erases the difference between when something happened at the venue and when the platform could have known it. Every look-ahead and latency assumption in replay depends on that difference, and the corruption is silent because the data still looks well-formed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "4", "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"},
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Clock + sequence normalization"},
+      {"doc": "M", "page": "15", "section": "§8.5 Data Correctness and Training Guardrails"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated capture streams with skewed venue and receive clocks, the canonical record, the Tick Lake record and the replay input all carry the four time fields and the sequence number unchanged and pairwise distinguishable, and no stage's output type has a single-timestamp form."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT", "DATA"],
+    "notes": "Merges the 'preserve event time, sequence, venue identity' and 'timestamp contamination' clauses of §1.2, the §8.2 clock-normalization row ('rather than collapsing everything to one timestamp', with its separate invariant reading) and the first half of §8.5 'No timestamp laundering'. The second half of that bullet, lineage for clock corrections, is TICK-056. The PTP/GPS discipline in the same §8.2 row is TICK-033. One extraction attributed the p4 sentence to §1.3; pdftotext prints §1.2's body after §1.3's bullets on p4, but the sentence belongs to §1.2, so only §1.2 is cited. CONTRACT-018 (M p37) holds the MarketEvent field list. P0: §1.2 is the non-negotiable boundary, and master Phase 1 (M p41) makes canonical tick capture mandatory for the first market."
+  },
+  {
+    "id": "TICK-004",
+    "domain": "TICK",
+    "title": "Model artifacts record the market-data entitlements that trained them",
+    "statement": "Entitlement lineage is preserved from capture into every artifact trained on market data. Each model artifact records which licensed market data trained it and where that artifact is permitted to run and its outputs to be used.",
+    "rationale": "A licence restricts not only who may read a feed but what may be derived from it and where. A model that cannot say what it was trained on can be deployed into a region or a use its licence forbids, and nobody can find out afterwards which artifacts a licence change affects.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "4", "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"},
+      {"doc": "M", "page": "15", "section": "§8.5 Data Correctness and Training Guardrails"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A training run over two partitions held under different entitlements produces an artifact whose manifest lists both entitlements and the permitted run/use scope, and the manifest writer refuses to seal a manifest whose entitlement list is empty."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "GOV"],
+    "notes": "Merges §1.2's 'entitlement lineage' (extracted twice, once under §1.3; see TICK-003) with §8.5 'Entitlements are part of lineage'. The blueprint says 'record'. Enforcing the recorded run/use scope at deployment is implied but not stated, and belongs with the model-promotion gates. Depends on TICK-036 (stored events carry their entitlement)."
+  },
+  {
+    "id": "TICK-005",
+    "domain": "TICK",
+    "title": "No look-ahead in training, labels or replay",
+    "statement": "Training, label construction and replay use only data that would have been observable at the decision timestamp. Observable means received after realistic publication and feed-arrival delays, not merely stamped earlier at the source. Outcome labels are computed from data after the decision instant and are never available as inputs at or before it.",
+    "rationale": "Look-ahead makes a backtest look better than any live result can be, and it is invisible in the output. A model that saw a price 3 ms early and a genuinely predictive model draw the same curve until they trade.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "4", "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"},
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Outcome/label builder"},
+      {"doc": "M", "page": "14", "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"},
+      {"doc": "M", "page": "15", "section": "§8.5 Data Correctness and Training Guardrails"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated event streams with injected arrival delays, every feature or input visible to a decision at time t has a knowable (receive) time at or before t, and perturbing any event whose knowable time is after t leaves every decision and every feature at t unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "DATA"],
+    "notes": "Merges the §1.2 'look-ahead leakage' clause (extracted twice), the 'without future leakage' clause of the §8.2 outcome/label builder row (the label types themselves are TICK-044), the 'what Algorik could have known ... data arrival' part of §8.3, and §8.5 'No look-ahead'. The §8.5 wording, which includes publication/feed arrival delays, is kept as the most specific. The repository's data-and-streaming rule already prohibits point-in-time leakage."
+  },
+  {
+    "id": "TICK-006",
+    "domain": "TICK",
+    "title": "No impossible fills in replay",
+    "statement": "A replayed or simulated fill never exceeds the depth available at its price at the instant the order could have arrived. Every such fill respects queue/priority position, rate limits, latency, partial fills, venue rules and price impact, and replay never assumes a fill at a bar's price.",
+    "rationale": "A simulator that fills more than the book held, jumps the queue or trades during a halt manufactures profit that can never be realised. Every model and paper result calibrated on it inherits the error, and paper trading is the only execution this platform has.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "4", "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"},
+      {"doc": "M", "page": "15", "section": "§8.5 Data Correctness and Training Guardrails"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated books, order flows and venue rule sets, every simulated fill at a price is at most the displayed depth at that price after the queue ahead of the order at its arrival time (decision time plus latency); no fill occurs while the venue state forbids trading; and orders beyond the rate limit are rejected, not filled."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXEC"],
+    "notes": "Merges §1.2 'impossible fills in replay' (extracted twice) with §8.5 'No impossible fills', kept as the more specific list, and the 'rather than assuming fills from bars' clause of the §31 checklist. The simulator's full model of frictions (fees, rejects, decision latency) is TICK-020; this item is the invariant a property test holds against it. P0 because the fill simulator is the execution path of a paper-only platform."
+  },
+  {
+    "id": "TICK-007",
+    "domain": "TICK",
+    "title": "Tick data is a learning corpus, not only execution input",
+    "statement": "Every market event captured for execution is also delivered to the Market Intelligence & Tick Learning Fabric. The fabric treats tick and order-book history as a first-class learning corpus (immutable history, normalization, reconstruction, alignment, replay, training, fusion and distillation), not as a feed the execution path consumes and discards.",
+    "rationale": "v10.1 treated ticks mainly as execution input. A feed handler that drops events after acting on them leaves nothing to replay, calibrate against or learn from, and the platform could never answer how the market actually reacted to what it did.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1"},
+      {"doc": "M", "page": "13", "section": "§8 Market Intelligence & Tick Learning Fabric"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Driving a capture adapter with a recorded session shows every event the reflex path consumed also present, by source sequence number, in the fabric's capture journal, with no gaps the adapter did not itself flag."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["DATA", "REFLEX"],
+    "notes": "Merges the §2 correction row with §8's 'first-class learning system, not merely a feed handler for execution'. The row's module list is expanded as TICK-008, -014, -015, -017, -018, -019, -042 and the fusion items. DATA-023 (M p12) states the same-events invariant from the data side at P0. NON_RUST from §8 was removed: this item constrains the data flow, not the language of the learners, which carry the flag themselves (TICK-018, -043). P0 because master Phase 1 (M p41) makes canonical tick capture for the first market an exit criterion."
+  },
+  {
+    "id": "TICK-008",
+    "domain": "TICK",
+    "title": "Tick and order-book history is immutable",
+    "statement": "Raw and canonical tick/order-book history, once written, is never modified or deleted in place. A correction (for example a clock correction or a venue restatement) is written as a new record that references the one it corrects, and removal happens only through the governed retention policy (TICK-037).",
+    "rationale": "Replay and retraining are reproducible only if they read the history that existed. An in-place edit silently changes every past result derived from the edited range, and nothing downstream can tell.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "5", "section": "§2 Corrections Required to v10.1"},
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Immutable Tick Lake"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An attempt to overwrite or delete a sealed Tick Lake segment through the writer's API is refused, and the storage's retention/object-hold configuration refuses the same operation outside the retention policy."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA"],
+    "notes": "Merges §2 'immutable tick/order-book history' with the 'Immutable' of the §8.2 Tick Lake row; the rest of that row is split into TICK-035 to -039. MANAGED_SERVICE and COST from the Tick Lake row were removed: immutability holds whatever store implements it. The repository's governance rule that nothing may edit sealed history is the same invariant."
+  },
+  {
+    "id": "TICK-009",
+    "domain": "TICK",
+    "title": "Capture trades, quotes, top-of-book and L1/L2 depth",
+    "statement": "The capture layer records trades/ticks, bid/ask quotes, NBBO or the venue-equivalent top-of-book, and L1/L2 depth for every venue and instrument it is configured for.",
+    "rationale": "Trades alone cannot say what liquidity was available or at what cost. Without quotes and depth, neither book reconstruction nor any fill simulation has the state it needs.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "14", "section": "§8.1 Tick and Market-Event Universe"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A recorded venue session played through the capture adapter yields canonical trade, quote, top-of-book and depth-update records in the counts and sequence the session contains."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["DATA"],
+    "notes": "Merges the §3 capability-map data list with the first §8.1 bullet. The L3/order-level clause of that bullet is a separate gate (TICK-029). P0 for the first market only (master Phase 1 exit, M p41); further venues arrive in their own phases."
+  },
+  {
+    "id": "TICK-010",
+    "domain": "TICK",
+    "title": "Capture auction, halt and order-lifecycle events",
+    "statement": "The capture layer records auction/open/close/imbalance events, halts, circuit breakers, venue status changes, and order rejects, cancels and acknowledgments.",
+    "rationale": "A book or a simulator that does not know the venue was halted or in auction will fill orders that could not have traded. Lifecycle events are what make a replayed session the session that happened.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "14", "section": "§8.1 Tick and Market-Event Universe"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying a recorded session that contains an auction and a halt shows the canonical stream carrying both state transitions, and the simulator refusing continuous-book fills while either is in force."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["EXEC"],
+    "notes": "§3 names 'auction' in its data list; §8.1's full bullet is kept. P0 because halts and venue status are needed for TICK-006 to hold on the first market."
+  },
+  {
+    "id": "TICK-011",
+    "domain": "TICK",
+    "title": "Capture derivatives and financing state",
+    "statement": "The capture layer records options chains, implied-volatility surfaces, Greeks, futures curves, basis, borrow, funding and financing state.",
+    "rationale": "Cross-asset reactions and carry cannot be learned from spot books alone. A strategy that ignores funding or basis is evaluated against a market with free leverage.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "14", "section": "§8.1 Tick and Market-Event Universe"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For a configured options and futures venue, the canonical stream contains chain, surface, curve, basis and funding records carrying the same time fields as spot events (TICK-003)."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["ASSET"],
+    "notes": "§3 lists options, futures and funding; §8.1's bullet is kept. P1: multiple asset classes arrive in master Phase 3 (M p41)."
+  },
+  {
+    "id": "TICK-012",
+    "domain": "TICK",
+    "title": "Capture FX, rates, crypto and on-chain market state",
+    "statement": "The capture layer records FX and rates quotes, crypto order books, perpetual funding, liquidations, mempool/on-chain market signals and decentralized venue state.",
+    "rationale": "These markets trade continuously and are often the first to react to world events. Leaving them out removes exactly the venues where lead/lag and liquidation cascades are visible.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "14", "section": "§8.1 Tick and Market-Event Universe"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For a configured crypto venue and an on-chain source, the canonical stream contains order-book, funding, liquidation and mempool/on-chain records with a source sequence or block identity and the TICK-003 time fields."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["ASSET", "DATA"],
+    "notes": "§3 lists FX, crypto, funding, liquidation and on-chain; §8.1's bullet is kept. P1 (master Phase 3, multiple asset classes)."
+  },
+  {
+    "id": "TICK-013",
+    "domain": "TICK",
+    "title": "Capture the platform's own execution telemetry",
+    "statement": "The capture layer records the platform's own execution telemetry: submitted orders, timestamps, routing decisions, fills, partial fills, slippage, queue estimates, cancels, rejects, hedges and risk vetoes.",
+    "rationale": "The platform's own orders and vetoes are the only record of what it did against the market it saw. Without them replay cannot compare predicted and realised fills, and the digital twin has nothing to calibrate to.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "14", "section": "§8.1 Tick and Market-Event Universe"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A paper session through the simulated broker produces, for every order, telemetry records for submission, routing, each fill or partial fill, cancel/reject and any risk veto, joinable to the market events by instrument and time."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXEC", "RISK"],
+    "notes": "§3 says 'Algorik execution data'; §8.1's list is kept. COST from the §3 row was removed: this is the platform's own data, not a licensed feed. P0 because master Phase 1 requires paper trading and replay for the first cell. Retention of these records is TICK-065."
+  },
+  {
+    "id": "TICK-014",
+    "domain": "TICK",
+    "title": "Canonical typed market-event schema",
+    "statement": "Venue-native messages are normalized into typed canonical records for trades, quotes, depth updates, auctions, status and lifecycle events, with event-time normalization applied. Consumers downstream of capture read the canonical types, not venue-native formats.",
+    "rationale": "Without one typed schema, each consumer re-parses each venue's format and each ends up with a slightly different book. A canonical record is what makes replay, features and training agree about what happened.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Canonical market-event schema"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "For each canonical event kind, a venue-native fixture decodes to exactly one typed record, and an unrecognised message is refused with an error naming the venue and message type, not dropped or coerced."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT"],
+    "notes": "Merges §3's 'canonical event-time normalization' with the §8.2 canonical-schema row; the row's lineage clause is TICK-034. CONTRACT-018 (M p37) holds the MarketEvent field list. COST from the §3 row was removed. P0: master Phase 0 includes canonical types/contracts and Phase 1 requires canonical tick capture."
+  },
+  {
+    "id": "TICK-015",
+    "domain": "TICK",
+    "title": "Order books are reconstructed deterministically",
+    "statement": "Venue order books are rebuilt from canonical events deterministically: the same event sequence always yields identical book states, independent of process, host, thread scheduling or run.",
+    "rationale": "If two rebuilds of the same history can disagree, no replay result, label or backtest built on the book can be reproduced. A difference between live and replay then cannot be attributed to the model rather than to the rebuild.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Order-book reconstruction"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated canonical event sequences, two independent reconstructions, one of them started from a checkpoint, produce identical book-state hashes at every sequence number."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX"],
+    "notes": "Merges §3's 'order-book reconstruction', the 'deterministically' of the §8.2 row and the §31 checklist's 'deterministic reconstruction'. The row's gap handling is TICK-040 and its checkpoints TICK-041. P0: master Phase 1 exit (M p41) names book reconstruction for the first market. MANAGED_SERVICE from §31 and COST from §3 were removed."
+  },
+  {
+    "id": "TICK-016",
+    "domain": "TICK",
+    "title": "Microstructure feature engine",
+    "statement": "A feature engine computes spread, depth, imbalance, queue, flow, toxicity, volatility, liquidity, lead/lag and cross-venue features from canonical events and reconstructed books.",
+    "rationale": "Models and the cognitive layer need the market summarised in quantities a person can check. Features computed ad hoc inside each model disagree with one another and with what the reflex path saw.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Feature + representation engine"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each feature has a fixture book and event window with a hand-computed expected value, and the engine reproduces it exactly."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "REFLEX"],
+    "notes": "Split from the §8.2 row; its learned-embedding half is TICK-043. NON_RUST was moved to TICK-043: these are deterministic computations the reflex path also needs. COST from §3 was removed. Training on live and replayed features together is TICK-018."
+  },
+  {
+    "id": "TICK-017",
+    "domain": "TICK",
+    "title": "Exact historical replay is deterministic",
+    "statement": "Historical replay sequences events deterministically from venue-native/canonical records, using book checkpoints and carrying reconstruction integrity flags. Replaying the same history with the same configuration yields identical event order, book states and outputs.",
+    "rationale": "Replay is how a live result is explained and a model is judged. A replay that can reorder events or drift between runs turns every comparison into a comparison with noise.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Replay + simulation engine"},
+      {"doc": "M", "page": "15", "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying one recorded session twice, and once more on a different host, produces identical output digests (event order, book states, simulated fills) and identical integrity flags."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "EXEC"],
+    "notes": "Merges §3's 'deterministic event-time replay', the 'replay canonical historical markets' clause of the §8.2 replay row and §8.3 'Exact historical replay'. Replay of the platform's own decisions is TICK-045; the simulator's execution model is TICK-020. P0: master Phase 1 exit (M p41) makes deterministic replay for the first market mandatory, and GCP Phase 3 (G p22) lists replay. COST from §3 was removed. The repository rule that iteration order reaching output uses BTreeMap exists for this property."
+  },
+  {
+    "id": "TICK-018",
+    "domain": "TICK",
+    "title": "Microstructure training service",
+    "statement": "A training service trains and calibrates specialist, execution, liquidity, slippage, fill, regime and short-horizon models from both live microstructure features and replay/simulation output. It continuously learns venue mechanics, queue behaviour, liquidity regimes, cross-asset lead/lag, execution dynamics and market reactions from tick history plus the platform's execution telemetry, and records what it learns as MicrostructureDelta artifacts.",
+    "rationale": "Fill, slippage and queue behaviour change with venue and regime. A model calibrated once and never retrained from what the platform observes will be confidently wrong about the venue it trades most.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path"},
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Microstructure training service"},
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — Market-microstructure expansion"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A training run's manifest lists both a live-feature window and a replay window as inputs, and the run emits a typed MicrostructureDelta artifact naming the model class, venue and data it was trained on."
+    },
+    "policy_flags": ["NON_RUST", "COST"],
+    "secondary_domains": ["MODEL", "EXPAND"],
+    "notes": "Merges the §3 'training' item, the §8.2 training row (its benchmarking clause is TICK-046), the two §5 extractions of 'Live Microstructure Features -> Microstructure Models' and 'Replay / Simulation -> Microstructure Models', and the learning half of the §23 market-microstructure expansion row (its residual-triggered campaigns are TICK-049). EXPAND-016 states the §23 half from the expansion side. Master Phase 2 (M p41) needs this; GCP puts 'model registry/training' in its Phase 8 (G p22). P1 follows the master. COST from §3 kept: training compute is the cost."
+  },
+  {
+    "id": "TICK-019",
+    "domain": "TICK",
+    "title": "Distilled intelligence is packaged into bounded reflex artifacts",
+    "statement": "A reflex distillation packager compresses useful slow/warm intelligence, including distilled fused world+market state, into bounded features, models, lookup structures and compact opportunity maps that regional reflex nodes can evaluate within their latency budgets. The outputs are packaged through the Model Registry as reflex-compatible artifacts.",
+    "rationale": "The reflex lane cannot call the cognitive lane on the hot path. Slow intelligence reaches a microsecond decision only as a precomputed artifact whose evaluation cost is known before deployment; an artifact without a bound is a latency incident waiting for a large input.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Reflex distillation/packager"},
+      {"doc": "M", "page": "15", "section": "§8.4 World + Market Intelligence Fusion"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — Microstructure training"}
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Every packaged artifact declares its size and evaluation bound, the reflex benchmark harness evaluates it at the declared worst case on reflex-node hardware within the lane's latency budget, and the packager refuses an artifact over budget."
+    },
+    "policy_flags": ["NON_RUST", "MULTI_REGION", "MANAGED_SERVICE"],
+    "secondary_domains": ["REFLEX", "MODEL"],
+    "notes": "Merges §3's 'reflex distillation', the §8.2 packager row, the §8.4 flow 'Distilled fused state -> regional reflex models and compact opportunity maps', and the 'packaged through the Model Registry into warm/reflex-compatible artifacts' clause of the §26 microstructure-training placement row (its compute placement is TICK-062). COST was removed; it belonged to the training pools. Staged, atomic activation of a package on reflex nodes (G p20, §21.1 steps 6-7) is outside this domain."
+  },
+  {
+    "id": "TICK-020",
+    "domain": "TICK",
+    "title": "Replay simulates what the platform could have done at each instant",
+    "statement": "The replay/simulation engine models the platform's own execution at each instant, applied to its historical or candidate decisions: data arrival, decision latency, queue position, rate limits, fees, rejects, partial fills and market impact.",
+    "rationale": "A strategy evaluated without latency, fees and rejects is evaluated in a market that never charges and never refuses. The gap between that result and paper performance is then blamed on the model.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Replay + simulation engine"},
+      {"doc": "M", "page": "14", "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying one recorded session with each friction switched on in turn changes simulated P&L in the expected direction, by an amount that can be checked by hand: fees by the fee schedule, latency by the price move over the delay, rejects by the refused orders."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXEC"],
+    "notes": "Merges §3's replay capability ('latency/queue/fill assumptions, fees, rejects, partial fills, market impact'), the §8.2 replay row, §8.3's 'what Algorik could have known and done' (the 'known' half is TICK-005) and the §31 checklist. The fill-feasibility invariant is TICK-006; multi-leg semantics are TICK-021. P1: master Phase 2 (M p41) includes replay/digital twin, while the Phase 1 paper simulator must already satisfy TICK-006. COST from §3 was removed."
+  },
+  {
+    "id": "TICK-021",
+    "domain": "TICK",
+    "title": "Replay simulates multi-leg and cross-region opportunities as sagas",
+    "statement": "Replay simulates multi-leg execution as a saga: legs executed in sequence or in parallel, the chance the opportunity disappears before every leg completes, partial execution, and failure with hedge/unwind. An opportunity that spanned regional cells is replayed as a distributed opportunity, as each cell saw it.",
+    "rationale": "A multi-leg opportunity is real only if every leg can be completed at the assumed price. A simulator that treats a cycle as atomic reports riskless profit on exactly the paths where the platform would be left holding one leg.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Replay + simulation engine"},
+      {"doc": "M", "page": "14", "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"},
+      {"doc": "M", "page": "41", "section": "§30 Build Order — Phase 4 Multi-Region Reflex Mesh"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "A replayed three-leg opportunity whose third leg's liquidity vanishes between legs produces a partial-execution outcome with the hedge/unwind cost booked, never a completed cycle."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["EXEC", "MESH", "CAPITAL"],
+    "notes": "Merges §3 'multi-leg saga simulation', §8.2 'multi-leg execution semantics', §8.3 'the possibility that a multi-leg opportunity disappears before completion', §31 'multi-leg failure/unwind' and Phase 4's 'distributed opportunity replay'. The fuller §8.3 bullet 'Multi-leg arbitrage replay' (M p15: 2-20 legs, reservation, legging risk, path decay, capital consumption across regions) was not in this domain's extraction. P1 for Phase 4's 2-5 leg cycles; Phase 5's 3-20 leg cycles (P2) extend the same capability. COST from §3 was removed."
+  },
+  {
+    "id": "TICK-022",
+    "domain": "TICK",
+    "title": "Counterfactual replay compares what was done with what could have been",
+    "statement": "Counterfactual replay compares actions taken, vetoed or missed, and the live model's decisions, against feasible alternative actions, a no-action branch and counterfactual (non-live) models. Every branch uses only the information set available at that time.",
+    "rationale": "Learning only from trades taken hides the cost of vetoes and missed opportunities. Comparing against alternatives that use information not yet available rewards hindsight rather than judgement.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "15", "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"},
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Replay / Simulation controllers"},
+      {"doc": "G", "page": "11", "section": "§11 Cognitive, Model and Quantum Compute Plane — Simulation/counterfactual"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "For a recorded decision, the counterfactual run produces an outcome for the taken action, the no-action branch and each alternative model's action, and every input read by any branch has a knowable time at or before the decision instant."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "RISK"],
+    "notes": "Merges §3's 'supports counterfactual execution', §8.3 'Counterfactual replay' (kept), GCP §8's 'compare live vs counterfactual models' and GCP §11's 'no-action branches'. GCP §11's intervention simulation is TICK-064. The GKE placement in both GCP rows is TICK-060, and KUBERNETES and MANAGED_SERVICE moved there with it. COST from §3 was removed. AMBIENT-012 (counterfactual shadow models) consumes this capability."
+  },
+  {
+    "id": "TICK-023",
+    "domain": "TICK",
+    "title": "Synthetic rare-regime experience supplements sparse history",
+    "statement": "Agent/market simulation generates synthetic rare regimes, liquidity droughts, manipulation patterns, venue outages and stress events as typed ScenarioPack/SyntheticEpisode artifacts, to supplement sparse real history.",
+    "rationale": "The regimes that break a strategy are the ones history holds only a handful of. Without synthetic experience, a model's first liquidity drought is a real one; and synthetic episodes that are not typed as such can leak into training as if they had happened.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "7", "section": "§3 Full Capability Map"},
+      {"doc": "M", "page": "15", "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"},
+      {"doc": "M", "page": "28", "section": "§23 Intelligence Expansion Engine — Simulation + counterfactual expansion"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A scenario run produces a SyntheticEpisode for each requested regime type, each marked synthetic in its lineage, and no Tick Lake partition of real history contains a record from one."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXPAND", "RISK"],
+    "notes": "Merges §3 'synthetic rare-regime generation', §8.3 'Agent/market simulation' (kept) and the §23 'Simulation + counterfactual expansion' mechanism, which names the artifact types. The blueprints do not say synthetic episodes must be kept apart from real history; the verification reads that from 'supplement' and from TICK-008. COST from §3 was removed. P1 follows master Phase 2; the §23 loop that drives it autonomously is Phase 9 (P3)."
+  },
+  {
+    "id": "TICK-024",
+    "domain": "TICK",
+    "title": "Historical tick learning runs in the Cognitive Slow lane",
+    "statement": "Historical tick replay, historical order-book reconstruction, microstructure training, representation learning and world+market fusion run in Lane 3 (Cognitive Slow), not on the reflex hot path.",
+    "rationale": "These workloads take minutes to days and grow with history. Placed in a faster lane, they compete with the order path for resources whose latency budget is measured in microseconds.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "10", "section": "§4 Time-Lane Architecture — Lane 3 (Cognitive Slow)"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test finds no dependency from a reflex-node binary on the replay, training, representation or fusion crates, and the deployment map places each of those workloads in a Lane 3 service or job."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ARCH"],
+    "notes": "ARCH-018 places aggregated microstructure state and short-horizon fusion in Lane 2 (M p9). The split is short-horizon fusion in Lane 2, and historical learning and fusion training in Lane 3. Live book reconstruction for trading stays in the reflex lane."
+  },
+  {
+    "id": "TICK-025",
+    "domain": "TICK",
+    "title": "Market data flows capture, normalize, reconstruct, then Tick Lake",
+    "statement": "Venue, exchange and blockchain feeds and the platform's execution telemetry flow through Tick Capture, then clock and sequence normalization, then order-book reconstruction, into the Tick Lake. Market feeds write to the Tick/Internal Lake directly and never pass through the Scout/Evidence pass-through pipeline used for world data.",
+    "rationale": "World data is fetched, distilled and discarded; market data is retained and replayed. A feed routed through the world pipeline would be subject to its discard step, and the platform would lose the history replay depends on.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path"},
+      {"doc": "H", "page": "L257-261", "section": "§04 World Sensing, Tick History & Durable Knowledge (edges)"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test over the pipeline wiring shows every market-feed source reaching the Tick Lake only through the capture, normalization and reconstruction stages, and finds no edge from a market-feed source into the Scout/Evidence pipeline."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA", "WORLD"],
+    "notes": "Merges the §5 path 'Venues / Exchanges / Blockchains / Algorik Execution Telemetry -> TICK CAPTURE -> NORMALIZE/CLOCK -> BOOK RECONSTRUCTION -> TICK LAKE' with the diagram's data edge market -> tick. The diagram draws the edge straight to the lake and the master shows the stages in between; both are kept. P1: the Tick Lake arrives in master Phase 2 and GCP Phase 5 (G p22)."
+  },
+  {
+    "id": "TICK-026",
+    "domain": "TICK",
+    "title": "Replay and simulation read their history from the Tick Lake",
+    "statement": "Replay/simulation takes its historical input from the Tick/Internal Lake, as a branch distinct from the live microstructure-feature path, and not from the live stream or from derived aggregates.",
+    "rationale": "A replay that read from a derived store or a live buffer would replay whatever that store happened to keep. The lake is the one place with the complete, immutable, entitled record.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "11", "section": "§5 End-to-End System Path"},
+      {"doc": "H", "page": "L257-261", "section": "§04 World Sensing, Tick History & Durable Knowledge (edges)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A replay job configured with a manifest of Tick Lake partitions reads only those partitions, and a replay job given no manifest refuses to start."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA"],
+    "notes": "Merges the two §5 extractions of 'Tick Lake -> Replay / Simulation' with the diagram edge tick -> replay. The other half of §5, that both branches feed the microstructure models, is folded into TICK-018. The diagram also draws a direct tick -> training edge."
+  },
+  {
+    "id": "TICK-027",
+    "domain": "TICK",
+    "title": "Raw and canonical tick history stays available for exact replay and retraining",
+    "statement": "Every raw tick and its canonical form can remain available for exact replay and retraining, as a governed training asset, for as long as rights and the retention policy allow.",
+    "rationale": "A model can be retrained, or a result re-derived, only if the exact input still exists. Keeping only features or summaries freezes today's feature design into all future research.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "13", "section": "§8 Market Intelligence & Tick Learning Fabric"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "For a sample of historical sessions inside their retention window, replay from the Tick Lake reproduces the raw message count and the canonical record digests recorded at capture."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA"],
+    "notes": "Merges §8's 'Every raw tick can remain available for exact replay and retraining' with the 'governed training asset' of the §31 checklist; that item's manifests, entitlements and deterministic reconstruction are TICK-038, -036 and -015. Raw bytes are kept only where rights allow (TICK-032)."
+  },
+  {
+    "id": "TICK-028",
+    "domain": "TICK",
+    "title": "The cognitive layer receives distilled market state",
+    "statement": "The market information the cognitive layer consumes is limited to what the tick fabric produces as time-aligned market states, learned embeddings, microstructure regimes, causal reaction summaries and exception episodes.",
+    "rationale": "Without a declared contract, the boundary in TICK-001 is only a convention. Someone gives an agent a raw-tick tool because it was convenient, and the cost and replayability problems return.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "13", "section": "§8 Market Intelligence & Tick Learning Fabric"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The cognitive layer's market-input type is a closed enumeration of the five representation kinds, and it cannot be constructed from a raw or canonical tick record."
+    },
+    "policy_flags": ["NON_RUST"],
+    "secondary_domains": ["REASON", "MODEL"],
+    "notes": "Merges two extractions of the same §8 sentence. The prohibition side is TICK-001. NON_RUST kept: the consuming cognitive layer is expected to sit outside the Rust workspace."
+  },
+  {
+    "id": "TICK-029",
+    "domain": "TICK",
+    "title": "L3 order-level data only where licensed and economically justified",
+    "statement": "L3/order-level data is captured only for venues where it is licensed and where its value has been judged to justify its cost.",
+    "rationale": "Order-level feeds are the most expensive and most restrictively licensed data the platform could buy. Capturing them by default spends money on data no model has shown it needs, and risks holding data outside its entitlement.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.1 Tick and Market-Event Universe"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Configuration load refuses L3 capture for a venue unless a licence entitlement and a cost justification are both recorded, and with both present the adapter captures order-level events."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA", "FINOPS", "GOV"],
+    "notes": "Merges the L3 clause of the first §8.1 bullet with its separately extracted prohibition reading. §3 (M p7) lists L3 in scope without the qualifier. P0 for the licence half, since the repository treats licensing as checked before a source is used; the economic half is a FinOps judgement and could stand at P3 if split out."
+  },
+  {
+    "id": "TICK-030",
+    "domain": "TICK",
+    "title": "Capture cross-asset and cross-region synchronization metadata",
+    "statement": "The capture layer records cross-asset and cross-region synchronization metadata, so that events on different instruments, venues and regions can be related and reactions learned across them rather than in isolation.",
+    "rationale": "Two venues' timestamps are comparable only if the platform knows how each clock was disciplined and how far apart the capture points were. Without that metadata, a cross-venue lead/lag cannot be told apart from clock skew.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.1 Tick and Market-Event Universe"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every capture point's output includes its clock-discipline source and measured uncertainty, and the aligner (TICK-042) refuses to align two streams that lack it."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["MESH"],
+    "notes": "The blueprint does not enumerate the metadata. Clock source, offset and uncertainty per capture point is the minimum that TICK-003 and TICK-042 need. P1: cross-region alignment is master Phase 4."
+  },
+  {
+    "id": "TICK-031",
+    "domain": "TICK",
+    "title": "Venue capture adapters stamp source sequence, exchange time and receive time",
+    "statement": "Venue capture adapters decode native feeds and attach to every message its source sequence number, exchange timestamp and receive timestamp.",
+    "rationale": "The source sequence number is how a gap is detected, and the two timestamps are how knowability is decided. An adapter that drops any of them makes TICK-003, TICK-005 and TICK-040 impossible downstream.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Venue capture adapters"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "For each supported venue, a fixture of native messages decodes to records whose sequence numbers and exchange timestamps match the fixture and whose receive timestamps come from the adapter's clock; for a feed that defines sequence numbers, a message without one is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "CONTRACT"],
+    "notes": "Split from the §8.2 adapter row; its raw-retention clause is TICK-032. P0: master Phase 1 (M p41) requires canonical tick capture for the first market, and the venue adapter SDK is Phase 0."
+  },
+  {
+    "id": "TICK-032",
+    "domain": "TICK",
+    "title": "Raw venue messages are kept only where rights allow",
+    "statement": "Capture adapters preserve raw venue messages only where the data's rights allow it. Where they do not, the raw message is not retained after decoding.",
+    "rationale": "Retaining a vendor's raw feed beyond its entitlement is a licence breach the capture layer could technically commit on every message, so the default has to be the restrictive one.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Venue capture adapters"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With a venue configured as raw-retention-not-permitted, a captured session leaves canonical records and payload hashes in the lake and no raw message bytes; with retention permitted, the raw bytes are present and hash to the recorded values."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "DATA"],
+    "notes": "Merges the retention clause of the §8.2 adapter row with its separate prohibition reading. The canonical record keeps the source payload hash either way (TICK-034), so lineage survives when the bytes may not be kept."
+  },
+  {
+    "id": "TICK-033",
+    "domain": "TICK",
+    "title": "PTP/GPS-grade clock discipline where justified",
+    "statement": "Capture points apply PTP/GPS-grade clock discipline where it is justified.",
+    "rationale": "Receive-time uncertainty bounds every latency and lead/lag claim the platform can make. At microsecond horizons, a loosely disciplined clock makes the measurement noise larger than the effect being measured.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Clock + sequence normalization"}
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each capture point's configuration records whether PTP/GPS discipline applies and why, and for those that use it, the measured clock-offset uncertainty in capture telemetry stays within the bound the justification states."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX"],
+    "notes": "Split from the §8.2 clock-normalization row; its preserve-every-time-field clause is TICK-003. 'Where justified' leaves the threshold to a per-venue decision, which is why the check asks for the justification to be recorded."
+  },
+  {
+    "id": "TICK-034",
+    "domain": "TICK",
+    "title": "Canonical records keep the source-native payload hash and lineage",
+    "statement": "Every canonical market-event record carries the hash of the source-native payload it was normalized from, and its lineage back to that payload, so the canonical record can be proven to derive from what the venue sent.",
+    "rationale": "Normalization is where a parsing bug silently rewrites history. With the source hash on every record, a disputed record can be checked against the raw message, or against the venue's own copy where the raw bytes could not be kept.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Canonical market-event schema"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated native messages, re-hashing the retained raw payload matches the hash on its canonical record, and the integrity check reports a canonical record whose hash does not match its raw payload as a lineage break."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CONTRACT", "EVID"],
+    "notes": "Merges the lineage clause of the §8.2 canonical-schema row with its separate contract reading. CONTRACT-018 includes 'payload lineage and hash' among the MarketEvent fields. P0 with the canonical schema (TICK-014)."
+  },
+  {
+    "id": "TICK-035",
+    "domain": "TICK",
+    "title": "The Tick/Internal Lake is compressed, partitioned history on Cloud Storage",
+    "statement": "Tick/order-book history and the platform's internal execution/financial history (Tier T) are stored as compressed, partitioned segments of raw and canonical events in a Cloud Storage object-archive Tick/Internal Lake.",
+    "rationale": "Tick-rate history grows without bound. Object storage with compressed partitions keeps cost proportional to what is kept, and partitioning lets replay read one venue-day without scanning the rest.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Immutable Tick Lake"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — Tick archive + replay"},
+      {"doc": "G", "page": "10", "section": "§9.2 Durable Knowledge Tiers — Tier T"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The data-plane Terraform plan creates the Tick/Internal Lake bucket(s) with the declared partition layout and lifecycle configuration, and a written segment's object path encodes its partition keys."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "COST"],
+    "secondary_domains": ["DATA", "GCP", "FINOPS"],
+    "notes": "Merges 'partitioned ... compression' from the §8.2 Tick Lake row, the Cloud Storage placement of the §26 tick archive row and GCP's Tier T. DATA-037 states the same placement from the data side; FINOPS-013 (G p21) adds the three-tier split. P1: GCP Phase 5 (G p22) delivers the retained tick/internal archive."
+  },
+  {
+    "id": "TICK-036",
+    "domain": "TICK",
+    "title": "Every stored market event carries the entitlement it was obtained under",
+    "statement": "Raw and canonical events in the Tick Lake carry the entitlement under which they were obtained, so that every replay, feature or training job can be restricted to, and can report, the entitlements it read.",
+    "rationale": "An entitlement recorded only in a contract file cannot stop a training job from reading a partition it may not use. Carried on the data, it is also what TICK-004's model lineage is computed from.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Immutable Tick Lake"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — Tick archive + replay"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A job granted entitlement A and pointed at partitions held under A and B reads only A's partitions and records A in its output lineage, and the lake writer refuses a partition that has no entitlement."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "DATA", "MODEL"],
+    "notes": "Merges 'entitlements' from the §8.2 Tick Lake row, the §26 tick archive row and the §31 checklist. MANAGED_SERVICE and COST were removed: the invariant is about the data, not the store. P0 as a licensing control and the precondition of TICK-004."
+  },
+  {
+    "id": "TICK-037",
+    "domain": "TICK",
+    "title": "Tick and internal financial history are governed retention classes",
+    "statement": "Tick/order-book history and the platform's own execution/financial history are distinct retention classes, each with its own governed retention policy and each separate from world-sourced knowledge. They are archived where rights and policy require it for replay, accounting, audit or model training.",
+    "rationale": "World data is pass-through and is never retained as a corpus. Applying that rule to market or internal history would destroy the replay and audit record, and applying the market-data rule to world data would breach the pass-through invariant; separate classes keep either rule from leaking into the other.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Immutable Tick Lake"},
+      {"doc": "G", "page": "3", "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant"},
+      {"doc": "G", "page": "10", "section": "§9.2 Durable Knowledge Tiers — Tier T"},
+      {"doc": "H", "page": "L77", "section": "World-data rule notice"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares separate lifecycle/retention rules for market history, internal financial history and world-derived knowledge, and a lifecycle dry-run over test objects of each class expires or retains each according to its own policy only."
+    },
+    "policy_flags": ["COST"],
+    "secondary_domains": ["DATA", "LEDGER", "GOV"],
+    "notes": "Merges 'retention' from the §8.2 Tick Lake row, GCP §2.1 (kept, because it names the purposes that justify archiving), GCP Tier T's 'separate ... retention' and the diagram's world-data notice. DATA-009 states the same invariant from the data side at P0, and this item follows it. MANAGED_SERVICE was removed. COST kept, because retention periods set storage spend."
+  },
+  {
+    "id": "TICK-038",
+    "domain": "TICK",
+    "title": "Tick Lake segments carry checksums and reproducible manifests",
+    "statement": "Every Tick Lake segment carries a checksum, and every replay, feature or training input set is described by a manifest from which the identical set of segments can be re-materialized later.",
+    "rationale": "A replay or training result is reproducible only if its exact input can be named and re-read. A manifest that resolves to different bytes next month, or a corrupted segment nobody can detect, makes every reproduction a guess.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Immutable Tick Lake"},
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — Tick archive + replay"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Re-materializing a stored manifest returns segments whose checksums match those recorded, and corrupting one byte of a segment makes the integrity check name that segment."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA", "MODEL"],
+    "notes": "Merges 'checksums and reproducible manifests' from the §8.2 row, 'manifests' from §26 and 'reproducible manifests' from §31. MANAGED_SERVICE and COST were removed. P1 with the Tick Lake (master Phase 2, GCP Phase 5). The Phase 1 replay journal needs the same property, and TICK-017 holds it there."
+  },
+  {
+    "id": "TICK-039",
+    "domain": "TICK",
+    "title": "Hot replay indexes are separate from the cold archive",
+    "statement": "The Tick Lake keeps hot replay indexes separate from cold archive storage, so active replay and retraining do not scan archive volumes.",
+    "rationale": "Without a hot index, every replay query pays archive latency and every archive policy has to allow for replay traffic. Separating them lets each be sized and priced for its own access pattern.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Immutable Tick Lake"}
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Replaying a recent session from the hot index meets its stated start-up and throughput targets without reading any cold-archive object, confirmed by the storage access logs."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "COST"],
+    "secondary_domains": ["DATA", "FINOPS"],
+    "notes": "Merges the last sentence of the §8.2 Tick Lake row with its separate extraction. GCP puts high-value hot replay in Fabric/Bigtable and immutable historical segments in GCS (G p21, FINOPS-013), with replay indexes in Bigtable (G p10). Neither blueprint states throughput targets."
+  },
+  {
+    "id": "TICK-040",
+    "domain": "TICK",
+    "title": "Reconstruction detects gaps and marks unreliable periods",
+    "statement": "Order-book reconstruction detects sequence gaps and out-of-order events and marks the affected periods as unreliable. Replay carries these integrity flags, so no downstream model, label or backtest treats a flagged period as ground truth without seeing the flag.",
+    "rationale": "A missed message leaves a book that looks valid and is wrong. If the rebuild cannot say so, a corrupted stretch trains models and passes backtests as silently as a clean one.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Order-book reconstruction"},
+      {"doc": "M", "page": "15", "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Removing one message from a recorded sequence makes reconstruction flag the period from the gap to the next snapshot as unreliable, and the flag appears on replay output for that period; the unmodified sequence produces no flag."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA", "MODEL"],
+    "notes": "Merges the gap-detection and unreliable-marking clauses of the §8.2 row, its separate failure-behaviour reading, and the 'integrity flags' of §8.3's exact-replay bullet. P0 with book reconstruction (master Phase 1 exit)."
+  },
+  {
+    "id": "TICK-041",
+    "domain": "TICK",
+    "title": "Reconstruction creates book snapshots and checkpoints",
+    "statement": "Order-book reconstruction creates snapshots/checkpoints from which replay can start mid-history and reach the same book state as a replay from the beginning.",
+    "rationale": "Without checkpoints, every replay of an afternoon rebuilds from the open, and a gap can be healed only at the next venue snapshot. Checkpoints bound both costs.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Order-book reconstruction"},
+      {"doc": "M", "page": "15", "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated sequences, a replay started from any checkpoint reaches the same book-state hash at every later sequence number as a replay from the start."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA"],
+    "notes": "Split from the §8.2 row; §8.3's exact-replay bullet names 'book checkpoints'. The check relies on the determinism in TICK-015."
+  },
+  {
+    "id": "TICK-042",
+    "domain": "TICK",
+    "title": "Cross-venue, cross-asset and cross-region alignment without artificial simultaneity",
+    "statement": "An aligner relates asynchronous instruments, venues and regions by event time and information arrival and carries the clock uncertainty through. It never asserts that two events were simultaneous, or in a given order, when their timestamps and uncertainty cannot support it.",
+    "rationale": "Snapping asynchronous venues onto one shared tick manufactures lead/lag relationships that a model will learn and trade. Preserving the uncertainty lets the model see that the ordering was never known.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Cross-venue/cross-asset aligner"},
+      {"doc": "M", "page": "41", "section": "§30 Build Order — Phase 4 Multi-Region Reflex Mesh"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated pairs of streams whose true order cannot be known within their combined uncertainty, the aligned output reports them as unordered; for pairs separated by more than that uncertainty, it reports the correct order."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["MESH"],
+    "notes": "Merges the §8.2 aligner row, its separate invariant reading and Phase 4's 'cross-region tick alignment'. Cross-venue alignment arrives with master Phase 2 and cross-region with Phase 4; both are P1. Lead/lag learning on the aligned data is TICK-063."
+  },
+  {
+    "id": "TICK-043",
+    "domain": "TICK",
+    "title": "Learned embedding representations of market state",
+    "statement": "The feature and representation engine produces learned embedding representations of market state alongside the computed features of TICK-016.",
+    "rationale": "Some structure in books and flows is not captured by named features. Embeddings carry it into fusion and into the cognitive layer, which consume representations rather than raw ticks (TICK-001, TICK-028).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Feature + representation engine"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An embedding model version produces embeddings for a replayed window, each tagged with its model version and input manifest, and re-running the same version over the same manifest reproduces them within a stated tolerance."
+    },
+    "policy_flags": ["NON_RUST"],
+    "secondary_domains": ["MODEL"],
+    "notes": "Split from the §8.2 feature row. NON_RUST kept here: learned embeddings imply a training stack outside the Rust workspace."
+  },
+  {
+    "id": "TICK-044",
+    "domain": "TICK",
+    "title": "Outcome and label builder",
+    "statement": "An outcome/label builder creates fill-probability, future-return, adverse-selection, market-impact, realized-volatility, opportunity-decay and multi-horizon outcome labels.",
+    "rationale": "Execution models can be trained only against outcomes measured the same way every time. Labels built ad hoc per model make results incomparable.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Outcome/label builder"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "For a fixture event window, each label type equals a hand-computed value at each horizon."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL"],
+    "notes": "Split from the §8.2 row; its 'without future leakage' clause is TICK-005."
+  },
+  {
+    "id": "TICK-045",
+    "domain": "TICK",
+    "title": "Replay reconstructs the platform's own decisions, to test and to explain",
+    "statement": "Replay reconstructs market, decision and outcome history together, including the platform's own historical decisions, from the Fabric journal and the GCS archive. The reconstruction is complete enough to test a strategy or model and to explain an incident on the live (paper) path.",
+    "rationale": "Market replay alone shows what the market did. Explaining an incident also needs what the platform saw, decided and received, on one timeline, and after any surprise the research desk's first question is why, answered from the record alone.",
+    "kind": "acceptance",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Replay + simulation engine"},
+      {"doc": "G", "page": "11", "section": "§11 Cognitive, Model and Quantum Compute Plane — Simulation/counterfactual"},
+      {"doc": "G", "page": "23", "section": "§27 Architecture Acceptance Criteria"}
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "After a paper session with an injected incident (a risk veto and a partial fill), replay from the journal alone reproduces the market state, the decision inputs, the veto and the fill sequence for that incident, and the reproduced decision matches the recorded one."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["EXEC", "OBS", "RISK"],
+    "notes": "Merges the 'and Algorik decisions' clause of the §8.2 replay row, GCP §11's 'strategy validation' and the GCP §27 acceptance criterion, whose wording is kept. P0: master Phase 1 and GCP Phase 3 (G p22) include replay in the One Reflex Cell exit, and the repository's product direction requires every decision to be reproducible from the log. The blueprint's 'live incident' covers any incident here, because the platform is paper-only (ADR 0003)."
+  },
+  {
+    "id": "TICK-046",
+    "domain": "TICK",
+    "title": "Microstructure models are benchmarked by venue, asset, regime and horizon",
+    "statement": "Microstructure model evaluation reports benchmarks broken down by venue, asset, regime and horizon, not only in aggregate.",
+    "rationale": "An aggregate score can hide a model that is excellent on the busiest venue and wrong everywhere else. Per-slice scores are how a model is kept off the venues where it has not earned a place.",
+    "kind": "acceptance",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Microstructure training service"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An evaluation report contains a score for every venue x asset x regime x horizon cell present in its test manifest, and reports a missing cell as missing rather than omitting it."
+    },
+    "policy_flags": ["NON_RUST"],
+    "secondary_domains": ["MODEL"],
+    "notes": "Split from the §8.2 training row. The baseline comparison each slice needs is TICK-058."
+  },
+  {
+    "id": "TICK-047",
+    "domain": "TICK",
+    "title": "Live results are reconciled against replay assumptions",
+    "statement": "Live (paper) fills, slippage, queue errors, missed and expired opportunities, and book/flow regime changes are measured against replay and model predictions. The residuals (fill/slippage error, regime drift, venue changes) are emitted as episodes and model residuals, which become microstructure retraining and evaluation data.",
+    "rationale": "A simulator that is never checked against what actually happened drifts until its predictions describe a market that no longer exists. The residual is the only evidence of that drift.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Online drift + feedback"},
+      {"doc": "M", "page": "27", "section": "§22 Continuous Learning & Evaluation Brain"},
+      {"doc": "G", "page": "20", "section": "§21.1 Tick to order and learning — step 5"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For a paper session whose simulated-broker fills differ from the replay prediction by a known amount, reconciliation emits a residual record of that amount per order, plus an episode the next training manifest can select."
+    },
+    "policy_flags": ["NON_RUST"],
+    "secondary_domains": ["MODEL", "EXEC", "OBS"],
+    "notes": "Merges the measurement half of the §8.2 online-drift row, the §22 tick-learning loop and GCP §21.1 step 5, which names the outputs (episodes and model residuals). The row's other halves are TICK-048 (no silent adaptation) and TICK-049 (curriculum tasks)."
+  },
+  {
+    "id": "TICK-048",
+    "domain": "TICK",
+    "title": "Drift never silently adapts money-moving logic",
+    "statement": "Measured drift and residuals feed retraining and evaluation only. No online process changes money-moving logic (reflex models, risk limits, sizing or execution policy) in place; a change reaches the execution path only as a new artifact that has been evaluated and promoted.",
+    "rationale": "An online learner that adjusts the order path in response to what it just saw is an unreviewed deployment on every tick. It can also be steered by anyone who can move the market it is learning from.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Online drift + feedback"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test finds no write path from the drift/feedback components to any artifact or configuration the execution path loads, and injecting a large residual stream leaves the loaded reflex package and limits byte-identical."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "REFLEX", "MODEL"],
+    "notes": "Split from the §8.2 online-drift row ('rather than silently adapting money-moving logic'). NON_RUST was removed: this is a prohibition on a data flow. The promotion path it points to is GCP §21.1 steps 6-7 (G p20: candidates evaluated, signed and promoted, then activated atomically at an approved epoch), which is outside this domain's extraction. P0 as a safety invariant; the repository also forbids escalating autonomy from a model output."
+  },
+  {
+    "id": "TICK-049",
+    "domain": "TICK",
+    "title": "Growing residuals create tick-replay campaigns",
+    "statement": "When microstructure residuals grow or new venue mechanics appear, the platform itself generates targeted replay and retraining tasks (TickCampaign) and Curriculum Engine tasks, without waiting for a person to notice.",
+    "rationale": "Residuals that are only charted get read after the loss. Turning them into tasks is what closes the learning loop without a human in it, inside the same promotion gates.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.2 Tick Data Pipeline and Storage — Online drift + feedback"},
+      {"doc": "M", "page": "29", "section": "§23 Intelligence Expansion Engine — Market-microstructure expansion"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A residual series crossing its configured threshold for a venue produces exactly one TickCampaign task naming the venue, the residual and a replay manifest, and a series below the threshold produces none."
+    },
+    "policy_flags": ["NON_RUST"],
+    "secondary_domains": ["EXPAND"],
+    "notes": "Merges the 'Curriculum Engine tasks' of the §8.2 online-drift row with the task-generating half of the §23 market-microstructure expansion row. EXPAND-017 states this from the expansion side at P3. Master Phase 9 (M p42) names 'market-microstructure curricula driven by live-vs-replay residuals', hence P3."
+  },
+  {
+    "id": "TICK-050",
+    "domain": "TICK",
+    "title": "Strategies are evaluated against the market that existed",
+    "statement": "Strategy evaluation replays the market as it existed, event by event from canonical history, and never evaluates against bars or aggregates constructed after the fact.",
+    "rationale": "A bar's close, high and low are known only once the bar ends, and a fill at a bar price assumes liquidity nobody measured. Evaluating on bars combines look-ahead with impossible fills.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "14", "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test finds that the strategy-evaluation harness accepts only canonical event replay as market input and has no constructor taking aggregated bars."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "EXEC"],
+    "notes": "Merges §8.3's 'against the market that existed, not against bars created after the fact' with §31's 'rather than assuming fills from bars'. Bars remain usable as research features; the prohibition is on evaluating a strategy's execution against them. P0 alongside TICK-005 and TICK-006."
+  },
+  {
+    "id": "TICK-051",
+    "domain": "TICK",
+    "title": "The execution digital twin is calibrated to live telemetry",
+    "statement": "An execution digital twin continuously calibrates the fill, queue, impact and latency models used by paper trading and replay against the platform's own execution telemetry.",
+    "rationale": "Paper and replay results are only as honest as their fill model. A twin that is never recalibrated lets paper performance drift away from anything a venue would have given, and the drift looks like skill.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "15", "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Feeding the twin a telemetry window whose realised queue positions are consistently worse than the model's lowers the predicted fill probability for that venue at the next calibration, and the calibration records the telemetry window it used."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["EXEC", "MODEL"],
+    "notes": "On a paper-only platform (ADR 0003), the 'live telemetry' comes from the simulated broker and provider sandboxes. Calibrating the simulator against its own output alone would be circular, which is why TICK-047's residuals against independent venue data matter. Master Phase 2 names 'replay/digital twin' (M p41)."
+  },
+  {
+    "id": "TICK-052",
+    "domain": "TICK",
+    "title": "World events produce a watch graph and hypothesis priors",
+    "statement": "A world event is mapped to the entities, assets and venues it is expected to affect, producing a watch graph and hypothesis priors for the market side to test.",
+    "rationale": "Without an explicit expectation of where an event should propagate, a later market move cannot be scored as confirming or contradicting the world model.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "15", "section": "§8.4 World + Market Intelligence Fusion"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A world-event fixture naming an issuer produces a watch-graph entry for its listed instruments and venues, with a prior attached and time-stamped at the event's knowable time."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD"],
+    "notes": "First of the five §8.4 flows."
+  },
+  {
+    "id": "TICK-053",
+    "domain": "TICK",
+    "title": "Measured market reaction updates beliefs",
+    "statement": "A market reaction is measured as propagation, liquidity response, cross-asset timing and opportunity decay, and the measurement updates the corresponding world beliefs.",
+    "rationale": "A world model that never learns from how markets actually reacted keeps its priors whatever happens. The tick side is the evidence that grades it.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "15", "section": "§8.4 World + Market Intelligence Fusion"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Replaying a session after a watched event produces a reaction record (propagation, liquidity response, timing, decay) and a belief-update record citing it, and a session with no reaction produces an update in the opposite direction."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "REASON"],
+    "notes": "Second of the §8.4 flows."
+  },
+  {
+    "id": "TICK-054",
+    "domain": "TICK",
+    "title": "Disagreement between belief and market triggers investigation",
+    "statement": "The event causality that world beliefs predict is compared with the market propagation actually observed. A mismatch produces an investigation, an arbitrage/relative-value hypothesis or an evidence-quality challenge.",
+    "rationale": "A mismatch means either the evidence was wrong or the market has not yet priced something. Ignoring it discards the most informative signal the fusion layer produces.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "15", "section": "§8.4 World + Market Intelligence Fusion"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture where a belief predicts propagation to an instrument and replay shows none produces a comparison record and exactly one of the three follow-up types; a matching fixture produces the comparison and no follow-up."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "EVID", "REASON"],
+    "notes": "Merges the third §8.4 flow with the second clause of the §31 fusion checklist item ('event causality can be compared with actual market propagation'), which is the comparison the flow acts on."
+  },
+  {
+    "id": "TICK-055",
+    "domain": "TICK",
+    "title": "Fused state feeds the model foundry and the brains",
+    "statement": "Fused world+market state is delivered to the strategy/model foundry, the Asset, Capital and Risk brains, and the specialist brains.",
+    "rationale": "Fusion that stays inside the fusion layer informs nothing. These consumers are where it becomes a strategy, an allocation or a risk view.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "15", "section": "§8.4 World + Market Intelligence Fusion"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each named consumer subscribes to the fused-state stream, and a fused record produced in replay reaches each consumer with its as-of time."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "CAPITAL", "RISK", "ASSET"],
+    "notes": "Fourth of the §8.4 flows; the fifth (distilled state to reflex) is in TICK-019. P1: the foundry is master Phase 2 and the Asset/Capital/Risk brains are Phase 3; delivery to the Phase 8 specialist brains follows them."
+  },
+  {
+    "id": "TICK-056",
+    "domain": "TICK",
+    "title": "Clock corrections are lineage-tracked",
+    "statement": "Every clock correction applied to a normalized timestamp is recorded (what was corrected, by how much, from which clock source and when), and the uncorrected source and receive times are kept alongside the result.",
+    "rationale": "A silently corrected timestamp is timestamp laundering: an event moves earlier or later in replay, no one can see that it moved, and nobody can undo the move when the correction turns out to be wrong.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "15", "section": "§8.5 Data Correctness and Training Guardrails"}
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Applying a correction to a record produces a new normalized time plus a lineage entry naming the correction and leaves the original source and receive times unchanged, and reversing the lineage entry recovers the original normalized time."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA", "EVID"],
+    "notes": "Merges the second clause of §8.5 'No timestamp laundering' with its separate extraction; the first clause is TICK-003."
+  },
+  {
+    "id": "TICK-057",
+    "domain": "TICK",
+    "title": "No hidden survivorship in historical universes",
+    "statement": "Historical universes used for training and replay keep delisted instruments, venue outages, symbol changes, corporate actions and failed products represented as they were.",
+    "rationale": "A universe built from what exists today leaves out everything that failed, so every backtest over it is flattered by exactly the instruments that would have lost money.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "15", "section": "§8.5 Data Correctness and Training Guardrails"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "A historical universe as of a past date includes a fixture instrument that was delisted afterwards, a replay across a known venue outage shows the outage rather than skipping it, and a symbol change resolves to a single instrument on both sides."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["ASSET", "DATA"],
+    "notes": "Needs the asset registry to hold instruments point-in-time (ASSET)."
+  },
+  {
+    "id": "TICK-058",
+    "domain": "TICK",
+    "title": "Tick-trained models must beat simpler baselines to count",
+    "statement": "Models trained on tick data, and the Evaluation Brain that judges them, must show incremental predictive or execution value over simpler baselines before a model is treated as an improvement. Raw tick volume is not accepted as evidence of value.",
+    "rationale": "More data and bigger models are easy to mistake for better ones. Without a simpler baseline in the same report, the platform cannot tell whether the tick corpus bought anything.",
+    "kind": "acceptance",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "15", "section": "§8.5 Data Correctness and Training Guardrails"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A candidate's evaluation report carries a baseline result on the same manifest and slices (TICK-046), and a candidate that does not beat its baseline is not marked promotable."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["MODEL"],
+    "notes": "The tick-model counterpart of ADR 0006 (a classical baseline always). P1 rather than P0: it is an evaluation gate on Phase 2 models, not a data-correctness invariant, although it sits in the §8.5 guardrail list."
+  },
+  {
+    "id": "TICK-059",
+    "domain": "TICK",
+    "title": "Microstructure Brain",
+    "statement": "The specialist brain society includes a Microstructure Brain covering books, flows, liquidity, queue dynamics, adverse selection, venue behaviour and execution cost.",
+    "rationale": "The specialist brains divide judgement by domain. Without one that owns microstructure, execution cost and venue behaviour are nobody's question in the slow lane.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "16", "section": "§9.1 Specialist Brain Society"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The brain registry lists a Microstructure Brain whose declared scope covers the seven areas, and a research request about queue dynamics on a venue is routed to it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REASON", "MODEL"],
+    "notes": "P2: the specialist-agent society is master Phase 8 (M p42)."
+  },
+  {
+    "id": "TICK-060",
+    "domain": "TICK",
+    "title": "Replay runs as batch jobs on dedicated compute with local caches",
+    "statement": "Replay and simulation controllers launch replay shards as GKE Jobs plus batch compute on dedicated capacity, reading history from GCS/BigQuery, with local high-throughput caches and indexes on the workers.",
+    "rationale": "Replay is bursty and throughput-bound. Sharing compute with serving workloads makes either replay slow or serving jittery, and reading every shard straight from object storage makes the archive the bottleneck.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — Tick archive + replay"},
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Replay / Simulation controllers"},
+      {"doc": "G", "page": "11", "section": "§11 Cognitive, Model and Quantum Compute Plane — Simulation/counterfactual"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan creates a dedicated replay compute pool, separate from serving capacity, with local SSD for caches, and a replay shard job loads its manifest's segments into the local cache before replaying."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE", "COST"],
+    "secondary_domains": ["GCP", "FINOPS"],
+    "notes": "Merges the replay-worker half of the §26 tick archive row, its separate extraction, GCP §8's Replay/Simulation controllers row and the placement of GCP §11's simulation row; GCP's 'GKE Jobs + batch compute' is the more specific wording. It conflicts with ADR 0024, which retired Kubernetes and whose acceptance test refuses a GKE resource in the Terraform. Under ADR 0099 that decision keeps its force until its own record supersedes it, so in the meantime a non-GKE batch placement can satisfy the rest of this item. P1: GCP Phase 6 (G p22)."
+  },
+  {
+    "id": "TICK-061",
+    "domain": "TICK",
+    "title": "The tick archive holds no raw external world content",
+    "statement": "The tick/internal archive stores market and internal execution history only. External world-source content is re-fetched from its origin or provider when needed and is never retained there as a raw corpus.",
+    "rationale": "The tick archive is the one store allowed to keep raw history. If world content were written into it, the pass-through invariant would be broken inside the very store built to be the exception.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — Tick archive + replay"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A test over the lake writer's accepted record types finds only market-event and internal-execution types, and an attempt to write a world-source document is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["DATA", "WORLD"],
+    "notes": "Split from the §26 tick archive row. DATA-001 owns the platform-wide invariant (no raw external-world corpus is ever retained) and cites the same row; this item is its instance at the tick archive, and is P0 to match. MANAGED_SERVICE and COST were removed."
+  },
+  {
+    "id": "TICK-062",
+    "domain": "TICK",
+    "title": "Microstructure training runs on Google Cloud training pools",
+    "statement": "Microstructure training runs on GPU/CPU/accelerator training pools on Google Cloud, with its feature and replay work run as distributed jobs.",
+    "rationale": "Training over tick history is the largest compute load the platform has. On dedicated pools it can scale and be billed on its own, without touching serving or reflex capacity.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "35", "section": "§26 Platform & Deployment Architecture — Microstructure training"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan creates training pools, with accelerator types as configured, separate from serving capacity, and a training job's feature/replay stages run on them as distributed jobs."
+    },
+    "policy_flags": ["COST", "MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "MODEL", "FINOPS"],
+    "notes": "Split from the §26 microstructure-training row; its Model Registry packaging clause is in TICK-019. GCP puts model registry/training in its Phase 8 (P2); P1 here follows master Phase 2, which already requires the fabric's training."
+  },
+  {
+    "id": "TICK-063",
+    "domain": "TICK",
+    "title": "Cross-region lead/lag is learned",
+    "statement": "The platform learns lead/lag structure across regions, venues and assets from aligned tick history.",
+    "rationale": "Information reaches regions at different times. A multi-region mesh that does not know which market leads which cannot tell a real cross-region opportunity from a stale quote.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "41", "section": "§30 Build Order — Phase 4 Multi-Region Reflex Mesh"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Over a replayed window with a known lag injected between two regions' streams, the learned lead/lag estimate recovers the injected lag within the aligner's stated uncertainty."
+    },
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["MESH"],
+    "notes": "Split from the Phase 4 build-order line; cross-region alignment is TICK-042 and distributed opportunity replay is in TICK-021. The lead/lag features of the §8.2 feature engine (TICK-016) are the single-region form."
+  },
+  {
+    "id": "TICK-064",
+    "domain": "TICK",
+    "title": "Simulation compute also runs intervention simulation",
+    "statement": "The simulation/counterfactual capability also runs intervention simulation: it simulates the effect of a proposed platform action over the same history as market replay and the no-action branch.",
+    "rationale": "An action the platform might take in the world has to be simulated against the same history and baselines as a trade. Otherwise its predicted effect cannot be compared with the no-action branch.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {"doc": "G", "page": "11", "section": "§11 Cognitive, Model and Quantum Compute Plane — Simulation/counterfactual"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An intervention scenario run over a replay window produces a simulated-effect record paired with the no-action branch for the same window."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["AGENCY"],
+    "notes": "Split from GCP §11's simulation row; the same row's market replay, no-action branches and strategy validation are in TICK-022 and -045, and its placement is TICK-060. KUBERNETES and MANAGED_SERVICE went with the placement. P3: causal agency is master Phase 10 and GCP Phase 10 (G p22). Whatever it simulates stays simulated, and the paper-trading boundary (ADR 0003) is unaffected."
+  },
+  {
+    "id": "TICK-065",
+    "domain": "TICK",
+    "title": "The platform's own outcomes are irreplaceable records",
+    "statement": "The platform's own orders, fills and decisions are internal, irreplaceable records. They are written directly to the Tick/Internal Lake and to the ledger, and never routed through the world-data pass-through/discard pipeline.",
+    "rationale": "World data can be re-fetched from its source by manifest; nothing can re-fetch what the platform itself did. A discard applied to internal outcomes loses them for good.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "H", "page": "L237", "section": "VIEWS.data — 04 · World Sensing, Tick History & Durable Knowledge (node 'internal')"},
+      {"doc": "H", "page": "L257-261", "section": "§04 World Sensing, Tick History & Durable Knowledge (edges)"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test shows internal-outcome records reaching the lake writer and the ledger writer, with no edge into the pass-through/discard stage."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["LEDGER", "DATA"],
+    "notes": "From the diagram's 'internal' node ('Internal irreplaceable records'). The L259 edges internal -> tick and internal -> sp are the routing, so that line range is cited as well. LEDGER-049 states the lake write at P1; the invariant that these records are never discarded is P0. Capture of the records themselves is TICK-013."
+  }
+]

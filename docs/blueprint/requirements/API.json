@@ -1,0 +1,331 @@
+[
+  {
+    "id": "API-001",
+    "domain": "API",
+    "title": "Public edge chain: DNS, global anycast load balancer, Cloud Armor, CDN and Certificate Manager",
+    "statement": "Traffic from users to the portal and public API passes, in order, through Cloud DNS, one global external Application Load Balancer on an anycast address, Cloud Armor, and Cloud CDN with Certificate Manager certificates, before it reaches the Cloud Run or GKE Gateway backends.",
+    "rationale": "With one chain in front of every customer-facing surface, TLS, WAF and caching policy each apply in exactly one place. A surface reached around the chain inherits none of them.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Users -> Portal/API row"},
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — Public edge bullet"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "A plan with a hostname declared shows a Cloud DNS record pointing at one global external managed forwarding rule's reserved anycast address. That rule targets an HTTPS proxy carrying Certificate Manager certificates, and every backend it reaches has the Cloud Armor policy attached, with CDN on the static backend."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "KUBERNETES"],
+    "secondary_domains": ["NET", "SEC"],
+    "notes": "G p5 gives the chain as an ordered path ending '-> Cloud Run or GKE Gateway'. G p11 lists the same five services as a set. The p5 ordering is kept because it is more specific. The 'anycast edge' from G p5's design column is folded in here because it is a property of the global external load balancer, not a separate control. H L100 labels the same node 'Anycast customer/API edge'. H L128 draws glb -> armor -> regional GKE only, with no Cloud Run arm. KUBERNETES applies only to the GKE Gateway arm (conflict C3; ADR 0024 retired Kubernetes for Cloud Run). The in-tree module infrastructure/terraform/modules/public-edge uses google_compute_managed_ssl_certificate rather than Certificate Manager. That is a divergence to score, not an error in this statement. Priority P1: API services land in GCP Phase 6 (regional service plane)."
+  },
+  {
+    "id": "API-002",
+    "domain": "API",
+    "title": "The dynamic BFF runs on Cloud Run or GKE behind the edge",
+    "statement": "The dynamic portal/API backend-for-frontend is hosted on Cloud Run or GKE and is attached to the global external load balancer as a serverless or GKE Gateway backend.",
+    "rationale": "The BFF is the only dynamic origin behind the public edge. Fixing its runtime and how it is attached keeps the edge's backend set known and small.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Users -> Portal/API row (path ends '-> Cloud Run or GKE Gateway')"},
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — Public edge bullet"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The only dynamic backends of the public URL map are serverless NEGs for the portal/BFF Cloud Run service, or GKE Gateway NEGs. No backend resolves to any other service."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "KUBERNETES"],
+    "secondary_domains": ["GCP", "FRONTEND"],
+    "notes": "Two raw extractions of the G p11 public-edge bullet stated this identically and are merged. G p19 §20 names the same backend 'Portal/BFF/API service' in its Global ALB -> Cloud Run/GKE Gateway row. That row's protocol is API-016. ADR 0024 already runs every warm binary on Cloud Run, so the Cloud Run arm needs no new record. The GKE arm carries conflict C3."
+  },
+  {
+    "id": "API-003",
+    "domain": "API",
+    "title": "Cloud Armor applies WAF and DDoS controls to every public backend",
+    "statement": "Every backend behind the public edge is protected by a Cloud Armor security policy providing WAF and DDoS controls.",
+    "rationale": "A backend without the policy is an unfiltered origin on the internet. The edge's protection is only as wide as its least-protected backend.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Users -> Portal/API row (design: 'WAF/DDoS controls')"},
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — Public edge bullet (Cloud Armor)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every backend service reachable from the public URL map has security_policy set to the Cloud Armor policy, and every backend bucket has edge_security_policy set. A plan that omits the policy on any backend fails a module test assertion."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["SEC"],
+    "notes": "Split out of G p5's design column, which also lists anycast (API-001), TLS (API-004) and static caching (API-005). KUBERNETES is dropped: the control is independent of the backend runtime. G p14 §15 and G p17 §19 describe Cloud Armor as 'WAF/DDoS/rate controls'. The rate-control part was not in this domain's extraction and belongs with SEC. The in-tree public-edge module already carries a rate limit and a geographic refusal."
+  },
+  {
+    "id": "API-004",
+    "domain": "API",
+    "title": "Portal, mobile and API clients reach the global load balancer over HTTPS",
+    "statement": "Portal, mobile and programmatic API clients connect to the global external load balancer over HTTPS, as synchronous request/response, with TLS terminated at the edge.",
+    "rationale": "Customer credentials and portfolio views cross the public internet on this hop. A plaintext listener would carry them in the clear.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Users -> Portal/API row (design: 'TLS')"},
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Public client -> Global ALB row"},
+      {"doc": "H", "page": "L128", "section": "§01 Global Platform Topology — edge users -> glb 'HTTPS'"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The only content-serving global forwarding rule is on port 443 and targets an HTTPS proxy with an SSL policy. No forwarding rule serves content over plain HTTP on port 80."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "SEC"],
+    "notes": "Merged from three items that state one fact: 'TLS' in G p5's design column, the G p19 row (Public client -> Global ALB, HTTPS, Sync, 'User/API edge') and the H L128 users -> glb edge labelled HTTPS. H names the clients ('Portal / Mobile / API', L99) and G does not, so H's wording for who connects is kept. Certificate provenance (Certificate Manager) belongs to API-001. KUBERNETES from the G p5 row is dropped because this hop never touches GKE. The in-tree public-edge module declares no port-80 listener at all, not even a redirect, which is stricter than this statement."
+  },
+  {
+    "id": "API-005",
+    "domain": "API",
+    "title": "Cloud CDN caches static portal content at the edge",
+    "statement": "Static portal assets are cached and served by Cloud CDN at the public edge.",
+    "rationale": "Serving the static shell from cache leaves the BFF handling only authenticated requests. It also removes a running origin for content that changes only with a commit.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Users -> Portal/API row (design: 'cache static assets')"},
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — Public edge bullet ('Static content cached')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The static-content backend has CDN enabled. The BFF/API backend service has CDN disabled, so no customer's derived view can be served from cache to another customer."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["FRONTEND"],
+    "notes": "G p5 ('static assets') and two G p11 extractions ('Static content cached') state the same fact. The dynamic-not-cached half of the check is inferred from G p11's contrast 'Static content cached; dynamic BFF hosted…' and is not stated outright. KUBERNETES is dropped because caching static content involves no GKE. The in-tree public-edge module already serves the static shell from a CDN-enabled bucket and sets enable_cdn = false on the application backend."
+  },
+  {
+    "id": "API-006",
+    "domain": "API",
+    "title": "No user path reaches an internal plane except through the public edge",
+    "statement": "Users have no direct network access to any internal plane, for example Reflex, Fabric, the ledger, the regional services or the data stores. The public edge chain is the only ingress from the internet.",
+    "rationale": "An internal plane with a public address can be reached without passing the WAF, the TLS policy or the API boundary, which makes every edge control optional.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Users -> Portal/API row (design: 'no direct access to internal planes')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "No resource outside the public-edge module has an external IP, a public forwarding rule, Cloud Run ingress 'all' or a firewall rule admitting 0.0.0.0/0. The module's zone precondition refuses execution, ledger and treasury-write backends, as its tftest runs assert."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["NET", "SEC"],
+    "notes": "Split from G p5's Users -> Portal/API row. The prohibition can be verified separately from the chain that precedes it. MANAGED_SERVICE and KUBERNETES are dropped because the prohibition holds whatever runtime the planes use. The plane list is illustrative; the source says only 'internal planes'. P0 because it protects Reflex, Fabric and the ledger (GCP Phases 2-4) and is part of the Phase 0 VPC/firewall foundation. The API-layer counterpart is API-015."
+  },
+  {
+    "id": "API-007",
+    "domain": "API",
+    "title": "Internal APIs are entered through GKE Gateway or a regional internal load balancer",
+    "statement": "Internal APIs are served through GKE Gateway or a regional internal Application Load Balancer, which is their regional service entry.",
+    "rationale": "A regional internal entry gives each region's warm services one controlled front door. East-west calls stay inside the region and off the internet.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Internal APIs row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every internal API service is fronted by a load balancer with load_balancing_scheme INTERNAL_MANAGED, or by an internal-class GKE Gateway, in its own region. None is a backend of the global external load balancer."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "GCP"],
+    "notes": "Split from the G p9 Internal APIs row. The row's mTLS/service-policy half is API-008. G p5's 'Regional services' row (GKE Gateway API / regional internal ALB + Cloud Service Mesh; 'never inserted in Reflex path') describes the same entry from the network side and belongs with NET. H L171 shows 'Regional APIs' (Portal/service APIs) as a GKE service in each region. Under ADR 0024 the warm services run on Cloud Run, which has no GKE Gateway. The internal-ALB arm (serverless NEG, INTERNAL_MANAGED) is therefore the one compatible with standing decisions today (conflict C3)."
+  },
+  {
+    "id": "API-008",
+    "domain": "API",
+    "title": "Internal API entry enforces mTLS and service policy",
+    "statement": "Calls entering an internal API are mutually authenticated with mTLS and are admitted only when a service policy permits the calling workload.",
+    "rationale": "Network location is not identity. Without mTLS and per-service policy, any workload that can reach the internal entry can call any internal API.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Internal APIs row ('Regional service entry with mTLS/service policy')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Three calls are made to an internal API. The call without a valid workload certificate is refused, the call from a workload the service policy does not name is refused, and the call from a named workload is admitted. Both refusals and the admission are asserted."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["SEC"],
+    "notes": "Split from the G p9 Internal APIs row because placement (API-007) and mTLS enforcement are checked separately. H L175 'Service Mesh / mTLS — Identity-aware GKE service communication' is the diagram's node for this control. v2.1 implements it with Cloud Service Mesh (conflict C3). An in-tree TLS stack would breach ADR 0009 (conflict C2), so the control has to come from managed infrastructure or an egress/sidecar proxy."
+  },
+  {
+    "id": "API-009",
+    "domain": "API",
+    "title": "Burst stateless webhook and control APIs may run on Cloud Run",
+    "statement": "Burst, stateless endpoints such as webhooks and control APIs run on Cloud Run when their cold-start and latency profile is acceptable.",
+    "rationale": "Scale-to-zero suits traffic that arrives in bursts and tolerates a cold start, and it keeps idle cost off the regional clusters.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Burst stateless endpoints row"}
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The service inventory records, for every Cloud Run service, that it is stateless, what role it serves (webhook, control API or other) and the cold-start/latency budget it was accepted against."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP"],
+    "notes": "Split from the G p9 Burst stateless endpoints row. Its 'not for venue execution' clause is API-010. ADR 0024 runs every warm binary on Cloud Run, which goes beyond v2.1's burst-only allowance, and v2.1 would move those warm services to GKE (conflict C3). This statement is met for burst endpoints; the divergence in the warm services is scored under C3."
+  },
+  {
+    "id": "API-010",
+    "domain": "API",
+    "title": "Venue execution never runs on Cloud Run",
+    "statement": "No venue-execution path is placed on Cloud Run.",
+    "rationale": "Cold starts and request-scoped instances on the order path would put unbounded latency between a venue event and an order. v2.1 reserves that path for dedicated Reflex nodes.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Burst stateless endpoints row ('not for venue execution')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "No Cloud Run service in the plan runs the edge-node/Reflex execution binary. Venue execution resolves only to the execution-node Compute Engine module."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "EXEC", "GCP"],
+    "notes": "Split from the G p9 Burst stateless endpoints row. MANAGED_SERVICE is dropped because the prohibition is met by not using the service. P0 because it protects the One Reflex Cell placement (GCP Phase 3). In this platform, venue execution means the simulated venue only (ADR 0003, ADR 0021): this constrains placement and opens no live path. ADR 0024 already places execution on a Compute Engine node; execution_nodes = {} in every environment, so none exists yet."
+  },
+  {
+    "id": "API-011",
+    "domain": "API",
+    "title": "Identity Platform authenticates customer and application identities",
+    "statement": "Customer and application identities are authenticated through Identity Platform.",
+    "rationale": "A single customer identity provider gives sign-in, recovery and MFA policy one enforcement point, kept separate from the workforce identity that governs admin paths.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — Customer identity bullet"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The BFF admits a request bearing a token issued by the project's Identity Platform tenant with the expected audience. It refuses a token from any other issuer or with any other audience."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["SEC", "FRONTEND"],
+    "notes": "Split from the G p11 Customer identity bullet. The MFA half is API-012. The same bullet continues 'Internal workforce/admin paths use Cloud Identity/IAM/IAP/PAM'. That clause was not in this domain's extraction and belongs with SEC, but it limits how API-017's admin surface authenticates. CLAUDE.md names the research and risk desk as intended users, 'not external customers', and lists retail distribution as a non-goal. ADR 0099's conflict register has no row for external customer identity, so this requirement probably needs one before it is built. A browser Identity Platform SDK would be a frontend dependency that needs review."
+  },
+  {
+    "id": "API-012",
+    "domain": "API",
+    "title": "Customer sign-in requires strong MFA, with passkeys where supported",
+    "statement": "Customer authentication requires strong multi-factor authentication and offers passkeys where the client supports them.",
+    "rationale": "The account guards a portfolio view and the authority to issue commands. With a second factor, a leaked password alone does not compromise the account.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — Customer identity bullet ('strong MFA/passkeys where supported')"}
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "A sign-in that completes only the first factor gets no session the API accepts. A sign-in that completes MFA does. A passkey-capable browser is offered passkey enrolment."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["SEC", "FRONTEND"],
+    "notes": "Split from the G p11 Customer identity bullet: the provider (API-011) and the factor policy are verified separately. The source wording 'strong MFA/passkeys where supported' is ambiguous. It is read here as MFA always required and passkeys wherever supported, but 'where supported' could also be read as qualifying MFA. The stricter reading is kept."
+  },
+  {
+    "id": "API-013",
+    "domain": "API",
+    "title": "Public API read views are derived from portfolio and ledger state",
+    "statement": "Every view the public API returns is derived from portfolio and ledger state and holds no fact the ledger does not.",
+    "rationale": "A view that keeps its own state is a second source of truth for money. A derived view can always be recomputed from the record, so it can be audited.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — API boundary bullet"}
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Each view the public API returns at a given ledger/event-log position is recomputed from the log alone at that position and matches field for field."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["LEDGER"],
+    "notes": "The G p11 API boundary bullet was extracted twice, identically. It is split here into derived views (this item), authorised commands (API-014) and the prohibition (API-015). MANAGED_SERVICE is dropped because nothing in this statement requires a managed service. P0 because it keeps the Phase 4 financial truth single. It matches the repository rule 'No second source of truth for a fact the event log already holds'."
+  },
+  {
+    "id": "API-014",
+    "domain": "API",
+    "title": "Every public API command is authorised before it takes effect",
+    "statement": "The public API accepts a command only after authorising the caller for that specific command. An unauthorised command has no effect.",
+    "rationale": "The API is the only customer-facing way to change state. A command that runs before authorisation is checked is a command anyone can issue.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — API boundary bullet ('authorized commands')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each command endpoint receives three requests: one with no identity, one whose identity lacks the permission, and one correctly authorised. The first two are refused and leave the ledger and event log unchanged; the third is admitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["SEC"],
+    "notes": "Split from the G p11 API boundary bullet. 'Authorized commands' is read as a requirement that every command be authorised, not as a list of which commands exist. MANAGED_SERVICE is dropped because it does not apply. No command may submit a live order (ADR 0003, ADR 0021, rules 01), so the command surface is paper-only, and the UI must render PAPER TRADING wherever posture is shown. A customer command that moved real capital would carry LIVE_CAPITAL; the source names none."
+  },
+  {
+    "id": "API-015",
+    "domain": "API",
+    "title": "The public API never exposes ledger tables, Fabric brokers, Reflex nodes or custody keys",
+    "statement": "The public API never exposes direct access to ledger-store tables (Spanner in v2.1), Fabric broker ports, Reflex nodes or custody keys.",
+    "rationale": "These four are the financial truth, the internal event fabric, the execution path and key material. Exposing any one of them lets a public caller bypass the controls in front of it.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — API boundary bullet"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An acceptance test enumerates every public route and asserts that none resolves to a ledger-store table, a Fabric broker endpoint, a Reflex node address or custody key material. The api_boundary suite is the natural home for it."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["LEDGER", "FABRIC", "REFLEX", "CUSTODY"],
+    "notes": "Extracted twice from G p11 with identical wording. MANAGED_SERVICE is dropped because Spanner is named as something never exposed, not something required. Spanner itself is conflict C4, so the item is read as 'the ledger store, whatever holds it'. The four assets form one enumerated prohibition and are checked by one route enumeration, so they are not split further. The network-level counterpart is API-006. The public-edge module's zone precondition, which refuses execution, ledger and treasury-write backends, is a second, infrastructure-level check."
+  },
+  {
+    "id": "API-016",
+    "domain": "API",
+    "title": "The load balancer reaches the portal/BFF/API backends over HTTPS",
+    "statement": "The global external load balancer calls the Cloud Run or GKE Gateway backends that serve the portal, BFF and API over HTTPS, synchronously.",
+    "rationale": "If TLS ended at the edge and the load balancer forwarded plaintext, customer traffic would be unencrypted between the load balancer and the service.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — Global ALB -> Cloud Run/GKE Gateway row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every backend service of the public URL map declares protocol HTTPS and none declares HTTP. The in-tree application backend already sets protocol = \"HTTPS\"."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "KUBERNETES"],
+    "secondary_domains": ["NET"],
+    "notes": "The row's backend identity ('Portal/BFF/API service') is merged into API-002. This item keeps the protocol contract. The requirement matters most for the GKE Gateway arm, where the backend protocol has to be set explicitly. On Cloud Run, the container still receives plaintext HTTP/1.1 from Cloud Run's own front end, which this contract does not cover."
+  },
+  {
+    "id": "API-017",
+    "domain": "API",
+    "title": "The portal provides separate investor, admin and user surfaces",
+    "statement": "The portal provides distinct investor, admin and general-user surfaces.",
+    "rationale": "Different principals see different facts and may issue different commands. Separate surfaces keep admin controls out of an investor's view.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {"doc": "H", "page": "L99", "section": "§01 Global Platform Topology — node 'users' (Portal / Mobile / API; 'Investor/admin/user surfaces')"}
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "Playwright signs in as an investor, an admin and a general user, and each lands on its own surface. A customer identity cannot open the admin surface."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FRONTEND", "SEC"],
+    "notes": "This comes from a diagram node label only; no PDF paragraph describes the surfaces. The node's channel half (portal, mobile, API) is carried by API-004. G p11 routes workforce/admin paths through Cloud Identity/IAM/IAP/PAM, so the admin surface authenticates as workforce, not through Identity Platform (API-011). The investor surface implies external investors, which conflicts with CLAUDE.md's stated users (the research and risk desk) and its retail-distribution non-goal. That is an owner decision, not an agent's. It is kept at P1 with the Phase 6 API services, but could be read as P2 (master Phase 7, commerce). frontend/mobile's README says the phone app is the portal PWA. The UI must render PAPER TRADING wherever posture is shown (rules 01)."
+  }
+]

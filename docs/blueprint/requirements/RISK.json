@@ -1,0 +1,946 @@
+[
+  {
+    "id": "RISK-001",
+    "domain": "RISK",
+    "title": "Money movement bounded by a deterministic control",
+    "statement": "Every movement of money (a transfer, conversion, funding or withdrawal between accounts, venues, custodians or regions) is bounded by a deterministic, testable control, and that bound holds however the movement was originated, including by AI acting automatically inside its pre-authorised envelope.",
+    "rationale": "The blueprint lets AI and AGI act automatically inside a pre-authorised envelope and keeps money movement under deterministic control so that the intelligence can become more general without the blast radius becoming general. A transfer the intelligence can originate is only as bounded as the control between it and the ledger.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated transfer requests from every originating component, model-originated ones included, a request exceeding its corridor or cap is refused, the same request against the same state always gets the same verdict, and a mutation that removes the cap makes the test fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "LEDGER"
+    ],
+    "notes": "The §1.2 sentence 'money movement, leverage, exposure, settlement and venue access remain bounded by deterministic, testable controls' is split into five requirements (RISK-001 to RISK-005). Each dimension is enforced by a different control, and any one of them can be present while another is missing. A second raw item quoted the same sentence ('not only money movement') under '§1.3 Pass-Through World Data'. The §1.2 heading on page 3 has no body, and its paragraph is laid out on page 4 after §1.3's bullets, so both citations point at the same page and paragraph; it is cited once, under its real heading. LIVE_CAPITAL was removed: this is a restriction, and it can be proven on simulated transfers. Moving live money stays out of scope under ADR 0003 and is not needed to meet this requirement."
+  },
+  {
+    "id": "RISK-002",
+    "domain": "RISK",
+    "title": "Leverage bounded by a deterministic limit",
+    "statement": "Leverage is bounded by a deterministic, testable limit that is checked before an order or position change exists, whatever originated the action.",
+    "rationale": "Leverage multiplies every other error. A leverage bound that only an AI's judgement enforces is exactly the general blast radius the §1.2 boundary exists to prevent.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated books and orders, an order whose fill would take leverage over the limit is refused before an order object exists, one that stays under it is admitted, the verdict is identical on re-evaluation, and a mutation that disables the limit makes the test fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": "Split out of the §1.2 sentence (see RISK-001). Merges that sentence with the raw item that repeated it under §1.3 and stressed that leverage, exposure, settlement and venue access, 'not only money movement', are bounded. RISK-011 covers measuring leverage as part of the capital risk domain. This requirement is the enforced bound."
+  },
+  {
+    "id": "RISK-003",
+    "domain": "RISK",
+    "title": "Exposure bounded by deterministic limits",
+    "statement": "Exposure is bounded by deterministic, testable limits that are checked before an order exists, whatever originated the action.",
+    "rationale": "An exposure limit enforced only after the order exists gets to refuse only the next order, not the one that breached it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated books and orders, an order that would take exposure past any configured exposure limit is refused before an order object exists, an order inside every limit is admitted, and a mutation that disables any single limit makes a test fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": "Split out of the §1.2 sentence (see RISK-001), with the same §1.3 duplicate merged in as for RISK-002. The blueprint does not say which exposure dimensions to bound. RISK-008 to RISK-015 list the risk domains whose measures such limits can be keyed on."
+  },
+  {
+    "id": "RISK-004",
+    "domain": "RISK",
+    "title": "Settlement exposure bounded by a deterministic limit",
+    "statement": "Settlement exposure (value committed to trades or transfers that have not yet settled) is bounded by a deterministic, testable limit.",
+    "rationale": "Unsettled value is exposure to a counterparty or venue that has not yet delivered. A book that is flat on positions but carries large unsettled legs looks safe and is not.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated sequences of trades and settlements, an action that would take unsettled value past the limit is refused, capacity is released only when the ledger records settlement, and a mutation that ignores unsettled legs makes the test fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "EXEC"
+    ],
+    "notes": "Split out of the §1.2 sentence (see RISK-001), with the same §1.3 duplicate merged in as for RISK-002. RISK-010 covers measuring settlement exposure per counterparty and venue. This requirement is the enforced bound."
+  },
+  {
+    "id": "RISK-005",
+    "domain": "RISK",
+    "title": "Venue access bounded by a deterministic control",
+    "statement": "Access to a venue is bounded by a deterministic, testable control. An action bound for a venue that the operating policy does not permit is refused before it reaches the venue adapter.",
+    "rationale": "Venue access is the point where a decision becomes an external effect. If which venues can be reached were a model's choice, then under this platform's policy a live-venue path would be one inference away.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An action addressed to a venue outside the permitted set, a live-class venue included, is refused before any adapter is called and the refusal is recorded. The same action addressed to a permitted simulated venue is admitted, which proves the control is not refusing everything."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC",
+      "SEC"
+    ],
+    "notes": "Split out of the §1.2 sentence (see RISK-001), with the same §1.3 duplicate merged in as for RISK-002. Under ADR 0003 the permitted set contains no live venue, so in this repository the requirement is also one of the checks that hold the paper-trading boundary."
+  },
+  {
+    "id": "RISK-006",
+    "domain": "RISK",
+    "title": "Every executable action passes pre-trade limits",
+    "statement": "Every executable action passes the deterministic pre-trade risk limits before it is submitted. No path reaches a venue adapter or the simulator without a Risk Gate verdict.",
+    "rationale": "A gate protects only the paths that go through it. A single submission path that skips the pre-trade check makes every limit behind it decorative for the orders that take that path.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every code path that can submit an order or transfer is enumerated and driven, each one is shown to obtain a gate verdict first, and an action with no verdict cannot be submitted. Preferably this is structural: the submit seam accepts only a gate-approved type."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "EXEC"
+    ],
+    "notes": "Merges 'pre-trade' from the §3 risk-management row with the first half of §14's 'every executable action still passes deterministic limits using locally available state'. The second half of that sentence, about locally available state, is RISK-023. The determinism of the gate is RISK-019. The §3 row's other entries are split into RISK-007 (post-trade) and merged into the §14 domain rows RISK-008 to RISK-015."
+  },
+  {
+    "id": "RISK-007",
+    "domain": "RISK",
+    "title": "Post-trade risk management",
+    "statement": "Risk management covers post-trade risk: after execution, positions, exposure and limits are re-evaluated from the fills, cancels and settlement events that actually occurred, not only before an order is sent.",
+    "rationale": "A pre-trade check sizes against the book it expected. Partial fills, slippage and price moves after the check change the book, and only a post-trade evaluation sees the book that actually resulted.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fill that differs from the one the pre-trade check assumed (partial, slipped or gapped) is driven through, and the post-trade evaluation reflects the actual fill and reports a limit breach that the pre-trade check could not have seen."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "EXEC"
+    ],
+    "notes": "Split out of the §3 risk-management row. This is its only source. The blueprint does not say what a post-trade breach does. The only stated consequence of a post-trade discrepancy is reconciliation narrowing or stopping execution (RISK-029)."
+  },
+  {
+    "id": "RISK-008",
+    "domain": "RISK",
+    "title": "Market risk domain",
+    "statement": "The risk model covers market risk: exposure to price, volatility, gaps, basis, greeks, factors and causal drivers.",
+    "rationale": "A limit can be keyed only on a measure that something computes. A market exposure the risk model does not represent cannot be bounded or forecast.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "For a book with known sensitivities, each listed market exposure (price, volatility, gap, basis, greeks, factor, causal-driver) is computed to the expected value, and a limit keyed on each one can refuse an order."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Merges 'market' and 'causal-driver' from the §3 risk-management row with the §14 Market row. The §14 table labels its entries 'Examples', so each domain row is one requirement rather than one per example, and the verification requires every listed example to be represented. WORLD is secondary because causal-driver exposure needs the world model's causal graph."
+  },
+  {
+    "id": "RISK-009",
+    "domain": "RISK",
+    "title": "Liquidity risk domain",
+    "statement": "The risk model covers liquidity risk: depth, time-to-exit, market impact, crowded exit, and quote and borrow availability.",
+    "rationale": "A position that is inside its exposure limit but cannot be exited at the size or speed the book assumes is a loss that has not yet been recognised.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Given order-book depth, a position and borrow and quote availability, time-to-exit and impact are computed to expected values, a crowded exit (many holders of the same position) raises the estimate, and unavailable quotes or borrow are represented as such rather than as zero cost."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MARKETDATA"
+    ],
+    "notes": "Merges 'liquidity' from the §3 row with the §14 Liquidity row. The row is treated as one requirement, as described in RISK-008."
+  },
+  {
+    "id": "RISK-010",
+    "domain": "RISK",
+    "title": "Counterparty and venue risk domain",
+    "statement": "The risk model covers counterparty and venue risk: credit, custody, exchange, bridge, broker and settlement exposure to each counterparty and venue.",
+    "rationale": "Money at a venue, custodian, bridge or broker is exposure to that entity's failure, and it is invisible in a view that aggregates positions by instrument only.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "For a book spread across several venues, custodians, bridges and brokers with unsettled legs, exposure is attributed to each counterparty and venue in each listed category, and the per-entity totals reconcile to the book."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "LEDGER"
+    ],
+    "notes": "Merges 'counterparty' and 'settlement' from the §3 row with the §14 Counterparty/Venue row. The row is treated as one requirement, as described in RISK-008. RISK-004 covers the enforced settlement bound. This requirement covers measuring it per entity."
+  },
+  {
+    "id": "RISK-011",
+    "domain": "RISK",
+    "title": "Capital risk domain",
+    "statement": "The risk model covers capital risk: leverage, margin, collateral, concentration, funding and liquidity buffers.",
+    "rationale": "A book can be within every market limit and still fail because a margin call, a collateral haircut or a funding gap exhausts its buffers.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "For a book with known margin terms, collateral and funding, each listed capital measure is computed to the expected value, concentration is reported by the dimensions it is measured on, and a buffer below its floor is reported as a breach."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": "Merges 'concentration' from the §3 row with the §14 Capital row. The row is treated as one requirement, as described in RISK-008. LIVE_CAPITAL was removed: these measures are computed over a book and hold on paper capital. RISK-002 covers the enforced leverage bound. RISK-021 covers the Risk Brain's discovery of concentration that no configured dimension shows."
+  },
+  {
+    "id": "RISK-012",
+    "domain": "RISK",
+    "title": "Model risk domain",
+    "statement": "The risk model covers model risk: drift, calibration, regime mismatch, uncertainty, feature failure and adversarial inputs.",
+    "rationale": "A model that has drifted or is being fed adversarial inputs produces confident decisions that its own outputs give no reason to doubt.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "A replay that introduces a regime shift, a drifted feature, a failed feature and a crafted adversarial input raises a model-risk finding in the matching category for each one, and an unaltered replay raises none."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "Merges 'model' from the §3 row with the §14 Model row. The row is treated as one requirement, as described in RISK-008."
+  },
+  {
+    "id": "RISK-013",
+    "domain": "RISK",
+    "title": "Data risk domain",
+    "statement": "The risk model covers data risk: stale, poisoned, manipulated, missing and inconsistent sources.",
+    "rationale": "A decision is only as sound as its inputs. A stale or poisoned source that is not flagged as a risk flows into sizing as if it were true.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each defect class (stale, poisoned, manipulated, missing, inconsistent) is injected into a source feed. Each one is detected, attributed to the source it came from, and represented as data risk on the decisions that consumed it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA",
+      "EVID"
+    ],
+    "notes": "Merges 'data' from the §3 row with the §14 Data row. The row is treated as one requirement, as described in RISK-008."
+  },
+  {
+    "id": "RISK-014",
+    "domain": "RISK",
+    "title": "Operational risk domain",
+    "statement": "The risk model covers operational risk: node, network, clock, deployment, credential, reconciliation and dependency failure.",
+    "rationale": "The platform's own infrastructure is a source of loss. A cell trading on a skewed clock or a broken reconciliation carries risk that no market measure shows.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Each failure class (node, network, clock skew, bad deployment, expired or revoked credential, reconciliation break, dependency outage) is injected and appears in the operational risk state under its own category while the fault lasts."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RES",
+      "OBS",
+      "SEC"
+    ],
+    "notes": "Merges 'operational' from the §3 row with the §14 Operational row. The row is treated as one requirement, as described in RISK-008. RISK-028 and RISK-029 cover what a reconciliation break raises and what it does to execution."
+  },
+  {
+    "id": "RISK-015",
+    "domain": "RISK",
+    "title": "Systemic risk domain",
+    "statement": "The risk model covers systemic risk: contagion across assets, regions and counterparties, and correlated causal mechanisms.",
+    "rationale": "Positions that are independent in normal conditions fail together in a crisis. A book assessed one asset, region or counterparty at a time understates exactly the loss that matters most.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      },
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "For a book whose positions in different assets, regions and counterparties share a causal mechanism, a replayed contagion episode shows the systemic measure aggregating them while each per-asset, per-region and per-counterparty measure alone stays inside its limit."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Merges 'systemic' from the §3 row with the §14 Systemic row. The row is treated as one requirement, as described in RISK-008. MULTI_REGION is kept because cross-region contagion needs positions held in more than one region. The cross-asset and cross-counterparty parts do not."
+  },
+  {
+    "id": "RISK-016",
+    "domain": "RISK",
+    "title": "Risk Brain forecasts risk",
+    "statement": "The Risk Brain produces risk forecasts: forward-looking estimates of the book's risk, distinct from the Risk Gate's evaluation of present state against limits.",
+    "rationale": "The gate answers whether the book is inside its limits now. Only a forecast can say it is about to leave them, and that is the part of risk a deterministic limit cannot see.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Forecasts issued at each point of a replay are scored against the risk that was later realised, and the calibration is recorded per forecast horizon."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "Merges 'risk forecasting' from the §9.1 Risk Brain row with §14's 'the Risk Brain forecasts and reasons'. §9.1's other three clauses are split out as RISK-017, RISK-018 and RISK-019. The rest of §14's opening, about the brain/gate split, is RISK-020."
+  },
+  {
+    "id": "RISK-017",
+    "domain": "RISK",
+    "title": "Risk Brain generates scenarios and stress tests",
+    "statement": "The Risk Brain generates scenarios and stress tests and evaluates the book under them.",
+    "rationale": "Historical measures describe conditions the book has already seen. A scenario or stress test is how the platform asks about the conditions it has not.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      },
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A generated scenario applied to a fixed book yields a loss estimate per scenario, and re-running from the recorded scenario definition reproduces the same estimate."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Merges 'scenario/stress generation' from the §9.1 Risk Brain row with 'Scenario/stress ... generation' from the G §8 Risk Brain row. G's row also names envelope generation (RISK-027), placement on Regional GKE (RISK-026) and the local hard veto (RISK-023)."
+  },
+  {
+    "id": "RISK-018",
+    "domain": "RISK",
+    "title": "Risk Brain issues risk recommendations",
+    "statement": "The Risk Brain produces risk recommendations derived from its forecasts and scenarios, and each recommendation can be traced to the forecast or scenario that motivated it.",
+    "rationale": "A recommendation with no traceable basis cannot be checked afterwards, and a research desk needs to know why the platform proposed what it did, not only that it proposed it.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every recommendation the Risk Brain emits carries a reference to the forecast or scenario it derives from, and that reference resolves to a recorded forecast or scenario."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from the §9.1 Risk Brain row. The blueprint names recommendations without saying who consumes them. RISK-020 states that they carry no enforcement authority of their own."
+  },
+  {
+    "id": "RISK-019",
+    "domain": "RISK",
+    "title": "Hard limits are enforced by deterministic gates",
+    "statement": "Hard risk limits are enforced by deterministic gates. The Risk Gate's verdict is a pure function of the proposed action, the local state and the loaded limit set, and involves no model inference.",
+    "rationale": "A verdict that can differ for the same inputs cannot be tested, replayed or explained afterwards, and a model in the gate makes the enforcement as fallible as the forecasting it exists to check.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      },
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated (action, local state, limit set) triples, repeated evaluation, across process restarts included, returns an identical verdict, and the gate's dependency graph contains no model or inference component."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": "Merges 'deterministic gates enforce hard limits' from the §9.1 Risk Brain row with 'deterministic limits' in §14. RISK-006 covers whether every action reaches the gate. This requirement covers whether the gate's answer is deterministic. The G p11 §11 'Model-package rule' ('a locally loaded, tested, signed model/policy package with deterministic risk') says the same thing. It was not among the raw items for this domain."
+  },
+  {
+    "id": "RISK-020",
+    "domain": "RISK",
+    "title": "Risk Brain has no enforcement authority",
+    "statement": "The Risk Brain forecasts and the Risk Gate enforces. No Risk Brain output approves or vetoes an executable action directly. Its outputs reach enforcement only as limits or envelopes that the deterministic gate evaluates, and the hard pre-trade veto is never delegated to the Risk Brain.",
+    "rationale": "The blueprint calls this split essential. If the component that reasons with complex models could also approve actions, the deterministic limits would bound only the actions the brain chose to send through them.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      },
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Gate verdicts on a fixed set of actions and states are unchanged when the Risk Brain is absent, stalled, or emitting recommendations that contradict the limits, and no interface lets a Brain output admit an action the gate refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "GOV"
+    ],
+    "notes": "Merges the first half of the §14 raw item ('the Risk Brain forecasts and reasons ... while the Risk Gate enforces') with the half of G §8 that keeps the hard pre-trade veto away from the Risk Brain. The discovery half of that §14 item is split into RISK-021 and RISK-022. The 'remains local Reflex' half of G §8 is RISK-023."
+  },
+  {
+    "id": "RISK-021",
+    "domain": "RISK",
+    "title": "Risk Brain discovers hidden concentration",
+    "statement": "The Risk Brain uses AI, causal and scenario models to discover hidden concentration: exposure concentrated through a shared driver, counterparty or mechanism that no single instrument, venue or strategy limit reveals.",
+    "rationale": "Deterministic limits bound only the dimensions they are keyed on. Concentration that runs through a dimension nobody configured is what the forecasting side exists to find, and without that job the Risk Brain has no stated purpose beyond not being the Gate.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In a constructed book whose positions each sit inside their own limits but share one causal driver, the Risk Brain flags the concentration and names the driver. A control book of the same size without the shared driver is not flagged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "MODEL"
+    ],
+    "notes": "Merges two raw items that both carry §14's 'discover hidden concentration and emerging risk' sentence. The sentence is split in two: hidden concentration is a property of the present book, while emerging risk (RISK-022) is a lead on a future breach, and each can be found without the other."
+  },
+  {
+    "id": "RISK-022",
+    "domain": "RISK",
+    "title": "Risk Brain discovers emerging risk",
+    "statement": "The Risk Brain uses AI, causal and scenario models to discover emerging risk: risk that is building before any deterministic limit is breached.",
+    "rationale": "By the time a deterministic limit fires, the risk has already arrived. An early signal is the only form of warning that leaves time to reduce exposure on purpose rather than by refusal.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Across replayed episodes that ended in a limit breach, the Risk Brain raised an emerging-risk finding before the breach, and the lead time is recorded. Across quiet periods, the false-positive rate is measured and reported."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "WORLD"
+    ],
+    "notes": "Split from the same §14 sentence as RISK-021, and merges the same two raw items."
+  },
+  {
+    "id": "RISK-023",
+    "domain": "RISK",
+    "title": "Hard pre-trade veto is local and uses local state",
+    "statement": "The hard pre-trade veto runs in the local Reflex node and evaluates its deterministic limits using only locally available state. No synchronous call to the Risk Brain, any regional service, the Fabric or another region sits between an action and its verdict.",
+    "rationale": "A gate that has to fetch state from a central service cannot fire while disconnected, and a disconnection is exactly when an unbounded action is most dangerous.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      },
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With the Fabric, the Risk Brain and every regional service made unreachable or stalled, the Reflex gate still returns a verdict for every action, those verdicts are identical to the ones returned with everything reachable, and no verdict waits on the stalled side."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": "Merges the second half of §14's 'every executable action still passes deterministic limits using locally available state' with the raw item that restated it to stress where the state comes from. Also merges G §8's 'hard pre-trade veto remains local Reflex', which appears in two raw items, one of them a near-duplicate. G's wording is the more specific, because it names where the veto runs. It is corroborated by, but not sourced from, the G p23 §27 acceptance criterion ('No synchronous call to Fabric, GKE, Spanner, Bigtable, Redis, BigQuery, AI or another region is required between a venue event and a local order') and by the diagram's algorik-node pipeline ('... strategy → risk → netting → execution')."
+  },
+  {
+    "id": "RISK-024",
+    "domain": "RISK",
+    "title": "Conduct risk domain",
+    "statement": "The risk model covers conduct risk: market-conduct and manipulation risk in the platform's own orders and quotes.",
+    "rationale": "An order pattern can breach market-conduct rules while every exposure limit is satisfied, and only a conduct measure sees it.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replayed order and quote sequences with known manipulative shapes (wash trading, spoofing, layering) are flagged as conduct risk, and ordinary sequences of the same volume are not."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMPLIANCE",
+      "EXEC"
+    ],
+    "notes": "Split from the §14 'Conduct / Intervention' row. Market-conduct and manipulation risk concern the platform's own orders and quotes and matter from master Phase 5 (market making). The rest of the row concerns external interventions and belongs to Phase 10 (RISK-025). The conduct rules this domain measures against are in the §1.2 paragraph on M p4 (no wash activity, spoofing or manipulative conduct), which another domain owns."
+  },
+  {
+    "id": "RISK-025",
+    "domain": "RISK",
+    "title": "Intervention risk domain",
+    "statement": "The risk model covers intervention risk for actions taken in the external world: truthfulness, disclosure, identity, communications permissions, causal overclaiming, unintended externalities and action-channel compromise.",
+    "rationale": "An intervention can be financially sound and still be untruthful, undisclosed, sent over a channel the platform has no permission to use, or built on a causal claim its evidence does not support.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A proposed intervention that lacks disclosure, uses an unverified identity, uses a channel without permission, claims an effect beyond its evidence, or arrives over a compromised action channel is scored under the matching intervention-risk category, and a compliant proposal is not."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY",
+      "COMPLIANCE",
+      "SEC"
+    ],
+    "notes": "Split from the §14 'Conduct / Intervention' row (see RISK-024). Priority P3 because these examples apply to master Phase 10 (causal agency and intervention). Scoring a proposed intervention needs no external action, so no EXTERNAL_ACTION flag. Carrying one out would need that flag and is not part of this requirement."
+  },
+  {
+    "id": "RISK-026",
+    "domain": "RISK",
+    "title": "Risk Brain placed on Regional GKE",
+    "statement": "The Risk Brain runs as a warm regional service on Regional GKE Standard.",
+    "rationale": "The Risk Brain's scenario and envelope work is warm, regional and stateful, and does not belong on the Reflex hot path.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "A plan for each region shows the Risk Brain workload on that region's regional GKE Standard cluster and shows no Risk Brain component on the Reflex node."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "The placement column of the G §8 Risk Brain row. This contradicts ADR 0024, under which warm binaries run on Cloud Run and Kubernetes is retired. ADR 0099 lists the conflict as C3 and leaves it to a runtime record, so until that record exists the standing decision holds. G itself allows Cloud Run where serverless economics suit. Moving the service does not affect RISK-023, which keeps the veto local whatever hosts the Brain."
+  },
+  {
+    "id": "RISK-027",
+    "domain": "RISK",
+    "title": "Risk Brain generates risk envelopes",
+    "statement": "The Risk Brain generates risk envelopes: the bounded limit sets handed to regional execution, which the local deterministic gate enforces.",
+    "rationale": "The envelope is the only channel by which the Risk Brain's reasoning reaches enforcement. Without it the brain's forecasts never tighten a limit, and with anything other than it the brain would be enforcing directly.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Once a Reflex gate loads an envelope produced by the Risk Brain, the gate refuses an action outside the envelope, admits one inside it, and records the envelope version that produced each verdict."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "CONTRACT"
+    ],
+    "notes": "Envelope generation from the G §8 Risk Brain row. The diagram's Risk Brain node (H, regional cell view) describes the same thing: 'Slow/warm risk forecasting and envelope generation'. The capital/risk envelope contract itself is GCP Phase 4 and would be P0, but it is not among this domain's raw items. This requirement is the Brain's production of envelopes, which arrives with the regional service plane in GCP Phase 6."
+  },
+  {
+    "id": "RISK-028",
+    "domain": "RISK",
+    "title": "Reconciliation break raises a P0/P1 Fabric event",
+    "statement": "A reconciliation discrepancy between venue or custody truth and the ledger creates a P0/P1 event on the Fabric.",
+    "rationale": "A difference between what the platform believes it holds and what the venue or custodian holds is a correctness failure. If it raises no high-priority event, it is found only when someone happens to look.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger/Capital/Financial State"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "When a venue or custody position that disagrees with the ledger is injected, a reconciliation-break event is published on the Fabric in the P0/P1 priority class, carrying both values and the direction of the difference. When they agree, no event is published."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "FABRIC"
+    ],
+    "notes": "Split from the G §10 reconciliation bullet. Raising the event is separate from what the event does to execution (RISK-029), because an event can be emitted with no consequence and a halt can happen with no event. The continuous comparison that finds the discrepancy belongs to the ledger domain and was not among these raw items."
+  },
+  {
+    "id": "RISK-029",
+    "domain": "RISK",
+    "title": "Reconciliation break narrows or stops local execution",
+    "statement": "A reconciliation discrepancy can narrow or stop local execution, and deterministic policy decides whether to narrow or stop.",
+    "rationale": "Continuing to trade at full size on a book known to disagree with the venue compounds the error with every order. A model's discretion over that response would put the gate's reliability in the hands of the component whose inputs have just been shown wrong.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger/Capital/Financial State"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each discrepancy class in the policy is driven through, and the local cell's execution is narrowed or halted exactly as the policy specifies. The same discrepancy always produces the same response, and a discrepancy within tolerance leaves execution untouched, which proves the policy does not stop everything."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "REFLEX",
+      "EXEC"
+    ],
+    "notes": "Split from the G §10 reconciliation bullet (see RISK-028). The bullet says 'can', not 'must': the policy decides whether a given discrepancy narrows, stops or does neither, and the requirement is that the policy is deterministic and is applied."
+  },
+  {
+    "id": "RISK-030",
+    "domain": "RISK",
+    "title": "Redis is never position or capital truth",
+    "statement": "Redis is never the source of truth for positions or capital. Any Redis copy is a cache, and losing it or letting it go stale cannot change an authoritative position or capital figure.",
+    "rationale": "A cache has no durability or ordering guarantees fit for financial truth. A position read from one after a flush or failover is a guess presented as a fact.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§28 Explicit Anti-Patterns"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Flushing or corrupting the Redis cache leaves every ledger position and capital balance unchanged, and no code path writes authoritative position or capital state from a Redis value."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "CAPITAL",
+      "GCP"
+    ],
+    "notes": "Split from the G §28 anti-pattern 'Using Redis as position/capital truth or as a required risk gate dependency'. Its two halves are independently checkable, and the second is RISK-031. MANAGED_SERVICE was removed: the prohibition constrains the use of a managed cache and does not require one. Redis arrives only as GCP Phase 6's cache, so today the requirement holds by absence, and it becomes checkable when that cache lands."
+  },
+  {
+    "id": "RISK-031",
+    "domain": "RISK",
+    "title": "Risk Gate never depends on Redis",
+    "statement": "The Risk Gate never requires Redis. It produces verdicts with Redis unavailable, whether Redis is local or remote.",
+    "rationale": "A gate that needs a cache to answer stops answering when the cache does, and it then either blocks all trading or, worse, is bypassed to keep trading.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§28 Explicit Anti-Patterns"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With Redis unreachable or absent, the gate returns verdicts identical to those it returns with Redis reachable, for the same actions and state."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "GCP"
+    ],
+    "notes": "The second half of the G §28 anti-pattern (see RISK-030). It is distinct from RISK-023: a Redis sidecar on the Reflex node would count as 'locally available state' and would pass RISK-023, but it is still forbidden as a required dependency here. MANAGED_SERVICE was removed for the same reason as in RISK-030."
+  },
+  {
+    "id": "RISK-032",
+    "domain": "RISK",
+    "title": "Risk Brain publishes control events on the Fabric",
+    "statement": "The Risk Brain publishes its outputs to regional execution as control-class events on the regional Fabric.",
+    "rationale": "Publishing on the Fabric makes each Risk Brain output durable, replayable and ordered alongside the rest of the region's control traffic, rather than a direct call that nothing records.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L178-184",
+        "section": "§02 Regional Cell (edges)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A Risk Brain output, such as an envelope change, is published on the regional Fabric with the control event class and is consumed from there by the regional cell."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Split from the diagram edge set in which Risk Brain, Capital/Treasury and Asset/Strategy each publish control back onto 'Fabric Broker A'. Each publisher is independently checkable (RISK-033, RISK-034). The diagram draws the edge to Broker A only, but Brokers A to C are one replicated regional cluster, so the requirement is publication to the regional Fabric, not to a particular broker. The same diagram also draws a data edge from the Fabric into the Risk Brain and security edges from Secret Manager/KMS and the service mesh. Those were not among the raw items."
+  },
+  {
+    "id": "RISK-033",
+    "domain": "RISK",
+    "title": "Capital/Treasury publishes control events on the Fabric",
+    "statement": "The Capital/Treasury service publishes its outputs to regional execution as control-class events on the regional Fabric.",
+    "rationale": "Capital grants and placements change what a cell may do. Carried as Fabric control events, they are durable and replayable, and ordered alongside the risk envelopes they interact with.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L178-184",
+        "section": "§02 Regional Cell (edges)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A Capital/Treasury output, such as a capital grant change, is published on the regional Fabric with the control event class and is consumed from there by the regional cell."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "FABRIC"
+    ],
+    "notes": "Split from the diagram edge set (see RISK-032). It belongs primarily to CAPITAL and is kept here because the raw item was assigned to RISK."
+  },
+  {
+    "id": "RISK-034",
+    "domain": "RISK",
+    "title": "Asset/Strategy publishes control events on the Fabric",
+    "statement": "The Asset/Strategy service publishes its outputs to regional execution as control-class events on the regional Fabric.",
+    "rationale": "Strategy and portfolio lifecycle changes alter what a cell trades. Carried as Fabric control events, they can be replayed alongside the risk and capital control that bounded them.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L178-184",
+        "section": "§02 Regional Cell (edges)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An Asset/Strategy output, such as a strategy activation or resize, is published on the regional Fabric with the control event class and is consumed from there by the regional cell."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET",
+      "FABRIC"
+    ],
+    "notes": "Split from the diagram edge set (see RISK-032). It belongs primarily to ASSET and is kept here because the raw item was assigned to RISK."
+  }
+]

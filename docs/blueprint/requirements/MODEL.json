@@ -1,0 +1,2197 @@
+[
+  {
+    "id": "MODEL-001",
+    "domain": "MODEL",
+    "title": "Execution stays Rust-first and bounded",
+    "statement": "The hot lane and every execution path (order-book processing, reflex inference, risk veto and order dispatch) run Rust-first, bounded code. Relaxing the Rust-only restriction for research does not admit a non-Rust runtime onto an execution path.",
+    "rationale": "v11.6 relaxes 'Rust-only machine learning' for research only. If the boundary is not stated as a requirement of its own, a research runtime adopted for training can reach the node through an inference call. It would bring an unbounded latency profile and an unreviewed dependency tree onto the path that sends orders.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1 — 'Rust-only machine learning' row"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§10 Model & Strategy Foundry (intro) — 'The hot lane stays Rust-first and bounded'"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The reflex cell, risk veto and dispatch crates and the node binary's dependency graph contain no Python, JAX, PyTorch or other non-Rust runtime, and ./scripts/check-dependencies.sh reports 'all permitted' for the workspace."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH",
+      "REFLEX"
+    ],
+    "notes": "Split from the §2 'Rust-only machine learning' correction and the §10 intro sentence. Both also grant the slow-lane permission, which is kept as MODEL-002. NON_RUST and MULTI_REPO were dropped from this half because it restricts the execution path to Rust and admits nothing else. Consistent with ADR 0001 and ADR 0011. P0 because the first reflex cell (master Phase 1) already carries an execution path."
+  },
+  {
+    "id": "MODEL-002",
+    "domain": "MODEL",
+    "title": "Slow-lane research and training may use a non-Rust ecosystem",
+    "statement": "Research and model training in the slow lane may use Python, JAX, PyTorch or other fit-for-purpose tooling. That tooling is confined to the research/training plane.",
+    "rationale": "Large-model and neural-network training ecosystems are not mature in Rust. Forbidding them in research would cap what the foundry can learn. Confining them to the research plane keeps the execution path's guarantees (MODEL-001, MODEL-003).",
+    "kind": "placement",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1 — 'Rust-only machine learning' row"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§10 Model & Strategy Foundry (intro) — 'the slow lane may use the best fit research ecosystem'"
+      },
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "§26 Platform & Deployment Architecture — placement table, Training/AGI row (tooling)"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "An ADR records which non-Rust training toolchain is admitted and where it runs, and a repository search finds that toolchain only in the research/training plane, never under backend/ and never in a Reflex node image."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "MULTI_REPO"
+    ],
+    "secondary_domains": [
+      "ARCH",
+      "CICD"
+    ],
+    "notes": "Merged from §2, the §10 intro and §26's tooling column. The standing decisions keep their force until an ADR of its own admits a non-Rust training toolchain (ADR 0099): ADR 0001 (Rust everywhere) and ADR 0002/0009 (two dependencies). ADR 0083 serves the forms the platform trains today in-process with no inference crate: linear and boosted-stump teachers, linear and tree students. This permission therefore matters only for model families beyond those. COST and MANAGED_SERVICE from the §26 row belong to the compute placement (MODEL-050). MULTI_REPO is kept because CICD-039 gives training to a separate algorik-models repository. P2: cognitive/AI plane (GCP Phase 8)."
+  },
+  {
+    "id": "MODEL-003",
+    "domain": "MODEL",
+    "title": "Trained models reach nodes only as exported, bounded inference artifacts",
+    "statement": "A model trained in any ecosystem reaches a Reflex node only as a hardened inference artifact. The artifact is exported to a bounded runtime format compatible with the warm or reflex runtime, and its worst-case evaluation cost is known before activation. A node never loads a training runtime or a model whose evaluation cost is unbounded.",
+    "rationale": "A node that loads a training framework or an unbounded model takes on its latency tail and dependency tree on the path that sends orders. Exporting a hardened artifact lets research use any ecosystem while the node keeps a known cost.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1 — 'Rust-only machine learning' row ('export hardened inference artifacts to Rust reflex nodes')"
+      },
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle, step 7"
+      },
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "§26 Platform & Deployment Architecture — placement table, Training/AGI row ('artifact export to bounded inference runtimes')"
+      },
+      {
+        "doc": "M",
+        "page": "35",
+        "section": "§26 placement table — Microstructure training row ('warm/reflex-compatible artifacts')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A node refuses to activate a package when a model artifact declares no worst-case cost, declares one above the reflex budget, or is not in a registered bounded format. An accepted artifact stays within its declared cost under a benchmark of adversarial inputs."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "CONTRACT"
+    ],
+    "notes": "Merged four near-duplicate sources: §2's export sentence (extracted twice), §10.1 step 7 ('exported to bounded runtime formats and distributed to nodes'), §26's Training/AGI export clause (extracted twice) and the Microstructure training row's 'warm/reflex-compatible artifacts'. Distribution to nodes follows the promotion path in MODEL-051. Overlaps CONTRACT-008 (P1) and ARCH-002. P0 here because the requirement is the bound on the node's cost, not the export mechanics. qip-strategy's DistilledModel already has this shape: it carries its own cost and digest (ADR 0083). NON_RUST and MULTI_REGION were dropped because one Rust artifact on one node satisfies the requirement."
+  },
+  {
+    "id": "MODEL-004",
+    "domain": "MODEL",
+    "title": "The hot path runs only tiny, bounded reflex models",
+    "statement": "Learned models evaluated on the hot path are tiny reflex models with bounded inference. They cover order-book state, fill probability, adverse selection, short-horizon signals and opportunity scoring. A larger model affects the hot path only through a distilled or compiled bounded artifact.",
+    "rationale": "v11.6 replaces v10.1's 'small models only' rule without deleting it. Large models move to the slow lane, and the hot path keeps the latency and determinism of a tiny model.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1 — 'Small models only' row ('Keep tiny reflex models for hot paths')"
+      },
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map — Model foundry row ('reflex models')"
+      },
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, Reflex models row"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist — COMPLETE TARGET: Model Foundry supports ... distilled reflex models"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A reflex cell evaluates a model for each of the five reflex purposes in-process within the reflex latency budget, and activation refuses a package that assigns a foundation or specialist model class to the hot lane."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "TICK"
+    ],
+    "notes": "Merged §2's first clause, §3's 'reflex models', the §10 table row and the reflex third of §31's completeness target. The large-model third of that target is in MODEL-005, and the specialist third is in MODEL-007. NON_RUST and COST were dropped from §2's flags because they apply to the large slow-lane models, not these. P1 as a foundry capability (master Phase 2). The bounded-cost invariant itself is MODEL-003 (P0)."
+  },
+  {
+    "id": "MODEL-005",
+    "domain": "MODEL",
+    "title": "Foundation and generalist models run in the slow lane only",
+    "statement": "Large multimodal foundation and generalist models run only in the slow lane, never in the warm or hot lane. They are used for research, extraction, planning, tool use, explanation and hypothesis generation.",
+    "rationale": "A foundation model has neither bounded latency nor deterministic output. In the slow lane it can still generate hypotheses and explanations, while nothing on the warm or hot path waits on it or takes a number from it.",
+    "kind": "placement",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1 — 'Small models only' row ('allow large multimodal/foundation/generalist models in the slow lane')"
+      },
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map — Model foundry row ('Foundation ... models')"
+      },
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, Foundation/generalist models row"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist — COMPLETE TARGET: Model Foundry supports large models ..."
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A foundation-model call from a slow-lane research task succeeds and is recorded. Lane admission refuses a package or warm service that binds a foundation-model class, and no warm or hot code path holds a client for one."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "COST",
+      "NEW_DEPENDENCY",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "COGNITION",
+      "REASON"
+    ],
+    "notes": "Merged four sources: §2's 'allow large ... models in the slow lane', §3's 'foundation' models, the §10 table row and §31's 'large models'. P2 because large models belong to the cognitive/AI plane (GCP Phase 8). The repository already holds the no-hot-path half through ADR 0005 (a language model never supplies a number) and ADR 0037 (the hosted model is narrative only)."
+  },
+  {
+    "id": "MODEL-006",
+    "domain": "MODEL",
+    "title": "Large-model capability is distilled into compact reflex models and signed policy bundles",
+    "statement": "Useful capability from large slow-lane models is distilled or compiled into bounded, compact reflex or warm models and signed policy bundles. The work runs through a training pipeline that emits an OCI/model package.",
+    "rationale": "The hot path cannot run the large models that find an edge. Distillation is the only route by which their knowledge reaches low-latency decisions without bringing their cost or nondeterminism with it.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1 — 'Small models only' row ('with distillation into fast models')"
+      },
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map — Model foundry row ('distillation')"
+      },
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§23 Intelligence Expansion Engine — mechanism table, Model evolution + distillation row"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist — COMPLETE TARGET: Model Foundry supports ... distilled reflex models"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§11 Cognitive, Model and Quantum Compute Plane — Reflex distillation row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A distillation run on a fixed teacher and dataset emits a package holding a bounded student whose declared cost fits the reflex budget. The student's agreement with the teacher on a held-out set is recorded, and re-running the distillation reproduces the same student digest."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "REFLEX",
+      "CICD"
+    ],
+    "notes": "G's wording is the more specific and is kept: a training pipeline -> OCI/model package, producing 'bounded compact Reflex models and signed policy bundles'. M gives only the direction ('distillation into fast models', 'distilled into smaller warm/reflex artifacts'). The signature is MODEL-035. The independent evaluation a distilled artifact must pass is MODEL-040 and MODEL-051. qip-training's distil already produces linear and tree students (ADR 0083). COST was dropped because it applies to training the teacher (MODEL-050)."
+  },
+  {
+    "id": "MODEL-007",
+    "domain": "MODEL",
+    "title": "Specialist predictive models run in the slow/warm lanes",
+    "statement": "Specialist predictive models run in the slow or warm lane. They cover regime, event probability, valuation, liquidity, slippage, default, volatility, demand and supply.",
+    "rationale": "These models feed pricing, sizing and risk estimates at warm cadence. Keeping them in slow/warm keeps their size and refresh cycle off the hot path, which receives their knowledge only in distilled form.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map — Model foundry row ('specialist models', 'regime models', 'valuation', 'risk')"
+      },
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, Specialist predictive models row"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist — COMPLETE TARGET: Model Foundry supports ... specialist models"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each named specialist purpose has a registered model class tagged slow/warm, a warm service evaluates one, and lane admission refuses a specialist class in a hot-lane package."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "RISK",
+      "ASSET",
+      "WORLD"
+    ],
+    "notes": "Merged §3's 'specialist', 'regime', 'valuation' and 'risk' models into the §10 row, whose purpose list is more specific. §3's 'risk models' has no row of its own; the table's risk purposes are default and volatility. Master Phase 2 (model/strategy foundry), so P1."
+  },
+  {
+    "id": "MODEL-008",
+    "domain": "MODEL",
+    "title": "The foundry trains supervised, unsupervised and reinforcement-learning models",
+    "statement": "The Model Foundry supports supervised, unsupervised and reinforcement learning as training paradigms.",
+    "rationale": "Regime discovery needs unsupervised learning and sequential execution policies need reinforcement learning. A foundry limited to supervised fitting cannot produce either.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map — Model foundry row ('supervised/unsupervised/RL')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The foundry trains, evaluates and registers at least one model per paradigm, each with a registry record naming its paradigm: a supervised predictor, an unsupervised clustering or representation model, and an RL policy trained only in the simulator."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from the §3 Model foundry row. Its model types are merged into MODEL-004, 005, 006, 007, 009 and 010. RL policies train only against the simulator and replay (ADR 0003). A learned policy gets no authority from training; that is governed by MODEL-027 and the promotion gate. Master Phase 2 lists the foundry, so P1."
+  },
+  {
+    "id": "MODEL-009",
+    "domain": "MODEL",
+    "title": "Ensembles run off the hot path or in compact hot form",
+    "statement": "Ensembles provide model diversity, calibrated uncertainty and regime-conditioned selection. They run in any non-hot lane and enter the hot lane only in compact form.",
+    "rationale": "An ensemble's uncertainty estimate and regime selection are useful in every lane, but a full ensemble multiplies inference cost. The compact hot form keeps within the hot budget.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map — Model foundry row ('ensembles')"
+      },
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, Ensembles row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "On replay, an ensemble registered for warm use reports a calibrated uncertainty and a regime-conditioned member selection. A hot-lane package accepts an ensemble only when its declared total cost fits the reflex budget."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": "Merged §3's 'ensembles' into the §10 row."
+  },
+  {
+    "id": "MODEL-010",
+    "domain": "MODEL",
+    "title": "Microstructure representation models learn compact book and flow state from ticks",
+    "statement": "Microstructure representation models are trained in the slow/warm lanes on tick streams. They learn compact representations of book, flow, liquidity and venue state for fusion, regime detection and downstream specialist and reflex models.",
+    "rationale": "Raw ticks arrive at too high a rate for every consumer to use directly. One shared learned representation gives fusion, regime detection and reflex models a consistent input, so each does not derive its own.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map — Model foundry row ('microstructure models')"
+      },
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, Microstructure representation models row"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Trained on a replayed tick segment, the model emits a fixed-width representation per book state that a downstream specialist or reflex model consumes. Replaying the same segment reproduces the same representations."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "TICK",
+      "WORLD"
+    ],
+    "notes": "Merged §3's 'microstructure models' into the §10 row. P1 because master Phase 2 includes the Market Intelligence & Tick Learning Fabric."
+  },
+  {
+    "id": "MODEL-011",
+    "domain": "MODEL",
+    "title": "Strategies move through a gated lifecycle from generation to retirement",
+    "statement": "The strategy factory takes strategies through generation, backtesting, simulation, stress testing, paper trading, promotion, decay and retirement, and records each transition. A strategy is promoted only after it has passed backtesting, simulation, stress testing and paper trading.",
+    "rationale": "A strategy promoted on a backtest alone has never faced a fill model, a stress scenario or a paper book. Enforcing the lifecycle order is what gives promotion its meaning.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map — Strategy factory row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A generated strategy's lifecycle record shows each stage in order. Promotion is refused for a strategy that is missing any earlier stage. A decayed strategy moves to retired and stops receiving capital grants."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REPLAY",
+      "RISK",
+      "CAPITAL"
+    ],
+    "notes": "Split from the §3 row; the scale clause ('thousands of strategies') is MODEL-012. Under ADR 0003, 'promote' means promotion within paper trading, and paper trading is the last execution stage that exists. Nothing in this lifecycle opens a live path (ADR 0021)."
+  },
+  {
+    "id": "MODEL-012",
+    "domain": "MODEL",
+    "title": "The strategy factory handles thousands of strategies",
+    "statement": "The strategy factory sustains a population of thousands of strategies across its lifecycle stages, with a bounded working set.",
+    "rationale": "A factory that works for tens of strategies but serialises at thousands turns generation into a queue. Stale strategies then keep running after they have decayed.",
+    "kind": "nfr",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map — Strategy factory row ('thousands of strategies')"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "A benchmark loads the factory with several thousand strategies spread across the stages. Lifecycle transitions and evaluations finish within a declared cycle budget, and memory stays under a declared ceiling."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FINOPS"
+    ],
+    "notes": "Split from the §3 row; the lifecycle half is MODEL-011. P2 because scale is a master Phase 8 concern (autonomous model/strategy lifecycle). The bounded working set comes from the bounded-retention decision."
+  },
+  {
+    "id": "MODEL-013",
+    "domain": "MODEL",
+    "title": "Financial-truth outcomes feed the Learning/Evaluation Brain",
+    "statement": "Ledger, treasury, settlement and inventory produce outcomes, episodes and missed opportunities, and deliver them to the Learning/Evaluation Brain. The brain derives attribution, calibration and counterfactuals from them.",
+    "rationale": "Learning from signals or intended fills teaches the platform what it planned rather than what happened. The rule is to bill what ran, not what was planned.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§5 End-to-End System Path — LEDGER + TREASURY + SETTLEMENT + INVENTORY -> LEARNING / EVALUATION BRAIN"
+      },
+      {
+        "doc": "H",
+        "page": "L393-395",
+        "section": "§08 End-to-End Operating Flow — edge s14 Ledger/Outcomes -> s15 Evaluation/Memory (knowledge)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A simulated fill booked in the ledger, a declined opportunity and an expired one each produce an episode record in the evaluation input that carries its ledger or decision event id. No record reaches the input without such an event behind it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "TREASURY",
+      "SETTLEMENT"
+    ],
+    "notes": "Merged M §5's diagram with H's s14 -> s15 knowledge edge. H's node label adds what is derived (attribution, calibration and counterfactuals), and that detail is kept."
+  },
+  {
+    "id": "MODEL-014",
+    "domain": "MODEL",
+    "title": "Evaluation output updates the world model and the tick/microstructure models",
+    "statement": "The Learning/Evaluation Brain's output feeds back to the world model and knowledge layer, and to tick/microstructure model training in the replay/training stage.",
+    "rationale": "Without the return edge, outcomes are scored and then forgotten. The world model keeps beliefs that outcomes contradicted, and microstructure models keep fill assumptions that live fills refuted.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§5 End-to-End System Path — WORLD MODEL UPDATE and TICK/MICROSTRUCTURE UPDATE branches"
+      },
+      {
+        "doc": "H",
+        "page": "L393-395",
+        "section": "§08 End-to-End Operating Flow — edges s15 Evaluation/Memory -> s5 Knowledge Layer and -> s8 Replay/Training/Quantum"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An episode that contradicts a world-model belief produces an update record addressed to the world model, and a fill that contradicts a replay fill assumption produces one addressed to microstructure training. Each record links to the episode that caused it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "TICK",
+      "REPLAY"
+    ],
+    "notes": "Merged M §5's two update branches with H's s15 -> s5 and s15 -> s8 edges. H's third edge, to Autonomous Engineering, is MODEL-071."
+  },
+  {
+    "id": "MODEL-015",
+    "domain": "MODEL",
+    "title": "Online drift never silently adapts money-moving logic",
+    "statement": "Live residuals, fill/slippage error, regime drift and venue changes never adjust execution, sizing or other money-moving logic directly. Any change they motivate goes through retraining, evaluation and promotion.",
+    "rationale": "An online loop that adjusted execution or sizing logic on its own would bypass training, evaluation and champion/challenger review. Live decisions would then drift with no change anyone could review.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage — Online drift + feedback row ('rather than silently adapting money-moving logic')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A reflex cell fed a sustained slippage drift on replay keeps its active package digest, parameters and sizing unchanged until a new package is promoted. The only effect of the drift is a recorded retraining or curriculum task."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "RISK",
+      "TICK"
+    ],
+    "notes": "Split from the §8.2 row; the half that feeds retraining is MODEL-016. The requirement forbids learned adaptation. It does not stop a deterministic control, such as a freshness envelope, from narrowing exposure (fail closed). That matches the rule that limits and autonomy may shrink automatically but never widen from a model output."
+  },
+  {
+    "id": "MODEL-016",
+    "domain": "MODEL",
+    "title": "Drift measurements become retraining and curriculum tasks",
+    "statement": "Live residuals, fill/slippage error, regime drift and venue changes are measured continuously and emitted as retraining tasks and Curriculum Engine tasks.",
+    "rationale": "Drift that is measured but routed nowhere is only a dashboard. Routing it into retraining closes the loop that MODEL-015 keeps out of the live path.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage — Online drift + feedback row ('feed retraining and Curriculum Engine tasks')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying a segment with injected fill/slippage drift and a venue change emits a retraining task naming the affected model and the measured residual, plus a Curriculum Engine task once the engine exists."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK",
+      "EXPANSION"
+    ],
+    "notes": "Split from the same §8.2 row as MODEL-015. The retraining half is master Phase 2 (P1). The Curriculum Engine is master Phase 9, so the curriculum-task half lands later."
+  },
+  {
+    "id": "MODEL-017",
+    "domain": "MODEL",
+    "title": "Policy/distilled models run hot or warm and evaluate deterministically",
+    "statement": "Policy/distilled models are compressed outputs of larger models. They run in the hot or warm lane and evaluate deterministically at bounded cost: the same inputs always produce the same output.",
+    "rationale": "A distilled form that is not deterministic cannot be replayed, and one that is not cheap cannot run hot. These two properties are the reason to put it there.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, Policy/distilled models row"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated inputs, a distilled model evaluated twice, and on two nodes, gives bit-identical outputs. Its measured evaluation cost never exceeds its declared bound."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "REPLAY"
+    ],
+    "notes": "The distillation process is MODEL-006. Bit-identical output across nodes constrains floating-point evaluation order. The existing instance is the DistilledModel form in qip-strategy (ADR 0083)."
+  },
+  {
+    "id": "MODEL-018",
+    "domain": "MODEL",
+    "title": "Execution digital-twin models predict fill, queue, slippage, impact, latency and decay",
+    "statement": "Execution digital-twin models run in the slow/warm lanes. They estimate fill probability, queue position, slippage, market impact, latency and opportunity decay.",
+    "rationale": "Replay and paper trading are only as honest as their fill model. A twin that omits queue position, impact or decay produces paper profits no venue would pay.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, Execution digital-twin models row"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "On a replayed segment with recorded simulated fills, the twin produces all six estimates for each order. Its fill-probability and slippage errors against the recorded outcomes are reported."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "EXEC",
+      "REPLAY",
+      "TICK"
+    ],
+    "notes": "Split from the §10 row; its calibration clause ('calibrated to Algorik telemetry and historical replay') is merged into MODEL-019. On a paper-only platform, 'Algorik telemetry' means the telemetry of the simulator and the provider sandboxes (ADR 0003)."
+  },
+  {
+    "id": "MODEL-019",
+    "domain": "MODEL",
+    "title": "Microstructure and execution models are recalibrated from telemetry and replay",
+    "statement": "Microstructure and execution models are calibrated to the platform's own execution telemetry and historical replay, and are recalibrated continuously as new telemetry arrives. A recalibration produces a candidate for promotion. It never replaces the active model in place.",
+    "rationale": "A fill model calibrated once drifts as venues and queues change. Stale calibration is how a twin comes to disagree with every fill without anyone noticing.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, Execution digital-twin models row ('calibrated to Algorik telemetry and historical replay')"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist — COMPLETE TARGET: Microstructure/execution models are continuously recalibrated from live Algorik telemetry ..."
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "After a telemetry batch whose slippage differs from the current calibration, a recalibration run produces a candidate with a recorded error reduction on held-out replay. The candidate enters the promotion path and the active calibration is unchanged."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "TICK",
+      "EXEC",
+      "REPLAY"
+    ],
+    "notes": "Merged the §10 row's calibration clause with the first half of §31's target. The second half ('distilled into bounded reflex artifacts only after independent evaluation') is merged into MODEL-040 and MODEL-051. Recalibrating into a candidate rather than in place follows from MODEL-015."
+  },
+  {
+    "id": "MODEL-020",
+    "domain": "MODEL",
+    "title": "World-model ensembles keep competing models with arbitration and calibration",
+    "statement": "World-model ensembles run concurrent domain, regional, horizon and scenario models in the slow/warm lanes. Each ensemble has explicit arbitration, a recorded measure of disagreement between members, and calibration.",
+    "rationale": "A single world model hides its own uncertainty. Running competing models and recording their disagreement turns model uncertainty into a research signal rather than a silent error.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, World-model ensembles row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "When two world models disagree on a forecast, the ensemble output records both forecasts, the arbitration weights and a disagreement measure. Each member carries a calibration score computed from resolved outcomes."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY",
+      "MANAGED_SERVICE",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "WORLD",
+      "COGNITION"
+    ],
+    "notes": "P1 because master Phase 2 establishes the initial World Model Federation and its representation of model disagreement. MULTI_REGION is kept for the regional members."
+  },
+  {
+    "id": "MODEL-021",
+    "domain": "MODEL",
+    "title": "Symbolic and neuro-symbolic reasoners run in the slow/warm lanes",
+    "statement": "Symbolic and neuro-symbolic reasoners run in the slow/warm lanes as a model class of the foundry. They cover rules, graphs, temporal and causal logic, probabilistic logic, constraints, planning and neural-symbolic hybrids.",
+    "rationale": "Constraints, accounting rules and temporal ordering are facts that a statistical model approximates badly. A reasoner class lets the foundry express them exactly.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, Symbolic / neuro-symbolic reasoners row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A registered reasoner answers a constraint query and a temporal-ordering query over a fixed knowledge fixture with a reproducible derivation. Lane admission refuses a reasoner in a hot-lane package unless it has been compiled under MODEL-023."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "REASON",
+      "WORLD"
+    ],
+    "notes": "P1 because master Phase 2 includes the symbolic/temporal/causal reasoning services. The reasoning capabilities belong to REASON; this requirement covers only the class's place in the foundry."
+  },
+  {
+    "id": "MODEL-022",
+    "domain": "MODEL",
+    "title": "Ambient forecasting and surprise models run continuously, in distilled form on the fast lanes",
+    "statement": "Ambient forecasting and surprise models run continuously in every lane: persistent expected-state, anomaly, precursor, assumption and opportunity models. They reach the warm and hot lanes only in distilled form.",
+    "rationale": "Surprise can only be measured against a standing expectation. The distilled form lets a cell notice a deviation locally without calling the slow lane.",
+    "kind": "placement",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, Ambient forecasting / surprise models row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A reflex cell evaluates a distilled ambient model on every pass and emits a surprise score for an injected anomaly while the full model runs in the slow lane. The ambient output changes no order and no limit."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "AMBIENT",
+      "REFLEX"
+    ],
+    "notes": "P2 because master Phase 8 adds the Ambient Model Mesh. Ambient outputs stay advisory until promoted (AMBIENT-016)."
+  },
+  {
+    "id": "MODEL-023",
+    "domain": "MODEL",
+    "title": "World-model/reflex compilers turn validated outputs into bounded artifacts",
+    "statement": "World-model/reflex compilers translate validated slow-lane symbolic predicates, representations and model outputs into bounded artifacts that can be deployed in the warm or reflex lane. They compile nothing that has not been validated.",
+    "rationale": "Compilation is how a slow-lane discovery becomes executable. Compiling an unvalidated predicate would get it past the promotion gate by a back door.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, World-model/reflex compilers row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Compiling a validated predicate yields an artifact with a declared bounded cost and a reference to its validation record. Compiling one without a validation record is refused."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "REASON",
+      "REFLEX",
+      "WORLD"
+    ],
+    "notes": "The existing reflex-side compiler is qip-strategy's compile, which lowers Expr::Model to Op::Model after checking arity and input types (ADR 0083). P1 because this is the foundry's route to the reflex lane (master Phase 2). The neural-to-symbolic half grows with master Phase 9."
+  },
+  {
+    "id": "MODEL-024",
+    "domain": "MODEL",
+    "title": "Intervention-effect/uplift models estimate heterogeneous causal effect",
+    "statement": "Intervention-effect/uplift models run in the slow/warm lanes. They estimate how the causal effect of candidate actions on target outcomes varies across entities, audiences, markets and horizons, and they support treatment selection.",
+    "rationale": "Choosing among interventions needs the effect for a given entity at a given horizon, not an average correlation.",
+    "kind": "placement",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, Intervention-effect / uplift models row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "On a synthetic dataset with a known heterogeneous effect, the per-segment effect estimates fall within a declared error of the truth, and treatment selection picks the segment with the largest true effect."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": "Split from the §10 row; the abstention clause, which was extracted twice, is MODEL-025. P3 because this is master Phase 10 (Causal Agency)."
+  },
+  {
+    "id": "MODEL-025",
+    "domain": "MODEL",
+    "title": "Uplift models abstain when the effect is not identifiable",
+    "statement": "When an intervention's causal effect cannot be identified from the available data, the uplift model abstains: it returns neither an estimate nor a treatment choice.",
+    "rationale": "A number returned for an unidentifiable effect looks exactly like a measured one, so downstream planners would size actions on correlation.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§10 Model & Strategy Foundry — model-class table, Intervention-effect / uplift models row ('abstention when effect is not identifiable')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated datasets built so that the effect is unidentified, for example with a confounder fully aligned with treatment, the model always abstains. For datasets where the effect is identified, it returns an estimate."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": "Merged the two extractions of this clause. P0 as a correctness invariant, consistent with AGENCY-045 and AGENCY-030. It applies from the moment an uplift model exists (MODEL-024, master Phase 10). The row's NON_RUST, NEW_DEPENDENCY and MANAGED_SERVICE flags were dropped because abstention is a property of the output, not of where the model runs."
+  },
+  {
+    "id": "MODEL-026",
+    "domain": "MODEL",
+    "title": "Action-policy/planner models propose constrained intervention sequences",
+    "statement": "Action-policy/planner models run in the slow/warm lanes. They propose sequences of interventions that respect causal, cost, risk, legal, identity, authority and timing constraints.",
+    "rationale": "An intervention plan that violates any one of these constraints is infeasible, however large its expected effect.",
+    "kind": "placement",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10 Model & Strategy Foundry — model-class table, Action-policy / planner models row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every proposed sequence for a goal names and satisfies each of the seven constraint kinds. On a fixture where only a constraint-violating sequence reaches the goal, the planner makes no proposal."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": "Split from the §10 row; the evaluate-before-authority clause is MODEL-027. P3 because this is master Phase 10. Under ADR 0099, a requirement that needs external action is scored BLOCKED. This one only proposes."
+  },
+  {
+    "id": "MODEL-027",
+    "domain": "MODEL",
+    "title": "Action-policy proposals are evaluated in simulation before any authority is granted",
+    "statement": "An action-policy/planner proposal is evaluated against simulators and counterfactual world-model branches. It gains no authority to act until that evaluation is recorded.",
+    "rationale": "A planner that acts on its own proposal is the creator judging its own idea. The simulator and the counterfactual branches are the independent test.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10 Model & Strategy Foundry — model-class table, Action-policy / planner models row ('evaluated against simulators and counterfactual world-model branches before authority is granted')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The authority gate refuses a proposal that has no recorded simulator and counterfactual-branch evaluation. A proposal with the record advances only to the gate, not past it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY",
+      "GOV"
+    ],
+    "notes": "Merged the two extractions of this clause. P0 as a safety invariant that applies once planner models exist (master Phase 10). Evaluation is necessary but not sufficient: authority still comes from the governance path, never from the evaluation result."
+  },
+  {
+    "id": "MODEL-028",
+    "domain": "MODEL",
+    "title": "Training data campaigns use retained episodes, reproducible references and licensed extracts only",
+    "statement": "A training data campaign is assembled from retained internal episodes, reproducible references to external data, and licensed extracts. Every external item can either be re-fetched by reference or is covered by a licence recorded with the campaign.",
+    "rationale": "A campaign built from a copied external corpus can neither be reproduced nor defended under its licence, and a backtest on it cannot be audited.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle, step 1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A campaign manifest lists every input as an internal episode id, an external reference with a content hash, or a licensed extract with its licence record. Building a campaign that includes any other kind of item is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA",
+      "COMPLIANCE",
+      "SCOUT"
+    ],
+    "notes": "Consistent with the pass-through world-data rule (EVID-020): raw external content is not retained, so external data enters training as a reference or a licensed extract. Licensing posture is evaluated before use, in qip-data-finder."
+  },
+  {
+    "id": "MODEL-029",
+    "domain": "MODEL",
+    "title": "Features and representations carry strict lineage",
+    "statement": "Every feature and learned representation used in training records its lineage: the versioned source data, the version of the transformation code, and the computation time.",
+    "rationale": "A model whose features cannot be traced to their inputs cannot be reproduced, or explained after an incident.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle, step 2 ('strict lineage')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For a trained model, every input feature's lineage record resolves to dataset snapshot ids and a code digest, and recomputing the feature from them reproduces the stored values."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA",
+      "EVID"
+    ],
+    "notes": "Split from §10.1 step 2; leak prevention is MODEL-030."
+  },
+  {
+    "id": "MODEL-030",
+    "domain": "MODEL",
+    "title": "Feature computation prevents look-ahead leakage",
+    "statement": "Features and representations used for training and evaluation are computed only from data knowable at the decision instant, using bitemporal as-of semantics. No training example uses information from after its own timestamp.",
+    "rationale": "Point-in-time leakage produces models that look excellent in backtests and fail live. Once leakage is in the features, no downstream evaluation can detect it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle, step 2 ('leak prevention')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated event streams, recomputing every feature as of each example's decision instant gives the stored value. A feature whose inputs include a record that became knowable after the decision instant is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA",
+      "TICK",
+      "REPLAY"
+    ],
+    "notes": "Split from §10.1 step 2; lineage is MODEL-029. P0 as a correctness invariant. §1.2 (M p4) makes the same demand for market-data training ('prevent look-ahead leakage, timestamp contamination and impossible fills'), and the data-and-streaming rules prohibit point-in-time leakage."
+  },
+  {
+    "id": "MODEL-031",
+    "domain": "MODEL",
+    "title": "A calibrated classical baseline is trained first",
+    "statement": "For every modelling task, a classical baseline is trained and calibrated before any other candidate, including a quantum-assisted variant, is trained or evaluated.",
+    "rationale": "Without a baseline, a candidate's result has nothing to beat. 'We used a quantum computer' or 'we used a larger model' is not a result.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle, step 3"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The training pipeline refuses to evaluate a candidate for a task that has no calibrated baseline on record, and the baseline's record carries its calibration."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "QUANTUM",
+      "EVID"
+    ],
+    "notes": "ADR 0006 establishes this for quantum results (ComputeRouter::solve always runs the classical solver). ADR 0083 applies it to a learned model against its linear baseline. The comparison at the gate is part of MODEL-065."
+  },
+  {
+    "id": "MODEL-032",
+    "domain": "MODEL",
+    "title": "Quantum-assisted variants are optional and limited to eligible workloads",
+    "statement": "Quantum-assisted model variants are evaluated only on workloads classified as eligible. The training lifecycle completes without them whenever none is evaluated.",
+    "rationale": "Making quantum a mandatory step would stall training on QPU queues. Allowing it on any workload would spend QPU time where no useful encoding exists.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle, step 4"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A training run on an ineligible workload never submits a quantum job. A run on an eligible workload with the quantum gateway unavailable still completes and registers the classical candidate."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "QUANTUM"
+    ],
+    "notes": "P2 because this is master Phase 6 (Quantum Foundry). The existing instance is the repository's IBM Quantum path: Qiskit Runtime, a local steepest-descent fallback, and a classical baseline every time (ADR 0006). A quantum output reaches the gate only as a control signal (MODEL-067)."
+  },
+  {
+    "id": "MODEL-033",
+    "domain": "MODEL",
+    "title": "Models are validated out-of-time, cross-regime, adversarially and in simulation/paper trading",
+    "statement": "Before acceptance, every model is validated out-of-time, across regimes, adversarially, and in simulation/paper trading. The acceptance record carries the result of each of the four.",
+    "rationale": "A model that only passes out-of-time and adversarial tests can still fail when the market regime shifts, or when it runs end-to-end in the paper-trading simulator. The source names all four checks as required before acceptance.",
+    "kind": "acceptance",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle, step 5"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The acceptance step refuses a model whose record is missing any of the four validation results. A model that passes three but fails the cross-regime validation is not accepted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REPLAY",
+      "EVID"
+    ],
+    "notes": "Merged two extractions of §10.1 step 5, one of which was partial. Overlaps CONTRACT-007. Paper trading is the only trading there is (ADR 0003)."
+  },
+  {
+    "id": "MODEL-034",
+    "domain": "MODEL",
+    "title": "A model version names exactly one immutable artifact",
+    "statement": "Every accepted model and policy package is versioned, and each version identifies exactly one immutable artifact by content digest. Publishing different bytes under an existing version is refused.",
+    "rationale": "If a version can be overwritten, every reference to it is ambiguous. Replay, audit and rollback would each run whatever the version held when they looked.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle, step 6 ('versioned')"
+      },
+      {
+        "doc": "M",
+        "page": "36-37",
+        "section": "§26.1 Native Rust Event & Control Fabric — Hot-path contract ('immutable signed artifacts')"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§11 Cognitive, Model and Quantum Compute Plane — Custom model training row ('output versioned model artifacts')"
+      },
+      {
+        "doc": "H",
+        "page": "L287",
+        "section": "§05 Cognitive / AGI / Quantum Plane — node 'registry' ('Immutable model/policy/feature/risk packages')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated publish sequences, a version always resolves to the digest first published under it, and a second publish of different bytes under the same version is refused."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "CICD",
+      "SUPPLY_CHAIN"
+    ],
+    "notes": "Split from §10.1 step 6: signing is MODEL-035, attestation MODEL-036 and the Model Pack MODEL-037. Merged with 'immutable' from §26.1 and H's registry node, and with G's 'output versioned model artifacts' (extracted twice). Overlaps CICD-003, CICD-052 and CONTRACT-007. NEW_DEPENDENCY, NON_RUST and COST were dropped because versioning needs none of them."
+  },
+  {
+    "id": "MODEL-035",
+    "domain": "MODEL",
+    "title": "Accepted model and policy packages are signed",
+    "statement": "Every accepted model artifact and policy bundle is signed at acceptance, and the signature is verified before the package is staged or activated.",
+    "rationale": "An unsigned package can be swapped between the registry and the node without detection. The registry's promotion evidence would then describe a different artifact from the one running.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle, step 6 ('signed')"
+      },
+      {
+        "doc": "M",
+        "page": "36-37",
+        "section": "§26.1 Native Rust Event & Control Fabric — Hot-path contract ('immutable signed artifacts')"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§11 Cognitive, Model and Quantum Compute Plane — Reflex distillation row ('signed policy bundles')"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.1 Tick to order and learning, step 6 ('evaluated, signed and promoted')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Staging and activation both refuse a package whose signature is missing, made by an unregistered key, or invalid after a one-byte change. A correctly signed package is accepted."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "SUPPLY_CHAIN",
+      "SEC",
+      "CICD"
+    ],
+    "notes": "ADR 0043 (proposed) lists asymmetric signing among the gaps that no in-tree code may close. Signing therefore needs a managed signer (KMS) or a crate admitted by ADR, which is why NEW_DEPENDENCY and MANAGED_SERVICE are kept. NON_RUST from G §21.1 was dropped. Overlaps GOV-025 and CICD-065."
+  },
+  {
+    "id": "MODEL-036",
+    "domain": "MODEL",
+    "title": "Accepted models carry a provenance attestation",
+    "statement": "Every accepted model carries a provenance attestation that binds its artifact digest to the training code commit, the data/evaluation manifest and the pipeline run that produced it.",
+    "rationale": "A signature says who approved the bytes; an attestation says how they were made. Without an attestation, a signed model trained on the wrong dataset cannot be told apart from the right one.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle, step 6 ('attested')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For an accepted model, the attestation's subject digest matches the artifact and its commit and manifest references resolve. Staging refuses a model whose attestation is missing or names a different digest."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "SUPPLY_CHAIN",
+      "EVID"
+    ],
+    "notes": "Split from §10.1 step 6. The fields named are the ones G §27 requires for traceability (MODEL-064), which is what the attestation is for. Signing the attestation hits the same ADR 0043 gap as MODEL-035."
+  },
+  {
+    "id": "MODEL-037",
+    "domain": "MODEL",
+    "title": "Accepted models are added to a Model Pack with recorded lineage",
+    "statement": "An accepted model is added to a Model Pack. Each Model Pack records its lineage: the pack it supersedes and the model versions it adds, keeps and removes.",
+    "rationale": "The pack is what ships. Without pack lineage, a rollback cannot say what it is rolling back to, and a model's history across packs is lost.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle, step 6 ('added to a Model Pack')"
+      },
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§23 Intelligence Expansion Engine — mechanism table, Model evolution + distillation row (output 'ModelPack lineage')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Adding an accepted model creates a new pack version whose lineage names its predecessor and the model delta. A model with no acceptance record cannot be added, and walking the lineage reconstructs every pack's membership."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CONTRACT",
+      "REFLEX"
+    ],
+    "notes": "Merged §10.1 step 6's 'added to a Model Pack' with §23's ModelPack lineage output. Overlaps CONTRACT-007 (the acceptance precondition) and CONTRACT-011 (ModelPack fields). NEW_DEPENDENCY was dropped because pack membership needs no new crate."
+  },
+  {
+    "id": "MODEL-038",
+    "domain": "MODEL",
+    "title": "Live, drift and counterfactual performance decide promote, hold or retire",
+    "statement": "Promote, hold and retire decisions for every active model are recomputed continuously from three inputs: live (paper) performance, measured drift and counterfactual performance. Each decision records the value of all three inputs and which of them drove it.",
+    "rationale": "Live performance alone rewards models that were lucky in the recent regime. Drift shows whether the edge is still there, and counterfactual performance shows whether a declined alternative would have done better.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§10.1 Training Lifecycle, step 8"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying a period in which a model's drift passes its threshold while its live P&L is still positive yields a 'hold' or 'retire' decision that cites drift. Every decision record carries the values of all three inputs."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID",
+      "REPLAY"
+    ],
+    "notes": "Automatic retirement is MODEL-045. A promotion decision is only a proposal to the gate (MODEL-051, MODEL-065). Narrowing decisions (hold, retire) may take effect automatically."
+  },
+  {
+    "id": "MODEL-039",
+    "domain": "MODEL",
+    "title": "Every path, including those not taken, becomes training data",
+    "statement": "Every decision path becomes training data, including paths not taken: actions taken, declined opportunities, partial fills and failures.",
+    "rationale": "Learning only from executed trades is survivorship bias. The platform would never learn what its declines cost or what its failures could teach.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§22 Continuous Learning & Evaluation Brain (intro) — 'Every path becomes training data, including paths not taken'"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist — COMPLETE TARGET: Continuous evaluation learns from actions, declines, partial fills and failures"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Over a replayed cycle containing an action, a decline, a partial fill and a failure, the evaluation input contains one training episode for each, and the number of episodes equals the number of decisions."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID",
+      "REPLAY"
+    ],
+    "notes": "Merged §22's principle with §31's completeness target, whose list is more specific. According to the observability rules, the repository's LEARN stage already scores declined decisions (score_declined) and filled ones (score_filled)."
+  },
+  {
+    "id": "MODEL-040",
+    "domain": "MODEL",
+    "title": "The Evaluation Brain is independent of the Foundry",
+    "statement": "The Evaluation Brain and the Evaluation/Promotion Gate that judge a model or strategy are independent of the Strategy/Model Foundry that created it. The foundry cannot write, alter or waive an evaluation verdict on its own candidates.",
+    "rationale": "The creator of an idea should not be its sole judge. A creator that grades its own work optimises for the grade, and independence is what makes a passing evaluation count as evidence.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§22 Continuous Learning & Evaluation Brain (intro) — 'The Evaluation Brain is independent of the Strategy/Model Foundry'"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist — COMPLETE TARGET: ... distilled into bounded reflex artifacts only after independent evaluation"
+      },
+      {
+        "doc": "H",
+        "page": "L286",
+        "section": "§05 Cognitive / AGI / Quantum Plane — node 'eval' ('independent tests')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The foundry's identity is refused write access to evaluation verdicts, and every verdict record names an evaluator identity distinct from the candidate's producer. The registry refuses a promotion whose verdict came from the candidate's own producer."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID",
+      "GOV"
+    ],
+    "notes": "Merged three sources: §22's independence rule, the second half of §31's microstructure target ('only after independent evaluation'), and the 'independent tests' on H's gate node. Overlaps CICD-021 (evaluating agents are independent of the authoring agent)."
+  },
+  {
+    "id": "MODEL-041",
+    "domain": "MODEL",
+    "title": "Live outcomes are attributed by strategy, model, belief, source, capital policy, risk rule and execution path",
+    "statement": "Every live (paper) outcome is attributed across the seven factors that produced it: strategy, model, belief, evidence source, capital policy, risk rule and execution path.",
+    "rationale": "Without attribution along each factor, a loss cannot be traced to its cause, and the research desk cannot say why the platform did what it did (ADR 0007).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§22 Continuous Learning & Evaluation Brain — bullet 'Live outcome attribution'"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For a booked simulated outcome, the attribution record names one value for each of the seven factors, and the amounts attributed along each factor sum exactly to the outcome."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID",
+      "LEDGER",
+      "CAPITAL",
+      "RISK"
+    ],
+    "notes": "ADR 0007 (exact attribution) is the standing decision on how amounts are divided."
+  },
+  {
+    "id": "MODEL-042",
+    "domain": "MODEL",
+    "title": "Declined, partial, hedged and unwound opportunities are replayed counterfactually",
+    "statement": "Every declined, partially filled, hedged and unwound opportunity is replayed counterfactually to estimate the outcome of the path not taken.",
+    "rationale": "In the ledger, a decline that would have lost money looks the same as one that would have made money. Only replay tells the platform whether its caution was right.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§22 Continuous Learning & Evaluation Brain — bullet 'Counterfactual replay'"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "For a replayed cycle with one opportunity of each of the four kinds, each opportunity yields a counterfactual record whose estimated outcome is computed only from market data knowable at the decision instant."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REPLAY",
+      "TICK"
+    ],
+    "notes": "The counterfactual uses point-in-time data only (MODEL-030)."
+  },
+  {
+    "id": "MODEL-043",
+    "domain": "MODEL",
+    "title": "Champion/challenger models and strategies are scored on regime-conditioned scorecards",
+    "statement": "Every active model and strategy is a champion that runs alongside challengers, which may be ensembles, new architectures or larger slow-lane models. Champions and challengers are scored continuously on scorecards conditioned on market regime.",
+    "rationale": "A single average across regimes hides a champion that only works in one of them. Per-regime scorecards show where a challenger is better and where it is worse.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§22 Continuous Learning & Evaluation Brain — bullet 'Champion/challenger models and strategies with regime-conditioned scorecards'"
+      },
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§23 Intelligence Expansion Engine — mechanism table, Model evolution + distillation row ('continuously tested')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Across a replay spanning two regimes, champion and challenger each receive one scorecard per regime. A challenger that wins in one regime and loses in the other is reported that way, not only as an overall ranking."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID",
+      "REPLAY"
+    ],
+    "notes": "Merged §22's bullet with the testing part of §23's Model evolution mechanism. That mechanism's distillation part is MODEL-006 and its lineage part is MODEL-037. Challengers run in shadow, and replacing a champion goes through the gate (MODEL-065)."
+  },
+  {
+    "id": "MODEL-044",
+    "domain": "MODEL",
+    "title": "Each data source's contribution to decisions is measured after cost and delay",
+    "statement": "For each data source, the platform measures whether it improved decisions once the source's cost and delay are accounted for.",
+    "rationale": "A source that improves forecasts but arrives too late, or costs more than its edge, is a net loss. Without this measurement the source catalogue only grows.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§22 Continuous Learning & Evaluation Brain — bullet 'Data-source alpha attribution'"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying decisions with a source's features present and then masked yields, for each source, an attributed improvement net of its recorded cost and latency."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SCOUT",
+      "DATA",
+      "FINOPS"
+    ],
+    "notes": "This measurement drives the Scout Fabric's retirement of low-value sources (M §6)."
+  },
+  {
+    "id": "MODEL-045",
+    "domain": "MODEL",
+    "title": "Degraded models and strategies are retired automatically with rollback to last known-good",
+    "statement": "When a model or strategy is found to be degraded, it is retired automatically and the last known-good artifact is reactivated.",
+    "rationale": "Leaving a degraded model active while someone is found to look at it lets it keep deciding. Rolling back to a known-good artifact limits the damage without guessing at a replacement.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§22 Continuous Learning & Evaluation Brain — bullet 'Automatic retirement of degraded models/strategies and rollback to last known-good artifact'"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Driving a model's score below its degradation threshold retires it and atomically reactivates the previous package epoch. The reactivated digest equals the last digest that passed the gate."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "CICD"
+    ],
+    "notes": "Retirement and rollback are kept as one action because retiring without a fallback leaves the slot empty. Narrowing may happen automatically; promotion may not (MODEL-038). Overlaps CICD-066 (the previous epoch is retained for rollback) and G §21.1 step 7."
+  },
+  {
+    "id": "MODEL-046",
+    "domain": "MODEL",
+    "title": "Failure clusters and unexplained residuals generate research prompts",
+    "statement": "The platform generates closed-loop research prompts from failure clusters and unexplained residuals, and tracks each prompt to the research task that answered it.",
+    "rationale": "Failures that are only counted keep recurring. Turning a cluster into a research task is how the platform learns why they happen.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§22 Continuous Learning & Evaluation Brain — bullet 'Closed-loop research prompts'"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Injecting a cluster of similar failures produces one research prompt that references the cluster's episodes, and closing the prompt records the resulting research task."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "REASON"
+    ],
+    "notes": "P2 because self-directed research campaigns are master Phase 8."
+  },
+  {
+    "id": "MODEL-047",
+    "domain": "MODEL",
+    "title": "Novelty and knowledge gaps are detected",
+    "statement": "The platform detects six kinds of novelty and knowledge gap: unexplained residuals, low-confidence regions, contradictory evidence, missing causal links, unsupported asset classes, and capabilities with no competent specialist.",
+    "rationale": "A system that cannot tell what it does not know carries its confidence into regions where it has no evidence.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§22 Continuous Learning & Evaluation Brain — bullet 'Novelty and knowledge-gap detection'"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture for each of the six gap kinds yields a gap record of the matching kind, and a fixture containing none yields no record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "WORLD",
+      "COVERAGE"
+    ],
+    "notes": "P2: the detection belongs to §22, while the Curriculum Engine that consumes gap signals is master Phase 9 (MODEL-049)."
+  },
+  {
+    "id": "MODEL-048",
+    "domain": "MODEL",
+    "title": "Active learning selects what to label, simulate, collect or retrain next",
+    "statement": "Outcomes, drift, uncertainty and information value decide what data to label, simulate, collect or retrain on next, instead of retraining blindly. The selection produces a TrainingCampaign.",
+    "rationale": "Blind retraining spends compute where the model is already right. Selecting by information value spends it where the model is wrong or unsure.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§23 Intelligence Expansion Engine — mechanism table, Continuous training + active learning row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Given candidate datasets of differing information value, the higher-value one is selected, and the TrainingCampaign records the selection criteria."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "DATA"
+    ],
+    "notes": "P3 because active learning is named in master Phase 9."
+  },
+  {
+    "id": "MODEL-049",
+    "domain": "MODEL",
+    "title": "Self-evaluation produces Scorecards and GapSignals",
+    "statement": "The platform measures forecast accuracy, uncertainty calibration, P&L attribution, execution quality, model decay, source value, hallucination/error rates and unexplained residuals, and publishes the results as Scorecard and GapSignal records.",
+    "rationale": "Measurements that are taken separately and never combined leave the Curriculum Engine nothing to rank. The Scorecard and GapSignal records are its input.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§23 Intelligence Expansion Engine — mechanism table, Self-evaluation + calibration row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A model's Scorecard carries all eight measures, each computed from outcomes resolved in the evaluation window, and a measure outside its threshold emits a GapSignal."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "EVID",
+      "OBS"
+    ],
+    "notes": "P3 because §23 is master Phase 9. Several of the measures exist earlier on their own, such as P&L attribution (MODEL-041) and source value (MODEL-044). This requirement is their consolidation into the §23 outputs."
+  },
+  {
+    "id": "MODEL-050",
+    "domain": "MODEL",
+    "title": "Model training runs on Vertex AI custom training and pipelines on GPU/TPU/CPU",
+    "statement": "Custom model training runs on Google Cloud GPU/TPU/CPU compute through Agent Platform / Vertex AI custom training and pipelines.",
+    "rationale": "Training large and specialist models needs accelerator capacity that the serving runtime does not have and should not share.",
+    "kind": "placement",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "§26 Platform & Deployment Architecture — placement table, Training/AGI row ('GPU/TPU compute on Google Cloud')"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§11 Cognitive, Model and Quantum Compute Plane — Custom model training row"
+      },
+      {
+        "doc": "G",
+        "page": "18",
+        "section": "§19 Complete GCP Service Catalog for This Platform — Gemini Enterprise Agent Platform / Vertex AI APIs row"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "A terraform plan declares Vertex AI custom training and pipeline resources with GPU/TPU/CPU machine types in the AI project, and the infrastructure acceptance suite admits the plan."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "COST",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "FINOPS"
+    ],
+    "notes": "G's placement (Vertex custom training and pipelines on GPU/TPU/CPU) is more specific than M's 'GPU/TPU compute on Google Cloud' and is kept. The §19 catalogue row also names managed agents, which belong to COGNITION and are not restated here. P2 because this is GCP Phase 8. ADR 0024 governs how the placement would be declared in code, and nothing is adopted until an ADR admits the managed service (ADR 0099)."
+  },
+  {
+    "id": "MODEL-051",
+    "domain": "MODEL",
+    "title": "A model reaches a regional cell only through the gate, the registry and the package builder",
+    "statement": "The only path from a trained candidate to a Regional Reflex Cell is Evaluation/Promotion Gate -> Model/Policy Registry -> Reflex Package Builder -> Regional Reflex Cells, driven through GitOps. No route skips the gate, the registry or the package builder.",
+    "rationale": "Every guarantee the gate checks is void if another route can put an artifact on a node, and a hand-copied model file is such a route.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "35",
+        "section": "§26 Platform & Deployment Architecture — placement table, Microstructure training row ('packaged through the Model Registry')"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.1 Tick to order and learning, step 6 ('promoted through GitOps/model gates')"
+      },
+      {
+        "doc": "H",
+        "page": "L284,286,293",
+        "section": "§05 Cognitive / AGI / Quantum Plane — edge vertex -> eval (deploy)"
+      },
+      {
+        "doc": "H",
+        "page": "L292-293",
+        "section": "§05 Cognitive / AGI / Quantum Plane — deploy edges eval -> registry -> package -> regions"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A node refuses to activate a package that the Package Builder did not produce, that is not registered, or whose registry record has no gate verdict. A package placed on the node any other way, such as a copied file, is never activated."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "CICD",
+      "REFLEX",
+      "GOV"
+    ],
+    "notes": "Merged four sources: §26's microstructure row, the promotion part of G §21.1 step 6, H's strict edge chain, and the deploy-candidate part of H's vertex -> eval edge. G §21.1's training part is MODEL-055 and its signing part MODEL-035; the quantum part of H's edge is MODEL-067. Overlaps GOV-025, CICD-005 (no hand-copied model files) and ARCH-002. NON_RUST and MANAGED_SERVICE were dropped because the path is a property of the promotion flow, not of the service that runs it."
+  },
+  {
+    "id": "MODEL-052",
+    "domain": "MODEL",
+    "title": "Model and policy packages are stored in artifact and object storage",
+    "statement": "Model and policy packages, both manifest and weights, are published asynchronously to artifact and object storage (Artifact Registry and GCS). The package manager and nodes fetch them from there.",
+    "rationale": "Keeping packages anywhere other than durable, access-controlled artifact storage makes their availability and integrity depend on a service that was not built to hold them.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "36-37",
+        "section": "§26.1 Native Rust Event & Control Fabric — Hot-path contract ('stored ... in object/artifact storage')"
+      },
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§20 Critical Service-to-Service Connection Matrix — Training/Model Registry -> Artifact Registry + GCS row"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares the artifact repository and bucket that hold packages, lets the training identity publish, and gives node and package-manager identities read access only. An integration test fetches a published package from there by digest."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "CICD",
+      "GCP",
+      "FABRIC"
+    ],
+    "notes": "Split from §26.1's sentence: the Fabric part is MODEL-053, and 'immutable signed' is MODEL-034 and MODEL-035. Merged with G's connection row, which names the stores and the async mode. Overlaps CICD-099."
+  },
+  {
+    "id": "MODEL-053",
+    "domain": "MODEL",
+    "title": "For packages, the Fabric carries only version, digest, availability and activation messages",
+    "statement": "The Fabric never carries model or policy package contents. For packages, it carries only version, digest, availability and activation messages.",
+    "rationale": "Package weights on the Fabric would put bulk transfers on the bus the reflex path journals to. They would also make the Fabric a second, unsigned source of the artifact.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "36-37",
+        "section": "§26.1 Native Rust Event & Control Fabric — Hot-path contract ('the fabric carries only version/digest/availability/activation messages')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Publishing and activating a package produces Fabric messages whose schema admits only version, digest, availability and activation fields. The schema registry rejects a message that carries package bytes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "REFLEX"
+    ],
+    "notes": "Split from §26.1; the storage part is MODEL-052. P0 because it is a Fabric contract, and master Phase 0 includes the Native Rust Event & Control Fabric contracts."
+  },
+  {
+    "id": "MODEL-054",
+    "domain": "MODEL",
+    "title": "AI training, registry and GPU/TPU jobs run in a project separate from financial state",
+    "statement": "Agent Platform/Vertex training, the model registry, the agent runtime and GPU/TPU jobs run in a dedicated prod/ai project. AI identities hold no permission on financial state, and AI quota is separate from the quota that financial services depend on.",
+    "rationale": "An AI workload in the same project as the ledger could be granted, or could consume, what the ledger needs. Separate projects rule out both by construction.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model — prod/ai row"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan puts every Vertex, GPU and TPU resource in the prod/ai project, and no IAM binding grants a prod/ai identity any role on the projects that hold ledger, capital or custody state."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "SEC",
+      "FINOPS"
+    ],
+    "notes": "Merged two extractions of the prod/ai row, one of which kept the GPU/TPU clause. P0 because the organisation, folder and project model and IAM are GCP Phase 0 deliverables, even though the workloads that fill prod/ai arrive in GCP Phase 8. NON_RUST was dropped because the separation holds whatever language runs inside."
+  },
+  {
+    "id": "MODEL-055",
+    "domain": "MODEL",
+    "title": "The Model Foundry trains from world knowledge, tick history, derived datasets and replay",
+    "statement": "The Model Foundry trains and distils specialist and reflex models from world and tick history. Its inputs are World Model Federation knowledge (Spanner Graph), fast state (Bigtable), the GCS tick/internal lake, BigQuery derived datasets, and Market Replay/Simulation output.",
+    "rationale": "A model trained only on market data cannot learn how events in the world move markets, and one trained only on world data cannot learn microstructure. Training on both together is the foundry's reason to exist.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§11 Cognitive, Model and Quantum Compute Plane — Custom model training row ('Training datasets from GCS/BQ/Bigtable snapshots')"
+      },
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§20 Critical Service-to-Service Connection Matrix — Training pipelines -> GCS/BQ/Bigtable/Spanner Graph row ('Build training/evaluation datasets')"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§21.1 Tick to order and learning, step 6 ('Training pipelines use world + tick history')"
+      },
+      {
+        "doc": "H",
+        "page": "L128-138",
+        "section": "§01 Global Platform Topology — edges graph -> vertex and bigtable -> vertex (knowledge), gcs -> vertex and bq -> vertex (data)"
+      },
+      {
+        "doc": "H",
+        "page": "L257-261",
+        "section": "§04 World Sensing, Tick History & Durable Knowledge — edges world, replay, tick, bq -> training"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A training campaign's manifest can reference inputs of each of the five kinds, and a trained specialist's lineage shows at least one world-knowledge input and one tick-history input."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "WORLD",
+      "TICK",
+      "DATA",
+      "REPLAY"
+    ],
+    "notes": "Merged G's dataset sources (§11, §20), the 'world + tick history' of G §21.1 step 6, and H's two edge sets (§01 at store level, §04 at component level). H §04's four inputs overlap H §01's four stores on GCS and BigQuery; the union is kept. G's custom training row was extracted twice. P1 because master Phase 2 includes world+market fusion and the foundry; the named GCP stores are the GCP Phase 5/8 placement. NON_RUST and COST were dropped."
+  },
+  {
+    "id": "MODEL-056",
+    "domain": "MODEL",
+    "title": "Training datasets are pinned snapshots",
+    "statement": "Training datasets are built from versioned snapshots of the source stores, and every trained model records the identities of the snapshots it was trained on.",
+    "rationale": "A model trained on a live table cannot be retrained or audited on the same data. The data/evaluation manifest that traceability requires (MODEL-064) is only meaningful if what it names still exists unchanged.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§11 Cognitive, Model and Quantum Compute Plane — Custom model training row ('GCS/BQ/Bigtable snapshots')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Retraining a model from the snapshot ids in its record reproduces the same training-set digest, and a training job pointed at a live table instead of a snapshot is refused."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "REPLAY",
+      "EVID"
+    ],
+    "notes": "Split from G's custom training row, which was extracted twice. The row's other parts are the placement (MODEL-050), the inputs (MODEL-055) and versioned outputs (MODEL-034)."
+  },
+  {
+    "id": "MODEL-057",
+    "domain": "MODEL",
+    "title": "The model registry records versions, evaluation, lineage, aliases and promotion evidence",
+    "statement": "For every model, the model registry (Model Registry / ML Metadata) holds its versions, evaluation results, lineage, aliases and promotion evidence.",
+    "rationale": "Promotion evidence stored anywhere other than beside the version it promoted can be lost or mismatched. The registry is the one place that answers why a given version is live.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§11 Cognitive, Model and Quantum Compute Plane — Model registry/evaluation row"
+      },
+      {
+        "doc": "G",
+        "page": "18",
+        "section": "§19 Complete GCP Service Catalog for This Platform — Model Registry / ML Metadata row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For a promoted model, the registry returns its version, evaluation results, lineage, current aliases and gate verdict. Moving an alias records who moved it and on what evidence."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "CICD",
+      "EVID"
+    ],
+    "notes": "G §11's list is more specific than §19's 'version/evaluation/lineage' and is kept. P1 because the registry is master Phase 2 (M §26 routes microstructure outputs through it); hosting it on Vertex Model Registry is the GCP Phase 8 placement. NON_RUST was dropped."
+  },
+  {
+    "id": "MODEL-058",
+    "domain": "MODEL",
+    "title": "Loss of global cognition/AI leaves the hot path and local trading unaffected",
+    "statement": "When global cognition/AI is lost, no new models or research are produced. Local trading continues on the last activated packages under its freshness/degradation envelope, and the hot path is unaffected.",
+    "rationale": "If the reflex path depended on the AI plane, the least reliable and most externally dependent part of the platform would set its availability.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "15",
+        "section": "§17 Availability, Resilience and Disaster Recovery — Global cognition/AI row"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With the AI plane unreachable, a reflex cell keeps running passes with its active package and its hot-path latency distribution stays within tolerance of the baseline. Sizing narrows only as far as the freshness envelope requires."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "RES",
+      "REFLEX"
+    ],
+    "notes": "Split from the §17 row; the recovery part is MODEL-059. P0 because G §27 requires no synchronous AI call between a venue event and a local order, and ADR 0008 has cells decide alone. MULTI_REGION was dropped from this part."
+  },
+  {
+    "id": "MODEL-059",
+    "domain": "MODEL",
+    "title": "The AI plane recovers by retry or failover to an alternate AI region",
+    "statement": "The AI plane recovers from a global cognition/AI loss by retrying and, where needed, failing over to an alternate AI region.",
+    "rationale": "With a single-region AI plane, a regional outage stops training and research across the whole platform.",
+    "kind": "failure_behavior",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "15",
+        "section": "§17 Availability, Resilience and Disaster Recovery — Global cognition/AI row (recovery column)"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "In a game day that removes the primary AI region, training and research jobs resume in the alternate region within the declared RTO, reading the same registry and datasets."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "RES",
+      "GCP"
+    ],
+    "notes": "Split from the §17 row. P2 because the AI plane is GCP Phase 8."
+  },
+  {
+    "id": "MODEL-060",
+    "domain": "MODEL",
+    "title": "Training jobs are scheduled with awareness of queues and quotas",
+    "statement": "AI training scales in units of GPU/TPU workers or jobs, scheduled against queues and quotas. Jobs beyond the available quota wait; they do not fail and do not pre-empt other jobs.",
+    "rationale": "Training that ignores quota either fails at submission or starves other families of accelerators.",
+    "kind": "nfr",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model — AI training row ('Queue and quota-aware scheduling')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Training jobs submitted beyond a family's quota stay queued and start as capacity frees, and no more than the quota ever runs at once."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "FINOPS",
+      "GCP"
+    ],
+    "notes": "Split from the §18 row; Spot use is MODEL-061 and reserved capacity MODEL-062. Overlaps FINOPS-005, which cites the same row. NON_RUST was dropped."
+  },
+  {
+    "id": "MODEL-061",
+    "domain": "MODEL",
+    "title": "Training uses Spot capacity only where interruption is safe",
+    "statement": "A training job runs on Spot (preemptible) capacity only if it tolerates interruption, meaning it checkpoints and resumes without losing completed work.",
+    "rationale": "A job that cannot resume loses its work at every preemption, so on Spot capacity it ends up costing more than on-demand.",
+    "kind": "nfr",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model — AI training row ('Spot where interruption is safe')"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "A Spot training job preempted mid-run resumes from its last checkpoint and completes, and the scheduler refuses to place a job not marked interruption-safe on Spot capacity."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "FINOPS"
+    ],
+    "notes": "Split from the §18 row. P3 because it is a cost optimisation. Overlaps FINOPS-006."
+  },
+  {
+    "id": "MODEL-062",
+    "domain": "MODEL",
+    "title": "Critical retraining has reserved capacity where justified",
+    "statement": "Critical retraining runs on fixed reserved capacity when a recorded justification shows that interruptible or queued capacity would miss its deadline.",
+    "rationale": "Retraining that must finish before a model degrades cannot wait in a shared queue. Reserving capacity without a justification pays for idle accelerators.",
+    "kind": "nfr",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "16",
+        "section": "§18 Scaling and Performance Model — AI training row ('fixed reserved capacity for critical retraining if justified')"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every reserved-capacity commitment for training links to a written justification that names the critical retraining it serves and its deadline, and no reservation exists without one."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "FINOPS"
+    ],
+    "notes": "Split from the §18 row. P3 because the source makes it conditional ('if justified') and it is an optimisation."
+  },
+  {
+    "id": "MODEL-063",
+    "domain": "MODEL",
+    "title": "Training pipelines reach data stores over Private Google APIs in batch/warm mode",
+    "statement": "Training pipelines reach GCS, BigQuery, Bigtable and Spanner Graph over Private Google APIs in batch/warm mode. They never use the public internet and never sit on the hot path.",
+    "rationale": "Training reads are bulk and not urgent. Routing them over the public internet exposes data in transit, and routing them through a hot-path service couples the two lanes.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§20 Critical Service-to-Service Connection Matrix — Training pipelines -> GCS/BQ/Bigtable/Spanner Graph row"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "In the plan, the training pipeline network has Private Google Access enabled and no public egress route to the store APIs, and no hot-path component is a hop between the pipeline and the stores."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "NET",
+      "SEC",
+      "DATA"
+    ],
+    "notes": "Split from the §20 row; its purpose ('Build training/evaluation datasets') is merged into MODEL-055. NON_RUST was dropped."
+  },
+  {
+    "id": "MODEL-064",
+    "domain": "MODEL",
+    "title": "Every model or policy in Reflex traces to its commit, manifest, signature, promotion event and activation epoch",
+    "statement": "Every model and policy executing in a Reflex cell can be traced to five records: its source commit, its data/evaluation manifest, its signature, its approval/promotion event and its activation epoch.",
+    "rationale": "Without this chain an incident cannot be explained. Nobody can say what code and data produced the deciding model, who approved it, or since when it was live.",
+    "kind": "acceptance",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§27 Architecture Acceptance Criteria — COMPLETE TARGET: Every model/policy executing in Reflex can be traced ..."
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "For the package active on a cell, a trace query that starts from the cell's activation record resolves all five links, and each link's digest matches the record it points to."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CICD",
+      "EVID",
+      "SUPPLY_CHAIN",
+      "REFLEX"
+    ],
+    "notes": "P0 because auditability (every decision reproducible from the log) is a precondition here, not a feature. The signature link depends on MODEL-035 and the ADR 0043 gap. Until that gap closes, the chain is complete except for the asymmetric signature, and the missing link is reported rather than hidden."
+  },
+  {
+    "id": "MODEL-065",
+    "domain": "MODEL",
+    "title": "Promotion requires calibration, replay, robustness, safety, baseline benchmark, authority and risk-envelope checks",
+    "statement": "The Evaluation/Promotion Gate promotes a model or policy only when each of seven independent checks has passed: calibration, replay behaviour, robustness, safety, benchmark performance against the classical baseline, authority, and compatibility with the deterministic risk envelope.",
+    "rationale": "Each check catches a failure the others miss. For example, a model promoted without the risk-envelope compatibility test can size positions that the deterministic gate then has to refuse at the worst moment.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§28 Explicit Anti-Patterns — 'Allowing model promotion without replay/calibration/classical baseline and deterministic risk-envelope compatibility tests'"
+      },
+      {
+        "doc": "H",
+        "page": "L273-289",
+        "section": "§05 Cognitive / AGI / Quantum Plane — node 'eval' (node detail)"
+      },
+      {
+        "doc": "H",
+        "page": "L286",
+        "section": "§05 Cognitive / AGI / Quantum Plane — node 'eval' ('Calibration, replay, robustness, safety, benchmark and authority checks')"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "For each of the seven checks, a candidate that passes every check except that one is refused by the gate, which names the failed check. A candidate that passes all seven is promoted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "EVID",
+      "REPLAY",
+      "GOV"
+    ],
+    "notes": "Merged G's anti-pattern (replay, calibration, classical baseline, deterministic risk-envelope compatibility) with H's six gate checks (calibration, replay, robustness, safety, benchmark, authority), which were extracted twice. The union is seven checks: G's 'classical baseline' is read as H's 'benchmark', and G's risk-envelope compatibility has no counterpart in H. The 'independent' on H's node is covered by MODEL-040."
+  },
+  {
+    "id": "MODEL-066",
+    "domain": "MODEL",
+    "title": "The Model Foundry consumes knowledge and outcomes from the Fabric",
+    "statement": "The Model Foundry consumes knowledge and outcomes from the Native Rust Event & Control Fabric as an asynchronous, replayable consumer, and produces model artifacts.",
+    "rationale": "Reading outcomes from the Fabric gives the foundry the same ordered, replayable record the rest of the platform uses, not a second copy assembled by polling services.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L218-221",
+        "section": "§03 Native Rust Event & Control Fabric — edge f2 (Broker B) -> c_vertex (Vertex / Model Foundry, knowledge)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The foundry's outcome ingest is a registered Fabric consumer group with committed offsets, and replaying from its offsets reproduces the same training episodes."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "The diagram draws the edge from Broker B only. Each broker has one downstream edge in the drawing, so which broker is incidental; the requirement is that the Fabric is the source. P2 because the foundry's managed placement is GCP Phase 8. NON_RUST was dropped."
+  },
+  {
+    "id": "MODEL-067",
+    "domain": "MODEL",
+    "title": "Quantum output reaches the promotion gate only as a control signal, never as a deploy candidate",
+    "statement": "Quantum Gateway output reaches the Evaluation/Promotion Gate only as a control signal, such as a selection or search result that informs a classical candidate. It is never a deploy candidate itself; deploy candidates come only from the training pipeline.",
+    "rationale": "A quantum result is a candidate solution or a search aid, never a proof. Deploying it directly would skip the classical verification that makes it trustworthy.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L284,286,293",
+        "section": "§05 Cognitive / AGI / Quantum Plane — edge vertex -> eval (deploy) versus quantum -> eval (control)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The gate refuses a deploy candidate whose producer is the quantum gateway. It accepts a quantum-informed candidate only when the training pipeline produced it and its classical-baseline comparison is attached."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "QUANTUM"
+    ],
+    "notes": "Split from the H extraction; the training-side deploy edge is merged into MODEL-051. Consistent with M §11 (quantum output is 'a candidate solution or search aid, never a proof of truth') and ADR 0006. P0 as a safety invariant, since the IBM Quantum path already exists in the repository."
+  },
+  {
+    "id": "MODEL-068",
+    "domain": "MODEL",
+    "title": "The Model/Policy Registry holds model, policy, feature and risk packages",
+    "statement": "The Model/Policy Registry stores four package types: model, policy, feature and risk. A package of any other type is refused.",
+    "rationale": "A registry that accepts any artifact becomes a side door for things the gate was never designed to check.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L287",
+        "section": "§05 Cognitive / AGI / Quantum Plane — node 'registry' ('Immutable model/policy/feature/risk packages')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A package of each of the four types registers successfully, and a package of any other type is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CONTRACT",
+      "CICD"
+    ],
+    "notes": "Split from the H node label; its 'immutable' is MODEL-034. 'Exactly four' reads a diagram label strictly. A strategy package (CONTRACT-012 StrategyPack), which H's Reflex Package Builder bundles but the registry node does not name, would require extending the registry's type list deliberately. Forcing that deliberate step is the point of refusing unknown types."
+  },
+  {
+    "id": "MODEL-069",
+    "domain": "MODEL",
+    "title": "The Specialist Brain Society feeds the training pipelines",
+    "statement": "The Specialist Brain Society supplies knowledge directly to Vertex Training/Pipelines as training input.",
+    "rationale": "Specialists hold domain structure that raw data does not state, such as what matters for a company, a supply chain or a venue. Without this edge the foundry relearns that structure from scratch.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L292-293",
+        "section": "§05 Cognitive / AGI / Quantum Plane — edge special -> vertex (knowledge)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A specialist's published knowledge output appears as a referenced input in a training campaign manifest."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "COGNITION"
+    ],
+    "notes": "Split from the H extraction; the Causal Agency Engine edge is MODEL-070. P2 because the specialist-agent society is master Phase 8. NON_RUST was dropped."
+  },
+  {
+    "id": "MODEL-070",
+    "domain": "MODEL",
+    "title": "The Causal Agency Engine feeds the training pipelines",
+    "statement": "The Causal Agency Engine supplies knowledge directly to Vertex Training/Pipelines as training input.",
+    "rationale": "Uplift and action-policy models can only learn from what the agency engine planned and observed. Without this edge they have nothing to train on.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L292-293",
+        "section": "§05 Cognitive / AGI / Quantum Plane — edge agency -> vertex (knowledge)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An intervention outcome recorded by the agency engine in shadow mode appears as a referenced input in the training campaign manifest for an uplift or action-policy model."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": "Split from the H extraction. P3 because this is master Phase 10, and the agency engine starts in shadow-only mode. NON_RUST was dropped."
+  },
+  {
+    "id": "MODEL-071",
+    "domain": "MODEL",
+    "title": "Evaluation findings feed Autonomous Engineering",
+    "statement": "Evaluation/Memory passes its findings to Autonomous Engineering, where they become candidate tests, fixes or features that go through governed CI/GitOps.",
+    "rationale": "When evaluation finds a failure in the platform itself rather than in a model, the fix is a code change. Routing the finding to engineering gets that change made, instead of the failure being found again every cycle.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L393-395",
+        "section": "§08 End-to-End Operating Flow — edge s15 Evaluation/Memory -> s16 Autonomous Engineering (knowledge)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An evaluation finding classified as a platform defect produces an engineering work item that references the finding, and that item reaches production only through the normal CI/GitOps gates."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CICD",
+      "DEVFACTORY"
+    ],
+    "notes": "Split from H's fan-out extraction; the knowledge-layer and training edges are merged into MODEL-014. P2 because autonomous development is GCP Phase 9."
+  }
+]

@@ -1,0 +1,1432 @@
+[
+  {
+    "id": "SEC-001",
+    "domain": "SEC",
+    "title": "Policy and artifacts sent down to Reflex nodes remain signed",
+    "statement": "Every policy and artifact sent downward to a regional Reflex node is signed. This still holds after peer Reflex messaging, distributed reservations, opportunity tokens and cross-region outcome and state exchange are added beside the downward path.",
+    "rationale": "v11.6 relaxes v10.1's 'policy down, outcomes up only' by adding peer and cross-region channels. The relaxation changes what else may flow. It does not weaken what flows down. If the downward path lost its signature when the mesh arrived, a peer or an intermediary could install policy on a node that trades.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "4", "section": "§2 Corrections Required to v10.1 — 'Policy down, outcomes up only' row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A Reflex node activates a policy or artifact from the downward path only when its signature verifies. It refuses one that is unsigned, altered or signed by another key, and it behaves the same way with the peer mesh and cross-region exchange enabled."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "CONTRACT", "MESH"],
+    "notes": "CONTRACT-004 holds the rule that a pack is activated only after verification. This entry holds the v11.6 point that adding peer channels does not relax that rule. In the tree every 'signature' is a symmetric HMAC-SHA256 (ADR 0043 §2), so a node that can verify a pack can also mint one. ADR 0043 §4 (proposed) delegates asymmetric signing to Cloud KMS, with public-key verification at the cell. That verification needs an outbound path, TLS and a verification crate, each under its own later record. Priority P0: master Phase 1 and GCP Phase 3 (one Reflex cell) activate packages."
+  },
+  {
+    "id": "SEC-002",
+    "domain": "SEC",
+    "title": "Key material is held in Cloud KMS, with Cloud HSM where higher assurance is required",
+    "statement": "Signing roots, policy keys, attestation roots and other high-assurance key material are held in Cloud KMS. Where higher assurance is required they use the Cloud HSM protection level. No such key exists as exportable material outside KMS/HSM.",
+    "rationale": "Anyone who can read a key file can copy the key, and the copy cannot be told apart from the original. With the private half in KMS/HSM, every use becomes an audited API call made by an IAM identity.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Secrets/keys row"},
+      {"doc": "G", "page": "9", "section": "§7.3 Fabric placement on GCP — Certificates bullet ('Cloud KMS/HSM protects signing roots/policy keys')"},
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud KMS / Cloud HSM row (high-assurance key material, attestation roots)"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog — Cloud KMS and Cloud HSM rows"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every signing, policy and attestation key in the plan is a Cloud KMS key, at HSM protection level wherever the key register marks it high-assurance. A search of the repository and the CI secret stores finds no private key material."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "CICD", "FABRIC"],
+    "notes": "This entry merges four sources. They are the Cloud KMS/HSM clause of the M p34 Secrets/keys row, G p9's 'KMS/HSM protects signing roots/policy keys', the high-assurance and attestation-root clauses of the G p14 KMS/HSM row, and the KMS and HSM rows of the G p18 catalogue. M p34's 'segregated custody/signing systems' is SEC-003. CMEK is SEC-046, and manifest signing is SEC-036. NEW_DEPENDENCY, from the G p9 item, was dropped. Holding a key in KMS is configuration. The dependency question belongs to whatever verifies signatures in Rust (SEC-001, SEC-024). In the tree, modules/secrets creates the one key ring, qip-<env>. modules/binaryauthorization, data, ai and evidence create their keys in it through var.key_ring_id. Both protection-level variables default to SOFTWARE, so no key is HSM-protected today. The capital-envelope key and the session secret are HMAC keys held as Secret Manager secrets, which makes them policy keys outside KMS. ADR 0043 §2 records why. Priority P0: KMS/CA is a GCP Phase 0 exit item."
+  },
+  {
+    "id": "SEC-003",
+    "domain": "SEC",
+    "title": "Custody, deployment-signing, Fabric identity and user-auth keys are separate trust domains",
+    "statement": "Custody/transfer keys, deployment-signing keys, Fabric identity keys and user-authentication keys are separate trust domains. No identity holds use or administration rights over keys in more than one of them.",
+    "rationale": "Separation is what confines a compromise to one kind of authority. If one identity or key ring spans two domains, whoever takes one service also gets the other's authority, and SEC-061 and SEC-062 can no longer be enforced.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Secrets/keys row ('segregated custody/signing systems'; two extractions)"},
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Key separation"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Each of the four key classes has its own key ring and IAM boundary, and IAM analysis of the plan finds no principal with use, sign or admin rights on keys in two classes."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["CUSTODY", "CICD", "FABRIC", "API", "GOV"],
+    "notes": "The G p14 wording is kept because it names the four domains. M p34 says the same thing more loosely ('Cloud KMS/HSM plus segregated custody/signing systems'), in two extractions merged here. LIVE_CAPITAL was dropped. Custody and transfer keys exist only once custody does, and ADR 0021 forbids custody. The separation of the other three domains can be built and tested under paper trading, and the flag would score the whole invariant BLOCKED. Under paper trading the custody domain stays empty, and that is the correct state, not a gap. In the tree every KMS key sits in the one environment key ring, and the HMAC keys for sessions, roles and capital envelopes are Secret Manager secrets in the one environment project. The domains are therefore not yet separated at key-ring or project level. M p33 §25 separately asks for separate identities and credentials for trading, custody/transfer, market creation, banking/financing and commerce purchasing (governance). Priority P0: a safety invariant."
+  },
+  {
+    "id": "SEC-004",
+    "domain": "SEC",
+    "title": "No browser reaches keys, ledger internals or execution nodes",
+    "statement": "No browser can access key material, ledger internals or execution (Reflex) nodes, whether directly or through a path that forwards to them.",
+    "rationale": "The browser is the least trusted runtime the platform serves. It runs on hardware nobody here controls, alongside extensions nobody here has reviewed. Any path from it to a key, the ledger store or an order-placing node puts the browser inside the trusted computing base.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Secrets/keys row (two extractions)"}
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An acceptance test lists every network destination and credential that the portal bundle and its session can use. None of them is a KMS key, a Secret Manager secret, a ledger-store endpoint or an execution-node address."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FRONTEND", "API", "LEDGER", "REFLEX"],
+    "notes": "This entry merges the prohibition clause of the M p34 Secrets/keys row with a second extraction of the same clause. API-015 holds the related G p11 rule that the public API never exposes ledger tables, Fabric broker ports, Reflex nodes or custody keys. MANAGED_SERVICE was dropped because the prohibition needs no managed service. In the tree the portal reaches qip-api by direct VPC egress, as a named invoker (modules/network, ADR 0018), and the frontend rules forbid reading a secret. Priority P0: a safety invariant."
+  },
+  {
+    "id": "SEC-005",
+    "domain": "SEC",
+    "title": "The IBM Quantum Gateway/Foundry is isolated",
+    "statement": "The IBM Quantum Gateway/Foundry is isolated. Other workloads reach quantum capability only through the gateway's own interface, and never reach IBM Quantum or the Foundry's internals directly.",
+    "rationale": "The quantum path holds an external provider token and makes outbound calls to a third party. Isolating it keeps that token and that egress out of every other workload. It also keeps a slow, queue-bound external service off every path that must not wait.",
+    "kind": "security_control",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "34", "section": "§26 Platform & Deployment Architecture — placement table, Quantum row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The gateway runs in its own zone or project under its own service account. Only that identity can read the IBM Quantum token and egress to IBM Quantum hosts, and firewall rules admit other workloads only to the gateway's interface."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["QUANT", "NET"],
+    "notes": "G p11 §11 and G p19 §20 put the same gateway behind a controlled egress path, with asynchronous, eligible-job-only access. In the tree, modules/trust-zones refuses IBM Quantum external egress outside the optimisation zone, and the quantum token has its own Secret Manager container. Priority P2 because the Quantum Foundry is master Phase 6. GCP v2.1 schedules the gateway in its Phase 10."
+  },
+  {
+    "id": "SEC-006",
+    "domain": "SEC",
+    "title": "org/platform-foundation holds the central security guardrails",
+    "statement": "An org/platform-foundation project, separate from every application project, holds Organization Policy, the IAM/PAM patterns, the audit log sinks, Security Command Center and the billing exports.",
+    "rationale": "A guardrail that lives in an application project can be changed by whoever administers that application. Holding the guardrails centrally means a compromised or misconfigured workload project cannot switch off the controls that watch it.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — org/platform-foundation row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan places the org policies, the aggregated audit sinks, the SCC configuration and the billing export in org/platform-foundation. No application-project identity holds a role on that project."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "GOV", "FINOPS", "OBS"],
+    "notes": "GCP-017 holds the same row from the placement side; this entry is the security view. SEC-063 holds the rule that Organization Policy cannot be bypassed. The tree has one project per environment and no organization id (modules/scc output still_needs_an_organisation), so it has no foundation project and no org-level control today. Priority P0: org/folders/projects, IAM/PAM and audit/SCC are GCP Phase 0 exit items."
+  },
+  {
+    "id": "SEC-007",
+    "domain": "SEC",
+    "title": "The ledger's KMS keys are held in prod/ledger, isolated from other projects",
+    "statement": "The KMS keys that protect the Spanner ledger, accounting and capital databases are held in the prod/ledger project and cannot be used from any other project.",
+    "rationale": "If the ledger's encryption keys lived in a shared project, an administrator of that project could disable or destroy them, which would take financial truth offline. That administrator could also grant decrypt rights to another workload. Keeping the keys with the ledger puts key control inside the ledger's own trust boundary.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§4 GCP Organization, Folder and Project Model — prod/ledger row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The ledger databases' CMEK keys are in a key ring in prod/ledger. Apart from the Spanner service agent, no principal from another project holds encrypt, decrypt or admin rights on them."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER", "GCP"],
+    "notes": "LEDGER-031 holds the prod/ledger project itself. Conflict C4 applies: the tree's ledger is a file-backed log (ADR 0089), not Spanner. Every KMS key in the tree sits in the one environment key ring (SEC-003). Priority P0: financial truth is GCP Phase 4."
+  },
+  {
+    "id": "SEC-008",
+    "domain": "SEC",
+    "title": "East-west traffic between warm services is mutually authenticated with mTLS",
+    "statement": "Traffic between warm GKE services on the regional services path is mutually authenticated and encrypted with mTLS. This explicitly includes the east-west traffic of Risk Brain and Capital/Treasury.",
+    "rationale": "Without mutual authentication, anything that can reach a warm service's port can call it as though it were a peer. Risk Brain and Capital/Treasury produce the envelopes and grants that bound trading, so a spoofed caller there has a direct financial effect.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Regional services row"},
+      {"doc": "H", "page": "L178-184", "section": "VIEWS.regional — 02 · Regional Cell, edges meshsec→risk and meshsec→capital"},
+      {"doc": "H", "page": "L328-330", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, edge svpc→mesh"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With the mesh in strict mTLS mode, a plaintext or unauthenticated in-cluster call to Risk Brain or Capital/Treasury is refused, and a call from an authorised peer succeeds."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "RISK", "CAPITAL", "API"],
+    "notes": "This entry merges three things: the mTLS clause of G p5's Regional services row, H's two mesh edges into Risk Brain and Capital/Treasury, and the mesh half of H's Shared VPC→mesh edge. H is more specific about which services, so they are named. ARCH-060 and GCP-028 hold the same mTLS requirement from the architecture and placement sides. API-008 holds mTLS at internal API entry. NEW_DEPENDENCY was dropped. In this design the sidecar terminates mTLS, so no TLS crate enters the workspace, which is the only form ADR 0009 permits. Conflicts C3 (Cloud Service Mesh on GKE) and C7 (one service per brain) apply. Today risk and capital are crates inside composed binaries (ADR 0091), so their east-west traffic stays in-process. Priority P1: GCP Phase 6."
+  },
+  {
+    "id": "SEC-009",
+    "domain": "SEC",
+    "title": "The regional services path enforces service-to-service authorization policy",
+    "statement": "The regional services path (GKE Gateway API, or a regional internal Application Load Balancer, with Cloud Service Mesh) enforces an authorization policy that names which service identities may call each warm service.",
+    "rationale": "mTLS proves who is calling. It does not say whether that caller is allowed to call. Without an allow policy, every authenticated workload in the region can reach every warm service.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Regional services row ('policy')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every warm service has a default-deny authorization policy that allows only named source identities. A call from an authenticated workload that is not on the list is refused."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "API"],
+    "notes": "This entry is split from G p5's Regional services row. The row's other parts are SEC-008 (mTLS), SEC-010 (retries and timeouts) and SEC-011 (warm-only scope). API-008 holds mTLS and service policy at internal API entry. Conflict C3 applies. Priority P1: GCP Phase 6."
+  },
+  {
+    "id": "SEC-010",
+    "domain": "SEC",
+    "title": "The regional services path bounds warm-service calls with timeouts and retries",
+    "statement": "Calls between warm services on the regional services path carry explicit timeouts and a bounded number of retries.",
+    "rationale": "An unbounded call to a failed dependency holds a thread, and then a pool. Unbounded retries multiply the load on a service that is already failing. Either one turns a single warm-service fault into a regional one.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Regional services row ('retries/timeouts')"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With a warm dependency made unresponsive, callers fail at their configured timeout and retry no more than the configured count. The caller's own latency and thread use stay bounded."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "RES"],
+    "notes": "This entry is split from G p5's Regional services row and kept here as rule 4 directs. It is a resilience property rather than a trust control, and NET is its natural home. G p9 §8 adds circuit breaking, and GCP-028 carries it. The workspace rules already require an explicit timeout on every call that leaves a process. Priority P1: GCP Phase 6."
+  },
+  {
+    "id": "SEC-011",
+    "domain": "SEC",
+    "title": "The mesh and regional services path serve warm services only, never the Reflex path",
+    "statement": "mTLS, policy, retries and timeouts on the regional services path apply only to warm services. The mesh and regional load balancing are never inserted between a venue event and a Reflex order.",
+    "rationale": "A sidecar or proxy on the Reflex path adds latency and jitter, plus a dependency that can fail on its own. Rule 1 keeps every synchronous dependency out of the path between tick and order.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Regional services row ('only for warm services; never inserted in Reflex path')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "No Reflex workload in the plan has a mesh sidecar or sits behind a regional internal load balancer, and the only hop on the venue-to-Reflex path is the venue connection itself."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["NET", "REFLEX", "FABRIC"],
+    "notes": "This entry is split from G p5's Regional services row. G p9 §8 says the same about mesh sidecars and also names Fabric. G p23 §28 lists as an anti-pattern routing Reflex traffic through a service mesh, a proxy, Secure Web Proxy, Cloud NAT chains or general API gateways without benchmarked necessity. KUBERNETES and MANAGED_SERVICE were dropped because the constraint is a negative one and holds without either. It holds in the tree: modules/execution-node runs qip-edge-node bare under systemd with no sidecar, and no node is deployed. Priority P0: a hot-path invariant of GCP Phase 3."
+  },
+  {
+    "id": "SEC-012",
+    "domain": "SEC",
+    "title": "Crawler, agent and build workloads reach the internet only through Cloud NAT or Secure Web Proxy",
+    "statement": "Crawler, agent and build workloads reach the internet only through the controlled egress path, which is Cloud NAT or Secure Web Proxy. They have no other route out.",
+    "rationale": "These workloads fetch untrusted content and run code the platform did not write. With an uncontrolled route out, a compromised crawler or agent can exfiltrate data or fetch a payload, and nothing records it.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Controlled Internet egress row"},
+      {"doc": "H", "page": "L315", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'swp'"},
+      {"doc": "H", "page": "L328-330", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, edge svpc→swp"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Crawler, agent and build subnets and node pools have no external IPs. Their only default route to the internet leads to a Cloud NAT gateway or a Secure Web Proxy."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "GCP", "CICD", "WORLD"],
+    "notes": "This entry merges three things: the path clause of G p5's egress row, H's Secure Web Proxy node, and the SWP half of H's Shared VPC→SWP edge. The static-identity, audit and domain-control clauses are SEC-013 to SEC-015, and separate Reflex governance is SEC-016. GCP-013 holds the same path per execution region. G p4 prefers separate VPCs joined through NCC and allows a Shared VPC only inside a domain. H's Shared VPC edge is therefore read as 'egress control is a property of the network', not as one flat VPC. NEW_DEPENDENCY and KUBERNETES, carried in with the H edge, were dropped because Cloud NAT and Secure Web Proxy need neither. In the tree the outbound path is the Envoy egress proxy (modules/egress-proxy, infrastructure/egress/envoy.yaml), which is neither Cloud NAT nor Secure Web Proxy, and nothing is applied. Priority P0: controlled egress is part of the GCP Phase 0 network foundation."
+  },
+  {
+    "id": "SEC-013",
+    "domain": "SEC",
+    "title": "Controlled internet egress uses static egress identities",
+    "statement": "The controlled egress path uses static, reserved egress identities (addresses), so every outbound connection from crawler, agent and build workloads can be traced to a known source.",
+    "rationale": "A provider that allow-lists by address needs the platform's outbound address to be stable and known, and so does an investigator reading that provider's logs. With ephemeral NAT addresses, the platform's traffic looks the same as anyone else's on that range.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Controlled Internet egress row ('static egress identities')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every Cloud NAT gateway on the controlled egress path uses MANUAL_ONLY allocation with reserved static addresses, or the Secure Web Proxy egresses through reserved addresses."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "GCP"],
+    "notes": "This entry is split from G p5's egress row. The tree declares two Cloud NAT gateways, one in modules/trust-zones for zones with sanctioned external egress and one in modules/execution-node for venue egress. Both use nat_ip_allocate_option = AUTO_ONLY, so neither has static addresses. Priority P1, unlike audit and domain control (P0). A static address limits nothing the platform itself does. It makes the traffic attributable from outside, which matters once providers allow-list by address."
+  },
+  {
+    "id": "SEC-014",
+    "domain": "SEC",
+    "title": "Controlled internet egress is audited",
+    "statement": "Egress through the controlled path is audited: each outbound connection or request is logged with its source workload and its destination.",
+    "rationale": "Without a record of what left, a data leak or a crawler reaching a forbidden host is found from its consequences rather than from the log.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Controlled Internet egress row ('audit')"},
+      {"doc": "H", "page": "L315", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'swp' ('domain/audit controls')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A test request through each controlled egress path appears in an audit log routed to the audit sink, and the entry names the source workload and the destination."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "OBS"],
+    "notes": "This entry is split from G p5's egress row and merged with the audit clause of H's Secure Web Proxy node. In the tree the Envoy egress proxy writes access logs to stdout (infrastructure/egress/envoy.yaml), and the firewall rules carry log_config. Nothing is applied, so no log has ever been read. Priority P0: auditability is a mandatory architecture concern, and controlled egress is GCP Phase 0."
+  },
+  {
+    "id": "SEC-015",
+    "domain": "SEC",
+    "title": "Controlled internet egress enforces a domain allow-list",
+    "statement": "The controlled egress path admits only destinations on a reviewed domain allow-list and refuses every other destination.",
+    "rationale": "An address-level rule cannot say 'this data provider, and not the CDN tenant next to it'. A domain allow-list is what stops an agent or crawler that has been talked into fetching from, or posting to, an arbitrary host.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Controlled Internet egress row ('domain controls')"},
+      {"doc": "H", "page": "L315", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'swp'"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A request from a crawler, agent or build workload to a host on the allow-list succeeds through the egress path. A request to a host off the list is refused and logged."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "WORLD", "CICD"],
+    "notes": "This entry is split from G p5's egress row and merged with the domain-control clause of H's SWP node. In the tree the Envoy egress proxy dials only var.allowed_upstreams, which is checked at plan time, and it refuses host names containing venue, broker or exchange (modules/egress-proxy). ADR 0060 (proposed) requires a reviewed egress route before a source is probed. That makes the tree's path a domain allow-list by construction, but it is not a Secure Web Proxy policy. Priority P0: GCP Phase 0."
+  },
+  {
+    "id": "SEC-016",
+    "domain": "SEC",
+    "title": "Reflex venue egress is governed separately from controlled internet egress",
+    "statement": "Reflex venue egress is governed separately from the Cloud NAT / Secure Web Proxy path used by crawlers, agents and builders. Venue traffic does not use that shared path, and the shared path does not reach venues.",
+    "rationale": "The two paths need opposite things. Crawler egress is untrusted and needs inspection. Venue egress is latency-critical and carries orders. Sharing one path either slows the venue path or exposes it to whatever the crawlers fetched.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Controlled Internet egress row ('Reflex venue egress is separately governed'; two extractions)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Reflex subnets send venue traffic through their own egress rules and gateway, never through the crawler, agent or build NAT or Secure Web Proxy, and the controlled-egress allow-list contains no venue host."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "NET", "EXEC"],
+    "notes": "This entry merges the last clause of G p5's egress row with a second extraction of that clause. G p23 §28 forbids routing Reflex traffic through Secure Web Proxy or Cloud NAT chains without benchmarked necessity. MANAGED_SERVICE was dropped because the separation needs no managed service. The tree already holds this by construction. The execution node has its own default-deny egress firewall with a single venue allow rule and its own NAT (modules/execution-node), and modules/egress-proxy refuses host names containing venue, broker or exchange. Under ADR 0021 no deployed venue path reaches a live venue. Priority P0: GCP Phase 3."
+  },
+  {
+    "id": "SEC-017",
+    "domain": "SEC",
+    "title": "Internal and administrative web interfaces are reachable only through IAP",
+    "statement": "Every internal or administrative web interface is reached through Identity-Aware Proxy, and no management endpoint is exposed publicly.",
+    "rationale": "A management endpoint on the internet is attacked by everyone who finds it, and its own login page is then the only control. IAP puts Google's workforce authentication and a per-resource access list in front of the interface.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Admin access row"},
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — Customer identity bullet (internal workforce/admin paths)"},
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — IAP row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every admin or internal web backend in the plan has IAP enabled with an explicit access list, and none has a public ingress path that bypasses IAP."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "API", "FRONTEND"],
+    "notes": "This entry merges the IAP clauses of G p5's Admin access row and G p11's workforce bullet with G p14's IAP row. GCP-057 holds the same from the placement side, including IAP TCP forwarding for SSH. In the tree the console sits behind Cloud Run's own IAP on its run.app URL (modules/iap-run, ADR 0095), with an optional custom-domain IAP edge (modules/iap-edge, ADR 0094). The access list is a per-service list and is empty by default. Priority P0: IAM/PAM and admin access are GCP Phase 0."
+  },
+  {
+    "id": "SEC-018",
+    "domain": "SEC",
+    "title": "Workforce identity is Cloud Identity, and access is authorized through IAM",
+    "statement": "Internal workforce and administrative identities are Cloud Identity accounts, and authorization for users and workloads is granted through Cloud IAM.",
+    "rationale": "An administrative path with its own account store is one that offboarding, MFA policy and access review never reach. With a single source of workforce identity, revoking a person revokes them everywhere.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Admin access row ('workforce identity')"},
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — Customer identity bullet ('Internal workforce/admin paths use Cloud Identity/IAM/IAP/PAM')"},
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud Identity / IAM row"},
+      {"doc": "G", "page": "16", "section": "§19 Complete GCP Service Catalog — Cloud Identity and IAM rows"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every human principal in the plan's IAM bindings is a Cloud Identity user or group in the organization's domain, and no admin surface authenticates against any other store."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "GOV"],
+    "notes": "Customer identity is a separate matter. G p11 puts customers on Identity Platform, which the tree implements (modules/identity, ADR 0019, ADR 0038), and that is not this requirement. Least privilege is SEC-038 and group-based access is SEC-039. ADR 0076 records two things: a per-person operator identity is the console's asserted subject, and a two-person rule needs a credential the platform cannot issue. Priority P0: GCP Phase 0 IAM/PAM."
+  },
+  {
+    "id": "SEC-019",
+    "domain": "SEC",
+    "title": "No VM accepts SSH or RDP from the public internet",
+    "statement": "No VM accepts SSH or RDP from the public internet. Any administrative shell access goes through the admin access path (IAP, workforce identity, PAM).",
+    "rationale": "SSH and RDP open to the internet are brute-forced continuously. A key or a password is then the only barrier to a machine that may hold venue sessions or broker journals.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Admin access row ('No public SSH/RDP')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "No firewall rule or hierarchical policy in the plan allows TCP 22 or 3389 from 0.0.0.0/0 or from any range other than IAP's, and no VM that accepts SSH has an external IP."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["NET", "GCP", "REFLEX", "FABRIC"],
+    "notes": "This entry is split from G p5's Admin access row. In the tree every 0.0.0.0/0 ingress rule is a deny rule (modules/network, trust-zones, execution-node, image-bake). The execution node has no access_config, and therefore no external address. MANAGED_SERVICE was dropped because the prohibition itself needs no managed service. Priority P0: GCP Phase 0."
+  },
+  {
+    "id": "SEC-020",
+    "domain": "SEC",
+    "title": "Privileged access is time-bound and just-in-time, never a standing grant",
+    "statement": "Privileged administrative access is granted only as time-bound, just-in-time elevation through Privileged Access Manager, on top of the principal's IAM identity, and it expires on its own. No principal holds a standing privileged grant.",
+    "rationale": "A standing admin grant is live whenever its holder's session is stolen. Time-bound elevation shrinks the window in which a stolen credential carries authority to the minutes someone actually asked for.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Admin access row ('temporary privileged access')"},
+      {"doc": "G", "page": "11", "section": "§12 Edge, Portal, API and Causal Action Plane — Customer identity bullet (PAM on workforce/admin paths)"},
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Privileged Access Manager row"},
+      {"doc": "G", "page": "16", "section": "§19 Complete GCP Service Catalog — Privileged Access Manager row"},
+      {"doc": "H", "page": "L308", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'pam'"},
+      {"doc": "H", "page": "L328-330", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, edge iam→pam"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Privileged roles in the plan are held only as PAM entitlements with a maximum duration, and no user or group holds a permanent binding to owner, admin or any other privileged role."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "GOV"],
+    "notes": "This entry merges six sources: G p5's 'temporary privileged access', G p11's PAM clause, the time-bound half of G p14's PAM row, the G p16 catalogue row, H's PAM node, and H's IAM→PAM edge. The words 'never a standing grant' come from H's node, and H's edge makes elevation an IAM grant on the underlying identity. Approval for sensitive operations is SEC-040, and auditing of elevation is SEC-021. The tree has no PAM entitlement. The pipeline's two service accounts hold standing custom roles (modules/cicd), but they are workloads, not people. Priority P0: GCP Phase 0 IAM/PAM."
+  },
+  {
+    "id": "SEC-021",
+    "domain": "SEC",
+    "title": "Privileged access is audited",
+    "statement": "Every privileged elevation, and every action taken under it, is recorded as audit evidence attributed to the person who elevated.",
+    "rationale": "Time-bounding limits how long authority lasts. The audit trail shows what was done with it. Without the trail, an elevation is a window nobody can look back through.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "5", "section": "§5 Network and Connectivity Architecture — Admin access row ('temporary privileged access with audit')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An elevation granted in a test project appears in Cloud Audit Logs with the requester, the grant and its expiry, and an admin action taken during the elevation is attributed to that person."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GOV", "OBS"],
+    "notes": "This entry is split from G p5's Admin access row. SEC-059 holds audit logging in general. Priority P0: GCP Phase 0 audit/SCC and IAM/PAM."
+  },
+  {
+    "id": "SEC-022",
+    "domain": "SEC",
+    "title": "fabric-admin accepts only mTLS-authenticated callers",
+    "statement": "fabric-admin's internal control API and CLI accept only callers that authenticate with mTLS. They cover creating topics, quotas, retention, partition moves, drain and diagnostics.",
+    "rationale": "fabric-admin can move partitions, drain brokers and change retention. That is enough to lose or stall the control and outcome journals, so a caller that has not proved its identity must not reach it.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7 Native Rust Event & Control Fabric — component table, fabric-admin row"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A call to fabric-admin with no client certificate, or with one not issued by the platform CA, is refused before any command is parsed."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC"],
+    "notes": "This entry is split from the G p8 fabric-admin row. IAM-bound authorization is SEC-023. The Fabric's transport (QUIC/mTLS) is conflict C2. ADR 0009 and ADR 0012 refuse an in-tree TLS stack, so this needs a transport-security record first. No fabric-admin exists in the tree. Priority P0: GCP Phase 2 (Rust Fabric MVP)."
+  },
+  {
+    "id": "SEC-023",
+    "domain": "SEC",
+    "title": "fabric-admin authorizes each operation against IAM",
+    "statement": "Each fabric-admin operation is authorized against the caller's GCP service identity and IAM policy. An authenticated caller without the matching permission is refused.",
+    "rationale": "Authentication establishes who is calling. It does not establish that a diagnostics client may drain a broker. Binding each operation to IAM puts Fabric administration under the same access review and PAM elevation as every other privileged act.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7 Native Rust Event & Control Fabric — component table, fabric-admin row ('IAM-bound access')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A caller with a valid certificate is refused an operation whose IAM permission it lacks, is allowed an operation it holds, and both calls are logged."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "GOV"],
+    "notes": "This entry is split from the G p8 fabric-admin row. SEC-028 maps broker identities to service accounts, which is what makes an IAM check possible. Conflict C2 applies to calling IAM from Rust: ADR 0009 names a Google auth flow written in-tree as the worst of its cases. Priority P0: GCP Phase 2."
+  },
+  {
+    "id": "SEC-024",
+    "domain": "SEC",
+    "title": "P0 Critical Control records carry a signed payload that consumers verify",
+    "statement": "Every record on a P0 Critical Control topic (risk envelope, model activation, kill/fence, capital grant) carries a signed payload. A consumer acts on the record only after its signature verifies.",
+    "rationale": "These records change what the platform may do. They widen envelopes, activate models, fence nodes and grant capital. A broker or peer able to inject or alter one would hold the platform's authority without holding its keys.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P0 Critical Control row ('signed payload')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every consumer rejects a P0 record whose payload is unsigned, altered after signing, or signed by a key outside the control-signing domain, and state does not change. A correctly signed record takes effect."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "CONTRACT", "RISK", "CAPITAL"],
+    "notes": "This entry is split from G p8's P0 row. The row's replication clause is SEC-025 and its fencing clause is SEC-026. The signature must be verifiable by a node that cannot sign, and the tree cannot yet provide that: every signer is also a verifier (ADR 0043 §2, symmetric HMAC). ADR 0043 §4 (proposed) delegates asymmetric signing to Cloud KMS, with public-key verification at the cell under its own later record. GOV-012 holds that authority envelopes take effect only when human-signed or governance-signed. Priority P0: GCP Phase 2, and a safety invariant."
+  },
+  {
+    "id": "SEC-025",
+    "domain": "SEC",
+    "title": "P0 Critical Control records are acknowledged only after an RF3 quorum write",
+    "statement": "A P0 Critical Control record is acknowledged to its producer only after a quorum of three replicas spread across zones holds it.",
+    "rationale": "A kill or fence acknowledged from a single replica can be lost with that replica. The producer then believes a command took effect that no consumer will ever see.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P0 Critical Control row ('RF3 quorum')"}
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Killing the leader replica immediately after a P0 acknowledgment never loses the record. With only one replica reachable, the producer receives no acknowledgment."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC"],
+    "notes": "This entry is split from G p8's P0 row and kept here as rule 4 directs. It is a durability property, and FABRIC is its home. G p8 §7.1 defines the quorum. The tree has no replicated broker (conflicts C2 and C8). Priority P0: GCP Phase 2."
+  },
+  {
+    "id": "SEC-026",
+    "domain": "SEC",
+    "title": "P0 Critical Control producers are fenced",
+    "statement": "P0 Critical Control producers are fenced by producer epoch, so a stale or superseded producer instance cannot append P0 records.",
+    "rationale": "A zombie producer, such as a controller that was replaced but did not die, can issue a kill, an activation or a capital grant after its successor has decided otherwise. Fencing makes the superseded instance's writes fail instead of racing the successor's.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "8", "section": "§7.2 Fabric topic classes — P0 Critical Control row ('producer fencing')"}
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Across any interleaving of two producer instances, a P0 topic accepts no record from an instance whose epoch is lower than the latest registered epoch."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC"],
+    "notes": "This entry is split from G p8's P0 row. G p8 §7.1 describes epoch and sequence fencing for every producer. This entry holds it for P0 topics, where a stale write carries authority. H L164 lists producer fencing under Fabric Meta/Schema. Priority P0: GCP Phase 2."
+  },
+  {
+    "id": "SEC-027",
+    "domain": "SEC",
+    "title": "Certificate Authority Service issues short-lived mTLS certificates outside the mesh",
+    "statement": "Certificate Authority Service issues short-lived mTLS workload certificates to Fabric brokers and clients, to VMs, and to internal workload identities outside the service mesh.",
+    "rationale": "Workloads outside the mesh still need mutual authentication. A long-lived certificate stays valid after its holder is compromised. Short lifetimes turn revocation into expiry.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§7.3 Fabric placement on GCP — Certificates bullet"},
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Certificate Authority Service row"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog — Certificate Authority Service row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares a CAS pool whose issuance policy caps certificate lifetime. Every Fabric broker, Reflex VM and non-mesh workload gets its certificate from that pool, and none uses a certificate baked into an image."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "NEW_DEPENDENCY"],
+    "secondary_domains": ["FABRIC", "REFLEX", "NET"],
+    "notes": "This entry merges G p9's CAS clause with the CAS rows of G p14 and G p18, keeping G p9's 'short-lived'. G p9's KMS clause is SEC-002, and its identity-mapping clause is SEC-028. NEW_DEPENDENCY stays, because using these certificates in the Fabric's QUIC/mTLS transport needs a TLS stack, which is conflict C2. The tree has no CAS pool (no privateca resource). Priority P0: KMS/CA is a GCP Phase 0 exit item."
+  },
+  {
+    "id": "SEC-028",
+    "domain": "SEC",
+    "title": "Fabric broker identities map to GCP service accounts and IAM policy",
+    "statement": "Each Fabric broker's identity maps to a GCP service account, and IAM policy on that account governs what the broker may do.",
+    "rationale": "A broker identity that exists only inside the Fabric is invisible to access review, PAM and audit. Mapping it to a service account puts broker authority under the same controls as every other workload.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§7.3 Fabric placement on GCP — Certificates bullet ('broker identities map to GCP service accounts/IAM policy')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every broker VM runs as its own service account, its certificate identity names that account, and IAM grants it only the archive and metadata permissions its role needs."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "NEW_DEPENDENCY"],
+    "secondary_domains": ["FABRIC"],
+    "notes": "This entry is split from G p9's Certificates bullet. G p4 also gives the Fabric project its own archiver identities. No broker exists in the tree (conflicts C2 and C8). Priority P0: GCP Phase 2."
+  },
+  {
+    "id": "SEC-029",
+    "domain": "SEC",
+    "title": "GKE pods authenticate to GCP as their own mapped service identity",
+    "statement": "Every GKE pod that calls a GCP API authenticates through Workload Identity for GKE, as a GCP service identity mapped to its Kubernetes service account.",
+    "rationale": "Without per-pod identity, every pod on a node acts as the node. A compromise of the least important pod then carries the permissions of the most important pod scheduled beside it.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Secrets bullet ('Workload Identity')"},
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Workload Identity for GKE row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every cluster has a workload pool. Every workload that calls a GCP API has a Kubernetes service account bound to its own distinct Google service account."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["GCP"],
+    "notes": "This entry merges G p9's Workload Identity clause with G p14's row. SEC-041 holds the rule that nodes expose no node-wide credentials. H L307 pairs IAM with Workload Identity. Conflict C3 applies. The only cluster in the tree is the GitOps control plane, suspended under ADR 0093, and it sets workload_pool. Priority P0 because the GitOps management cluster is a GCP Phase 1 exit item."
+  },
+  {
+    "id": "SEC-030",
+    "domain": "SEC",
+    "title": "GKE workloads receive secrets from Secret Manager through the CSI driver",
+    "statement": "GKE workloads obtain secrets from Secret Manager through the Secret Manager CSI driver, mounted as files, under their own Workload Identity.",
+    "rationale": "A secret mounted from Secret Manager at run time stays under Secret Manager's IAM, versioning and audit. A secret copied into the cluster escapes all three.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Secrets bullet ('Secret Manager/CSI')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every workload secret in the cluster manifests is a SecretProviderClass volume sourced from Secret Manager. Each workload's Google service account holds secretAccessor only on the secrets that workload mounts."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["GCP"],
+    "notes": "This entry is split from G p9's Secrets bullet. The repository already requires that secrets reach a process as files and never as environment values (01-security-and-safety.md, and ADR 0024 for Cloud Run volumes). ADR 0031 records the one exception, for vendored images. Conflict C3 applies to the GKE form. Priority P0: the GCP Phase 1 management cluster."
+  },
+  {
+    "id": "SEC-031",
+    "domain": "SEC",
+    "title": "No long-lived cloud credential is stored in a Kubernetes Secret",
+    "statement": "No long-lived cloud credential, such as a service-account key or a static cloud API token, is persisted in a Kubernetes Secret.",
+    "rationale": "A Kubernetes Secret is base64 in etcd. Anyone with get on secrets in its namespace can read it, and every backup copies it. A long-lived cloud credential stored there outlives every rotation of the cluster that holds it.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "9", "section": "§8 Regional GKE Service Plane — Secrets bullet ('do not persist long-lived cloud credentials in Kubernetes Secrets')"}
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A scan of the cluster manifests, the GitOps desired state and the live Secrets finds no service-account key or other long-lived cloud credential in any Kubernetes Secret."
+    },
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["GCP", "CICD"],
+    "notes": "This entry is split from G p9's Secrets bullet. SEC-035 holds the broader rule that no service-account key is stored anywhere. MANAGED_SERVICE was dropped because the prohibition itself needs no managed service. Priority P0: an invariant with no phase to wait for."
+  },
+  {
+    "id": "SEC-032",
+    "domain": "SEC",
+    "title": "Model-gateway credentials stay in Secret Manager",
+    "statement": "The credentials the model gateway uses for approved model providers (Gemini, Claude, OpenAI and others) remain in Secret Manager. The agents that call the gateway do not hold them.",
+    "rationale": "A provider key in an agent's environment goes wherever the agent's output goes, into logs, commits and prompts. With the key held behind the gateway, a compromised or confused agent can use only what the gateway's policy allows, and never the key itself.",
+    "kind": "security_control",
+    "priority": "P2",
+    "sources": [
+      {"doc": "G", "page": "12", "section": "§13 Autonomous Development and AI Engineering — Model gateway bullet"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Model-provider credentials are Secret Manager secrets whose only accessor is the gateway's service account, and no agent identity holds secretAccessor on them."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["CICD", "MODEL"],
+    "notes": "This entry is split from G p12's Model gateway bullet. The bullet's audit clause is SEC-033. CICD-034 holds the same fact and rates it P0. It is rated P2 here because the gateway belongs to the autonomous development plane (GCP Phase 9). The matrix should reconcile the two ratings. The tree has no model gateway. Priority P2."
+  },
+  {
+    "id": "SEC-033",
+    "domain": "SEC",
+    "title": "Every model-gateway request is audited",
+    "statement": "Every request an agent makes through the model gateway is recorded in an audit trail and attributed to the calling agent.",
+    "rationale": "What an agent asked a model, and when, is evidence about every change that agent then proposes. If the requests are not recorded, the agent's reasoning cannot be reconstructed afterwards.",
+    "kind": "security_control",
+    "priority": "P2",
+    "sources": [
+      {"doc": "G", "page": "12", "section": "§13 Autonomous Development and AI Engineering — Model gateway bullet ('requests are audited')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A request through the gateway produces an audit record that names the calling agent identity, the model and the time."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CICD", "MODEL", "OBS"],
+    "notes": "This entry is split from G p12's Model gateway bullet. MANAGED_SERVICE was dropped: the platform's own hash-chained event log could hold the audit record just as well. Priority P2: GCP Phase 9."
+  },
+  {
+    "id": "SEC-034",
+    "domain": "SEC",
+    "title": "CI reaches GCP only through Workload Identity Federation with short-lived credentials",
+    "statement": "GitHub Actions and any other external CI obtain GCP access only by exchanging their OIDC token through Workload Identity Federation (STS) for short-lived credentials.",
+    "rationale": "A CI system that authenticates with a stored key exposes that key, for its whole lifetime, to every workflow, fork and log line able to read it. A federated exchange instead yields a credential that expires within about an hour and is bound to the repository and workflow that requested it.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "13", "section": "§14.2 Source-to-production flow — step 2"},
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Workload Identity Federation row"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog — Workload Identity Federation row"},
+      {"doc": "G", "page": "19", "section": "§20 Critical Service-to-Service Connection Matrix — GitHub Actions → GCP WIF row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every workflow that reaches GCP authenticates through a workload_identity_provider, and the provider's attribute condition admits only this repository."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["CICD", "GCP"],
+    "notes": "This entry merges four sources: G p13 step 2, G p14's WIF row, the G p18 catalogue row and the G p19 connection row. CICD-046 holds the same requirement from the pipeline side. In the tree modules/cicd declares a WIF pool whose provider's attribute condition admits exactly one repository. deploy.yml and vendor.yml authenticate with workload_identity_provider, and no workflow references credentials_json. The 2026-09-25 security baseline records the same. Priority P0: GitHub WIF is a GCP Phase 0 exit item."
+  },
+  {
+    "id": "SEC-035",
+    "domain": "SEC",
+    "title": "No service-account key is stored anywhere",
+    "statement": "No service-account key is stored for CI or anywhere else in the platform, and CI access works without one.",
+    "rationale": "A downloaded key is a bearer credential that never expires and works from anywhere. Once one exists, its custody is a problem for good. The only safe number of such keys is zero.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "13", "section": "§14.2 Source-to-production flow — step 2 ('no stored service-account keys')"},
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Workload Identity Federation row ('without service-account keys')"}
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A secret scan of every repository and CI secret store finds no service-account key, and the project IAM shows no user-managed key on any service account."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CICD", "GCP"],
+    "notes": "This entry is split from G p13 step 2 and G p14's WIF row. SEC-069 holds the Organization Policy that turns key creation from an absence into an impossibility. 01-security-and-safety.md already forbids downloaded service-account keys 'in any file, including examples', and scripts/check-secrets.sh detects service-account JSON. MANAGED_SERVICE was dropped because the prohibition itself needs no managed service. Priority P0."
+  },
+  {
+    "id": "SEC-036",
+    "domain": "SEC",
+    "title": "Cloud KMS/HSM signs release, model and policy manifests",
+    "statement": "Release, model and policy manifests are signed with keys held in Cloud KMS/HSM before they are promoted.",
+    "rationale": "A manifest states what should run. If it is signed with a key held in KMS, any change made after the pipeline produced it fails verification. If it is unsigned, anyone who can write to the registry can change what runs.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "13", "section": "§14.2 Source-to-production flow — step 6 (signing)"},
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud KMS / Cloud HSM row ('package signing')"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog — Cloud KMS row ('CMEK/signing')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A released manifest verifies against the public half of a KMS/HSM key, and the same manifest with one byte changed fails verification."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["CICD", "MODEL", "CONTRACT"],
+    "notes": "This entry merges three sources: the signing half of G p13 step 6, the package-signing clause of G p14, and the signing half of G p18's 'CMEK/signing'. CICD-054 holds the same requirement. SEC-001 and SEC-024 hold verification where a signed artifact is used. KUBERNETES, carried in from step 6, was dropped because signing a manifest does not involve a cluster. In the tree the only asymmetric key is the Binary Authorization attestor (ASYMMETRIC_SIGN, modules/binaryauthorization), and it signs image attestations, not model or policy manifests. Priority P0: GCP Phase 1 supply chain."
+  },
+  {
+    "id": "SEC-037",
+    "domain": "SEC",
+    "title": "Binary Authorization and admission policy admit only attested workloads",
+    "statement": "Binary Authorization and admission policy admit a GKE workload at deploy time only when its artifact carries a trusted attestation, and refuse it otherwise.",
+    "rationale": "Scanning and signing are only advice until something refuses what fails them. Deploy-time enforcement is where an unattested or tampered image is stopped.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "13", "section": "§14.2 Source-to-production flow — step 6 (Binary Authorization and admission policy)"},
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Artifact Analysis + Binary Authorization row ('deploy-time enforcement')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Deploying an unattested image is refused at admission. Deploying the same image after the pipeline has attested it succeeds."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "KUBERNETES"],
+    "secondary_domains": ["CICD", "GCP"],
+    "notes": "This entry merges the enforcement half of G p13 step 6 with the enforcement half of G p14's row. Scanning is SEC-056. CICD-055 and CICD-100 hold the full trust path, including H's Artifact Registry → Artifact Analysis → Binary Authorization → admission edges. In the tree modules/binaryauthorization declares an attestor on an asymmetric KMS key and a project policy whose default rule is REQUIRE_ATTESTATION, covering Cloud Run and the GKE control-plane cluster. Priority P0: GCP Phase 1."
+  },
+  {
+    "id": "SEC-038",
+    "domain": "SEC",
+    "title": "IAM grants follow least privilege",
+    "statement": "Every human and workload identity holds only the IAM permissions its role needs, using narrow predefined or custom roles in preference to basic roles.",
+    "rationale": "Excess permission lies dormant until a credential is stolen, and then it belongs to the attacker. Least privilege caps what any single compromise can do.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud Identity / IAM row ('least privilege')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "No binding in the plan grants a basic role (owner, editor or viewer) to any principal other than a documented break-glass account. Every service account's roles are listed against the operations it performs."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "GOV"],
+    "notes": "This entry is split from G p14's Cloud Identity / IAM row. In the tree modules/cicd defines custom roles narrower than the built-in ones for the deploy and infra service accounts. modules/secrets binds the venue credential's accessor with count = var.venue_credential_readable, which is 0 in every valid plan. Priority P0: GCP Phase 0."
+  },
+  {
+    "id": "SEC-039",
+    "domain": "SEC",
+    "title": "Human access is granted to groups, not individuals",
+    "statement": "Human access is granted through IAM bindings on Cloud Identity groups, not on individual user accounts.",
+    "rationale": "Individual bindings scatter one person's access across dozens of resources, so a person who leaves the team leaves grants behind. A group is a single place to review access and a single place to revoke it.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud Identity / IAM row ('group-based access')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "No IAM binding in the plan names an individual user, except a documented break-glass account."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "GOV"],
+    "notes": "This entry is split from G p14's Cloud Identity / IAM row. The tree has no organization and no workforce groups. IAP access to the console is a per-service list, empty by default (modules/iap-run). Priority P0: GCP Phase 0."
+  },
+  {
+    "id": "SEC-040",
+    "domain": "SEC",
+    "title": "Sensitive operations require approval before privileged elevation is granted",
+    "statement": "Privileged elevation for sensitive operations is granted only after a designated approver other than the requester approves it.",
+    "rationale": "Time-bounding limits how long one person holds authority. Approval limits whether one person can take that authority at all. For operations that can destroy data or move keys, one compromised account should not be enough.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Privileged Access Manager row ('approvals for sensitive operations')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A PAM entitlement for a sensitive role requires approval. A request is not granted until an approver other than the requester approves it, and a requester cannot approve their own request."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GOV"],
+    "notes": "This entry is split from G p14's PAM row. Time-bounding is SEC-020. ADR 0076 records that a two-person rule needs a credential the platform cannot yet issue. PAM's approval workflow answers that for cloud roles, but it does not by itself give the platform's own console a second signer. Priority P0: GCP Phase 0 IAM/PAM."
+  },
+  {
+    "id": "SEC-041",
+    "domain": "SEC",
+    "title": "GKE nodes expose no node-wide credentials to pods",
+    "statement": "Pods cannot obtain node-wide credentials. The GKE metadata server withholds the node's service account from every pod.",
+    "rationale": "Every pod scheduled on a node shares a node-wide credential, so the least trusted pod inherits the reach of the most trusted one.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Workload Identity for GKE row ('no node-wide credentials')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every node pool runs the GKE metadata server (workload_metadata_config GKE_METADATA, or Autopilot), and the node service account holds only logging and monitoring roles."
+    },
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE"],
+    "secondary_domains": ["GCP"],
+    "notes": "This entry is split from G p14's Workload Identity for GKE row. The identity mapping is SEC-029. Conflict C3 applies. The tree's suspended GitOps control-plane cluster runs in Autopilot mode (enable_autopilot = true), where Workload Identity and the GKE metadata server are always on. G's regional GKE Standard clusters would each have to set this per node pool. Priority P0: the GCP Phase 1 management cluster."
+  },
+  {
+    "id": "SEC-042",
+    "domain": "SEC",
+    "title": "Venue, API and service credentials and other non-key secrets are held in Secret Manager",
+    "statement": "Venue credentials, API credentials, service secrets and other non-key secret material are held in Secret Manager. Cryptographic key material belongs in Cloud KMS/HSM (SEC-002), not in Secret Manager.",
+    "rationale": "A credential in a config file, an image or an environment variable has no access control, rotation or audit of its own. Secret Manager gives every credential all three, plus one place to revoke it.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Secret Manager row (two extractions)"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog — Secret Manager row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every venue, API and service credential the platform uses is a Secret Manager secret in the plan. No credential value appears in Terraform, images, tfvars or workflow files."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "EXEC"],
+    "notes": "This entry merges G p14's Secret Manager row (two extractions) with G p18's catalogue row ('venue/API/service secrets'). Rotation, versioning and audit are SEC-043 to SEC-045. In the tree modules/secrets declares 16 empty Secret Manager containers, among them the venue credential, the quantum token, the capital-envelope key and the session secret. Terraform never creates a version. The capital-envelope key and the session secret are HMAC keys. They are key material held in Secret Manager because every signature in the tree is a symmetric MAC (ADR 0043 §2), which departs from G's 'non-key' boundary. Nothing can read the venue credential: its accessor binding is count = var.venue_credential_readable, which is 0 in every valid plan (ADR 0021). Priority P0: GCP Phase 0, and the Reflex cell's credentials in Phase 3."
+  },
+  {
+    "id": "SEC-043",
+    "domain": "SEC",
+    "title": "Secrets in Secret Manager have a rotation schedule",
+    "statement": "Every Secret Manager secret has a rotation schedule.",
+    "rationale": "A credential that is never rotated stays valid through every leak that has ever happened to it. A schedule bounds how long a silent compromise lasts.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Secret Manager row ('rotation'; two extractions)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every Secret Manager secret in the plan has a rotation block with a rotation_period and a notification topic."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP"],
+    "notes": "This entry is split from G p14's Secret Manager row. In the tree every secret has a rotation block with a 90-day period (7776000s) and the notification topic qip-secret-rotation-<env>. Terraform does not write the new value, so a rotation is announced but not performed. That topic is the platform's only Pub/Sub topic. It carries a Google-service notification, not internal messaging, which G p18 §19.1 excludes. Priority P1: rotation is hygiene, not a foundation-phase exit item."
+  },
+  {
+    "id": "SEC-044",
+    "domain": "SEC",
+    "title": "Secrets change by adding versions",
+    "statement": "A secret's value changes only by adding a new Secret Manager version. Earlier versions stay available until they are explicitly disabled, so a consumer can be moved forward or rolled back by version.",
+    "rationale": "Overwriting a credential in place leaves no record of what was valid when, and no way back if the new value is wrong. Versions make each change a distinct event that is reversible and auditable.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Secret Manager row ('versioning'; two extractions)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "After a new version is added to a secret, the previous version stays enabled and can be read by version number until it is disabled."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP"],
+    "notes": "This entry is split from G p14's Secret Manager row. Secret Manager versions natively. The requirement is that consumers and procedures use versions rather than destroying and recreating secrets. In the tree Terraform creates containers and never versions, so no version history exists yet. Priority P1."
+  },
+  {
+    "id": "SEC-045",
+    "domain": "SEC",
+    "title": "Access to Secret Manager secrets is audited",
+    "statement": "Every read of a secret's value, and every change to a secret or its access policy, is recorded in Cloud Audit Logs.",
+    "rationale": "The first question after a suspected leak is who read the venue credential, and when. Secret Manager records reads only when data-access audit logging is on.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Secret Manager row ('audit'; two extractions)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The audit configuration enables DATA_READ and DATA_WRITE logs for secretmanager.googleapis.com, and a test access shows up in the log with the accessing identity."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["OBS", "GOV"],
+    "notes": "This entry is split from G p14's Secret Manager row. Admin-activity logs, which record changes to secrets and their IAM, are always on. Data-access logs, which record reads, are not. The tree declares no google_project_iam_audit_config, so secret reads are not logged today. SEC-059 holds audit logging in general. Priority P0: auditability is a mandatory concern, and audit is a GCP Phase 0 exit item."
+  },
+  {
+    "id": "SEC-046",
+    "domain": "SEC",
+    "title": "Customer-managed Cloud KMS keys encrypt platform data at rest, including Secret Manager",
+    "statement": "Platform data at rest is encrypted with customer-managed keys (CMEK) from Cloud KMS/HSM, and that includes Secret Manager's secret payloads.",
+    "rationale": "With Google-managed keys the platform cannot revoke access to its own data or prove who was able to decrypt it. CMEK puts that control, and its audit trail, in the platform's own key ring.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud KMS / Cloud HSM row ('CMEK')"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog — Cloud KMS row ('CMEK/signing')"},
+      {"doc": "H", "page": "L328-330", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, edge kms→secret"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every storage bucket, BigQuery dataset, Spanner database and Secret Manager secret in the plan names a Cloud KMS key in its encryption configuration."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA", "LEDGER", "GCP"],
+    "notes": "This entry merges the CMEK clause of G p14's KMS/HSM row, the CMEK half of G p18's catalogue row, and H's KMS→Secret Manager edge. H is the more specific source about Secret Manager, so Secret Manager is named. In the tree Secret Manager secrets use customer_managed_encryption with the secrets key (modules/secrets). The evidence, data and ai modules set default_kms_key_name or kms_key_name on their buckets and datasets. Priority P0: KMS is a GCP Phase 0 exit item."
+  },
+  {
+    "id": "SEC-047",
+    "domain": "SEC",
+    "title": "VPC Service Controls perimeters enclose the ledger, data and AI projects",
+    "statement": "VPC Service Controls perimeters enclose the ledger, data and AI projects. The Google APIs that hold their data can be reached only from inside the perimeter or through explicit ingress and egress rules.",
+    "rationale": "IAM alone cannot stop a valid credential, whether stolen or misused, from copying a dataset to a bucket in another organization. A perimeter refuses that copy whatever the credential is allowed to do.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — VPC Service Controls row"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog — VPC Service Controls row (two extractions, one of which treats it as its own governed capability)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares a service perimeter containing prod/ledger, prod/data and prod/ai, and its restricted services include Spanner, Cloud Storage, BigQuery, Bigtable and Vertex AI."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER", "DATA", "MODEL", "NET", "GCP"],
+    "notes": "This entry merges G p14's row, G p18's catalogue row, and the VPC-SC half of the G p17-18 item that treats VPC-SC and Sensitive Data Protection as capabilities in their own right. That item's argument about how the catalogue groups services is not a requirement and was dropped. SEC-072 holds the Private Service Connect path into the perimeter. VPC Service Controls needs an organization, and the tree has none. The tree prepares for a perimeter only by resolving Google APIs through a private DNS zone, and SEC-072's notes show that zone points at the wrong address range. Priority P1: no foundation-phase exit names it, and the data and AI projects arrive in GCP Phases 5 and 8. The earliest sensible point to perimeter the ledger is when prod/ledger is created in Phase 4."
+  },
+  {
+    "id": "SEC-048",
+    "domain": "SEC",
+    "title": "Cloud Armor applies WAF rules to internet-facing traffic",
+    "statement": "Cloud Armor applies web-application-firewall rules to every internet-facing backend.",
+    "rationale": "Injection and protocol-abuse attacks arrive as well-formed HTTPS. Without WAF rules at the edge, every backend has to defend itself against every one of them.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud Armor row ('WAF')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The Cloud Armor policy of every internet-facing backend includes preconfigured WAF rules (evaluatePreconfiguredWaf or equivalent) in deny mode."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["API", "NET", "FRONTEND"],
+    "notes": "This entry is split from G p14's Cloud Armor row. DDoS protection is SEC-049 and rate control is SEC-050. API-003 and GCP-054 hold the same row. In the tree the public-edge and iap-edge policies apply geographic refusal and a rate-based ban, but no preconfigured WAF rule. Priority P1: the public edge is not a foundation-phase exit item."
+  },
+  {
+    "id": "SEC-049",
+    "domain": "SEC",
+    "title": "Cloud Armor protects internet-facing traffic against DDoS",
+    "statement": "Cloud Armor's DDoS defences, including layer-7 adaptive protection, protect every internet-facing backend.",
+    "rationale": "A volumetric or application-layer flood that reaches the service consumes capacity and money before anyone notices. Detecting it at the edge keeps it off the platform's bill and its CPUs.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud Armor row ('DDoS')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every internet-facing Cloud Armor policy enables adaptive_protection_config with layer_7_ddos_defense_config enabled."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["API", "NET"],
+    "notes": "This entry is split from G p14's Cloud Armor row. In the tree modules/public-edge and modules/iap-edge enable layer-7 adaptive protection, but nothing is applied. Priority P1."
+  },
+  {
+    "id": "SEC-050",
+    "domain": "SEC",
+    "title": "Cloud Armor rate-limits internet-facing traffic per client",
+    "statement": "Cloud Armor enforces per-client rate limits on internet-facing backends.",
+    "rationale": "Without a rate limit, a single automated client can exhaust a backend or enumerate an API at machine speed, and the first sign is an outage.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud Armor row ('rate controls')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A client that exceeds the configured request rate is refused with 429 and banned for the configured interval. A client under the limit is served."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["API", "NET"],
+    "notes": "This entry is split from G p14's Cloud Armor row. In the tree both edge policies use rate_based_ban with deny(429) per source address (modules/public-edge, modules/iap-edge). They chose a ban over a throttle so that a refusal lasts long enough to be noticed. Priority P1."
+  },
+  {
+    "id": "SEC-051",
+    "domain": "SEC",
+    "title": "Network policy is set by hierarchical firewall policies at organization and folder level",
+    "statement": "Network policy at organization and folder level is expressed as Cloud NGFW hierarchical firewall policies, which project-level rules cannot override.",
+    "rationale": "A rule that lives only in a project can be relaxed by that project's administrator. A hierarchical policy holds the boundary above them.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud NGFW / hierarchical firewall policies row ('organization/folder network policy')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan associates hierarchical firewall policies with the organization or with the prod and nonprod folders, and they carry deny rules that no project-level rule can relax."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "GCP"],
+    "notes": "This entry is split from G p14's NGFW row. Egress segmentation is SEC-052 and narrow lateral paths are SEC-053. GCP-058 holds the same requirement. Hierarchical policies need an organization or folder, and the tree has neither. It uses per-VPC firewall rules instead (modules/trust-zones, modules/network). Priority P0: firewalls are a GCP Phase 0 exit item."
+  },
+  {
+    "id": "SEC-052",
+    "domain": "SEC",
+    "title": "Egress is segmented per network by default-deny firewall policy",
+    "statement": "Each platform network denies egress by default and allows only the named outbound flows its workloads need.",
+    "rationale": "With default-allow egress, a compromised workload can reach its controller and data can leave. Default deny makes every outbound path a reviewed exception.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud NGFW / hierarchical firewall policies row ('egress segmentation')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every network and trust zone in the plan has a lowest-priority deny-all egress rule, and every allow-egress rule names its destination and the identity or tag it applies to."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET"],
+    "notes": "This entry is split from G p14's NGFW row. In the tree each of the 13 trust zones has default-deny egress and ingress rules, and external egress exists only where modules/trust-zones sanctions it by name. The execution node denies all egress except to venues and the central plane. These are VPC rules, not hierarchical ones (SEC-051). Priority P0: GCP Phase 0."
+  },
+  {
+    "id": "SEC-053",
+    "domain": "SEC",
+    "title": "Lateral paths between planes are default-deny and narrowly allowed",
+    "statement": "East-west traffic between planes and zones is denied by default. Only named, narrow paths are allowed, each defined by source identity, destination and port.",
+    "rationale": "On a flat internal network, one compromised workload can reach everything else. With narrow lateral paths, an intruder has to defeat one boundary for every hop.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud NGFW / hierarchical firewall policies row ('narrow lateral paths')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every inter-zone allow rule in the plan names its source and destination by tag or service account and lists its ports. No rule allows all ports or all internal ranges."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "GCP"],
+    "notes": "This entry is split from G p14's NGFW row. In the tree modules/trust-zones allows an internal path only where its locals sanction it by name, and it publishes those paths as permitted_paths. Priority P0: GCP Phase 0."
+  },
+  {
+    "id": "SEC-054",
+    "domain": "SEC",
+    "title": "Security Command Center aggregates posture, findings and threat data",
+    "statement": "Security Command Center aggregates security posture, findings, and threat and vulnerability data for every platform project. Cloud Audit Logs are among its inputs.",
+    "rationale": "Findings scattered across tools go unread. A single aggregation point is where a misconfiguration or an active threat becomes visible to someone who can act on it.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Security Command Center row"},
+      {"doc": "G", "page": "16", "section": "§19 Complete GCP Service Catalog — Security Command Center row"},
+      {"doc": "H", "page": "L328-330", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, edges scc→audit and audit→scc"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "SCC is activated at organization level with Security Health Analytics and Event Threat Detection enabled, and every platform project is in its scope."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["OBS", "GOV"],
+    "notes": "This entry merges three sources: the aggregation clause of G p14, the G p16 catalogue row, and H's two-way SCC/Audit Logs edge. Response integration is SEC-055. In the tree modules/scc declares two project-scoped custom Security Health Analytics modules, one for Binary Authorization enforcement and one for private endpoints. They are off by default, because everything else SCC offers is organization-scoped and the configuration has no organization id. The 2026-09-25 security baseline did not run a cloud posture check. Priority P0: audit/SCC is a GCP Phase 0 exit item."
+  },
+  {
+    "id": "SEC-055",
+    "domain": "SEC",
+    "title": "Security findings are routed into a response workflow",
+    "statement": "Security Command Center findings are routed into a response workflow that assigns, tracks and closes them.",
+    "rationale": "A finding that is aggregated but routed nowhere waits until someone happens to open the console. Like a policy nobody watches, it makes the project look watched when it is not.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Security Command Center row ('response integration')"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A test finding raised in SCC reaches the response workflow through a notification config, where it is recorded with an owner."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["OBS", "GOV"],
+    "notes": "This entry is split from G p14's SCC row. The observability rules already forbid alert policies that page nobody, and the same principle applies to findings. No SCC notification config exists in the tree. Priority P1: response integration needs the SRE incident loop, which arrives after the foundation phases."
+  },
+  {
+    "id": "SEC-056",
+    "domain": "SEC",
+    "title": "Artifact Analysis scans every artifact for vulnerabilities",
+    "statement": "Artifact Analysis scans every image and package in Artifact Registry for vulnerabilities.",
+    "rationale": "An image built from clean source still carries whatever its base layers and dependencies carry. Scanning in the registry catches vulnerabilities disclosed after the build as well as those known at build time.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Artifact Analysis + Binary Authorization row ('supply-chain scanning')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The container scanning API is enabled for the registry, and every pushed digest has vulnerability occurrences recorded in Artifact Analysis."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["CICD"],
+    "notes": "This entry is split from G p14's Artifact Analysis + Binary Authorization row. Enforcement is SEC-037. KUBERNETES, carried in from that row, was dropped because scanning happens in the registry. In the tree, CI's vulnerability-scan job does the scanning with Trivy, and it passed on run 36168396965 according to the 2026-09-25 security baseline. modules/services enables containeranalysis.googleapis.com for the Binary Authorization note, but not containerscanning.googleapis.com, so registry scanning is off. G p23 §28 lists mutable tags as an anti-pattern, and the baseline found 45 GitHub Actions references by movable tag. Priority P0: GCP Phase 1 supply chain."
+  },
+  {
+    "id": "SEC-057",
+    "domain": "SEC",
+    "title": "Sensitive Data Protection discovers and classifies sensitive data in the lake and analytics",
+    "statement": "Sensitive Data Protection discovers and classifies PII and other sensitive data in the data lake and the analytics stores.",
+    "rationale": "Data nobody knows to be sensitive gets copied into research datasets, exports and model training. Classification is what lets retention, access and redaction policy apply to it.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Sensitive Data Protection row ('discovery/classification')"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog — Sensitive Data Protection row (two extractions, one of which treats it as its own governed capability)"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Discovery scan configurations cover every Cloud Storage bucket and BigQuery dataset in prod/data, and their data profiles are published to the data catalogue."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA", "COMPLIANCE"],
+    "notes": "This entry merges G p14's row with G p18's catalogue row and the SDP half of the G p17-18 capability item. Redaction is SEC-058. The pass-through design (G p10) keeps no raw external-world corpus. That narrows the scope without removing it: customer and operator records still pass through, and so does anything a scout parses transiently. The tree has no SDP configuration. Priority P1: GCP Phase 5 data plane."
+  },
+  {
+    "id": "SEC-058",
+    "domain": "SEC",
+    "title": "Sensitive data is redacted in the lake and analytics by policy",
+    "statement": "A redaction (de-identification) policy is applied to sensitive data classified in the lake and the analytics stores before that data reaches research, training or reporting use.",
+    "rationale": "Classification that changes nothing is only an inventory. Redaction is what stops PII flowing into a backtest, a model or a report that has no need for it.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Sensitive Data Protection row ('redaction policy')"},
+      {"doc": "G", "page": "18", "section": "§19 Complete GCP Service Catalog — Sensitive Data Protection row (two extractions)"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A dataset seeded with synthetic PII produces a research or training copy in which every classified field is redacted or tokenized."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA", "COMPLIANCE", "MODEL"],
+    "notes": "This entry is split from G p14's row and G p18's catalogue row. The tree has no de-identification template. Priority P1: GCP Phase 5."
+  },
+  {
+    "id": "SEC-059",
+    "domain": "SEC",
+    "title": "Cloud Audit Logs record administrative and data-access activity",
+    "statement": "Cloud Audit Logs record administrative activity and data access across the platform's projects as evidence.",
+    "rationale": "After an incident the questions are who did what to which resource, and who read which data. Admin-activity logs answer the first by default. Data-access logs answer the second only if they are enabled.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud Audit Logs + Cloud Asset Inventory row ('administrative/data access evidence')"},
+      {"doc": "G", "page": "16", "section": "§19 Complete GCP Service Catalog — Cloud Audit Logs row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Audit configuration enables DATA_READ and DATA_WRITE for every service that holds platform data, keys or secrets. An aggregated sink routes the audit logs to retained storage in org/platform-foundation."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["OBS", "GOV"],
+    "notes": "This entry merges the audit-log half of G p14's row with G p16's catalogue row. Cloud Asset Inventory is SEC-060, and the audit sinks live in org/platform-foundation (SEC-006). The tree declares no audit config and no log sink. The 2026-09-25 security baseline found nine buckets with no access-log sink and recorded that as a work item. Priority P0: GCP Phase 0 audit/SCC."
+  },
+  {
+    "id": "SEC-060",
+    "domain": "SEC",
+    "title": "Cloud Asset Inventory gives inventory and change visibility",
+    "statement": "Cloud Asset Inventory keeps an inventory of the platform's cloud resources and IAM policies, together with a history of their changes.",
+    "rationale": "Resources created outside Terraform, and IAM changes nobody reviewed, never appear in a plan. An inventory with history is how drift and unreviewed grants are found.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Cloud Audit Logs + Cloud Asset Inventory row ('inventory/change visibility'; two extractions)"},
+      {"doc": "G", "page": "16", "section": "§19 Complete GCP Service Catalog — Cloud Asset Inventory row"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The Cloud Asset API is enabled at organization level, and an asset feed or scheduled export covers the resources and IAM policies of every platform project."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GOV", "GCP", "OBS"],
+    "notes": "This entry merges the CAI half of G p14's row, a second extraction of it, and G p16's catalogue row. The rebuild-from-zero game day (G p22 §25) is the other half of drift detection. The tree declares no asset feed. Priority P1: no foundation-phase exit names it, and no safety invariant depends on it."
+  },
+  {
+    "id": "SEC-061",
+    "domain": "SEC",
+    "title": "An engineering-agent compromise cannot yield authority to move capital",
+    "statement": "Compromising an engineering (autonomous development) agent, including its credentials and its sandbox, yields no authority to move capital or to sign a capital grant or envelope.",
+    "rationale": "Engineering agents read untrusted input such as issues, dependencies and web pages, and they have write access to code. If their credentials could also move capital, a prompt injection would amount to a theft.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Key separation"}
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "In the agent-compromise game day, an agent given a malicious instruction cannot read any capital-signing, custody or transfer key, and cannot sign or publish a capital grant or envelope."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GOV", "CICD", "CAPITAL", "CUSTODY"],
+    "notes": "Source: G p14's key-separation paragraph. GOV-026 holds the related G p23 §27 acceptance criterion that autonomous agents cannot obtain production capital or custody authority. G p22 §25 defines the agent-compromise game day used as the check. LIVE_CAPITAL was dropped. Under paper trading, 'capital' means the paper capital grants and envelopes, and the prohibition can be tested and enforced against them now. The flag would score it BLOCKED and hide that. In the tree, autonomy changes only through AutonomyController::request_change with an authenticated operator identity. Envelope signing is HMAC with a key held in Secret Manager (ADR 0043 §2), so the check comes down to which identities can read that secret. Priority P0: a safety invariant."
+  },
+  {
+    "id": "SEC-062",
+    "domain": "SEC",
+    "title": "A trading-service compromise cannot yield deployment-signing authority",
+    "statement": "Compromising a trading service, meaning a Reflex node, a brain or anything else on the order path, yields no authority to sign deployments, attestations or release manifests.",
+    "rationale": "Trading services face venues and market data, the most exposed inputs the platform has. If one of them could sign a release, an attacker who took it could make every other node run the attacker's code.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "14", "section": "§15 Security and Trust Architecture — Key separation"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "No trading-service identity holds sign rights on the attestor key or the manifest-signing keys, and none holds a role that can create attestations or push to the release registry."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["CICD", "REFLEX", "EXEC"],
+    "notes": "Source: G p14's key-separation paragraph. In the tree the only deployment-signing key is the Binary Authorization attestor key, and attestations are made from the pipeline's identity (modules/binaryauthorization, modules/cicd). The registry lets CI push but not delete (modules/registry). Priority P0: a safety invariant."
+  },
+  {
+    "id": "SEC-063",
+    "domain": "SEC",
+    "title": "Organization Policy guardrails cannot be bypassed from application projects",
+    "statement": "Organization Policy constraints are set at organization or folder level as guardrails that cannot be bypassed. No application-project identity can override or relax them.",
+    "rationale": "A guardrail that an application owner can switch off is only a default. Setting constraints above the project, and keeping policy-admin rights away from project identities, keeps them in force during exactly the incident that would tempt someone to relax them.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "16", "section": "§19 Complete GCP Service Catalog — Organization Policy row ('Non-bypassable org guardrails')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every constraint in the plan is set on the organization or a folder. No project-level principal holds roles/orgpolicy.policyAdmin, or any custom role that grants write on org policies."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "GOV"],
+    "notes": "This entry is split from the G p16 identity and governance catalogue item. That item's other services are merged into SEC-018, SEC-020, SEC-054, SEC-059 and SEC-060. The constraints themselves are SEC-066 to SEC-069, and SEC-006 places them in org/platform-foundation. The tree has no organization. Priority P0: GCP Phase 0."
+  },
+  {
+    "id": "SEC-064",
+    "domain": "SEC",
+    "title": "Every internet-facing path passes through Cloud Armor before any backend",
+    "statement": "All traffic arriving through the global external load balancer passes through Cloud Armor before it reaches any backend. That includes the regional GKE service planes in the Americas, Europe and APAC.",
+    "rationale": "A single backend attached to the load balancer without the policy is the path an attacker will use, and the protection on the other backends then counts for nothing. The rule has to hold for every backend in every region.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "H", "page": "L128-138", "section": "VIEWS.global — 01 · Global Platform Topology, edges glb→armor and armor→am_gke/eu_gke/ap_gke (two extractions)"},
+      {"doc": "H", "page": "L328-330", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, edge armor→svpc"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every backend service and backend bucket attached to an external load balancer in the plan has a Cloud Armor security policy, and no regional GKE service has an external ingress that bypasses it."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "KUBERNETES", "MULTI_REGION"],
+    "secondary_domains": ["API", "NET", "GCP"],
+    "notes": "This entry merges H's edge from the load balancer through Cloud Armor, a second extraction naming the three regional GKE clusters, and H's Cloud Armor→Shared VPC edge. The PDFs state the same chain in prose, in G p5's Users→Portal/API row ('no direct access to internal planes') and G p11's public-edge bullet, and API-001 holds it. In the tree modules/public-edge structurally refuses any backend outside the application-identity and public-edge zones, so trading traffic and customer traffic never share a load balancer. Nothing is applied. Conflict C3 applies to the GKE backends. Priority P1: the public edge and the regional service planes arrive in GCP Phases 6 and 7."
+  },
+  {
+    "id": "SEC-065",
+    "domain": "SEC",
+    "title": "Risk Brain reads its credentials directly from Secret Manager/KMS, apart from package signing",
+    "statement": "Risk Brain obtains its credentials and keys directly from Secret Manager/KMS under its own identity. That path is separate from the Reflex package-signing and verification path.",
+    "rationale": "If Risk Brain's credentials travelled inside signed packages, the package channel would carry secrets to every node that receives a package, and anyone who could read a package could read them.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "H", "page": "L178-184", "section": "VIEWS.regional — 02 · Regional Cell, edges secrets→risk and secrets→pkg"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Risk Brain's service account holds secretAccessor only on its own secrets, and no Risk Brain credential appears in any Reflex package manifest."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "KUBERNETES"],
+    "secondary_domains": ["RISK"],
+    "notes": "This entry comes from H's regional-cell edges. Secret Manager/KMS has one security edge to the Reflex Package Agent, for signing and verification, and a separate one to Risk Brain. The requirement is read from the diagram alone; neither PDF states it. Conflicts C3 and C7 apply, because Risk Brain is not a separate service in the tree (ADR 0091). Priority P1: master Phase 3 (Risk Brain) and GCP Phase 6."
+  },
+  {
+    "id": "SEC-066",
+    "domain": "SEC",
+    "title": "Organization Policy restricts which Google APIs may be enabled",
+    "statement": "Organization Policy restricts the Google Cloud APIs that may be enabled to an approved list.",
+    "rationale": "Every enabled API adds attack surface and is another place data can go. An allow-list stops a project from quietly enabling a service nobody reviewed.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "H", "page": "L306", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'org' ('Restrict APIs')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan sets a constraint at organization or folder level (gcp.restrictServiceUsage or an equivalent custom constraint) that limits enabled services to the approved list."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GCP"],
+    "notes": "This entry is split from H's Organization Policies node, which names four constraint categories. The other three are SEC-067 to SEC-069. In the tree modules/services enables APIs per environment from a map that gives a reason for each API. That is review, not a guardrail. Priority P0: GCP Phase 0."
+  },
+  {
+    "id": "SEC-067",
+    "domain": "SEC",
+    "title": "Organization Policy restricts resources to approved regions",
+    "statement": "Organization Policy restricts resource creation to the platform's approved regions.",
+    "rationale": "A resource in an unapproved region can put data outside its legal residency and outside the network design. A location constraint refuses such a resource when someone tries to create it.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "H", "page": "L306", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'org' ('regions')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan sets gcp.resourceLocations at organization or folder level to the approved regions, and an attempt to create a resource elsewhere in a test project is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["GCP", "COMPLIANCE", "NET"],
+    "notes": "This entry is split from H's Organization Policies node. Residency is also a v2.1 ledger concern: G p10 chooses the ledger's leader region by legal residency. The tree pins each module to var.region and has no organization. Priority P0: GCP Phase 0."
+  },
+  {
+    "id": "SEC-068",
+    "domain": "SEC",
+    "title": "Organization Policy restricts external IP addresses",
+    "statement": "Organization Policy restricts which VM instances may have external IP addresses and denies them by default.",
+    "rationale": "An external address on a VM is a direct path around the load balancer, Cloud Armor and IAP. Denying external addresses by policy means their absence is enforced, not just remembered.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "H", "page": "L306", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'org' ('external IPs')"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan sets compute.vmExternalIpAccess at organization or folder level to deny all, or to an explicit list of instances."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["NET", "GCP"],
+    "notes": "This entry is split from H's Organization Policies node. In the tree the execution node deliberately has no access_config and therefore no external address. That is the property this constraint would enforce. Priority P0: GCP Phase 0."
+  },
+  {
+    "id": "SEC-069",
+    "domain": "SEC",
+    "title": "Organization Policy constrains service-account and workload-identity behaviour",
+    "statement": "Organization Policy constrains how service accounts behave, and it constrains the IAM and Workload Identity configuration that governs them.",
+    "rationale": "While policy still permits key creation, 'no service-account keys' is a habit rather than a guarantee. Constraining it at the organization makes the keyless posture of SEC-034 and SEC-035 structural.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "H", "page": "L306", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'org' ('service account behavior')"},
+      {"doc": "H", "page": "L328-330", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, edge org→iam"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan sets iam.disableServiceAccountKeyCreation, iam.disableServiceAccountKeyUpload, iam.automaticIamGrantsForDefaultServiceAccounts and iam.workloadIdentityPoolProviders at organization or folder level."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["GCP", "CICD"],
+    "notes": "This entry merges the service-account clause of H's Organization Policies node with H's Organization Policies→IAM + Workload Identity edge. It turns SEC-035 from an absence into an impossibility. The tree has no organization. Priority P0: GCP Phase 0."
+  },
+  {
+    "id": "SEC-070",
+    "domain": "SEC",
+    "title": "Reflex and Fabric VMs run as Shielded VMs",
+    "statement": "Reflex and Fabric compute runs on Shielded VMs with secure boot, vTPM and integrity monitoring enabled.",
+    "rationale": "A modified boot chain or kernel on a node that holds venue sessions or broker journals would be invisible to everything running above it. Measured boot and integrity monitoring make that kind of tampering detectable.",
+    "kind": "security_control",
+    "priority": "P0",
+    "sources": [
+      {"doc": "H", "page": "L324", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'shield'"},
+      {"doc": "H", "page": "L328-330", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, edge policy→shield"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Every Reflex and Fabric instance template in the plan enables secure boot, vTPM and integrity monitoring."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "FABRIC", "GCP"],
+    "notes": "This entry merges the Shielded half of H's Shielded/Confidential VM node with H's Admission/NetworkPolicy→Shielded VM edge, which extends the runtime-control boundary from GKE to VM compute. GCP-059 holds the same requirement with G p17's catalogue row. KUBERNETES and MANAGED_SERVICE, carried in with the edge, were dropped because this is a VM setting. In the tree modules/execution-node sets enable_secure_boot, enable_vtpm and enable_integrity_monitoring. No Fabric VM exists. Priority P0: GCP Phases 2 and 3."
+  },
+  {
+    "id": "SEC-071",
+    "domain": "SEC",
+    "title": "Reflex and Fabric VMs use Confidential VM where compatible",
+    "statement": "Reflex and Fabric compute runs as Confidential VM wherever the chosen machine type supports it.",
+    "rationale": "Confidential VM encrypts memory against the host, which protects venue session keys and journal contents from a compromised hypervisor. The requirement is conditional because not every machine type supports it.",
+    "kind": "security_control",
+    "priority": "P3",
+    "sources": [
+      {"doc": "H", "page": "L324", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, node 'shield' ('where compatible')"}
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "For each Reflex and Fabric machine type, the register records whether Confidential VM is supported. Where it is, a benchmark shows its effect on decision p99 before it is enabled."
+    },
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "FABRIC", "GCP"],
+    "notes": "This entry is split from H's Shielded/Confidential VM node. GCP-059 chose not to make Confidential VM an obligation, and it is kept here only as a conditional one. Priority P3, as an optional hardening: no phase exit names it, and it must first be shown not to break the Reflex latency budget."
+  },
+  {
+    "id": "SEC-072",
+    "domain": "SEC",
+    "title": "Google API access from inside the perimeter uses Private Service Connect or the restricted VIP",
+    "statement": "The Private Service Connect endpoints through which workloads reach Google APIs sit inside the VPC Service Controls perimeter and resolve to the restricted API surface.",
+    "rationale": "A perimeter is only as strong as the path workloads use to reach the APIs it protects. If private access resolved to the unrestricted endpoints, services the perimeter is meant to protect would be reachable without its checks.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "H", "page": "L328-330", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, edge vpcsc→psc"}
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "*.googleapis.com resolves, through the private DNS zone, to a Private Service Connect endpoint targeting the vpc-sc bundle or to restricted.googleapis.com at 199.36.153.4/30. The firewall and route rules that admit Google API traffic name that same range."
+    },
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["NET", "GCP", "DATA"],
+    "notes": "This entry comes from H's VPC Service Controls→Private Service Connect edge. SEC-047 holds the perimeter itself. DEFECT FOUND IN THE TREE while writing this entry. Google's Private Google Access documentation (docs.cloud.google.com/vpc/docs/configure-private-google-access, read 2026-09-25) gives restricted.googleapis.com as 199.36.153.4/30 and private.googleapis.com as 199.36.153.8/30. modules/network publishes the A record restricted.googleapis.com as 199.36.153.8 to 199.36.153.11, which is the private range, and points *.googleapis.com at it with a CNAME. modules/trust-zones, modules/execution-node, modules/connectivity and modules/gitops-control-plane all treat 199.36.153.8/30 as 'the restricted VIP'. Workloads that resolve Google APIs through that zone therefore reach the private VIP. The private VIP also serves APIs that no perimeter can protect, which is the reverse of what the module comments intend. The finding is not fixed here, because this task writes requirements. Priority P1, with SEC-047."
+  },
+  {
+    "id": "SEC-073",
+    "domain": "SEC",
+    "title": "A workload receives runtime secrets only after admission and network policy admit it",
+    "statement": "Runtime access to Secret Manager is tied to admission and network policy. A workload obtains its secrets only if admission policy has admitted it and network policy permits its path to Secret Manager.",
+    "rationale": "If an unadmitted workload, such as an unsigned image started by hand, could still mount production secrets, admission control would stop the image and then hand it the credentials anyway.",
+    "kind": "security_control",
+    "priority": "P1",
+    "sources": [
+      {"doc": "H", "page": "L328-330", "section": "VIEWS.security — 06 · Network, Security & Trust Boundaries, edge secret→policy"}
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In a test cluster, a pod from an unattested image, or from outside the governed namespaces, is refused at admission and never receives the secret. The admitted workload with the same service account mounts it."
+    },
+    "policy_flags": ["MANAGED_SERVICE", "KUBERNETES"],
+    "secondary_domains": ["CICD", "GCP"],
+    "notes": "This entry comes from H's Secret Manager→Admission/NetworkPolicy edge. The reading is this entry's own, since neither PDF states the coupling. The admission half is SEC-037, and G p12 §13's sandboxing (NetworkPolicy and egress policy) is related. Conflict C3 applies. On Cloud Run the tree gets the equivalent by construction: the Binary Authorization policy refuses an unattested revision, so there is no revision to mount a secret. Priority P1: the requirement applies once warm GKE services consume secrets (GCP Phase 6)."
+  }
+]

@@ -1,0 +1,920 @@
+[
+  {
+    "id": "EVID-001",
+    "domain": "EVID",
+    "title": "Every processed world source leaves a manifest record with its provenance and lineage",
+    "statement": "For every external world source Algorik processes, persist a manifest record carrying: the source reference, the provider/source identity, the retrieval timestamp, the version or etag when the source supplies one, a cryptographic hash/fingerprint of the content retrieved, the entitlement it was retrieved under, its geography, the parser and parser-version lineage that processed it, and its freshness/expiry metadata. A record missing any of these fields is refused, except version/etag, whose absence is recorded explicitly as not supplied by the source rather than left empty.",
+    "rationale": "The raw external content is discarded after processing (EVID-020), so the manifest is the only durable link from a piece of knowledge back to what it was derived from. Without the hash or the parser version, a later re-fetch cannot be verified and the belief built on it cannot be audited.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "\u00a71.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing a manifest record with each mandatory field removed in turn is refused with an error naming that field; a complete record round-trips through serialisation unchanged; a record without version/etag is admitted only when it states explicitly that the source supplied none."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA",
+      "COMPLIANCE"
+    ],
+    "notes": "G p2 \u00a72.1 describes the same record as the Source Manifest Registry (Spanner/AlloyDB) and adds canonical URI, cursor and re-fetch instructions. H view 04 shows it as 'URI \u00b7 hash \u00b7 etag \u00b7 cursor'. M's list is kept because it is more specific about lineage (entitlement, geography, parser version, expiry). The G bullet was not in this domain's raw set and probably belongs to DATA, which should merge the two field lists into one type. P0 because the manifest is a canonical contract (master Phase 0 exit: 'Canonical types/contracts'), even though the Scout that fills it is master Phase 2. Keeping the entitlement in the manifest is what lets licensing posture be checked before a source is used, as .claude/rules/domains/data-and-streaming.md requires of qip-data-finder."
+  },
+  {
+    "id": "EVID-002",
+    "domain": "EVID",
+    "title": "Historical reasoning re-fetches the source through its manifest",
+    "statement": "When historical reasoning needs the content behind a past piece of evidence, it re-fetches that content from the original source, or from a licensed historical API, using the source's manifest record. It never reads a retained copy of the external payload.",
+    "rationale": "Re-fetching instead of warehousing keeps Algorik from becoming a store of third-party content it has no right to keep, and still lets a past decision be re-examined against its evidence.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "\u00a71.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A historical query over a fixture claim, run with no copy of the payload available anywhere, succeeds by issuing a fetch whose target and version come from the claim's manifest record, and it reports the fetched bytes' hash against the manifest hash."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA",
+      "REPLAY"
+    ],
+    "notes": "Split from the M p3 re-fetch bullet. Its second sentence (retain knowledge when the source cannot be fetched) is EVID-003. No source says what happens when the re-fetched content's hash differs from the manifest hash, meaning the source changed after retrieval. Decide that with DATA before implementation instead of letting it default. H view 04 draws the same path as Source Manifest Registry -> Scout ('re-fetch manifest'), with a separate 'Historical Provider APIs' source node. In this repository the HTTP client speaks plaintext HTTP/1.1 and needs the egress proxy in front of it, and no deployed process has an outbound HTTPS path yet (.claude/rules/domains/data-and-streaming.md). Until the proxy is applied, a re-fetch can be proven end to end only behind a local bridge."
+  },
+  {
+    "id": "EVID-003",
+    "domain": "EVID",
+    "title": "Knowledge survives a source that can no longer be fetched, and says so",
+    "statement": "If the original external content can no longer be retrieved, Algorik keeps the knowledge derived from it and records on that source's manifest that the evidence is no longer re-fetchable, with when the failure was observed and its cause. The derived knowledge is neither deleted nor presented as re-verifiable.",
+    "rationale": "Deleting knowledge whenever a page disappears would make the world model depend on third parties' hosting. Keeping the knowledge without a marker would let a claim look re-checkable when it is not.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "\u00a71.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With a fixture source made unretrievable (page removed, licence expired, API retired), a re-fetch attempt leaves every derived fact and belief intact, marks the manifest non-re-fetchable with a timestamp and cause, and a later query over that knowledge returns the marker."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": "Merged: the same M p3 sentence was extracted twice, once together with the re-fetch step and once on its own. Split from EVID-002, which covers the re-fetch itself. Recording when and why the failure happened is added here so that the recorded fact can be audited. The blueprint does not say whether non-re-fetchable evidence should lower dependent confidence. M p39 \u00a728 (Failure and Degradation Model) quarantines poisoned or stale sources and downweights dependent beliefs, but that is a different trigger and was not in this raw set."
+  },
+  {
+    "id": "EVID-004",
+    "domain": "EVID",
+    "title": "An evidence score is separate components, not one data-confidence number",
+    "statement": "Evidence/Provenance scores every evidence item on separate components, at least corroboration, contradiction, source quality and freshness, and keeps each component on the item. Confidence in a claim is derived from those components. It is never taken from a single source-supplied or ingest-time 'data confidence' value.",
+    "rationale": "The v10.1 assumption that 'data confidence is enough' collapses why a claim is believed into one number nobody can audit. A stale but corroborated claim and a fresh but contested one can carry the same scalar.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 'Data confidence is enough' row"
+      },
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "\u00a73 Full Capability Map \u2014 'Evidence & trust' row"
+      },
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "\u00a731 Capability Completeness Checklist"
+      },
+      {
+        "doc": "H",
+        "page": "L241",
+        "section": "VIEWS.data \u2014 04 \u00b7 World Sensing, Tick History & Durable Knowledge (node 'ev')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Every scored evidence item exposes the four components individually; recomputing a claim's confidence from them reproduces the stored value; the scorer's output type cannot represent an evidence item that carries only a scalar confidence."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "H names the four components on the Evidence/Provenance node. M p5 presents the whole Evidence/Truth Fabric as the replacement for 'data confidence is enough'. M p6 lists freshness and confidence under Evidence & trust, and M p42 requires world information to be 'evidence-scored'. No source gives the arithmetic that combines the components; ADR 0005 (confidence as arithmetic) governs how it is written. The other M p5 mechanisms (authenticity, temporal and geospatial consistency, adversarial detection; EVID-009 to EVID-012) are read as inputs to these components rather than extra components. That is an interpretation, since H lists only four. NEW_DEPENDENCY, carried by the M p5 and M p6 umbrella items, was removed because scoring is in-process arithmetic."
+  },
+  {
+    "id": "EVID-005",
+    "domain": "EVID",
+    "title": "Evidence forms a provenance graph a belief can be traced through",
+    "statement": "The Evidence/Truth Fabric builds a provenance graph in which each Evidence object is linked to its source manifest, to the evidence it corroborates or contradicts, and to the beliefs it updated, so that every belief can be traced back to the full set of evidence and sources it rests on.",
+    "rationale": "An audit trail that stops at 'the model believed X' cannot say on what evidence. The graph is what makes a belief reproducible from its inputs.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 'Data confidence is enough' row"
+      },
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "\u00a73 Full Capability Map \u2014 'Evidence & trust' row"
+      },
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "\u00a77 Evidence, Provenance & Truth Fabric (intro)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For a belief built from a fixture of claims across several sources, traversing the graph from the belief returns exactly the fixture's Evidence objects and their manifests, with none missing and none extra, and recomputing the belief from that set alone reproduces the stored belief."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "M p13 states the graph, M p5 lists it among the fabric's mechanisms, and M p6 lists 'provenance' and 'audit trail' under Evidence & trust. The links to beliefs follow from M p13 ('updates beliefs from evidence') together with M p6's audit trail. ADR 0088 (a belief carries its evidence set) is the existing record for the belief side. G p9 places the graph state in Spanner Graph (EVID-022). NEW_DEPENDENCY, carried by the umbrella items, was removed because an in-process graph needs no crate."
+  },
+  {
+    "id": "EVID-006",
+    "domain": "EVID",
+    "title": "Corroboration counts independent origins, not copies",
+    "statement": "Corroboration is measured as agreement among independent sources, weighted by their common-source dependence. Copies, syndications or rewrites of one origin, such as ten copies of one press release, count as one source, not as many.",
+    "rationale": "Without dependence weighting, one widely reprinted release, or one planted story amplified by many outlets, looks like strong independent confirmation and inflates confidence in a claim that has a single origin.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 'Data confidence is enough' row"
+      },
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "\u00a73 Full Capability Map \u2014 'Evidence & trust' row"
+      },
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "\u00a77 Evidence, Provenance & Truth Fabric \u2014 Corroboration"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "\u00a721.2 World event to cognitive response \u2014 step 2"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated claim sets, adding any number of copies derived from an origin already present leaves the corroboration weight unchanged, while adding one genuinely independent agreeing source strictly increases it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Merged: M p13's corroboration row was extracted twice, once as a mechanism and once as an invariant. M p5 and M p6 list corroboration among the fabric's mechanisms, and G p20 \u00a721.2 step 2 has evidence workers 'corroborate sources'. No source specifies how dependence between sources is established (shared origin link, near-duplicate text, a common upstream wire); that is part of the design. P0 as a correctness invariant: the mechanism arrives in master Phase 2, but a corroboration count that duplication can inflate is a manipulation vector from its first line. NEW_DEPENDENCY, carried by the umbrella items, was removed."
+  },
+  {
+    "id": "EVID-007",
+    "domain": "EVID",
+    "title": "Contradictions are kept as competing hypotheses, never deleted",
+    "statement": "When evidence conflicts, the contradiction engine keeps each side as a competing hypothesis with its own supporting evidence. No conflicting evidence or hypothesis is deleted to restore a single consistent view.",
+    "rationale": "Deleting one side of a conflict erases the record of how a belief was reached, and it hides a discrepancy that may still be unresolved or that an adversary created on purpose.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 'Data confidence is enough' row"
+      },
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "\u00a73 Full Capability Map \u2014 'Evidence & trust' row"
+      },
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "\u00a77 Evidence, Provenance & Truth Fabric \u2014 Contradiction engine"
+      },
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "\u00a78 Regional GKE Service Plane \u2014 Evidence / Provenance row"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated streams containing conflicting claims, every ingested claim is still retrievable with its hypothesis after the stream completes, the number of hypotheses (open or resolved) never decreases, and the engine's interface offers no operation that removes one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Merged: M p13's contradiction-engine row was extracted twice. M p6 lists contradictions under Evidence & trust, and G p9 \u00a78 gives Evidence/Provenance 'contradiction handling', which appeared both in the placement row and in its capability restatement. M p5 says 'contradiction resolution', and resolution presupposes that the conflict is kept. Split from the second half of the M p13 row, resolution tracking (EVID-008). G p2 \u00a72.1 also has the Knowledge Graph store contradictions. The invariant matches the repository rule that sealed event-log history is never edited. KUBERNETES and MANAGED_SERVICE, carried by the G p9 placement item, were removed because they concern where the service runs, not this invariant."
+  },
+  {
+    "id": "EVID-008",
+    "domain": "EVID",
+    "title": "The contradiction engine records which later evidence resolved each conflict",
+    "statement": "When later evidence resolves a contradiction, the contradiction engine records the resolution against the conflict: which evidence resolved it, when, and in favour of which hypothesis. The losing hypothesis is marked resolved-against, not removed.",
+    "rationale": "Knowing what settled a conflict lets the platform learn which kinds of evidence are decisive, and it lets an auditor check that the resolution was not arbitrary.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 'Data confidence is enough' row"
+      },
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "\u00a77 Evidence, Provenance & Truth Fabric \u2014 Contradiction engine"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying a fixture evidence stream in which a later item settles an earlier conflict reproduces the same resolution record, naming that item, its time and the winning hypothesis, and the losing hypothesis is still present and marked resolved-against."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "REPLAY"
+    ],
+    "notes": "Split from the M p13 contradiction-engine row, whose other half is EVID-007. Merged with the duplicate extraction of that row and with M p5's 'contradiction resolution'. Resolution records are also an input to evidence-quality learning (EVID-018)."
+  },
+  {
+    "id": "EVID-009",
+    "domain": "EVID",
+    "title": "Each evidence item records the authenticity signals available for its source",
+    "statement": "For every evidence item, the fabric evaluates and records the authenticity signals available for its source: TLS/domain identity, a signed release where the issuer signs, a document hash, a chain proof where the claim is on-chain, known issuer identity, and the source's history. A signal that was checked and failed is recorded as failed, distinct from a signal that was not available.",
+    "rationale": "A spoofed domain or a doctored document can carry exactly the same text as the real one; only authenticity signals tell them apart. A failed check that reads as 'no signal' hides an attack.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 'Data confidence is enough' row"
+      },
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "\u00a77 Evidence, Provenance & Truth Fabric \u2014 Authenticity"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Fixture evidence covers each signal in a valid and a tampered form (signed release, document hash, chain proof, issuer identity). Each signal is recorded with the right outcome, and every tampered case is recorded as failed, not absent."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "M p5 calls this 'cryptographic/source authenticity'. Two repository constraints apply. First, checking a signed release needs asymmetric signature verification, which ADR 0043 names as a gap no in-tree code may close; that is why NEW_DEPENDENCY is kept, and an ADR must precede any crate. Second, the workspace HTTP client speaks plaintext HTTP/1.1 behind the egress proxy, so the proxy has to attest TLS/domain identity; the worker cannot observe it. M p13's 'Quantum role' row (quantum does not itself confer authenticity or truth) was not in this raw set and belongs with the quantum domain."
+  },
+  {
+    "id": "EVID-010",
+    "domain": "EVID",
+    "title": "Claims are checked for temporal consistency",
+    "statement": "Every evidence item is checked for temporal consistency: whether its claim fits the previously known state, the ordering of related events, and a physically possible timeline. The outcome of the check is recorded on the item, together with the conflicting fact when the check fails.",
+    "rationale": "A claim that an event happened before its cause, or a shipment that arrived faster than any vessel can travel, signals error or fabrication that agreement between sources may not catch.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 'Data confidence is enough' row"
+      },
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "\u00a77 Evidence, Provenance & Truth Fabric \u2014 Temporal consistency"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Fixture claims that precede their cause, contradict the last known state, or imply an impossible elapsed time are flagged with the conflicting fact, and consistent fixture claims pass unflagged, which proves the check accepts valid claims as well as refusing invalid ones."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "M p5 combines this with geospatial consistency as 'time/location consistency'; M p13 gives them separate mechanisms, so they are two requirements here (see EVID-011). The blueprint does not say whether a failed check lowers confidence or quarantines the evidence. Its effect has to land in EVID-004's components. The comparison with prior state depends on bitemporal records (.claude/rules/domains/data-and-streaming.md). The raw kind was 'invariant'; it is recorded as a capability because the source describes a check that produces a finding, not a rule that refuses input."
+  },
+  {
+    "id": "EVID-011",
+    "domain": "EVID",
+    "title": "Location-bearing claims are checked for geospatial consistency",
+    "statement": "Where location, routing, shipping, weather or jurisdiction evidence is relevant to a claim, the fabric checks that these agree with one another and records any disagreement on the evidence item. A claim with no geospatial dimension is recorded as not applicable, not as passed.",
+    "rationale": "A reported port closure during clear weather, at a port no vessel was routed to, is either wrong or planted, and the disagreement only shows up when the location evidence is compared.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 'Data confidence is enough' row"
+      },
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "\u00a77 Evidence, Provenance & Truth Fabric \u2014 Geospatial consistency"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Fixture claims whose location, route, weather or jurisdiction evidence disagree are flagged, naming the dimension that disagrees; agreeing fixtures pass; a claim with no geospatial content is recorded as not applicable."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Split from M p5's 'time/location consistency'; the time half is EVID-010. The check needs geospatial, shipping/AIS and weather sources, which M p12 \u00a76.1 lists as used 'where licensed/available', so it can be only as complete as those sources' licences allow. The raw kind was 'invariant'; it is recorded as a capability for the same reason as EVID-010."
+  },
+  {
+    "id": "EVID-012",
+    "domain": "EVID",
+    "title": "The fabric detects adversarial and anomalous sources",
+    "statement": "The fabric detects and flags, per evidence item and per source, spam, coordinated manipulation, synthetic content, poisoned feeds, spoofing and anomalous source behaviour, and it records which class was detected.",
+    "rationale": "A system that trades on what it reads is a target for anyone who can write what it reads. Manipulation has to be caught at the evidence layer, before it becomes a belief.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 'Data confidence is enough' row"
+      },
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "\u00a73 Full Capability Map \u2014 'Evidence & trust' row"
+      },
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "\u00a77 Evidence, Provenance & Truth Fabric \u2014 Adversarial detection"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A labelled fixture for each of the six classes is flagged with that class, a clean fixture from the same sources is not flagged, and a coordinated campaign spread across several sources is attributed to every source involved."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "M p5 says 'adversarial-source detection' and M p6 says 'manipulation detection'. Kept as one requirement because every class is detected at the same point and on the same object; the check covers each class. Synthetic-content detection realistically needs a trained classifier, which is why NON_RUST and NEW_DEPENDENCY are kept: either path needs an ADR before implementation. M p39 \u00a728 says what happens to flagged evidence ('Data source poisoned/stale: Evidence quarantined; dependent beliefs/models downweighted or invalidated'), but that row was not in this raw set. The Adversarial Brain (EVID-015) runs a separate specialist search for the same threats."
+  },
+  {
+    "id": "EVID-013",
+    "domain": "EVID",
+    "title": "Every extracted claim becomes an Evidence object with its provenance",
+    "statement": "Every claim extracted from a world source becomes an Evidence object carrying source identity, timestamp, location, extraction method, authenticity signals, licence, confidence, and links to the evidence that corroborates or contradicts it. A claim that cannot be given these fields does not become evidence.",
+    "rationale": "The Scout's output is structured evidence with provenance, not scraped text. An object that lacks its source, method or licence cannot be audited, weighted or lawfully used.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "\u00a73 Full Capability Map \u2014 'Evidence & trust' row"
+      },
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "\u00a76 Global Scout & Data Acquisition Fabric (intro)"
+      },
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "\u00a77 Evidence, Provenance & Truth Fabric (intro)"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing an Evidence object with each mandatory field removed in turn is refused, naming the field. Location and authenticity signals accept an explicit 'not applicable' or 'none available' value but not an omitted one. A complete object round-trips through serialisation unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CONTRACT",
+      "DATA"
+    ],
+    "notes": "Merged: M p12 \u00a76 gives the Scout's goal as turning the world into 'structured evidence with provenance' (the rest of that sentence, not hoarding, is covered by EVID-020). M p6 lists source identity, licensing and confidence under Evidence & trust. M p37 \u00a727 defines the matching core contract, EvidencePacket (claim, entities, time/location, source/provenance, licence, confidence, contradiction links, content hash), which adds the claim, entities and content hash. It was not in this raw set; reconcile the two field lists with CONTRACT into one type. P0 because this is a canonical contract (master Phase 0 exit). NEW_DEPENDENCY, carried by the M p6 umbrella item, was removed."
+  },
+  {
+    "id": "EVID-014",
+    "domain": "EVID",
+    "title": "No scraped text becomes a fact or belief except through evidence",
+    "statement": "No component converts scraped or extracted text directly into a fact or belief. Beliefs are updated only from Evidence objects and the provenance graph they belong to, so no single source is treated as truth by default.",
+    "rationale": "If scraped text counted as fact, any page Algorik reads could move its world model, and through it its positions, with no corroboration and no trail.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "\u00a77 Evidence, Provenance & Truth Fabric (intro)"
+      },
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "\u00a731 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test shows that the belief-update interface accepts only Evidence object references and has no constructor from raw text. An acceptance run that drives a scraped fixture page through the pipeline shows every resulting belief citing Evidence objects and none citing the page directly."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Merged: M p13's intro sentence ('updates beliefs from evidence rather than converting scraped text directly into facts') was extracted twice, and its 'no single source is truth' framing a third time. M p42 \u00a731 states the same completion target: 'no component treats scraping as truth by default'. The other half of the M p13 sentence, that every claim becomes an Evidence object, is EVID-013. The first half of M p42's target ('evidence-scored and provenance-tracked') is cited on EVID-004. EVID-019 holds the same rule structurally at the knowledge-delta boundary. P0 as a correctness invariant that constrains every component touching world data."
+  },
+  {
+    "id": "EVID-015",
+    "domain": "EVID",
+    "title": "The Adversarial Brain hunts for manipulation and source poisoning",
+    "statement": "The Adversarial Brain, a specialist in the brain society, actively looks for manipulation and for poisoning of Algorik's sources, and it records each finding with the evidence behind it.",
+    "rationale": "Detection at the evidence layer (EVID-012) judges one item at a time. A specialist that looks across sources, time and positions can see a campaign that no single item reveals.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Adversarial Brain"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "A replay with an injected poisoned source and an injected coordinated manipulation episode produces Adversarial Brain findings naming each, and the same replay without the injections produces none."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REASON"
+    ],
+    "notes": "Split from the M p16 \u00a79.1 Adversarial Brain row. Its five targets fall into three groups, each verified at a different point: manipulation and source poisoning (this requirement), regime breaks and model failure (EVID-016), and strategies that exploit Algorik (EVID-017). The source does not qualify 'manipulation', so it may mean information or market manipulation; the check should cover both. P2 because the specialist-agent society is master Phase 8. Findings are advisory: an agent finding never escalates autonomy (.claude/rules/domains/risk-and-execution.md)."
+  },
+  {
+    "id": "EVID-016",
+    "domain": "EVID",
+    "title": "The Adversarial Brain hunts for regime breaks and model failure",
+    "statement": "The Adversarial Brain looks for regime breaks and for model failure, meaning conditions under which Algorik's models no longer describe the market, and it records each finding with the evidence behind it.",
+    "rationale": "A model that fails quietly after a regime change keeps producing confident output. An adversarial specialist looks for that failure instead of waiting for losses to reveal it.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Adversarial Brain"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying a historical period that contains a known regime break, with a model whose degradation was injected, yields findings naming the break and the degraded model, and a replay of a stable period with healthy models yields none."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "REASON"
+    ],
+    "notes": "Split from the M p16 Adversarial Brain row (see EVID-015). It overlaps with the Meta Brain in the same table, which measures which models are reliable in which regimes, and with M p20 \u00a710.1 step 5, which validates models 'out-of-time, cross-regime, adversarially'. Both of those belong to MODEL. Kept here because the raw item was assigned to this domain. P2 (master Phase 8)."
+  },
+  {
+    "id": "EVID-017",
+    "domain": "EVID",
+    "title": "The Adversarial Brain hunts for strategies that exploit Algorik itself",
+    "statement": "The Adversarial Brain looks for strategies that exploit Algorik's own behaviour, and it records each finding with the behaviour being exploited.",
+    "rationale": "A system whose behaviour is regular enough to model is a system others can trade against. The platform needs a specialist that looks at itself from the adversary's side.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Adversarial Brain"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "In the paper-trading simulator, an injected adversary strategy that trades against a known regular Algorik behaviour (for example predictable order placement or rebalancing) is detected and reported, naming the exploited behaviour, and a simulator run without the adversary produces no such finding."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC",
+      "RISK",
+      "REASON"
+    ],
+    "notes": "Split from the M p16 Adversarial Brain row (see EVID-015). The examples of exploitable behaviour in the check are illustrative and do not come from the source. Verified only against the simulator; nothing here implies a live-order path (ADR 0003). P2 (master Phase 8)."
+  },
+  {
+    "id": "EVID-018",
+    "domain": "EVID",
+    "title": "Evidence policy and source scores improve from realised outcomes",
+    "statement": "As realised outcomes show which information channels were reliable, the rules for source reputation, provenance-graph weighting, corroboration, contradiction resolution and adversarial detection are updated. Each update is emitted as a new versioned EvidencePolicy / SourceScore artefact, never as an in-place change.",
+    "rationale": "A source that was right last year may be wrong now. Scores that never learn from outcomes freeze the fabric's judgement at whatever it was first configured to believe.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "\u00a723 Intelligence Expansion Engine \u2014 Evidence-quality expansion"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replaying outcomes in which one channel's claims were repeatedly contradicted by events yields a new EvidencePolicy/SourceScore version that lowers that channel's score, and decisions made before the update still replay identically under the version they were made with."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION"
+    ],
+    "notes": "From the \u00a723 Intelligence Expansion Engine mechanism table. The \u00a723 introduction (M p27) requires every new capability to be evaluated, sandboxed, lineage-tracked and promoted through explicit gates. That rule governs how a new EvidencePolicy is adopted and belongs to EXPANSION. Versioning is required here so that replay stays reproducible. P3 because the expansion engine is master Phase 9. The continuous operational rescoring under the current policy is EVID-024 (P1). Scoring a source against its realised strategy contribution also appears in M p13 \u00a76.2 step 5 (the Scout discovery loop), which was not in this raw set."
+  },
+  {
+    "id": "EVID-019",
+    "domain": "EVID",
+    "title": "Evidence scoring stands between extraction and knowledge",
+    "statement": "Every world payload flows Scout/Crawler Workers \u2192 Parse/Extract/Normalize \u2192 Evidence/Provenance \u2192 Knowledge Delta Builder, in that order. The Knowledge Delta Builder accepts only input that Evidence/Provenance has scored, so no path from extraction to durable knowledge bypasses evidence scoring.",
+    "rationale": "If extraction output could reach the knowledge store directly, one integration shortcut would be enough to turn scraped text into durable knowledge, which EVID-014 prohibits.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "\u00a72.1 World Data Pass-Through / Knowledge Persistence Invariant"
+      },
+      {
+        "doc": "H",
+        "page": "L257-261",
+        "section": "\u00a704 World Sensing, Tick History & Durable Knowledge (edges)"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An architecture test shows that only Evidence/Provenance can construct the Knowledge Delta Builder's input type, and an acceptance run pushing a fixture through the pipeline observes the four stages in order with none skipped."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": "G p2 \u00a72.1 says the payload is 'parsed, evidence-scored and distilled into durable knowledge', and H view 04's edges give the strict stage order. The same pipeline is drawn in M p12 \u00a76.3 (TRANSIENT FETCH -> PARSE / EXTRACT -> EVIDENCE CHECK -> ... -> KNOWLEDGE DELTA) and G p9 \u00a79.1, neither of which was in this raw set. H places these stages on GKE workers, but the placement is not part of the ordering invariant, so KUBERNETES was removed from the flags; placement is EVID-021, and ADR 0024 applies. Split from G p2 \u00a72.1, whose other half, the payload discard, is EVID-020. P0 because this is the structural form of the correctness invariant in EVID-014."
+  },
+  {
+    "id": "EVID-020",
+    "domain": "EVID",
+    "title": "The raw external payload is discarded once distilled",
+    "statement": "After a fetched world payload has been parsed, evidence-scored and distilled into durable knowledge, the source payload is discarded. No copy of it persists in any durable store; only the derived knowledge and the source manifest remain.",
+    "rationale": "Algorik must not become a warehouse of third-party content. Keeping payloads multiplies licensing exposure and storage for material the platform can re-fetch through its manifest.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "\u00a72.1 World Data Pass-Through / Knowledge Persistence Invariant"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A fixture payload carrying a unique canary string is processed end to end. Afterwards, a search of every durable store, journal and log finds no trace of the canary, while the derived knowledge and the manifest record are present."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA",
+      "COMPLIANCE"
+    ],
+    "notes": "Split from G p2 \u00a72.1; the scoring half is EVID-019. This is the pass-through invariant of M p3 \u00a71.3 and G p2 \u00a72.1, including G's transient-fetch bullet ('no default GCS landing bucket for external-world content'). DATA probably holds the primary copy and should merge with this one. P0 as a non-negotiable compliance rule (G \u00a72 'Non-Negotiable Architecture Rules'). This invariant is in tension with EVID-027: its 'immutable GCS evidence' can only hold derived evidence, never the payload."
+  },
+  {
+    "id": "EVID-021",
+    "domain": "EVID",
+    "title": "Evidence/Provenance runs on the regional GKE service plane",
+    "statement": "The Evidence/Provenance service runs as a warm workload on the regional GKE service plane, off the Reflex hot path.",
+    "rationale": "Evidence scoring is continuous, stateful and warm rather than latency-critical, which is the profile the v2.1 service plane is built for.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "\u00a78 Regional GKE Service Plane \u2014 Evidence / Provenance row"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "A Terraform plan for an environment shows the Evidence/Provenance workload scheduled on the regional GKE cluster, and the Reflex node's startup configuration contains no Evidence/Provenance component."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "Split from G p9 \u00a78's 'GKE + Spanner Graph/BigQuery'; the two stores are EVID-022 and EVID-023. This contradicts a standing decision: ADR 0024 retired Kubernetes in favour of Cloud Run, and row C3 of ADR 0099 keeps that decision in force until a runtime record decides whether warm services return to GKE. Until then this requirement is scored against that record, not built. G p22 \u00a726 puts 'GKE asset/capital/risk/evidence/API services' in GCP phase 6, hence P1. H views 01 and 02 show the same placement ('Regional GKE: Asset/Capital/Risk/Evidence/World-model services' and an 'Evidence / World Model' k8s service)."
+  },
+  {
+    "id": "EVID-022",
+    "domain": "EVID",
+    "title": "Evidence/Provenance keeps its graph state in Spanner Graph",
+    "statement": "Evidence/Provenance persists its durable graph state, including the provenance graph (EVID-005), in Spanner Graph.",
+    "rationale": "Provenance is a graph traversed from beliefs back to sources. A graph store keeps that traversal a query rather than an application-side join over many tables.",
+    "kind": "placement",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "\u00a78 Regional GKE Service Plane \u2014 Evidence / Provenance row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture evidence stream written by Evidence/Provenance is read back from Spanner Graph by a graph query from a belief to its sources, and the query returns the same evidence set as EVID-005's traversal."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "WORLD"
+    ],
+    "notes": "Split from G p9 \u00a78 ('GKE + Spanner Graph/BigQuery'). G does not say which state goes to Spanner Graph and which to BigQuery. Assigning the provenance graph to Spanner Graph is an interpretation, consistent with G p2 \u00a72.1 (the Knowledge Graph in Spanner Graph holds source references and contradictions) and with H ('Spanner Graph ... provenance refs'). P2 because Spanner Graph arrives in GCP phase 8 (G p22 \u00a726), although the service itself is phase 6. The workspace has no Google client, and ADR 0009 forbids writing one in-tree, so reaching Spanner needs a dependency decision before this can be built. KUBERNETES, carried by the G p9 placement item, was removed."
+  },
+  {
+    "id": "EVID-023",
+    "domain": "EVID",
+    "title": "Evidence/Provenance keeps its analytical scoring history in BigQuery",
+    "statement": "Evidence/Provenance writes its analytical state, the history of source scores and evidence scoring, to BigQuery.",
+    "rationale": "Asking which sources were right over the last year is an analytical scan over history, not a graph traversal. BigQuery is where that question is cheap to answer.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "\u00a78 Regional GKE Service Plane \u2014 Evidence / Provenance row"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan provisions a BigQuery dataset for evidence scoring and grants the Evidence/Provenance workload identity write access to that dataset only, and an integration run lands a fixture's scoring records in it."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "DATA"
+    ],
+    "notes": "Split from G p9 \u00a78. Assigning the scoring history to BigQuery is an interpretation (see EVID-022). BigQuery arrives in GCP phase 5 (data plane), hence P1. H view 04 describes BigQuery as K3 analytical knowledge with 'no copied source documents', which also binds this store to EVID-020. KUBERNETES, carried by the G p9 placement item, was removed."
+  },
+  {
+    "id": "EVID-024",
+    "domain": "EVID",
+    "title": "Source trust and evidence confidence are rescored continuously",
+    "statement": "Evidence/Provenance rescores continuously. As each new evidence item is corroborated or contradicted, the trust score of every source involved and the confidence of every affected claim are updated in the same processing pass, not in a periodic batch.",
+    "rationale": "A source that starts publishing falsehoods has to lose weight while it is doing so. A nightly rescore would leave a day in which its claims move beliefs at full trust.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "\u00a78 Regional GKE Service Plane \u2014 Evidence / Provenance row"
+      },
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "\u00a721.2 World event to cognitive response \u2014 step 2"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "In a fixture where a previously trusted source's claims start being contradicted, that source's trust score drops as soon as the first contradicted item has been processed, before the next item is, and each update records the evidence that caused it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA",
+      "WORLD"
+    ],
+    "notes": "Merged: G p9 \u00a78 gives Evidence/Provenance 'continuous source scoring' twice, in the placement row and in its capability restatement, and G p20 \u00a721.2 step 2 has evidence workers 'update trust/confidence'. The same-pass rule is how 'continuous' is read here. Improving the scoring rules themselves from outcomes is EVID-018 (P3); this requirement is the operational rescoring under the current rules, in GCP phase 6. KUBERNETES and MANAGED_SERVICE, carried by the placement items, were removed because they concern placement, not the scoring behaviour."
+  },
+  {
+    "id": "EVID-025",
+    "domain": "EVID",
+    "title": "Observations carry source identity and provenance from the moment of capture",
+    "statement": "Each scout, crawler or API connector attaches source identity and provenance to an observation at the moment it captures it. An observation without them is refused at publication, and provenance is never reconstructed downstream.",
+    "rationale": "Provenance added after the fact is a guess about where data came from. Provenance attached at capture is a record.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "\u00a721.2 World event to cognitive response \u2014 step 1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every observation a fixture connector publishes carries source identity and provenance fields that match the fixture source, and publication is refused for a connector that omits them."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": "Split from G p20 \u00a721.2 step 1. Publication to the regional Fabric is EVID-026 and the immutable GCS record is EVID-027. These capture-time fields seed the manifest record (EVID-001) and the Evidence object (EVID-013). MANAGED_SERVICE and NEW_DEPENDENCY, carried by the step-1 item, were removed because they belong to the GCS write (EVID-027)."
+  },
+  {
+    "id": "EVID-026",
+    "domain": "EVID",
+    "title": "Observations are published to the regional Fabric",
+    "statement": "A captured observation is published to the Rust Event & Control Fabric of the region in which it was captured.",
+    "rationale": "Publishing to the regional Fabric keeps world sensing on the platform's own durable, replayable journal, and it keeps one region's scouts from depending on another region's brokers.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "\u00a721.2 World event to cognitive response \u2014 step 1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An observation captured by a fixture connector in one region appears on that region's Fabric journal with its provenance intact, and it appears on no other region's journal unless a mirroring policy puts it there."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "DATA"
+    ],
+    "notes": "Split from G p20 \u00a721.2 step 1. The Fabric here is the native Rust one: M p3 \u00a71.1 says Google Pub/Sub and Kafka are not core internal dependencies. Cross-region mirroring is selective and arrives with master Phase 4. MANAGED_SERVICE and NEW_DEPENDENCY, carried by the step-1 item, were removed because the Fabric is in-tree and not a managed service."
+  },
+  {
+    "id": "EVID-027",
+    "domain": "EVID",
+    "title": "Each observation is also recorded as immutable evidence in Cloud Storage",
+    "statement": "Each captured observation is also written to Cloud Storage as an immutable evidence record that cannot be overwritten or deleted once written. The record holds the derived observation with its provenance, never the raw external payload.",
+    "rationale": "An immutable, independent evidence record lets a decision be reconstructed even if the Fabric journal or the knowledge stores are later lost or disputed.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "\u00a721.2 World event to cognitive response \u2014 step 1"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan provisions the evidence bucket with a retention lock or object holds. An integration run shows that overwriting or deleting a written record is refused, and that a canary string in the fixture payload appears in no record in the bucket."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "GCP"
+    ],
+    "notes": "Split from G p20 \u00a721.2 step 1. As written ('publishes to regional Fabric plus immutable GCS evidence'), it is in tension with G p2 \u00a72.1 ('no default GCS landing bucket for external-world content') and with M p3 \u00a71.3. Reading the GCS record as the derived observation and its provenance, not the payload, reconciles them, but that reading is an interpretation and should be confirmed. Writing to GCS from the workspace needs a Google client and auth flow that ADR 0009 forbids writing in-tree, hence NEW_DEPENDENCY. Whether immutability comes from a bucket retention policy or from object holds is a design choice."
+  },
+  {
+    "id": "EVID-028",
+    "domain": "EVID",
+    "title": "Evidence workers normalise the entities observations refer to",
+    "statement": "Evidence workers resolve each observation's entity mentions to canonical entities. The same company, asset, place or person named differently across sources becomes one entity, and different entities that share a name are not merged.",
+    "rationale": "Corroboration and contradiction mean something only between claims about the same entity. An unresolved alias turns agreement into apparent silence, and a false merge creates contradictions that do not exist.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "\u00a721.2 World event to cognitive response \u2014 step 2"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated observation sets containing aliases, tickers and transliterations of known entities, every mention of one entity resolves to a single canonical id, and mentions of distinct entities with the same name resolve to distinct ids."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Split from G p20 \u00a721.2 step 2. The corroboration in that step is merged into EVID-006, the trust/confidence update into EVID-024, and the Spanner Graph update is EVID-029. Entity resolution is mainly the world model's concern and is kept here because the raw item was assigned to this domain. H view 04's 'Parse / Extract / Normalize' stage suggests normalisation may run before Evidence/Provenance rather than inside it; where it runs is still open. MANAGED_SERVICE, carried by the step-2 item, was removed."
+  },
+  {
+    "id": "EVID-029",
+    "domain": "EVID",
+    "title": "World-model services write evidence-derived updates to Spanner Graph",
+    "statement": "After evidence workers have scored an observation, world-model services apply the resulting update to the world graph in Spanner Graph.",
+    "rationale": "Writing to the world graph only behind evidence scoring means the graph never holds a fact that did not pass through the fabric.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "\u00a721.2 World event to cognitive response \u2014 step 2"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture observation scored by the evidence workers produces a Spanner Graph update that carries its Evidence object reference, and an unscored observation produces none."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "WORLD",
+      "GCP"
+    ],
+    "notes": "Split from G p20 \u00a721.2 step 2. G p19 \u00a720 lists the same connection (Evidence/World workers -> Spanner Graph, gRPC/SQL/GQL, warm). P2 because Spanner Graph arrives in GCP phase 8 (G p22 \u00a726). This belongs mainly to WORLD. It carries the same client caveat as EVID-022: ADR 0009 forbids writing a Google client in-tree."
+  },
+  {
+    "id": "EVID-030",
+    "domain": "EVID",
+    "title": "Evidence/World Model publishes knowledge-class events back onto Fabric Broker A",
+    "statement": "In each regional cell, the Evidence/World Model service publishes its output onto Fabric Broker A as knowledge-class events.",
+    "rationale": "Returning knowledge to the Fabric, rather than calling consumers directly, keeps it on the replayable journal and lets any brain subscribe without coupling to the evidence service.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L178-184",
+        "section": "\u00a702 Regional Cell (edges)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture observation that the Evidence/World Model service consumes from Broker A yields an event on Broker A tagged with the knowledge class, and no knowledge-class output reaches a consumer by any other path."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "WORLD"
+    ],
+    "notes": "Split from H view 02's edge list (L178-184), which gives the Ambient/Causal Agents the same edge (EVID-031). The same lines show Evidence consuming data-class events from Broker A (e('b1','evidence','data')). The diagram does not say why Broker A rather than B or C; confirm that choice with FABRIC."
+  },
+  {
+    "id": "EVID-031",
+    "domain": "EVID",
+    "title": "Ambient/Causal Agents publish knowledge-class events back onto Fabric Broker A",
+    "statement": "In each regional cell, the Ambient/Causal Agents publish their output onto Fabric Broker A as knowledge-class events.",
+    "rationale": "Ambient predictions and detected surprises become journaled, replayable knowledge on the Fabric instead of side-channel calls, as in EVID-030.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L178-184",
+        "section": "\u00a702 Regional Cell (edges)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An ambient agent fed a fixture that triggers surprise detection publishes a knowledge-class event onto Broker A, and nothing it emits bypasses the Fabric."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "REASON"
+    ],
+    "notes": "Split from the same H edge list as EVID-030. This belongs mainly to the ambient/causal-agent domain and is kept here because the raw item was assigned to this domain. P2 because the Ambient Model Mesh is master Phase 8. M p18 \u00a79.5 makes ambient outputs advisory until promoted 'through the same evidence, evaluation, authority and deterministic-control boundaries as any other model output'."
+  }
+]

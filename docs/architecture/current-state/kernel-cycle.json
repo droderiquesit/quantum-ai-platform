@@ -1,0 +1,148 @@
+[
+  {
+    "name": "qip-kernel",
+    "path": "backend/crates/runtime/qip-kernel",
+    "kind": "runtime",
+    "purpose": "The composition root for the intelligence loop: qip-kernel/Cargo.toml declares it as \"the composition root: wires services onto the bus and runs the intelligence loop,\" and its lib.rs states a Platform owns every stage and Platform::run_cycle is one pass through SENSE -> UNDERSTAND -> DISCOVER -> REASON -> SIMULATE -> DECIDE -> ACT -> LEARN. Its `central` module is the second composition root inside the same crate, wiring strategy approval, capital allocation and the six governance controls across edge cells (backend/crates/runtime/qip-kernel/src/lib.rs:16-32).",
+    "key_contracts": [
+      "Stage enum (Sense..Learn) (backend/crates/runtime/qip-kernel/src/cycle.rs:17-26)",
+      "CycleReport, StageOutcome (backend/crates/runtime/qip-kernel/src/cycle.rs:58-124)",
+      "Platform struct (backend/crates/runtime/qip-kernel/src/platform.rs:220)",
+      "Platform::new / with_language_model / new_serving / with_model_provider (backend/crates/runtime/qip-kernel/src/platform.rs:3948,3975,3998,4027)",
+      "Platform::run_cycle (backend/crates/runtime/qip-kernel/src/platform.rs:9009)",
+      "Platform::ingest_cell_report (backend/crates/runtime/qip-kernel/src/platform.rs:5488)",
+      "Platform::learn_from_cells (backend/crates/runtime/qip-kernel/src/platform.rs:8109)",
+      "Platform::learn_from (backend/crates/runtime/qip-kernel/src/platform.rs:8423)",
+      "CentralPlane, CellReport, StrategyDna, StrategyFactory (re-exported, backend/crates/runtime/qip-kernel/src/lib.rs:69)",
+      "PlatformConfig, EventLogDestination (backend/crates/runtime/qip-kernel/src/config.rs)"
+    ],
+    "workspace_deps": [
+      "qip-core", "qip-numerics", "qip-events", "qip-financial", "qip-market", "qip-portfolio", "qip-risk", "qip-ai", "qip-agents", "qip-quantum", "qip-observability", "qip-contracts", "qip-lifecycle", "qip-capital", "qip-compliance", "qip-confidential", "qip-strategy", "qip-market-ingestion", "qip-world-model", "qip-opportunity-engine", "qip-reasoning-engine", "qip-simulation-engine", "qip-optimization-engine", "qip-portfolio-engine", "qip-risk-engine", "qip-execution-engine", "qip-learning-engine", "qip-investment-agents", "qip-data-finder", "qip-mesh", "qip-chain", "qip-prediction", "qip-streaming", "qip-twin", "qip-capital-fabric", "qip-cost-router", "qip-evolution", "qip-training"
+      ],
+    "reached_from_production": "yes",
+    "production_evidence": "Every deployable binary composes a Platform and drives run_cycle: backend/crates/apps/qip-api/src/main.rs:228 (Platform::new_serving, the API's composition root) and backend/crates/apps/qip-api/src/routes.rs:2259 (run_cycle in the /cycle handler); backend/crates/apps/qip-fastbrain/src/main.rs:212 (Platform::new) and backend/crates/apps/qip-fastbrain/src/node.rs:133 (run_cycle, production, before that file's #[cfg(test)] at line 385); backend/crates/apps/qip-deepbrain/src/main.rs:222 (Platform::with_model_provider, the deep brain's composition root) and backend/crates/apps/qip-deepbrain/src/node.rs:157 (run_cycle inside pub fn step, before that file's #[cfg(test)] at line 531); backend/crates/apps/qip-cli/src/main.rs:147,257 (Platform::new, run_cycle in the `run` subcommand) and backend/crates/apps/qip-cli/src/demo/mod.rs:795,962 (Platform::new, run_cycle in the demo binary's step loop, before its #[cfg(test)] at line 1325); backend/crates/apps/qip-cli/src/replay.rs:271 (Platform::new for `qip-cli replay`). ingest_cell_report's one production caller is backend/crates/apps/qip-api/src/mesh.rs:1621, named explicitly in backend/crates/apps/qip-api/src/main.rs:926. learn_from_cells and learn_from have no direct apps/*/src caller, but are reached from production every cycle through stage_learn -> review_strategies -> learn_from_cells (backend/crates/runtime/qip-kernel/src/platform.rs:14140,14287) and stage_learn -> calibrate_resolved -> learn_from (backend/crates/runtime/qip-kernel/src/platform.rs:13912,14528), and stage_learn is called unconditionally from run_cycle (platform.rs:9060).",
+    "io_and_state": "Blocking, explicit-timeout I/O only, composed at assembly: Platform::new (via with_model_provider) opens the event log through config.event_log.open() before anything else is built and reads its records back to find inherited_through, the last sequence a previous run did not write (backend/crates/runtime/qip-kernel/src/platform.rs:4046,4059-4062). EventLogDestination is file-backed or in-memory (backend/crates/runtime/qip-kernel/src/config.rs:41,66,157). Every cycle is sealed into a durable journal at the end of run_cycle via self.journal_cycle (platform.rs:9133), backed by the `journal: DurableLogTransport` field (platform.rs:623) from qip_streaming. No wall-clock reads: every stage and Platform::run_cycle take `now: Timestamp` as a parameter from an injected Clock (qip_core::Context), so replay is deterministic.",
+    "tests": {
+      "count": 154,
+      "notable": [
+        "one_observation_traverses_all_eight_stages (backend/crates/runtime/qip-kernel/tests/kernel.rs:130)",
+        "a_cycle_with_no_data_still_runs_every_stage_and_says_why_each_was_quiet (backend/crates/runtime/qip-kernel/tests/kernel.rs:174)",
+        "a_cycle_records_one_run_and_one_timed_outcome_for_every_stage_it_ran (backend/crates/runtime/qip-kernel/tests/kernel.rs:695)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "The eight-stage loop, Platform::new/run_cycle and the ingest/learn paths are exercised by 39 tests in tests/kernel.rs, 14 in tests/learning.rs and 101 inline #[test]s in platform.rs itself (covering the whole file, not only the core loop), and every path is reached from at least one of the five deployable binaries (qip-api, qip-fastbrain, qip-deepbrain, qip-cli, qip-cli-demo); no TODO/unimplemented!/stub markers were found in cycle.rs or in the run_cycle/stage_*/ingest_cell_report/learn_from(_cells) bodies of platform.rs.",
+    "blueprint_capabilities": ["ARCH", "FABRIC", "REFLEX", "REASON", "RISK", "OBS", "EVID"],
+    "gaps_observed": [
+      "platform.rs is 26,172 lines and this record covers only its core-loop surface (Platform::new/with_language_model/new_serving/with_model_provider, run_cycle, the eight stage_* functions, ingest_cell_report, learn_from_cells, learn_from); the file also implements capital calls, the capital fabric wallet/corridors, product/eligibility/registration catalogues, model promotion and dozens of other subsystems not covered here.",
+      "run_cycle refuses (does not clamp) a cycle timestamped before the platform's own reasoned_through watermark, at backend/crates/runtime/qip-kernel/src/platform.rs:9010-9012, delegating to refuse_cycle_before (platform.rs:9174) which journals nothing for that refusal by design.",
+      "A cycle journal write failure is recorded as a problem on the LEARN stage rather than aborting the cycle (backend/crates/runtime/qip-kernel/src/platform.rs:9133-9148), so a process that cannot write its own journal keeps trading and keeps reporting healthy stages while qip_journal_write_failures_total increments.",
+      "stage_act's leverage gauge is only published when publishable_leverage(...) returns Some (backend/crates/runtime/qip-kernel/src/platform.rs:13372-13376) -- an unpublishable leverage reading is silently absent from qip_portfolio_leverage rather than recorded as a gap."
+    ],
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/lib.rs:1-32",
+      "backend/crates/runtime/qip-kernel/Cargo.toml:1-58",
+      "backend/crates/runtime/qip-kernel/src/cycle.rs:17-183",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:220,3943-4030,9009-9157,9174-9209"
+    ]
+  },
+  {
+    "name": "qip-kernel::cycle",
+    "path": "backend/crates/runtime/qip-kernel/src/cycle.rs",
+    "kind": "runtime",
+    "purpose": "Defines the eight-stage Stage enum in fixed order and the two report types (StageOutcome, CycleReport) that make one pass through the loop legible: 'a cycle that produced nothing should be as legible as one that traded' (module doc, cycle.rs:1-8). Pure data and formatting -- no I/O, no engine logic.",
+    "key_contracts": [
+      "pub enum Stage { Sense, Understand, Discover, Reason, Simulate, Decide, Act, Learn } (cycle.rs:17-26)",
+      "Stage::as_str, Stage::all (cycle.rs:29-53)",
+      "pub struct StageOutcome { stage, ran, produced, elapsed, detail, problems } (cycle.rs:58-74)",
+      "StageOutcome::ran / skipped / with_problem / with_elapsed (cycle.rs:77-107)",
+      "pub struct CycleReport { cycle, correlation_id, started_at, finished_at, stages, events_logged, halted } (cycle.rs:112-124)",
+      "CycleReport::duration / stage / traversed_every_stage / problems / summarise (cycle.rs:127-182)"
+    ],
+    "workspace_deps": ["qip-core"],
+    "reached_from_production": "yes",
+    "production_evidence": "CycleReport is the return type of Platform::run_cycle (platform.rs:9009), which every deployable binary calls (see qip-kernel's own record for the five call sites). CycleReport::summarise is called in backend/crates/apps/qip-cli/src/main.rs:258 to print each cycle's report, and CycleReport::traversed_every_stage / stage / problems are read back by callers such as backend/crates/apps/qip-fastbrain/src/node.rs (StepOutcome::problems, node.rs:140-146).",
+    "io_and_state": "None -- no I/O side effects; every field is populated by the caller (Platform::run_cycle) and the type itself only formats and queries in-memory data.",
+    "tests": {
+      "count": 0,
+      "notable": []
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "No unit tests live in cycle.rs itself (0 #[test] in the file), but its types are exercised black-box through every test in tests/kernel.rs that calls run_cycle and inspects the returned CycleReport (e.g. traversed_every_stage, stage-by-stage problems), and through production callers listed above; the module has no TODO/stub markers.",
+    "blueprint_capabilities": ["ARCH", "OBS", "EVID"],
+    "gaps_observed": [],
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/cycle.rs:1-183",
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs:130,155,174,695"
+    ]
+  },
+  {
+    "name": "qip-kernel::platform (core loop)",
+    "path": "backend/crates/runtime/qip-kernel/src/platform.rs",
+    "kind": "runtime",
+    "purpose": "The core of the composition root: assembles a Platform (Platform::new and its three variants), and runs one cycle (Platform::run_cycle) by calling the eight stage_* methods in fixed order, timing each, charging the cycle's compute cost, recording telemetry, and journalling the result -- 'the stages run in order and every one of them runs: a cycle that fails at REASON still reaches LEARN, because LEARN is what would eventually notice that REASON keeps failing' (platform.rs:9032-9034). Also owns the two paths by which the central plane's per-cell facts enter a cycle's own state: ingest_cell_report (a cell's report, per pass) and learn_from_cells / learn_from (grading resolved theses and strategy sessions in LEARN).",
+    "key_contracts": [
+      "Platform::new / with_language_model / new_serving / with_model_provider (platform.rs:3948,3975,3998,4027)",
+      "Platform::run_cycle (platform.rs:9009)",
+      "Platform::refuse_cycle_before (platform.rs:9174)",
+      "Platform::stage_sense (platform.rs:9695)",
+      "Platform::stage_understand (platform.rs:9788)",
+      "Platform::stage_discover (platform.rs:10288)",
+      "Platform::stage_reason (platform.rs:10794)",
+      "Platform::stage_simulate (platform.rs:12559)",
+      "Platform::stage_decide (platform.rs:13075)",
+      "Platform::stage_act / stage_act_orders (platform.rs:13272,13326)",
+      "Platform::stage_learn (platform.rs:13828)",
+      "Platform::ingest_cell_report (platform.rs:5488)",
+      "Platform::learn_from_cells (platform.rs:8109)",
+      "Platform::learn_from (platform.rs:8423)"
+    ],
+    "workspace_deps": [
+      "qip-core", "qip-agents", "qip-ai", "qip-capital", "qip-capital-fabric", "qip-chain", "qip-compliance", "qip-contracts", "qip-cost-router", "qip-data-finder", "qip-events", "qip-execution-engine", "qip-financial", "qip-investment-agents", "qip-learning-engine", "qip-lifecycle", "qip-market", "qip-market-ingestion", "qip-mesh", "qip-numerics", "qip-observability", "qip-opportunity-engine", "qip-optimization-engine", "qip-portfolio", "qip-portfolio-engine", "qip-prediction", "qip-quantum", "qip-reasoning-engine", "qip-risk", "qip-risk-engine", "qip-simulation-engine", "qip-streaming", "qip-twin", "qip-world-model"
+    ],
+    "reached_from_production": "yes",
+    "production_evidence": "run_cycle (and therefore all eight stage_* methods) is called from: backend/crates/apps/qip-api/src/routes.rs:2259, backend/crates/apps/qip-fastbrain/src/node.rs:133, backend/crates/apps/qip-deepbrain/src/node.rs:157, backend/crates/apps/qip-cli/src/main.rs:257, backend/crates/apps/qip-cli/src/demo/mod.rs:962 -- none of these five call sites are inside a #[cfg(test)] module (each file's test module was located and starts after the cited line, confirmed per-file). Platform::new/new_serving is the composition-root constructor in backend/crates/apps/qip-api/src/main.rs:228, qip-fastbrain/src/main.rs:212, qip-deepbrain/src/main.rs:222 (Platform::with_model_provider; the file's own Platform::new at line 1301 is a test helper inside #[cfg(test)] starting at line 1162), qip-cli/src/main.rs:147, qip-cli/src/replay.rs:271, qip-cli/src/demo/mod.rs:795. ingest_cell_report's production caller is backend/crates/apps/qip-api/src/mesh.rs:1621. learn_from_cells is called in production only internally, from Platform::review_strategies (platform.rs:14287), which stage_learn calls unconditionally (platform.rs:14140); learn_from is called internally from Platform::calibrate_resolved (platform.rs:14528), which stage_learn also calls (platform.rs:13912). Neither has a direct backend/crates/apps/*/src call site.",
+    "io_and_state": "Platform::with_model_provider (the terminal constructor all of Platform::new/with_language_model/new_serving funnel into) opens the event log via config.event_log.open() before any other field is built and reads back the log's last sequence for inherited_through (platform.rs:4046,4059-4062) -- a file or in-memory KeyValueStore-backed EventLog depending on PlatformConfig::event_log (config.rs:41-66). run_cycle writes to Telemetry (in-process counters/gauges/histograms, no external I/O) on every stage and at cycle end (platform.rs:9086-9121), and journals the whole cycle through self.journal_cycle -> the `journal: DurableLogTransport` field (platform.rs:623,9133). All timestamps come from the `now: Timestamp` parameter threaded through every stage and Platform::run_cycle -- no direct std::time or wall-clock reads in this file's core-loop functions.",
+    "tests": {
+      "count": 101,
+      "notable": [
+        "one_observation_traverses_all_eight_stages (tests/kernel.rs:130)",
+        "a_cycle_records_one_run_and_one_timed_outcome_for_every_stage_it_ran (tests/kernel.rs:695)",
+        "the_reason_stage_records_where_the_router_put_the_decision_and_whether_the_panel_convened (tests/kernel.rs:957)"
+      ]
+    },
+    "status": ["exists", "hardened"],
+    "status_reason": "The 101 #[test]s inline in platform.rs (spanning the whole file's many responsibilities, not only the core loop) plus 39 in tests/kernel.rs and 14 in tests/learning.rs exercise Platform::new, run_cycle, every stage_* function and both ingest_cell_report and learn_from(_cells); grep found no TODO!/unimplemented!/todo!/FIXME markers inside these functions, and every one of them is reached from at least one of the five deployable binaries (directly for run_cycle/Platform::new/ingest_cell_report, transitively through stage_learn for learn_from_cells/learn_from).",
+    "blueprint_capabilities": ["ARCH", "FABRIC", "REFLEX", "REASON", "RISK", "MESH", "OBS", "EVID"],
+    "gaps_observed": [
+      "run_cycle refuses rather than clamps a cycle dated before the platform's own reasoned_through watermark (platform.rs:9010-9012,9174-9209) and deliberately does not journal that refusal, by the comment's own account, so a caller feeding a backwards clock leaves no event-log trace of the refusal, only stage_runs_total{ran=\"false\"} and one stage_problems_total{stage=\"sense\"}.",
+      "A cycle journal write failure is captured as a LEARN-stage problem rather than stopping the cycle (platform.rs:9133-9148): 'the cycle has happened, and a review that could not run is a fact about this cycle to record, not a reason to lose the rest of the stage's account' is the same rationale applied inside stage_learn's own sub-calls (e.g. review_strategies, platform.rs:14277-14280).",
+      "stage_simulate's capacity probe and stress test are diagnostic only: a refusal along the probe path (bad last price, too few returns, simulator refusal) is swallowed to None rather than surfaced as a stage problem (platform.rs:12576-12581), so a persistently-refusing probe produces a quiet cycle rather than a flagged one.",
+      "learn_from_cells and learn_from have zero direct callers in backend/crates/apps/*/src; they are reached only through the two private stage_learn sub-paths named above, which is sufficient for 'reached from production' but means neither function is independently exercised by an app-level integration test outside qip-kernel's own test suite."
+    ],
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:220,3943-4030,4036-4146,9009-9157,9174-9209",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9695-9786 (stage_sense)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9788-10288 (stage_understand)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10288-10794 (stage_discover)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10794-12559 (stage_reason)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12559-13075 (stage_simulate)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13075-13272 (stage_decide)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13272-13828 (stage_act/stage_act_orders)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13828-14264 (stage_learn)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:5488-5653 (ingest_cell_report)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8109-8133 (learn_from_cells)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8423-8516 (learn_from)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14140,14281-14299,13912,14398-14528",
+      "backend/crates/apps/qip-api/src/main.rs:228,926",
+      "backend/crates/apps/qip-api/src/routes.rs:2259",
+      "backend/crates/apps/qip-api/src/mesh.rs:1621",
+      "backend/crates/apps/qip-fastbrain/src/main.rs:212",
+      "backend/crates/apps/qip-fastbrain/src/node.rs:133,385",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:157,531",
+      "backend/crates/apps/qip-cli/src/main.rs:147,257,497",
+      "backend/crates/apps/qip-cli/src/demo/mod.rs:795,962,1325",
+      "backend/crates/apps/qip-cli/src/replay.rs:271"
+    ]
+  }
+]

@@ -1,0 +1,1514 @@
+[
+  {
+    "id": "REASON-001",
+    "domain": "REASON",
+    "title": "Symbolic conclusions never violate a declared invariant",
+    "statement": "The symbolic reasoners hold their invariants explicitly, as a declared and versioned set, and preserve them. No conclusion, derivation or compiled artifact the fabric emits may violate a declared invariant. A reasoning step that would violate one is refused, and the refusal names the invariant.",
+    "rationale": "\u00a79.4 values symbolic systems for invariants and exact constraints. An invariant held only implicitly inside a reasoner cannot be checked, and one that a reasoner can override is not an invariant.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "\u00a71 Executive Summary ('symbolic reasoners preserve explicit invariants and proof traces')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Generate random fact sets against a fixture of declared invariants. Assert that no emitted conclusion violates any invariant and that every refused step names the invariant it would have broken. Then remove one invariant from the set and assert that a conclusion violating it now appears, which proves the check can fire."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": "Split from the M p2 sentence. Its 'proof traces' half is REASON-002. The M p17 \u00a79.4 preamble gives the reason: symbolic systems are 'valuable for invariants, exact constraints, compositional reasoning and auditable derivations'. This is P0 because it is a correctness invariant, even though the fabric that holds it is delivered in master Phase 2. M p40 \u00a728 (outside this extraction) sets the behaviour for an unsatisfied constraint: mark the conclusion infeasible or unresolved, and fail closed for money-moving invariants. The house principle 'refuse rather than guess' applies, so a violating conclusion is refused and never silently corrected."
+  },
+  {
+    "id": "REASON-002",
+    "domain": "REASON",
+    "title": "Consequential conclusions carry a machine-readable derivation",
+    "statement": "Every conclusion the fabric emits that can reach a proposal, a promotion gate, a risk or capital decision, or the event log carries a machine-readable derivation artifact with four parts: the proof trace (the rules, constraints and graph paths applied), the evidence set it rests on, the assumptions it found violated, and its uncertainty. Free-form prose alone is not a derivation.",
+    "rationale": "The platform exists to say why it did what it did. If a conclusion's reasoning survives only as prose, or not at all, the conclusion cannot be reproduced from the log or audited afterwards.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "\u00a71 Executive Summary ('symbolic reasoners preserve explicit invariants and proof traces')"
+      },
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('and proof traces coupled to neural models')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 Symbolic & neuro-symbolic reasoning fabric row ('proof traces')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('produces explicit derivations')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 'Proof/derivation artifacts'"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('proof-trace reasoning')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Replay a recorded reasoning run from the event log. Assert that every conclusion that reached a proposal or decision carries a derivation artifact with all four parts, that every evidence reference resolves to a logged record, and that re-running the derivation yields the same conclusion."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID",
+      "REPLAY",
+      "CONTRACT"
+    ],
+    "notes": "M p18 says 'important conclusions'. This requirement defines 'important' as any conclusion that can reach a decision or the log, because an undefined threshold cannot be tested. The field-level contract is CONTRACT-024 (SymbolicDerivation, M p37), scored P1 there. This requirement is the invariant that such a record exists for every consequential conclusion, and it is P0 because auditability is a mandatory architecture concern. Separate requirements cover machine-checkability of the trace (REASON-035) and of emitted constraints (REASON-027). The umbrella items merged here carried NON_RUST and NEW_DEPENDENCY. Both were removed: a derivation record is a serde-serialisable type and names no solver."
+  },
+  {
+    "id": "REASON-003",
+    "domain": "REASON",
+    "title": "No neural proposal is accepted without symbolic verification",
+    "statement": "Perceptions, hypotheses and representations proposed by neural models are candidates only. Each one is verified against the applicable symbolic logic, constraints and causal structure before it is accepted or combined. A proposal that fails verification is rejected with a derivation naming the rule, constraint or causal relation it contradicts.",
+    "rationale": "Neural models are good at proposing and poor at guaranteeing. If a proposal can become an accepted belief without passing the symbolic check, the check is only advisory, and the platform's conclusions are only as sound as its least calibrated model.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "\u00a71.1 Product Identity \u2014 'Neuro-symbolic reasoning'"
+      },
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 'Reasoning is primarily implicit inside learned/generative models'"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Feed generated neural proposals, some consistent with a fixture rule set and some contradicting it. Assert that every contradicting proposal is rejected with a derivation naming the violated rule or constraint, that every consistent proposal is accepted, and that no path lets a proposal reach the accepted state without passing the verifier."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "WORLD"
+    ],
+    "notes": "Split from M p3. The 'combine' half is REASON-004. M p4 \u00a71 (outside this extraction) states the consequence: however continuously models run, 'symbolic verification, evidence policy, risk envelopes and deterministic money-moving controls still define what can execute'. That is why this is P0 even though the fabric is delivered in master Phase 2. AGENCY-043 applies the same rule to causal agency: hard constraints are symbolic, and no learned estimate overrides them."
+  },
+  {
+    "id": "REASON-004",
+    "domain": "REASON",
+    "title": "The fabric composes neural proposals into symbolic conclusions",
+    "statement": "The reasoning fabric is coupled to the neural models. It consumes their perceptions, hypotheses and representations as typed inputs, and it can combine several verified proposals into one conclusion. That conclusion's derivation cites each proposal it used and the model that produced it.",
+    "rationale": "v11.6 \u00a72 corrects v10.1, where reasoning was mostly implicit inside learned models. Coupling the two, rather than running them side by side, lets a neural hypothesis contribute to an explicit and attributable conclusion.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "\u00a71.1 Product Identity \u2014 'Neuro-symbolic reasoning' ('verify, combine or reject them')"
+      },
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('coupled to neural models')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('alongside neural models')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Give the fabric two verified proposals from different fixture models. Assert that it emits one combined conclusion whose derivation lists both proposals and both model identities, and that removing either proposal changes or withdraws the conclusion."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "M p44 says 'alongside' and M p5 says 'coupled to'. The 'coupled to' wording is kept because it is more specific. NON_RUST was removed: the coupling is a typed interface, and whether either side runs outside Rust is covered by REASON-033. P1 because master Phase 2 establishes the symbolic reasoning services (M p41 \u00a730)."
+  },
+  {
+    "id": "REASON-005",
+    "domain": "REASON",
+    "title": "Ontology reasoning over typed entities, events and lifecycles",
+    "statement": "The fabric reasons over a knowledge graph and an ontology of typed entities, relationships and events, including financial and physical lifecycles. It infers the relationships and lifecycle states the ontology entails. When a fact contradicts the ontology's typing, it reports the contradiction instead of absorbing the fact.",
+    "rationale": "With a graph of typed entities, a conclusion about one issuer, contract or shipment can follow from what is known about its class, and a type error surfaces as a finding instead of a wrong inference.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('ontologies')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('Knowledge graph + ontology reasoning')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('ontology')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 knowledge-graph and ontology reasoning bullet"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('ontology')"
+      },
+      {
+        "doc": "H",
+        "page": "L279",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, node 'sym' ('Knowledge graph reasoning')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Load a fixture ontology with a typed entity hierarchy and a lifecycle. Assert that an inferred relationship follows from subtyping, and that a fact giving an entity a type the ontology forbids is reported as a contradiction and not stored as knowledge."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "DATA"
+    ],
+    "notes": "The M p18 wording is kept as the most specific. The M p18 item's MANAGED_SERVICE and NEW_DEPENDENCY flags were removed because the requirement names no store or library. The blueprints put the graph in Spanner Graph (G p20, REASON-036), and that requirement carries the managed-service conflict (ADR 0099 C4). The other umbrella items' NON_RUST flag was removed for the same reason. Growing the ontology when observations do not fit it is REASON-029. Reporting a type contradiction rather than absorbing it is this catalogue's reading of 'typed'. P1: master Phase 2."
+  },
+  {
+    "id": "REASON-006",
+    "domain": "REASON",
+    "title": "Causal graphs answer intervention and propagation queries",
+    "statement": "The fabric reasons over causal graphs to answer intervention queries. Given an intervention on a variable, it returns the variables the intervention affects and the causal paths the effect propagates along. Each path cites its edges and the evidence for them.",
+    "rationale": "Asking what happens if X changes is a different question from asking what moves with X. The propagation path is what lets a person judge whether the effect is plausible.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('causal graphs')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('causal reasoning')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('causal')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 causal graph reasoning bullet ('interventions, propagation paths')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('causal')"
+      },
+      {
+        "doc": "H",
+        "page": "L279",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, node 'sym' ('causal/abductive reasoning')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "On generated DAGs, assert that the variables returned as affected by an intervention are exactly the intervened variable's descendants, that every returned path is a directed path in the graph, and that an intervention on a sink returns no other affected variable."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "AGENCY"
+    ],
+    "notes": "The M p18 causal bullet is split three ways: interventions and propagation paths (this item), confounders (REASON-007) and counterfactual explanations (REASON-008). The general 'causal' mentions in M p5, p8, p16 and p44 and in H L279 are cited on all three. NON_RUST and NEW_DEPENDENCY were removed because graph traversal needs neither. AGENCY-013 covers structural intervention modelling for causal agency (do(action) -> intermediate states -> outcome, M p32 \u00a724.2)."
+  },
+  {
+    "id": "REASON-007",
+    "domain": "REASON",
+    "title": "Causal queries identify confounders",
+    "statement": "For a causal effect query, the fabric identifies the confounders (common causes of the treatment and the outcome) and states the adjustment set it used. When no valid adjustment set exists, it marks the effect unidentified instead of reporting a correlation as the effect.",
+    "rationale": "An effect estimated without adjusting for a common cause is a correlation reported as a cause. Naming the adjustment set lets someone check the estimate.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('causal graphs')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('causal reasoning')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('causal')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 causal graph reasoning bullet ('confounders')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('causal')"
+      },
+      {
+        "doc": "H",
+        "page": "L279",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, node 'sym' ('causal/abductive reasoning')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "On generated causal graphs with known backdoor structure, assert that the reported adjustment set blocks every backdoor path between treatment and outcome. Assert that a graph with an unobserved confounder and no valid adjustment set yields 'unidentified' rather than an estimate."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY",
+      "WORLD"
+    ],
+    "notes": "Split from the M p18 causal bullet (see REASON-006). The abstention wording follows AGENCY-045 (the engine abstains when causal identification is weak, M p32) and AGENCY-030 (correlation is never recorded as causal certainty). Here the abstention is the reasoner's own output. Flags were removed as for REASON-006."
+  },
+  {
+    "id": "REASON-008",
+    "domain": "REASON",
+    "title": "Causal reasoning explains outcomes counterfactually",
+    "statement": "The fabric produces counterfactual explanations. For an observed outcome, it states what the causal graph implies would have happened if a named variable had taken a different value, and it cites the graph and the evidence the counterfactual rests on.",
+    "rationale": "A counterfactual makes 'why did this happen' checkable, because it names what would have had to be different.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('causal graphs')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('causal reasoning')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('causal')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 causal graph reasoning bullet ('counterfactual explanations')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('causal')"
+      },
+      {
+        "doc": "H",
+        "page": "L279",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, node 'sym' ('causal/abductive reasoning')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "For a fixture structural causal model with known equations, assert that the counterfactual outcome the fabric reports for a changed input equals the hand-computed value, and that the explanation cites the variables and edges it used."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "AGENCY"
+    ],
+    "notes": "Split from the M p18 causal bullet (see REASON-006). Counterfactual world branches as models belong to WORLD. This requirement is the reasoner's explanation of a single outcome. Flags were removed as for REASON-006."
+  },
+  {
+    "id": "REASON-009",
+    "domain": "REASON",
+    "title": "Temporal logic decides before/after and causal ordering",
+    "statement": "The fabric's temporal and event logic decides the ordering between events: whether one came before or after another, and their causal ordering. An effect is never ordered before its cause.",
+    "rationale": "Much of financial reasoning comes down to ordering: which fill came first, whether a disclosure preceded a trade, whether a cause preceded its supposed effect.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('temporal/event logic')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('temporal/event calculus')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('temporal')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 temporal and event logic bullet ('before/after', 'causal ordering')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('temporal')"
+      },
+      {
+        "doc": "H",
+        "page": "L279",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, node 'sym' ('temporal logic')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "On generated event sets with timestamps and causal links, assert that the ordering relation is a strict partial order (irreflexive and transitive), that no effect is ordered before its cause, and that a query as of instant t never uses a fact whose knowable instant is later than t."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA",
+      "REPLAY"
+    ],
+    "notes": "The M p18 temporal bullet is split three ways: ordering (this item), deadlines and settlement calendars (REASON-010) and state transitions (REASON-011). The general temporal mentions in M p5 ('temporal/event logic'), M p8 ('temporal/event calculus'), M p16, M p44 and H L279 are cited on all three. The as-of condition in the check applies the house data rule: records are bitemporal, and no point-in-time leakage is allowed. NEW_DEPENDENCY was removed because nothing names a library."
+  },
+  {
+    "id": "REASON-010",
+    "domain": "REASON",
+    "title": "Temporal logic reasons over deadlines and settlement calendars",
+    "statement": "The fabric's temporal logic reasons over deadlines and settlement calendars. It computes when an obligation falls due under a named calendar, including non-business days, and reports whether each deadline has been met, has been missed, or cannot yet be decided.",
+    "rationale": "A settlement date computed on the wrong calendar becomes a funding break that shows up only at settlement. The reasoner has to say which calendar it used so that the answer can be checked.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('temporal/event logic')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('temporal/event calculus')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('temporal')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 temporal and event logic bullet ('deadlines, settlement calendars')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('temporal')"
+      },
+      {
+        "doc": "H",
+        "page": "L279",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, node 'sym' ('temporal logic')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Using fixture calendars with holidays and weekends, assert that the due dates the fabric computes match hand-computed dates, that each answer names the calendar it used, and that an obligation whose calendar is missing is reported as undecidable rather than given a default date."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SETTLEMENT",
+      "LEDGER"
+    ],
+    "notes": "Split from the M p18 temporal bullet (see REASON-009). The last clause of the check applies 'refuse rather than guess': an unknown calendar is neither read as instant nor as a default cycle. NEW_DEPENDENCY was removed."
+  },
+  {
+    "id": "REASON-011",
+    "domain": "REASON",
+    "title": "Temporal logic checks lifecycle state transitions",
+    "statement": "The fabric reasons over state transitions. Given a lifecycle definition, it decides whether an observed or proposed sequence of states is admissible. When the sequence is not admissible, it names the first inadmissible transition.",
+    "rationale": "Orders, contracts and positions move through lifecycles. An illegal transition, such as a fill after a cancel or a settlement before a trade, is often the first visible symptom of a break.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('temporal/event logic')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('temporal/event calculus')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('temporal')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 temporal and event logic bullet ('state transitions')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('temporal')"
+      },
+      {
+        "doc": "H",
+        "page": "L279",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, node 'sym' ('temporal logic')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For a fixture lifecycle, generate transition sequences. Assert that the fabric admits exactly the sequences the lifecycle's transition relation allows, and that for each rejected sequence it names the first transition that broke it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "CONTRACT"
+    ],
+    "notes": "Split from the M p18 temporal bullet (see REASON-009). The lifecycles themselves are typed in the ontology (REASON-005, 'financial/physical lifecycles'). NEW_DEPENDENCY was removed."
+  },
+  {
+    "id": "REASON-012",
+    "domain": "REASON",
+    "title": "Probabilistic symbolic reasoning over uncertain rules",
+    "statement": "The fabric performs probabilistic symbolic reasoning. It evaluates uncertain rules and Bayesian structures, and it weighs competing hypotheses by the evidence for each. Every conclusion it reports carries a probability rather than a bare verdict.",
+    "rationale": "Most financial rules hold usually rather than always. A rule engine that can only answer true or false either ignores that uncertainty or hides it, and ADR 0005 treats confidence as arithmetic.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('probabilistic logic')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('probabilistic logic')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('probabilistic')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 probabilistic symbolic reasoning bullet"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('probabilistic')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "On generated Bayesian networks, assert that every posterior lies in [0,1], that posteriors over an exhaustive set of mutually exclusive hypotheses sum to 1 within a stated tolerance, and that adding evidence with a likelihood ratio above 1 for a hypothesis never lowers that hypothesis's posterior."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "EVID"
+    ],
+    "notes": "The M p18 wording is kept. NON_RUST and NEW_DEPENDENCY were removed: no source names a library, and the workspace already computes statistics in-tree. Probabilities are f64 and money is Decimal. Where a probability feeds a monetary figure, the crossing point must be stated in a comment where it happens (core-rust rule)."
+  },
+  {
+    "id": "REASON-013",
+    "domain": "REASON",
+    "title": "Rule and policy engines evaluate versioned rule packs",
+    "statement": "The fabric includes rule and policy engines. They evaluate versioned rule packs over facts for eligibility, accounting invariants, market structure, contracts and other deterministic business logic. Each verdict cites the rule-pack version and the rules that fired.",
+    "rationale": "Eligibility and accounting rules are exact. Written as rules, they can be reviewed, versioned and cited. Learned by a model, they can only be trusted.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('rules')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('rules')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('rule')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 rule and policy engines bullet"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('rule')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Evaluate fixture rule packs for each named use (an eligibility rule, an accounting invariant, a market-structure rule and a contract term). Assert that each verdict matches the expected outcome and cites the pack version and the rules that fired."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "LEDGER",
+      "COMPLIANCE"
+    ],
+    "notes": "The M p18 wording is kept. REASON-014 is the determinism half of 'deterministic business logic'. 'Versioned rule packs' follows the RulePack output of M p29 (REASON-021). The platform's existing pre-trade limits are a deterministic rule set owned by the risk domain. This requirement is the general engine and does not replace them. The umbrella items' NON_RUST flag was removed."
+  },
+  {
+    "id": "REASON-014",
+    "domain": "REASON",
+    "title": "Rule evaluation is deterministic",
+    "statement": "Rule and policy evaluation is deterministic. The same rule-pack version applied to the same facts always produces the same verdict and the same trace of fired rules, whatever order the facts arrive in. No learned model takes part in the evaluation.",
+    "rationale": "A rule whose verdict can differ between two runs cannot be replayed, and a replay that disagrees with the original proves nothing.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('rules')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 rule and policy engines bullet ('deterministic business logic')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Evaluate a fixture rule pack over a recorded fact set twice, in separate processes, with the facts supplied in different orders. Assert that the verdicts and traces are byte-identical, and that the evaluation path makes no model call."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "REPLAY"
+    ],
+    "notes": "Split from the M p18 rule bullet ('deterministic business logic'). The 'no learned model' clause applies the house rule that deterministic pre-trade checks never route to a model, which qip-cost-router's Determinism::Required arm makes structural. The order-independence in the check follows the core-rust rule to use BTreeMap or BTreeSet wherever iteration order reaches output. P0 as a correctness invariant."
+  },
+  {
+    "id": "REASON-015",
+    "domain": "REASON",
+    "title": "Constraint satisfaction via CSP, SAT and SMT",
+    "statement": "Where a problem suits them, the fabric answers constraint-satisfaction problems with CSP, SAT or SMT formulations. It returns either a satisfying assignment, or a verdict that the constraints are unsatisfiable together with a subset of constraints that conflict.",
+    "rationale": "Whether a set of limits, obligations and positions can all hold at once is an exact question, and satisfiability solvers answer it exactly. An unsatisfiable verdict that names the conflicting constraints tells a person what to change.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('constraint solvers')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('constraint/SAT/SMT/MILP/graph solvers')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('constraint reasoning')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 constraint reasoning bullet ('CSP/SAT/SMT')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('constraint')"
+      },
+      {
+        "doc": "H",
+        "page": "L279",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, node 'sym' ('SAT/SMT')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "On generated constraint sets with known answers, assert that every returned assignment satisfies every constraint, that every 'unsatisfiable' verdict is confirmed by independent brute force on small instances, and that the reported conflicting subset is itself unsatisfiable."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "RISK",
+      "CAPITAL"
+    ],
+    "notes": "The M p18 constraint bullet is split three ways: satisfaction (this item), optimisation (REASON-016) and QUBO formulations (REASON-017). The general constraint mentions in M p5, p8, p16 and p44 and in H L279 are cited on all three. The blueprints name Z3 for this work (G p9, G p11; REASON-033), so NON_RUST and NEW_DEPENDENCY are kept (ADR 0099 C5; ADR 0002, ADR 0009). Returning the conflicting subset follows M p40 \u00a728 (outside this extraction): an unsatisfied constraint marks the conclusion infeasible or unresolved, and the contradiction trace is kept."
+  },
+  {
+    "id": "REASON-016",
+    "domain": "REASON",
+    "title": "Constraint optimisation via MILP and graph solvers",
+    "statement": "Where a problem suits them, the fabric solves constrained optimisation problems with MILP or graph-solver formulations. It returns a feasible solution, the solution's objective value, and whether optimality was proven or the search stopped at a stated bound.",
+    "rationale": "Allocation, routing and hedge selection are optimisation problems with hard constraints. A solution that does not say whether it is optimal, or how far from the bound it stopped, cannot be compared with another solution.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('constraint solvers')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('constraint/SAT/SMT/MILP/graph solvers')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('constraint reasoning')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 constraint reasoning bullet ('graph solvers', 'MILP')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('constraint')"
+      },
+      {
+        "doc": "H",
+        "page": "L279",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, node 'sym' ('MILP')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "On generated MILP and graph instances small enough to solve exhaustively, assert that every returned solution satisfies all constraints, that a solution reported as optimal matches the exhaustive optimum, and that any reported gap is consistent with the returned bound."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "CAPITAL",
+      "ARBITRAGE"
+    ],
+    "notes": "Split from the M p18 constraint bullet (see REASON-015). The blueprints name OR-Tools for this work (REASON-033), which is why the flags are kept. This solver is also the classical baseline that REASON-017's QUBO formulations must be compared against (ADR 0006)."
+  },
+  {
+    "id": "REASON-017",
+    "domain": "REASON",
+    "title": "Constraint problems can be formulated as QUBOs",
+    "statement": "Where a constraint problem admits it, the fabric can express the problem as a QUBO-style formulation whose decoded minimum is a solution of the original problem. The formulation can then be offered to the quantum path as a candidate search.",
+    "rationale": "A QUBO is the bridge between a symbolic constraint problem and quantum or annealing-style search. If the encoding is not equivalent to the original problem, any quantum result answers a different question.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('constraint solvers')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('constraint/SAT/SMT/MILP/graph solvers')"
+      },
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('constraint reasoning')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 constraint reasoning bullet ('QUBO-style formulations where appropriate')"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('constraint')"
+      },
+      {
+        "doc": "H",
+        "page": "L279",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, node 'sym' ('QUBO')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "On generated small constraint problems, brute-force the QUBO minimum and decode it. Assert that the decoded solution satisfies the original constraints and has the same objective value as the classical solver's optimum on the same instance (the ADR 0006 baseline)."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "QUANTUM"
+    ],
+    "notes": "Split from the M p18 constraint bullet (see REASON-015). H L279 lists QUBO beside SAT, SMT and MILP. M p20-21 \u00a711 (outside this extraction) sets the terms. Quantum may assist 'structured symbolic/combinatorial reasoning' as an experimental hybrid, compared with classical solvers, and 'Quantum output is a candidate solution or search aid, never a proof of truth'. ADR 0006 already requires a classical baseline every time a quantum path runs. NON_RUST and NEW_DEPENDENCY were removed: building a QUBO matrix is arithmetic, and the platform already reaches Qiskit Runtime through an existing path. How quantum is invoked is covered by REASON-037 and REASON-038. P2: master Phase 6 ('benchmarked experiments for symbolic/combinatorial search')."
+  },
+  {
+    "id": "REASON-018",
+    "domain": "REASON",
+    "title": "Plans and tool programs are composed from explicit goals and constraints",
+    "statement": "The fabric performs planning and program synthesis. From an explicit goal and explicit constraints, it composes tools, actions, experiments and research plans into a plan in which every step traces to the goal and no step violates a stated constraint. When no such plan exists, it reports that instead of returning a plan that violates a constraint.",
+    "rationale": "A plan derived from stated goals and constraints can be inspected before it runs. A plan improvised inside a model can only be watched while it runs.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "\u00a72 Corrections Required to v10.1 \u2014 reasoning fabric row ('planning')"
+      },
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('planning')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 planning/program synthesis bullet"
+      },
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "\u00a731 Capability Completeness Checklist ('planning')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated goal and constraint fixtures over a registered tool set, assert that every step of each returned plan uses a registered tool, contributes to the goal and satisfies every constraint, and that an unsatisfiable fixture yields a 'no plan' result."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY",
+      "RES"
+    ],
+    "notes": "The M p18 wording is kept. M p5, M p8 and M p44 name only 'planning'. Planning and program synthesis are one requirement because the source treats them as one mechanism: composing tools and actions into an executable plan. A plan here takes no action. Plans that act outside the platform are governed by AGENCY (AGENCY-001, AGENCY-016), and actions run only through registered tools (AGENCY-007). NON_RUST and NEW_DEPENDENCY were removed because nothing names a planner library. P2: master Phase 8 (broader tool use, self-directed research campaigns)."
+  },
+  {
+    "id": "REASON-019",
+    "domain": "REASON",
+    "title": "Abduction ranks explanations for surprising observations",
+    "statement": "Given a surprising observation, the fabric's abductive reasoning infers candidate explanations and ranks them. It names the best current explanation, and for each candidate it states the evidence and assumptions the candidate rests on.",
+    "rationale": "Surprises are where the platform learns fastest, but only if it proposes explanations that it can later test.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('abductive reasoning')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 abductive reasoning bullet"
+      },
+      {
+        "doc": "H",
+        "page": "L279",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, node 'sym' ('causal/abductive reasoning')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Present a fixture observation that contradicts expected state and has a known planted cause. Assert that the planted cause appears among the ranked explanations with its supporting evidence, and that the ranking is reproducible across runs."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AMBIENT",
+      "WORLD"
+    ],
+    "notes": "Split from the M p18 abductive bullet. Preserving the alternatives is REASON-020. M p8 and H L279 name abductive reasoning without detail and are cited on both items. The ambient mesh scores surprise (AMBIENT domain) and is one source of the observations this consumes. NEW_DEPENDENCY was removed. P1: master Phase 2 (symbolic reasoning services)."
+  },
+  {
+    "id": "REASON-020",
+    "domain": "REASON",
+    "title": "Abduction preserves the alternative explanations",
+    "statement": "Abductive reasoning preserves alternatives. The explanations that were not ranked best are kept with their scores and evidence rather than discarded, so later evidence can promote one of them without deriving it again.",
+    "rationale": "Collapsing to one explanation early is how a platform becomes confidently wrong. v11.6 represents disagreement explicitly instead of collapsing it prematurely.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('abductive reasoning')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 abductive reasoning bullet ('while preserving alternatives')"
+      },
+      {
+        "doc": "H",
+        "page": "L279",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, node 'sym' ('causal/abductive reasoning')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Run abduction on a fixture with three candidate explanations and assert that all three are recorded with scores and evidence. Then add evidence favouring the second-ranked explanation, and assert that it is promoted from the retained record rather than derived again."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "MEMORY"
+    ],
+    "notes": "Split from the M p18 abductive bullet (see REASON-019). The same principle governs the World Model Federation (M p3 \u00a71.1: 'disagreement is represented explicitly instead of collapsed prematurely'). This is P1 rather than P0 because it protects epistemic state, not an execution path or a money-moving path. Retention is bounded by the house rule on bounded working sets; the event log is the record."
+  },
+  {
+    "id": "REASON-021",
+    "domain": "REASON",
+    "title": "Validated discoveries become versioned symbolic theory",
+    "statement": "Validated discoveries and patterns can be compiled into symbolic theory: ontology relations, rules, graph predicates, invariants, causal structures, constraints or proof procedures. Each is emitted as a versioned RulePack, ConstraintPack or TheoryDelta rather than written into the fabric in place.",
+    "rationale": "A discovery that stays inside a neural model has to be relearned every time and cannot be reviewed. Once it is compiled into a versioned rule or constraint, it can be read, tested, cited in a derivation and withdrawn.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('neural-to-symbolic compilation')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 neural-to-symbolic compilation bullet"
+      },
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "\u00a723 Intelligence Expansion Engine \u2014 mechanism table: Symbolic theory growth"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Compile a fixture validated discovery into a RulePack and assert that the pack is versioned and that the rule engine evaluates it. Then replay an earlier cycle and assert that it reasons under the pack version it originally used, not the new one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "MODEL"
+    ],
+    "notes": "This merges the neural-to-symbolic compilation of M p8 and M p18 with the M p29 symbolic theory growth row. The M p29 row says the same thing more specifically: it adds invariants, causal structures and proof procedures, and it names the output contracts. Its wording is kept, and the M p18 'graph predicates' are added. The row's contradiction clause is REASON-031. Compilation into reflex artifacts is REASON-022, and the validation precondition is REASON-023. 'Rather than in place' is this catalogue's reading of the versioned output contracts, together with the house rule that sealed history is never edited. NON_RUST and NEW_DEPENDENCY were removed because the artifacts are data that the in-tree rule engine reads. P3: master Phase 9 (M p42) is the phase that names 'symbolic theory/rule growth'."
+  },
+  {
+    "id": "REASON-022",
+    "domain": "REASON",
+    "title": "Bounded predicates compile into reflex-compatible artifacts",
+    "statement": "Deterministic solvers in the fabric can compile validated, bounded predicates into reflex-compatible artifacts. A Reflex Cell evaluates such an artifact locally, without calling back into the fabric.",
+    "rationale": "The fast lane cannot wait for a solver, but it can evaluate a predicate that a solver has already derived. Compiling ahead of time lets symbolic knowledge reach the reflex lane without putting the fabric on the hot path.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('neural-to-symbolic compilation')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 neural-to-symbolic compilation bullet ('bounded reflex predicates')"
+      },
+      {
+        "doc": "M",
+        "page": "35",
+        "section": "\u00a726 Platform & Deployment Architecture \u2014 placement table: Symbolic reasoning services ('deterministic solvers may also compile bounded predicates into reflex artifacts')"
+      },
+      {
+        "doc": "M",
+        "page": "35",
+        "section": "\u00a726 placement table \u2014 Symbolic reasoning services (extracted separately as 'reflex-compatible artifacts')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Compile a fixture predicate and load the artifact into a test Reflex Cell with every fabric service stopped. Assert that the cell evaluates the artifact and returns the same answers the fabric gives for the same inputs."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "REFLEX",
+      "MODEL"
+    ],
+    "notes": "This merges the reflex half of the M p18 neural-to-symbolic bullet with M p35. The M p35 clause was extracted twice: as the second clause of the placement item and as a separate item. M p19 \u00a710 (outside this extraction) puts 'World-model/reflex compilers' in the slow -> warm/reflex lane, translating validated symbolic predicates into 'bounded deployable artifacts'. G p20 \u00a721.2 step 5 (outside this extraction) says promotion gates convert a validated result into signed packages, 'never an unreviewed direct hot-path call'. The compiler may be one of the named non-Rust solvers (REASON-033), so NON_RUST and NEW_DEPENDENCY are kept, but the artifact it emits runs in the Rust reflex cell. The artifact's determinism and bound are REASON-024 and REASON-025. P2: master Phase 8 (autonomous model/strategy lifecycle) and GCP Phase 8 (signed model package lifecycle)."
+  },
+  {
+    "id": "REASON-023",
+    "domain": "REASON",
+    "title": "Only validated discoveries are compiled",
+    "statement": "The compiler refuses any discovery or pattern that does not carry a passed validation record. Nothing unvalidated becomes a rule, a constraint, a predicate or a reflex artifact.",
+    "rationale": "Compilation turns a hypothesis into something that executes deterministically and is trusted as theory. Compiling an unvalidated pattern promotes it past every gate that should have tested it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('neural-to-symbolic compilation')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 neural-to-symbolic compilation bullet ('validated discoveries can become')"
+      },
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "\u00a723 Intelligence Expansion Engine \u2014 mechanism table: Symbolic theory growth ('Validated patterns can become')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Submit generated discoveries, with and without a passed validation record, including at least one of each. Assert that every discovery without such a record is refused with a reason and produces no artifact, and that every discovery with one compiles."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "GOV",
+      "EVAL"
+    ],
+    "notes": "Split from the precondition in M p18 ('validated discoveries') and M p29 ('Validated patterns'). The check covers admission as well as refusal, so a gate that refuses everything does not pass. P0 because this is the gate between a learned pattern and deterministic execution. What counts as validation is decided by the Evaluation / Promotion Gate (H view 05, node 'eval'), not by this fabric. NEW_DEPENDENCY was removed because a gate needs no crate."
+  },
+  {
+    "id": "REASON-024",
+    "domain": "REASON",
+    "title": "Compiled reflex predicates execute deterministically",
+    "statement": "A predicate compiled into a reflex artifact evaluates deterministically. Given the same inputs, the same artifact returns the same result on every evaluation and on every host.",
+    "rationale": "If a reflex predicate answers differently on two hosts, two cells disagree about the same book, and neither side of the disagreement can be replayed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('neural-to-symbolic compilation')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 neural-to-symbolic compilation bullet ('bounded reflex predicates that execute deterministically')"
+      },
+      {
+        "doc": "M",
+        "page": "35",
+        "section": "\u00a726 placement table \u2014 Symbolic reasoning services ('deterministic solvers may also compile bounded predicates')"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Evaluate a compiled artifact over a recorded input stream in two separate processes and assert that the outputs are byte-identical. Then replay the stream from the event log and assert the same outputs again."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "REPLAY"
+    ],
+    "notes": "The M p18 phrase 'bounded reflex predicates that execute deterministically' is split into determinism (this item) and boundedness (REASON-025). M p35 attributes the compilation to 'deterministic solvers', but the determinism that matters at the reflex cell is the artifact's. NON_RUST and NEW_DEPENDENCY were removed because the property belongs to the artifact the Rust cell evaluates, not to the compiler."
+  },
+  {
+    "id": "REASON-025",
+    "domain": "REASON",
+    "title": "Compiled reflex predicates are bounded",
+    "statement": "A predicate compiled into a reflex artifact is bounded. It reads a declared, finite set of inputs and has a stated worst-case evaluation cost. The compiler refuses any artifact whose worst case cannot be stated.",
+    "rationale": "The reflex lane has a latency budget. A predicate whose evaluation cost depends on the data can exceed that budget in exactly the market that matters.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "\u00a73 Full Capability Map \u2014 reasoning fabric row ('neural-to-symbolic compilation')"
+      },
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 neural-to-symbolic compilation bullet ('bounded reflex predicates')"
+      },
+      {
+        "doc": "M",
+        "page": "35",
+        "section": "\u00a726 placement table \u2014 Symbolic reasoning services ('compile bounded predicates into reflex artifacts')"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "For each compiled fixture artifact, assert that it declares its inputs and its worst-case cost. Measure evaluation over adversarial inputs and assert that no evaluation exceeds the declared bound. Assert that an artifact with unbounded evaluation, such as a recursive predicate, is refused at compilation."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": "Split from M p18 (see REASON-024). 'Bounded' is read as bounded inputs and bounded evaluation cost, which is what a reflex budget needs. M p19 \u00a710 (outside this extraction) calls the output of reflex compilers 'bounded deployable artifacts'. Limits on what a predicate may authorise belong to the risk envelope, not to this requirement. Flags were removed as for REASON-024."
+  },
+  {
+    "id": "REASON-026",
+    "domain": "REASON",
+    "title": "A Symbolic Reasoning Brain serves the specialist society",
+    "statement": "The specialist brain society includes a Symbolic Reasoning Brain. On request from other brains, it runs ontology, temporal, causal, rule, probabilistic and constraint reasoning and returns explicit derivations.",
+    "rationale": "Other brains need one addressable place to ask for exact reasoning. Without it, each specialist reimplements a fragment, and none of the fragments is checked.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "From a fixture specialist, request one query of each of the six reasoning kinds from the Symbolic Reasoning Brain. Assert that each answer arrives with a derivation artifact (REASON-002) identifying which reasoner produced it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COGNITION"
+    ],
+    "notes": "Split from the M p16 row. The brain's reasoning scope is this item. 'Explicit derivations' is merged into REASON-002, and 'machine-checkable constraints' is REASON-027. ADR 0091 composes brains as library crates inside a few binaries, so the brain need not be a separate process (ADR 0099 C7). NON_RUST and NEW_DEPENDENCY were removed because the row names no technology. P1: master Phase 2."
+  },
+  {
+    "id": "REASON-027",
+    "domain": "REASON",
+    "title": "Emitted constraints are machine-checkable",
+    "statement": "Every constraint the fabric emits for another component to enforce is machine-checkable. It is expressed in a declared formal form that a deterministic evaluator can check against a state without the reasoner that produced it.",
+    "rationale": "A constraint that only its author can interpret is advice. Risk, capital and reflex components must be able to enforce a constraint from the fabric without calling back into the fabric.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "\u00a79.1 Specialist Brain Society \u2014 Symbolic Reasoning Brain row ('machine-checkable constraints')"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "\u00a711 Cognitive, Model and Quantum Compute Plane \u2014 Symbolic/neuro-symbolic reasoning row ('machine-checkable proofs/constraints where possible')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Evaluate generated constraints emitted by the fabric against generated states, using a standalone evaluator that shares no code with the reasoner. Assert that its verdict agrees with the fabric's own on every state."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "REFLEX",
+      "CONTRACT"
+    ],
+    "notes": "M p16 is unconditional, and G p11 adds 'where possible'. For constraints the unconditional M wording is kept. G's qualifier is kept for proofs (REASON-035), because not every reasoner yields a proof. The placement half of G p11 is REASON-032 and its runtimes are REASON-033. NON_RUST, NEW_DEPENDENCY and KUBERNETES were removed because this is a format property. P1 as a master Phase 2 contract, consistent with CONTRACT-024."
+  },
+  {
+    "id": "REASON-028",
+    "domain": "REASON",
+    "title": "Reasoning is a society of interoperable reasoners",
+    "statement": "Reasoning is done by a society of interoperable reasoners rather than a single chain-of-thought model. Each reasoner accepts and emits conclusions through a shared contract, so one reasoner's derivation can be another's input. No single model is the only path by which the platform reaches a conclusion.",
+    "rationale": "Neural models are excellent proposal engines and representation learners, while symbolic systems bring invariants, exact constraints, compositional reasoning and auditable derivations (M p17). A single chain-of-thought model offers none of the second group.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "\u00a79.4 Symbolic & Neuro-Symbolic Reasoning Fabric \u2014 preamble"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Run a fixture query whose derivation needs two reasoner kinds, for example a temporal ordering that feeds a constraint check. Assert that the final derivation cites both through the shared contract. Then disable the language model and assert that the fabric still answers rule, temporal and constraint queries."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COGNITION",
+      "MODEL"
+    ],
+    "notes": "According to docs/architecture/current-state/, the kernel's REASON stage currently dispatches the agent organisation and calls a language-model chain. The second half of the check is what distinguishes a society of reasoners from a single model with helpers. P1: master Phase 2."
+  },
+  {
+    "id": "REASON-029",
+    "domain": "REASON",
+    "title": "Unexplained observations extend the ontology through an OntologyPatch",
+    "statement": "When existing schemas cannot explain an observation, the knowledge graph and ontology are extended with the novel entities, relationships, causal drivers, asset classes, event types or physical processes it requires. The extension is made through a versioned OntologyPatch or GraphSchema rather than an in-place edit.",
+    "rationale": "An ontology that cannot grow forces new realities into old categories, where they are misclassified without anyone noticing. A versioned patch keeps what the platform knew before the change replayable.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "\u00a723 Intelligence Expansion Engine \u2014 mechanism table: World-model + ontology expansion"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "Feed an observation of a type the fixture ontology lacks, and assert that an OntologyPatch is produced naming the new type and the observation that required it. Then replay an earlier cycle and assert that it still reasons under the ontology version it originally used."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "WORLD",
+      "DATA"
+    ],
+    "notes": "'Rather than an in-place edit' is this catalogue's reading of the output contract (OntologyPatch/GraphSchema), together with the house rule that sealed history is never edited. M p30 \u00a723 (outside this extraction) names an Ontology Registry of versioned entity, event, relationship, market, asset, product, causal-driver and lifecycle definitions. P3: master Phase 9 ('ontology/source/tool/brain/capability registries')."
+  },
+  {
+    "id": "REASON-030",
+    "domain": "REASON",
+    "title": "Cross-domain synthesis proposes causal chains across domains",
+    "statement": "A synthesis layer searches for causal and economic links across domains, for example weather -> shipping -> commodity basis -> FX -> equities -> options -> event markets. It records each candidate as a CrossDomainHypothesis that carries the chain, the evidence for each link, and its status as an untested hypothesis.",
+    "rationale": "The most valuable links often cross the boundaries between specialist domains, where no single specialist looks. Recording them as hypotheses keeps a plausible chain from being treated as an established one.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "\u00a723 Intelligence Expansion Engine \u2014 mechanism table: Cross-domain synthesis"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Seed a fixture knowledge graph with a planted multi-domain chain and run synthesis. Assert that a CrossDomainHypothesis is produced whose links match the planted chain, that each link cites its evidence, and that its status stays 'hypothesis' until it is validated."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "WORLD"
+    ],
+    "notes": "'Status as an untested hypothesis' is this catalogue's reading of the contract name. Validation belongs to the evaluation gate. P3: \u00a723 is the Intelligence Expansion Engine, which master Phase 9 delivers."
+  },
+  {
+    "id": "REASON-031",
+    "domain": "REASON",
+    "title": "Theory contradictions raise explicit revision tasks",
+    "statement": "When symbolic theory contradicts an observation, a validated result or another part of the theory, the contradiction generates an explicit theory-revision task. The task carries the conflicting elements and their evidence. A contradiction is never absorbed silently or left to accumulate.",
+    "rationale": "The 'symbolic theory growth' extraction dropped the row's contradiction clause, which is a distinct failure path. A theory that grows without revising itself accumulates rules that cannot all be true.",
+    "kind": "failure_behavior",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "\u00a723 Intelligence Expansion Engine \u2014 mechanism table: Symbolic theory growth ('contradictions generate explicit theory-revision tasks')"
+      },
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "\u00a723 mechanism table, Symbolic theory growth row (contradiction clause, extracted separately)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Admit a fixture rule, then feed an observation that contradicts it. Assert that a theory-revision task is created naming the rule, the observation and the evidence, and that the rule is not silently modified or dropped."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "GOV"
+    ],
+    "notes": "This merges the contradiction clause of the extracted 'symbolic theory growth' item with the item extracted for that clause alone. M p40 \u00a728 (outside this extraction) gives the immediate behaviour for 'Symbolic contradiction / unsatisfied constraints': mark the conclusion or action infeasible or unresolved, keep the contradiction trace, search for alternative hypotheses and plans, and fail closed for money-moving invariants. That immediate behaviour is a P0 candidate that this extraction does not cover; REASON-001 and REASON-015 cover part of it. P3: master Phase 9."
+  },
+  {
+    "id": "REASON-032",
+    "domain": "REASON",
+    "title": "Symbolic reasoning runs in the warm/slow lane on compute-optimised pools",
+    "statement": "Symbolic reasoning services (graph, logic, constraint and planning runtimes) run in the warm/slow lane on dedicated compute-optimised node pools, never on Reflex Cell hosts.",
+    "rationale": "Solvers have unpredictable run times and heavy memory use. Placed beside the reflex path, they would compete with it for CPU. In their own pools, they can be sized to their own workload.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "35",
+        "section": "\u00a726 Platform & Deployment Architecture \u2014 placement table: Symbolic reasoning services ('warm/slow compute pools')"
+      },
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "\u00a78 Regional GKE Service Plane \u2014 Symbolic reasoners / solvers row ('Compute-optimized GKE node pools')"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "\u00a711 Cognitive, Model and Quantum Compute Plane \u2014 Symbolic/neuro-symbolic reasoning row ('GKE compute pools')"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "In a Terraform plan, assert that the reasoning services are placed on a dedicated compute-optimised pool or service separate from every Reflex Cell host, and that no execution-node template schedules them."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "ARCH"
+    ],
+    "notes": "G p9 is the most specific source ('compute-optimized GKE node pools') and its wording is kept. M p35 says 'warm/slow compute pools', and G p11 says 'GKE compute pools'. M p19 \u00a710 (outside this extraction) puts symbolic and neuro-symbolic reasoners in the slow/warm lane. GKE conflicts with ADR 0024, which retired Kubernetes in favour of Cloud Run (ADR 0099 C3). A dedicated Cloud Run service can meet the lane separation, so the KUBERNETES flag attaches to the node-pool wording, not to the separation. NON_RUST and NEW_DEPENDENCY were moved to REASON-033, which covers the runtimes named in the same rows. The hot-path rule is REASON-034, and the reflex-compilation clause of M p35 is REASON-022. P1: master Phase 2 and GCP Phase 6 (regional service plane). G p11's cognitive plane is GCP Phase 8."
+  },
+  {
+    "id": "REASON-033",
+    "domain": "REASON",
+    "title": "Reasoners are built on Z3, OR-Tools and custom Rust or Python services",
+    "statement": "The symbolic reasoners and solvers are implemented with Z3, OR-Tools, custom Rust graph and symbolic services, and custom Python reasoners.",
+    "rationale": "The blueprint names mature solvers rather than in-tree ones because SMT and MILP solving represent decades of specialised engineering. That choice collides with this repository's Rust-only and two-dependency decisions, and it has to be settled in a decision record, not in a build.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "\u00a78 Regional GKE Service Plane \u2014 Symbolic reasoners / solvers row ('Z3/OR-Tools/custom Rust graph/symbolic services')"
+      },
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "\u00a711 Cognitive, Model and Quantum Compute Plane \u2014 Symbolic/neuro-symbolic reasoning row ('Z3/OR-Tools/custom Rust/Python reasoners')"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Check that every named runtime a reasoner service uses is admitted, before it is built, by an ADR that resolves ADR 0099 conflict C5, and that ./scripts/check-dependencies.sh still reports 'all permitted' for the Rust workspace."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "ARCH",
+      "GCP"
+    ],
+    "notes": "G p11 adds Python to G p9's list, and the union is kept. The applicable records are ADR 0099 conflict C5 (Z3 and OR-Tools for symbolic reasoning, against ADR 0001's Rust everywhere) and ADR 0002/0009 (serde and serde_json only). Until a record resolves C5, this requirement is scored as a gap rather than built. Custom Rust services meet it without any conflict."
+  },
+  {
+    "id": "REASON-034",
+    "domain": "REASON",
+    "title": "Symbolic reasoners are never a hot-path dependency",
+    "statement": "No hot-path component depends on a symbolic reasoner or solver at run time. A Reflex Cell keeps deciding and executing when every reasoning service is unavailable.",
+    "rationale": "A solver's worst-case run time is unbounded. If a reflex decision waited on one, the latency budget would be set by the hardest instance the solver ever sees.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "\u00a78 Regional GKE Service Plane \u2014 Symbolic reasoners / solvers row ('no hot-path dependency')"
+      },
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "\u00a78 Regional GKE service plane rows and bullets (extracted separately as an invariant)"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Stop every reasoning service while a test Reflex Cell runs passes against the simulated venue, and assert that its pass count, refusals and order flow are unchanged. Separately, assert that no edge crate depends on a reasoning crate in the workspace dependency graph."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "ARCH"
+    ],
+    "notes": "This merges the 'no hot-path dependency' clause of the extracted G p9 placement item with the item extracted for that clause alone. M p35's warm/slow placement (REASON-032) implies the rule without stating it. The same rule appears for quantum in the G p19 connectivity table (outside this extraction: 'Agent/Symbolic workers -> IBM Quantum gateway \u2026 no execution dependency') and for world models in M p35 ('no single model is on the reflex critical path'). P0 because it protects master Phase 1's reflex cell, whose exit capability includes the local fast path. KUBERNETES and NON_RUST were removed because the invariant concerns the dependency graph, not the runtime."
+  },
+  {
+    "id": "REASON-035",
+    "domain": "REASON",
+    "title": "Proofs are machine-checkable by an independent checker",
+    "statement": "Where the reasoning produces a proof, the proof is machine-checkable: a checker independent of the solver that produced it can verify it again. A proof the checker rejects is not accepted as support for any conclusion.",
+    "rationale": "A solver's claim to have proved something is only as good as the solver. An independent check turns the claim into evidence that a person can rerun.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "\u00a711 Cognitive, Model and Quantum Compute Plane \u2014 Symbolic/neuro-symbolic reasoning row ('machine-checkable proofs/constraints where possible')"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For generated derivations, verify each trace again with a checker that shares no code with the solver. Assert that the checker accepts every untampered trace and rejects every trace with one step mutated, and that a conclusion whose trace was rejected is not accepted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID",
+      "CONTRACT"
+    ],
+    "notes": "Split from G p11. The constraints half is REASON-027, the placement REASON-032 and the runtimes REASON-033. G's 'where possible' is kept for proofs because not every reasoner, for example a probabilistic one, yields a proof in the formal sense. CONTRACT-024 requires a SymbolicDerivation to carry a 'machine-checkable trace' (M p37). KUBERNETES, NON_RUST and NEW_DEPENDENCY were removed because this is a format property. P1: master Phase 2."
+  },
+  {
+    "id": "REASON-036",
+    "domain": "REASON",
+    "title": "Symbolic reasoners draw on the knowledge stores and simulations",
+    "statement": "In step 4 of the world-event-to-cognitive-response flow, specialist agents and symbolic reasoners answer tasks by querying the Knowledge Catalog, Spanner Graph, BigQuery and simulations. Each answer cites the records and simulation runs it read.",
+    "rationale": "Reasoning from a model's parametric memory alone cannot be audited. When each answer is grounded in governed stores and cites them, its evidence is something a person can open.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "\u00a721.2 World event to cognitive response \u2014 step 4"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Raise a fixture research task and let a reasoner answer it against fixture stores and a simulation. Assert that the answer's evidence references resolve to records in those stores and to the simulation run."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "WORLD",
+      "COGNITION"
+    ],
+    "notes": "Split from G p20 step 4. Its quantum clause is split into REASON-037 and REASON-038. The citation clause applies REASON-002 to this flow. The three stores are managed services that conflict with in-tree storage (ADR 0099 C4). An in-tree equivalent satisfies the data flow but not the named placement. NON_RUST was removed because querying a store implies no language. P2: GCP Phase 8 (Spanner Graph, ambient/symbolic agents)."
+  },
+  {
+    "id": "REASON-037",
+    "domain": "REASON",
+    "title": "Reasoners never wait synchronously on a quantum job",
+    "statement": "When a symbolic reasoner or specialist agent uses quantum resources, it does so asynchronously. No reasoning step blocks on a quantum job, and no execution path depends on one.",
+    "rationale": "A quantum job's queue time can run from minutes to hours, and its availability is outside the platform's control. Anything that waits on a quantum job inherits both problems.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "\u00a721.2 World event to cognitive response \u2014 step 4 ('quantum is invoked only for eligible asynchronous research')"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Make the quantum gateway unreachable, or delay its responses indefinitely, while the fabric answers a constraint query with a quantum-eligible formulation. Assert that the answer arrives within the classical solver's time and carries the classical result, and that the reflex cell's passes are unaffected."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "QUANTUM",
+      "REFLEX"
+    ],
+    "notes": "Split from G p20 step 4 (see REASON-036). The eligibility half is REASON-038. Two passages outside this extraction say the same. The G p19 connectivity table gives the Agent/Symbolic workers -> IBM Quantum gateway link as 'Async \u2026 Eligible quantum jobs only; no execution dependency', and M p20 \u00a711 says 'QPU jobs are asynchronous and never sit on the market hot path.' ADR 0006 already requires a local fallback and a classical baseline on every quantum run. MANAGED_SERVICE and NON_RUST were removed: the platform reaches IBM Quantum over its existing path, and the invariant concerns blocking, not technology."
+  },
+  {
+    "id": "REASON-038",
+    "domain": "REASON",
+    "title": "Only eligible research workloads are sent to quantum",
+    "statement": "Symbolic reasoners and specialist agents send to quantum only workloads classified as eligible research, meaning a problem with a suitable formulation and a classical baseline on the same instance. Any other request is refused before it leaves the platform.",
+    "rationale": "Quantum methods run here only where a measured benefit over the classical baseline can be shown. A workload without a baseline produces a result that nothing can judge.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "\u00a721.2 World event to cognitive response \u2014 step 4 ('quantum is invoked only for eligible asynchronous research')"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Submit fixture workloads, including at least one with and one without an eligibility classification and classical baseline. Assert that only the eligible ones reach the gateway client, and that the others are refused with a reason."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "QUANTUM",
+      "FINOPS"
+    ],
+    "notes": "Split from G p20 step 4 (see REASON-037). The definition of eligibility follows ADR 0006 and M p20-21 \u00a711 (outside this extraction). \u00a711 says 'Every quantum workload has a classical baseline, a common objective and a promotion threshold', and runs the symbolic/combinatorial workload only 'when the formulation is suitable; compare to classical solvers'. This is P2 rather than P0 because it is an eligibility rule of the quantum foundry, not a safety invariant; the safety half is REASON-037. P2 comes from master Phase 6 ('benchmarked experiments for symbolic/combinatorial search'), while GCP places the IBM Quantum gateway in Phase 10 (P3). The master blueprint governs what the system does."
+  },
+  {
+    "id": "REASON-039",
+    "domain": "REASON",
+    "title": "The reasoning fabric feeds the Meta/Arbitration Brain",
+    "statement": "The Neuro-Symbolic Reasoning fabric sends its conclusions to the Meta/Arbitration Brain as knowledge-class messages. These messages inform arbitration and carry no control authority.",
+    "rationale": "Arbitration between competing models is only as good as the evidence it sees, and exact derivations are among the strongest evidence available. Typing the link as knowledge keeps a derivation from becoming a command.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L292-293",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, edge sym -> meta ('knowledge')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Publish a fixture derivation from the fabric. Assert that the Meta/Arbitration Brain receives it as a knowledge-class message and records it among the evidence it weighs, and that the fabric emits no control-class message on that link."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "MODEL"
+    ],
+    "notes": "Split from the H L292-293 item. The ambient half is REASON-040. H's 'Meta / Arbitration Brain' (L281: 'weights models by regime/evidence and preserves disagreement') corresponds to the Meta Brain and the World Model Arbitration Brain in M p16 \u00a79.1. 'No control authority' is this catalogue's reading of the diagram's edge classes (knowledge, data, control, deploy). The same view also draws wm -> sym (knowledge), and M p11 (outside this extraction) draws the World Model Federation <-> symbolic reasoning link in both directions. P1 because both endpoints are master Phase 2 deliverables (symbolic reasoning services and model-disagreement representation)."
+  },
+  {
+    "id": "REASON-040",
+    "domain": "REASON",
+    "title": "The ambient mesh feeds the Meta/Arbitration Brain",
+    "statement": "The Ambient Proactive Mesh sends its output to the Meta/Arbitration Brain as knowledge-class messages, so ambient forecasts and surprise scores reach arbitration alongside the reasoning fabric's derivations.",
+    "rationale": "Arbitration that sees exact derivations but not continuously maintained expectations weighs models on part of the evidence. The diagram makes the Meta/Arbitration Brain the point where the two meet.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L292-293",
+        "section": "VIEWS.ai \u2014 05 \u00b7 Cognitive / AGI / Quantum Plane, edge amb -> meta ('knowledge')"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Emit a fixture ambient signal. Assert that the Meta/Arbitration Brain receives it as a knowledge-class message beside a fabric derivation on the same subject, and that the mesh emits no control-class message on that link."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AMBIENT",
+      "WORLD"
+    ],
+    "notes": "Split from the H L292-293 item because the two links can be checked independently. The requirement belongs mainly to AMBIENT. AMBIENT-011's notes observe the amb -> meta link, but no AMBIENT requirement states it, so it is kept here. AGENCY-058 covers the next hop (meta -> agency). P2 because the ambient mesh is master Phase 8."
+  }
+]

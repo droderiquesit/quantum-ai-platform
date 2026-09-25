@@ -1,0 +1,2083 @@
+[
+  {
+    "id": "ARCH-001",
+    "domain": "ARCH",
+    "title": "Fast reflex and slow cognitive systems are explicit and independently deployable",
+    "statement": "The platform is built as two explicit nervous systems: a slow cognitive system that searches, reads, verifies, models, simulates, reasons and trains, and a fast reflex system that reacts to local market state. The fast reflex lane and the slow cognitive lane are each independently deployable.",
+    "rationale": "The reflex system must react in microseconds to milliseconds without waiting for the global brain. If the two ship as one deployable, a cognitive release or a cognitive outage becomes a reflex outage.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      },
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "A reflex cell deployed with no cognitive-lane process present completes paper passes from its last signed packages, and a new cognitive-lane build is released without redeploying or restarting the cell."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "COGNITION"
+    ],
+    "notes": "Merged the §1 description of the two nervous systems (M p2) with the §31 COMPLETE TARGET that they be explicit and independently deployable (M p42). The inputs the fast system takes from the slow one were split out as ARCH-002. The slow system's responsibilities in time-lane terms are ARCH-020. The standing decision this matches is ADR 0008 (cells decide alone)."
+  },
+  {
+    "id": "ARCH-002",
+    "domain": "ARCH",
+    "title": "The reflex system takes packages from the slow system, not live calls",
+    "statement": "The fast reflex system receives compressed knowledge, models, policy and capital envelopes from the slow cognitive system as packages. It reacts to local market state using those packages and does not wait for, or call, the global brain.",
+    "rationale": "Source: the fast system 'reacts to local market state in microseconds to milliseconds without waiting for the global brain'. A synchronous query back to cognition would put a minutes-to-days lane on the order path.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The inbound interface a reflex cell accepts from the centre consists only of knowledge, model, policy and capital-envelope package types, and with the centre unreachable the cell keeps deciding from its cached packages."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "CAPITAL",
+      "MODEL"
+    ],
+    "notes": "Split from the same §1 paragraph as ARCH-001. The §5 path (M p11) names the delivered form as 'signed model + strategy + belief + capital + risk packs' distributed over the Global Reflex Mesh. Signing and activation of those packs belong to the package-lifecycle requirements, not here."
+  },
+  {
+    "id": "ARCH-003",
+    "domain": "ARCH",
+    "title": "A warm coordination layer connects the slow and fast systems",
+    "statement": "A warm coordination layer sits between the slow cognitive system and the fast reflex system and connects them. It carries cross-region arbitrage coordination, capital movement, portfolio management, market creation and settlement.",
+    "rationale": "These functions need more than one region's or one cell's state but cannot wait minutes to days. Without a layer of their own they drift either onto the hot path or into the cognitive lane.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      },
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The lane-placement register assigns cross-region arbitrage coordination, capital movement, portfolio management, market creation and settlement to warm-layer components, and none of them is a reflex-cell or cognitive-core component."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "CAPITAL",
+      "ARBITRAGE",
+      "SETTLEMENT"
+    ],
+    "notes": "Merged the §1 sentence (M p2) with the 'connects slow and fast systems' clause of a §31 COMPLETE TARGET (M p42). That target's other clause, that no global service lands on the local hot path, is ARCH-043. The time-lane table spreads this layer across Lane 1 (multi-leg coordination, ARCH-015) and Lane 2 (capital placement, treasury, rebalancing, ARCH-017), so the layer is a role and not a single lane. Capital movement, market creation and settlement run in simulated form only (ADR 0021). Their live forms carry LIVE_CAPITAL or EXTERNAL_ACTION in their own domains."
+  },
+  {
+    "id": "ARCH-004",
+    "domain": "ARCH",
+    "title": "The platform operates across regions, time zones, currencies, jurisdictions and venues",
+    "statement": "The platform operates across regions, time zones, currencies, jurisdictions, venues and information ecosystems.",
+    "rationale": "A system built around one implicit region, currency or jurisdiction hides that assumption in every calculation that touches it, and only fails when a second one arrives.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The canonical instrument, order, position and event types carry region, time zone, currency, jurisdiction and venue explicitly, and no code path assumes a single default for any of them."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "COMPLIANCE",
+      "MESH"
+    ],
+    "notes": "This is a §1.1 product-identity bullet. It is kept as a requirement because each dimension it names can be checked in the canonical types. The multi-region deployment itself is the Phase 4 / GCP Phase 7 bundle (ARCH-034)."
+  },
+  {
+    "id": "ARCH-005",
+    "domain": "ARCH",
+    "title": "The platform runs its research, model, strategy and operating lifecycle autonomously",
+    "statement": "The platform autonomously discovers data, generates hypotheses, runs research, trains models, promotes strategies, deploys artifacts, allocates capital and operates itself.",
+    "rationale": "The product identity is an autonomous system. A human is not required to start each of these steps, and ARCH-006 bounds each of them.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "In a paper environment and with no human prompt, one run carries at least one item through each named activity (a source discovered, a hypothesis generated, research run, a model trained, a strategy promoted, an artifact deployed and paper capital allocated), and each step is recorded with its authority check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COGNITION",
+      "EXPANSION",
+      "MODEL",
+      "CAPITAL",
+      "AIOPS"
+    ],
+    "notes": "Split from the §1.1 'Autonomous' bullet. Its qualifier 'inside bounded authority' is ARCH-006 and is P0 on its own. Capital allocation is autonomous only against the simulated broker (ADR 0021). Artifact deployment is autonomous only through the normal pipeline (GCP Rule 9, G p3). Master Phase 8 delivers the autonomous lifecycle, which is why this is P2."
+  },
+  {
+    "id": "ARCH-006",
+    "domain": "ARCH",
+    "title": "Every autonomous action stays inside bounded authority",
+    "statement": "Every autonomous activity is performed inside bounded authority: data discovery, research, training, strategy promotion, artifact deployment, capital allocation and platform operation. An action outside the authority granted to its actor is refused.",
+    "rationale": "M §1.2 (p4): the intelligence can become more general without its blast radius becoming general. Money movement, leverage, exposure, settlement and venue access remain bounded by deterministic, testable controls.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Across generated actions in every autonomous activity class, any action whose scope exceeds the actor's granted authority envelope is refused, and no sequence of accepted actions enlarges the envelope without an authenticated operator change."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV",
+      "RISK",
+      "AIOPS"
+    ],
+    "notes": "Split from the §1.1 'Autonomous' bullet (see ARCH-005). In this repository the bound is held by AutonomyController::request_change, which requires an authenticated operator identity, and by the three paper-trading layers (ADR 0021). This requirement must not be read as permitting any authority above paper trading."
+  },
+  {
+    "id": "ARCH-007",
+    "domain": "ARCH",
+    "title": "Each financial-operating-system capability is first-class",
+    "statement": "Asset management, capital management, risk management, treasury/custody, accounting/ledger, execution, settlement, market making, market creation and commerce are each first-class capabilities of the platform.",
+    "rationale": "A capability that exists only as a function inside another has no contract, owner or degraded mode of its own, and it cannot be scored or failed independently.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each of the ten capabilities has its own owning domain or component with a published contract in the capability registry, and none exists only as a function inside another capability."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "ASSET",
+      "CAPITAL",
+      "RISK",
+      "TREASURY",
+      "CUSTODY",
+      "LEDGER",
+      "EXECUTION",
+      "SETTLEMENT",
+      "MARKETMAKING",
+      "COMMERCE"
+    ],
+    "notes": "P2 because the last members to arrive (market creation, commerce) are master Phase 7. The ledger, risk and execution members are already P0 through ARCH-031 and ARCH-064. Live treasury transfer, custody, settlement, market creation and commerce are BLOCKED under ADR 0021 (ADR 0099 C1) and are built only in simulated form. The six capital-adjacent brains as separate domains are ARCH-012."
+  },
+  {
+    "id": "ARCH-008",
+    "domain": "ARCH",
+    "title": "Cognition is federated across global, specialist and regional reflex intelligence",
+    "statement": "Cognition is a federation of a global brain, specialist brains and regional reflex intelligence. It replaces a single central intelligence that runs once.",
+    "rationale": "v11.6 §2 calls this correction 'architectural rather than cosmetic'. A single intelligence that runs once cannot serve regional reflex decisions or specialist domains at their own cadence.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The cognition component register names a global brain, at least one specialist brain and a regional reflex intelligence per region, each with its own deployable and contract, and no single component produces every decision."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "COGNITION",
+      "REFLEX"
+    ],
+    "notes": "Split from the §2 correction row 'Central intelligence runs once' (M p4). That row's state-authority clauses are ARCH-009 to ARCH-011. The raw item 'Global state owns long-horizon knowledge' duplicated those clauses and was merged into them."
+  },
+  {
+    "id": "ARCH-009",
+    "domain": "ARCH",
+    "title": "Global state is authoritative for long-horizon knowledge",
+    "statement": "Global state is the authoritative store of long-horizon knowledge.",
+    "rationale": "If regional copies of long-horizon knowledge can each be authoritative, two regions can act on contradictory beliefs about the same fact with no rule for which one is right.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "When a region's copy of a long-horizon knowledge item diverges from global state, reconciliation resolves it to the global version and records the divergence."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "WORLD",
+      "DATA"
+    ],
+    "notes": "The raw set stated this twice, once inside the federated-cognition row and once on its own, with the same citation (M p4). Merged into one requirement."
+  },
+  {
+    "id": "ARCH-010",
+    "domain": "ARCH",
+    "title": "Each region keeps its reflex state local",
+    "statement": "Each region retains its own local state. The Reflex Execution plane keeps its order books, features, models and risk state locally, not in a remote store.",
+    "rationale": "Local state is what allows a region to keep deciding when global state or another region is unreachable. It also keeps a remote read off the hot path.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      },
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture — Reflex Execution plane"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With every remote store unreachable, a reflex cell keeps its books, features, model and risk state and continues to decide, and inspection shows that state is held in-process."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "RISK"
+    ],
+    "notes": "Merged the §2 'regions retain local state' clause (M p4, stated twice in the raw set) with the more specific v2.1 Reflex Execution row (G p2), whose wording is kept. That row's 'no service-mesh or database dependency' clause is ARCH-045. MULTI_REGION was dropped because the property holds for a single cell in a single region. COST, from the G row, was dropped because it concerns the VM class (ARCH-046). ADR 0008 (cells decide alone) is the standing decision this matches."
+  },
+  {
+    "id": "ARCH-011",
+    "domain": "ARCH",
+    "title": "Regions share fast state peer to peer",
+    "statement": "Regions can share fast state directly with peer regions, without routing it through global state.",
+    "rationale": "The §2 correction row 'Policy down, outcomes up only' calls v10.1's topology too restrictive for cross-region opportunities that must be coordinated faster than the global brain works.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With the global brain partitioned away, two regional cells exchange a fast-state message over the peer path and each applies the other's state."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "MESH",
+      "REFLEX"
+    ],
+    "notes": "Split from the §2 row (M p4). The companion row 'Policy down, outcomes up only' adds peer reflex messaging, distributed reservations and opportunity tokens, which belong to MESH. Master Phase 4 (ARCH-034) delivers the peer mesh."
+  },
+  {
+    "id": "ARCH-012",
+    "domain": "ARCH",
+    "title": "The six capital-adjacent brains are separate domains with explicit contracts",
+    "statement": "Asset Brain, Capital Brain, Risk Brain, Treasury Bank, Ledger Brain and Settlement Brain are separate first-class autonomous domains, each with an explicit contract. None of them is a component inside another.",
+    "rationale": "v10.1 treated the capital engine as a component. Money, exposure, custody and settlement need separately owned contracts, so that one domain's defect cannot silently rewrite another's state.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      },
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each of the six has its own crate or service with a published contract, and a dependency check shows that none reaches into another's internals except through those contracts."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET",
+      "CAPITAL",
+      "RISK",
+      "TREASURY",
+      "LEDGER",
+      "SETTLEMENT"
+    ],
+    "notes": "Merged the §2 correction (M p5) with the §31 COMPLETE TARGET (M p43). The Asset/Capital/Risk brains and treasury are master Phase 3, hence P1. The capital/risk envelope contracts themselves are P0 through GCP Phase 4 (ARCH-064). ADR 0091 composes the brains as library crates inside five binaries, while v2.1 draws separate warm services per brain; that is ADR 0099 conflict C7. A separate domain need not be a separate process until independent scaling is measured to require one. Treasury and settlement act on simulated balances only (ADR 0021)."
+  },
+  {
+    "id": "ARCH-013",
+    "domain": "ARCH",
+    "title": "Each function sits in the fastest lane that meets its correctness requirements",
+    "statement": "The platform is organized by time budget. Every function is placed in the fastest time lane that can still meet its correctness requirements, not in the fastest lane available.",
+    "rationale": "Source: a function belongs in the fastest lane that can meet its correctness requirements, 'not the fastest lane that sounds impressive'. A function placed in a lane that cannot meet those requirements trades correctness for speed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The lane-placement register gives every component a lane and names the correctness requirement that lane meets, and architecture review rejects any component placed in a faster lane that cannot satisfy its correctness requirement (for example a remote read or a quorum write)."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "COGNITION"
+    ],
+    "notes": "This rule governs ARCH-014 to ARCH-021 and ARCH-029."
+  },
+  {
+    "id": "ARCH-014",
+    "domain": "ARCH",
+    "title": "Lane 0 (Reflex Hot) runs within about 10 microseconds to 10 milliseconds",
+    "statement": "Lane 0 (Reflex Hot) work completes on a time scale of about 10 microseconds to 10 milliseconds.",
+    "rationale": "Lane 0 covers local feed decode through order and quote generation. Any work slower than this belongs in a later lane.",
+    "kind": "nfr",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture — lane table, Time scale column"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "An in-process tick-to-order benchmark of the local reflex path reports p99 at or under 10 ms, and the full percentile distribution is published."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": "Split from the lane time-budget table (M p9-10). The budget covers work inside the regional cell. Venue round-trip from a cloud region is outside it, and ARCH-055 records that a GCP region is not colocation. Lane 0's other responsibilities (no remote dependency; never reads the historical Tick Lake in the order path) belong to REFLEX."
+  },
+  {
+    "id": "ARCH-015",
+    "domain": "ARCH",
+    "title": "Lane 1 (Coordinated Fast) runs within about 1 millisecond to seconds",
+    "statement": "Lane 1 (Coordinated Fast) work operates on a time scale of about 1 millisecond to seconds.",
+    "rationale": "Lane 1 carries peer reflex messages, opportunity tokens, reservations and multi-leg coordination, where cross-region latency is accepted explicitly rather than hidden.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture — lane table, Time scale column"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Multi-region coordination benchmarks (token issue to peer acknowledgement, and a reservation round trip) report latencies inside the 1 ms-to-seconds band and publish the measured cross-region component."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MESH",
+      "ARBITRAGE"
+    ],
+    "notes": "Split from the lane time-budget table (M p9-10). Lane 1's responsibilities belong to MESH."
+  },
+  {
+    "id": "ARCH-016",
+    "domain": "ARCH",
+    "title": "Lane 2 (Tactical/Warm) runs within seconds to minutes",
+    "statement": "Lane 2 (Tactical/Warm) work operates on a time scale of seconds to minutes.",
+    "rationale": "Portfolio, capital and liquidity-map refreshes need to be current within seconds to minutes. They do not need the hot path, and they must not wait on research.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture — Lane 2 (Tactical/Warm)"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "The refresh intervals of the Lane 2 functions (portfolio/risk refresh, capital placement, cross-venue liquidity maps) are measured, and each completes within its declared seconds-to-minutes budget."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "RISK"
+    ],
+    "notes": "Merged the Lane 2 entry of the time-budget table with the time scale embedded in the Lane 2 responsibility item. Lane 2's responsibilities are ARCH-017 and ARCH-018."
+  },
+  {
+    "id": "ARCH-017",
+    "domain": "ARCH",
+    "title": "Lane 2 hosts portfolio, capital, treasury, regime-shift, repricing and rebalancing work",
+    "statement": "Lane 2 (Tactical/Warm) is responsible for portfolio/risk refresh, capital placement, treasury moves, market-making regime shifts, event repricing and cross-region inventory rebalancing.",
+    "rationale": "These decisions change the envelopes the reflex cells trade within. They are too slow and too cross-cutting for Lane 0, and too urgent for Lane 3.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture — Lane 2 (Tactical/Warm)"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The lane-placement register places each of the six functions in Lane 2, and a dependency check shows none of them is invoked from the Lane 0 order path."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "MULTI_REGION",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "CAPITAL",
+      "RISK",
+      "TREASURY",
+      "MARKETMAKING"
+    ],
+    "notes": "The same table cell also lists 'bounded tactical interventions such as authorized pricing/configuration, inventory/capital rebalancing and pre-approved operational actions' (M p9). That clause was not in this domain's raw set and belongs to AGENCY. Treasury moves and capital placement act on simulated balances only (ADR 0021)."
+  },
+  {
+    "id": "ARCH-018",
+    "domain": "ARCH",
+    "title": "Lane 2 hosts aggregated microstructure state, liquidity maps and short-horizon fusion",
+    "statement": "Lane 2 (Tactical/Warm) is responsible for aggregated microstructure state, cross-venue liquidity maps, execution-quality refresh and short-horizon world/market fusion.",
+    "rationale": "Aggregation across venues and fusion with world state cost too much for the hot path. Their output still has to reach the reflex cells within minutes to stay useful.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture — Lane 2 (Tactical/Warm)"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The lane-placement register places aggregated microstructure state, cross-venue liquidity maps, execution-quality refresh and short-horizon fusion in Lane 2, and reflex cells consume their outputs only as published state, never by synchronous call."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK",
+      "WORLD",
+      "EXECUTION"
+    ],
+    "notes": "The extractor had already split this from ARCH-017 (same cell, M p9)."
+  },
+  {
+    "id": "ARCH-019",
+    "domain": "ARCH",
+    "title": "Lane 3 (Cognitive Slow) runs within minutes to days",
+    "statement": "Lane 3 (Cognitive Slow) work operates on a time scale of minutes to days.",
+    "rationale": "Research, training and causal reasoning cannot be made fast enough for a trading lane. Their budget states that nothing faster may wait on them.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "§4 Time-Lane Architecture — Lane 3 (Cognitive Slow)"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every Lane 3 job declares a completion horizon inside the minutes-to-days band, and a dependency check shows no Lane 0-2 call awaits a Lane 3 result synchronously."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COGNITION"
+    ],
+    "notes": "Merged the Lane 3 entry of the time-budget table with the time scale embedded in the Lane 3 responsibility item (M p10). Lane 3's responsibilities are ARCH-020."
+  },
+  {
+    "id": "ARCH-020",
+    "domain": "ARCH",
+    "title": "Lane 3 hosts discovery, evidence, reasoning, research, simulation and model training",
+    "statement": "Lane 3 (Cognitive Slow) is responsible for global scraping/discovery, evidence synthesis, causal reasoning, research, hypothesis generation, simulation, strategy discovery, and model training and validation.",
+    "rationale": "This is the slow cognitive system of §1 expressed as a lane. Its work is open-ended in duration and must never be on the path to an order.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "§4 Time-Lane Architecture — Lane 3 (Cognitive Slow)"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The lane-placement register places each named function in Lane 3, and none of them is deployed on the reflex runtime or invoked from Lanes 0-2."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SCOUT",
+      "EVIDENCE",
+      "COGNITION",
+      "MODEL"
+    ],
+    "notes": "The same cell (M p10) also assigns to Lane 3: historical tick replay, order-book reconstruction, microstructure training, ambient world models, symbolic reasoners and causal-intervention planning. Those were not in this domain's raw set and belong to TICK, REPLAY, AMBIENT, REASON and AGENCY. The §1 slow cognitive system (ARCH-001) is this lane."
+  },
+  {
+    "id": "ARCH-021",
+    "domain": "ARCH",
+    "title": "Lane 4 (Quantum/Research) runs within minutes to days",
+    "statement": "Lane 4 (Quantum/Research) work operates on a time scale of minutes to days.",
+    "rationale": "Quantum and hybrid jobs queue on external hardware and are benchmarked asynchronously. A budget any shorter would invite an execution path to wait on them.",
+    "kind": "nfr",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "§4 Time-Lane Architecture — Lane 4 (Quantum/Research)"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every quantum or research job is submitted asynchronously with a declared horizon, and no execution path awaits a Lane 4 result."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "QUANTUM"
+    ],
+    "notes": "Split from the lane time-budget table. The source cell says twice that Lane 4 'never blocks execution' (M p10); that property belongs to QUANTUM. P2 because the Quantum Foundry is master Phase 6. ADR 0006 already requires a classical baseline on every quantum run."
+  },
+  {
+    "id": "ARCH-022",
+    "domain": "ARCH",
+    "title": "World data reaches the world model only through Scout and Evidence",
+    "statement": "World, economic, geopolitical, company and physical data enters through the Global Scout, passes through Evidence & Truth, and only then reaches the World Model / Causal Memory.",
+    "rationale": "§7 (M p13): beliefs are updated from evidence rather than by converting scraped text directly into facts. A direct write from a scout into the world model would skip provenance, corroboration and contradiction handling.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "§5 End-to-End System Path"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A world observation injected at the Scout reaches the World Model only as an Evidence object carrying provenance, and a direct write from a scout into the World Model is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SCOUT",
+      "EVIDENCE",
+      "WORLD"
+    ],
+    "notes": "This is the first edge chain of the §5 path diagram (M p10)."
+  },
+  {
+    "id": "ARCH-023",
+    "domain": "ARCH",
+    "title": "The Cognitive Core is fed by both the Scout and the World Model",
+    "statement": "The Financial AGI / Cognitive Core takes input from both the Global Scout and the World Model / Causal Memory.",
+    "rationale": "The Scout supplies what is new and the World Model supplies what is already believed. A planner fed by only one of them either ignores novelty or re-derives settled knowledge.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10-11",
+        "section": "§5 End-to-End System Path"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A Cognitive Core run's recorded inputs include items from both the Scout and the World Model, each traceable to its source record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COGNITION",
+      "SCOUT",
+      "WORLD"
+    ],
+    "notes": "This edge crosses the page break in the §5 diagram (M p10-11)."
+  },
+  {
+    "id": "ARCH-024",
+    "domain": "ARCH",
+    "title": "The cognitive path fans out in parallel to the Foundry, the capital brains and the Quantum Foundry",
+    "statement": "Downstream of the causal agency / intervention engine, the path fans out in parallel to the Model/Strategy Foundry, the Asset/Capital/Risk Brains and the Quantum Foundry / Simulation.",
+    "rationale": "The three consumers work at different cadences and fail independently. Running them in series would make the slowest one, the quantum leg, gate the others.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "11",
+        "section": "§5 End-to-End System Path"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "One upstream output is delivered to all three consumers independently, and stopping any one consumer does not block delivery to the other two."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "CAPITAL",
+      "RISK",
+      "QUANTUM"
+    ],
+    "notes": "From the §5 diagram (M p11). The diagram draws the fan-out below the causal-agency block, which is master Phase 10. Until that block exists, the three consumers are fed by world+market fusion and the world-model federation above it. Their outputs converge into 'signed model + strategy + belief + capital + risk packs' distributed through the Global Reflex Mesh (see ARCH-002). P2 because the Quantum Foundry leg is master Phase 6."
+  },
+  {
+    "id": "ARCH-025",
+    "domain": "ARCH",
+    "title": "Both world data and tick data are required learning streams",
+    "statement": "The platform learns from two required streams: world data, which teaches why markets may move, and tick/order-book data, which teaches how prices, liquidity, queues, spreads, venue behavior and cross-asset reactions actually evolve. Neither substitutes for the other.",
+    "rationale": "A world-only learner cannot tell whether a tradable reaction still exists. A tick-only learner cannot tell why the reaction happened. §8.4 fuses the two for exactly that reason.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§8 Market Intelligence & Tick Learning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The learning pipeline has separate world and tick ingestion paths, and every fused-state record carries lineage to at least one world input and one tick input."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "TICK",
+      "DATA"
+    ],
+    "notes": "§1.1 'Dual-stream learner' (M p3) states the same. The fusion mechanics belong to TICK and WORLD."
+  },
+  {
+    "id": "ARCH-026",
+    "domain": "ARCH",
+    "title": "The Cognitive Core is never the hot-path trader",
+    "statement": "The Cognitive Core is the slow-thinking system: a planner and scientific engine. It is never the hot-path trader, and no Lane 0 order decision calls it.",
+    "rationale": "A generalist model on the order path would put a minutes-to-days lane, and a non-deterministic decision, between a tick and an order.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§9 Financial AGI / Cognitive Core"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "An architecture test shows no reflex or execution crate depends on the cognitive-core crates, and a chaos run with the Cognitive Core stopped leaves the hot path's decisions unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COGNITION",
+      "REFLEX"
+    ],
+    "notes": "The matching structural guarantee in this repository is qip-cost-router's Determinism::Required arm, which cannot name a model rung for a pre-trade check."
+  },
+  {
+    "id": "ARCH-027",
+    "domain": "ARCH",
+    "title": "Capabilities of the Cognitive Core",
+    "statement": "The Cognitive Core can decompose goals, launch research campaigns, call tools, coordinate specialist agents, inspect evidence, build causal hypotheses, run simulations, request new data, train models, challenge its own conclusions, and produce deployable policy/model packages.",
+    "rationale": "These are the capabilities that make it a scientific engine rather than a forecaster. The last one, producing deployable packages, is how its work reaches the reflex lane without it being on that lane.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§9 Financial AGI / Cognitive Core"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "A research campaign in a paper environment exercises each of the eleven capabilities and ends with a signed policy/model package that passes the normal promotion gates."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "COGNITION",
+      "AGENCY",
+      "MODEL"
+    ],
+    "notes": "The raw set had two items for this one §9 sentence (M p15); the second listed capabilities the first one's title omitted. Merged into one requirement. NON_RUST because training may use Python/JAX/PyTorch (M p4 §2; ADR 0099 C5). EXTERNAL_ACTION because tool calls can leave the platform, and beyond read-only research those are BLOCKED under ADR 0021. Master Phase 8, hence P2."
+  },
+  {
+    "id": "ARCH-028",
+    "domain": "ARCH",
+    "title": "Venue/Reflex I/O, the Reflex Mesh and the Event & Control Fabric are three separate paths",
+    "statement": "Three paths are kept separate, each with its own job. Direct Venue/Reflex I/O carries the hot path. The direct Reflex Mesh carries short-lived, latency-sensitive peer state that coordinates live multi-leg opportunities. The Rust Event & Control Fabric carries durable, replayable control, journals, outcomes, telemetry and replay. Mesh traffic never rides the Fabric, and Fabric traffic never rides the Mesh.",
+    "rationale": "M §33: the split exists 'for deterministic speed and failure isolation'. Durability and latency pull in opposite directions, and a shared channel would let each one's failure stall the other.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage"
+      },
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§33 Final Definition of Algorik"
+      },
+      {
+        "doc": "G",
+        "page": "1",
+        "section": "Architecture thesis"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each message type is registered to exactly one of the three paths, sending a Mesh type over the Fabric (or the reverse) is refused, and a trace of a multi-leg opportunity shows coordination on the Mesh and its journal on the Fabric."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MESH",
+      "FABRIC",
+      "REFLEX"
+    ],
+    "notes": "Merged three items: §17's 'deliberately separate' (M p24); §33's statement of what the Fabric carries (M p45); and v2.1's three-path thesis (G p1), whose wording is kept. That the local hot path does not depend on the Fabric is ARCH-044. §17's converse, that a Mesh outage must not prevent durable journaling, belongs to MESH and FABRIC. P1 because the Mesh first appears in master Phase 4. The hot-path/Fabric part of the split is P0 through ARCH-044."
+  },
+  {
+    "id": "ARCH-029",
+    "domain": "ARCH",
+    "title": "Workloads are placed by lane, not on one runtime",
+    "statement": "Workloads are placed by lane, each workload class on a runtime fit for its lane, rather than on one runtime everywhere.",
+    "rationale": "v11.6 §26 calls this 'the primary architectural correction'. A runtime chosen for elastic warm services adds jitter to the reflex path, and a runtime chosen for the reflex path wastes capacity on burst research.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "34",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The Terraform plan puts each workload class on the runtime the placement register assigns it, and the reflex cell does not share its runtime class with warm services or with training."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GCP",
+      "REFLEX"
+    ],
+    "notes": "The §26 table (M p34) places reflex cells on dedicated GCE low-latency VMs (C3/C3D-class in v11.6; C4D/C4 in v2.1, see ARCH-046), warm services on GKE or on Cloud Run 'where stateless burst/serverless economics are beneficial', and training on GPU/TPU. Under ADR 0024, this repository places warm binaries on Cloud Run and the execution node on Compute Engine. v2.1's return of warm services to GKE is ADR 0099 conflict C3."
+  },
+  {
+    "id": "ARCH-030",
+    "domain": "ARCH",
+    "title": "Master Phase 0 (Foundations) exit capability",
+    "statement": "Master Phase 0 (Foundations) exits only when all of the following exist: canonical types/contracts, the ledger, a simulation harness, observability, CI/CD/GitOps, identity/security and a venue adapter SDK, together with the native Rust Event & Control Fabric contracts, a 3-zone regional quorum, a Rust SDK and a benchmark harness.",
+    "rationale": "§30: building every capability at once 'would produce an impressive diagram and an untestable system'. The architecture is complete from day one, but its implementation is gated.",
+    "kind": "build_phase",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§30 Build Order — Phase 0"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A phase-gate acceptance test lists the eleven Phase 0 deliverables and names, for each, the test or run that demonstrates it. The gate fails while any deliverable has no demonstration."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CONTRACT",
+      "LEDGER",
+      "FABRIC",
+      "OBS",
+      "SUPPLYCHAIN",
+      "SEC"
+    ],
+    "notes": "v2.1 covers the same ground in GCP Phases 0-2 (ARCH-061 to ARCH-063): landing zone, supply chain and Fabric MVP. The two are not merged because their contents differ, so a v11.6 Phase 0 exit needs both this list and GCP Phases 0-2. ADR 0099 C2 constrains how the Fabric contracts are built: no async runtime or QUIC crate without a record."
+  },
+  {
+    "id": "ARCH-031",
+    "domain": "ARCH",
+    "title": "One Reflex Cell phase exit capability",
+    "statement": "The One Reflex Cell phase (master Phase 1; GCP Phase 3) exits when one asset/venue shard runs all of the following: a local fast path with local deterministic risk and order flow, a ledger, paper trading, an asynchronous Fabric journal and replay. Canonical tick capture, book reconstruction and deterministic replay for that first market are mandatory.",
+    "rationale": "One cell proven end to end, on one market and in paper, is the smallest unit that exercises the hot path, the risk gate, the ledger and replay together before anything is multiplied across regions.",
+    "kind": "build_phase",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§30 Build Order — Phase 1"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§26 Recommended Build Order — Phase 3"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "For one venue/asset shard in paper mode, a recorded session replays deterministically from canonical ticks to identical decisions, risk vetoes, ledger entries and journal records, and the Fabric journal is shown to be written asynchronously to the order path."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "REFLEX",
+      "RISK",
+      "LEDGER",
+      "FABRIC",
+      "TICK",
+      "REPLAY"
+    ],
+    "notes": "Merged master Phase 1 (M p41) with GCP Phase 3 (G p22). v11.6 adds canonical tick capture, book reconstruction and deterministic replay; v2.1 adds the asynchronous Fabric journal. Paper trading is the permanent posture here, not a phase (ADR 0003). NEW_DEPENDENCY is kept from the GCP item because building an asynchronous Fabric journal on v2.1's stack would add an async runtime (ADR 0099 C2)."
+  },
+  {
+    "id": "ARCH-032",
+    "domain": "ARCH",
+    "title": "Master Phase 2 (Cognitive Data Loop) exit capability",
+    "statement": "Master Phase 2 (Cognitive Data Loop) exits when all of the following exist: the Scout Fabric, evidence/provenance, the world model, episodic memory, the Market Intelligence & Tick Learning Fabric, the Tick Lake, replay/digital twin, world+market fusion and the model/strategy foundry. An initial World Model Federation, a model-disagreement representation and symbolic/temporal/causal reasoning services must also be established.",
+    "rationale": "The cognitive loop is what turns a single trading cell into a learning system. The gate keeps the loop's data correctness proven before multi-asset capital depends on its output.",
+    "kind": "build_phase",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§30 Build Order — Phase 2"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A phase-gate test names a demonstrating test or run for every Phase 2 deliverable, including a world observation flowing Scout to Evidence to World Model and a replayed tick window fused with it. The gate fails on any undemonstrated deliverable."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SCOUT",
+      "EVIDENCE",
+      "WORLD",
+      "TICK",
+      "REPLAY",
+      "MODEL",
+      "REASON"
+    ],
+    "notes": "GCP Phases 5 and 8 (ARCH-065, ARCH-067) are the platform side of this phase. Tick Lake retention on GCS and Spanner Graph fall under ADR 0099 C4."
+  },
+  {
+    "id": "ARCH-033",
+    "domain": "ARCH",
+    "title": "Master Phase 3 (Multi-Asset + Capital/Risk) exit capability",
+    "statement": "Master Phase 3 (Multi-Asset + Capital/Risk) exits with an asset registry, the Asset/Capital/Risk brains, treasury, custody corridors and multiple asset classes.",
+    "rationale": "A second asset class is the first point where capital, risk and treasury decisions have to be made across positions, not within one cell.",
+    "kind": "build_phase",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§30 Build Order — Phase 3"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A phase-gate test registers at least two asset classes and sizes positions in each through the Asset/Capital/Risk brains, with treasury and custody-corridor movements executed against simulated balances only."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "ASSET",
+      "CAPITAL",
+      "RISK",
+      "TREASURY",
+      "CUSTODY"
+    ],
+    "notes": "Custody corridors and treasury exist only in simulated form. Any live transfer is BLOCKED (ADR 0021; ADR 0099 C1). GCP Phase 4's capital/risk envelope contracts (ARCH-064) come before this phase."
+  },
+  {
+    "id": "ARCH-034",
+    "domain": "ARCH",
+    "title": "Multi-region phase exit capability",
+    "statement": "The Multi-Region phase (master Phase 4; GCP Phase 7) exits with all of the following. Three regional cells (Americas, Europe, APAC), each with Reflex, Fabric and warm-service tiers. An NCC latency mesh. A direct Reflex Mesh with peer messaging, opportunity tokens and distributed reservations, running 2-5-leg cycles. Cross-region tick alignment, lead/lag learning and distributed opportunity replay. Selective cross-region Fabric mirroring for outcomes and control, while latency-sensitive arbitrage state stays on direct Reflex Mesh links. Game-day failover.",
+    "rationale": "Multi-region is where regional independence and peer coordination are first tested against each other. The game-day failover exit test proves that one region's loss does not halt the others.",
+    "kind": "build_phase",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§30 Build Order — Phase 4"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§26 Recommended Build Order — Phase 7"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Three regions run paper cycles concurrently. A 2-5-leg cycle coordinated over the Reflex Mesh is replayed from mirrored Fabric outcomes. When one region is removed, the other two keep trading, and cycles that depended on the removed peer are disabled explicitly."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE",
+      "MULTI_REGION",
+      "NEW_DEPENDENCY",
+      "COST"
+    ],
+    "secondary_domains": [
+      "MESH",
+      "FABRIC",
+      "GCP",
+      "TICK",
+      "REPLAY",
+      "ARBITRAGE"
+    ],
+    "notes": "Merged master Phase 4 (M p41) with GCP Phase 7 (G p22). v11.6 supplies the mesh and learning content; v2.1 supplies the GKE tier, the NCC latency mesh and game-day failover. The GKE tier is ADR 0099 C3 (ADR 0024 retired Kubernetes). The three-region footprint is C8 (cost; execution_nodes = {} in every environment today). ADR 0008 describes seven regional edge cells. Cells and execution regions are different units, and the mapping between them needs stating in the deployment record."
+  },
+  {
+    "id": "ARCH-035",
+    "domain": "ARCH",
+    "title": "Master Phase 5 (3-20-Leg Arbitrage + Market Making) exit capability",
+    "statement": "Master Phase 5 (3-20 Leg Arbitrage + Market Making) exits with graph optimization, pre-positioned inventory, saga recovery, a quote engine and a cross-class hedge map.",
+    "rationale": "Longer cycles and quoting multiply legging risk. Saga recovery and the hedge map are the exit conditions because they are what contain a partially executed cycle.",
+    "kind": "build_phase",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§30 Build Order — Phase 5"
+      }
+    ],
+    "verification": {
+      "method": "replay",
+      "check": "A phase-gate replay runs a cycle of three or more legs through graph optimization with pre-positioned inventory, forces a leg failure that exercises saga recovery and hedging through the cross-class hedge map, and runs the quote engine against the simulated venue."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARBITRAGE",
+      "MARKETMAKING",
+      "RISK"
+    ],
+    "notes": "Quoting runs against the simulated venue only. GCP Phase 10 (ARCH-069) carries 'larger arbitrage cycles' after the classical baseline and reliability gates."
+  },
+  {
+    "id": "ARCH-036",
+    "domain": "ARCH",
+    "title": "Master Phase 6 (Quantum Foundry) exit capability",
+    "statement": "Master Phase 6 (Quantum Foundry) exits with quantum optimization and QML research plug-ins, plus benchmarked experiments for symbolic/combinatorial search and for world-model/scenario ensemble selection.",
+    "rationale": "The Foundry is architecturally broad but operationally benchmark-gated (§32). Its exit is a set of plug-ins that can each be measured.",
+    "kind": "build_phase",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§30 Build Order — Phase 6"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A phase-gate test runs each quantum plug-in and each symbolic-search or ensemble-selection experiment, and each produces a benchmark report against its classical counterpart."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "QUANTUM"
+    ],
+    "notes": "The same cell's ordering and ship rule ('classical benchmark first ... ship only measured wins') is split out as ARCH-037. The IBM Quantum gateway is GCP Phase 10 (ARCH-069)."
+  },
+  {
+    "id": "ARCH-037",
+    "domain": "ARCH",
+    "title": "A quantum capability ships only on a measured win over a classical baseline",
+    "statement": "Quantum work is built classical-benchmark-first. A classical baseline exists before any quantum optimization, learning or search capability, and a quantum capability ships only when it shows a measured win against that baseline.",
+    "rationale": "§32: current quantum methods have practical limits in data encoding, noise and training. Without the baseline, 'we used a quantum computer' would pass for a result.",
+    "kind": "invariant",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§30 Build Order — Phase 6"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§26 Recommended Build Order — Phase 10"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The promotion gate for any quantum-backed capability refuses promotion unless the same run recorded a classical-baseline result and the quantum result beats it on the declared metric."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "QUANTUM",
+      "MODEL"
+    ],
+    "notes": "Split from master Phase 6 (M p42) and merged with GCP Phase 10's 'only after classical baseline/reliability gates' (G p22). This is ADR 0006 (compute a classical baseline every time), which is already a standing decision in this repository. EXTERNAL_ACTION, carried by the GCP Phase 10 raw item, was dropped here because the gate itself takes no external action."
+  },
+  {
+    "id": "ARCH-038",
+    "domain": "ARCH",
+    "title": "Master Phase 7 (Prediction / Market Factory / Commerce) exit capability",
+    "statement": "Master Phase 7 (Prediction/Market Factory/Commerce) exits with event markets, market creation workflows, and physical product commerce and logistics adapters.",
+    "rationale": "These capabilities extend the platform beyond trading existing markets, so they come after the capital, risk and arbitrage machinery they depend on.",
+    "kind": "build_phase",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§30 Build Order — Phase 7"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A phase-gate test creates and settles an event market in simulation and drives a physical-product purchase and resale through the commerce and logistics adapters against sandboxes only."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION",
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "PREDICTION",
+      "COMMERCE"
+    ],
+    "notes": "Beyond simulation, market creation and physical commerce are BLOCKED under ADR 0021 (ADR 0099 C1). Isolation of regulated wagering belongs to PREDICTION."
+  },
+  {
+    "id": "ARCH-039",
+    "domain": "ARCH",
+    "title": "Master Phase 8 (Financial AGI Autonomy) exit capability",
+    "statement": "Master Phase 8 (Financial AGI Autonomy) exits with the following: broader tool use, self-directed research campaigns, a specialist-agent society, and an autonomous model/strategy lifecycle under authority envelopes. It also adds the Ambient Model Mesh and the Attention Router, so that cognition predicts, scans and launches research without prompts.",
+    "rationale": "Autonomy is deliberately late. It is built on a data loop, a capital stack and benchmark gates that have already been proven, and it stays inside the authority envelopes of ARCH-006.",
+    "kind": "build_phase",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§30 Build Order — Phase 8"
+      }
+    ],
+    "verification": {
+      "method": "e2e",
+      "check": "A phase-gate paper run shows an ambient-model signal, routed by the Attention Router, launching a self-directed research campaign that ends in a model/strategy candidate promoted only through its authority envelope."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "COGNITION",
+      "AMBIENT",
+      "AGENCY",
+      "MODEL"
+    ],
+    "notes": "GCP Phase 8 (ARCH-067) is the platform side of this phase. The phrase 'under authority envelopes' ties it to ARCH-006."
+  },
+  {
+    "id": "ARCH-040",
+    "domain": "ARCH",
+    "title": "Master Phase 9 (Open-Ended Intelligence Expansion) exit capability",
+    "statement": "Master Phase 9 (Open-Ended Intelligence Expansion) exits with the following: the Curriculum Engine; ontology/source/tool/brain/capability registries; sandboxed tool and agent creation; active learning; memory consolidation; regional-to-global learning; and continuous benchmark-gated promotion. It includes market-microstructure curricula driven by live-vs-replay residuals and by newly discovered venues and market structures. It enables governed spawning and retirement of world models, symbolic theory and rule growth, and ambient-signal-driven curricula.",
+    "rationale": "Open-ended expansion is safe only once every new capability can be sandboxed, evaluated independently and promoted by benchmark, so this phase comes after the lifecycle and gates exist.",
+    "kind": "build_phase",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§30 Build Order — Phase 9"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A phase-gate test shows a novelty or a live-vs-replay residual generating a curriculum item, and a sandboxed tool or agent being created and independently evaluated. A capability is promoted only after a benchmark gate, and every registry involved is versioned."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPANSION",
+      "TICK",
+      "WORLD",
+      "REASON"
+    ],
+    "notes": "Master Phase 9 maps to priority P3."
+  },
+  {
+    "id": "ARCH-041",
+    "domain": "ARCH",
+    "title": "Master Phase 10 (Causal Agency & Intervention Intelligence) exit capability",
+    "statement": "Master Phase 10 (Causal Agency & Intervention Intelligence) exits with the following: a GoalSpec/action-affordance graph, the Intervention Planner, authorized action adapters, a communications/conduct gate, causal effect attribution, experiment/no-action baselines, Action Outcome Memory, and ambient-to-agency routing.",
+    "rationale": "Agency is the capability with the widest external blast radius, so it is last. Its exit conditions are the gates and baselines that bound it, not the action surfaces alone.",
+    "kind": "build_phase",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§30 Build Order — Phase 10"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "In shadow mode, a phase-gate test takes a GoalSpec through the Intervention Planner, the conduct gate and a shadow authorized adapter, and records a causal-effect attribution against a no-action baseline in Action Outcome Memory."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "AGENCY",
+      "AMBIENT"
+    ],
+    "notes": "This phase's rollout order is split out as ARCH-042. GCP Phase 10 (ARCH-069) carries 'causal agency adapters'. Authorized action adapters that act outside the platform are BLOCKED under ADR 0021."
+  },
+  {
+    "id": "ARCH-042",
+    "domain": "ARCH",
+    "title": "Causal agency rolls out shadow-only, then narrow reversible actions, then broader authority",
+    "statement": "Causal agency is introduced shadow-only first. It is then limited to narrow reversible actions, and only after that is it given broader authority.",
+    "rationale": "§32: reliable agency requires identifiable causal structure and measured effects, not only high predictive accuracy. Shadow and reversible stages are where those effects are measured.",
+    "kind": "invariant",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§30 Build Order — Phase 10"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The agency authority configuration refuses any non-shadow action until a recorded shadow period is complete, and refuses any irreversible or broad action class until a recorded narrow-reversible period is complete."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "AGENCY",
+      "GOV"
+    ],
+    "notes": "Split from master Phase 10 (M p42). ADR 0099 relies on this ordering. Under ADR 0021 every external action stays in its shadow form, so in this repository the second and third stages are BLOCKED."
+  },
+  {
+    "id": "ARCH-043",
+    "domain": "ARCH",
+    "title": "The warm lane puts no global service on the local hot path",
+    "statement": "The warm coordination lane connects the slow and fast systems without putting any global service on the local hot path.",
+    "rationale": "The warm lane talks to both sides, which makes it the most likely route by which a global dependency creeps into the order path.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With every global and warm service partitioned away from a regional cell, the cell's tick-to-order path keeps deciding at unchanged latency, and a trace of an order shows no synchronous call to a global service."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "CAPITAL"
+    ],
+    "notes": "Split from a §31 COMPLETE TARGET whose 'connects slow and fast' clause was merged into ARCH-003. ARCH-044 (the Fabric) and ARCH-045 (managed GCP services) state the same isolation for other dependencies. They are kept separate because each is proven by a different outage."
+  },
+  {
+    "id": "ARCH-044",
+    "domain": "ARCH",
+    "title": "The local Reflex hot path does not depend on the Fabric",
+    "statement": "The local Reflex hot path stays independent of the Event & Control Fabric, so that a Fabric outage cannot stall a live local decision.",
+    "rationale": "M §33: the fabric carries control, journals and outcomes, while the hot path stays independent 'for deterministic speed and failure isolation'.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§33 Final Definition of Algorik"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Every Fabric broker in a region is stopped during a paper session. The cell keeps deciding at unchanged tick-to-order latency, buffers its journal locally, and catches the journal up when the Fabric returns."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "FABRIC"
+    ],
+    "notes": "Split from §33 (M p45). §33's statement of what the Fabric carries was merged into ARCH-028. §17 (M p24) states this outage rule in the same terms, and §31 (M p44) names the mechanism: non-blocking local journal/ring writers and cached signed control packages. Both of those belong to FABRIC and REFLEX as well."
+  },
+  {
+    "id": "ARCH-045",
+    "domain": "ARCH",
+    "title": "Managed GCP services are never synchronous dependencies of execution",
+    "statement": "Managed GCP services scale the system around the three paths but are never synchronous dependencies of execution. In particular, the Reflex Execution plane has no service-mesh or database dependency.",
+    "rationale": "A managed service's latency tail and its regional incidents are outside the platform's control. On the execution path they would become the platform's latency tail and its outages.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "1",
+        "section": "Architecture thesis"
+      },
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture — Reflex Execution plane"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "With Spanner, Bigtable, BigQuery, Redis, Cloud Service Mesh and every AI endpoint unreachable, a reflex cell continues its tick-to-order path, and a dependency check of the reflex binary finds no client for any of them."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "GCP"
+    ],
+    "notes": "Merged the v2.1 thesis sentence (G p1) with the 'no service-mesh or database dependency' clause of the Reflex Execution row (G p2); the rest of that row is ARCH-010 and ARCH-046. GCP Rule 1 (G p3) and the §27 acceptance criterion (G p23) list the same exclusions item by item and belong to REFLEX. COST, from the G p2 row, was dropped here because it concerns the VM class."
+  },
+  {
+    "id": "ARCH-046",
+    "domain": "ARCH",
+    "title": "The Reflex Execution plane runs on dedicated C4D/C4-class Compute Engine VMs",
+    "statement": "The Reflex Execution plane runs on dedicated Compute Engine C4D/C4-class VMs that hold direct venue sessions.",
+    "rationale": "v2.1 §1 says this runtime was chosen for the lowest jitter and for direct venue sessions. A shared or orchestrated runtime adds scheduling noise to the Lane 0 budget.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture — Reflex Execution plane"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The Terraform plan for an execution region creates a dedicated C4D/C4-class instance for the reflex cell, shared with no other workload, and venue sessions originate from that instance rather than from GKE or another service."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "REFLEX",
+      "GCP"
+    ],
+    "notes": "v2.1 (G p2) names C4D/C4 and v11.6 §26 (M p34) says 'C3/C3D-class or equivalent'. The more specific and later v2.1 wording is kept. The exact machine still needs venue-level benchmarks (G p23 §29). The execution-node module in this repository already targets Compute Engine (ADR 0024), but no node is deployed: execution_nodes = {}, ADR 0099 C8, blocked on billing. Its venue egress passes through the loopback Envoy egress proxy because the in-tree HTTP client does not speak TLS. v2.1 §28 calls a proxy on the Reflex path an anti-pattern 'without benchmarked necessity', so that proxy needs either a benchmark or a record."
+  },
+  {
+    "id": "ARCH-047",
+    "domain": "ARCH",
+    "title": "Pub/Sub and Managed Kafka are not internal runtime dependencies",
+    "statement": "Google Pub/Sub and Managed Kafka are not internal Algorik runtime dependencies. Service-to-service control, tick journaling, outcomes and replay use the Rust Event & Control Fabric and neither of those systems.",
+    "rationale": "v2.1 §1: one native contract for durable pub/sub, journals, replay, backpressure, control and outcomes, so that Algorik's messaging semantics are defined in the platform and not by a managed broker's defaults.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture — Explicitly removed from the core runtime"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A dependency and Terraform scan finds no Pub/Sub or Kafka client, topic or subscription used for internal messaging, and every internal asynchronous contract is a Fabric schema."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "FABRIC",
+      "GCP"
+    ],
+    "notes": "Split from v2.1's 'Explicitly removed from the core runtime' box (G p2). Its partner-bridge allowance is ARCH-048. v11.6 says the same in §1.1 'Native Rust nervous system' (M p3) and §31 (M p44), and v2.1 repeats it in §27 (G p23). Those citations belong to FABRIC's version of this requirement. P0 because master Phase 0 makes the Fabric contracts a foundation."
+  },
+  {
+    "id": "ARCH-048",
+    "domain": "ARCH",
+    "title": "A partner's Kafka/Pub/Sub bridge must be stateless and sit at the external boundary",
+    "statement": "If a partner requires Kafka or Pub/Sub compatibility, the only permitted form is a stateless bridge at an external boundary. Algorik semantics remain defined by the Rust Fabric, not by the bridged system.",
+    "rationale": "A stateful or internal bridge would become a second message system with its own ordering and retention semantics, which is the dependency ARCH-047 removes.",
+    "kind": "prohibition",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture — Explicitly removed from the core runtime"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Any partner bridge holds no durable state and is deployed only at the external boundary, and no internal consumer subscribes to the bridged system directly."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "FABRIC",
+      "GCP"
+    ],
+    "notes": "Split from the same box as ARCH-047. It applies only if a partner needs such a bridge, so it has no phase and is set at P2. A bridge would also need a Kafka or Pub/Sub client crate, which requires its own dependency record (ADR 0002, ADR 0009)."
+  },
+  {
+    "id": "ARCH-049",
+    "domain": "ARCH",
+    "title": "Spanner owns financial truth",
+    "statement": "Spanner is the owner of financial truth, and no other store is authoritative for it.",
+    "rationale": "GCP Rule 7: state ownership is explicit. Two stores that each claim financial truth will disagree, and reconciliation then has no rule for which one wins.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 7"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Positions and cash rebuilt from the ledger store, plus venue and custody statements, match every other view, and editing a derived view does not change what reconciliation reports as truth."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "LEDGER",
+      "GCP"
+    ],
+    "notes": "Split from GCP Rule 7 (G p3), which the raw set listed twice. In this repository financial truth is held by the hash-chained, file-backed event log (ADR 0089; ADR 0002/0009). Moving ownership to Spanner is ADR 0099 conflict C4, and that record orders the ledger store first. Until then the log holds this role, and the part of the invariant that matters already applies: one authoritative store, with no second source of truth."
+  },
+  {
+    "id": "ARCH-050",
+    "domain": "ARCH",
+    "title": "The Fabric owns event history and consumer offsets",
+    "statement": "The Rust Event & Control Fabric owns event history and consumer offsets.",
+    "rationale": "If a consumer keeps its own authoritative offset, a replay and a live run can disagree about which events a decision saw.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 7"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A restarted consumer resumes from Fabric-held offsets, replaying a topic from the Fabric reproduces its event history, and no consumer keeps an authoritative offset anywhere else."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "REPLAY"
+    ],
+    "notes": "Split from GCP Rule 7 (G p3). MANAGED_SERVICE was dropped because the Fabric is an in-tree Rust subsystem. The single-region Fabric MVP with consumer offsets is GCP Phase 2 (ARCH-063)."
+  },
+  {
+    "id": "ARCH-051",
+    "domain": "ARCH",
+    "title": "GCS owns retained tick/internal archives and compact derived knowledge artifacts",
+    "statement": "GCS owns retained tick and internal archives and compact derived knowledge artifacts.",
+    "rationale": "Archives and knowledge packs are large, cold and Algorik-derived. Object storage with lifecycle tiers is the store sized for them, and keeping them out of the ledger and the graph stores protects those stores' performance.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 7"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Retained tick and internal archives and knowledge packs are written only to GCS buckets with declared lifecycle tiers, and no other store holds an authoritative copy of them."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "TICK",
+      "WORLD"
+    ],
+    "notes": "Split from GCP Rule 7 (G p3). The Fabric's own GCS archive is a GCP Phase 2 deliverable (ARCH-063, P0). The tick archive and knowledge packs are GCP Phase 5 (ARCH-065). Object storage on GCS falls under ADR 0099 C4."
+  },
+  {
+    "id": "ARCH-052",
+    "domain": "ARCH",
+    "title": "External world payloads are transient",
+    "statement": "External world payloads are transient: no store owns them, and they are discarded once evidence and knowledge have been extracted from them.",
+    "rationale": "v11.6 §1.3: Algorik must not become a warehouse of the world's raw external content. It keeps compact knowledge and the means to re-fetch the source, not the source itself.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 7"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "After a scout run, no bucket, table or disk holds the fetched external content, while the source manifest and the derived knowledge for it both exist."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA",
+      "SCOUT",
+      "WORLD",
+      "COMPLIANCE"
+    ],
+    "notes": "Split from GCP Rule 7 (G p3). The detailed pass-through rules (M p3 §1.3; G p2-3 §2.1) belong to DATA. MANAGED_SERVICE was dropped because the invariant is that no store is involved."
+  },
+  {
+    "id": "ARCH-053",
+    "domain": "ARCH",
+    "title": "Bigtable owns hot derived features and state",
+    "statement": "Bigtable owns hot derived features and state.",
+    "rationale": "High-rate derived features and entity/event state need a low-latency, horizontally scaled store. Keeping them out of the ledger database protects the ledger's transactional performance.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 7"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The state-ownership register names Bigtable as the owning store for hot derived features and entity/event state, and no other store is written as their authoritative copy."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "TICK"
+    ],
+    "notes": "Split from GCP Rule 7 (G p3). Bigtable arrives in GCP Phase 5 (ARCH-065) and falls under ADR 0099 C4."
+  },
+  {
+    "id": "ARCH-054",
+    "domain": "ARCH",
+    "title": "Caches own nothing authoritative",
+    "statement": "Caches own nothing authoritative. Every value held in a cache is also held by its owning store, and a decision that needs authoritative state never takes it from a cache.",
+    "rationale": "A cache that silently becomes the only copy of a position or a capital figure turns every eviction into data loss, and every stale read into a wrong risk decision.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 7"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Every cache (Redis included) is flushed or corrupted during a paper session, and positions, capital and risk decisions stay unchanged while reconciliation reports no break."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "RISK",
+      "CAPITAL"
+    ],
+    "notes": "Split from GCP Rule 7 (G p3). v2.1 §28 (G p23) names the concrete anti-pattern: Redis used as position or capital truth, or as a required dependency of the risk gate. Redis itself arrives in GCP Phase 6 (ARCH-066), but the invariant applies to every cache, in-process ones included. MANAGED_SERVICE was dropped for that reason."
+  },
+  {
+    "id": "ARCH-055",
+    "domain": "ARCH",
+    "title": "Cloud regional execution is not colocation",
+    "statement": "GCP regional execution is treated as fast cloud trading, not exchange colocation. Any requirement for true sub-millisecond colocation is met by edge/colo nodes outside ordinary cloud regions, not by a GCP region.",
+    "rationale": "GCP Rule 10: 'Cloud latency has physics.' A latency target that assumes colocation from a cloud region cannot be met by any amount of in-process optimization.",
+    "kind": "nfr",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules — Rule 10"
+      }
+    ],
+    "verification": {
+      "method": "benchmark",
+      "check": "Venue round-trip from each chosen region is measured and published, and no SLO or requirement promises sub-millisecond venue latency from a cloud region."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "GCP"
+    ],
+    "notes": "The same rule makes region and topology an outcome of venue-specific benchmarks (G p3), which belongs to GCP and REFLEX. P3 because colocation is an optimisation beyond the current target."
+  },
+  {
+    "id": "ARCH-056",
+    "domain": "ARCH",
+    "title": "The Fabric implements only the semantics the platform needs",
+    "statement": "The Fabric is not a feature-for-feature clone of Kafka. It implements only the semantics the platform needs.",
+    "rationale": "v2.1 §28 lists rebuilding Kafka semantics blindly as an anti-pattern. Every semantic implemented is one that has to be proven under faults, so any semantic nobody needs is untested risk.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every Fabric feature traces to a named platform requirement, and each implemented semantic has a fault or property test that proves it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Split from the §7 opening (G p7); the priority-class clause is ARCH-057. v2.1 §28 (G p23) adds that the required semantics are to be proven with fault and property tests. §7's implementation direction (Tokio, QUIC/mTLS, prost) is ADR 0099 C2. Until its dependency records exist, the Fabric is built on what the workspace permits."
+  },
+  {
+    "id": "ARCH-057",
+    "domain": "ARCH",
+    "title": "Fabric priority classes each have explicit failure behavior",
+    "statement": "The Fabric has explicit priority classes, and each class has explicit, stated failure behavior.",
+    "rationale": "Under overload, control and outcomes must not be dropped for the sake of telemetry. That only holds if the classes and the behavior of each one are declared rather than left to broker defaults.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "Under broker backpressure, the lower-priority classes are shed or delayed as each class declares, while control and outcome classes keep their delivery guarantees."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Split from the §7 opening (G p7). GCP Rule 6 (G p3) gives the classes their meaning: quorum durability for control and outcomes, sampled telemetry, and throughput-optimised research streams. §31 (M p44) requires every durable stream to declare partitioning, ordering, retention, replication, overload and mirroring semantics. Both belong to FABRIC."
+  },
+  {
+    "id": "ARCH-058",
+    "domain": "ARCH",
+    "title": "Service mesh only for warm services, never on Fabric or Reflex traffic",
+    "statement": "Cloud Service Mesh is used only for warm GKE services. Fabric and Reflex traffic is never routed through mesh sidecars.",
+    "rationale": "A sidecar adds a proxy hop, retries and a control-plane dependency. Those protect warm services but add jitter and a failure mode to the paths that must not have either.",
+    "kind": "prohibition",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "Mesh sidecar injection is enabled only on warm-service namespaces, and both the plan and a live check show no sidecar on any Fabric broker or Reflex workload."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "FABRIC",
+      "REFLEX"
+    ],
+    "notes": "Merged two raw items for the same §8 bullet (G p9) and split them into this scope rule, the resilience rule (ARCH-059) and the mTLS rule (ARCH-060). v2.1 §5 (G p5) says the same: 'never inserted in Reflex path'. Cloud Service Mesh and GKE are ADR 0099 conflict C3. With warm services on Cloud Run (ADR 0024) there is no mesh today, so the exclusion holds vacuously."
+  },
+  {
+    "id": "ARCH-059",
+    "domain": "ARCH",
+    "title": "Warm service calls have strict timeouts, bounded retries and circuit breaking",
+    "statement": "Every warm service-to-service call on Cloud Service Mesh has a strict timeout, a bounded retry policy and circuit breaking.",
+    "rationale": "Without a timeout, one hung warm dependency spreads through every caller. Without a circuit breaker, retries amplify the load on a service that is already failing.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With a hung downstream injected, the caller times out at its configured bound, retries no more than its configured count, and the circuit opens."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "Split from the same §8 bullet as ARCH-058 (G p9). The repository's rule of an explicit timeout on every blocking call (ADR 0001, ADR 0011) already applies to warm binaries on Cloud Run, independent of any mesh."
+  },
+  {
+    "id": "ARCH-060",
+    "domain": "ARCH",
+    "title": "Warm service-to-service traffic uses mTLS",
+    "statement": "Warm service-to-service traffic on Cloud Service Mesh is mutually authenticated with mTLS.",
+    "rationale": "Warm services carry capital, risk and evidence traffic. An unauthenticated caller inside the service network could otherwise impersonate one of them.",
+    "kind": "nfr",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A plaintext or unauthenticated call between warm services is refused by the mesh."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "SEC"
+    ],
+    "notes": "Split from the same §8 bullet as ARCH-058 (G p9). The workspace has no in-tree TLS (ADR 0009), so mTLS here would come from the managed mesh. That falls under ADR 0099 C3."
+  },
+  {
+    "id": "ARCH-061",
+    "domain": "ARCH",
+    "title": "GCP Phase 0 (Foundations) exit test",
+    "statement": "GCP Phase 0 (Foundations) exits with the following in place: the organization, folders and projects; IAM/PAM; Terraform modules; NCC/VPC/DNS/firewalls; KMS/CA; audit logging/SCC; and GitHub Workload Identity Federation.",
+    "rationale": "Identity, network and audit boundaries have to exist before anything runs inside them. Retrofitting them means migrating live workloads.",
+    "kind": "build_phase",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§26 Recommended Build Order — Phase 0"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "terraform validate and plan for the landing zone show the organization, folders and projects, IAM/PAM, the modules, NCC/VPC/DNS/firewalls, KMS/CA, audit/SCC and GitHub WIF, and a CI run authenticates through WIF with no service-account key."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "SEC"
+    ],
+    "notes": "The platform-side counterpart of master Phase 0 (ARCH-030). What already exists under infrastructure/terraform is scored in the traceability matrix, not here."
+  },
+  {
+    "id": "ARCH-062",
+    "domain": "ARCH",
+    "title": "GCP Phase 1 (Supply chain) exit test",
+    "statement": "GCP Phase 1 (Supply chain) exits with the following in place: Cloud Build private pools, Artifact Registry, provenance/SBOM, Binary Authorization, a GitOps management cluster, and Config Sync/Argo/Kargo/Rollouts.",
+    "rationale": "GCP Rule 8: Git and signed digests are deployment truth. The supply chain has to exist before the first workload, or the first workload is deployed on trust.",
+    "kind": "build_phase",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§26 Recommended Build Order — Phase 1"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A release is built in a private pool and lands in Artifact Registry by digest with SBOM and provenance, then is admitted by Binary Authorization. An unsigned digest is refused at admission."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "SUPPLYCHAIN",
+      "SEC"
+    ],
+    "notes": "The GitOps management cluster with Config Sync/Argo/Kargo/Rollouts is ADR 0099 C3. ADR 0024 retired Kubernetes for workloads, ADR 0036 confined Argo to a control-plane cluster, and ADR 0093 suspended that cluster on cost."
+  },
+  {
+    "id": "ARCH-063",
+    "domain": "ARCH",
+    "title": "GCP Phase 2 (Rust Fabric MVP) exit test",
+    "statement": "GCP Phase 2 (Rust Fabric MVP) exits with the following: a single region with three brokers, schemas and a client, an RF3 journal, consumer offsets, a GCS archive, and OTel. Chaos tests must pass before any application adopts the Fabric.",
+    "rationale": "The Fabric becomes every service's asynchronous nervous system. Proving it under faults before adoption keeps its defects from surfacing as defects in each application.",
+    "kind": "build_phase",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§26 Recommended Build Order — Phase 2"
+      }
+    ],
+    "verification": {
+      "method": "chaos",
+      "check": "In one region with three brokers and RF3 journals: killing a broker loses no quorum-acknowledged record, consumers resume from committed offsets, segments archive to GCS, and OTel traces span the path. The chaos suite passes before any application depends on the Fabric."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "FABRIC",
+      "OBS"
+    ],
+    "notes": "OTel and v2.1's Tokio/QUIC stack would be new dependencies (ADR 0099 C2), and the GCS archive falls under C4. 'Chaos tests before application adoption' is part of the exit test, not an optional follow-on."
+  },
+  {
+    "id": "ARCH-064",
+    "domain": "ARCH",
+    "title": "GCP Phase 4 (Financial truth) exit test",
+    "statement": "GCP Phase 4 (Financial truth) exits with the following: a Spanner ledger writer with idempotency, reconciliation, and capital/risk envelope contracts.",
+    "rationale": "GCP Rule 4: transport is at-least-once, so financial writers must enforce uniqueness transactionally. Otherwise a redelivered outcome is booked twice.",
+    "kind": "build_phase",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§26 Recommended Build Order — Phase 4"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The same outcome event delivered three times commits once to the ledger through event-id idempotency. Reconciliation rebuilds positions and cash from the ledger. The capital/risk envelope contracts are versioned schemas with tests."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "LEDGER",
+      "CAPITAL",
+      "RISK"
+    ],
+    "notes": "ADR 0099 C4 puts the ledger store record first because this phase needs it. The capital/risk envelope contracts can be built in-tree before the store is decided."
+  },
+  {
+    "id": "ARCH-065",
+    "domain": "ARCH",
+    "title": "GCP Phase 5 (Data plane) exit test",
+    "statement": "GCP Phase 5 (Data plane) exits with the following: a GCS retained tick/internal archive plus compact knowledge packs, Bigtable, BigQuery, Knowledge Catalog, replay/feature sinks, and data contracts.",
+    "rationale": "Replay, training and research all read from the data plane. Its data contracts are what stop a schema drift in one sink from silently corrupting every consumer downstream.",
+    "kind": "build_phase",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§26 Recommended Build Order — Phase 5"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A phase-gate test archives a tick window and a knowledge pack to GCS, serves recent features from Bigtable, queries history in BigQuery, finds the datasets in the catalog, and validates each sink against its data contract."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "DATA",
+      "TICK",
+      "REPLAY"
+    ],
+    "notes": "Each store falls under ADR 0099 C4. Ownership of each store is ARCH-051 to ARCH-053."
+  },
+  {
+    "id": "ARCH-066",
+    "domain": "ARCH",
+    "title": "GCP Phase 6 (Regional service plane) exit test",
+    "statement": "GCP Phase 6 (Regional service plane) exits with the following: GKE asset/capital/risk/evidence/API services, Fabric consumer scaling, and a Redis cache.",
+    "rationale": "Warm services scale elastically and independently of the reflex cells, but only once the Fabric and the ledger they consume from are proven.",
+    "kind": "build_phase",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§26 Recommended Build Order — Phase 6"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Asset, capital, risk, evidence and API services run as regional warm services, Fabric consumers scale out with lag, and a Redis-cache outage changes no decision."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "ASSET",
+      "CAPITAL",
+      "RISK",
+      "EVIDENCE"
+    ],
+    "notes": "GKE is ADR 0099 C3 and separate services per brain is C7. Redis must not become truth (ARCH-054)."
+  },
+  {
+    "id": "ARCH-067",
+    "domain": "ARCH",
+    "title": "GCP Phase 8 (Cognitive/AI) exit test",
+    "statement": "GCP Phase 8 (Cognitive/AI) exits with the following: Spanner Graph, a model registry and training, ambient/symbolic agents, world+tick fusion, and a signed model-package lifecycle.",
+    "rationale": "Cognition is elastic and asynchronous, so it comes after the planes it reads from and writes to. The signed package lifecycle is how its output reaches the reflex cells safely.",
+    "kind": "build_phase",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§26 Recommended Build Order — Phase 8"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A model trained from world+tick history is registered, signed, promoted and activated through the package lifecycle, and the ambient and symbolic agents read and write the graph store."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "COGNITION",
+      "MODEL",
+      "AMBIENT",
+      "REASON",
+      "WORLD"
+    ],
+    "notes": "The platform-side counterpart of master Phases 2 and 8 (ARCH-032, ARCH-039). Spanner Graph falls under ADR 0099 C4 and Python training under C5."
+  },
+  {
+    "id": "ARCH-068",
+    "domain": "ARCH",
+    "title": "GCP Phase 9 (Autonomous development) exit test",
+    "statement": "GCP Phase 9 (Autonomous development) exits with a planner/coder/test/security/reviewer/release/SRE agent loop that runs through normal CI/GitOps, with sandbox and budget controls.",
+    "rationale": "GCP Rule 9: autonomous agents obey the same pipeline. An agent loop that could bypass CI, review or budget would be an unreviewed path to production.",
+    "kind": "build_phase",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§26 Recommended Build Order — Phase 9"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "An agent's change reaches an environment only through normal CI/GitOps. In a game-day agent-compromise simulation (v2.1 §25), the agent cannot merge, deploy or reach secrets around policy, and it stops at its budget."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "DEVFACTORY",
+      "SEC",
+      "SUPPLYCHAIN"
+    ],
+    "notes": "ADR 0098 records the development factory. prod stays refused by infra.yml and the deploy gate."
+  },
+  {
+    "id": "ARCH-069",
+    "domain": "ARCH",
+    "title": "GCP Phase 10 (Quantum/agency expansion) exit test",
+    "statement": "GCP Phase 10 (Quantum/agency expansion) exits with the following: an IBM Quantum gateway, causal agency adapters, additional assets and markets, and larger arbitrage cycles. Each is admitted only after the classical baseline and reliability gates.",
+    "rationale": "Each of these widens the blast radius or the uncertainty of the system, so each is admitted only once the classical baseline and reliability gates are in place.",
+    "kind": "build_phase",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§26 Recommended Build Order — Phase 10"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Each expansion item is admitted only with a recorded pass of the classical-baseline gate and the reliability gate, and admission is refused without either record."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION",
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "QUANTUM",
+      "AGENCY",
+      "ARBITRAGE",
+      "ASSET"
+    ],
+    "notes": "Its gating clause is shared with ARCH-037. Causal agency adapters that act outside the platform are BLOCKED under ADR 0021, and are built only in their shadow form (ARCH-042). CLAUDE.md describes the current stack as reaching IBM Quantum through Qiskit Runtime for QAOA, with a local fallback and a classical baseline (ADR 0006). How that compares with a gateway is for the traceability matrix to score, not this catalogue."
+  },
+  {
+    "id": "ARCH-070",
+    "domain": "ARCH",
+    "title": "Every workload documents its state owner, protocols, scaling model and degraded mode",
+    "statement": "Every GCP workload has a documented state owner, upstream/downstream protocol, scaling model and degraded mode.",
+    "rationale": "A workload with no documented degraded mode fails in whatever way it happens to fail. A workload with no documented state owner is how a second source of truth appears.",
+    "kind": "acceptance",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A machine-readable workload register lists every GCP workload with its state owner, upstream/downstream protocol, scaling model and degraded mode, and an acceptance test fails when a Terraform-declared workload has no complete entry."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GCP",
+      "OBS"
+    ],
+    "notes": "Kept as one requirement because the four attributes are fields of a single register and are checked by one test. v11.6 §31 (M p43) asks the same of dependencies: 'Every dependency has a defined degraded mode'. v2.1 §22 holds the degradation contracts."
+  },
+  {
+    "id": "ARCH-071",
+    "domain": "ARCH",
+    "title": "The ledger does not share a Spanner database with other trust or performance domains",
+    "statement": "Ledger, world graph, agent memory and general service tables are not placed in one Spanner database. Each trust/performance domain gets its own database.",
+    "rationale": "v2.1 §29: do not share Spanner Graph's noisy analytical load with the ledger database. A shared database also shares its failure and its access boundary.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§28 Explicit Anti-Patterns"
+      }
+    ],
+    "verification": {
+      "method": "infra-plan",
+      "check": "The plan declares the ledger in a Spanner database of its own, with the world graph and agent memory in separate databases, and no service's tables share the ledger database."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "LEDGER",
+      "DATA",
+      "WORLD"
+    ],
+    "notes": "This applies once ADR 0099 C4 is resolved. It is P0 because it protects the store holding financial truth from the day that store first exists (GCP Phase 4, ARCH-064)."
+  },
+  {
+    "id": "ARCH-072",
+    "domain": "ARCH",
+    "title": "Application, Fabric, IaC, policies, schemas and model config live in one monorepo",
+    "statement": "Application code, the Rust Fabric, infrastructure-as-code, policies, schemas and model/config are held together in one GitHub monorepo.",
+    "rationale": "One repository gives one gate, one history and one review surface. A contract change and its consumers land in one commit, rather than as a cross-repository version skew.",
+    "kind": "placement",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "H",
+        "page": "L345",
+        "section": "VIEWS.cicd — 07 · CI/CD, GitOps & Autonomous Development (node 'gh')"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Application crates, the Fabric, Terraform, policies, schemas and model/config manifests all resolve to paths in the one repository, and CI builds all of them from a single commit."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SUPPLYCHAIN",
+      "DEVFACTORY"
+    ],
+    "notes": "The raw item's claim that nothing is split across repositories overstates the diagram. The same CI/CD view also draws a separate 'Environment / GitOps Repo' node, for versioned environment manifests and package pins. v2.1 names seven repositories. ADR 0099 C6 declines that split and keeps ADR 0016's single repository, mapping each named repository to a directory; environment desired state therefore also lives here, under infrastructure/environments/."
+  }
+]

@@ -1,0 +1,1612 @@
+[
+  {
+    "id": "RES-001",
+    "domain": "RES",
+    "title": "A Fabric outage never stalls a live local decision",
+    "statement": "A Reflex Node's live local decision (book update, inference, risk veto, venue send) never waits on the Event & Control Fabric. A total Fabric outage, a lost quorum, or a broker or partition-leader failover in progress does not delay or block it.",
+    "rationale": "The Fabric is durable and replayable, not latency-critical. If a decision could wait on a broker acknowledgement or a failover, every Fabric incident would become a trading incident, and the split between the reflex path and the asynchronous bus would exist only on paper.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage ('A fabric outage must not stall a live local decision')"},
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Regional Event Fabric broker loss row ('Reflex execution does not wait for failover')"},
+      {"doc": "H", "page": "L190", "section": "VIEWS.fabric — 03 · Native Rust Event & Control Fabric, subtitle ('never a synchronous dependency of the trading hot path')"}
+    ],
+    "verification": {"method": "chaos", "check": "While a Reflex Node trades against a simulated venue, kill every broker, then separately force a partition-leader failover, and assert that the tick-to-decision latency distribution stays within its no-fault benchmark band and that no decision is dropped or deferred."},
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "REFLEX"],
+    "notes": "Merges the §17 principle (M p24) with the broker-loss row's clause 'Reflex execution does not wait for failover' (M p40). The rest of that row is RES-057 to RES-059. Two passages outside this extraction state the same boundary: M p36 §26.1's hot-path contract ('never wait on a broker acknowledgement') and G p3 Rule 1. Both are owned by ARCH and REFLEX. The COST flag on the broker-loss item was dropped here because it belongs to RF3 replica placement (RES-057), not to this property. This pass added the H citation from the diagram source."
+  },
+  {
+    "id": "RES-002",
+    "domain": "RES",
+    "title": "A Reflex Mesh outage never stops durable journaling or control distribution",
+    "statement": "Loss or degradation of the Reflex Mesh does not prevent the Event & Control Fabric from durably journaling records, or from distributing control (policy, package and activation announcements).",
+    "rationale": "The Mesh carries short-lived peer state for live multi-leg coordination, and the Fabric carries the record. If the record depended on the Mesh, a peer-link outage would silently open a gap in the event log that replay and audit could never close.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "24", "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage ('a Reflex Mesh outage must not prevent durable journaling or control distribution')"}
+    ],
+    "verification": {"method": "chaos", "check": "Partition every Mesh link of a trading cell and assert that every record it journals still reaches the Fabric with contiguous offsets, and that a ControlPackAnnouncement published during the partition is received and acknowledged by the cell."},
+    "policy_flags": [],
+    "secondary_domains": ["MESH", "FABRIC"],
+    "notes": "Kept as one requirement: journaling and control distribution are two uses of the same Fabric path, and one partition test checks both. ARCH-028 owns the three-path separation this depends on. P1 because the peer mesh arrives in master Phase 4."
+  },
+  {
+    "id": "RES-003",
+    "domain": "RES",
+    "title": "Without the Fabric, a Reflex Node runs on its last valid package until TTL, freshness or risk policy ends it",
+    "statement": "When the Fabric is unavailable, including when Fabric quorum is lost, a Reflex Node continues under its last valid signed model/policy package, its local policy and its local journal. It does so only until the package's TTL expires, a freshness policy is exceeded, or risk policy requires degradation. At that point it degrades.",
+    "rationale": "Continuing is what stops a Fabric outage from becoming a trading outage. Bounding the continuation is what stops a stale package from trading indefinitely on beliefs nobody has refreshed. A continuation with no end condition silently relaxes every control the package carried.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "37", "section": "§26.1 Native Rust Event & Control Fabric — Hot-path contract ('continues under its last valid package and local journal until the package TTL or risk policy requires degradation'; extracted twice)"},
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Regional Event Fabric quorum lost row ('Local Reflex Nodes continue from cached signed policy and local journals')"},
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Fabric row, Reflex behavior ('Continue under local policy'; 'narrow if spool/freshness policy exceeded')"}
+    ],
+    "verification": {"method": "chaos", "check": "Cut a trading node off from the Fabric. Assert that it keeps deciding under the package digest it held, never under an unsigned or partially received package. Then advance the clock past the package TTL, and separately past the freshness threshold, and assert that each moves the node to the degraded mode its risk policy names."},
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "FABRIC", "MODEL", "RISK"],
+    "notes": "Merges four items. Two are extractions of the same M p37 sentence; the second, which names the Reflex Node and the model/policy package, is the more specific and is kept. The others are the continuation clause of the quorum-lost row (M p40) and G p21's Reflex behaviour on Fabric loss. G's 'freshness policy exceeded' trigger is folded in here. Its 'spool policy exceeded' trigger is RES-062. The merged G and quorum-lost items carried NEW_DEPENDENCY and COST, which belong to other clauses and were dropped."
+  },
+  {
+    "id": "RES-004",
+    "domain": "RES",
+    "title": "Every dependency has a defined degraded mode, so the platform degrades by capability",
+    "statement": "Every dependency of the platform has a defined, documented degraded mode (degradation envelope). The envelope states what continues, what narrows and what stops when that dependency is lost, so that the system degrades one capability at a time rather than failing as one monolith.",
+    "rationale": "A dependency with no declared degraded mode fails in whatever way its callers happen to be written, which is usually all at once. Declaring the envelope for each dependency is what makes every other failure behaviour in this domain testable.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — lead sentence ('The system should degrade by capability, not fail as one monolith')"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist ('Every dependency has a defined degraded mode')"},
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 5, Regions fail independently ('Each dependency has a degradation envelope')"}
+    ],
+    "verification": {"method": "inspection", "check": "List every dependency named in the deployed topology and in the degradation register. Assert that each has an entry naming what continues, narrows and stops, and at least one chaos or game-day test that exercises it."},
+    "policy_flags": [],
+    "secondary_domains": ["ARCH", "OBS"],
+    "notes": "Merges three sources. The first is the §28 lead sentence (M p39). The second is the first clause of the §31 checklist item (M p43); its quantum and global-cognition clauses are RES-009 and RES-005. The third is the second sentence of G Rule 5 (G p3); its first sentence is split between RES-005 and RES-007. The §28 lead sentence also appears as the rationale of every raw §28 row. ARCH-070 (G p23) requires the same for each GCP workload. The Rule 5 item carried MULTI_REGION, which belongs to its region clause (RES-007) and was dropped here."
+  },
+  {
+    "id": "RES-005",
+    "domain": "RES",
+    "title": "Loss of global cognition never blocks the reflex path",
+    "statement": "When global cognition is unavailable, including the AI/Agent Platform that hosts it, healthy Reflex Cells keep executing on their last valid signed packages until those packages expire. No new research, policy or model output is produced, and nothing on the reflex path waits for cognition to return.",
+    "rationale": "Cognition runs in the slow lane and is global. The reflex path runs in the fast lane and is local. If the reflex path could block on cognition, the least latency-critical and most failure-prone plane would decide when the platform can trade.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Global cognition unavailable row ('Regional nodes continue with last valid packs until expiry ... No new research/policy')"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist ('quantum and global cognition can never block the reflex path')"},
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 5 ('Loss of global cognition ... cannot stop a healthy Reflex Cell')"},
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — AI/Agent Platform row ('No new cognitive/model output'; 'Existing packages continue')"},
+      {"doc": "H", "page": "L90", "section": "VIEWS.global — 01 · Global Platform Topology, subtitle ('Hot execution stays regional; global services are asynchronous')"}
+    ],
+    "verification": {"method": "chaos", "check": "Stop every cognition and model-serving process while a cell trades. Assert that decisions continue at unchanged latency under the package digests the cell holds, that no new package is activated during the outage, and that trading on each package stops at its expiry."},
+    "policy_flags": [],
+    "secondary_domains": ["REFLEX", "MODEL"],
+    "notes": "Merges five statements of one failure. The AI/Agent Platform row (G p21) is v2.1's placement of global cognition, so its Reflex half belongs here. Its 'research backlog queues' half is RES-083, and the narrowing clause of the M p39 row is RES-006. Three flags were removed. MANAGED_SERVICE and NON_RUST describe the cognition stack that is lost, not anything this behaviour needs. MULTI_REGION belongs to Rule 5's region clause (RES-007). This is P0 as a hot-path isolation invariant, even though global cognition itself arrives in master Phase 2. This pass added the H citation."
+  },
+  {
+    "id": "RES-006",
+    "domain": "RES",
+    "title": "Position size narrows as package confidence and TTL decay",
+    "statement": "While global cognition is unavailable, the size a Reflex Cell allows under a held package narrows as that package's confidence decays and as the package ages toward its TTL.",
+    "rationale": "An old package is weaker evidence than a new one. Sizing at full strength until the instant of expiry treats a belief that has gone unrefreshed for hours as if it were minutes old, and then drops off a cliff.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Global cognition unavailable row ('size narrows as confidence/TTL decay')"}
+    ],
+    "verification": {"method": "property", "check": "For generated packages, assert that the allowed size never increases as the package ages toward its TTL or as its confidence falls, and that it is strictly smaller at a late age than at activation."},
+    "policy_flags": [],
+    "secondary_domains": ["RISK", "REFLEX", "MODEL"],
+    "notes": "Split from the global-cognition row (RES-005). Neither blueprint specifies the decay function. The nearest existing mechanism is the edge cell's capability-freshness sizing (qip_edge_sizing_multiplier, described in the observability rules). The traceability matrix must establish whether that sizing is keyed to package confidence and TTL. P1 because the packages that decay arrive in master Phase 2."
+  },
+  {
+    "id": "RES-007",
+    "domain": "RES",
+    "title": "Loss of a peer, a region or the cross-region network never stops local trading in a healthy cell",
+    "statement": "None of the following stops local trading in a healthy Reflex Cell or globally halts healthy regions: degradation of the peer Reflex Mesh, loss of the cross-region network, or loss of another whole region. Each healthy region continues on its own.",
+    "rationale": "Regions are failure domains. If losing one region could halt the others, three regions would triple the chance of a global outage instead of protecting against one.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Peer reflex mesh degraded row ('Local trading continues')"},
+      {"doc": "G", "page": "3", "section": "§2 Non-Negotiable Architecture Rules — Rule 5 ('Loss of ... another region cannot stop a healthy Reflex Cell')"},
+      {"doc": "G", "page": "4", "section": "§3 Global Region and Failure-Domain Strategy — Regional failure bullet ('healthy regions continue')"},
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Cross-region network row ('Local trading continues')"},
+      {"doc": "G", "page": "23", "section": "§27 Architecture Acceptance Criteria ('Region loss does not globally halt healthy regions')"}
+    ],
+    "verification": {"method": "chaos", "check": "In a multi-cell topology, sever the Mesh, then the cross-region network, then one region entirely, in separate runs. Assert that every remaining healthy cell keeps deciding and filling locally throughout each run."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["REFLEX", "MESH", "NET"],
+    "notes": "Merges five statements of one property. It is already a standing decision here: ADR 0008, cells decide alone. The explicit disabling of cycles that need the lost peer is RES-008, which also takes the second half of the G p23 item. The G p4 regional-failure item carried MANAGED_SERVICE, which belongs to its ledger/data clause (RES-071) and was dropped here. Three regions fall under ADR 0099 C8 (a cost ceiling, and execution_nodes = {} in every environment). The property can be proven between simulated cells before any region is deployed."
+  },
+  {
+    "id": "RES-008",
+    "domain": "RES",
+    "title": "Cycles that need an unreachable peer are disabled explicitly",
+    "statement": "A distributed or multi-region cycle may need a peer cell or region that becomes unreachable, whether because the Mesh is degraded, the cross-region network is lost or the region is lost. Every cycle that requires coordination with that peer is then explicitly disabled or reduced to pre-positioned directional bands, and no cycle assumes the missing peer.",
+    "rationale": "A multi-leg cycle whose remote leg cannot be coordinated is not an arbitrage. It is an unhedged position. Disabling it explicitly, instead of letting legs fail one by one, stops a network fault from turning into open exposure.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Peer reflex mesh degraded row ('distributed cycles requiring coordination are disabled or reduced to pre-positioned directional bands')"},
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Cross-region network row ('disable multi-region cycles requiring peers')"},
+      {"doc": "G", "page": "23", "section": "§27 Architecture Acceptance Criteria ('cross-region cycles depending on failed peers are disabled explicitly')"}
+    ],
+    "verification": {"method": "chaos", "check": "With a three-leg cross-region cycle template active, partition the peer that holds one leg. Assert that the cycle is marked disabled, or constrained to its declared directional band, with a journaled reason before any new leg is placed, and that no OpportunityToken naming the missing peer is issued."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["ARBITRAGE", "MESH"],
+    "notes": "G's word 'explicitly' is kept: a cycle that merely stops finding fills has not been disabled. 'Pre-positioned directional bands' is M's alternative to disabling. The quarterly regional-loss game day (RES-089) exercises this requirement. P1 as master Phase 4 (2-5 leg cycles)."
+  },
+  {
+    "id": "RES-009",
+    "domain": "RES",
+    "title": "Quantum unavailability falls back to the classical path without interrupting execution",
+    "statement": "When the quantum service is unavailable, the classical solver/model path runs in its place and execution is not interrupted. No quantum dependency can ever block the reflex path.",
+    "rationale": "Quantum is a research accelerator whose benefit must be measured against a classical baseline. Letting it gate execution would put the least mature and least available dependency on the path that has to work.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Quantum unavailable row ('Classical solver/model path runs; no execution interruption')"},
+      {"doc": "M", "page": "43", "section": "§31 Capability Completeness Checklist ('quantum ... can never block the reflex path')"}
+    ],
+    "verification": {"method": "chaos", "check": "Make the quantum backend refuse or time out every job. Assert that each optimisation request returns the classical result it computed anyway, that no decision waits on the quantum call, and that the journal records which path's answer was used."},
+    "policy_flags": [],
+    "secondary_domains": ["QUANTUM", "REFLEX"],
+    "notes": "This is ADR 0006, already a standing decision: a classical baseline is computed every time, so falling back means choosing an answer that already exists. P0 as a hot-path isolation invariant, although the quantum foundry is master Phase 6. A quantum path (QAOA via Qiskit Runtime, with a local fallback) already exists in this repository."
+  },
+  {
+    "id": "RES-010",
+    "domain": "RES",
+    "title": "Evidence from a poisoned or stale source is quarantined",
+    "statement": "When a data source is found to be poisoned or stale, the evidence it contributed is quarantined, so that it no longer feeds beliefs, features or models.",
+    "rationale": "Poisoned evidence that stays in circulation keeps shaping decisions after it has been identified. Quarantine is what makes the finding take effect.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Data source poisoned/stale row ('Evidence quarantined')"}
+    ],
+    "verification": {"method": "integration", "check": "Mark a registered source poisoned. Assert that every EvidencePacket from it is flagged quarantined and excluded from new belief updates and feature computations, and that each stays in the record with its quarantine reason."},
+    "policy_flags": [],
+    "secondary_domains": ["EVID", "DATA"],
+    "notes": "Split from the M p39 row; propagation to dependent beliefs and models is RES-011. Quarantine keeps the evidence and its provenance, because deleting it would break replay of decisions already made on it. P1 as master Phase 2 (evidence and provenance)."
+  },
+  {
+    "id": "RES-011",
+    "domain": "RES",
+    "title": "Beliefs and models that depend on quarantined evidence are downweighted or invalidated",
+    "statement": "Beliefs and models that depended on evidence from a poisoned or stale source are found through their evidence lineage and are downweighted or invalidated.",
+    "rationale": "Quarantining the evidence without touching what was built from it leaves the damage in place. The lineage is what lets the platform find that damage.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Data source poisoned/stale row ('dependent beliefs/models downweighted or invalidated')"}
+    ],
+    "verification": {"method": "integration", "check": "Build a belief and a model partly from one source and a second belief with no lineage to it. Quarantine the source, then assert that the first belief and the model are downweighted or invalidated and that the second belief is unchanged."},
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "MODEL", "EVID"],
+    "notes": "Split from the M p39 row (RES-010). The check first asserts that some belief does not depend on the source and is left alone. That premise stops the check from passing by invalidating everything."
+  },
+  {
+    "id": "RES-012",
+    "domain": "RES",
+    "title": "Money-risking actions halt once the ledger falls past its lag threshold",
+    "statement": "When the ledger cannot commit authoritative accounting, a Reflex Cell continues only within its cached capital/risk envelope, and only until the ledger-lag threshold is reached. Beyond the threshold, new money-risking actions halt.",
+    "rationale": "Trading without an authoritative record means trading with no way to know the position. A bounded lag lets short ledger interruptions pass, and the threshold stops the platform from building exposure it cannot account for.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Ledger degraded row ('New money-risking actions halt if authoritative accounting cannot be committed')"},
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Spanner row, Reflex behavior ('Continue only within cached capital/risk envelope until ledger-lag threshold')"}
+    ],
+    "verification": {"method": "chaos", "check": "Deny ledger commits while a cell trades. Assert that the cell keeps acting only within its cached envelope, that the first new order past the lag threshold is refused with a ledger-lag reason, and that cancels are unaffected."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER", "RISK", "CAPITAL"],
+    "notes": "Merged. G's wording is the more specific and is kept: it bounds the continuation by the cached envelope and a ledger-lag threshold, which turns M's 'cannot be committed' into a testable condition. Neither blueprint gives a value for the threshold. Safe cancels and flattening are RES-013, and G's disabling of stricter transfer and position actions is RES-078. MANAGED_SERVICE is kept because G names Spanner (ADR 0099 C4), although the behaviour itself does not depend on which store holds the ledger."
+  },
+  {
+    "id": "RES-013",
+    "domain": "RES",
+    "title": "Safe cancels and flattening continue while the ledger is degraded",
+    "statement": "While the ledger is degraded, risk-reducing actions (cancels and flattening) continue under local journal rules.",
+    "rationale": "Halting everything on a ledger outage would also halt the actions that reduce exposure. The halt must apply only to actions that add risk.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Ledger degraded row ('safe cancels/flattening continue under local journal rules')"}
+    ],
+    "verification": {"method": "chaos", "check": "With ledger commits denied and the lag threshold exceeded, assert that cancels and flattening orders are still sent and journaled locally, and that each is later committed to the ledger exactly once."},
+    "policy_flags": [],
+    "secondary_domains": ["EXEC", "LEDGER"],
+    "notes": "Split from the M p39 row (RES-012). 'Local journal rules' means each such action is first journaled locally and later reaches the ledger through the idempotent catch-up of RES-080."
+  },
+  {
+    "id": "RES-014",
+    "domain": "RES",
+    "title": "Without custody or treasury, trading is limited to available settled capital",
+    "statement": "When custody or treasury is unavailable, trading is constrained to capital that is already settled and available.",
+    "rationale": "Unsettled or in-transit capital cannot be relied on while the systems that settle and move it are down. Sizing against it would commit capital that may never arrive.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Custody/treasury unavailable row ('Trading constrained to available settled capital')"}
+    ],
+    "verification": {"method": "integration", "check": "Mark custody and treasury unavailable while part of the book is unsettled. Assert that every new order is sized against settled, available capital only, and that an order needing unsettled capital is refused with that reason."},
+    "policy_flags": [],
+    "secondary_domains": ["CAPITAL", "TREASURY", "CUSTODY"],
+    "notes": "Split from the M p39 row (RES-015). Verifiable against the paper ledger; no live custody is needed (ADR 0003). P1 as master Phase 3 (treasury, custody corridors)."
+  },
+  {
+    "id": "RES-015",
+    "domain": "RES",
+    "title": "Without custody or treasury, no new position depends on a transfer",
+    "statement": "While custody or treasury is unavailable, the platform takes no new position, cycle or plan whose completion depends on a capital or asset transfer.",
+    "rationale": "A transfer that cannot be executed turns a planned multi-venue position into a stranded leg.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Custody/treasury unavailable row ('no new transfer dependence')"}
+    ],
+    "verification": {"method": "integration", "check": "With treasury unavailable, offer one cycle whose closing leg needs a cross-venue transfer and one cycle that does not. Assert that only the second is admitted."},
+    "policy_flags": [],
+    "secondary_domains": ["TREASURY", "CUSTODY", "ARBITRAGE"],
+    "notes": "Split from RES-014. The check requires the transfer-free cycle to be admitted, which stops it from passing by refusing everything. Transfers themselves are live-capital actions and are BLOCKED (ADR 0021). Refusing to depend on one can be verified in paper."
+  },
+  {
+    "id": "RES-016",
+    "domain": "RES",
+    "title": "A failed venue is quarantined",
+    "statement": "When a venue fails, it is quarantined, and no new order is routed to it while the quarantine holds.",
+    "rationale": "Routing into a venue that has already failed adds exposure the platform cannot manage.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Venue failure row ('Quarantine venue')"}
+    ],
+    "verification": {"method": "integration", "check": "Fail a simulated venue. Assert that it is marked quarantined with a journaled reason, and that the router refuses every later new order to it."},
+    "policy_flags": [],
+    "secondary_domains": ["EXEC"],
+    "notes": "Split from the four-part M p39 venue-failure row (RES-016 to RES-019). Exercised against the simulated broker only (ADR 0003). P0 because the one-venue Reflex Cell of master Phase 1 must already handle the loss of its venue."
+  },
+  {
+    "id": "RES-017",
+    "domain": "RES",
+    "title": "Exposure at a failed venue is cancelled where possible",
+    "statement": "When a venue fails, open orders and exposure at that venue are cancelled, where the venue still permits it.",
+    "rationale": "Resting orders at a failed venue can fill without the platform seeing it. Cancelling them where possible limits exposure the platform cannot observe.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Venue failure row ('cancel exposure if possible')"}
+    ],
+    "verification": {"method": "integration", "check": "Fail a simulated venue that still accepts cancels and assert that every resting order there receives a cancel. Fail one that does not, and assert that the attempt and its failure are journaled rather than recorded as successful."},
+    "policy_flags": [],
+    "secondary_domains": ["EXEC", "RISK"],
+    "notes": "Split from the M p39 venue-failure row. 'If possible' is kept: a venue that is fully down cannot accept a cancel, and the platform must record that it could not cancel rather than assume it did."
+  },
+  {
+    "id": "RES-018",
+    "domain": "RES",
+    "title": "Flow and exposure at a failed venue are rerouted or hedged elsewhere",
+    "statement": "When a venue fails, flow intended for it is rerouted to other eligible venues, and exposure stranded at it is hedged elsewhere.",
+    "rationale": "Quarantining a venue closes one door. Without a reroute and a hedge, the strategy stops and the stranded exposure stays unmanaged.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Venue failure row ('reroute/hedge elsewhere')"}
+    ],
+    "verification": {"method": "integration", "check": "Fail one of two simulated venues while it carries an open position. Assert that new flow for the instrument routes to the other venue, and that a hedge sized to the stranded exposure is placed there."},
+    "policy_flags": [],
+    "secondary_domains": ["EXEC", "RISK"],
+    "notes": "The source's 'reroute/hedge' is kept as one response. Both actions need a second eligible venue, which is why this is P1: master Phase 1 has one venue. Exercised against simulated venues only (ADR 0003)."
+  },
+  {
+    "id": "RES-019",
+    "domain": "RES",
+    "title": "Positions at a failed venue are reconciled asynchronously",
+    "statement": "After a venue failure, positions and fills at that venue are reconciled against the ledger asynchronously, off the order path.",
+    "rationale": "Reconciliation needs the venue's own statement, which may be slow to arrive. Reconciling synchronously would stall the order path on a venue that has already failed.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Venue failure row ('reconcile asynchronously')"}
+    ],
+    "verification": {"method": "integration", "check": "Fail a venue with orders in flight and restore its statement feed later. Assert that reconciliation runs after recovery and raises a break for any mismatch, and that it never delays a decision on another venue."},
+    "policy_flags": [],
+    "secondary_domains": ["LEDGER", "EXEC"],
+    "notes": "LEDGER-040 and LEDGER-041 own what a reconciliation break triggers. P0 because reconciliation is part of the financial-truth phase (GCP Phase 4)."
+  },
+  {
+    "id": "RES-020",
+    "domain": "RES",
+    "title": "A drifting model falls back to its challenger, its baseline or a deterministic strategy",
+    "statement": "When a model is detected drifting, the decision path falls back to the model's challenger, to its baseline model, or to a deterministic strategy.",
+    "rationale": "A drifting model still produces confident outputs. Without a fallback, the platform keeps acting on them until someone notices.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Model drift row ('Fall back to challenger/baseline model or deterministic strategy')"}
+    ],
+    "verification": {"method": "replay", "check": "Replay a window in which a model's inputs shift past its drift threshold. Assert that from the detection instant onward, decisions are made by the declared fallback and recorded with the fallback's identity."},
+    "policy_flags": [],
+    "secondary_domains": ["MODEL", "RISK"],
+    "notes": "Split from the M p39 row (RES-021). P1 as master Phase 2 (model/strategy foundry)."
+  },
+  {
+    "id": "RES-021",
+    "domain": "RES",
+    "title": "Capital behind a drifting model shrinks automatically",
+    "statement": "When a model drifts, the capital allocated to strategies that depend on it shrinks automatically, without a manual step.",
+    "rationale": "A fallback limits what the model decides, and shrinking capital limits what the decisions cost. Waiting for a human to shrink it leaves full exposure on a model known to be wrong.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Model drift row ('shrink capital automatically')"}
+    ],
+    "verification": {"method": "replay", "check": "Replay a drift event and assert that the capital grants of the dependent strategies are reduced at detection, before any further order, with no operator action in the log."},
+    "policy_flags": [],
+    "secondary_domains": ["CAPITAL", "MODEL"],
+    "notes": "Split from RES-020. Shrinking capital only narrows authority, so it is consistent with the rule that autonomy is never escalated from a model output. Restoring the capital is a separate, governed step."
+  },
+  {
+    "id": "RES-022",
+    "domain": "RES",
+    "title": "A tick-feed gap or corrupt book marks the affected interval unreliable",
+    "statement": "On a tick-feed sequence gap or a corrupt book, the affected interval and instrument are marked unreliable.",
+    "rationale": "A book rebuilt across a gap looks exactly like a correct one. Unless the gap is marked, every consumer downstream treats invented state as observed state.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Tick-feed sequence gap / corrupt book row ('Mark affected interval/instrument unreliable')"}
+    ],
+    "verification": {"method": "replay", "check": "Replay a captured feed with an injected sequence gap and a crossed book. Assert that exactly the affected instrument and interval are flagged unreliable and that the clean intervals on either side are not."},
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "MARKETDATA"],
+    "notes": "Split from the four-part M p39 row (RES-022 to RES-024). P0 because master Phase 1 makes canonical tick capture and book reconstruction mandatory for the first market."
+  },
+  {
+    "id": "RES-023",
+    "domain": "RES",
+    "title": "A tick-feed gap triggers a snapshot or recovery request",
+    "statement": "On a tick-feed sequence gap or a corrupt book, the feed handler requests a snapshot or recovery from the source to restore the book.",
+    "rationale": "Marking an interval unreliable says what is wrong but does not fix it. Without a recovery request, the book stays wrong until the next natural reset.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Tick-feed sequence gap / corrupt book row ('request snapshot/recovery')"}
+    ],
+    "verification": {"method": "integration", "check": "Inject a gap into a simulated feed. Assert that a snapshot or recovery request is issued, that the book is rebuilt from the snapshot, and that the book is marked reliable again only once sequence continuity is re-established."},
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "MARKETDATA"],
+    "notes": "Split from the M p39 row."
+  },
+  {
+    "id": "RES-024",
+    "domain": "RES",
+    "title": "Contaminated windows are kept out of features, training and replay until integrity is restored",
+    "statement": "Features derived from an unreliable interval are quarantined where needed. Contaminated windows are prevented from entering training or replay until their integrity has been restored.",
+    "rationale": "A model trained on a corrupted book learns the corruption, and a replay over it validates the corruption. Either way the defect outlives the feed incident that caused it.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Tick-feed sequence gap / corrupt book row ('quarantine derived features if needed, and prevent contaminated windows from training/replay until integrity is restored')"}
+    ],
+    "verification": {"method": "replay", "check": "Build a training set and a replay manifest over a period containing a flagged interval. Assert that the interval and the features derived from it are excluded or marked, and that they re-enter only after the integrity flag clears."},
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "REPLAY", "MODEL"],
+    "notes": "Two clauses of the row are kept together, 'quarantine derived features' and 'prevent contaminated windows from training/replay'. Both enforce one rule, that contamination does not propagate downstream, and one check covers both. P0 because deterministic replay of the first market is a master Phase 1 exit capability."
+  },
+  {
+    "id": "RES-025",
+    "domain": "RES",
+    "title": "Degraded clock sync preserves raw timestamps and widens temporal uncertainty",
+    "statement": "When clock synchronisation degrades, raw timestamps are preserved unaltered, and the temporal uncertainty recorded on each affected event is widened.",
+    "rationale": "Silently correcting a timestamp is a guess that becomes indistinguishable from a measurement. Keeping the raw value and widening the uncertainty tells every consumer how far to trust the ordering.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Clock synchronization degraded row ('Preserve raw timestamps, widen temporal uncertainty')"}
+    ],
+    "verification": {"method": "property", "check": "For events recorded while the sync-health signal is degraded, assert that the raw source and receive timestamps equal the values received, and that the normalized-time uncertainty is at least the declared degraded bound."},
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "MARKETDATA", "CONTRACT"],
+    "notes": "Split from the M p39 row (RES-025 to RES-027). Preserving and widening stay together because together they are the one rule for recording a degraded timestamp. The field that is widened is the 'normalized time + uncertainty' carried by the MarketEvent contract (M p37). This rule matches house principle 2, refuse rather than guess."
+  },
+  {
+    "id": "RES-026",
+    "domain": "RES",
+    "title": "Degraded clock sync disables strategies and research that need precise cross-venue ordering",
+    "statement": "While clock synchronisation is degraded, strategies and research that require precise cross-venue ordering are disabled.",
+    "rationale": "A lead/lag or latency-arbitrage signal computed from untrustworthy ordering is noise that looks like edge.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Clock synchronization degraded row ('disable strategies/research requiring precise cross-venue ordering')"}
+    ],
+    "verification": {"method": "integration", "check": "Degrade sync health. Assert that every strategy declaring a cross-venue ordering requirement is disabled with a reason, and that strategies without that requirement continue."},
+    "policy_flags": [],
+    "secondary_domains": ["TICK", "ARBITRAGE"],
+    "notes": "Assumes that each strategy and research job declares whether it needs precise cross-venue ordering. Neither blueprint states this declaration, and without it the rule cannot be applied. P1 because cross-venue and cross-region tick alignment arrive in master Phases 3-4."
+  },
+  {
+    "id": "RES-027",
+    "domain": "RES",
+    "title": "Precision-sensitive labels and replays from a clock-degraded period are blocked from promotion",
+    "statement": "Labels and replays that are sensitive to timing precision, and that were produced over a period of degraded clock synchronisation, are blocked from promotion.",
+    "rationale": "A model promoted on labels whose timing cannot be trusted carries that uncertainty into production as false confidence.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Clock synchronization degraded row ('block precision-sensitive labels/replay from promotion')"}
+    ],
+    "verification": {"method": "replay", "check": "Produce a label set and a replay run over a period flagged as clock-degraded. Assert that the promotion gate refuses any model or strategy whose evidence depends on them, naming the flagged period."},
+    "policy_flags": [],
+    "secondary_domains": ["REPLAY", "MODEL"],
+    "notes": "Split from the M p39 row."
+  },
+  {
+    "id": "RES-028",
+    "domain": "RES",
+    "title": "Replay diverging from live execution reduces confidence and capital on dependent strategies",
+    "statement": "When the replay model diverges from live execution, confidence and capital are reduced on the strategies that depend on it.",
+    "rationale": "Strategies are promoted on replay evidence. Once replay is shown not to match reality, that evidence is weaker than it was when the strategies were sized.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Replay model diverges from live execution row ('Reduce confidence/capital on dependent strategies')"}
+    ],
+    "verification": {"method": "replay", "check": "Feed live fills that diverge from the digital twin's predicted fills by more than the threshold. Assert that the confidence and capital of dependent strategies are reduced at detection."},
+    "policy_flags": [],
+    "secondary_domains": ["REPLAY", "CAPITAL", "RISK"],
+    "notes": "Split from the three-part M p39 row (RES-028 to RES-030). P1 as master Phase 2 (replay and digital twin). In this platform 'live execution' means execution against the paper venue (ADR 0003)."
+  },
+  {
+    "id": "RES-029",
+    "domain": "RES",
+    "title": "Replay divergence recalibrates the digital twin with live telemetry",
+    "statement": "When replay diverges from live execution, the digital twin is recalibrated with live telemetry.",
+    "rationale": "Reducing authority treats the symptom, and recalibration treats the cause. Without it, the twin keeps making the same wrong prediction.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Replay model diverges from live execution row ('recalibrate digital twin with live telemetry')"}
+    ],
+    "verification": {"method": "replay", "check": "After a divergence, assert that a recalibration run consumes the recorded live residuals and that its manifest names the telemetry window it used."},
+    "policy_flags": [],
+    "secondary_domains": ["REPLAY"],
+    "notes": "Split from the M p39 row. The live residuals are carried by the MicrostructureDelta contract (M p37)."
+  },
+  {
+    "id": "RES-030",
+    "domain": "RES",
+    "title": "Authority lost to a replay divergence returns only after a benchmark rerun and renewed promotion",
+    "statement": "Authority removed because replay diverged from live execution is restored only after two steps: the benchmark suite has been rerun against the recalibrated twin, and the dependent strategies have passed a renewed promotion.",
+    "rationale": "Restoring authority because the incident has aged, rather than because the evidence has been rebuilt, makes the reduction a delay instead of a control.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "39", "section": "§28 Failure and Degradation Model — Replay model diverges from live execution row ('rerun benchmark suite and require renewed promotion before restoring authority')"}
+    ],
+    "verification": {"method": "integration", "check": "Attempt to restore capital to a strategy after a divergence without a renewed promotion record and assert that the attempt is refused. Then rerun the benchmarks and promote, and assert that the restoration is admitted."},
+    "policy_flags": [],
+    "secondary_domains": ["REPLAY", "MODEL", "GOV"],
+    "notes": "Split from the M p39 row. The rerun and the renewed promotion are one gate on restoration, so they are kept together."
+  },
+  {
+    "id": "RES-031",
+    "domain": "RES",
+    "title": "Diverging world models keep their branches and raise uncertainty",
+    "statement": "When world models diverge, the platform does not force a false consensus. Competing branches are preserved, and the stated uncertainty is raised.",
+    "rationale": "Averaging two incompatible world models produces a third model that nobody believes. It hides the disagreement, which is often the most informative thing the platform knows.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — World models diverge row ('Do not force false consensus. Preserve branches, raise uncertainty')"}
+    ],
+    "verification": {"method": "property", "check": "Given two world models that disagree on a proposition, assert that the resulting state carries both branches with their lineage and an uncertainty no lower than either branch's, and does not carry a single blended value."},
+    "policy_flags": [],
+    "secondary_domains": ["WORLD"],
+    "notes": "Split from the M p40 row (RES-031 to RES-033). The divergence is recorded in the ModelDisagreement contract (M p37). P1 as master Phase 2 (initial World Model Federation and model-disagreement representation)."
+  },
+  {
+    "id": "RES-032",
+    "domain": "RES",
+    "title": "World-model divergence reduces authority where appropriate",
+    "statement": "When world models diverge, the authority of decisions that depend on the disputed propositions is reduced where appropriate.",
+    "rationale": "A decision resting on a proposition the platform's own models dispute deserves less authority than one resting on a proposition they agree on.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — World models diverge row ('reduce authority where appropriate')"}
+    ],
+    "verification": {"method": "integration", "check": "Introduce a divergence on a proposition that one strategy depends on. Assert that this strategy's authority (size or autonomy) falls, and that a strategy with no dependence on the proposition is unchanged."},
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "RISK"],
+    "notes": "The source says 'where appropriate' without defining it. The rule that decides when to reduce authority must be declared before this requirement can be checked."
+  },
+  {
+    "id": "RES-033",
+    "domain": "RES",
+    "title": "World-model divergence is resolved by discriminating evidence and track record",
+    "statement": "A world-model divergence triggers requests for discriminating evidence or simulations. Arbitration between the models weighs each model's calibration and outcome history.",
+    "rationale": "A divergence settled by vote, by recency or by whichever model spoke loudest is settled by accident. Evidence that separates the hypotheses, and each model's record of being right, are the only defensible arbiters.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — World models diverge row ('request discriminating evidence/simulations and let arbitration use calibration + outcome history')"}
+    ],
+    "verification": {"method": "integration", "check": "Create a divergence and assert that an evidence or simulation request naming the disputed propositions is raised. Then swap the two models' calibration records and assert that the arbitration outcome changes."},
+    "policy_flags": [],
+    "secondary_domains": ["WORLD", "EVID"],
+    "notes": "Two clauses of the M p40 row are kept together because both describe how a divergence is resolved. The swap in the check proves that arbitration actually reads calibration, rather than passing whatever it decides."
+  },
+  {
+    "id": "RES-034",
+    "domain": "RES",
+    "title": "A symbolic contradiction marks the conclusion unresolved and keeps the trace",
+    "statement": "When symbolic reasoning finds a contradiction or unsatisfiable constraints, the conclusion or action is marked infeasible or unresolved, and the contradiction trace is retained.",
+    "rationale": "A contradiction that is discarded cannot be diagnosed, and a conclusion that silently survives one is wrong in a way nobody can see.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Symbolic contradiction / unsatisfied constraints row ('Mark conclusion/action infeasible or unresolved, retain the contradiction trace')"}
+    ],
+    "verification": {"method": "unit", "check": "Submit a constraint set with a known contradiction. Assert that the result is marked infeasible or unresolved and carries a machine-checkable trace naming the conflicting constraints."},
+    "policy_flags": ["NON_RUST"],
+    "secondary_domains": ["REASON"],
+    "notes": "Split from the four-part M p40 row (RES-034 to RES-036). The trace is carried by the SymbolicDerivation contract (M p37). NON_RUST is kept because the blueprints name Z3 and OR-Tools as the solvers (ADR 0099 C5). P1 as master Phase 2 (symbolic reasoning services)."
+  },
+  {
+    "id": "RES-035",
+    "domain": "RES",
+    "title": "A symbolic contradiction starts a search for alternate hypotheses or plans",
+    "statement": "After a contradiction, the reasoning layer searches for alternate hypotheses or plans instead of stopping at the failure.",
+    "rationale": "A reasoning layer that stops at the first contradiction turns every conflict into an abstention, even when a consistent alternative exists.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Symbolic contradiction / unsatisfied constraints row ('search alternate hypotheses/plans')"}
+    ],
+    "verification": {"method": "integration", "check": "Give the solver a contradiction for which a satisfiable alternate plan exists. Assert that the alternate plan is found and recorded with a link to the rejected one."},
+    "policy_flags": ["NON_RUST"],
+    "secondary_domains": ["REASON", "AGENCY"],
+    "notes": "Split from the M p40 row. NON_RUST is kept for the same solver reason as RES-034."
+  },
+  {
+    "id": "RES-036",
+    "domain": "RES",
+    "title": "Money-moving invariants fail closed on a contradiction",
+    "statement": "When a contradiction or an unsatisfied constraint touches a money-moving invariant, the result is a refusal. No order, transfer or capital change proceeds on an unresolved derivation.",
+    "rationale": "For an action that moves money, an unresolved constraint is not a question to be decided later. Proceeding on one means the invariant it guards has already failed to hold.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Symbolic contradiction / unsatisfied constraints row ('fail closed for money-moving invariants')"}
+    ],
+    "verification": {"method": "property", "check": "For generated money-moving actions whose constraint check returns infeasible, unresolved, timed out or errored, assert that every one is refused and that none reaches the order path."},
+    "policy_flags": [],
+    "secondary_domains": ["REASON", "RISK"],
+    "notes": "P0 as a safety invariant (house principle 3, fail closed). It holds from the first deterministic risk gate onward, before any symbolic reasoning service exists. NON_RUST was dropped because the refusal happens in the deterministic gate, not in the solver."
+  },
+  {
+    "id": "RES-037",
+    "domain": "RES",
+    "title": "Attention is rate-limited and budgeted during an ambient model storm",
+    "statement": "During an ambient model storm, or a flood of noisy proactive alerts, attention is rate-limited and budgeted, so that the volume of escalations cannot exceed the declared attention budget.",
+    "rationale": "An attention system with no budget turns a noisy model into a denial of service against the humans and agents it escalates to.",
+    "kind": "failure_behavior",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Ambient model storm / noisy proactive alerts row ('Rate-limit and budget attention')"}
+    ],
+    "verification": {"method": "property", "check": "Drive the Attention Router at an alert rate well above budget. Assert that the escalations admitted per window never exceed the budget, and that the excess is recorded as shed or deferred."},
+    "policy_flags": [],
+    "secondary_domains": ["AMBIENT"],
+    "notes": "Split from the five-part M p40 row (RES-037 to RES-041). P2 as master Phase 8 (Ambient Model Mesh and Attention Router)."
+  },
+  {
+    "id": "RES-038",
+    "domain": "RES",
+    "title": "Duplicate proactive alerts are clustered",
+    "statement": "Duplicate proactive alerts are clustered, so that one underlying condition produces one escalation.",
+    "rationale": "Several ambient models noticing the same event is corroboration, not a reason to escalate the event several times.",
+    "kind": "failure_behavior",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Ambient model storm / noisy proactive alerts row ('cluster duplicates')"}
+    ],
+    "verification": {"method": "unit", "check": "Feed N alerts describing one condition from several ambient models and assert that exactly one clustered escalation results, citing all N."},
+    "policy_flags": [],
+    "secondary_domains": ["AMBIENT"],
+    "notes": "Split from the M p40 row."
+  },
+  {
+    "id": "RES-039",
+    "domain": "RES",
+    "title": "Producers of low-value ambient signals are penalised",
+    "statement": "Ambient signal producers whose alerts prove to be low-value are penalised by lowering the weight or budget their future alerts receive.",
+    "rationale": "Without a feedback penalty, the noisiest producer keeps the largest share of attention indefinitely.",
+    "kind": "failure_behavior",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Ambient model storm / noisy proactive alerts row ('penalize low-value signal producers')"}
+    ],
+    "verification": {"method": "replay", "check": "Replay a period in which one producer's alerts are never acted on and another's lead to action. Assert that the first producer's weight or budget falls relative to the second's."},
+    "policy_flags": [],
+    "secondary_domains": ["AMBIENT", "MODEL"],
+    "notes": "Split from the M p40 row. Neither blueprint defines what makes a signal 'low-value'; the check uses whether an alert was acted on as the proxy."
+  },
+  {
+    "id": "RES-040",
+    "domain": "RES",
+    "title": "Drifting ambient models are quarantined",
+    "statement": "An ambient model found to be drifting is quarantined from the attention path.",
+    "rationale": "A drifting ambient model generates confident false alarms, and those feed the very storm the other controls are trying to damp.",
+    "kind": "failure_behavior",
+    "priority": "P2",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Ambient model storm / noisy proactive alerts row ('quarantine drifting ambient models')"}
+    ],
+    "verification": {"method": "integration", "check": "Force an ambient model's drift metric past its threshold. Assert that its signals stop reaching the Attention Router and that the quarantine is recorded."},
+    "policy_flags": [],
+    "secondary_domains": ["AMBIENT", "MODEL"],
+    "notes": "Split from the M p40 row."
+  },
+  {
+    "id": "RES-041",
+    "domain": "RES",
+    "title": "Background cognition cannot take reflex or ledger resources",
+    "statement": "Reflex and ledger resources are protected from background cognition. An ambient storm cannot consume the compute, I/O or queue capacity that the reflex and ledger paths need.",
+    "rationale": "The failure the storm controls exist to prevent is not a noisy dashboard. It is a trading or accounting path starved by a research process.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Ambient model storm / noisy proactive alerts row ('protect reflex/ledger resources from background cognition')"}
+    ],
+    "verification": {"method": "chaos", "check": "Run an ambient storm on shared infrastructure. Assert that reflex decision latency and ledger commit latency stay within their no-storm benchmark bands."},
+    "policy_flags": [],
+    "secondary_domains": ["AMBIENT", "REFLEX", "LEDGER"],
+    "notes": "AMBIENT-022 (M p44) states the same isolation for the reflex, risk, ledger and custody paths and is P0; this is its failure-mode form. It is P0 here too, although the rest of the row is P2."
+  },
+  {
+    "id": "RES-042",
+    "domain": "RES",
+    "title": "An unidentifiable causal effect is never claimed as caused",
+    "statement": "When a causal effect is not identifiable, the platform does not claim that the action caused the outcome. It downgrades confidence and preserves the competing explanations.",
+    "rationale": "A claim of causation made without identification is how a lucky correlation becomes a policy.",
+    "kind": "failure_behavior",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Causal effect not identifiable row ('Do not claim the action caused the outcome. Downgrade confidence, preserve competing explanations')"}
+    ],
+    "verification": {"method": "unit", "check": "Give the attribution step an intervention whose effect is confounded. Assert that the record says the effect was not identified, carries a lowered confidence, and lists each competing explanation."},
+    "policy_flags": [],
+    "secondary_domains": ["AGENCY", "REASON"],
+    "notes": "Split from the M p40 row (RES-042 to RES-044). P3 as master Phase 10 (causal effect attribution)."
+  },
+  {
+    "id": "RES-043",
+    "domain": "RES",
+    "title": "An unidentifiable effect prompts discriminating evidence or a safer experiment",
+    "statement": "An unidentifiable causal effect produces either a request for discriminating evidence or a proposal for a safer experiment that could identify it.",
+    "rationale": "Recording 'not identified' and stopping there leaves the question open forever. The failure should produce the work that could close it.",
+    "kind": "failure_behavior",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Causal effect not identifiable row ('seek discriminating evidence or design a safer experiment')"}
+    ],
+    "verification": {"method": "integration", "check": "Assert that an unidentified-effect record raises an evidence request or an experiment proposal that links back to the record."},
+    "policy_flags": [],
+    "secondary_domains": ["AGENCY"],
+    "notes": "Split from the M p40 row. Any experiment is itself an intervention and passes the same gates. An experiment that acts outside the platform is BLOCKED beyond its shadow form (ADR 0021)."
+  },
+  {
+    "id": "RES-044",
+    "domain": "RES",
+    "title": "Autonomy is never scaled on correlation alone",
+    "statement": "Autonomy is never increased on the basis of correlation alone. An association whose causal effect is unidentified cannot justify more authority.",
+    "rationale": "Scaling authority on correlation compounds the most common error in learning from outcomes, taking coincidence for skill, and then gives that error more capital to act with.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Causal effect not identifiable row ('do not scale autonomy from correlation alone')"}
+    ],
+    "verification": {"method": "property", "check": "For generated outcome histories whose only support is an unidentified correlation, assert that every request to increase autonomy is refused."},
+    "policy_flags": [],
+    "secondary_domains": ["AGENCY", "GOV"],
+    "notes": "P0 as a safety invariant. It matches the house rule that autonomy is never escalated from a model output, an agent finding or a config value, and that changes go only through AutonomyController::request_change with an authenticated operator (risk-and-execution rules). Autonomy above paper trading is refused by the three paper-trading layers regardless (ADR 0003)."
+  },
+  {
+    "id": "RES-045",
+    "domain": "RES",
+    "title": "A compromised adapter and its credentials are revoked immediately",
+    "statement": "When an action or channel identity, or its permission, is compromised, the adapter and its credentials are immediately revoked or quarantined.",
+    "rationale": "Every moment a compromised credential stays valid is a moment an attacker can act as the platform.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Action/channel identity or permission compromised row ('Immediately revoke/quarantine the adapter and credentials')"}
+    ],
+    "verification": {"method": "integration", "check": "Raise a compromise signal for an adapter. Assert that its credential is revoked or its access disabled, and that the adapter refuses every call from that moment onward."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["SEC", "AGENCY"],
+    "notes": "Split from the six-clause M p40 row (RES-045 to RES-049). This pass reads the row as applying to every adapter that acts, venue adapters included, and not only to master Phase 10 channels. That reading, and identity/security being a master Phase 0 capability, make it P0. MANAGED_SERVICE is kept because revocation acts on IAM and Secret Manager identities."
+  },
+  {
+    "id": "RES-046",
+    "domain": "RES",
+    "title": "Pending actions through a compromised adapter are stopped",
+    "statement": "When an action identity or permission is compromised, every pending action through the affected adapter is stopped.",
+    "rationale": "Revoking the credential does not recall work already queued under it. An attacker's queued actions would otherwise still run.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Action/channel identity or permission compromised row ('stop pending actions')"}
+    ],
+    "verification": {"method": "integration", "check": "Queue actions through an adapter and then raise a compromise signal. Assert that none of the queued actions executes afterwards and that each is recorded as stopped."},
+    "policy_flags": [],
+    "secondary_domains": ["SEC", "AGENCY"],
+    "notes": "Split from the M p40 row. MANAGED_SERVICE was dropped because stopping queued work is internal to the platform."
+  },
+  {
+    "id": "RES-047",
+    "domain": "RES",
+    "title": "The audit trail of a compromised adapter is preserved",
+    "statement": "The audit trail of a compromised adapter is preserved through revocation and rotation.",
+    "rationale": "The audit trail is the only way to learn what the attacker did. A remediation that wipes it destroys the investigation.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Action/channel identity or permission compromised row ('preserve audit')"}
+    ],
+    "verification": {"method": "integration", "check": "After compromise handling, assert that every action-journal entry and access record for the adapter from before the revocation is still present and verifies against the hash chain."},
+    "policy_flags": [],
+    "secondary_domains": ["SEC", "GOV"],
+    "notes": "Split from the M p40 row. Consistent with the house rule that sealed event-log history is never edited."
+  },
+  {
+    "id": "RES-048",
+    "domain": "RES",
+    "title": "A compromised identity is rotated and needs explicit re-authorisation",
+    "statement": "After a compromise, the adapter's identity and secrets are rotated, and the adapter is not used again until it has been explicitly re-authorised.",
+    "rationale": "Restoring an adapter automatically after rotation would let the same compromise path be used again before anyone has checked it is closed.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Action/channel identity or permission compromised row ('rotate identity/secrets and require explicit re-authorization')"}
+    ],
+    "verification": {"method": "integration", "check": "After compromise handling, assert that the old credential is rejected, and that the adapter refuses to act on its new credential until an authenticated re-authorisation record exists."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["SEC"],
+    "notes": "Split from the M p40 row. Rotation and re-authorisation are kept together because re-authorisation is the gate on putting the rotated identity into use. MANAGED_SERVICE is kept because rotation acts on Secret Manager."
+  },
+  {
+    "id": "RES-049",
+    "domain": "RES",
+    "title": "An unapproved identity or channel is never substituted",
+    "statement": "When an identity or channel is compromised or revoked, the pending work is never completed through an unapproved substitute identity or channel.",
+    "rationale": "Routing around a revoked identity to finish the job is exactly what an attacker, or a goal-seeking agent, would do. It would make revocation advisory.",
+    "kind": "prohibition",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Action/channel identity or permission compromised row ('Never substitute an unapproved identity/channel')"}
+    ],
+    "verification": {"method": "property", "check": "For every action whose adapter is revoked, assert that no other identity or channel executes it unless that identity is already approved for the action's class."},
+    "policy_flags": [],
+    "secondary_domains": ["SEC", "AGENCY"],
+    "notes": "Split from the M p40 row. MANAGED_SERVICE was dropped because the prohibition is enforced by the platform's own routing."
+  },
+  {
+    "id": "RES-050",
+    "domain": "RES",
+    "title": "A failed conduct gate blocks the external action, whatever its profitability",
+    "statement": "When the communication/conduct gate fails, the external action is blocked. No expected profitability or utility can override a conduct constraint.",
+    "rationale": "A conduct constraint that gives way to a large enough payoff is a price, not a constraint.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Communication/conduct gate fails row ('Block the external action ... Profitability never overrides conduct constraints')"}
+    ],
+    "verification": {"method": "property", "check": "For generated external actions that fail a conduct check, with expected profit varied from zero to very large, assert that every one is blocked."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["AGENCY", "COMPLIANCE"],
+    "notes": "Merges the row's first and last clauses, because 'profitability never overrides' is the condition under which the block holds. P0 as the fail-closed form of the pre-action gate (AGENCY-009, P0). EXTERNAL_ACTION is kept because the gate guards external actions, which are BLOCKED beyond their shadow form (ADR 0021). The block itself can be verified in shadow."
+  },
+  {
+    "id": "RES-051",
+    "domain": "RES",
+    "title": "A plan blocked by the conduct gate is retained with its reasons",
+    "statement": "A plan blocked by the conduct gate is retained, together with the reasons it failed.",
+    "rationale": "Blocked plans show what the planner is inclined to do. Discarding them hides the pattern that governance most needs to see.",
+    "kind": "failure_behavior",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Communication/conduct gate fails row ('retain the failed plan and reasons')"}
+    ],
+    "verification": {"method": "integration", "check": "Block a plan at the conduct gate and assert that the stored record contains the full plan and each conduct check it failed."},
+    "policy_flags": [],
+    "secondary_domains": ["AGENCY", "GOV"],
+    "notes": "Split from the M p40 row. EXTERNAL_ACTION was dropped because storing the record acts on nothing outside the platform. P3 as master Phase 10."
+  },
+  {
+    "id": "RES-052",
+    "domain": "RES",
+    "title": "After a conduct failure the planner finds a truthful alternative or abstains",
+    "statement": "After a conduct-gate failure, the planner searches for a truthful, non-manipulative alternative, or abstains.",
+    "rationale": "A planner that retries the same plan with small changes until the gate passes is probing the gate, not complying with it.",
+    "kind": "failure_behavior",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Communication/conduct gate fails row ('search for a truthful/non-manipulative alternative or abstain')"}
+    ],
+    "verification": {"method": "integration", "check": "Block a plan for a conduct reason. Assert that the planner's next output is either an alternative that passes every conduct check or an explicit abstention, and never a resubmission of the blocked plan."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["AGENCY", "COMPLIANCE"],
+    "notes": "Split from the M p40 row. EXTERNAL_ACTION is kept because the alternative would itself be an external action."
+  },
+  {
+    "id": "RES-053",
+    "domain": "RES",
+    "title": "An adverse side effect triggers the plan's own stop, rollback or mitigation",
+    "statement": "When an intervention causes an adverse side effect, the plan's own stop, rollback, hedge or mitigation actions are triggered where feasible.",
+    "rationale": "A plan that declares its mitigations but never fires them has the appearance of a safety case without the substance of one.",
+    "kind": "failure_behavior",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Intervention causes adverse side effect row ('Trigger plan-specific stop/rollback/hedge/mitigation actions where feasible')"}
+    ],
+    "verification": {"method": "integration", "check": "In a shadow intervention whose simulated effect crosses a side-effect constraint, assert that the plan's declared mitigation actions are emitted at detection."},
+    "policy_flags": ["EXTERNAL_ACTION"],
+    "secondary_domains": ["AGENCY"],
+    "notes": "Split from the four-part M p40 row (RES-053 to RES-056). This pass added EXTERNAL_ACTION: mitigating an external intervention is itself an external action, BLOCKED beyond its shadow form (ADR 0021). P3 as master Phase 10."
+  },
+  {
+    "id": "RES-054",
+    "domain": "RES",
+    "title": "An adverse side effect reduces the authority of the action policy that caused it",
+    "statement": "An adverse side effect reduces the authority of the action policy that produced it.",
+    "rationale": "Leaving the policy's authority unchanged after it has caused harm lets it cause the same harm again at the same scale.",
+    "kind": "failure_behavior",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Intervention causes adverse side effect row ('reduce the relevant action policy authority')"}
+    ],
+    "verification": {"method": "integration", "check": "After an adverse side effect, assert that the responsible action policy's authority level is lower than it was before."},
+    "policy_flags": [],
+    "secondary_domains": ["AGENCY", "GOV"],
+    "notes": "Split from the M p40 row."
+  },
+  {
+    "id": "RES-055",
+    "domain": "RES",
+    "title": "An adverse side effect creates a failure episode",
+    "statement": "An adverse side effect creates a failure episode in memory that links the intervention to the side effect observed.",
+    "rationale": "Unrecorded failures cannot teach the platform anything, and cannot be counted against the policy that caused them.",
+    "kind": "failure_behavior",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Intervention causes adverse side effect row ('create a failure episode')"}
+    ],
+    "verification": {"method": "integration", "check": "Assert that an Episode marked as a failure is written, linking the intervention and the observed side effect."},
+    "policy_flags": [],
+    "secondary_domains": ["AGENCY"],
+    "notes": "Split from the M p40 row. The Episode contract (M p37) carries actions, outcome horizons, surprise and counterfactuals."
+  },
+  {
+    "id": "RES-056",
+    "domain": "RES",
+    "title": "A policy that caused an adverse side effect is re-evaluated before reuse",
+    "statement": "An action policy that caused an adverse side effect is not reused until it has been re-evaluated.",
+    "rationale": "Reduced authority limits the damage a policy can do. Re-evaluation establishes whether it should act at all.",
+    "kind": "failure_behavior",
+    "priority": "P3",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Intervention causes adverse side effect row ('require re-evaluation before reuse')"}
+    ],
+    "verification": {"method": "integration", "check": "Attempt to invoke the policy again before a re-evaluation record exists and assert that the attempt is refused."},
+    "policy_flags": [],
+    "secondary_domains": ["AGENCY", "GOV"],
+    "notes": "Split from the M p40 row."
+  },
+  {
+    "id": "RES-057",
+    "domain": "RES",
+    "title": "On broker loss, partition leadership moves to an in-sync replica in another zone",
+    "statement": "Each Fabric partition keeps three replicas spread across zones (RF3). When a broker is lost, leadership of its partitions moves to an in-sync replica in another zone.",
+    "rationale": "Replicas in the same zone as the leader fail together with it. Only a cross-zone in-sync replica turns a broker loss into a failover rather than an outage.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Regional Event Fabric broker loss row ('Partition leadership moves to an in-sync replica in another zone')"},
+      {"doc": "G", "page": "4", "section": "§3 Global Region and Failure-Domain Strategy — Zonal failure bullet ('Fabric RF3 partition replicas across zones')"}
+    ],
+    "verification": {"method": "chaos", "check": "Kill the broker leading a partition. Assert that a new leader is elected from the in-sync set in a different zone, and that no quorum-acknowledged record is lost."},
+    "policy_flags": ["COST"],
+    "secondary_domains": ["FABRIC", "GCP"],
+    "notes": "Merges the broker-loss row's first clause (M p40) with the Fabric clause of G p4's zonal-failure bullet. The rest of that bullet is RES-068 and RES-069, and GCP-041 (G p15) states the zone-loss form. The replica placement is kept in this requirement because it is the precondition of the failover, and the one check proves both. COST is kept for the three cross-zone replicas. Leader election needs consensus, a dependency class that ADR 0099 C2 names. Until a dependency record exists, the Fabric is built on what the workspace permits (serde and serde_json)."
+  },
+  {
+    "id": "RES-058",
+    "domain": "RES",
+    "title": "Producers retry by epoch across a broker failover",
+    "statement": "After a broker failover, producers retry under their producer epoch. A retried record is neither lost nor duplicated, and a producer holding a stale epoch is fenced out.",
+    "rationale": "A naive retry after failover duplicates any record that the old leader had already accepted. The epoch is what makes the retry idempotent, and fencing is what stops a zombie producer from writing.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Regional Event Fabric broker loss row ('Producers retry by epoch')"}
+    ],
+    "verification": {"method": "chaos", "check": "Inject a leader failover between a produce and its acknowledgement. Assert that the retried record appears exactly once in the partition, and that a producer presenting an older epoch is refused."},
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC"],
+    "notes": "Split from the M p40 broker-loss row. The fencing clause comes from reading 'by epoch' together with G p3 Rule 4 ('fencing epochs'), which is outside this extraction. The COST flag on the row belongs to RES-057."
+  },
+  {
+    "id": "RES-059",
+    "domain": "RES",
+    "title": "Consumers resume from committed offsets after a broker failover",
+    "statement": "After a broker failover, consumers resume from their committed offsets.",
+    "rationale": "Resuming from anywhere else either skips records, silently losing outcomes, or reprocesses them. Reprocessing is safe only where the sink is idempotent.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Regional Event Fabric broker loss row ('consumers resume from committed offsets')"}
+    ],
+    "verification": {"method": "chaos", "check": "Fail over a partition leader in the middle of consumption. Assert that each consumer group resumes from its last committed offset and that no record is skipped."},
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC"],
+    "notes": "Split from the M p40 broker-loss row."
+  },
+  {
+    "id": "RES-060",
+    "domain": "RES",
+    "title": "Losing Fabric quorum stops new control changes",
+    "statement": "When regional Fabric quorum is lost, new control changes stop. No policy, package or activation change is issued or applied until quorum returns.",
+    "rationale": "A control change that some nodes apply and others never receive leaves the region running two policies, and with no quorum there is no record of which node holds which.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Regional Event Fabric quorum lost row ('new control changes stop')"}
+    ],
+    "verification": {"method": "chaos", "check": "Remove quorum from the control topic. Assert that a control change submitted during the outage is refused rather than partially applied, and that no node activates it."},
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "REFLEX"],
+    "notes": "Split from the M p40 quorum-lost row. The row's continuation clause is in RES-003, its spooling clause is RES-061, and its degradation clause is RES-062. COST was dropped because stopping a change has no cost."
+  },
+  {
+    "id": "RES-061",
+    "domain": "RES",
+    "title": "Without the Fabric, critical events spool locally within a bounded disk budget",
+    "statement": "When the Fabric or its quorum is lost, publication of durable (critical) events queues to a local spool that stays within a bounded disk budget.",
+    "rationale": "Dropping critical events during an outage loses financial outcomes. Buffering without a bound turns a Fabric outage into a full disk, and then into a node outage.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Regional Event Fabric quorum lost row ('durable event publication queues locally within bounded disk budgets')"},
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Fabric row, Reflex behavior ('buffer bounded critical events to local spool')"}
+    ],
+    "verification": {"method": "chaos", "check": "Cut a node off from the Fabric while it keeps trading. Assert that every critical event lands in the local spool and that the spool never exceeds its configured budget."},
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "REFLEX"],
+    "notes": "Merges the quorum-lost row (M p40) with G p21's Fabric row. G limits the buffering to critical events, which agrees with M p36's durability classes: telemetry may be sampled or dropped. The merged items carried COST and NEW_DEPENDENCY, both dropped here. A bounded local spool is a capacity limit, not a spend, and the file-backed log (ADR 0089) already provides one without a new dependency."
+  },
+  {
+    "id": "RES-062",
+    "domain": "RES",
+    "title": "A node cut off from the Fabric narrows before its spool is exhausted",
+    "statement": "A node cut off from the Fabric performs its policy-defined degradation (narrowing) before its local spool or journal budget is exhausted, never after.",
+    "rationale": "A node that notices its spool is full only when a critical event cannot be written has already lost that event. Narrowing first keeps the rate of new outcomes below the space left to record them.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Regional Event Fabric quorum lost row ('policy-defined degradation occurs before journal exhaustion')"},
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Fabric row, Reflex behavior ('narrow if spool ... policy exceeded')"}
+    ],
+    "verification": {"method": "chaos", "check": "Fill the local spool at a controlled rate during a Fabric outage. Assert that the node enters its degraded mode at the declared spool threshold, before the first critical event would be refused for lack of space."},
+    "policy_flags": [],
+    "secondary_domains": ["FABRIC", "REFLEX", "RISK"],
+    "notes": "Merges M p40's degradation clause with the spool half of G p21's narrowing clause. G's freshness trigger is in RES-003. COST and NEW_DEPENDENCY were dropped for the same reasons as in RES-061."
+  },
+  {
+    "id": "RES-063",
+    "domain": "RES",
+    "title": "Local Fabric streams stay writable when cross-region mirroring is down",
+    "statement": "When cross-region mirroring is down, local Fabric streams remain writable and regional durability is unaffected.",
+    "rationale": "If local writes depended on the mirror, a trans-oceanic link failure would stop every region's journal at once.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Cross-region fabric mirror down row ('Local streams remain writable')"},
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Cross-region network row, Platform behavior ('Regional durability intact')"}
+    ],
+    "verification": {"method": "chaos", "check": "Sever the mirror link and assert that producers in both regions keep receiving quorum acknowledgements at unchanged latency."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["FABRIC"],
+    "notes": "Merges M p40 with the Platform column of G p21's cross-region row. The mirror-down row is split five ways (RES-063 to RES-067). MANAGED_SERVICE, for GCS, belongs to RES-067. Multi-region deployment is ADR 0099 C8."
+  },
+  {
+    "id": "RES-064",
+    "domain": "RES",
+    "title": "Cross-region mirror lag is visible and bounded",
+    "statement": "Cross-region mirror lag is visible and bounded: it is measured for each mirrored stream and partition, and it has a declared bound.",
+    "rationale": "A mirror whose lag nobody can see fails silently. The first sign is a global consumer acting on knowledge hours out of date.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Cross-region fabric mirror down row ('Mirror lag is visible and bounded')"},
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Cross-region network row, Reflex behavior ('Fabric mirrors lag')"}
+    ],
+    "verification": {"method": "chaos", "check": "Sever the mirror for a period. Assert that the lag series for each mirrored partition rises and is exported, and that both the declared bound and any breach of it are observable."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["FABRIC", "OBS"],
+    "notes": "Merges M p40 with G p21. The lag is carried by the MirrorCheckpoint contract (M p39). Neither blueprint says what happens when the bound is reached. This pass infers that source retention must be at least the bound, or the catch-up of RES-067 cannot complete."
+  },
+  {
+    "id": "RES-065",
+    "domain": "RES",
+    "title": "No cross-region synchronous quorum is ever attempted",
+    "statement": "No cross-region synchronous quorum is ever attempted. Cross-region mirroring is asynchronous, and no regional write waits on a remote acknowledgement.",
+    "rationale": "A synchronous quorum across oceans puts intercontinental latency, and every intercontinental outage, inside each regional write.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Cross-region fabric mirror down row ('no cross-region synchronous quorum is attempted')"},
+      {"doc": "H", "page": "L207", "section": "VIEWS.fabric — 03 · Native Rust Event & Control Fabric, node 'f_mirror' Cross-Region Mirror ('never global synchronous quorum')"}
+    ],
+    "verification": {"method": "chaos", "check": "Add latency to the cross-region link, then partition it fully, and assert that local produce-acknowledgement latency does not change in either case."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["FABRIC", "NET"],
+    "notes": "M p36 §26.1 ('A regional cluster never blocks on remote acknowledgement') states the same rule outside this extraction. The selectivity half of the H node is RES-070. This pass added the H citation."
+  },
+  {
+    "id": "RES-066",
+    "domain": "RES",
+    "title": "Global consumers mark knowledge from an unreachable region as stale",
+    "statement": "While a cross-region mirror is down, global consumers mark knowledge from the unreachable region as stale.",
+    "rationale": "Knowledge that is not marked stale reads as current. A global model would then treat a silent region as a quiet one.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Cross-region fabric mirror down row ('Global consumers mark remote knowledge stale')"}
+    ],
+    "verification": {"method": "integration", "check": "Sever one region's mirror. Assert that every global consumer reading that region's streams flags the derived state as stale, together with the time of the last mirrored record."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["FABRIC", "DATA"],
+    "notes": "Split from the M p40 row."
+  },
+  {
+    "id": "RES-067",
+    "domain": "RES",
+    "title": "The mirror catches up from the regional Fabric or its GCS archive when connectivity returns",
+    "statement": "When cross-region connectivity returns, the mirror catches up, and global consumers replay the missed records from the regional Fabric or its GCS archive.",
+    "rationale": "An outage that leaves a permanent gap in the global record turns a network incident into lost history.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "M", "page": "40", "section": "§28 Failure and Degradation Model — Cross-region fabric mirror down row ('replay from regional/GCS archive when connectivity returns')"},
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Cross-region network row, Platform behavior ('catch up mirror when link returns')"}
+    ],
+    "verification": {"method": "chaos", "check": "Sever the mirror long enough for part of the backlog to age into the GCS archive, then restore it. Assert that the destination ends with the same record set as the source, with no gap and no duplicate."},
+    "policy_flags": ["MULTI_REGION", "MANAGED_SERVICE"],
+    "secondary_domains": ["FABRIC", "REPLAY", "DATA"],
+    "notes": "Merges M p40 with G p21. MANAGED_SERVICE is kept for the GCS archive."
+  },
+  {
+    "id": "RES-068",
+    "domain": "RES",
+    "title": "A Reflex standby in another zone absorbs a zonal failure",
+    "statement": "Each Reflex primary has a standby in another zone, and the standby takes over when the primary's zone fails.",
+    "rationale": "Without a standby, a single zone outage is a full outage for every venue that zone's Reflex serves.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§3 Global Region and Failure-Domain Strategy — Zonal failure bullet ('Reflex standby')"}
+    ],
+    "verification": {"method": "chaos", "check": "Terminate the zone of a Reflex primary. Assert that the standby takes over, that fencing prevents primary and standby from both sending, and that the outcomes lost are within the declared bound."},
+    "policy_flags": ["COST"],
+    "secondary_domains": ["REFLEX", "GCP"],
+    "notes": "Split from G p4's zonal-failure bullet (see also RES-057 and RES-069). GCP-043 (G p15) states the promotion with fencing, and the monthly zonal game day (RES-090) exercises it with bounded outcome loss. This pass added COST because a standby doubles the reserved hot capacity (ADR 0093 cost instruction; ADR 0099 C8). The merged item's KUBERNETES flag belongs to RES-069. P1 because a standby is not part of the Phase 3 One Reflex Cell exit test."
+  },
+  {
+    "id": "RES-069",
+    "domain": "RES",
+    "title": "Regional GKE control planes and multi-zone node pools absorb a zonal failure",
+    "statement": "Each regional GKE cluster runs a regional (multi-zone) control plane and multi-zone node pools, so that losing one zone does not stop the warm services.",
+    "rationale": "A zonal cluster, or a pool confined to one zone, makes one zone's outage an outage of every warm service in the region.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§3 Global Region and Failure-Domain Strategy — Zonal failure bullet ('GKE regional control plane and multi-zone node pools')"}
+    ],
+    "verification": {"method": "infra-plan", "check": "Plan the Terraform and assert that every warm-services cluster is regional and that every node pool spans more than one zone."},
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["GCP"],
+    "notes": "GCP-042 (G p15) states the zone-loss behaviour. This requirement is in ADR 0099 conflict C3: ADR 0024 retired Kubernetes in favour of Cloud Run. Until a runtime record decides otherwise, the equivalent is a regional Cloud Run service, which is multi-zone by construction."
+  },
+  {
+    "id": "RES-070",
+    "domain": "RES",
+    "title": "Only critical Fabric topics are mirrored across regions",
+    "statement": "Cross-region mirroring is selective: only critical Fabric topics are mirrored.",
+    "rationale": "Mirroring everything multiplies cross-region traffic and cost, and gives a regional failure more data to reconcile, for streams nobody outside the region needs.",
+    "kind": "placement",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§3 Global Region and Failure-Domain Strategy — Regional failure bullet ('critical Fabric topics have selective cross-region mirrors')"},
+      {"doc": "H", "page": "L207", "section": "VIEWS.fabric — 03 · Native Rust Event & Control Fabric, node 'f_mirror' Cross-Region Mirror ('Only selected topics mirror')"}
+    ],
+    "verification": {"method": "inspection", "check": "Assert that every topic's StreamPolicy declares a mirroring policy, that the mirrored set equals the declared critical set, and that no other topic crosses regions."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["FABRIC", "GCP"],
+    "notes": "M p41 Phase 4, outside this extraction, names the selection: outcomes and control are mirrored, while latency-sensitive arbitrage state stays on direct Reflex Mesh links. The merged G p4 item carried MANAGED_SERVICE, which belongs to RES-071. This pass added the H citation."
+  },
+  {
+    "id": "RES-071",
+    "domain": "RES",
+    "title": "Ledger and data services stay available through a regional failure as their topology allows",
+    "statement": "On a regional failure, ledger and data services remain available to the extent their managed-service topology provides, for example a multi-region ledger.",
+    "rationale": "The surviving regions can keep trading only if the ledger they commit to survives as well. Where a store's topology cannot promise that, the gap must be known in advance, not discovered during the outage.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "4", "section": "§3 Global Region and Failure-Domain Strategy — Regional failure bullet ('ledger/data services remain available according to managed-service topology')"}
+    ],
+    "verification": {"method": "game-day", "check": "In the regional-loss game day, assert that the ledger and data services used by the surviving regions are reachable and accept writes, as their declared topology says they should."},
+    "policy_flags": ["MULTI_REGION", "MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER", "DATA", "GCP"],
+    "notes": "The statement defers to each store's topology rather than promising a figure. RES-099 requires that the resulting RTO and RPO be observable, or that their absence be documented. GCP-004 places the ledger as one multi-region deployment. The stores are in ADR 0099 conflict C4."
+  },
+  {
+    "id": "RES-072",
+    "domain": "RES",
+    "title": "Losing the Redis cache never loses financial state",
+    "statement": "Loss of Memorystore Redis causes only a cache rebuild and degraded latency, never lost financial state, because nothing authoritative is kept in it.",
+    "rationale": "A cache that has quietly become the only copy of a position turns a routine cache eviction into a financial loss nobody can reconstruct.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "10", "section": "§9.2 Durable Knowledge Tiers — store/service table, Memorystore Redis Cluster row ('Never authoritative; loss causes cache rebuild/degraded latency, not lost financial state')"}
+    ],
+    "verification": {"method": "chaos", "check": "Flush the cache and then remove it while the platform runs. Assert that positions, cash and ledger state are unchanged, and that services rebuild the cache and return to normal latency."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA", "LEDGER"],
+    "notes": "DATA-045 and ARCH-054 own the rule that caches are never authoritative; this requirement is its failure-mode consequence. G p23 §28 also forbids Redis as a required dependency of the risk gate. Memorystore is in ADR 0099 conflict C4. P1 as GCP Phase 6 (Redis cache)."
+  },
+  {
+    "id": "RES-073",
+    "domain": "RES",
+    "title": "Loss of the Fabric raises an alert immediately",
+    "statement": "Loss of the regional Fabric raises an alert immediately.",
+    "rationale": "Reflex keeps trading through a Fabric outage by design, so nothing in the trading path will make the outage obvious. Only an alert starts the clock on the local spool budget.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Fabric row, Platform behavior ('alert immediately')"}
+    ],
+    "verification": {"method": "integration", "check": "Stop every broker in a region and assert that an alert naming the Fabric fires within the declared detection window."},
+    "policy_flags": [],
+    "secondary_domains": ["OBS", "FABRIC"],
+    "notes": "Split from G p21's Fabric row (see also RES-003, RES-061, RES-062 and RES-074). 'GKE loses async bus' in the same cell describes a consequence and is not a requirement. The observability rules forbid an alert policy naming a metric nothing emits, so the Fabric-down signal must be emitted and scraped before its policy is enabled (workload_metrics_exist). NEW_DEPENDENCY was dropped because alerting needs no new crate."
+  },
+  {
+    "id": "RES-074",
+    "domain": "RES",
+    "title": "After Fabric loss, the cluster is restored and local and GCS segments are replayed",
+    "statement": "After a Fabric loss, the cluster is restored, and the local spools and GCS segments are replayed into it, so that no spooled or archived record is lost.",
+    "rationale": "The local spool only postpones loss. If nothing drains it into the restored cluster, every record buffered during the outage is lost when the spool is recycled.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Fabric row, Platform behavior ('restore cluster and replay local/GCS segments')"}
+    ],
+    "verification": {"method": "chaos", "check": "After an outage during which nodes spooled locally, restore the cluster. Assert that every spooled record is present exactly once and in per-partition order, and that consumers resume."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["FABRIC", "REPLAY"],
+    "notes": "Split from G p21's Fabric row. NEW_DEPENDENCY is kept: reading GCS segments from Rust needs a client that is outside the two permitted dependencies, unless it is reached through the egress proxy with the in-tree HTTP client."
+  },
+  {
+    "id": "RES-075",
+    "domain": "RES",
+    "title": "When regional GKE services are lost, Reflex continues local execution",
+    "statement": "When the regional GKE services are lost, Reflex continues local execution. It receives no new warm policy or capital intelligence until those services return.",
+    "rationale": "Warm services advise the hot path and do not gate it. If losing them stopped execution, the advisory tier would have become a dependency by accident.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — GKE regional services row, Reflex behavior ('Continue local execution; no new warm policy/capital intelligence')"}
+    ],
+    "verification": {"method": "chaos", "check": "Take down every warm service in a region. Assert that the cell keeps deciding under the policy and capital grant it holds, and that no new policy or grant is activated."},
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["REFLEX", "GCP"],
+    "notes": "Split from G p21's GKE row (RES-075 to RES-077). GCP-045 states the same. KUBERNETES is kept because the dependency named is GKE (ADR 0099 C3); the property is identical for warm services on Cloud Run. MULTI_REGION belongs to RES-077 and was dropped here."
+  },
+  {
+    "id": "RES-076",
+    "domain": "RES",
+    "title": "When regional GKE services are lost, the Fabric keeps journaling",
+    "statement": "When the regional GKE services are lost, the Fabric keeps journaling.",
+    "rationale": "If the journal depended on the warm tier, an outage there would leave a gap in the record exactly when the platform is most degraded.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — GKE regional services row, Platform behavior ('Fabric keeps journaling')"}
+    ],
+    "verification": {"method": "chaos", "check": "Take down the warm services. Assert that producers still write to the Fabric, and that consumer lag for the lost consumers accumulates without any record being lost."},
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["FABRIC", "GCP"],
+    "notes": "GCP-046 states the same."
+  },
+  {
+    "id": "RES-077",
+    "domain": "RES",
+    "title": "Eligible functions of a lost regional service plane are covered from another region or globally",
+    "statement": "When a region's GKE services are lost, other-region or global services may take over the functions declared eligible for such cover.",
+    "rationale": "Some warm functions can safely be served from elsewhere and some cannot. Deciding which is which during the outage is too late.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — GKE regional services row, Platform behavior ('other-region/global services may cover eligible functions')"}
+    ],
+    "verification": {"method": "game-day", "check": "During a regional-services outage, assert that each function declared eligible is served from another region or globally, and that no ineligible function is."},
+    "policy_flags": ["KUBERNETES", "MULTI_REGION"],
+    "secondary_domains": ["GCP"],
+    "notes": "GCP-047 states the same. The source says 'may cover', so the requirement is that eligibility is declared for each function and then honoured. Neither blueprint says which functions are eligible."
+  },
+  {
+    "id": "RES-078",
+    "domain": "RES",
+    "title": "While the ledger is lost, stricter transfer and position actions are disabled",
+    "statement": "While the ledger (Spanner) is unavailable, the stricter class of transfer and position actions is disabled outright, instead of being allowed within the cached envelope.",
+    "rationale": "The cached envelope is enough to bound small, reversible trading. It is not enough to authorise actions whose correctness depends on the authoritative balance.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Spanner row, Reflex behavior ('stricter transfer/position actions disabled')"}
+    ],
+    "verification": {"method": "integration", "check": "With ledger commits denied, submit a transfer and a position change of the stricter class. Assert that both are refused immediately, before the lag threshold is reached."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER", "RISK", "TREASURY"],
+    "notes": "Split from G p21's Spanner row (see also RES-012, RES-079 and RES-080). Neither blueprint lists which actions are 'stricter', and the traceability work must name them. Transfers are live-capital actions and BLOCKED regardless (ADR 0021); the refusal can be verified in paper."
+  },
+  {
+    "id": "RES-079",
+    "domain": "RES",
+    "title": "Outcomes accumulate durably in the Fabric while the ledger is down",
+    "statement": "While the ledger is unavailable, outcome partitions accumulate durably in the Fabric under P1 retention, so that no financial outcome is lost.",
+    "rationale": "The ledger outage must cost time, not outcomes. If outcomes aged out of the Fabric before the ledger returned, they would be lost for good.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Spanner row, Platform behavior ('Outcome partitions accumulate durably in Fabric')"}
+    ],
+    "verification": {"method": "chaos", "check": "Deny ledger writes for a period while trading continues. Assert that every outcome produced is retained in the Fabric's outcome partitions for at least the outage plus the catch-up time."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER", "FABRIC"],
+    "notes": "G p22's ledger-outage game day calls this 'Fabric P1 retention'. LEDGER-033 (no outcome is dropped) is the ledger-side counterpart."
+  },
+  {
+    "id": "RES-080",
+    "domain": "RES",
+    "title": "When the ledger is restored, the ledger writer replays outcomes idempotently",
+    "statement": "When the ledger is restored, the ledger writer replays the accumulated outcomes idempotently, committing each exactly once in effect.",
+    "rationale": "Catch-up after an outage is when duplicates are most likely, because the writer cannot know which commits landed just before the failure. Idempotency by event_id is what keeps the recovery from corrupting the books.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Spanner row, Platform behavior ('ledger writer replays idempotently when restored')"}
+    ],
+    "verification": {"method": "chaos", "check": "Restore ledger writes after an outage and replay the backlog twice. Assert that each outcome's event_id is committed exactly once and that balances match an outage-free run."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER", "FABRIC"],
+    "notes": "LEDGER-020 (exactly once in effect, by event_id) is the mechanism, and this requirement is its recovery case."
+  },
+  {
+    "id": "RES-081",
+    "domain": "RES",
+    "title": "Loss of Bigtable or BigQuery has no direct impact on the hot path",
+    "statement": "Loss of Bigtable or BigQuery has no direct impact on the Reflex hot path. Only research, replay and features degrade.",
+    "rationale": "Analytical and feature stores are reached asynchronously. If their loss could touch the hot path, a synchronous dependency would have crept in.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Bigtable/BigQuery row ('No direct hot impact'; 'Research/replay/features degrade')"}
+    ],
+    "verification": {"method": "chaos", "check": "Make both stores unreachable. Assert that reflex decision latency and fill rate are unchanged, while research and feature jobs report a degraded state."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["REFLEX", "DATA"],
+    "notes": "Split from G p21's Bigtable/BigQuery row (RES-082). The stores are in ADR 0099 conflict C4. P1 as GCP Phase 5 (data plane)."
+  },
+  {
+    "id": "RES-082",
+    "domain": "RES",
+    "title": "Fabric and GCS preserve the source history that derived stores are rebuilt from",
+    "statement": "When Bigtable or BigQuery is lost, the Fabric and GCS still hold the source history, so that the derived stores can be rebuilt from it.",
+    "rationale": "A derived store that holds the only copy of its history is not derived. Losing it would lose the history.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Bigtable/BigQuery row, Platform behavior ('Fabric/GCS preserve source history')"}
+    ],
+    "verification": {"method": "replay", "check": "Drop a derived table, rebuild it from the Fabric and GCS history, and assert that the rebuilt table matches the original."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["DATA", "FABRIC", "REPLAY"],
+    "notes": "DATA-066 states the rebuild."
+  },
+  {
+    "id": "RES-083",
+    "domain": "RES",
+    "title": "Research queues as a backlog while the AI/Agent Platform is down",
+    "statement": "When the AI/Agent Platform is unavailable, research work queues as a backlog and is processed when the platform returns, rather than being dropped.",
+    "rationale": "Research requests raised during an outage are often about the very conditions that caused it. Dropping them loses the questions the platform most needs answered.",
+    "kind": "failure_behavior",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — AI/Agent Platform row, Platform behavior ('research backlog queues')"}
+    ],
+    "verification": {"method": "integration", "check": "Submit research tasks during an AI-platform outage. Assert that each is durably queued and that each is processed exactly once after recovery."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["MODEL", "FABRIC"],
+    "notes": "Split from G p21's AI/Agent Platform row. The row's Reflex half ('no new cognitive/model output', 'existing packages continue') is in RES-005. NON_RUST was dropped because queueing research tasks needs nothing outside Rust. MANAGED_SERVICE is kept because the dependency named is Agent Platform/Vertex (ADR 0099 C4 and C5). P1 as master Phase 2 (cognitive data loop)."
+  },
+  {
+    "id": "RES-084",
+    "domain": "RES",
+    "title": "Strategies that depend on a lost venue feed stop",
+    "statement": "When a venue market-data feed is lost, the strategies that depend on that feed stop.",
+    "rationale": "A strategy acting on a stale feed trades against prices that no longer exist.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Market data venue feed row, Reflex behavior ('Stop strategies dependent on stale feed')"}
+    ],
+    "verification": {"method": "integration", "check": "Stall a simulated feed. Assert that every strategy consuming it stops placing orders once the feed's staleness threshold is crossed, and that strategies on other feeds continue."},
+    "policy_flags": [],
+    "secondary_domains": ["MARKETDATA", "EXEC", "RISK"],
+    "notes": "Split from G p21's venue-feed row (RES-084 to RES-086). LIVE_CAPITAL was dropped: stopping a strategy, and hedging or exiting against the simulated venue, can all be verified in paper (ADR 0003)."
+  },
+  {
+    "id": "RES-085",
+    "domain": "RES",
+    "title": "Exposure left by a lost venue feed is hedged or exited by a local playbook",
+    "statement": "When a venue feed is lost, open exposure that depended on it is hedged or exited according to a local playbook.",
+    "rationale": "Stopping new orders leaves the existing position exposed to prices the platform can no longer see. A local playbook acts on that without waiting for a centre that may be unreachable too.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Market data venue feed row, Reflex behavior ('hedge/exit according to local playbook')"}
+    ],
+    "verification": {"method": "integration", "check": "Stall a feed while a position is open. Assert that the cell executes its local playbook's hedge or exit, recorded with the playbook's version."},
+    "policy_flags": [],
+    "secondary_domains": ["EXEC", "RISK"],
+    "notes": "Split from G p21's venue-feed row. LIVE_CAPITAL was dropped for the reason given in RES-084."
+  },
+  {
+    "id": "RES-086",
+    "domain": "RES",
+    "title": "A lost venue feed journals incident and reconciliation events",
+    "statement": "A venue-feed loss produces incident and reconciliation events in the journal.",
+    "rationale": "The actions taken during a feed outage have to be explained afterwards. Without the journaled incident, the hedge looks like an unexplained trade.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — Market data venue feed row, Platform behavior ('Incident and reconciliation events journaled')"}
+    ],
+    "verification": {"method": "integration", "check": "Stall a feed. Assert that an incident event is journaled for it and, after recovery, a reconciliation event."},
+    "policy_flags": [],
+    "secondary_domains": ["OBS", "LEDGER"],
+    "notes": "Split from G p21's venue-feed row. LIVE_CAPITAL was dropped for the reason given in RES-084."
+  },
+  {
+    "id": "RES-087",
+    "domain": "RES",
+    "title": "Losing GitHub or GitOps leaves the running system unchanged",
+    "statement": "Loss of GitHub or GitOps leaves the running system unchanged. Only new deployments stop.",
+    "rationale": "The source of truth for change is not a runtime dependency. If an outage at a code host could restart or roll back production, the delivery pipeline would itself be a failure mode.",
+    "kind": "failure_behavior",
+    "priority": "P0",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — GitHub/GitOps row ('Running system unchanged'; 'No new deployments')"}
+    ],
+    "verification": {"method": "chaos", "check": "Block the platform's access to GitHub and to the GitOps controller. Assert that every running workload keeps serving, that no workload is restarted or rolled back, and that no deployment proceeds."},
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["CICD"],
+    "notes": "Split from G p21's GitHub/GitOps row (RES-087 and RES-088). CICD-073 states the same for the GitOps management plane. KUBERNETES is kept because v2.1's GitOps tooling runs on Kubernetes (ADR 0099 C3; ADR 0093 suspended the control-plane cluster). P0 as a supply-chain invariant (GCP Phase 1)."
+  },
+  {
+    "id": "RES-088",
+    "domain": "RES",
+    "title": "Emergency change without GitOps uses only a pre-approved break-glass runbook, reconciled to Git afterwards",
+    "statement": "While GitHub or GitOps is unavailable, emergency change uses only a pre-approved break-glass runbook, and every break-glass change is reconciled into Git afterwards.",
+    "rationale": "An emergency with no approved path invites improvised console changes that nobody records. Reconciling to Git afterwards is what stops the emergency fix from becoming permanent, undocumented drift.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "21", "section": "§22 Dependency Degradation Contracts — GitHub/GitOps row, Platform behavior ('emergency runbook uses pre-approved break-glass process with later reconciliation to Git')"}
+    ],
+    "verification": {"method": "game-day", "check": "Exercise the break-glass runbook in a nonprod environment. Assert that the change was made only through the runbook's pre-approved steps, and that Git holds a matching commit afterwards with no drift left."},
+    "policy_flags": ["KUBERNETES"],
+    "secondary_domains": ["CICD", "GOV"],
+    "notes": "Break-glass cannot relax the paper-trading boundary or deploy to prod. Prod stays refused by infra.yml and the deploy gate, and needs a human dispatch. G p23 §28 forbids undocumented emergency config (CICD-004). P1 because this is an operational runbook, not a foundation exit test."
+  },
+  {
+    "id": "RES-089",
+    "domain": "RES",
+    "title": "Quarterly regional-loss game day",
+    "statement": "A regional-loss game day runs every quarter. One execution region is removed from service and control networking, and the exercise verifies three things: the other regions continue, mirrors and recovery behave, and no cross-region arbitrage assumes the missing peer.",
+    "rationale": "Regional independence that has never been exercised is an assumption. The first real regional outage is the worst time to learn which cycle quietly depended on the lost peer.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "22", "section": "§25 Resilience Testing and Game Days — Quarterly regional-loss game day bullet"}
+    ],
+    "verification": {"method": "game-day", "check": "Check each quarter's record for the region removed and for evidence of each of the three verifications: continuation, mirror and recovery behaviour, and no cycle naming the missing peer."},
+    "policy_flags": ["MULTI_REGION"],
+    "secondary_domains": ["GCP", "MESH", "ARBITRAGE"],
+    "notes": "Exercises RES-007, RES-008 and RES-063 to RES-067. It runs in staging, the environment G p21 §24 assigns to failure and game-day validation; prod is refused. It needs more than one deployed region (ADR 0099 C8)."
+  },
+  {
+    "id": "RES-090",
+    "domain": "RES",
+    "title": "Monthly zonal-failure game day",
+    "statement": "A zonal-failure game day runs every month. A Reflex primary, or the Fabric replicas in one zone, are terminated, and the exercise proves fencing, quorum, failover and bounded outcome loss.",
+    "rationale": "Zonal failures are the most frequent infrastructure fault. A failover path that runs only when one happens is a path nobody has seen work.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "22", "section": "§25 Resilience Testing and Game Days — Monthly zonal failure bullet"}
+    ],
+    "verification": {"method": "game-day", "check": "Check each month's record for the component terminated, the fencing and quorum evidence, the failover time, and the measured outcome loss against its bound."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["REFLEX", "FABRIC"],
+    "notes": "Exercises RES-057 to RES-059 and RES-068. NEW_DEPENDENCY is kept as extracted: the v2.1 Fabric this exercises rests on dependency classes that ADR 0099 C2 has not yet decided (consensus and transport). The CI form of the same fault test belongs to the Fabric MVP exit test (ARCH-063, 'chaos tests before application adoption'), which is P0."
+  },
+  {
+    "id": "RES-091",
+    "domain": "RES",
+    "title": "Broker-backpressure game day",
+    "statement": "A broker-backpressure game day freezes a sink and fills consumer lag, and verifies that priority QoS holds and that broker memory does not explode.",
+    "rationale": "Backpressure is where a broker either sheds the right traffic or collapses under all of it. The difference shows only under load.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "22", "section": "§25 Resilience Testing and Game Days — Broker backpressure bullet"}
+    ],
+    "verification": {"method": "game-day", "check": "Check the record shows that higher-priority classes kept their latency and delivery while the frozen sink's lag grew, and that broker memory stayed within its limit."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["FABRIC"],
+    "notes": "M p36 §26.1 requires explicit per-stream quotas, lag limits and an overload policy; this game day exercises them. NEW_DEPENDENCY is kept for the same reason as RES-090."
+  },
+  {
+    "id": "RES-092",
+    "domain": "RES",
+    "title": "Ledger-outage game day",
+    "statement": "A ledger-outage game day denies Spanner writes and verifies Fabric P1 retention, the degradation of local capital freshness, and then idempotent catch-up.",
+    "rationale": "The ledger path is the one where a recovery bug turns directly into wrong money. It has to be exercised, not only designed.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "22", "section": "§25 Resilience Testing and Game Days — Ledger outage bullet"}
+    ],
+    "verification": {"method": "game-day", "check": "Check the record shows the outcomes retained during the denial, the cells narrowing as their capital freshness decayed, and every outcome committed exactly once after writes returned."},
+    "policy_flags": ["MANAGED_SERVICE"],
+    "secondary_domains": ["LEDGER", "FABRIC"],
+    "notes": "Exercises RES-012, RES-079 and RES-080. Spanner is in ADR 0099 conflict C4."
+  },
+  {
+    "id": "RES-093",
+    "domain": "RES",
+    "title": "Bad model or package game day",
+    "statement": "A bad-model/package game day promotes an intentionally degraded candidate in nonprod or staging, and verifies that the shadow, replay or SLO gate blocks it or rolls it back.",
+    "rationale": "A promotion gate that has never been shown a bad candidate has not been shown to work.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "22", "section": "§25 Resilience Testing and Game Days — Bad model/package bullet"}
+    ],
+    "verification": {"method": "game-day", "check": "Check the record shows that the degraded candidate never reached authority, or was rolled back, and which gate caught it."},
+    "policy_flags": ["NON_RUST"],
+    "secondary_domains": ["MODEL", "CICD"],
+    "notes": "NON_RUST is kept because v2.1's model packages come from the Python training stack (ADR 0099 C5). P1 as master Phase 2 (model/strategy foundry)."
+  },
+  {
+    "id": "RES-094",
+    "domain": "RES",
+    "title": "Bad schema game day",
+    "statement": "A bad-schema game day attempts an incompatible Fabric schema change. The CI or runtime schema registry must reject it before any production consumer breaks.",
+    "rationale": "An incompatible schema that reaches consumers breaks every one of them at once, and the records written under it cannot be read back for replay.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "22", "section": "§25 Resilience Testing and Game Days — Bad schema bullet"}
+    ],
+    "verification": {"method": "game-day", "check": "Check the record shows that the incompatible schema was rejected at CI or at registry admission, and that no consumer saw a record written under it."},
+    "policy_flags": ["NEW_DEPENDENCY"],
+    "secondary_domains": ["FABRIC", "CONTRACT", "CICD"],
+    "notes": "CICD-069 requires the versioned registry. NEW_DEPENDENCY is kept because v2.1's schema is Protobuf via prost (ADR 0099 C2)."
+  },
+  {
+    "id": "RES-095",
+    "domain": "RES",
+    "title": "Agent-compromise simulation game day",
+    "statement": "An agent-compromise game day gives an autonomous development agent malicious instructions or input, and verifies that the secret, network, merge and prod-deploy boundaries prevent any escalation of authority.",
+    "rationale": "Agent boundaries are written on the assumption that the agent is honest. Only a simulated compromise shows whether they hold when it is not.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {"doc": "G", "page": "22", "section": "§25 Resilience Testing and Game Days — Agent compromise simulation bullet"}
+    ],
+    "verification": {"method": "game-day", "check": "Check the record shows that each of the four boundaries was attempted and held: no secret was read, no unapproved egress was made, nothing was merged without review, and nothing was deployed to prod."},
+    "policy_flags": [],
+    "secondary_domains": ["SEC", "CICD", "GOV"],
+    "notes": "The boundaries it tests are GOV-026 to GOV-028. This repository already runs agents under a guard hook and settings that deny reads of key material and block destructive commands (01-security-and-safety.md). This game day would test those boundaries. P2 as GCP Phase 9 (autonomous development)."
+  },
+  {
+    "id": "RES-096",
+    "domain": "RES",
+    "title": "A regional GKE cluster is rebuilt from zero",
+    "statement": "A regional GKE cluster is periodically rebuilt from zero using only Terraform, Git and artifacts, proving that it has no undocumented console dependency.",
+    "rationale": "Infrastructure that has only ever been modified, and never recreated, accumulates hand-made state nobody knows about until it has to be rebuilt in an emergency.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "22", "section": "§25 Resilience Testing and Game Days — Rebuild from zero bullet ('rebuild a regional GKE cluster')"}
+    ],
+    "verification": {"method": "game-day", "check": "Check the record shows the cluster destroyed and recreated from the committed Terraform and Git state with no manual console step, and the workloads it served healthy again."},
+    "policy_flags": ["KUBERNETES", "MANAGED_SERVICE", "COST"],
+    "secondary_domains": ["GCP", "CICD"],
+    "notes": "Split from G p22's rebuild bullet; the Fabric half is RES-097. GCP-048 states the same. MULTI_REGION was dropped because only one regional cluster is rebuilt. This pass added COST because the rebuild creates billable infrastructure (ADR 0093). ADR 0099 C3 applies, and the Cloud Run equivalent is rebuilding a region's services from Terraform. Destroying the cluster deletes resources, which needs explicit approval in the conversation (02-change-management.md)."
+  },
+  {
+    "id": "RES-097",
+    "domain": "RES",
+    "title": "A nonprod Fabric cluster is rebuilt from zero",
+    "statement": "A nonprod Fabric cluster is periodically rebuilt from zero using only Terraform, Git and artifacts, proving that it has no undocumented console dependency.",
+    "rationale": "The Fabric holds the platform's event history. A Fabric that cannot be recreated from code cannot be recovered with confidence after a real loss.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "22", "section": "§25 Resilience Testing and Game Days — Rebuild from zero bullet ('and a nonprod Fabric cluster')"}
+    ],
+    "verification": {"method": "game-day", "check": "Check the record shows a nonprod Fabric cluster recreated from committed Terraform and artifacts alone, and passing its conformance tests afterwards."},
+    "policy_flags": ["COST"],
+    "secondary_domains": ["FABRIC", "CICD"],
+    "notes": "Split from RES-096. KUBERNETES, MANAGED_SERVICE and MULTI_REGION were dropped: the Fabric runs on its own VMs in its own project (G p4 prod/fabric-<region>), not on GKE or a managed service, and the rebuild covers one cluster. This pass added COST (ADR 0093)."
+  },
+  {
+    "id": "RES-098",
+    "domain": "RES",
+    "title": "Every critical component is exercised in scheduled game days",
+    "statement": "Every critical component is exercised in scheduled game days.",
+    "rationale": "A component left out of the schedule is exactly the one whose failure mode nobody has seen.",
+    "kind": "acceptance",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "23", "section": "§27 Architecture Acceptance Criteria ('Every critical component is exercised in scheduled game days')"}
+    ],
+    "verification": {"method": "inspection", "check": "Compare the declared list of critical components against the game-day schedule and records. Assert that each component has been exercised within its scheduled period."},
+    "policy_flags": [],
+    "secondary_domains": ["OBS", "GCP"],
+    "notes": "Split from the G p23 acceptance item; the RTO/RPO half is RES-099. Neither blueprint gives the list of critical components, and it must be declared before this can be checked."
+  },
+  {
+    "id": "RES-099",
+    "domain": "RES",
+    "title": "Every critical component has an observable RTO and RPO, or a documented reason why not",
+    "statement": "Every critical component has an observable recovery time objective (RTO) and recovery point objective (RPO), or a documented reason why exact guarantees cannot be promised.",
+    "rationale": "An RTO nobody measures is a hope. Where a guarantee genuinely cannot be given, saying so in writing is more useful than an unmeasured number.",
+    "kind": "acceptance",
+    "priority": "P1",
+    "sources": [
+      {"doc": "G", "page": "23", "section": "§27 Architecture Acceptance Criteria ('has observable RTO/RPO or a documented reason exact guarantees cannot be promised')"}
+    ],
+    "verification": {"method": "inspection", "check": "For each declared critical component, assert that it has either an RTO and RPO together with a metric or game-day measurement of each, or a written reason, and that no component has neither."},
+    "policy_flags": [],
+    "secondary_domains": ["OBS"],
+    "notes": "'Observable' means measured in operation or in a game day, not only declared. The observability rules forbid describing the platform as observable until scraping is proven, so today most of these figures can only be declared."
+  }
+]
