@@ -48,14 +48,26 @@
 //! assumption the cell cannot check — the one the centre's attribution also
 //! makes — and a placer that states its units is what closes it.
 //!
+//! The owner rule has a consequence that is fail-closed and is not a design.
+//! An owner that realises in two units is latched on its first realisation in
+//! the second, and every triangle the arbitrage desk trades realises in at
+//! least two — the production gateway states each listing's own currency, so
+//! a USDT/BTC/ETH cycle unwinds in USDT and in BTC. Adding the two would be
+//! arithmetic across units with no rate; a grant's single loss limit has no
+//! reading in two units until somebody decides which unit it is stated in
+//! and at what rate the others convert. That decision is the envelope's, not
+//! this module's, and it is open.
+//!
 //! # When it clears
 //!
 //! Neither the realised P&L nor a latch clears on its own or on any unsigned
-//! call. Each clears only when its owner is redeployed under a grant issued
-//! after the fact it records — the last realisation, the latest unpriced leg —
-//! because only a grant signed after a loss can have been signed knowing it,
-//! the rule `Cell::apply_halt` keeps for a release. A redeploy under the same
-//! grant, or an older one, keeps both. None of this survives a restart: the
+//! call. Each clears only when its owner receives a grant issued after the
+//! fact it records — the last realisation, the latest unpriced leg — because
+//! only a grant signed after a loss can have been signed knowing it, the rule
+//! `Cell::apply_halt` keeps for a release. A strategy receives one by being
+//! renewed or redeployed; the desk only by being renewed, since a cell never
+//! installs a second desk. A grant issued before the fact, including the one
+//! the owner already holds, keeps both. None of this survives a restart: the
 //! ledger starts empty with the process, as every `Utilisation` does, and
 //! nothing rebuilds it from the journal.
 
@@ -223,8 +235,9 @@ impl RealisedLedger {
             .and_then(|owner| owner.unpriced.as_ref())
     }
 
-    /// `owner` has been redeployed under a grant; `granted_after(t)` answers
-    /// whether that grant was issued after the instant `t`.
+    /// `owner` has been redeployed or renewed under a grant;
+    /// `granted_after(t)` answers whether that grant was issued after the
+    /// instant `t`.
     ///
     /// The realised P&L resets only if the grant postdates the last
     /// realisation, and the latch clears only if it postdates the leg that set

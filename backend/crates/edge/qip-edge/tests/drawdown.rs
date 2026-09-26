@@ -12,6 +12,13 @@
 //! reported. Both seams that move a strategy's book are exercised — venue
 //! fills and internal crosses — because a ledger fed from one of them books
 //! the other's closing trade as an opening one.
+//!
+//! Where a unit matters the placer states one, as the production gateway
+//! does: `SimulatedGateway::quote_terms` names each listing's own currency.
+//! A placer that states none hides every unit rule the ledger has, and an
+//! earlier version of this suite hid the fact that the desk, which realises
+//! in USDT and BTC on every triangle, latched on its first unwind and had no
+//! clear it could receive.
 
 // In a test the assertion is the deliverable; the workspace denies
 // `panic_in_result_fn` for production code, where it would be a bug.
@@ -30,7 +37,8 @@ use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, Duration, ObjectId, Timestamp};
 use qip_edge::arbitrage::ArbitrageDesk;
 use qip_edge::cell::{
-    Cell, CellConfig, ExecutionReport, Placer, PricingPolicy, QuoteTerms, WorkReport,
+    Cell, CellConfig, CrossingInterval, ExecutionReport, Placer, PricingPolicy, QuoteTerms,
+    WorkReport,
 };
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
@@ -188,7 +196,11 @@ fn fresh_policy(issued_at: Timestamp) -> Result<VerifiedPolicy> {
 
 /// A cell quoting ACME at 99 / 101 under a fresh policy.
 fn cell() -> Result<Cell> {
-    let config = CellConfig::new(CELL, REGION).with_venue(venue());
+    cell_with(CellConfig::new(CELL, REGION).with_venue(venue()))
+}
+
+/// [`cell`], under `config`.
+fn cell_with(config: CellConfig) -> Result<Cell> {
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let mut cell = Cell::new(config, features)?;
     cell.apply_policy(fresh_policy(t(5))?, t(5))?;
@@ -197,12 +209,23 @@ fn cell() -> Result<Cell> {
 }
 
 /// A simulated venue that fills every order it accepts, whole, at the
-/// order's own price, and states the listing's quote unit when given one.
+/// order's own price, and states a quote unit when given one: the listing's
+/// own from `listing_units` first, as the production gateway states it, and
+/// otherwise `quote_unit` for every listing.
 #[derive(Debug, Default)]
 struct FillingVenue {
     placed: Vec<(String, ObjectId, BookSide, Decimal, Decimal)>,
     reports: Vec<ExecutionReport>,
     quote_unit: Option<Currency>,
+    listing_units: BTreeMap<String, Currency>,
+}
+
+/// A venue stating `unit` for every listing.
+fn stating(unit: &str) -> Result<FillingVenue> {
+    Ok(FillingVenue {
+        quote_unit: Some(Currency::parse(unit)?),
+        ..FillingVenue::default()
+    })
 }
 
 impl Placer for FillingVenue {
@@ -241,8 +264,12 @@ impl Placer for FillingVenue {
         std::mem::take(&mut self.reports)
     }
 
-    fn quote_terms(&self, _object_id: &ObjectId, _venue: &VenueId) -> Option<QuoteTerms> {
-        self.quote_unit.map(|quote_unit| QuoteTerms { quote_unit })
+    fn quote_terms(&self, object_id: &ObjectId, _venue: &VenueId) -> Option<QuoteTerms> {
+        self.listing_units
+            .get(object_id.as_str())
+            .copied()
+            .or(self.quote_unit)
+            .map(|quote_unit| QuoteTerms { quote_unit })
     }
 }
 
@@ -430,6 +457,108 @@ fn the_drawdown_breach_is_journaled_with_the_grant_and_the_loss_that_reached_the
 }
 
 #[test]
+fn a_redeploy_under_the_grant_the_loss_was_made_under_keeps_the_loss_and_the_next_commitment_is_refused()
+-> Result<()> {
+    // A plan that changes one rule redeploys every strategy it names under
+    // the grant each already holds. `Cell::install` builds a fresh
+    // `Utilisation` there, and before it carried the ledger's figure into it
+    // that fresh value was zero: a strategy past its drawdown limit was
+    // handed the whole limit again by a deployment call nobody signed.
+    let (envelope, mut cell, mut gateway, last, _) = breach()?;
+    let loss = reported_loss(&cell, &last, ALPHA, t(41))?;
+    assert!(
+        loss >= d(LIMIT),
+        "the premise is a breached limit: {loss} against {LIMIT}"
+    );
+    let sent = gateway.placed.len();
+
+    deploy(&mut cell, ALPHA, SignalKind::Enter, SIZE, &envelope)?;
+    let next = cell.work(t(60), &mut gateway)?;
+    assert_eq!(
+        next.signals.len(),
+        1,
+        "the premise is a redeployed strategy that signals"
+    );
+    assert!(
+        next.orders.is_empty() && gateway.placed.len() == sent,
+        "a redeploy under the grant the loss was made under reset the drawdown, and an order \
+         went out after a realised loss of {loss} against a {LIMIT} limit: {:?}",
+        next.orders
+    );
+    let capital = refused_under(&next, CAPITAL);
+    assert_eq!(capital.len(), 1, "{:?}", next.refusals);
+    let words = tokens(capital[0]);
+    let (loss_word, limit_word) = (loss.to_string(), d(LIMIT).to_string());
+    assert!(
+        words.contains(&loss_word.as_str()) && words.contains(&limit_word.as_str()),
+        "the refusal does not name the loss {loss_word} and the limit {limit_word}: {}",
+        capital[0]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_renewal_resets_a_breached_drawdown_only_under_a_grant_issued_after_the_loss() -> Result<()> {
+    // The node routes every fresh grant for a deployed strategy to
+    // `Cell::renew_capital`, never to a redeploy. A renewal that could not
+    // reset the loss left a breached strategy stopped until the process
+    // restarted — and a restart forgets every loss, so the only remedy an
+    // operator had was the one that fails open.
+    let (_, mut cell, mut gateway, last, _) = breach()?;
+    let loss = reported_loss(&cell, &last, ALPHA, t(41))?;
+    // Premise: the breach, and the instant of its last loss. `breach` sells
+    // at `start + 10` for trips starting at 10 and 30, so the loss that
+    // reached the limit was realised at t(40).
+    assert!(loss >= d(LIMIT), "the premise is a breached limit");
+    let realised_at = cell
+        .journal()
+        .entries()
+        .iter()
+        .rev()
+        .find(|entry| matches!(entry.decision, Decision::Filled { .. }))
+        .map(|entry| entry.at)
+        .ok_or_else(|| Error::not_found("the fill that realised the last loss"))?;
+    assert_eq!(realised_at, t(40), "the premise is a last loss at t(40)");
+
+    // Signed at t(35), before that loss: whoever signed it could not have
+    // known of it.
+    cell.renew_capital(grant(ALPHA, LIMIT, 35)?, t(50))?;
+    let still = cell.work(t(60), &mut gateway)?;
+    assert_eq!(
+        still.signals.len(),
+        1,
+        "the premise is a strategy that signals"
+    );
+    assert!(
+        still.orders.is_empty(),
+        "a renewal under a grant signed before the loss reset the drawdown: {:?}",
+        still.orders
+    );
+    assert_eq!(
+        refused_under(&still, CAPITAL).len(),
+        1,
+        "{:?}",
+        still.refusals
+    );
+    assert_eq!(reported_loss(&cell, &still, ALPHA, t(61))?, loss);
+
+    // Signed at t(100), after it: the operator's clear.
+    cell.renew_capital(grant(ALPHA, LIMIT, 100)?, t(101))?;
+    assert_eq!(
+        reported_loss(&cell, &WorkReport::default(), ALPHA, t(102))?,
+        Decimal::ZERO,
+        "under a grant issued after the loss, the figure the envelope reads and the delta \
+         reports is still the old loss"
+    );
+    let resumed = cell.work(t(110), &mut gateway)?;
+    assert_traded(
+        &resumed,
+        "the first commitment under a grant issued after the loss",
+    );
+    Ok(())
+}
+
+#[test]
 fn the_cells_delta_reports_the_realised_loss_it_booked() -> Result<()> {
     let envelope = grant(ALPHA, "1000", 0)?;
     let mut cell = cell()?;
@@ -595,6 +724,144 @@ fn a_loss_realised_by_closing_a_venue_position_through_an_internal_cross_is_book
         reported_loss(&cell, &crossed, ALPHA, t(21))?,
         (entry - cross.price) * cross.quantity,
         "closing a venue position through a cross realised nothing"
+    );
+    Ok(())
+}
+
+/// Every capital refusal in the chain so far, in order.
+fn journaled_capital_refusals(cell: &Cell) -> Vec<String> {
+    cell.journal()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision {
+            Decision::Refused { gate, reason } if gate == CAPITAL => Some(reason.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether the chain holds a fill on `order_id` journaled in `unit`.
+fn filled_in(cell: &Cell, order_id: &str, unit: &str) -> bool {
+    cell.journal().entries().iter().any(|entry| {
+        matches!(
+            &entry.decision,
+            Decision::Filled { order_id: filled, quote_unit, .. }
+                if filled == order_id && quote_unit.as_deref() == Some(unit)
+        )
+    })
+}
+
+#[test]
+fn a_cross_beside_a_venue_order_is_booked_in_the_unit_the_placer_states_and_stops_nobody()
+-> Result<()> {
+    // The cross is priced at the mid of a listing whose unit the placer
+    // states, and the venue share of the same net fills in that unit. A cross
+    // leg booked with no unit reads, against the fill beside it, as a second
+    // unit: every strategy that crossed and then traded at the venue would be
+    // stopped for a mismatch that is not there. Under the production gateway,
+    // which states every listing's currency, that is every strategy that
+    // crosses.
+    let alpha = grant(ALPHA, "1000000", 0)?;
+    let beta = grant(BETA, "1000000", 0)?;
+    let mut cell = cell()?;
+    let mut gateway = stating("GBP")?;
+    deploy(&mut cell, ALPHA, SignalKind::Enter, "20", &alpha)?;
+    deploy(&mut cell, BETA, SignalKind::Exit, "30", &beta)?;
+    let crossed = cell.work(t(10), &mut gateway)?;
+
+    // Premise: 20 crossed at the mid and the net 10 sold at the venue in
+    // pounds, 4 of it alpha's — so alpha's venue share closes part of a lot
+    // the cross opened.
+    assert_eq!(crossed.crosses.len(), 1, "no cross: {crossed:?}");
+    assert_eq!(crossed.crosses[0].quantity, d("20"));
+    assert_eq!(crossed.crosses[0].price, d("100"));
+    assert_eq!(crossed.crosses[0].bought, vec![strategy(ALPHA)]);
+    assert_eq!(crossed.orders.len(), 1, "the net did not reach the venue");
+    assert!(
+        filled_in(&cell, &crossed.orders[0].order_id, "GBP"),
+        "the premise is a venue fill journaled in pounds"
+    );
+    assert_eq!(
+        cell.strategy_position(&strategy(ALPHA), &venue(), &acme()),
+        d("16")
+    );
+
+    // (99 − 100) × 4, priced against the cross's entry because both are in
+    // pounds.
+    assert_eq!(
+        reported_loss(&cell, &crossed, ALPHA, t(11))?,
+        d("4"),
+        "alpha's venue share was not priced against the lot the cross opened: the cross was \
+         booked in a unit other than the one the placer states"
+    );
+    let refused = journaled_capital_refusals(&cell);
+    assert!(
+        refused.is_empty(),
+        "a cross and a fill in the same stated unit stopped an owner: {refused:?}"
+    );
+
+    cell.withdraw(BETA, t(15))?;
+    let next = cell.work(t(20), &mut gateway)?;
+    assert_traded(&next, "alpha's next buy");
+    Ok(())
+}
+
+#[test]
+fn a_cross_that_leaves_nothing_for_the_venue_is_booked_in_the_unit_the_placer_states() -> Result<()>
+{
+    // The other seam: a net that cancels to nothing settles its cross before
+    // any venue call. Measured over three passes the cap admits a full
+    // cancellation on the second pass (`tests/crossing.rs` proves it), so
+    // alpha's whole lot is opened by the cross and closed at the venue.
+    let config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_crossing_interval(CrossingInterval::Passes(3))?;
+    let mut cell = cell_with(config)?;
+    let mut gateway = stating("GBP")?;
+    let alpha = grant(ALPHA, "1000000", 0)?;
+    deploy(&mut cell, ALPHA, SignalKind::Enter, "20", &alpha)?;
+    deploy(
+        &mut cell,
+        BETA,
+        SignalKind::Exit,
+        "20",
+        &grant(BETA, "1000000", 0)?,
+    )?;
+
+    let first = cell.work(t(10), &mut gateway)?;
+    assert!(
+        first.crosses.is_empty() && first.cancelled.len() == 1,
+        "the premise is a first pass that cancels and does not cross: {first:?}"
+    );
+    let second = cell.work(t(11), &mut gateway)?;
+    assert_eq!(second.crosses.len(), 1, "no cross: {:?}", second.refusals);
+    assert_eq!(second.crosses[0].quantity, d("20"));
+    assert_eq!(second.crosses[0].price, d("100"));
+    assert!(
+        second.orders.is_empty() && gateway.placed.is_empty(),
+        "the premise is a cross with nothing at the venue"
+    );
+
+    cell.withdraw(BETA, t(12))?;
+    deploy(&mut cell, ALPHA, SignalKind::Exit, "20", &alpha)?;
+    let closed = cell.work(t(20), &mut gateway)?;
+    assert_traded(&closed, "alpha's closing sell");
+    assert!(
+        filled_in(&cell, &closed.orders[0].order_id, "GBP"),
+        "the premise is a closing fill journaled in pounds"
+    );
+    assert_eq!(closed.fills[0].price, d("99"));
+
+    assert_eq!(
+        reported_loss(&cell, &closed, ALPHA, t(21))?,
+        d("20"),
+        "(99 − 100) × 20 against the cross's entry was not booked: the cross was booked in a \
+         unit other than the one the placer states"
+    );
+    let refused = journaled_capital_refusals(&cell);
+    assert!(
+        refused.is_empty(),
+        "a cross and a fill in the same stated unit stopped an owner: {refused:?}"
     );
     Ok(())
 }
@@ -846,6 +1113,189 @@ fn an_arbitrage_desks_losses_reach_its_envelopes_drawdown_limit_too() -> Result<
         reported_loss(&cell, &next, DESK, t(31))?,
         loss,
         "the delta does not carry the desk's realised loss"
+    );
+    Ok(())
+}
+
+/// A cell holding the triangle desk under `envelope`, under a fresh policy.
+fn desk_cell(envelope: &VerifiedEnvelope) -> Result<Cell> {
+    let desk = ArbitrageDesk::new(
+        strategy(DESK),
+        OpportunityScanner::new(
+            SearchSettings::default(),
+            EdgeAssumptions::default(),
+            PlanSettings::with_budget(d("50000")),
+        ),
+        both_ways()?,
+        SizePolicy::uniform(d("10000"))
+            .with(ObjectId::from_string("ETH"), d("3.3"))
+            .with(ObjectId::from_string("BTC"), d("0.16")),
+        envelope.clone(),
+        4,
+        Duration::from_secs(30),
+    )?;
+    let config = CellConfig::new(CELL, REGION).with_venue(venue());
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?.with_arbitrage(desk)?;
+    cell.apply_policy(fresh_policy(t(5))?, t(5))?;
+    Ok(cell)
+}
+
+/// What the production gateway states for the triangle's listings: each
+/// one's own quote currency.
+fn listing_currencies() -> Result<BTreeMap<String, Currency>> {
+    Ok(BTreeMap::from([
+        ("ETHUSDT".to_string(), Currency::parse("USDT")?),
+        ("ETHBTC".to_string(), Currency::parse("BTC")?),
+        ("BTCUSDT".to_string(), Currency::parse("USDT")?),
+    ]))
+}
+
+/// The books after ETH has fallen by a third, which the desk unwinds into.
+fn eth_fallen(cell: &mut Cell) -> Result<()> {
+    track_desk_books(cell, ("2000", "2000.1"), ("0.0327", "0.03271"))
+}
+
+/// The desk's forward cycle at t(10), then its unwind at t(20) after ETH has
+/// fallen: every leg of both sent and filled. Returns the unwind.
+fn round_the_triangle(cell: &mut Cell, gateway: &mut FillingVenue) -> Result<WorkReport> {
+    track_desk_books(cell, ("3000", "3000.1"), ("0.0505", "0.05051"))?;
+    let forward = cell.work(t(10), gateway)?;
+    assert_eq!(
+        (forward.orders.len(), forward.fills.len()),
+        (3, 3),
+        "the forward cycle did not go out and fill: {forward:?}"
+    );
+    eth_fallen(cell)?;
+    let unwind = cell.work(t(20), gateway)?;
+    assert_eq!(
+        (unwind.orders.len(), unwind.fills.len()),
+        (3, 3),
+        "the unwind did not go out and fill: {unwind:?}"
+    );
+    Ok(unwind)
+}
+
+fn desk_loss(cell: &Cell) -> Result<Decimal> {
+    cell.arbitrage()
+        .map(|desk| desk.utilisation().realised_loss)
+        .ok_or_else(|| Error::not_found("the desk"))
+}
+
+/// Whether `reason` names the remedy a desk can receive — a renewal — and
+/// not one it cannot. The chain is sealed, so a reason that tells an
+/// operator to redeploy a desk is wrong for good.
+fn names_the_desks_clear(reason: &str) -> bool {
+    let words = tokens(reason);
+    words.contains(&"renewal") && !words.contains(&"redeployed")
+}
+
+#[test]
+fn an_arbitrage_desk_stopped_on_a_fill_it_could_not_price_resumes_only_on_a_renewal_under_a_grant_issued_after_it()
+-> Result<()> {
+    // A limit no loss here comes near, so the latch is the only thing that
+    // can stop the desk and a leg that goes out is the latch failing.
+    let limit = "100000000";
+    let mut cell = desk_cell(&grant(DESK, limit, 0)?)?;
+    let mut gateway = FillingVenue {
+        listing_units: listing_currencies()?,
+        ..FillingVenue::default()
+    };
+    let unwind = round_the_triangle(&mut cell, &mut gateway)?;
+
+    // Premise: the unwind realised in two units — its fills are in the chain
+    // in USDT and in BTC — and the cell journaled a fill it could not price,
+    // naming it by its order id.
+    let in_usdt = unwind
+        .orders
+        .iter()
+        .any(|order| filled_in(&cell, &order.order_id, "USDT"));
+    let in_btc = unwind
+        .orders
+        .iter()
+        .any(|order| filled_in(&cell, &order.order_id, "BTC"));
+    assert!(in_usdt && in_btc, "the premise is an unwind in two units");
+    let journaled = journaled_capital_refusals(&cell);
+    let unpriced: Vec<&str> = unwind
+        .orders
+        .iter()
+        .map(|order| order.order_id.as_str())
+        .filter(|id| journaled.iter().any(|reason| tokens(reason).contains(id)))
+        .collect();
+    assert!(
+        !unpriced.is_empty(),
+        "the premise is an unwind leg the cell journaled as unpriced: {journaled:?}"
+    );
+    for reason in &journaled {
+        assert!(
+            names_the_desks_clear(reason),
+            "the sealed record of the unpriced fill names a clear the desk cannot receive: \
+             {reason}"
+        );
+    }
+    let booked = desk_loss(&cell)?;
+    assert!(
+        booked.is_positive() && booked < d(limit),
+        "the premise is a priced loss under the limit, so the drawdown is not what stops the \
+         desk: {booked}"
+    );
+
+    // Stopped: the desk scans the same opportunity and sends nothing.
+    let sent = gateway.placed.len();
+    eth_fallen(&mut cell)?;
+    let stopped = cell.work(t(30), &mut gateway)?;
+    assert!(
+        stopped.orders.is_empty() && gateway.placed.len() == sent,
+        "the desk sent another leg while holding a fill it could not price: its loss was read \
+         as the part it could price: {:?}",
+        stopped.orders
+    );
+    let capital = refused_under(&stopped, CAPITAL);
+    assert!(
+        !capital.is_empty(),
+        "the premise is a desk that raised a cycle: {:?}",
+        stopped.refusals
+    );
+    for reason in &capital {
+        let words = tokens(reason);
+        assert!(
+            unpriced.iter().any(|id| words.contains(id)) && names_the_desks_clear(reason),
+            "the refusal does not name the unpriced fill ({unpriced:?}) and the renewal that \
+             clears it: {reason}"
+        );
+    }
+
+    // A renewal under a grant issued at t(15), before the fill at t(20), is
+    // not a clear: whoever signed it could not have known of the fill.
+    cell.renew_capital(grant(DESK, limit, 15)?, t(35))?;
+    let still = cell.work(t(40), &mut gateway)?;
+    assert!(
+        still.orders.is_empty() && gateway.placed.len() == sent,
+        "a renewal under a grant issued before the fill released the desk: {:?}",
+        still.orders
+    );
+    assert!(!refused_under(&still, CAPITAL).is_empty());
+
+    // A grant issued after it is the operator's signed clear — the only one a
+    // desk can receive, since a cell never installs a second.
+    cell.renew_capital(grant(DESK, limit, 100)?, t(101))?;
+    assert_eq!(
+        desk_loss(&cell)?,
+        Decimal::ZERO,
+        "under a grant issued after the fill, the figure the desk's envelope reads is still the \
+         old loss"
+    );
+    let resumed = cell.work(t(110), &mut gateway)?;
+    assert_eq!(
+        resumed.orders.len(),
+        3,
+        "a renewal under a grant issued after the fill did not release the desk: {:?}",
+        resumed.refusals
+    );
+    assert!(
+        refused_under(&resumed, CAPITAL).is_empty(),
+        "{:?}",
+        resumed.refusals
     );
     Ok(())
 }

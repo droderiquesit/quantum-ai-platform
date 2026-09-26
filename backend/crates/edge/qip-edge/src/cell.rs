@@ -3777,7 +3777,12 @@ impl Cell {
         // nobody could price. Asking anyway would treat an unknown loss as
         // none and send the next order.
         if let Some(unpriced) = self.realised.latched(&key) {
-            let reason = unpriced_refusal(&key, deployed.envelope.signature(), unpriced);
+            let reason = unpriced_refusal(
+                &key,
+                self.is_desk(&key),
+                deployed.envelope.signature(),
+                unpriced,
+            );
             self.refuse(report, "capital", &reason, now);
             return Ok(None);
         }
@@ -6271,6 +6276,7 @@ impl Cell {
                 .map(|unpriced| {
                     unpriced_refusal(
                         desk.strategy().as_str(),
+                        true,
                         desk.envelope().signature(),
                         unpriced,
                     )
@@ -7980,13 +7986,14 @@ impl Cell {
     ) {
         if let Booking::Unpriced(why) = self.realised.book(leg, now) {
             let described = describe();
+            let clear = clear_for(leg.owner, self.is_desk(leg.owner), now);
             self.journal.record(
                 Decision::Refused {
                     gate: "capital".to_string(),
                     reason: format!(
                         "the {described} could not be priced into {owner}'s realised loss: \
                          {why}. It books nothing, and nothing more is committed for {owner} \
-                         until it is redeployed under a grant issued after this",
+                         {clear}",
                         owner = leg.owner
                     ),
                 },
@@ -8021,6 +8028,15 @@ impl Cell {
         {
             desk.utilisation_mut().realised_loss = loss;
         }
+    }
+
+    /// Whether `owner` is the installed arbitrage desk, whose one clear is a
+    /// renewal: it cannot be installed a second time, so "redeployed" names
+    /// a remedy a desk can never receive.
+    fn is_desk(&self, owner: &str) -> bool {
+        self.desk
+            .as_ref()
+            .is_some_and(|installed| installed.desk.strategy().as_str() == owner)
     }
 
     // --- the mesh seam ------------------------------------------------------
@@ -8164,15 +8180,28 @@ impl Cell {
     ///   that started running something because capital arrived for it would be
     ///   promoting its own strategy — the thing ADR 0008 says a cell never
     ///   does. An envelope for a strategy that is not deployed is refused.
-    /// * **It does not reset utilisation.** What a strategy has committed is
-    ///   measured against positions that are still open, and a renewal that
-    ///   zeroed it would hand the strategy its whole gross limit again while
-    ///   the previous commitment was still live. Carrying it across is the
-    ///   conservative direction, and it is the one that is right.
+    /// * **It does not reset what was committed.** What a strategy has
+    ///   committed is measured against positions that are still open, and a
+    ///   renewal that zeroed it would hand the strategy its whole gross limit
+    ///   again while the previous commitment was still live. Carrying it
+    ///   across is the conservative direction, and it is the one that is
+    ///   right.
     /// * **It does not widen anything by itself.** The new envelope replaces
     ///   the old one entirely — wider or narrower — because that is what the
     ///   centre signed. A cell that merged the two would be constructing a
     ///   grant nobody approved.
+    ///
+    /// One thing it does clear, and only under a grant issued after it: the
+    /// owner's realised loss and any latch on a fill the cell could not price
+    /// (`RealisedLedger::redeployed`, the rule `install` applies). A grant
+    /// signed after the loss is a decision somebody made knowing the loss
+    /// could exist; one signed before it cannot have been, so a renewal under
+    /// an older grant clears nothing. This is the clear an owner actually
+    /// receives while the process runs: the node routes every fresh grant for
+    /// an installed desk or a deployed strategy here, and a desk cannot be
+    /// installed twice. Without it a stopped desk stayed stopped until a
+    /// restart — and a restart forgets every owner's loss, so the only remedy
+    /// left to an operator was the one that fails open.
     pub fn renew_capital(&mut self, envelope: VerifiedEnvelope, now: Timestamp) -> Result<()> {
         // `verify` has already checked the cell, and this checks it again
         // against the cell's own identity rather than against the string a
@@ -8189,12 +8218,26 @@ impl Cell {
         let key = envelope.strategy().as_str().to_string();
         let approver = envelope.approver().to_string();
         let expires_at = envelope.expires_at();
-        if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk)
-            && desk.strategy().as_str() == key
-        {
+        let is_desk = self.is_desk(&key);
+        if !is_desk && !self.deployed.contains_key(&key) {
+            return Err(Error::not_found(format!(
+                "no strategy {key} is deployed at this cell, so there is nothing for the grant to \
+                 fund; a cell does not deploy a strategy because capital arrived for it"
+            )));
+        }
+        // Asked of the grant's own window, as `install` asks it: the envelope
+        // states no issue instant a cell can read, and an instant before its
+        // expiry at which it is not live is an instant before it was granted.
+        self.realised.redeployed(&key, |at| {
+            at < envelope.expires_at() && !envelope.is_live(at)
+        });
+        if is_desk {
             // The desk is renewed by the same rules as a strategy: the grant
-            // replaces the old one whole and utilisation carries across.
-            desk.replace_envelope(envelope);
+            // replaces the old one whole and what it committed carries across.
+            if let Some(installed) = self.desk.as_mut() {
+                installed.desk.replace_envelope(envelope);
+            }
+            self.write_realised_loss(&key);
             self.journal.record(
                 Decision::CapitalRenewed {
                     strategy: key,
@@ -8205,13 +8248,10 @@ impl Cell {
             );
             return Ok(());
         }
-        let Some(deployed) = self.deployed.get_mut(&key) else {
-            return Err(Error::not_found(format!(
-                "no strategy {key} is deployed at this cell, so there is nothing for the grant to \
-                 fund; a cell does not deploy a strategy because capital arrived for it"
-            )));
-        };
-        deployed.envelope = envelope;
+        if let Some(deployed) = self.deployed.get_mut(&key) {
+            deployed.envelope = envelope;
+        }
+        self.write_realised_loss(&key);
         self.journal.record(
             Decision::CapitalRenewed {
                 strategy: key,
@@ -8580,13 +8620,30 @@ fn region_hold_id(pass: u64, strategy: &str) -> String {
 /// The `capital` refusal of a commitment by an owner latched on a leg the
 /// cell could not price: whose, under which grant, which leg and why, and
 /// what clears it.
-fn unpriced_refusal(owner: &str, signature: &str, unpriced: &Unpriced) -> String {
+fn unpriced_refusal(owner: &str, is_desk: bool, signature: &str, unpriced: &Unpriced) -> String {
     format!(
         "strategy {owner} under grant {signature} holds a {} the cell could not price ({}); its \
-         realised loss is unknown, so nothing is committed for it until it is redeployed under a \
-         grant issued after {}",
-        unpriced.leg, unpriced.why, unpriced.at
+         realised loss is unknown, so nothing is committed for it {}",
+        unpriced.leg,
+        unpriced.why,
+        clear_for(owner, is_desk, unpriced.at)
     )
+}
+
+/// What releases `owner` from a latch set at `at`, in the words of the
+/// remedy that owner can actually receive.
+///
+/// The journal is hash-chained and nothing in it can be corrected, so a
+/// reason naming a clear that does not exist stays wrong for good. A draft
+/// of this refusal told the desk it would resume once redeployed, which a
+/// desk cannot be; review caught it before it shipped. The desk's only clear
+/// is a renewal (`Cell::renew_capital`).
+fn clear_for(owner: &str, is_desk: bool, at: Timestamp) -> String {
+    if is_desk {
+        format!("until a renewal of {owner}'s capital under a grant issued after {at}")
+    } else {
+        format!("until {owner} is renewed or redeployed under a grant issued after {at}")
+    }
 }
 
 /// The reason for a `capital` refusal, naming the owner and its grant when
