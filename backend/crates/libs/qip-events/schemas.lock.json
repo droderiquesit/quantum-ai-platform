@@ -1,0 +1,56 @@
+[
+  {
+    "topic": "policy.distributed",
+    "version": 1,
+    "type_name": "qip_mesh::spine::PolicyFrame",
+    "schema_id": "50b731e2267ebb6d67fb767bd3199484d2fcda5098052e6062b8652e5a4840ab"
+  },
+  {
+    "topic": "reflex.chain_span",
+    "version": 1,
+    "type_name": "qip_contracts::reflex::ChainSpan",
+    "schema_id": "b210acdb5cf7a402bb2d26ba9ebc58802af1e2968446b71a32ad0e97d32577f1"
+  },
+  {
+    "topic": "reflex.fabric_gap",
+    "version": 1,
+    "type_name": "qip_contracts::reflex::Gap",
+    "schema_id": "f3df22c44dbc9fb60763f0168dbc0464bbcb928186bf6fe45c61ac7185c9849d"
+  },
+  {
+    "topic": "reflex.journal_recorded",
+    "version": 1,
+    "type_name": "qip_contracts::reflex::JournalEntry",
+    "schema_id": "72696d109a5bdf32f7ad9bf0a39a6e0a4e9a61581a7ba414132fe03d1da099a2"
+  },
+  {
+    "topic": "reflex.market_event_applied",
+    "version": 1,
+    "type_name": "qip_contracts::market_event::MarketEvent",
+    "schema_id": "7eea153c73ee3d0e592075a0e93fc6a19abbf0fce8c8767a41c3a9f8cae9c0ca"
+  },
+  {
+    "topic": "reflex.outcome_recorded",
+    "version": 1,
+    "type_name": "qip_contracts::reflex::OutcomeRecord",
+    "schema_id": "f23ab09b6c5aba07821b96ddad44715145cd2addea030851feaa0d880d4fe75d"
+  },
+  {
+    "topic": "reflex.pass_marked",
+    "version": 1,
+    "type_name": "qip_contracts::replay::PassMarker",
+    "schema_id": "a6802387b4e4e88cd9567e6ec9d4085fb21a2ebd7afd2e54874ea652e7657f05"
+  },
+  {
+    "topic": "risk.approved",
+    "version": 1,
+    "type_name": "qip_mesh::spine::CapitalGrantFrame",
+    "schema_id": "452be8ec56caa7ceb1fb9e39e1d20c10c9ee711680eaa0584b31230f71019381"
+  },
+  {
+    "topic": "system.kill_switch_engaged",
+    "version": 1,
+    "type_name": "qip_mesh::spine::HaltFrame",
+    "schema_id": "8d174dab9bd9f17571786f56b7bc47c80b4100d46aa601a396c69afe37f5c4a0"
+  }
+]
