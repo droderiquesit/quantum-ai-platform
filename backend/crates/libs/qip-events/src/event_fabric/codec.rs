@@ -24,12 +24,16 @@
 //! | previous-batch hash | broker | chains this batch to the one before it in the same partition |
 //!
 //! Three fields are **not** in this table because they are framing, not
-//! CONTRACT-048 content: the total body length (so a reader can tell a torn
-//! tail from a corrupt one before touching a payload, exactly as
-//! `qip-storage`'s WAL frame does), the record count (so the reader knows how
-//! many records to walk) and the batch CRC (recomputed by every stamp, over
-//! everything the stamp just wrote — see below). No field in CONTRACT-048's
-//! list needed a home this split could not give it.
+//! CONTRACT-048 content: the total body length together with the prefix CRC
+//! that protects it (so a reader can tell a torn tail from a corrupt one
+//! before touching a payload, exactly as `qip-storage`'s WAL frame does —
+//! and so that a bit flipped **inside the length field itself** is caught as
+//! corruption rather than misread as an ordinary torn tail; see "Decoding
+//! has exactly three outcomes" below for why that distinction needed its own
+//! CRC), the record count (so the reader knows how many records to walk) and
+//! the batch CRC (recomputed by every stamp, over everything the stamp just
+//! wrote — see below). No field in CONTRACT-048's list needed a home this
+//! split could not give it.
 //!
 //! ## Three stamps, one CRC discipline
 //!
@@ -57,10 +61,22 @@
 //!   [`Batch::decode`] returns `Err`, naming the byte offset, and never
 //!   returns the mismatched payload as if it were data.
 //!
-//! Magic, format version and the declared length are checked **before** any
-//! record is parsed, so a wrong magic, an unknown version or a length past
-//! [`MAX_BATCH_LEN`] is refused without the reader ever indexing into a
-//! payload it has not yet proven is there.
+//! The prefix — magic, format version and the declared length — carries its
+//! own CRC32C (`PREFIX_LEN`'s trailing four bytes), checked **before** magic,
+//! version or the length is trusted for anything else. Without it, a bit
+//! flipped inside the declared length changes what the reader believes the
+//! batch's true end is; if the corrupted length happens to describe more
+//! bytes than the buffer holds, the reader cannot tell that from an
+//! ordinary, healthy torn tail, and a recovery path that truncates a torn
+//! tail (as SLICE-16's does) would then silently discard every batch
+//! committed after it. This is not a hypothetical: an exhaustive
+//! single-bit-flip probe of this codec's first version found exactly that
+//! gap, at every bit of bytes 6 through 9. Once the prefix CRC agrees, magic,
+//! version and [`MAX_BATCH_LEN`] are checked, then the declared length is
+//! compared against what the buffer actually holds — all of it before any
+//! record is parsed, so a wrong magic, an unknown version, an oversized
+//! length or a corrupted length is refused without the reader ever indexing
+//! into a payload it has not yet proven is there.
 
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256;
@@ -84,8 +100,18 @@ pub const FORMAT_VERSION: u16 = 1;
 /// corrupt or malicious length field.
 pub const MAX_BATCH_LEN: usize = 32 * 1024 * 1024;
 
-/// magic (4) + format version (2) + body length (4).
-const FIXED_PREFIX_LEN: usize = 4 + 2 + 4;
+/// magic (4) + format version (2) + body length (4): the fields the prefix
+/// CRC below protects.
+const PREFIX_FIELDS_LEN: usize = 4 + 2 + 4;
+
+/// The prefix fields plus their own trailing CRC32C. An exhaustive
+/// single-bit-flip probe of this codec's first version — before this
+/// constant existed — found that a bit flipped inside the declared-length
+/// field decoded as an ordinary torn tail rather than as corruption, because
+/// nothing checked the length field's own integrity before trusting it to
+/// decide where the batch ends. Protecting the whole prefix, not just the
+/// length, closes the same gap for magic and version too.
+const PREFIX_LEN: usize = PREFIX_FIELDS_LEN + 4;
 
 /// No flag bit is defined yet. Any other value is refused on decode rather
 /// than silently accepted and ignored, so a future flag a reader does not
@@ -123,12 +149,16 @@ impl PayloadCodec {
         }
     }
 
-    fn from_tag(tag: u8) -> Result<Self> {
+    /// `offset` is the corrupted byte's own position, named in the error so
+    /// every refusal this codec returns points at a place in the wire bytes
+    /// a caller can find, not just at "somewhere in the header".
+    fn from_tag(tag: u8, offset: usize) -> Result<Self> {
         match tag {
             ENCODING_TAG_CANONICAL_JSON => Ok(PayloadCodec::CanonicalJson),
             other => Err(Error::schema(format!(
-                "payload encoding byte {other} is not canonical JSON (0); every \
-                 other codec (prost included) is blocked pending ADR 0099 conflict C2"
+                "corrupt batch at byte offset {offset}: payload encoding byte {other} is \
+                 not canonical JSON (0); every other codec (prost included) is blocked \
+                 pending ADR 0099 conflict C2"
             ))),
         }
     }
@@ -177,11 +207,14 @@ impl MessageType {
         }
     }
 
-    fn from_tag(tag: u8) -> Result<Self> {
+    /// `offset` is the corrupted byte's own position; see
+    /// [`PayloadCodec::from_tag`] for why it is a parameter rather than
+    /// hard-coded.
+    fn from_tag(tag: u8, offset: usize) -> Result<Self> {
         match tag {
             MESSAGE_TYPE_TAG_DATA => Ok(MessageType::Data),
             other => Err(Error::schema(format!(
-                "unknown batch message-type byte {other}"
+                "corrupt batch at byte offset {offset}: unknown batch message-type byte {other}"
             ))),
         }
     }
@@ -368,10 +401,15 @@ impl Batch {
             ))
         })?;
 
-        let mut out = Vec::with_capacity(FIXED_PREFIX_LEN + body.len());
+        let mut out = Vec::with_capacity(PREFIX_LEN + body.len());
         out.extend_from_slice(&BATCH_MAGIC);
         out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
         out.extend_from_slice(&body_len.to_le_bytes());
+        // The prefix CRC covers exactly the bytes just written (magic,
+        // version, length) and nothing else — it is computed here, once
+        // those three are final, rather than folded into any other check.
+        let prefix_crc = crc32c(&out);
+        out.extend_from_slice(&prefix_crc.to_le_bytes());
         out.extend_from_slice(&body);
         Ok(out)
     }
@@ -379,16 +417,39 @@ impl Batch {
     /// Decode a batch from `bytes`. See the module documentation for the
     /// three outcomes and the order refusals happen in.
     pub fn decode(bytes: &[u8]) -> Result<DecodeOutcome> {
-        if bytes.len() < FIXED_PREFIX_LEN {
+        if bytes.len() < PREFIX_LEN {
             return Ok(DecodeOutcome::Torn);
         }
+        if bytes.iter().all(|b| *b == 0) {
+            // A crash can leave a tail of zeroes where a block was allocated
+            // but never written; that is a torn tail, not damage, and it
+            // must be recognised before the prefix CRC below — computed over
+            // real magic/version/length bytes — is compared against a
+            // stored value of all zeroes and misread as corruption.
+            return Ok(DecodeOutcome::Torn);
+        }
+
+        // The prefix CRC is checked before magic, version or the declared
+        // length is trusted for anything: see the module documentation for
+        // why a bit flipped inside the length field specifically must be
+        // caught here rather than later.
+        let prefix_fields = &bytes[..PREFIX_FIELDS_LEN];
+        let expected_prefix_crc = u32::from_le_bytes([
+            bytes[PREFIX_FIELDS_LEN],
+            bytes[PREFIX_FIELDS_LEN + 1],
+            bytes[PREFIX_FIELDS_LEN + 2],
+            bytes[PREFIX_FIELDS_LEN + 3],
+        ]);
+        let actual_prefix_crc = crc32c(prefix_fields);
+        if actual_prefix_crc != expected_prefix_crc {
+            return Err(Error::schema(format!(
+                "corrupt batch at byte offset 0: prefix CRC mismatch over the magic, \
+                 version and declared length (recorded {expected_prefix_crc:#010x}, \
+                 computed {actual_prefix_crc:#010x})"
+            )));
+        }
+
         if bytes[..4] != BATCH_MAGIC {
-            if bytes.iter().all(|b| *b == 0) {
-                // A crash can leave a tail of zeroes where a block was
-                // allocated but never written; that is a torn tail, not
-                // damage.
-                return Ok(DecodeOutcome::Torn);
-            }
             return Err(Error::schema(format!(
                 "corrupt batch at byte offset 0: expected the event-fabric batch \
                  magic, found {:02x?}",
@@ -403,7 +464,7 @@ impl Batch {
             )));
         }
         let declared_len = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]) as usize;
-        // Checked before anything past the header is read: an oversized
+        // Checked before anything past the prefix is read: an oversized
         // declared length is refused outright rather than treated as a torn
         // tail, which is what skipping this check would otherwise disguise
         // it as.
@@ -413,7 +474,7 @@ impl Batch {
                  the {MAX_BATCH_LEN}-byte ceiling"
             )));
         }
-        let end = FIXED_PREFIX_LEN + declared_len;
+        let end = PREFIX_LEN + declared_len;
         if bytes.len() < end {
             return Ok(DecodeOutcome::Torn);
         }
@@ -421,19 +482,24 @@ impl Batch {
         // does not fit inside it is corruption, not a torn write, because a
         // torn write is precisely what the length check above already ruled
         // out.
-        let body = &bytes[FIXED_PREFIX_LEN..end];
+        let body = &bytes[PREFIX_LEN..end];
 
-        let mut cursor = Cursor::new(body, FIXED_PREFIX_LEN);
+        let mut cursor = Cursor::new(body, PREFIX_LEN);
         let header_start = cursor.pos;
-        let message_type = MessageType::from_tag(cursor.read_u8()?)?;
+        let message_type_pos = cursor.pos;
+        let message_type =
+            MessageType::from_tag(cursor.read_u8()?, cursor.absolute(message_type_pos))?;
+        let flags_pos = cursor.pos;
         let flags = cursor.read_u8()?;
         if flags != FLAGS_NONE {
             return Err(Error::schema(format!(
-                "batch at byte offset 0 sets flags byte {flags:#04x}, and this build \
-                 defines no bit; refusing rather than guessing what it means"
+                "corrupt batch at byte offset {}: flags byte {flags:#04x} sets a bit \
+                 this build does not understand; refusing rather than guessing what it means",
+                cursor.absolute(flags_pos)
             )));
         }
-        let encoding = PayloadCodec::from_tag(cursor.read_u8()?)?;
+        let encoding_pos = cursor.pos;
+        let encoding = PayloadCodec::from_tag(cursor.read_u8()?, cursor.absolute(encoding_pos))?;
         let schema_id = cursor.read_u32()?;
         let schema_version = cursor.read_u32()?;
         let producer_id = cursor.read_string()?;
@@ -549,6 +615,7 @@ fn encode_previous_hash(out: &mut Vec<u8>, hash: &Option<ContentHash>) -> Result
 }
 
 fn decode_previous_hash(cursor: &mut Cursor) -> Result<Option<ContentHash>> {
+    let tag_pos = cursor.pos;
     match cursor.read_u8()? {
         HASH_TAG_NONE => Ok(None),
         HASH_TAG_SHA256 => {
@@ -557,12 +624,15 @@ fn decode_previous_hash(cursor: &mut Cursor) -> Result<Option<ContentHash>> {
             digest.copy_from_slice(bytes);
             Ok(Some(ContentHash::Sha256(digest)))
         }
-        HASH_TAG_BLAKE3 => Err(Error::schema(
-            "ContentHash::Blake3 is refused pending ADR 0099 conflict C2; a batch \
-             carrying one cannot be decoded"
-                .to_string(),
-        )),
-        other => Err(Error::schema(format!("unknown content-hash tag {other}"))),
+        HASH_TAG_BLAKE3 => Err(Error::schema(format!(
+            "corrupt batch at byte offset {}: ContentHash::Blake3 is refused pending \
+             ADR 0099 conflict C2; a batch carrying one cannot be decoded",
+            cursor.absolute(tag_pos)
+        ))),
+        other => Err(Error::schema(format!(
+            "corrupt batch at byte offset {}: unknown content-hash tag {other}",
+            cursor.absolute(tag_pos)
+        ))),
     }
 }
 

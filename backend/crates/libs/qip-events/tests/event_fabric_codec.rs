@@ -21,6 +21,22 @@ impl EventBody for Tick {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// The documented wire prefix: magic, then a `u16` version, then a `u32`
+/// declared body length — the fields the prefix CRC below protects.
+const PREFIX_FIELDS_LEN: usize = BATCH_MAGIC.len() + 2 + 4;
+
+/// The prefix fields plus their own trailing CRC32C.
+const PREFIX_LEN: usize = PREFIX_FIELDS_LEN + 4;
+
+/// Overwrite the four-byte prefix CRC in a mutated fixture so a corruption
+/// made further down the prefix (magic, version or length) is the only thing
+/// wrong with it — otherwise the prefix CRC itself would refuse the batch
+/// first, and the specific check under test would never run.
+fn refresh_prefix_crc(bytes: &mut [u8]) {
+    let crc = crc32c(&bytes[..PREFIX_FIELDS_LEN]);
+    bytes[PREFIX_FIELDS_LEN..PREFIX_LEN].copy_from_slice(&crc.to_le_bytes());
+}
+
 /// Build an `AnyEvent` whose identity, timestamp and (optional) trace id are
 /// exactly what a test asserts survives the codec.
 fn make_event(id: &str, symbol: &str, occurred_at: Timestamp, trace: Option<&str>) -> AnyEvent {
@@ -219,12 +235,12 @@ fn flipping_any_bit_of_a_complete_batch_is_refused_as_corruption_naming_its_offs
     }
 
     // Flip the last bit of the last byte before the record's own trailing
-    // CRC — the final byte of the JSON payload — so only that record's CRC,
-    // not the batch-header CRC, can catch it.
-    let flip_at = bytes.len() - 5;
-    bytes[flip_at] ^= 0x01;
-
-    let err = match Batch::decode(&bytes) {
+    // CRC — the final byte of the JSON payload — so only that record's own
+    // CRC, not the prefix or the batch-header CRC, can catch it.
+    let payload_flip_at = bytes.len() - 5;
+    let mut single_flip = bytes.clone();
+    single_flip[payload_flip_at] ^= 0x01;
+    let err = match Batch::decode(&single_flip) {
         Err(e) => e,
         Ok(outcome) => panic!("a flipped payload bit must be refused, not decoded as {outcome:?}"),
     };
@@ -237,6 +253,42 @@ fn flipping_any_bit_of_a_complete_batch_is_refused_as_corruption_naming_its_offs
         err.message().contains("record CRC mismatch"),
         "a flipped payload bit must be caught by the record's own CRC: {}",
         err.message()
+    );
+
+    // Exhaustive: every single-bit flip of the *entire* encoded batch must be
+    // refused as corruption — never silently accepted as a different
+    // complete batch, and never misread as an ordinary torn tail. An earlier
+    // version of this codec had no CRC over the prefix, so 23 flips inside
+    // the declared-length field (byte offsets 6 through 9) decoded as
+    // `Torn` instead of being refused: a bit-rotted length looked exactly
+    // like a healthy, incomplete write, and a recovery path that truncates a
+    // torn tail (as SLICE-16's does) would have silently discarded every
+    // batch committed after it.
+    for byte_index in 0..bytes.len() {
+        let original = bytes[byte_index];
+        for bit in 0..8u8 {
+            bytes[byte_index] = original ^ (1 << bit);
+            match Batch::decode(&bytes) {
+                Err(e) => assert!(
+                    e.message().contains("byte offset"),
+                    "flipping byte {byte_index} bit {bit} must name an offset: {}",
+                    e.message()
+                ),
+                Ok(outcome) => panic!(
+                    "flipping byte {byte_index} bit {bit} must be refused, not decoded \
+                     as {outcome:?}"
+                ),
+            }
+        }
+        bytes[byte_index] = original;
+    }
+
+    // The restore above must be exact, not merely "close enough": a bug in
+    // it could otherwise hide behind "every flip was refused".
+    assert_eq!(
+        bytes,
+        batch.encode().expect("batch re-encodes"),
+        "the fixture must be restored byte for byte after the exhaustive flip"
     );
 }
 
@@ -277,13 +329,20 @@ fn a_wrong_magic_version_or_oversized_length_is_refused_before_the_payload_is_re
         Ok(DecodeOutcome::Complete(_))
     ));
 
+    // Each fixture below corrupts exactly one prefix field and then repairs
+    // the prefix CRC over the corrupted bytes, so what is under test is the
+    // specific downstream check (magic, version or the length ceiling) —
+    // not the prefix CRC, which a stale value would otherwise trip first
+    // and mask the check this test means to isolate.
     let mut wrong_magic = bytes.clone();
     wrong_magic[0..4].copy_from_slice(b"XXXX");
+    refresh_prefix_crc(&mut wrong_magic);
     let err = Batch::decode(&wrong_magic).expect_err("a wrong magic must be refused");
     assert!(err.message().contains("magic"), "{}", err.message());
 
     let mut wrong_version = bytes.clone();
     wrong_version[4..6].copy_from_slice(&99u16.to_le_bytes());
+    refresh_prefix_crc(&mut wrong_version);
     let err = Batch::decode(&wrong_version).expect_err("an unknown format version must be refused");
     assert!(
         err.message().contains("format version 99"),
@@ -300,6 +359,7 @@ fn a_wrong_magic_version_or_oversized_length_is_refused_before_the_payload_is_re
     let mut oversized = bytes.clone();
     let huge = (MAX_BATCH_LEN as u32) + 1;
     oversized[6..10].copy_from_slice(&huge.to_le_bytes());
+    refresh_prefix_crc(&mut oversized);
     assert!(
         oversized.len() < MAX_BATCH_LEN,
         "the fixture buffer must stay small; the refusal must come from the \
@@ -333,13 +393,13 @@ fn a_blake3_content_hash_or_a_non_json_encoding_is_refused_naming_c2() {
     assert!(err.message().contains("C2"), "{}", err.message());
 
     // A wire encoding byte other than canonical JSON (0) is refused on
-    // decode. The encoding byte's fixed position — magic, then a u16
-    // version, then a u32 length, then one byte each of message type and
-    // flags — is the documented wire layout, not an internal that could
-    // silently drift under the test.
+    // decode. The encoding byte's fixed position — the prefix (magic, a u16
+    // version, a u32 length and the prefix's own CRC32C), then one byte
+    // each of message type and flags — is the documented wire layout, not
+    // an internal that could silently drift under the test.
     let (_, plain_batch) = one_record_batch();
     let bytes = plain_batch.encode().expect("batch encodes");
-    let encoding_offset = BATCH_MAGIC.len() + 2 + 4 + 1 + 1;
+    let encoding_offset = PREFIX_LEN + 1 + 1;
 
     // Premise: that offset really does hold the canonical-JSON tag (0)
     // before it is corrupted.
