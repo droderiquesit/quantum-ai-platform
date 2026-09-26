@@ -68,6 +68,10 @@ fn main() {
         "registrations" => registrations_command(&arguments[1..]),
         "replay" => replay_command(&arguments[1..]),
         "blueprint" => blueprint_command(&arguments[1..]),
+        // The whole family, once: a subcommand added to
+        // `qip_cli::event_fabric` is reachable without this file changing,
+        // and an unknown one is refused by the family naming its list.
+        "event-fabric" => qip_cli::event_fabric::run(&arguments[1..]),
         other => Err(Error::invalid(format!(
             "unknown command: {other}. Run `qip help` for the list."
         ))),
@@ -106,6 +110,10 @@ fn print_help() {
     println!("  blueprint render|check [--root <path>]");
     println!("                    render the blueprint registers from their JSON sources,");
     println!("                    or exit 3 if a committed view is stale");
+    println!("  event-fabric grant --fixture <path> --peer <loopback-address:port>");
+    println!("                    sign the labelled slice fixture's grant and policy with");
+    println!("                    the fixture key and publish them to a loopback broker's");
+    println!("                    control stream. A fixture, not how grants are issued");
     println!();
     println!("`registrations` exits 3 while any catalogued source is still refused, and");
     println!("`replay` exits 3 if the chain is broken or a registry disagrees. Both exit");

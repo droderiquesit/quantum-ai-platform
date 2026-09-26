@@ -1,0 +1,14 @@
+{
+  "label": "fixture:qip-event-fabric-grant",
+  "cell": "london-1",
+  "region": "europe-west2",
+  "strategy": "microprice-guard",
+  "venue": "XSIM",
+  "gross_limit": "100000",
+  "order_limit": "10000",
+  "loss_limit": "5000",
+  "valid_for_secs": 3600,
+  "policy_sequence": 1,
+  "partition": 0,
+  "plan": "../../qip-edge-node/fixtures/slice-strategy-plan.json"
+}
