@@ -25,17 +25,18 @@
 //!   delivered the fixture capital grant to the cell it was for.
 //! * **Archive-required is the retention class, not a separate flag.** The
 //!   catalogue schema has no archive field, and this suite does not add one
-//!   the parser would drop. A stream is archive-required exactly when its
-//!   declared [`RetentionClass`] is not replaceable (§22.1's `Never` or
-//!   `InMemoryFixed`): the log may roll a replaceable record by age, and may
-//!   delete nothing else before it is archived. P2 is archive-required too,
-//!   or a spool mixing P1 and P2 never returns to baseline (ADR 0100 §8
-//!   test 8).
+//!   the parser would drop. A stream is archive-required exactly when
+//!   `StreamPolicy::archive_required` says so for its declared retention
+//!   class (§22.1's `Never` or `InMemoryFixed` are the two that are not): the
+//!   log may roll a replaceable record by age, and may delete nothing else
+//!   before it is archived. P2 is archive-required too, or a spool mixing P1
+//!   and P2 never returns to baseline (ADR 0100 §8 test 8). SLICE-38's broker
+//!   answers the identical question off the identical method, so the two
+//!   never drift into disagreement about the same stream.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use qip_acceptance::read;
-use qip_events::RetentionClass;
 use qip_events::event_fabric::catalogue::{Catalogue, KeyScope, Permission};
 use qip_events::event_fabric::policy::{Mirroring, OverloadPolicy, QosClass};
 
@@ -85,12 +86,6 @@ fn catalogue() -> Catalogue {
         Ok(catalogue) => catalogue,
         Err(error) => panic!("{CATALOGUE} is refused by Catalogue::parse: {error}"),
     }
-}
-
-/// Archive-required, derived from the declared retention class alone (see
-/// the module comment for why there is no separate flag).
-fn archive_required(retention: RetentionClass) -> bool {
-    !retention.is_replaceable()
 }
 
 /// The four streams of the slice and their classes, as ADR 0100 §5 and the
@@ -477,7 +472,7 @@ fn p1_and_p2_are_archive_required_and_p4_is_the_only_sheddable_class() {
     let mut sheddable: BTreeSet<&str> = BTreeSet::new();
     for (name, stream) in catalogue.streams() {
         let policy = &stream.policy;
-        let required = archive_required(policy.retention());
+        let required = policy.archive_required();
         assert_eq!(
             Some(&required),
             expected_archive.get(name.as_str()),
