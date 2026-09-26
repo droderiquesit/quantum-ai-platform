@@ -1336,16 +1336,27 @@ fn a_cell_cut_off_from_the_centre_spends_only_its_grant_and_then_stops() -> Resu
         CapitalGrant::Full
     ));
 
-    // Still cut off, and now past the grant it holds: reduced, then refused.
+    // Still cut off, and now past the grant it holds: refused whole, never
+    // reduced to fit (CAPITAL-025). This asserted a reduction until the
+    // envelope stopped making one; a cell out of contact that sends part of
+    // an order sends a trade nobody sized, with nobody to ask.
     let mostly_used = Utilisation {
         gross_committed: d("800"),
         realised_loss: Decimal::ZERO,
         orders_sent: 2,
     };
-    assert!(matches!(
-        envelope.admit(&xlon, d("400"), &mostly_used, t(20)),
-        CapitalGrant::Reduced(_)
-    ));
+    let over_headroom = envelope.admit(&xlon, d("400"), &mostly_used, t(20));
+    assert!(
+        matches!(over_headroom, CapitalGrant::Refused(_)),
+        "400 against 200 of headroom was not refused whole: {over_headroom:?}"
+    );
+    assert_eq!(
+        over_headroom,
+        CapitalGrant::Refused(
+            "order notional 400 exceeds the 200 of the 1000 gross limit left".into()
+        ),
+        "the refusal did not name the headroom that stopped it"
+    );
     let exhausted = Utilisation {
         gross_committed: d("1000"),
         realised_loss: Decimal::ZERO,

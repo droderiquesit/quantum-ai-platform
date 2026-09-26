@@ -1,13 +1,13 @@
-# 0010 — Four of the six application crates are deployed, and the other two are not
+# 0010 — Four of the eight application crates are deployed, and the other four are not
 
 **Status:** accepted
 
 ## Decision
 
-`crates/apps` holds six crates. Four of them are deployed as Kubernetes
-workloads, and the other two are deliberately not. This record is the list, so
-that "why is that one missing" has an answer somewhere other than a comment in
-a build matrix.
+`crates/apps` holds eight crates. Four of them are deployed as Kubernetes
+workloads, and the other four are deliberately not. This record is the list,
+so that "why is that one missing" has an answer somewhere other than a comment
+in a build matrix.
 
 | crate | binary | deployed | why |
 | --- | --- | --- | --- |
@@ -17,6 +17,8 @@ a build matrix.
 | `qip-edge-node` | `qip-edge-node` | yes | one cell's hot path, applied per cell by a runbook rather than by the pipeline |
 | `qip-cli` | `qip` | **no** | an operator's tool, run by a person |
 | `qip-web` | *none* | **no** | not a binary — a library `qip-api` links and renders from |
+| `qip-fabricd` | `qip-fabricd` | **no** | event fabric broker (ADR 0100); composition root unfinished, and GCP placement is undecided (ADR 0099 C8) |
+| `qip-ledgerd` | `qip-ledgerd` | **no** | ledger writer (ADR 0100); composition root unfinished, and GCP placement is undecided (ADR 0099 C8) |
 
 Deployed means all three of: an entry in the image matrix in
 `.github/workflows/deploy.yml`, a manifest in
@@ -63,9 +65,41 @@ The consequences follow from that rather than from a preference:
   permission nobody is watching.
 * **One content-security policy, not two.** The header the pages are served
   under is `qip-api`'s — `default-src 'none'; style-src 'self'` and no script
-  source at all — set in `crates/apps/qip-api/src/http.rs`. A second deployment
+  source at all — set in `qip-transport/src/server.rs`. A second deployment
   would be a second place for that policy to be set, and a second place for it
   to be set differently.
+
+### `qip-fabricd` and `qip-ledgerd` are not deployed yet
+
+ADR 0100 gives the event fabric broker and the ledger writer each their own
+binary, argued under ADR 0091's own test: each is "a writer of the log or a
+clock of its own" — `qip-fabricd` is the sole writer of every partition's
+batch chain and runs its own segment-roll clock, and `qip-ledgerd` is the sole
+writer of the ledger's double-entry chain. Both pass that test. Neither is
+imaged or scheduled today, for a reason distinct from `qip-cli`'s and
+`qip-web`'s: this is not a decision that either binary should never deploy,
+only that it cannot yet.
+
+Each binary's `main.rs` refuses to start and exits non-zero, naming ADR 0100,
+because its composition-root modules — `qip-fabricd`'s `config`, `health` and
+`archiver`; `qip-ledgerd`'s `config`, `consumer`, `read_api` and `store` — are
+still doc-only stubs, each waiting on the packet named in its own module
+comment. A binary that cannot read configuration, prove a store writable or
+serve a request has no business in an image matrix or a catalogue entry: an
+image built from it would ship a process that exits the instant Cloud Run
+started it, and a catalogue entry would be a revision that never serves.
+Beyond that, *where* either binary runs is undecided — tracked as ADR 0099's
+conflict C8 — and `qip-ledgerd`'s own custody-separation argument in ADR 0100
+§2 is part of what that decision has to weigh.
+
+So both are on the exclusion lists `NOT_A_WORKLOAD` and
+`NOT_IN_THE_IMAGE_MATRIX` in `infrastructure.rs`, with this section as the
+reason. Excluding is the restrictive, reversible choice: the moment each
+composition root lands and C8 resolves placement, the binary needs all three
+of an image matrix entry, a catalogue or execution-node entry, and a service
+account — the same bar `qip-fastbrain` and `qip-deepbrain` already clear — and
+this record's own tests fail the day one of those three arrives without the
+other two.
 
 ## Why
 
@@ -132,3 +166,9 @@ here, in a record someone reads on purpose, rather than only in a `const`.
   neither a deployed workload nor a library the API links — means this table
   has stopped describing the directory, and the directory should be split
   before the table grows a column.
+* **Either `qip-fabricd`'s or `qip-ledgerd`'s composition root lands and ADR
+  0099's C8 resolves placement.** Then that binary needs all three of an
+  image matrix entry, a catalogue or execution-node entry, and a service
+  account, and leaving it on `NOT_A_WORKLOAD` / `NOT_IN_THE_IMAGE_MATRIX` past
+  that point is the exclusion list becoming a place to hide, which this
+  record's own `## What it costs` already names as the risk to watch.

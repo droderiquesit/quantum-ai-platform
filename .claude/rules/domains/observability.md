@@ -53,7 +53,12 @@ still answers the JSON health body. The series and what each is keyed on:
   descriptor block and not on the writer. Locate both with
   `grep -n 'fn halt(\|names::EDGE_HALTED' backend/crates/edge/qip-edge/src/telemetry.rs`),
   written wherever any halt can change and at wiring time, so a cell halted
-  before its first pass still reports halted.
+  before its first pass still reports halted. A fourth source, `journal`
+  (ADR 0100 §6, SLICE-26), is the spool-pressure wire: written only by a
+  cell built with `CellConfig::with_journal_wire`, and absent — not zero —
+  on every other cell, because a cell that reads no spool has no journal
+  halt to report. Locate its recording site with
+  `grep -n 'with("source", "journal")' backend/crates/edge/qip-edge/src/telemetry.rs`.
 - `qip_edge_capability_freshness{capability}` and `qip_edge_sizing_multiplier`
   — the §6.2 table as the pass actually sized against it, recorded per pass.
   Only the three policy-fed capabilities are published; `ingestion` and

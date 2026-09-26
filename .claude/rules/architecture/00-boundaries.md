@@ -12,7 +12,24 @@ Dependencies point **inward only**. A lib may not depend on a service; a
 service may not depend on the runtime; nothing may depend on an app.
 
 - `backend/crates/libs/` — shared types and pure logic. **No I/O side effects.** A lib
-  that opens a socket is a service in the wrong directory.
+  that opens a socket is a service in the wrong directory — with two named
+  exceptions, and only two:
+  - `qip-transport` is the in-tree protocol stack and owns sockets in both
+    directions under ADR 0100 (the client, and since then the server moved out
+    of `qip-api`). "What must not happen" below states the terms.
+  - `qip-storage/src/redis.rs` opens a TCP socket to Memorystore. It predates
+    ADR 0100, whose "only library" wording did not mention it. Its module doc
+    gives the reason: RESP is a length-prefixed protocol small enough that
+    its whole encoder and decoder are two functions, the same trade
+    `qip-transport`'s HTTP client makes. It is named here so it is visible.
+    That is not a second licence, and it is not widened.
+
+  Every other library still may not perform I/O. The guard that pins the
+  allowed set is
+  `qip-acceptance`'s `event_fabric_architecture::only_the_named_libraries_open_sockets`,
+  which SLICE-45 writes. Until it lands, this sentence is prose, not an
+  enforced check. Locate it with
+  `grep -rn 'fn only_the_named_libraries_open_sockets' backend/crates/tests`.
 - `backend/crates/services/` — one domain engine each. A service owns its domain and
   exposes it through types, not through reaching into another service.
 - `backend/crates/runtime/qip-kernel` — the only place that composes services into a

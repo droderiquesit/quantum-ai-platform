@@ -47,9 +47,13 @@ pub mod mirror;
 /// §32.1's passive-first mechanism: which leg of a cycle rests, and why.
 pub mod passive;
 pub mod policy;
+pub mod pressure;
 /// §29.2 priority allocation: which quote update gets the message.
 pub mod priority;
 pub mod quoting;
+/// Realised P&L from the cell's own fills and crosses, so a grant's drawdown
+/// limit can fire (CAPITAL-026). Private: `Cell` is its only caller.
+mod realised_loss;
 /// Which other regions have gone dark, and what a cell does about it (§36.3).
 pub mod region;
 pub mod reservation;

@@ -79,6 +79,8 @@ members = [
     "crates/apps/qip-fastbrain",
     "crates/apps/qip-deepbrain",
     "crates/apps/qip-edge-node",
+    "crates/apps/qip-fabricd",
+    "crates/apps/qip-ledgerd",
 ]
 
 [workspace.package]

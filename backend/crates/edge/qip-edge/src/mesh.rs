@@ -29,6 +29,26 @@
 //! endpoint's own check never covered — that check runs on the peer, over the
 //! frames a publisher *sent it*, not over the frames this cell *pulled back*.
 //!
+//! # The mesh is one source, and every source gets the same checks
+//!
+//! Control does not have to arrive over the mesh. ADR 0100 §8 moves it onto
+//! the event fabric "through the SAME verify code as the mesh downlink", and
+//! [`FrameSource`] is where that sameness is held. Both downlinks take their
+//! frames from a source — the mesh when built by `connect`, anything else
+//! through `from_source` or `poll_from` — and every frame, whatever handed it
+//! over, goes through the one absorb each downlink has: topic, schema
+//! ceiling, payload hash, decode, the grant memory where the downlink keeps
+//! one, signature. A source hands over [`AnyEvent`] frames and nothing else,
+//! and the absorb takes a frame and nothing about where it came from, so
+//! there is no argument by which one source could be checked less than
+//! another. A second verification path is how an unsigned grant gets
+//! through, and opening one here would first need a parameter this code
+//! deliberately does not have.
+//!
+//! Moving the wire moves nothing about the signature. It is HMAC over a key
+//! the cell shares with the centre, over the fabric exactly as over the mesh:
+//! it proves possession of that key, not who held it (ADR 0043's first gap).
+//!
 //! # What is durable in which direction, and why they differ
 //!
 //! **Nothing on the uplink is spooled.** A state delta whose circuit is open is
@@ -61,6 +81,7 @@
 //! ids or idempotency keys were stamped on them in between.
 
 use std::collections::{BTreeSet, VecDeque};
+use std::fmt;
 use std::sync::Arc;
 
 use qip_contracts::capital::{CapitalEnvelope, Utilisation};
@@ -104,7 +125,11 @@ const MAX_REFUSALS_PER_DELTA: usize = 64;
 /// twice, which changes nothing the cell can act on — the visible cost is a
 /// second journal entry for one grant, which is why the number is generous
 /// rather than tuned.
-const DEFAULT_GRANT_MEMORY: usize = 512;
+///
+/// Public so a downlink built over a source other than the mesh
+/// ([`CapitalDownlink::from_source`]) can name the same bound rather than
+/// inventing its own.
+pub const DEFAULT_GRANT_MEMORY: usize = 512;
 
 // --- what a cell says about itself --------------------------------------
 
@@ -576,6 +601,196 @@ impl CellUplink {
     }
 }
 
+// --- where downlink frames come from ------------------------------------
+
+/// What one ask of a [`FrameSource`] produced.
+///
+/// Two arms rather than an empty list standing in for the second, because
+/// "the source had nothing" and "the source was not asked" are different
+/// facts: the second is an outage the circuit already knows about, and a
+/// downlink that reported it as an empty batch would tell its caller the
+/// centre had gone quiet.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SourcePoll {
+    /// Every frame the source knew at or before the instant asked about, in
+    /// the order it knew them. Unverified: a source hands over frames, never
+    /// authority.
+    Frames(Vec<AnyEvent>),
+    /// The source declined to be asked — a mesh circuit that is open — and
+    /// nothing was fetched.
+    CircuitOpen(Refusal),
+}
+
+/// Where a downlink's frames come from: the mesh, or anything else that can
+/// hand over [`AnyEvent`] frames — a scripted list of event-fabric records
+/// among them.
+///
+/// # A source delivers frames; it never delivers authority
+///
+/// The only thing a source can produce is an [`AnyEvent`], and the only
+/// routes from one to a [`VerifiedEnvelope`], a [`VerifiedPolicy`] or a
+/// [`VerifiedHalt`] are those types' own `verify`, called from one absorb per
+/// downlink that takes the frame and nothing about its origin. A source
+/// cannot construct a verified value and cannot tell the absorb it is
+/// special, so it cannot be the second verification path through which an
+/// unsigned grant reaches the cell.
+///
+/// It takes frames rather than fabric records so that `qip-edge` gains no
+/// event-fabric type or dependency: an adapter on the far side of this seam
+/// hands over the frames its records carry, and the cell never learns which
+/// wire they rode.
+pub trait FrameSource: fmt::Debug + Send {
+    /// Take every frame this source knew at or before `now`.
+    ///
+    /// `now` bounds what is returned for the reason the mesh's own poll is
+    /// bounded: the downlink verifies at `now`, and a frame the source only
+    /// learned of later must not be judged at an instant before it was
+    /// knowable.
+    fn fetch(&mut self, now: Timestamp) -> Result<SourcePoll>;
+
+    /// Where the circuit to this source stands, for a health surface.
+    fn circuit(&self) -> BreakerState;
+}
+
+/// A scripted list of frames, as a [`FrameSource`].
+///
+/// Event-fabric records replayed in order, or a test's script. Frames are
+/// handed over in the order they were pushed, up to the first one recorded
+/// after the instant asked about — the rule the mesh inbox's own read
+/// follows — so a frame stamped later than `now` is held rather than judged
+/// early, and one pushed behind it waits with it rather than being jumped
+/// over. Each frame is handed over once.
+///
+/// Nothing here deduplicates, on purpose. The memory that makes a grant
+/// applied once belongs to the downlink and is keyed on the grant's
+/// signature; a second memory here would be a second place deciding "applied
+/// once", keyed on something other than the grant, and a grant arriving by
+/// this source and the mesh would be judged by two memories that cannot see
+/// each other.
+#[derive(Debug)]
+pub struct ScriptedFrames {
+    capacity: usize,
+    pending: VecDeque<AnyEvent>,
+}
+
+impl ScriptedFrames {
+    /// A source that holds at most `capacity` frames not yet fetched.
+    ///
+    /// Bounded for the reason every buffer in the mesh is: a list that grows
+    /// with whatever it is handed is an unbounded allocation on the path
+    /// control arrives by.
+    pub fn new(capacity: usize) -> Result<Self> {
+        if capacity == 0 {
+            return Err(Error::invalid(
+                "a scripted source that can hold no frame refuses every push, which presents as a \
+                 centre that never sends rather than as a misconfiguration; give it a capacity",
+            ));
+        }
+        Ok(Self {
+            capacity,
+            pending: VecDeque::new(),
+        })
+    }
+
+    /// Queue one frame behind those already pushed.
+    ///
+    /// Refused rather than evicting the oldest when full: an evicted frame
+    /// might be the halt, and a script that silently lost its first line is
+    /// worse than one that was told to fetch before pushing more.
+    pub fn push(&mut self, frame: AnyEvent) -> Result<()> {
+        if self.pending.len() >= self.capacity {
+            return Err(Error::invalid(format!(
+                "the scripted source already holds {} frames, its bound; fetch before pushing more",
+                self.capacity
+            )));
+        }
+        self.pending.push_back(frame);
+        Ok(())
+    }
+
+    /// How many frames are waiting to be fetched.
+    pub fn pending(&self) -> usize {
+        self.pending.len()
+    }
+}
+
+impl FrameSource for ScriptedFrames {
+    fn fetch(&mut self, now: Timestamp) -> Result<SourcePoll> {
+        let knowable = self
+            .pending
+            .iter()
+            .take_while(|frame| frame.recorded_at <= now)
+            .count();
+        Ok(SourcePoll::Frames(self.pending.drain(..knowable).collect()))
+    }
+
+    /// Always closed: a list in memory has no peer to be unreachable, so
+    /// there is no circuit that could open, and closed is the state in which
+    /// every ask is answered — which is what this source does.
+    fn circuit(&self) -> BreakerState {
+        BreakerState::Closed
+    }
+}
+
+/// The mesh, as a [`FrameSource`]: the subscription and the circuit to its
+/// peer.
+///
+/// The circuit lives with the source rather than the downlink because it is
+/// a fact about a wire, and a scripted list has none. It is keyed by the
+/// peer's address rather than the subscription's name: two subscriptions
+/// against one unreachable plane are one outage, and a breaker keyed by name
+/// would discover it twice.
+#[derive(Debug)]
+struct MeshFrames {
+    peer: String,
+    subscriber: RemoteSubscriber,
+    breaker: CircuitBreaker,
+}
+
+impl MeshFrames {
+    fn connect(
+        mesh: MeshConfig,
+        policy: BreakerPolicy,
+        seed: u64,
+        clock: Arc<dyn Clock>,
+        sleeper: Arc<dyn Sleeper>,
+    ) -> Result<Self> {
+        // One peer, as for the uplink's breaker: the bound exists at all
+        // because the breaker's key is an address.
+        let breaker = CircuitBreaker::new(policy, clock, seed, 4)?;
+        let peer = mesh.peer.clone();
+        let subscriber = RemoteSubscriber::new(mesh, sleeper)?;
+        Ok(Self {
+            peer,
+            subscriber,
+            breaker,
+        })
+    }
+}
+
+impl FrameSource for MeshFrames {
+    fn fetch(&mut self, now: Timestamp) -> Result<SourcePoll> {
+        let permit = match self.breaker.admit(&self.peer) {
+            BreakerDecision::Refused(refusal) => return Ok(SourcePoll::CircuitOpen(refusal)),
+            BreakerDecision::Admitted(permit) => permit,
+        };
+        match self.subscriber.poll(now) {
+            Ok(frames) => {
+                self.breaker.record(permit, Outcome::Success);
+                Ok(SourcePoll::Frames(frames))
+            }
+            Err(error) => {
+                self.breaker.record(permit, Outcome::failed(&error));
+                Err(Error::from(error))
+            }
+        }
+    }
+
+    fn circuit(&self) -> BreakerState {
+        self.breaker.state(&self.peer)
+    }
+}
+
 // --- the downlink -------------------------------------------------------
 
 /// How a cell's capital downlink is built.
@@ -668,14 +883,14 @@ impl DownlinkBatch {
 #[derive(Debug)]
 pub struct CapitalDownlink {
     cell: String,
-    peer: String,
     /// The shared secret the cell verifies grants against. An empty key is
     /// refused at construction: a cell that cannot verify capital must not
     /// trade, and one that accepted an empty key would verify nothing while
     /// looking like it verified everything.
     key: Vec<u8>,
-    subscriber: RemoteSubscriber,
-    breaker: CircuitBreaker,
+    /// Where [`Self::poll`] takes frames from — the mesh, when built by
+    /// [`Self::connect`].
+    source: Box<dyn FrameSource>,
     applied: BTreeSet<String>,
     applied_order: VecDeque<String>,
     grant_memory: usize,
@@ -683,42 +898,66 @@ pub struct CapitalDownlink {
 }
 
 impl CapitalDownlink {
+    /// A downlink that polls the mesh.
     pub fn connect(
         config: DownlinkConfig,
         key: &[u8],
         clock: Arc<dyn Clock>,
         sleeper: Arc<dyn Sleeper>,
     ) -> Result<Self> {
+        // Before the mesh is touched, so a downlink with no key and a bad
+        // peer is refused for the key: the fault that would make it deliver
+        // unchecked grants outranks the one that would make it deliver none.
+        Self::refuse_unverifiable(key, config.grant_memory)?;
+        let mesh = MeshFrames::connect(
+            config.mesh,
+            config.breaker,
+            config.breaker_seed,
+            clock,
+            sleeper,
+        )?;
+        Self::from_source(config.cell, key, config.grant_memory, Box::new(mesh))
+    }
+
+    /// A downlink that polls any [`FrameSource`] — the event fabric's
+    /// control records, a scripted list — through the same checks, the same
+    /// grant memory and the same key refusal [`Self::connect`] applies.
+    ///
+    /// [`Self::connect`] builds its downlink through this, so the refusal of
+    /// an empty key or an empty memory is one piece of code for every source
+    /// rather than a check a second constructor could forget.
+    pub fn from_source(
+        cell: impl Into<String>,
+        key: &[u8],
+        grant_memory: usize,
+        source: Box<dyn FrameSource>,
+    ) -> Result<Self> {
+        Self::refuse_unverifiable(key, grant_memory)?;
+        Ok(Self {
+            cell: cell.into(),
+            key: key.to_vec(),
+            source,
+            applied: BTreeSet::new(),
+            applied_order: VecDeque::new(),
+            grant_memory,
+            stats: DownlinkStats::default(),
+        })
+    }
+
+    fn refuse_unverifiable(key: &[u8], grant_memory: usize) -> Result<()> {
         if key.is_empty() {
             return Err(Error::denied(
                 "a downlink with no envelope key cannot verify a grant, so every envelope it \
                  delivered would be one nobody checked",
             ));
         }
-        if config.grant_memory == 0 {
+        if grant_memory == 0 {
             return Err(Error::invalid(
                 "a downlink that remembers no applied grant treats every redelivery as new, \
                  which is the duplicate the memory exists to absorb",
             ));
         }
-        let breaker =
-            CircuitBreaker::new(config.breaker, Arc::clone(&clock), config.breaker_seed, 4)?;
-        // The circuit is keyed by the peer's address rather than by the
-        // subscription's name: two subscriptions against one unreachable plane
-        // are one outage, and a breaker keyed by name would discover it twice.
-        let peer = config.mesh.peer.clone();
-        let subscriber = RemoteSubscriber::new(config.mesh, sleeper)?;
-        Ok(Self {
-            cell: config.cell,
-            peer,
-            key: key.to_vec(),
-            subscriber,
-            breaker,
-            applied: BTreeSet::new(),
-            applied_order: VecDeque::new(),
-            grant_memory: config.grant_memory,
-            stats: DownlinkStats::default(),
-        })
+        Ok(())
     }
 
     pub fn cell(&self) -> &str {
@@ -729,8 +968,9 @@ impl CapitalDownlink {
         self.stats
     }
 
+    /// Where the circuit to this downlink's own source stands.
     pub fn circuit(&self) -> BreakerState {
-        self.breaker.state(&self.peer)
+        self.source.circuit()
     }
 
     /// Whether this grant has already been applied.
@@ -751,25 +991,48 @@ impl CapitalDownlink {
     /// good ones — and a poll that returned `Err` would leave the caller unable
     /// to say which.
     pub fn poll(&mut self, now: Timestamp) -> Result<DownlinkBatch> {
-        let permit = match self.breaker.admit(&self.peer) {
-            BreakerDecision::Refused(refusal) => {
+        let fetched = self.source.fetch(now);
+        self.receive(fetched, now)
+    }
+
+    /// Take frames from a second source through this downlink's own checks
+    /// and its own grant memory.
+    ///
+    /// For a cell that hears the centre on two wires at once — the mesh and
+    /// the event fabric, while control moves from one to the other. It is a
+    /// method on this downlink rather than a second downlink because a grant
+    /// the centre published on both wires is one grant, and only one memory
+    /// can say so: two downlinks would each apply it, and nothing in the two
+    /// frames — different event ids, different wires — would tell them they
+    /// carried the same authority.
+    pub fn poll_from(
+        &mut self,
+        source: &mut dyn FrameSource,
+        now: Timestamp,
+    ) -> Result<DownlinkBatch> {
+        let fetched = source.fetch(now);
+        self.receive(fetched, now)
+    }
+
+    /// Everything one ask of a source produced, through [`Self::absorb`].
+    fn receive(&mut self, fetched: Result<SourcePoll>, now: Timestamp) -> Result<DownlinkBatch> {
+        let frames = match fetched {
+            Ok(SourcePoll::CircuitOpen(refusal)) => {
                 return Ok(DownlinkBatch {
                     circuit_open: Some(refusal),
                     ..DownlinkBatch::default()
                 });
             }
-            BreakerDecision::Admitted(permit) => permit,
-        };
-
-        self.stats.polls += 1;
-        let frames = match self.subscriber.poll(now) {
-            Ok(frames) => {
-                self.breaker.record(permit, Outcome::Success);
+            Ok(SourcePoll::Frames(frames)) => {
+                self.stats.polls += 1;
                 frames
             }
+            // A source that was asked and failed was still polled: the
+            // counter says how often the centre was asked, not how often it
+            // answered.
             Err(error) => {
-                self.breaker.record(permit, Outcome::failed(&error));
-                return Err(Error::from(error));
+                self.stats.polls += 1;
+                return Err(error);
             }
         };
 
@@ -782,6 +1045,11 @@ impl CapitalDownlink {
     }
 
     /// Take one frame through every check, or refuse it.
+    ///
+    /// The one absorb for every source. It takes the frame and not the
+    /// source, so a frame from the fabric and a frame from the mesh cannot be
+    /// told apart here — which is the property: a check that could depend on
+    /// the wire is a check one wire could skip.
     fn absorb(&mut self, frame: &AnyEvent, now: Timestamp, batch: &mut DownlinkBatch) {
         if frame.topic != CapitalGrantTopic::TOPIC {
             // Not addressed to this concern. Counted rather than refused: an
@@ -841,9 +1109,9 @@ impl CapitalDownlink {
             return;
         }
 
-        // The whole point of the module. Arriving over the mesh has bought this
-        // envelope nothing; it is verified here exactly as one handed over by
-        // any other route would be.
+        // The whole point of the module. Arriving over the mesh, or over any
+        // other source, has bought this envelope nothing; it is verified here
+        // exactly as one handed over by any other route would be.
         match VerifiedEnvelope::verify(envelope, &self.key, &self.cell, now) {
             Ok(verified) => {
                 self.remember(key);
@@ -986,44 +1254,68 @@ pub struct PolicyDownlinkStats {
 /// central plane.
 ///
 /// A deliberate mirror of [`CapitalDownlink`] — poll, topic filter, schema
-/// ceiling, integrity hash, decode, verify, refuse-and-record — because the
-/// payload deserves exactly the guard capital has and a second, different
-/// discipline would be a second thing to get wrong.
+/// ceiling, integrity hash, decode, verify, refuse-and-record, and the same
+/// [`FrameSource`] seam in front of them — because the payload deserves
+/// exactly the guard capital has and a second, different discipline would be
+/// a second thing to get wrong.
 #[derive(Debug)]
 pub struct PolicyDownlink {
     cell: String,
-    peer: String,
     key: Vec<u8>,
-    subscriber: RemoteSubscriber,
-    breaker: CircuitBreaker,
+    /// Where [`Self::poll`] takes frames from — the mesh, when built by
+    /// [`Self::connect`].
+    source: Box<dyn FrameSource>,
     stats: PolicyDownlinkStats,
 }
 
 impl PolicyDownlink {
+    /// A downlink that polls the mesh.
     pub fn connect(
         config: DownlinkConfig,
         key: &[u8],
         clock: Arc<dyn Clock>,
         sleeper: Arc<dyn Sleeper>,
     ) -> Result<Self> {
+        // Before the mesh is touched, for the reason `CapitalDownlink::connect`
+        // gives: the fault that would deliver unchecked payloads outranks the
+        // one that would deliver none.
+        Self::refuse_unverifiable(key)?;
+        let mesh = MeshFrames::connect(
+            config.mesh,
+            config.breaker,
+            config.breaker_seed,
+            clock,
+            sleeper,
+        )?;
+        Self::from_source(config.cell, key, Box::new(mesh))
+    }
+
+    /// A downlink that polls any [`FrameSource`] through the same checks and
+    /// the same key refusal [`Self::connect`] applies — which builds its own
+    /// downlink through this, so there is one refusal of an empty key for
+    /// every source.
+    pub fn from_source(
+        cell: impl Into<String>,
+        key: &[u8],
+        source: Box<dyn FrameSource>,
+    ) -> Result<Self> {
+        Self::refuse_unverifiable(key)?;
+        Ok(Self {
+            cell: cell.into(),
+            key: key.to_vec(),
+            source,
+            stats: PolicyDownlinkStats::default(),
+        })
+    }
+
+    fn refuse_unverifiable(key: &[u8]) -> Result<()> {
         if key.is_empty() {
             return Err(Error::denied(
                 "a downlink with no policy key cannot verify a payload, so every payload it \
                  delivered would be one nobody checked",
             ));
         }
-        let breaker =
-            CircuitBreaker::new(config.breaker, Arc::clone(&clock), config.breaker_seed, 4)?;
-        let peer = config.mesh.peer.clone();
-        let subscriber = RemoteSubscriber::new(config.mesh, sleeper)?;
-        Ok(Self {
-            cell: config.cell,
-            peer,
-            key: key.to_vec(),
-            subscriber,
-            breaker,
-            stats: PolicyDownlinkStats::default(),
-        })
+        Ok(())
     }
 
     pub fn cell(&self) -> &str {
@@ -1034,8 +1326,9 @@ impl PolicyDownlink {
         self.stats
     }
 
+    /// Where the circuit to this downlink's own source stands.
     pub fn circuit(&self) -> BreakerState {
-        self.breaker.state(&self.peer)
+        self.source.circuit()
     }
 
     /// Pull everything the centre knew by `now`, verifying each payload.
@@ -1045,25 +1338,46 @@ impl PolicyDownlink {
     /// revoked the good ones, and an `Err` would leave the caller unable to
     /// say which was which.
     pub fn poll(&mut self, now: Timestamp) -> Result<PolicyBatch> {
-        let permit = match self.breaker.admit(&self.peer) {
-            BreakerDecision::Refused(refusal) => {
+        let fetched = self.source.fetch(now);
+        self.receive(fetched, now)
+    }
+
+    /// Take frames from a second source through this downlink's own checks.
+    ///
+    /// The payload has no memory here to share — "last applied" is the
+    /// cell's fact, held where it applies — so what this keeps in one place
+    /// is the key, the cell a frame must name and the counters. A halt that
+    /// rides the fabric while payloads still ride the mesh is then verified
+    /// against the same key and counted in the same place as every other
+    /// frame the centre sent, rather than by a second downlink whose numbers
+    /// an operator would have to know to add up.
+    pub fn poll_from(
+        &mut self,
+        source: &mut dyn FrameSource,
+        now: Timestamp,
+    ) -> Result<PolicyBatch> {
+        let fetched = source.fetch(now);
+        self.receive(fetched, now)
+    }
+
+    /// Everything one ask of a source produced, through [`Self::absorb`].
+    fn receive(&mut self, fetched: Result<SourcePoll>, now: Timestamp) -> Result<PolicyBatch> {
+        let frames = match fetched {
+            Ok(SourcePoll::CircuitOpen(refusal)) => {
                 return Ok(PolicyBatch {
                     circuit_open: Some(refusal),
                     ..PolicyBatch::default()
                 });
             }
-            BreakerDecision::Admitted(permit) => permit,
-        };
-
-        self.stats.polls += 1;
-        let frames = match self.subscriber.poll(now) {
-            Ok(frames) => {
-                self.breaker.record(permit, Outcome::Success);
+            Ok(SourcePoll::Frames(frames)) => {
+                self.stats.polls += 1;
                 frames
             }
+            // Counted for the reason the capital downlink counts it: the
+            // centre was asked, whether or not it answered.
             Err(error) => {
-                self.breaker.record(permit, Outcome::failed(&error));
-                return Err(Error::from(error));
+                self.stats.polls += 1;
+                return Err(error);
             }
         };
 
@@ -1076,6 +1390,11 @@ impl PolicyDownlink {
     }
 
     /// Take one frame through every check, or refuse it.
+    ///
+    /// The one absorb for every source, and it dispatches on the frame's
+    /// topic alone: a halt is a halt whichever wire carried it, and a routing
+    /// decision that consulted the wire is how a halt sent over the fabric
+    /// would come to be read as a malformed payload and never stop anything.
     fn absorb(&mut self, frame: &AnyEvent, now: Timestamp, batch: &mut PolicyBatch) {
         if frame.topic == HaltTopic::TOPIC {
             self.absorb_halt(frame, now, batch);
@@ -1124,8 +1443,9 @@ impl PolicyDownlink {
             }
         };
 
-        // Arriving over the mesh has bought this payload nothing; it is
-        // verified here exactly as one handed over by any other route would be.
+        // Arriving over the mesh, or over any other source, has bought this
+        // payload nothing; it is verified here exactly as one handed over by
+        // any other route would be.
         match VerifiedPolicy::verify(payload, &self.key, &self.cell, now) {
             Ok(verified) => {
                 self.stats.verified += 1;
@@ -1216,6 +1536,133 @@ impl CapitalGrantTopic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A frame of no particular meaning, recorded at `secs`.
+    fn frame_at(name: &str, secs: i64) -> AnyEvent {
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        struct Marker {
+            name: String,
+        }
+        impl EventBody for Marker {
+            const TOPIC: Topic = Topic::ServiceStarted;
+            const SCHEMA_VERSION: u32 = 1;
+        }
+        let at = Timestamp::from_secs(1_000 + secs);
+        Envelope::new(
+            Id::from_string(format!("EVT-{name}")),
+            at,
+            at,
+            Lineage::root(CorrelationId::from_string(format!("COR-{name}")), "tests"),
+            Marker {
+                name: name.to_string(),
+            },
+        )
+        .erase()
+        .expect("a marker frame erases")
+    }
+
+    fn fetched_ids(source: &mut ScriptedFrames, secs: i64) -> Vec<String> {
+        match source
+            .fetch(Timestamp::from_secs(1_000 + secs))
+            .expect("a scripted source always answers")
+        {
+            SourcePoll::Frames(frames) => frames
+                .iter()
+                .map(|frame| frame.event_id.as_str().to_string())
+                .collect(),
+            SourcePoll::CircuitOpen(refusal) => panic!("a list has no circuit: {refusal:?}"),
+        }
+    }
+
+    #[test]
+    fn a_scripted_source_holds_a_frame_until_the_instant_it_became_knowable() {
+        // The mesh inbox's read rule, held by the scripted source too. A
+        // downlink verifies at `now`; a frame handed over before it was
+        // knowable would be judged at an instant it did not yet exist, which
+        // is point-in-time leakage on the control path. The frame pushed
+        // behind a held one waits with it rather than being jumped over, so a
+        // replayed script is read in the order it was recorded.
+        let mut source = ScriptedFrames::new(8).expect("a bounded source");
+        for (name, secs) in [("EARLY", 10), ("LATE", 50), ("BEHIND", 20)] {
+            source.push(frame_at(name, secs)).expect("room for three");
+        }
+        assert_eq!(source.pending(), 3);
+
+        assert_eq!(fetched_ids(&mut source, 30), vec!["EVT-EARLY"]);
+        assert_eq!(
+            source.pending(),
+            2,
+            "a frame recorded after the instant asked about was handed over"
+        );
+        assert_eq!(fetched_ids(&mut source, 60), vec!["EVT-LATE", "EVT-BEHIND"]);
+        assert_eq!(
+            source.pending(),
+            0,
+            "a frame was handed over twice or never"
+        );
+    }
+
+    #[test]
+    fn a_scripted_source_refuses_rather_than_drops_a_frame_it_cannot_hold() {
+        // Evicting the oldest to make room could evict the halt. The source
+        // refuses the push instead, and what it already holds is untouched.
+        assert!(
+            ScriptedFrames::new(0).is_err(),
+            "a source that can hold nothing was built"
+        );
+        let mut source = ScriptedFrames::new(1).expect("a bounded source");
+        source.push(frame_at("FIRST", 10)).expect("room for one");
+        assert!(
+            source.push(frame_at("SECOND", 11)).is_err(),
+            "a full source took another frame"
+        );
+        assert_eq!(source.pending(), 1);
+        assert_eq!(fetched_ids(&mut source, 30), vec!["EVT-FIRST"]);
+    }
+
+    #[test]
+    fn a_downlink_over_any_source_refuses_to_exist_without_a_key() {
+        // `connect` checks the key before it touches the mesh, and the
+        // existing mesh suite holds that half. This holds the other: a
+        // downlink built straight over a source — the fabric's route — is
+        // refused an empty key by the same code, so the route that is not
+        // the mesh cannot be the one that verifies nothing.
+        let capital = CapitalDownlink::from_source(
+            "london-1",
+            b"",
+            DEFAULT_GRANT_MEMORY,
+            Box::new(ScriptedFrames::new(1).expect("a bounded source")),
+        )
+        .expect_err("a capital downlink with no key was built over a scripted source");
+        assert!(
+            capital.message().contains("cannot verify a grant"),
+            "{}",
+            capital.message()
+        );
+        let forgetful = CapitalDownlink::from_source(
+            "london-1",
+            b"a-key",
+            0,
+            Box::new(ScriptedFrames::new(1).expect("a bounded source")),
+        )
+        .expect_err("a capital downlink that remembers no grant was built");
+        assert!(
+            forgetful.message().contains("remembers no applied grant"),
+            "{}",
+            forgetful.message()
+        );
+        let policy = PolicyDownlink::from_source(
+            "london-1",
+            b"",
+            Box::new(ScriptedFrames::new(1).expect("a bounded source")),
+        )
+        .expect_err("a policy downlink with no key was built over a scripted source");
+        assert!(
+            policy.message().contains("cannot verify a payload"),
+            "{}",
+            policy.message()
+        );
+    }
 
     #[test]
     fn a_grant_key_changes_when_any_bound_changes() {

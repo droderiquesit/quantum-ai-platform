@@ -1,0 +1,149 @@
+{
+  "streams": [
+    {
+      "name": "control.local",
+      "qos_class": "p0_control",
+      "partition_key": "cell",
+      "ordering": "per_partition",
+      "retention": "irreplaceable",
+      "replication_factor": 1,
+      "mirroring": "none",
+      "overload_policy": "refuse_producer",
+      "ack_profile": "quorum",
+      "byte_quota_per_producer": 65536,
+      "message_quota_per_producer": 256,
+      "lag_limit": 256,
+      "entitlement_dataset": "qip-control",
+      "entitlement_usage": "research",
+      "seal_age_ms": 1000,
+      "peak_bytes_per_second": 65536,
+      "topics": [
+        "risk.approved",
+        "policy.distributed",
+        "system.kill_switch_engaged"
+      ]
+    },
+    {
+      "name": "reflex-outcomes.local",
+      "qos_class": "p1_outcomes",
+      "partition_key": "cell",
+      "ordering": "per_partition",
+      "retention": "irreplaceable",
+      "replication_factor": 1,
+      "mirroring": "none",
+      "overload_policy": "refuse_producer",
+      "ack_profile": "quorum",
+      "byte_quota_per_producer": 262144,
+      "message_quota_per_producer": 1024,
+      "lag_limit": 4096,
+      "entitlement_dataset": "qip-reflex-outcomes",
+      "entitlement_usage": "research",
+      "seal_age_ms": 1000,
+      "peak_bytes_per_second": 262144,
+      "topics": [
+        "reflex.outcome_recorded",
+        "reflex.chain_span",
+        "reflex.fabric_gap"
+      ]
+    },
+    {
+      "name": "reflex-journal.local",
+      "qos_class": "p2_market_journal",
+      "partition_key": "cell",
+      "ordering": "per_partition",
+      "retention": "event_anchored",
+      "replication_factor": 1,
+      "mirroring": "none",
+      "overload_policy": "throttle_with_gap",
+      "ack_profile": "leader_only",
+      "byte_quota_per_producer": 1048576,
+      "message_quota_per_producer": 4096,
+      "lag_limit": 16384,
+      "entitlement_dataset": "qip-reflex-journal",
+      "entitlement_usage": "research",
+      "seal_age_ms": 1000,
+      "peak_bytes_per_second": 1048576,
+      "topics": [
+        "reflex.journal_recorded",
+        "reflex.pass_marked",
+        "reflex.market_event_applied",
+        "reflex.fabric_gap"
+      ]
+    },
+    {
+      "name": "telemetry.local",
+      "qos_class": "p4_telemetry",
+      "partition_key": "cell",
+      "ordering": "per_partition",
+      "retention": "derived_state",
+      "replication_factor": 1,
+      "mirroring": "none",
+      "overload_policy": "sample_or_shed",
+      "ack_profile": "none",
+      "byte_quota_per_producer": 262144,
+      "message_quota_per_producer": 4096,
+      "lag_limit": 4096,
+      "entitlement_dataset": "qip-telemetry",
+      "entitlement_usage": "research",
+      "seal_age_ms": 5000,
+      "peak_bytes_per_second": 262144,
+      "topics": []
+    }
+  ],
+  "grants": [
+    {
+      "identity": "reflex:cell-local",
+      "stream": "reflex-outcomes.local",
+      "permission": "produce",
+      "key_scope": "own_key"
+    },
+    {
+      "identity": "reflex:cell-local",
+      "stream": "reflex-journal.local",
+      "permission": "produce",
+      "key_scope": "own_key"
+    },
+    {
+      "identity": "reflex:cell-local",
+      "stream": "control.local",
+      "permission": "consume",
+      "key_scope": "own_key"
+    },
+    {
+      "identity": "release-controller",
+      "stream": "control.local",
+      "permission": "produce",
+      "key_scope": "any"
+    },
+    {
+      "identity": "ledger",
+      "stream": "reflex-outcomes.local",
+      "permission": "consume",
+      "key_scope": "any"
+    },
+    {
+      "identity": "operator",
+      "stream": "control.local",
+      "permission": "admin",
+      "key_scope": "any"
+    },
+    {
+      "identity": "operator",
+      "stream": "reflex-outcomes.local",
+      "permission": "admin",
+      "key_scope": "any"
+    },
+    {
+      "identity": "operator",
+      "stream": "reflex-journal.local",
+      "permission": "admin",
+      "key_scope": "any"
+    },
+    {
+      "identity": "operator",
+      "stream": "telemetry.local",
+      "permission": "admin",
+      "key_scope": "any"
+    }
+  ]
+}

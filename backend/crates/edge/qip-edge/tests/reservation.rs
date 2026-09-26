@@ -352,14 +352,14 @@ fn a_net_that_cancels_to_zero_returns_its_holds_to_the_region_allocation() -> Re
 
 #[test]
 fn an_intent_the_feasibility_gate_drops_returns_its_region_hold() -> Result<()> {
-    // Four hundred rest on the ask; the envelope's order limit lets a
-    // thousand through, and the depth rule refuses the size whole.
+    // Four hundred rest on the ask. Two thousand, scaled by the degradation
+    // floor, is still well over four hundred and well inside the envelope's
+    // hundred-thousand order limit, so the envelope takes it whole and the
+    // depth rule is what refuses it. This asked for a hundred thousand until
+    // the envelope stopped reducing an order to fit (CAPITAL-025): that size
+    // only reached the depth gate because the envelope cut it down first.
     let opening = dec!("100000000");
-    let mut cell = trading_cell(
-        &[("alpha", SignalKind::Enter, "100000")],
-        Some(opening),
-        None,
-    )?;
+    let mut cell = trading_cell(&[("alpha", SignalKind::Enter, "2000")], Some(opening), None)?;
     let mut gateway = RecordingGateway::default();
     let report = cell.work(t(50), &mut gateway)?;
 
@@ -369,6 +369,11 @@ fn an_intent_the_feasibility_gate_drops_returns_its_region_hold() -> Result<()> 
         report.signals.len(),
         1,
         "the premise failed: the strategy did not fire: {:?}",
+        report.refusals
+    );
+    assert!(
+        refused_under(&report, "capital").is_empty(),
+        "the premise failed: the envelope, not the depth gate, refused: {:?}",
         report.refusals
     );
     assert!(

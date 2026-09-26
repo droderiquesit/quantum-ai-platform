@@ -13,8 +13,10 @@
 //! Three further properties are structural rather than procedural:
 //!
 //! * **Correlated evidence cannot masquerade as independent confirmation.**
-//!   [`evidence::EvidenceSet::independent_weight`] groups by origin first, and
-//!   the belief update discounts by the effective sample size.
+//!   [`evidence::EvidenceSet::independent_weight`] groups by origin first and
+//!   keeps only each origin's strongest item — a copy adds nothing on top of
+//!   it — and the belief update separately discounts by the effective sample
+//!   size.
 //! * **Point-in-time throughout.** Evidence is filtered to the hypothesis's
 //!   as-of time before anything is computed, so a backtested thesis cannot
 //!   rest on evidence that did not exist yet.

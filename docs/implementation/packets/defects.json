@@ -1,0 +1,1398 @@
+[
+ {
+  "id": "FIX-01",
+  "title": "One-time codes are keyed by the session signer and refused without a secret in production",
+  "defects": [
+   1
+  ],
+  "epic": "E13",
+  "objective": "Every email-verification and password-reset one-time code is HMAC'd with the same key the session signer resolves: the configured ALGORIK_SESSION_SECRET (or its _FILE), refused when shorter than 32 characters, refused outright when NODE_ENV is production and none is configured, and a per-process random key in development. No string literal keys any HMAC in frontend/portal/src/lib/server.",
+  "why": "codeHash() (identity.ts:104-110) resolves its key as `configuredSessionSecret() ?? \"algorik-development\"`. configuredSessionSecret() returns null whenever the mounted secret is absent or empty, and the production refusal lives only in session.ts's signingKey() (session.ts:144-162), which codeHash never calls. A production deployment whose secret file failed to mount would therefore key every stored code hash with a literal anyone can read in this repository instead of refusing - the fail-open shape CLAUDE.md principle 3 forbids, in the file family whose own comment records that the cookie signer already fell back to a development key once. What that key protects is narrower than the title suggests, and this packet claims only that: issueCode and redeemCode are reached only on the development provider (developmentProviderActive(), identity.ts:142), whose store (identity.json, identity-store.ts:69) holds each code as its HMAC; with the key public, anyone who can read the store recovers a six-digit code offline in at most 10^6 HMACs. The key is NOT what protects the live reset flow: on a production build the development provider returns the plaintext code (identity.ts:476, and :261/:282/:456 for verification) and the routes put it in the HTTP response for any registered email (api/auth/forgot-password/route.ts:27-28, sign-up/route.ts:54, resend-verification/route.ts:19-20); infrastructure/gitops/envs/dev/portal.yaml:96-107 deploys exactly that shape (no ALGORIK_IDENTITY_PROJECT_ID, `next start`). That exposure is FIX-16's, latent today (gitops_iap_members = [] in environments/dev/terraform.tfvars:648 and ADR 0093 suspends the reconciler), and FIX-01 does not close it. scripts/deploy-frontends.sh:265 sets ALGORIK_IDENTITY_PROJECT_ID and is unaffected by either. Source: docs/reports/tech-debt/frontend.json, the row at index 5 (class B-refactor, 'identity.ts's one-time-code HMAC key silently falls back to a hardcoded literal'). No requirement in docs/blueprint/requirements states this property - SEC-017 is IAP reachability and is FIX-02's - so `requirements` is empty rather than borrowed. Confirmed at 42fb3c07: identity.ts:108 is the literal fallback; no spec under frontend/portal/tests names codeHash or the literal.",
+  "requirements": [],
+  "owns": [
+   "frontend/portal/src/lib/server/identity.ts",
+   "frontend/portal/src/lib/server/session.ts",
+   "frontend/portal/tests/one-time-code-key.spec.ts"
+  ],
+  "reads": [
+   "frontend/portal/src/lib/server/secret.ts",
+   "frontend/portal/src/lib/server/identity-store.ts",
+   "frontend/portal/playwright.config.ts",
+   "frontend/portal/tests/auth.spec.ts",
+   "frontend/portal/tests/identity-provider.spec.ts",
+   "frontend/portal/src/app/api/auth/forgot-password/route.ts",
+   "frontend/CLAUDE.md",
+   "docs/adr/0013-identity-verification-earns-a-dependency.md",
+   "docs/reports/tech-debt/frontend.json"
+  ],
+  "symbols": [
+   "codeHash frontend/portal/src/lib/server/identity.ts:104 (the literal fallback at :108)",
+   "issueCode frontend/portal/src/lib/server/identity.ts:117 and redeemCode :129 (the two callers; both reached only when developmentProviderActive() :142)",
+   "signUp identity.ts:211 (devCode :282) and forgotPassword identity.ts:459 (devCode :476): the exports the spec drives",
+   "storePath frontend/portal/src/lib/server/identity-store.ts:68-71 (reads ALGORIK_IDENTITY_STORE_DIR on every call; the file is identity.json)",
+   "configuredSessionSecret frontend/portal/src/lib/server/session.ts:132",
+   "signingKey frontend/portal/src/lib/server/session.ts:144 (the refusal to reuse: <32 chars, and NODE_ENV=production with none set)",
+   "developmentKey frontend/portal/src/lib/server/session.ts:103",
+   "TEST_SESSION_SECRET frontend/portal/playwright.config.ts:109 (every instance sets it, so the refusal does not fire in the suites)",
+   "the production-build code exposure FIX-16 owns, read only: identity.ts:476 -> api/auth/forgot-password/route.ts:27-28; sign-up/route.ts:54; resend-verification/route.ts:19-20"
+  ],
+  "depends_on": [],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "One resolver, not two: export a one-time-code hash from session.ts that goes through signingKey() (or export the key itself) and have identity.ts import it. A second copy of the production refusal in identity.ts is the duplication that let this drift once already.",
+   "The refusal throws with a message naming ALGORIK_SESSION_SECRET and ALGORIK_SESSION_SECRET_FILE and never prints a value; no secret, token or key material in the spec, its fixtures or its names (.claude/rules/00-enterprise-governance.md).",
+   "Do not change cookie semantics: a session sealed before the change still verifies after it (the key material is identical when a secret is configured).",
+   "The spec mutates process.env only inside each test and restores it in a finally/afterEach: NODE_ENV, ALGORIK_SESSION_SECRET and ALGORIK_SESSION_SECRET_FILE for the case under test, ALGORIK_IDENTITY_PROJECT_ID deleted so the development provider answers (the branch where codeHash runs), and ALGORIK_IDENTITY_STORE_DIR pointed at a fresh temporary directory per test so identity.json is the test's own. NODE_ENV is typed readonly under Next, so assign through Reflect.set(process.env, ...) rather than a cast that eslint or tsc refuses.",
+   "No new npm dependency; node:crypto only (ADR 0013).",
+   "The tests drive identity.ts's own exports (signUp, forgotPassword) and read the stored hash from identity.json, because identity.ts:108 is the defect site: a test of a session.ts export alone stays green when the literal is restored in identity.ts, which is the regression that matters.",
+   "Scope is the key only. Do not touch the three auth route files or identity.ts's devCode returns: the plaintext code in a production build's responses is FIX-16's, which is ordered after this packet and owns them."
+  ],
+  "tests": [
+   "frontend/portal/tests/one-time-code-key.spec.ts: `a one-time code is refused in production when no session secret is configured` - with NODE_ENV=production, no ALGORIK_SESSION_SECRET or _FILE, no identity project and a temporary store: premise: the development provider is the one answering (developmentProviderActive() is true); asserts signUp rejects with a message naming ALGORIK_SESSION_SECRET and ALGORIK_SESSION_SECRET_FILE, and forgotPassword for an account created beforehand under a configured secret rejects the same way; neither leaves a code record in identity.json. Mutation: restore `configuredSessionSecret() ?? \"algorik-development\"` as the key in identity.ts only (session.ts untouched); both calls resolve instead of rejecting and the test fails on the missing rejection.",
+   "frontend/portal/tests/one-time-code-key.spec.ts: `a one-time code in development is never keyed by a string written in the source` - with NODE_ENV=development, no secret, no identity project and a temporary store: signUp returns a devCode; premise: identity.json holds exactly one verify-email code record for that user and its codeHash is 43 base64url characters; assertion: that codeHash differs from HMAC-SHA256(\"algorik-development\", devCode). Mutation: restore the literal fallback in identity.ts only; the stored hash equals the literal's and the test fails.",
+   "frontend/portal/tests/one-time-code-key.spec.ts: `a configured secret shorter than a signing key is refused for codes exactly as it is for cookies` - with a 16-character ALGORIK_SESSION_SECRET, signUp through identity.ts rejects naming the length requirement. Mutation: have identity.ts key codes with configuredSessionSecret() directly instead of the session.ts export that goes through signingKey(); the 16-character secret is accepted and the test fails."
+  ],
+  "acceptance": [
+   "cd frontend/portal && npm run lint -> exit 0",
+   "cd frontend/portal && npm run typecheck -> exit 0",
+   "cd frontend/portal && npm run build -> exit 0",
+   "cd frontend/portal && npx playwright test tests/one-time-code-key.spec.ts --project=desktop-chromium -> '3 passed', 0 failed",
+   "cd frontend/portal && npx playwright test --project=auth-chromium -> every test passed (auth.spec.ts issues and redeems real codes through the changed path)",
+   "cd frontend/portal && npx playwright test --project=identity-chromium -> every test passed",
+   "grep -rn 'algorik-development' frontend/portal/src -> no output",
+   "./scripts/check-secrets.sh -> 'nothing found'"
+  ],
+  "artifacts": [
+   "identity.ts's codeHash replaced by a session.ts export that keys through signingKey()",
+   "tests/one-time-code-key.spec.ts with three mutation-verified tests"
+  ],
+  "tier": "T4",
+  "model_ceiling": "opus-lead",
+  "token_budget": 150000,
+  "escalate_if": [
+   "a Playwright instance in playwright.config.ts runs without ALGORIK_SESSION_SECRET, so the refusal would fire inside an existing suite (the fix is then a config change outside owns)",
+   "the spec cannot import src/lib/server/session.ts under the Playwright runner without a bundler shim",
+   "infrastructure/gitops/envs/*/portal.yaml or scripts/deploy-frontends.sh turns out to start the portal without ALGORIK_SESSION_SECRET_FILE in some environment, so the refusal would stop a deployed sign-up flow - that is the owner's decision, not this packet's",
+   "the reviewer or the worker reads this packet as closing the reset-code exposure: it does not. On a production build the development provider returns the plaintext code in the HTTP response (identity.ts:476 -> forgot-password/route.ts:27-28; sign-up/route.ts:54; resend-verification/route.ts:19-20), and portal.yaml:96-107 deploys that shape. Stop rather than widen into the routes; FIX-16 owns them.",
+   "identity.ts cannot be imported under the Playwright runner (its imports of identity-platform.ts, iap.ts or @algorik/auth need a bundler), so the tests cannot drive its exports - a session.ts-only test does not guard the defect site"
+  ],
+  "hand_back": [
+   "Name the production-build code exposure as open and owned by FIX-16: identity.ts:476 and the three routes return the plaintext code on a production build of the development provider, which portal.yaml:96-107 deploys; the HMAC key this packet fixes is not the control that protects that flow.",
+   "Name docs/reports/tech-debt/frontend.json's row at index 5 as the row this closes; claim no requirement ID."
+  ],
+  "size": "S",
+  "wave": 1
+ },
+ {
+  "id": "FIX-02",
+  "title": "OpenObserve admits no anonymous invoker, and the test that pinned it now refuses one",
+  "defects": [
+   2
+  ],
+  "epic": "E14",
+  "status": "deferred",
+  "deferred_until": "SLICE-18 merges (wave 3): gitops.rs and infrastructure.rs are its files, and the pin this packet must invert lives in both",
+  "objective": "No committed manifest, catalogue entry or module output grants roles/run.invoker to allUsers or allAuthenticatedUsers on any environment; qip-dev-openobserve carries the ingress modules/openobserve derives for the authenticated posture (INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER, modules/openobserve/main.tf:54); modules/openobserve is instantiated from catalogue.tf so its prod refusal is evaluated by every plan and the parity test reads its invoker list; gitops.rs asserts no manifest names an anonymous principal; console_route.rs asserts OpenObserve's authenticated ingress rather than ALL_TRAFFIC; infrastructure.rs's .tf scan admits no anonymous exception; ADR 0033's status reads applied for the invoker half.",
+  "why": "API-006 and SEC-017 are INCORRECT for one committed door: infrastructure/gitops/envs/dev/openobserve.yaml:27 is `ingress: INGRESS_TRAFFIC_ALL` and invokers.yaml:27-40 binds allUsers to run.invoker on qip-dev-openobserve, a management-zone store for the platform's cycle, refusal and order telemetry, anonymously writable the moment the reconciler runs (ADR 0093 has it suspended, not removed). ADR 0033 decided to end the anonymous invoker and is 'accepted, not yet applied'. Two suites pin the violation rather than the prohibition. gitops.rs:4536 openobserve_is_deployed_at_the_reviewed_digest_anonymous_as_adr_0030_records_and_on_ephemeral_storage asserts both halves: ingress INGRESS_TRAFFIC_ALL (:4580-4585) and exactly one manifest naming allUsers, by a whole-file count (:4586-4600). console_route.rs asserts qip-<env>-openobserve carries INGRESS_TRAFFIC_ALL (:634-643), requires every other RunService but the portal to be INGRESS_TRAFFIC_INTERNAL_ONLY naming OpenObserve as the one service that may answer the internet (:684-691), and names the gitops test this packet renames (:442-447). infrastructure.rs's carve-out at :4167-4173 is stale rather than a pin: its scan reads only .tf files under infrastructure/terraform (:4112) and admits the HCL line `invokers        = [\"allUsers\"]`, which no .tf file contains (grep -rnE 'invokers *= *\\[\"allUsers\"\\]' infrastructure -> no output at 42fb3c07), so it neither sees nor admits the YAML binding; it is dead code that would admit an anonymous HCL grant the day one were written. modules/openobserve already derives the authenticated ingress and invoker set and refuses anonymous in prod (variables.tf:54,70) but nothing instantiates it. Confirmed at 42fb3c07.",
+  "requirements": [
+   "API-006",
+   "SEC-017"
+  ],
+  "owns": [
+   "infrastructure/gitops/envs/dev/openobserve.yaml",
+   "infrastructure/gitops/envs/dev/invokers.yaml",
+   "infrastructure/terraform/catalogue.tf",
+   "backend/crates/tests/qip-acceptance/tests/gitops.rs",
+   "backend/crates/tests/qip-acceptance/tests/infrastructure.rs",
+   "backend/crates/tests/qip-acceptance/tests/console_route.rs",
+   "backend/crates/tests/qip-acceptance/tests/egress.rs",
+   "backend/crates/tests/qip-acceptance/tests/terraform_contract.rs",
+   "docs/adr/0033-openobserve-becomes-authenticated-before-it-holds-telemetry.md",
+   "docs/adr/README.md"
+  ],
+  "reads": [
+   "docs/adr/0028-openobserve-is-adopted-as-a-deliberate-deviation-from-section-2-1.md",
+   "docs/adr/0030-openobserve-is-reachable-anonymously-on-the-owners-instruction.md",
+   "docs/adr/0036-argo-cd-and-kargo-return-on-a-control-plane-cluster.md",
+   "docs/adr/0093-the-dev-control-planes-cluster-is-suspended-while-no-argo-cd-release-passes-the-scan-gate.md",
+   "docs/adr/0095-the-portal-is-reached-at-its-google-issued-run-app-url-behind-cloud-runs-own-iap-and-a-custom-domain-becomes-the-optional-path.md",
+   "infrastructure/terraform/modules/openobserve/main.tf",
+   "infrastructure/terraform/modules/openobserve/variables.tf",
+   "infrastructure/terraform/modules/openobserve/outputs.tf",
+   "infrastructure/terraform/modules/iap-run/main.tf",
+   "infrastructure/gitops/envs/dev/portal.yaml",
+   "infrastructure/terraform/modules/observability/NOT-SCRAPED.md"
+  ],
+  "symbols": [
+   "infrastructure/gitops/envs/dev/openobserve.yaml:27 ingress: INGRESS_TRAFFIC_ALL",
+   "infrastructure/gitops/envs/dev/invokers.yaml:27-40 qip-dev-openobserve-invoker-all-users (member: allUsers)",
+   "backend/crates/tests/qip-acceptance/tests/gitops.rs:4536 openobserve_is_deployed_at_the_reviewed_digest_anonymous_as_adr_0030_records_and_on_ephemeral_storage (pins the defect)",
+   "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4112 (scans .tf under infrastructure/terraform only) and :4167-4173 (the stale carve-out admitting the HCL line `invokers        = [\"allUsers\"]`, which no .tf contains)",
+   "backend/crates/tests/qip-acceptance/tests/gitops.rs:4580-4585 (ingress pinned to INGRESS_TRAFFIC_ALL) and :4586-4600 (the whole-file allUsers count pinned to 1)",
+   "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:7752,7791,7832 the_openobserve_access_posture_* (module refusals, keep)",
+   "backend/crates/tests/qip-acceptance/tests/terraform_contract.rs:715 openobserve_is_anonymous, :827 no_deployment_points_telemetry_at_openobserve_while_it_is_anonymous",
+   "backend/crates/tests/qip-acceptance/tests/egress.rs:414 (comment naming 'both halves of ADR 0030's anonymous posture')",
+   "infrastructure/terraform/catalogue.tf:796 module \"openobserve\" (the Cloud Run identity; the new posture module goes beside it)",
+   "infrastructure/terraform/modules/openobserve/variables.tf:16 access_posture (default authenticated), :70 prod refusal",
+   "docs/adr/0033-openobserve-becomes-authenticated-before-it-holds-telemetry.md:3 Status: accepted, not yet applied",
+   "backend/crates/tests/qip-acceptance/tests/console_route.rs:442-447 (comment in the invoker loop naming the gitops test this packet renames)",
+   "backend/crates/tests/qip-acceptance/tests/console_route.rs:565-566 (comment: 'the gitops.rs test named above holds it to OpenObserve's one grant')",
+   "backend/crates/tests/qip-acceptance/tests/console_route.rs:622-630 (comment: 'the one that may answer the internet is OpenObserve (ADR 0030 ...)')",
+   "backend/crates/tests/qip-acceptance/tests/console_route.rs:634-643 (asserts qip-<env>-openobserve carries ALL_TRAFFIC; pins the defect)",
+   "backend/crates/tests/qip-acceptance/tests/console_route.rs:684-691 (the INTERNAL_ONLY arm's message naming OpenObserve as the one public service)",
+   "backend/crates/tests/qip-acceptance/tests/console_route.rs:55 ALL_TRAFFIC, :64 LOAD_BALANCER_ONLY (the constant the inverted arm asserts)",
+   "infrastructure/terraform/modules/openobserve/main.tf:54 run_service_ingress (INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER when authenticated)"
+  ],
+  "depends_on": [
+   "SLICE-18"
+  ],
+  "ordered_shares": [
+   {
+    "file": "backend/crates/tests/qip-acceptance/tests/gitops.rs",
+    "after": [
+     "SLICE-18"
+    ]
+   },
+   {
+    "file": "backend/crates/tests/qip-acceptance/tests/infrastructure.rs",
+    "after": [
+     "SLICE-18"
+    ]
+   }
+  ],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "Deferred: gitops.rs and infrastructure.rs are SLICE-18's (wave 3). Start from the merged SLICE-18 tree and re-read both files; line numbers above are 42fb3c07's.",
+   "Fail closed: the change removes anonymous access and does not add a front door. With no IAP in front, OpenObserve is reachable by nobody, which ADR 0033's own reasoning prefers to reachable by anybody. Building the IAP front door (modules/iap-run beside the portal, or modules/iap-edge) is not this packet: it needs infra.yml's --iap step (FIX-11's file) and a lead decision on which of ADR 0033's load balancer or ADR 0095's Cloud Run IAP applies, recorded as an amendment to ADR 0033.",
+   "Where each suite refuses the anonymous principal, stated exactly: gitops.rs's whole-file count over the parsed manifests (the pin moves from one manifest to zero); console_route.rs's reads of the same manifests (the OpenObserve arm inverts to the authenticated ingress, and its 'outside envs/' allUsers check stays); infrastructure.rs's line scan covers .tf files only, so its OpenObserve carve-out is deleted as stale, not inverted, and nothing there claims to guard the YAML. No `qip.algorik.ai/why` annotation may spell the anonymous identifiers: annotations are part of the parsed manifest gitops.rs counts, the trap invokers.yaml:57 describes (YAML comments, such as portal.yaml:17 and :31, are not parsed and may stay).",
+   "Name the new catalogue.tf module anything but `openobserve` (e.g. `openobserve_access`): egress.rs splits catalogue.tf on the literal `module \"openobserve\" {`, and a second match would hand it the wrong block.",
+   "Do not edit infrastructure/terraform/main.tf (FIX-03 owns it) or any .github/workflows file (FIX-11 and FIX-15 own them).",
+   "No terraform apply and no plan against a real project; tests use terraform test's mocked provider and the acceptance suites' text readers.",
+   "Invert the pinning test in place under a new sentence name; do not delete its digest and ephemeral-storage halves, which remain true.",
+   "console_route.rs is edited only where it states ADR 0030's anonymous posture: the OpenObserve arm at :634-643 asserts LOAD_BALANCER_ONLY (the value modules/openobserve/main.tf:54 derives for the authenticated posture, cited in the comment), the comments at :442-447, :565-566 and :622-630 and the message at :684-691 are reworded to the authenticated posture and the renamed gitops test, and every API, portal and IAP assertion stays byte-for-byte. The arm is inverted in place, not deleted: without it an OpenObserve RunService would fall through to the INTERNAL_ONLY arm and fail for the wrong reason."
+  ],
+  "tests": [
+   "gitops.rs: `openobserve_is_deployed_at_the_reviewed_digest_on_ephemeral_storage_and_answers_no_anonymous_caller` (replaces the ADR 0030 test) - asserts every environment's OpenObserve RunService carries the authenticated ingress and that zero manifests under infrastructure/gitops/envs name allUsers or allAuthenticatedUsers. Mutation: restore the allUsers IAMPolicyMember in invokers.yaml; the test fails naming it. This is the only suite the invokers.yaml mutation is attributed to.",
+   "gitops.rs: same test - mutation: restore `ingress: INGRESS_TRAFFIC_ALL` on openobserve.yaml; the test fails naming the ingress.",
+   "console_route.rs: the_api_is_reachable_only_from_inside_the_vpc_and_its_address_is_a_terraform_output's OpenObserve arm asserts INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER - mutation: restore `ingress: INGRESS_TRAFFIC_ALL` on openobserve.yaml; console_route fails naming qip-dev-openobserve (and, before the inversion, the same restored value is what it demanded - which is why it could not be left out of owns).",
+   "infrastructure.rs: the allUsers line scan admits no exception (the stale carve-out at :4167-4173 removed) - mutation: add the exact line the carve-out admitted, `invokers        = [\"allUsers\"]`, inside a module call in infrastructure/terraform/catalogue.tf; the scan fails naming catalogue.tf. Run the same mutation against the pre-change test first and record that it passed there: that pair is the evidence the carve-out is gone, since the scan reads no YAML and an invokers.yaml mutation could never fire it.",
+   "infrastructure.rs: `the_openobserve_posture_module_is_instantiated_and_its_invokers_are_the_manifests` - asserts catalogue.tf instantiates modules/openobserve with access_posture left at its default and that invokers.yaml names exactly the module's authenticated member set for qip-dev-openobserve. Mutation: set access_posture = \"anonymous\" in the catalogue call; the test fails.",
+   "terraform_contract.rs: premise check that openobserve_is_anonymous() is now false against the committed tree, so no_deployment_points_telemetry_at_openobserve_while_it_is_anonymous is no longer vacuous in the anonymous direction - mutation: restore INGRESS_TRAFFIC_ALL plus allUsers; openobserve_is_anonymous() reads true and the premise assertion fails."
+  ],
+  "acceptance": [
+   "terraform -chdir=infrastructure/terraform fmt -check -recursive -> exit 0, no file listed",
+   "terraform -chdir=infrastructure/terraform init -backend=false && terraform -chdir=infrastructure/terraform validate -> 'Success! The configuration is valid.'",
+   "terraform fmt -check -recursive infrastructure/environments -> exit 0",
+   "python3 -c 'import yaml,sys; [list(yaml.safe_load_all(open(p))) for p in sys.argv[1:]]' infrastructure/gitops/envs/*/*.yaml -> exit 0 (the GitOps manifests parse)",
+   "for d in $(find infrastructure -name '*.tftest.hcl' -printf '%h\\n' | sed 's|/tests$||' | sort -u); do terraform -chdir=$d init -backend=false -input=false && terraform -chdir=$d test; done -> every harness 'Success!', 0 failed",
+   "cd backend && cargo test -p qip-acceptance --test gitops --test infrastructure --test terraform_contract --test terraform_plan --test egress --test console_route --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "grep -rnE '^[[:space:]]*member:[[:space:]]*all(Authenticated)?Users' infrastructure/gitops -> no output (comments in portal.yaml name the principal on purpose and are not bindings)",
+   "cd backend && cargo fmt --all --check -> exit 0, no diff printed",
+   "cd backend && cargo clippy -p qip-acceptance --all-targets -- -D warnings -> exit 0, zero 'warning:' lines",
+   "cd backend && cargo test -p qip-acceptance --no-fail-fast -> every 'test result:' line reads '0 failed' (the touched crate, whole)",
+   "./scripts/check-dependencies.sh -> 'all permitted'",
+   "./scripts/check-secrets.sh -> 'nothing found'"
+  ],
+  "artifacts": [
+   "invokers.yaml without an anonymous binding; openobserve.yaml on the authenticated ingress",
+   "modules/openobserve instantiated from catalogue.tf",
+   "gitops.rs and console_route.rs pins inverted to refuse the anonymous posture; infrastructure.rs's stale carve-out removed",
+   "ADR 0033 status updated to applied for the invoker half, with the IAP front door named as open"
+  ],
+  "tier": "T4",
+  "model_ceiling": "opus-lead",
+  "token_budget": 400000,
+  "escalate_if": [
+   "the owner needs OpenObserve reachable from a browser in the same change (the IAP front door then needs infra.yml and an ADR 0033 amendment choosing between its load balancer and ADR 0095's Cloud Run IAP)",
+   "SLICE-18's merged gitops.rs or infrastructure.rs moved or rewrote the OpenObserve assertions so the inversion is no longer a local edit",
+   "modules/openobserve's outputs cannot express the manifest's member list without a module change (modules/openobserve is outside owns)",
+   "any other workload's manifest turns out to rely on the anonymous carve-out",
+   "console_route.rs's OpenObserve assertions moved or were rewritten between 42fb3c07 and the merged SLICE-18 tree so the inversion is no longer local to the arm and its comments"
+  ],
+  "size": "M",
+  "wave": 4
+ },
+ {
+  "id": "FIX-03",
+  "title": "The restricted VIP is restricted.googleapis.com's 199.36.153.4/30 everywhere it is named",
+  "defects": [
+   3
+  ],
+  "epic": "E14",
+  "objective": "restricted.googleapis.com's A record in modules/network resolves to 199.36.153.4-7, every range the tree calls the restricted VIP or the private Google API range (network, root main.tf, trust-zones, execution-node, gitops-control-plane, image-bake, connectivity) is 199.36.153.4/30, no file under infrastructure/ (prose included) and not docs/operations/external-dependencies.md names 199.36.153.8/30 or an address in it, every *.googleapis.com host the tree calls has been checked against what restricted.googleapis.com serves before the switch, and a mocked-provider terraform test plus an acceptance test hold both halves.",
+  "why": "modules/network/main.tf:107-110 publishes restricted.googleapis.com as 199.36.153.8-11 and :173 sets restricted_vip_range = 199.36.153.8/30; six further consumers copy the same range. 199.36.153.8/30 is private.googleapis.com, the range that also serves APIs a VPC Service Controls perimeter cannot protect; restricted.googleapis.com is 199.36.153.4/30 (SEC-072's own check names it). The module's comment (:83-87) argues for restricted precisely so a workload reaching for an unprotectable API fails to resolve it; the addresses deliver the opposite. No test names either range (grep -rn '199.36.153' backend/crates/tests -> nothing), so the day SEC-047's perimeter is built every workload would reach the wrong VIP silently. Confirmed at 42fb3c07.",
+  "requirements": [
+   "SEC-072"
+  ],
+  "owns": [
+   "infrastructure/terraform/modules/network/main.tf",
+   "infrastructure/terraform/modules/network/tests/restricted-vip.tftest.hcl",
+   "infrastructure/terraform/main.tf",
+   "infrastructure/terraform/modules/trust-zones/variables.tf",
+   "infrastructure/terraform/modules/trust-zones/NOT-ENFORCED-HERE.md",
+   "infrastructure/terraform/modules/execution-node/variables.tf",
+   "infrastructure/terraform/modules/gitops-control-plane/main.tf",
+   "infrastructure/terraform/modules/image-bake/main.tf",
+   "infrastructure/terraform/modules/connectivity/main.tf",
+   "infrastructure/terraform/modules/connectivity/variables.tf",
+   "infrastructure/terraform/modules/connectivity/NOT-ORDERED.md",
+   "docs/operations/external-dependencies.md",
+   "backend/crates/tests/qip-acceptance/tests/google_api_vip.rs"
+  ],
+  "reads": [
+   "infrastructure/terraform/modules/network/tests/console-egress.tftest.hcl",
+   "infrastructure/terraform/modules/trust-zones/main.tf",
+   "infrastructure/terraform/modules/execution-node/main.tf",
+   "infrastructure/CLAUDE.md",
+   "docs/blueprint/assessment/SEC-b3.json"
+  ],
+  "symbols": [
+   "infrastructure/terraform/modules/network/main.tf:104-111 google_dns_record_set.restricted_vip (rrdatas 199.36.153.8-11)",
+   "infrastructure/terraform/modules/network/main.tf:113-119 googleapis_wildcard (CNAME to restricted.googleapis.com, keep)",
+   "infrastructure/terraform/modules/network/main.tf:173 restricted_vip_range, used at :237",
+   "infrastructure/terraform/main.tf:125 private_google_apis, used at :137 central_plane_ranges",
+   "infrastructure/terraform/modules/trust-zones/variables.tf:171-181 google_apis_range default, used at trust-zones/main.tf:333",
+   "infrastructure/terraform/modules/execution-node/variables.tf:322-339 google_apis_range default, used at execution-node/main.tf:526",
+   "infrastructure/terraform/modules/gitops-control-plane/main.tf:59 restricted_vip, used at :487 and :498",
+   "infrastructure/terraform/modules/image-bake/main.tf:114 restricted_vip_range, used at :251",
+   "infrastructure/terraform/modules/connectivity/main.tf:124,159 and variables.tf:147 (prose naming the range)",
+   "infrastructure/terraform/modules/network/main.tf:223-239 google_compute_firewall.console_egress_google_apis (count 0 unless console_egress_cidr is set; destination_ranges is a set-typed attribute in hashicorp/google)",
+   "infrastructure/terraform/modules/connectivity/NOT-ORDERED.md:75,85 and modules/trust-zones/NOT-ENFORCED-HERE.md:160 (prose naming the range; owned here and scanned by test 3)",
+   "docs/operations/external-dependencies.md:84-88 (names 199.36.153.8/30 as the fast brain's permitted range and argues it reaches every Google API, aiplatform included)",
+   "Google API hosts the tree calls, starting inventory at 42fb3c07 (re-run the grep in `constraints`, do not trust this list): identitytoolkit.googleapis.com (frontend/portal/src/lib/server/identity-platform.ts:19,179 - the portal, whose console egress is the firewall above), {region}-aiplatform.googleapis.com (backend/crates/services/qip-training/src/vertex.rs:283,446; infrastructure/terraform/variables.tf:352), storage, bigquery, pubsub, secretmanager, sts, iamcredentials, logging, monitoring, cloudkms, artifactregistry, spanner, redis, alloydb. type.googleapis.com (protobuf type URLs) and www.googleapis.com (execution-node/variables.tf:192, a self-link prefix in a description) are not calls."
+  ],
+  "depends_on": [],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "One literal per module, kept beside the record set or variable that gives it meaning; the tree's own convention (network/main.tf:167-174). Rename root main.tf's private_google_apis to say restricted, since after this change the range is the restricted one.",
+   "Both halves in one change: a DNS record on .4/30 with a firewall still admitting only .8/30 is a workload that resolves Google APIs to an address its egress deny drops, which reads as every vendor being down.",
+   "No terraform apply and no plan against a real project; the tftest uses mock_provider \"google\" {} and command = plan, as console-egress.tftest.hcl does.",
+   "Do not touch infrastructure/terraform/catalogue.tf (FIX-02's) or any environment tfvars; no environment overrides google_apis_range today (grep -rn google_apis_range infrastructure/environments -> nothing), and none should start.",
+   "No file names an address in 199.36.153.8/30 even to explain the change: refer to it as private.googleapis.com's range by name, so the grep and the new suite stay exact. That includes the owned prose: NOT-ORDERED.md:75,85, NOT-ENFORCED-HERE.md:160 and docs/operations/external-dependencies.md:87.",
+   "The new acceptance suite matches addresses as delimited tokens (a regex with non-digit boundaries), not substrings: 199.36.153.4 is a prefix of nothing, but 199.36.153.1 is a prefix of 199.36.153.10.",
+   "docs/operations/external-dependencies.md changes only in the fast-brain paragraph at :84-88: the range becomes restricted.googleapis.com's 199.36.153.4/30, and the sentence that calls it 'one address range for every Google API' is corrected to say the restricted VIP serves only VPC-SC-supported APIs - aiplatform.googleapis.com among them - so its conclusion (a perimeter is still needed to keep the fast brain off Vertex AI) stands. Nothing else in that document moves.",
+   "Before the switch, not on noticing: list every Google API host the tree calls with `grep -rhoE '[a-z0-9{}$._-]*\\.googleapis\\.com' backend/crates frontend/portal/src frontend/landing/src infrastructure scripts --include=*.rs --include=*.ts --include=*.tsx --include=*.tf --include=*.tftpl --include=*.sh --include=*.yaml | sort -u`, drop type.googleapis.com and self-link prefixes, and check each remaining service against Google's published list of services restricted.googleapis.com serves (VPC Service Controls supported products), read at the time of the change and cited by URL and date. Record the host -> supported table in the hand-back. Any host not on that list stops the packet (escalate_if); identitytoolkit.googleapis.com (the portal) and the regional *-aiplatform.googleapis.com endpoints are the two to check first."
+  ],
+  "tests": [
+   "infrastructure/terraform/modules/network/tests/restricted-vip.tftest.hcl run `the_restricted_vip_resolves_to_restricted_googleapis_coms_own_range`: asserts google_dns_record_set.restricted_vip.rrdatas == [199.36.153.4, .5, .6, .7] and, with console_egress_cidr set (the rule has count 0 otherwise), google_compute_firewall.console_egress_google_apis[0].destination_ranges == toset([\"199.36.153.4/30\"]) - compared as a set because the provider types the attribute as one, so a list literal is unequal even for correct code. Mutation: restore 199.36.153.8-11 in the record set; the run fails. Second mutation: restore restricted_vip_range to private.googleapis.com's range; the firewall assertion fails.",
+   "google_api_vip.rs: `every_range_the_tree_admits_google_api_traffic_on_is_the_restricted_vip` - premise: at least six files under infrastructure/terraform name a 199.36.153.x address; assertion: every such address is inside 199.36.153.4/30. Mutation: restore trust-zones/variables.tf's default to 199.36.153.8/30; the test fails naming that file and line.",
+   "google_api_vip.rs: `no_file_names_the_private_googleapis_range_as_the_restricted_one` - scans every file under infrastructure/ that reads as UTF-8 (every extension, .md included; .terraform/ directories skipped because they hold downloaded providers) plus docs/operations/external-dependencies.md, and asserts none names an address in 199.36.153.8/30 as a delimited token. Premise: the scan read at least one .md and at least one .tf file. Mutations: restore root main.tf:125; the test fails naming it. Restore NOT-ORDERED.md:75's range; the test fails naming NOT-ORDERED.md, which a scan limited to .tf/.tfvars/.tftpl/README would have passed."
+  ],
+  "acceptance": [
+   "the Google API host table required by `constraints` is in the hand-back, every host marked served by restricted.googleapis.com with the source URL and the date read -> no host unmarked",
+   "terraform -chdir=infrastructure/terraform fmt -check -recursive -> exit 0, no file listed",
+   "terraform -chdir=infrastructure/terraform init -backend=false && terraform -chdir=infrastructure/terraform validate -> 'Success! The configuration is valid.'",
+   "terraform -chdir=infrastructure/terraform/modules/network init -backend=false -input=false && terraform -chdir=infrastructure/terraform/modules/network test -> 'Success! N passed, 0 failed.' with the new run among them",
+   "for d in $(find infrastructure -name '*.tftest.hcl' -printf '%h\\n' | sed 's|/tests$||' | sort -u); do terraform -chdir=$d init -backend=false -input=false && terraform -chdir=$d test; done -> every harness 'Success!', 0 failed",
+   "grep -rnE '199\\.36\\.153\\.(8|9|10|11)([^0-9]|$)' infrastructure docs/operations/external-dependencies.md -> no output",
+   "cd backend && cargo test -p qip-acceptance --test google_api_vip --test infrastructure --test gitops --test terraform_contract --test terraform_plan --test egress --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo fmt --all --check -> exit 0, no diff printed",
+   "cd backend && cargo clippy -p qip-acceptance --all-targets -- -D warnings -> exit 0, zero 'warning:' lines",
+   "cd backend && cargo test -p qip-acceptance --no-fail-fast -> every 'test result:' line reads '0 failed' (the touched crate, whole)",
+   "./scripts/check-dependencies.sh -> 'all permitted'",
+   "./scripts/check-secrets.sh -> 'nothing found'"
+  ],
+  "artifacts": [
+   "every Google-API range on 199.36.153.4/30",
+   "modules/network/tests/restricted-vip.tftest.hcl",
+   "backend/crates/tests/qip-acceptance/tests/google_api_vip.rs"
+  ],
+  "tier": "T3",
+  "model_ceiling": "sonnet",
+  "token_budget": 250000,
+  "escalate_if": [
+   "any host in the table `constraints` requires is not served by restricted.googleapis.com (it serves only VPC-SC-supported services), so switching the VIP would break the workload calling it - the choice between restricted and a named private exception is the lead's. Checked before the switch, not left to be noticed",
+   "any consumer module reaches the range through a variable an environment tfvars overrides",
+   "a Rust acceptance test outside owns asserts the .8/30 literal",
+   "terraform validate or the module tests need a provider the lock file does not pin"
+  ],
+  "size": "M",
+  "wave": 1
+ },
+ {
+  "id": "FIX-04",
+  "title": "A capital envelope refuses an order it cannot take whole instead of reducing it to fit",
+  "defects": [
+   4
+  ],
+  "epic": "E07",
+  "objective": "CapitalEnvelope::admit returns CapitalGrant::Full or CapitalGrant::Refused, never Reduced: an order whose notional exceeds the envelope's order limit, or the gross headroom left, is refused whole with a reason naming the bound, the notional and the limit or headroom. Both cell call sites therefore refuse such an order under the existing `capital` gate and send nothing; the tests that locked the reduction in assert the refusal instead.",
+  "why": "capital.rs:219-228 computes cap = min(order_limit, headroom) and returns CapitalGrant::Reduced(cap) for any larger order; cell.rs:3508-3517 then sends the reduced quantity under a `capital_reduced` record. CAPITAL-025 ('a commitment that would exceed the limit is refused, not reduced to fit') and AGENCY-024 are INCORRECT on it, and it is the clamp-instead-of-refuse shape CLAUDE.md principle 2 forbids - hold_region_capital beside it (cell.rs:7371) already refuses whole. contracts.rs:504 an_oversized_order_is_reduced_rather_than_approved_as_requested and tests/cell.rs:157 a_verified_envelope_admits_then_reduces_then_refuses_as_capital_is_used pin the clamp. Callers checked: VerifiedEnvelope::admit (envelope.rs:119-127, a delegate), Cell strategy path (cell.rs:3503-3521) and arbitrage path (cell.rs:5917-5950, already refuses on Reduced), acceptance chaos/stress/performance, qip-capital tests. The central plane issues envelopes (plane.rs CentralPlane::issue) but never admits an order against one, so it has no caller to change. Measured at 42fb3c07 on a scratch copy with admit returning Refused in place of Reduced (cargo test -p qip-contracts -p qip-edge -p qip-capital -p qip-acceptance -p qip-edge-node -p qip-cli --no-fail-fast): exactly five tests failed - contracts.rs:504, qip-edge tests/cell.rs:157, tests/region_table.rs:1118, tests/reservation.rs:354 and qip-acceptance stress.rs:1318 - and every other binary read '0 failed', including qip-edge tests/telemetry.rs, the one slice-owned test that exists at 42fb3c07 (the slice's other qip-edge and qip-edge-node test files are created by later waves and could not be run).",
+  "requirements": [
+   "CAPITAL-025",
+   "AGENCY-024"
+  ],
+  "owns": [
+   "backend/crates/libs/qip-contracts/src/capital.rs",
+   "backend/crates/libs/qip-contracts/tests/contracts.rs",
+   "backend/crates/edge/qip-edge/tests/cell.rs",
+   "backend/crates/edge/qip-edge/tests/region_table.rs",
+   "backend/crates/edge/qip-edge/tests/reservation.rs",
+   "backend/crates/tests/qip-acceptance/tests/stress.rs"
+  ],
+  "reads": [
+   "backend/crates/edge/qip-edge/src/cell.rs",
+   "backend/crates/edge/qip-edge/src/envelope.rs",
+   "backend/crates/tests/qip-acceptance/tests/chaos.rs",
+   "backend/crates/tests/qip-acceptance/tests/performance.rs",
+   "backend/crates/tests/qip-acceptance/tests/region_share.rs",
+   "backend/crates/services/qip-capital/tests/capital.rs",
+   "docs/adr/0008-edge-cells-decide-alone.md",
+   "docs/blueprint/assessment/CAPITAL.json",
+   ".claude/rules/domains/risk-and-execution.md",
+   ".claude/rules/01-security-and-safety.md"
+  ],
+  "symbols": [
+   "CapitalEnvelope::admit backend/crates/libs/qip-contracts/src/capital.rs:190 (the clamp at :219-228)",
+   "CapitalGrant backend/crates/libs/qip-contracts/src/capital.rs:161 (Reduced at :166; permitted_quantity :172)",
+   "VerifiedEnvelope::admit backend/crates/edge/qip-edge/src/envelope.rs:119",
+   "Cell strategy path backend/crates/edge/qip-edge/src/cell.rs:3503-3521 (Reduced arm :3508, `capital_reduced`)",
+   "Cell arbitrage path backend/crates/edge/qip-edge/src/cell.rs:5917-5950 (Reduced arm :5934, `arbitrage_capital`)",
+   "backend/crates/libs/qip-contracts/tests/contracts.rs:504 an_oversized_order_is_reduced_rather_than_approved_as_requested (pins the defect)",
+   "backend/crates/edge/qip-edge/tests/cell.rs:157 a_verified_envelope_admits_then_reduces_then_refuses_as_capital_is_used (pins the defect)",
+   "backend/crates/edge/qip-edge/tests/region_table.rs:1118 a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire (fixture relies on the envelope trimming its second order; fails at :1171)",
+   "backend/crates/edge/qip-edge/tests/reservation.rs:354 an_intent_the_feasibility_gate_drops_returns_its_region_hold (fixture relies on the envelope reducing 100000 to its order limit before the depth gate; fails at :374)",
+   "backend/crates/tests/qip-acceptance/tests/stress.rs:1318 a_cell_cut_off_from_the_centre_spends_only_its_grant_and_then_stops (asserts Reduced at :1344-1348)"
+  ],
+  "depends_on": [],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "The paper-trading boundary is untouched: no Placer, gateway, venue class or autonomy ceiling changes. State in the hand-back that layers 1-3 (Terraform variables.tf, AutonomyLevel::deployable, Cell/Determinism typing) are intact.",
+   "Scoped to avoid cell.rs (SLICE-15, SLICE-20 and SLICE-26 own it): admit simply never constructs Reduced, so cell.rs's two Reduced arms become unreachable and compile unchanged. Deleting the variant, permitted_quantity's arm, both dead cell.rs arms, the cell.rs:7371 doc sentence and chaos.rs's arm is FIX-14, deferred until those slice packets merge. Do not mark the variant #[deprecated]: the warning in cell.rs would fail clippy -D warnings in a file this packet cannot edit.",
+   "The refusal reason names which bound stopped the order and both numbers, in the existing style (\"order notional N exceeds the O order limit\" / \"order notional N exceeds the H of the G gross limit left\"); the loss, expiry and venue refusals keep their text byte-for-byte.",
+   "A fixture that relied on trimming is fixed by sizing the fixture so its premise holds whole (region_table.rs: an envelope gross with headroom for the second order and a third the region gate, not the envelope, refuses; reservation.rs: a signal inside the order limit and above the 400 resting on the ask), never by loosening an assertion. Each such change is listed in the hand-back.",
+   "CapitalGrant's serde shape is unchanged (the variant stays), so a journal or delta written before the change still deserialises.",
+   "Do not edit chaos.rs, performance.rs or region_share.rs: the experiment showed they do not pin the reduction, and chaos.rs's dead arm is FIX-14's.",
+   "Rewritten and new tests never name CapitalGrant::Reduced: they assert `matches!(grant, CapitalGrant::Refused(_))` where refusal is the property, and `matches!(grant, CapitalGrant::Full | CapitalGrant::Refused(_))` where 'nothing partial' is. Both still fail on a Reduced answer, and both still compile once FIX-14 deletes the variant - naming it here would make FIX-14's deletion break this packet's tests."
+  ],
+  "tests": [
+   "contracts.rs: `an_order_larger_than_its_envelopes_order_limit_is_refused_whole_naming_the_limit` (replaces an_oversized_order_is_reduced_rather_than_approved_as_requested) - mutation: restore `CapitalGrant::Reduced(cap)` at capital.rs:227; admit returns Reduced and the test fails on the variant.",
+   "contracts.rs: `an_order_larger_than_the_headroom_left_is_refused_whole_naming_the_headroom` - premise: headroom is positive and below the order limit; mutation: the same Reduced arm; the test fails.",
+   "contracts.rs: `for_generated_commitment_sequences_nothing_is_admitted_in_part_and_nothing_past_the_gross_limit` - a seeded qip_core::rng::Xoshiro256 drives 10,000 notionals against one envelope, commits every Full, and asserts no grant is ever partial and gross_committed never exceeds gross_limit (CAPITAL-025's property). Mutation: the Reduced arm; a partial admission is observed and the test fails.",
+   "qip-edge tests/cell.rs: `a_verified_envelope_admits_then_refuses_whole_as_capital_is_used` (replaces a_verified_envelope_admits_then_reduces_then_refuses_as_capital_is_used) - mutation: the Reduced arm; the 400-notional request against 200 of headroom is Reduced and the test fails.",
+   "qip-edge tests/cell.rs: `a_strategy_order_larger_than_its_envelope_allows_sends_nothing_and_is_refused_under_the_capital_gate` - drives Cell::work with a signal whose notional exceeds the order limit; premise: the signal fired; asserts no order reached the placer, exactly one refusal under the delimited gate `capital`, none under `capital_reduced`. Mutation: the Reduced arm; a reduced order is placed and the test fails.",
+   "qip-edge tests/region_table.rs and tests/reservation.rs: the two fixtures resized as in `constraints`, same test names - mutation: none new; each must still fail if its own guarded property breaks (region gate refusal count; depth-gate refusal), re-verified by the mutations their doc comments name.",
+   "qip-acceptance stress.rs: a_cell_cut_off_from_the_centre_spends_only_its_grant_and_then_stops asserts the 400-over-200 request is refused naming headroom - mutation: the Reduced arm; the test fails."
+  ],
+  "acceptance": [
+   "cd backend && cargo fmt --all --check -> exit 0, no diff printed",
+   "cd backend && cargo clippy -p qip-contracts -p qip-edge -p qip-acceptance --all-targets -- -D warnings -> exit 0, zero 'warning:' lines",
+   "cd backend && cargo test -p qip-contracts -p qip-edge -p qip-capital -p qip-edge-node -p qip-cli --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo test -p qip-acceptance --test stress --test chaos --test performance --test region_share --test security --test compliance_proof --test paper_boundary --test e2e --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo test --workspace --no-fail-fast -> every 'test result:' line reads '0 failed'; quote the summed passed/failed totals, and no binary is missing from the run (a run without --no-fail-fast is not evidence)",
+   "grep -n 'CapitalGrant::Reduced' backend/crates/libs/qip-contracts/src/capital.rs -> no output (admit constructs no Reduced; the declaration `Reduced(Decimal),` at :166 and permitted_quantity's `Self::Reduced(q)` at :175 do not contain that string, and :227 was the only match before)",
+   "grep -nE 'CapitalGrant::Reduced|::Reduced\\b' backend/crates/libs/qip-contracts/tests/contracts.rs backend/crates/edge/qip-edge/tests/cell.rs backend/crates/tests/qip-acceptance/tests/stress.rs -> no output (before: contracts.rs:516,519, tests/cell.rs:175, stress.rs:1347)",
+   "./scripts/check-dependencies.sh -> 'all permitted'",
+   "./scripts/check-secrets.sh -> 'nothing found'"
+  ],
+  "artifacts": [
+   "CapitalEnvelope::admit refusing whole",
+   "the two pinning tests rewritten to assert refusal; two fixtures resized; one property test and one cell-level test added"
+  ],
+  "tier": "T4",
+  "model_ceiling": "opus-lead",
+  "token_budget": 300000,
+  "escalate_if": [
+   "any test outside owns fails under the change (the experiment found none beyond the four listed plus stress.rs; a new one means the tree moved)",
+   "a slice packet's new test (qip-edge tests/journal_pressure.rs, journal_v2.rs, filled_terms.rs, downlink_source.rs, or a qip-edge-node test) is found to rely on a reduced send when it merges - that packet then needs the lead, since the reduction is gone",
+   "the refusal changes a count a runbook or alert policy reads (qip_edge_refusals_total{gate=\"capital_reduced\"} stops moving)",
+   "making region_table.rs's premise hold whole needs a different envelope shape than the fixture's helpers can express"
+  ],
+  "hand_back": [
+   "Name qip-risk-engine's PreTradeDecision::Reduced (pretrade.rs:79-114, constructed at :235; sent by oms.rs:772-776) as the same reduce-to-fit shape on the central pre-trade path and out of scope: CAPITAL-025 is scoped to grants. The lead decides whether CLAUDE.md principle 2 applies to risk limits.",
+   "List each fixture resized (region_table.rs, reservation.rs) and each test rewritten because it pinned the reduction, with the reason."
+  ],
+  "size": "M",
+  "wave": 1,
+  "deferred": [
+   "Deleting CapitalGrant::Reduced, permitted_quantity's arm, cell.rs's two unreachable Reduced arms (cell.rs:3508-3517, 5934-5945), the cell.rs:7371 doc sentence and chaos.rs:454's arm is FIX-14: cell.rs belongs to SLICE-15/20/26 until wave 4."
+  ]
+ },
+ {
+  "id": "FIX-05",
+  "title": "A grant's drawdown limit fires because the cell books realised loss from its fills",
+  "defects": [
+   5
+  ],
+  "epic": "E07",
+  "status": "deferred",
+  "deferred_until": "SLICE-15 (wave 3), SLICE-20 (wave 4) and SLICE-26 (wave 2) merge: all three own backend/crates/edge/qip-edge/src/cell.rs, and SLICE-52 (wave 1) owns qip-edge/src/lib.rs",
+  "objective": "Every position change the cell books - each confirmed fill share at the fill price (Cell::confirm) and each leg of an internal cross at the cross price, for the bought and the sold strategy alike (Cell::book_cross) - feeds one average-cost position per (strategy, venue, instrument), and the realised P&L it produces updates the owning strategy's (and the arbitrage desk's) Utilisation.realised_loss; once losses under a grant reach its loss_limit the next commitment is refused under the `capital` gate with a journaled reason naming the strategy, the grant's signature, the realised loss and the limit; a fill the cell cannot price refuses that owner's next commitment until a fresh grant; and the cell's delta reports the realised loss it booked to the centre.",
+  "why": "capital.rs:206-211 refuses once used.realised_loss >= loss_limit, but no non-test code in qip-edge or qip-edge-node writes realised_loss: the only Utilisation writes are gross_committed and orders_sent at cell.rs:3749-3750 and 6624-6625 (grep -rn realised_loss backend/crates/edge backend/crates/apps/qip-edge-node, non-test -> no write). The drawdown limit therefore cannot fire - the MaxExpectedShortfall defect class risk-and-execution.md prohibits - and CAPITAL-026 is INCORRECT; contracts.rs:470's test hand-builds a Utilisation rather than driving losses. CentralPlane::realised_loss_by_cell (plane.rs:1314) sums the same always-zero field. A fix that books only venue fills would leave the same class open by another door: internal crosses move each strategy's position and cash with no ConfirmedFill (InternalCross cell.rs:749, cross_internally :6801, book_cross :7019 writing strategy_positions and strategy_cash at :7091-7093, documented at :1061-1075), and crossing is the cell's default netting whenever two strategies oppose. A position opened by a cross and closed at the venue would be booked as an opening trade, so the loss is understated and the limit fires late or never. And a fill the cell cannot price must not count as a zero loss that keeps admitting commitments (CapitalEnvelope::admit, capital.rs:206-211, reads only the number). Confirmed at 42fb3c07.",
+  "requirements": [
+   "CAPITAL-026"
+  ],
+  "owns": [
+   "backend/crates/edge/qip-edge/src/cell.rs",
+   "backend/crates/edge/qip-edge/src/realised_loss.rs",
+   "backend/crates/edge/qip-edge/src/lib.rs",
+   "backend/crates/edge/qip-edge/tests/drawdown.rs"
+  ],
+  "reads": [
+   "backend/crates/libs/qip-contracts/src/capital.rs",
+   "backend/crates/edge/qip-edge/src/arbitrage.rs",
+   "backend/crates/runtime/qip-kernel/src/central/realised.rs",
+   "backend/crates/runtime/qip-kernel/src/central/plane.rs",
+   "backend/crates/edge/qip-edge/tests/cell.rs",
+   "docs/adr/0008-edge-cells-decide-alone.md",
+   ".claude/rules/domains/risk-and-execution.md"
+  ],
+  "symbols": [
+   "CapitalEnvelope::admit loss arm backend/crates/libs/qip-contracts/src/capital.rs:206-211",
+   "Utilisation backend/crates/libs/qip-contracts/src/capital.rs:153 (realised_loss :155)",
+   "Cell::confirm backend/crates/edge/qip-edge/src/cell.rs:4462 (builds ConfirmedFill at :4518; per-strategy share booking into strategy_positions at :4545-4560)",
+   "ConfirmedFill backend/crates/edge/qip-edge/src/cell.rs:840 (side, quantity, price, shares per strategy)",
+   "InternalCross backend/crates/edge/qip-edge/src/cell.rs:749 (price is the mid at the netting instant; bought and sold strategies)",
+   "Cell::cross_internally backend/crates/edge/qip-edge/src/cell.rs:6801, settle_cross :6985, book_cross :7019 (legs at :7054-7057; strategy_positions and strategy_cash written at :7091-7093)",
+   "strategy_positions / strategy_cash backend/crates/edge/qip-edge/src/cell.rs:1061-1075 (keyed by strategy, venue and instrument; the key the cost basis reuses)",
+   "the only Utilisation writes backend/crates/edge/qip-edge/src/cell.rs:3749-3750 and 6623-6625",
+   "Utilisation::default() at deploy/install backend/crates/edge/qip-edge/src/cell.rs:2609 (a fresh envelope and a restarted process both start at zero loss)",
+   "Cell::apply_halt backend/crates/edge/qip-edge/src/cell.rs:2048-2054 (release is a fresh signed decision, never an unsigned call - the rule the unpriceable-fill latch follows)",
+   "ArbitrageDesk::utilisation_mut backend/crates/edge/qip-edge/src/arbitrage.rs:212",
+   "Cell::refuse backend/crates/edge/qip-edge/src/cell.rs:7486 (journals Decision::Refused{gate, reason})",
+   "Cell::state_delta backend/crates/edge/qip-edge/src/cell.rs:7520 (StrategyUtilisation built per strategy at :7530 and for the desk at :7541)",
+   "StrategyUtilisation backend/crates/edge/qip-edge/src/mesh.rs:144 (CellStateDelta.utilisation at :212)",
+   "CentralPlane::realised_loss_by_cell backend/crates/runtime/qip-kernel/src/central/plane.rs:1314 (the centre's reader of the reported loss)",
+   "the centre's own realised arithmetic backend/crates/runtime/qip-kernel/src/central/realised.rs:323 (read for convention; the edge may not depend on qip-kernel)"
+  ],
+  "depends_on": [
+   "SLICE-15",
+   "SLICE-20",
+   "SLICE-26",
+   "SLICE-52"
+  ],
+  "ordered_shares": [
+   {
+    "file": "backend/crates/edge/qip-edge/src/cell.rs",
+    "after": [
+     "SLICE-26",
+     "SLICE-15",
+     "SLICE-20"
+    ]
+   },
+   {
+    "file": "backend/crates/edge/qip-edge/src/lib.rs",
+    "after": [
+     "SLICE-52"
+    ]
+   }
+  ],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "The paper-trading boundary is untouched: no Placer, gateway, venue class or autonomy ceiling changes. State in the hand-back that layers 1-3 (Terraform variables.tf, AutonomyLevel::deployable, Cell/Determinism typing) are intact.",
+   "Deferred: start from the tree with SLICE-15, SLICE-20, SLICE-26 and SLICE-52 merged and re-read cell.rs; every cell.rs line above is 42fb3c07's. SLICE-20 adds each fill's side and quote unit, which this packet consumes rather than re-derives.",
+   "Decimal for money throughout; no f64 on the loss path. Realised P&L is booked only on the reducing part of a fill share or cross leg against the average entry price of that (strategy, venue, instrument) position; realised_loss is max(0, -cumulative realised P&L) per strategy, the convention central/realised.rs:323 uses, so the two planes' figures are comparable.",
+   "A fill the cell cannot price - side or price absent after SLICE-20, or quoted in a unit other than the one its position was opened in - is journaled as a `capital` refusal naming the fill (order id, venue, instrument) and why, books nothing, and latches its owning strategy (or the desk): every later commitment by that owner is refused under `capital` naming the unpriced fill, until the owner is redeployed under a fresh verified envelope issued after the fill. That is the operator's clear, and it is signed, as apply_halt's release is (cell.rs:2048-2054); no unsigned clear method is added. Journal-only is not enough: admit reads only the number, so an unpriced loss journaled and not latched is treated as zero and the next order goes out - the fail-open this constraint exists to prevent.",
+   "Both seams, one position. Cell::confirm feeds each fill share at the fill price, and Cell::book_cross feeds both legs at the cross price - the bought strategy as a buy, the sold strategy as a sell - into the same average-cost entry, and only after book_cross has settled both legs (its all-or-nothing rule at :7048-7053 holds for the cost basis too: a leg that cannot be represented moves neither book). A cross between two strategies conserves the cell's net position but not either strategy's P&L, so each leg books against its own strategy's entry.",
+   "No new journal Decision variant and no new qip-contracts field: the journal's chain format and the reflex bodies are SLICE-07/15's design, and a variant here would widen this packet into the journal format. The breach is the existing capital refusal (Decision::Refused under `capital`), whose reason is extended to name strategy, grant signature, loss and limit.",
+   "The arithmetic lives in a new private module (realised_loss.rs) with its own unit tests, declared in lib.rs; cell.rs only calls it at the fill seam. qip-edge's dependency set is unchanged.",
+   "Bounded working set: one cost-basis entry per (strategy, venue, instrument), keyed exactly as strategy_positions is (cell.rs:1943), and one latch per deployed strategy or desk; nothing keyed by order id."
+  ],
+  "tests": [
+   "tests/drawdown.rs: `losses_booked_from_fills_reach_the_grants_drawdown_limit_and_the_next_commitment_is_refused` - premise: the strategy's first order is admitted and filled; losing round trips are driven through the placer until realised loss >= loss_limit; asserts the next signal sends nothing and exactly one refusal under the delimited `capital` gate whose reason names the loss and the limit. Mutation: delete the realised_loss feed at the fill seam; the loss stays zero, the order goes out, the test fails.",
+   "tests/drawdown.rs: `a_loss_realised_on_a_position_opened_by_an_internal_cross_reaches_the_drawdown_limit` - two opposed strategies cross internally (premise: a crossed_internally record, no venue fill for the crossed quantity, and the strategy's position is non-zero), then the strategy closes at the venue at a loss >= loss_limit; asserts the next signal sends nothing and one `capital` refusal naming the loss. Mutation: feed confirmed fills only (drop the book_cross feed); the closing fill books as an opening trade, the loss stays below the limit, the next order goes out and the test fails.",
+   "tests/drawdown.rs: `a_loss_realised_by_closing_a_venue_position_through_an_internal_cross_is_booked` - the reverse: a venue fill opens the position and a cross at a worse mid closes it; asserts the strategy's realised loss equals (entry - cross price) x crossed quantity. Mutation: the same fills-only feed; the realised loss reads zero and the test fails.",
+   "tests/drawdown.rs: `the_drawdown_breach_is_journaled_with_the_grant_and_the_loss_that_reached_the_limit` - reads the journal for the Refused entry and asserts the strategy id, the envelope signature and both figures. Mutation: drop the grant signature from the reason; the test fails.",
+   "tests/drawdown.rs: `a_fill_the_cell_cannot_price_stops_its_owners_next_commitment_until_a_fresh_grant` - premise: the fill was confirmed and journaled and is unpriceable (e.g. quoted in a unit other than its position's); asserts the next signal sends nothing with one `capital` refusal naming that fill's order id, and that after redeploying the strategy under a fresh verified envelope the next order goes out. Mutation: journal the unpriced fill without latching; the next order is admitted and the test fails.",
+   "tests/drawdown.rs: `the_cells_delta_reports_the_realised_loss_it_booked` - after losing round trips, state_delta's CellStateDelta.utilisation entry for the strategy (and, in the desk case, the desk's) carries realised_loss equal to the loss the cell booked. Mutation: zero realised_loss where state_delta builds StrategyUtilisation (cell.rs:7530); the test fails.",
+   "tests/drawdown.rs: `a_winning_round_trip_books_no_realised_loss` - mutation: book the absolute P&L instead of only losses; the test fails.",
+   "tests/drawdown.rs: `an_arbitrage_desks_losses_reach_its_envelopes_drawdown_limit_too` - mutation: feed the strategy path only; the desk's next leg is admitted and the test fails.",
+   "realised_loss.rs unit tests: `a_partial_close_realises_only_the_closed_quantity_at_the_average_entry` and `a_fill_that_flips_the_position_realises_the_close_and_opens_the_remainder_at_the_fill_price` - mutation: realise the whole fill quantity; both fail."
+  ],
+  "acceptance": [
+   "cd backend && cargo fmt --all --check -> exit 0, no diff printed",
+   "cd backend && cargo clippy -p qip-edge -p qip-edge-node --all-targets -- -D warnings -> exit 0, zero 'warning:' lines",
+   "cd backend && cargo test -p qip-edge -p qip-edge-node -p qip-contracts --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo test -p qip-acceptance --test compliance_proof --test security --test paper_boundary --test chaos --test stress --test region_share --test e2e --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo test --workspace --no-fail-fast -> every 'test result:' line reads '0 failed'; quote the summed passed/failed totals, and no binary is missing from the run (a run without --no-fail-fast is not evidence)",
+   "grep -n 'realised_loss' backend/crates/edge/qip-edge/src/cell.rs backend/crates/edge/qip-edge/src/realised_loss.rs -> at least one write outside #[cfg(test)]; quote it (before this packet: none in qip-edge)",
+   "./scripts/check-dependencies.sh -> 'all permitted'",
+   "./scripts/check-secrets.sh -> 'nothing found'"
+  ],
+  "artifacts": [
+   "realised loss booked from fill shares and internal-cross legs into each strategy's and the desk's Utilisation",
+   "an unpriceable fill latching its owner under `capital` until a fresh grant",
+   "tests/drawdown.rs proving the drawdown limit fires on both seams, is journaled, and is reported in the delta"
+  ],
+  "tier": "T4",
+  "model_ceiling": "opus-lead",
+  "token_budget": 500000,
+  "escalate_if": [
+   "a fill reaching the cell carries no side or no price after SLICE-20, so realised P&L cannot be computed without guessing",
+   "fees must enter realised loss and SLICE-20's optional venue-reported fee is absent for the simulated gateway",
+   "the centre's attribution (central/realised.rs) and the cell's figure disagree on a shared fixture and a choice between them is needed",
+   "booking losses changes an existing qip-edge or acceptance test's outcome",
+   "no fill the harness can drive through the placer is unpriceable after SLICE-20, so the latch cannot be tested through Cell::work (the lead decides whether a realised_loss.rs unit test suffices)",
+   "a fill reaches the cell with no attributable owner at all, so there is no strategy or desk to latch",
+   "the lead wants booked losses to survive a restart or a redeploy: Utilisation starts at Utilisation::default() at deploy (cell.rs:2609) and nothing rebuilds it from the journal, so a process restart re-opens a limit that had fired; closing that is a journal-replay change in SLICE-07/15's format and is not this packet"
+  ],
+  "hand_back": [
+   "Name the restart reset as open: realised_loss (like all of Utilisation) starts at zero on deploy (cell.rs:2609) and is not rebuilt from the journal, so a restarted process or a redeployed strategy starts under its limit whatever it lost before.",
+   "State the paper-trading boundary is intact, naming layers 1-3.",
+   "Quote a realised_loss write outside #[cfg(test)] at each seam (confirm and book_cross)."
+  ],
+  "size": "L",
+  "wave": 5
+ },
+ {
+  "id": "FIX-07",
+  "title": "World-model beliefs carry a stated in-range confidence, and uncontrolled lead-lag edges are never Established",
+  "defects": [
+   7,
+   13
+  ],
+  "epic": "E09",
+  "objective": "Fact::new and CausalEdge::new take the confidence as an argument and refuse a NaN or out-of-range value; Fact::with_confidence refuses instead of clamping; the graph refuses a Fact whose confidence is outside [0, 1] at assert_fact (its fields are public); WorldModel::relate returns the refusal; absorb_news states each ConcernsEntity fact's confidence from the mention it came from; CausalEdge::DEFAULT_CONFIDENCE is gone; and granger::establish_temporal_precedence - the uncontrolled method the UNDERSTAND stage runs every cycle - records an unobserved common driver on every edge it returns, so each is EdgeStanding::Suggestive under the suggestive ceiling rather than Established.",
+  "why": "Defect 7 (WORLD-008, WORLD-056): graph.rs:85-93 Fact::new stamps confidence 1.0, graph.rs:96-98 with_confidence clamps (and NaN.clamp is NaN, so the value most in need of refusal passes), world.rs:557-566 absorb_news asserts every ConcernsEntity fact through Fact::new with no confidence so each is stored as certain, and causal.rs:359/398 gives every CausalEdge built without one 0.7. Defect 13 (AGENCY-030): platform.rs:10232 calls granger::establish_temporal_precedence, which passes an empty ConfounderSet (granger.rs:151-168), and CausalEdge::standing (causal.rs:679-687) answers Established for an edge nobody asked about confounders - so an uncontrolled lead-lag correlation is written to the world model as an established edge every cycle, against ADR 0054's own statement that §9.4's unobserved-confounder limit applies to every edge the method produces. The two defects are one packet because both must edit causal.rs, granger.rs, world.rs and platform.rs, and fix packets are file-disjoint. Confirmed at 42fb3c07. Measured on a scratch copy with the uncontrolled method naming one unobserved confounder (cargo test --workspace --no-fail-fast, 6,281 passed / 3 failed together with FIX-08's mutation): the only defect-13 failures were confounders.rs:100 (its premise asserts the uncontrolled edge is Established, :116) and confounders.rs:238 (:255). No qip-kernel, qip-risk or acceptance test moved - so nothing today guards the shared-cause charge that precedence edges feed, which is why the risk-input constraint below is written out rather than left to the suite.",
+  "requirements": [
+   "WORLD-008",
+   "WORLD-056",
+   "AGENCY-030"
+  ],
+  "owns": [
+   "backend/crates/services/qip-world-model/src/graph.rs",
+   "backend/crates/services/qip-world-model/src/world.rs",
+   "backend/crates/services/qip-world-model/src/causal.rs",
+   "backend/crates/services/qip-world-model/src/granger.rs",
+   "backend/crates/services/qip-world-model/src/exposure.rs",
+   "backend/crates/services/qip-world-model/tests/understanding.rs",
+   "backend/crates/services/qip-world-model/tests/exposure.rs",
+   "backend/crates/services/qip-world-model/tests/second_order.rs",
+   "backend/crates/services/qip-world-model/tests/conditions.rs",
+   "backend/crates/services/qip-world-model/tests/retirement.rs",
+   "backend/crates/services/qip-world-model/tests/granger.rs",
+   "backend/crates/services/qip-world-model/tests/confounders.rs",
+   "backend/crates/runtime/qip-kernel/src/platform.rs",
+   "backend/crates/runtime/qip-kernel/src/causal_review.rs",
+   "backend/crates/runtime/qip-kernel/src/central/causal.rs",
+   "backend/crates/runtime/qip-kernel/src/shared_cause.rs",
+   "backend/crates/tests/qip-acceptance/tests/cognition.rs",
+   "backend/crates/tests/qip-acceptance/tests/truth_loop.rs",
+   "docs/adr/0054-temporal-precedence-is-the-first-real-causal-edge-establishment-method.md"
+  ],
+  "reads": [
+   "backend/crates/services/qip-world-model/src/confounder.rs",
+   "backend/crates/services/qip-world-model/src/relationship.rs",
+   "backend/crates/services/qip-streaming/src/provenance.rs",
+   "docs/adr/0087-a-causal-edge-that-fails-its-conditions-three-passes-running-is-retired-from-inference-and-never-re-estimated-back.md",
+   "docs/blueprint/assessment/WORLD-b1.json",
+   "docs/blueprint/assessment/WORLD-b2.json",
+   "docs/blueprint/assessment/AGENCY-b2.json"
+  ],
+  "symbols": [
+   "Fact::new backend/crates/services/qip-world-model/src/graph.rs:85 (confidence 1.0 at :92)",
+   "Fact::with_confidence backend/crates/services/qip-world-model/src/graph.rs:96 (clamp at :97)",
+   "KnowledgeGraph::assert_fact backend/crates/services/qip-world-model/src/graph.rs:195",
+   "WorldModel::relate backend/crates/services/qip-world-model/src/world.rs:234 (writes through the clamp at :249)",
+   "WorldModel::absorb_news backend/crates/services/qip-world-model/src/world.rs:525 (Fact::new with no confidence at :557-566; mention.confidence is at hand)",
+   "seed_demo_world backend/crates/services/qip-world-model/src/world.rs:1034",
+   "CausalEdge::DEFAULT_CONFIDENCE backend/crates/services/qip-world-model/src/causal.rs:359, assigned in CausalEdge::new :381-414",
+   "CausalEdge::with_confidence backend/crates/services/qip-world-model/src/causal.rs:578",
+   "CausalEdge::standing backend/crates/services/qip-world-model/src/causal.rs:679-687",
+   "granger::establish_temporal_precedence backend/crates/services/qip-world-model/src/granger.rs:151-168 (empty ConfounderSet)",
+   "granger::establish_temporal_precedence_controlling_for backend/crates/services/qip-world-model/src/granger.rs:210 (ceiling choice by suspected.is_empty())",
+   "TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING granger.rs:87 and TEMPORAL_PRECEDENCE_SUGGESTIVE_CEILING granger.rs:104",
+   "Confounder::unobserved backend/crates/services/qip-world-model/src/confounder.rs:145",
+   "Platform::discover_temporal_precedence backend/crates/runtime/qip-kernel/src/platform.rs:10181 (uncontrolled call :10232, claim_causal :10277; doc naming DEFAULT_CONFIDENCE :10116)",
+   "causal_review::an_edge_that_is_only_a_shared_driver_does_not_survive_the_control backend/crates/runtime/qip-kernel/src/causal_review.rs:635 (premise: the uncontrolled method writes an edge - still true, now Suggestive)",
+   "confounders.rs:238 an_edge_built_without_confounders_at_all_carries_empty_sets_rather_than_a_guess (pins defect 13)",
+   "understanding.rs:2359 (asserts CausalEdge::DEFAULT_CONFIDENCE, pins defect 7)",
+   "CausalEdge::new call sites: 43 across the owned files (grep -rn 'CausalEdge::new(' backend/crates)",
+   "Fact::new call sites: 16 across the owned files (grep -rn 'Fact::new(' backend/crates)"
+  ],
+  "depends_on": [],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "The paper-trading boundary is untouched: no Placer, gateway, venue class or autonomy ceiling changes. State in the hand-back that layers 1-3 (Terraform variables.tf, AutonomyLevel::deployable, Cell/Determinism typing) are intact.",
+   "Structural, not a runtime default: the confidence is a constructor argument, checked by the same check_fraction CausalEdge already uses for strength (causal.rs:425), and Fact gets the equivalent. A new constructor beside the old one that keeps a default is not the fix.",
+   "absorb_news states the confidence it has: the mention's own confidence for a ConcernsEntity fact. If a mention carries none, the fact is not written and the refusal is counted, never written at 1.0.",
+   "The rule lives in establish_temporal_precedence_controlling_for, not only in the uncontrolled wrapper: a confounder set with no observed control in it is an uncontrolled test by another name, so it records one Confounder::unobserved with a written rationale (a lead-lag test that adjusted for nothing cannot exclude a shared driver, §9.4); otherwise a caller passing ConfounderSet::new() reopens the door the wrapper closed. The ceiling and standing then come from the existing arithmetic - do not add a third ceiling. An edge adjusted for an observed control with no unobserved confounder named stays Established: confounders.rs:50 must pass unchanged, and causal_review.rs:280's measured-factor call keeps its standing.",
+   "Every test that asserted the 0.7 default, the 1.0 default, a clamped value, or an Established uncontrolled edge is changed in this packet and listed in the hand-back with the reason; tests asserting the controlled method, retirement (ADR 0087) or bitemporal visibility keep their assertions.",
+   "platform.rs is edited only at discover_temporal_precedence's doc comment (:10116) and at test-module call sites (the Fact::new/CausalEdge::new sites at :19224, :20581, :21559, :25961, :25981, :26146 are all inside #[cfg(test)] modules starting at :18513); no production behaviour in platform.rs changes beyond what the world-model API forces.",
+   "Append a dated amendment to ADR 0054 naming that its edges are recorded Suggestive under the suggestive ceiling and that seed_demo_world's 0.7 default it cites no longer exists; do not rewrite its decision text.",
+   "relationship.rs:147 (weight clamp) and state.rs:58 (materiality clamp) are the same class but are not confidences; they are out of scope here and named in the hand-back.",
+   "Do not touch qip-reasoning-engine (FIX-08) or any qip-edge / qip-contracts file.",
+   "Risk input, stated out loud: qip_kernel::shared_cause charges every causal edge to the per-causal-driver bucket at CausalEdge::transmission (strength x confidence, shared_cause.rs:15,171), and LimitSet::conservative_default caps that bucket. Moving precedence edges under the lower suggestive ceiling therefore shrinks the charged exposure and lets that cap fire later on the same tape - a risk control weakened as a side effect of an epistemic fix. This packet must not ship that silently: either shared_cause keeps charging a Suggestive edge at no less than it charged the same edge before (an unidentified common driver is still a concentration), proven by a test on the common-driver fixture, or the lead decides otherwise in writing in the hand-back. Tier T4 for this reason (.claude/rules/10-product-direction.md, judging a proposal, question 4)."
+  ],
+  "tests": [
+   "understanding.rs: `a_fact_without_a_confidence_cannot_be_constructed_and_an_out_of_range_one_is_refused` - asserts Fact::new(..., 1.5) and Fact::new(..., f64::NAN) are Err naming the relationship. Mutation: restore `confidence.clamp(0.0, 1.0)`; 1.5 is admitted as 1.0 and the test fails.",
+   "understanding.rs: `the_graph_refuses_a_fact_whose_public_confidence_field_was_set_out_of_range` - builds a valid Fact, sets .confidence = 2.0, asserts assert_fact is Err. Mutation: drop the check in assert_fact; the test fails.",
+   "understanding.rs: `a_news_mention_becomes_a_fact_at_the_mentions_own_confidence` - absorbs a NewsItem whose mention confidence is 0.42 and asserts the ConcernsEntity fact reads 0.42. Mutation: restore Fact::new's 1.0 default at world.rs:557; the fact reads 1.0 and the test fails.",
+   "understanding.rs: `a_causal_edge_is_constructed_with_the_confidence_its_writer_states` (replaces the :2359 DEFAULT_CONFIDENCE assertion) - mutation: reintroduce a constant assigned in CausalEdge::new ignoring the argument; the test fails.",
+   "granger.rs tests: `an_uncontrolled_temporal_precedence_edge_is_suggestive_and_capped_at_the_suggestive_ceiling` - premise: a lagged dependent pair clears the bar; asserts standing() == Suggestive, suspected_confounders is non-empty and confidence <= TEMPORAL_PRECEDENCE_SUGGESTIVE_CEILING. Mutation: restore the empty ConfounderSet at granger.rs:163; the edge is Established and the test fails.",
+   "confounders.rs: `a_control_set_with_nothing_observed_in_it_is_still_an_uncontrolled_test` - establish_temporal_precedence_controlling_for with ConfounderSet::new() returns a Suggestive edge naming the unmeasured driver. Mutation: apply the rule in the uncontrolled wrapper only; the empty-set call returns Established and the test fails.",
+   "confounders.rs:100 an_unobserved_confounder_makes_the_edge_suggestive_and_never_raises_its_confidence keeps its name and its assertion; its premise baseline (asserted Established at :116) was the uncontrolled edge, which is no longer Established. The baseline becomes the pair adjusted for one observed control, and the comparison edge that same control plus the unobserved `unpriced_liquidity` - an unobserved confounder never enters the regression, so the statistics stay identical and `suggestive.confidence < plain.confidence` keeps meaning what it says. Listed in the hand-back as a test that pinned the defect. Mutation (the property it guards): choose TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING for the suggestive arm too; the suggestive edge's confidence rises to the baseline's and the 'never raises' assertion fails.",
+   "confounders.rs: an_edge_built_without_confounders_at_all_carries_empty_sets_rather_than_a_guess becomes `an_edge_from_the_uncontrolled_method_names_the_unobserved_driver_it_could_not_exclude` - mutation: the same empty set; the test fails on the empty suspected set.",
+   "shared_cause.rs test module: `a_driver_the_platform_could_not_identify_is_still_charged_as_a_concentration` - premise: the same (strength, p-value) pair produces an Established edge under the controlled method and a Suggestive one under the uncontrolled method; asserts the per-causal-driver exposure charged for the Suggestive edge is not below the Established one's. Mutation: charge the Suggestive edge at its lowered transmission; the exposure falls and the test fails. (If the lead decides the lower charge is correct, this test is replaced by one asserting the decided figure, and the decision is quoted in the hand-back.)",
+   "platform.rs decide/understand test module: `the_understand_stage_writes_no_established_edge_from_an_uncontrolled_lead_lag_test` - runs discover_temporal_precedence over a common-driver fixture (the one causal_review.rs:635 uses) and asserts every edge written reads Suggestive. Mutation: the same empty set; an Established edge is written and the test fails."
+  ],
+  "acceptance": [
+   "cd backend && cargo fmt --all --check -> exit 0, no diff printed",
+   "cd backend && cargo clippy -p qip-world-model -p qip-kernel -p qip-acceptance --all-targets -- -D warnings -> exit 0, zero 'warning:' lines",
+   "cd backend && cargo test -p qip-world-model -p qip-kernel -p qip-risk --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo test -p qip-acceptance --test cognition --test truth_loop --test acceptance --test e2e --test compliance_proof --test security --no-fail-fast -> every 'test result:' line reads '0 failed' (compliance_proof and security are the risk domain's required evidence)",
+   "cd backend && cargo test --workspace --no-fail-fast -> every 'test result:' line reads '0 failed'; quote the summed passed/failed totals, and no binary is missing from the run (a run without --no-fail-fast is not evidence)",
+   "grep -rn 'DEFAULT_CONFIDENCE' backend/crates/services/qip-world-model backend/crates/runtime/qip-kernel -> no output",
+   "grep -n 'clamp(0.0, 1.0)' backend/crates/services/qip-world-model/src/graph.rs -> no output",
+   "./scripts/check-dependencies.sh -> 'all permitted'",
+   "./scripts/check-secrets.sh -> 'nothing found'"
+  ],
+  "artifacts": [
+   "Fact and CausalEdge constructors requiring a checked confidence; assert_fact and relate refusing",
+   "the uncontrolled precedence method recording its unobserved driver",
+   "ADR 0054 amendment note"
+  ],
+  "tier": "T4",
+  "model_ceiling": "opus-lead",
+  "token_budget": 500000,
+  "escalate_if": [
+   "a production caller of Fact::new or CausalEdge::new has no confidence it can honestly state (then the refusal, not a guessed number, is the fix, and the caller's owner decides)",
+   "moving precedence edges to Suggestive changes a risk-engine limit, a sizing figure or a shared-cause level asserted in a qip-kernel or acceptance test, or keeping the causal-driver charge whole needs a qip-risk change (the lead decides; qip-risk is outside owns)",
+   "WorldModel::relate's new Result forces an edit in a file outside owns",
+   "the change needs qip-world-model's public API re-exported differently from qip-kernel's lib.rs"
+  ],
+  "size": "L",
+  "wave": 1
+ },
+ {
+  "id": "FIX-08",
+  "title": "Copies of one origin count once in corroboration weight",
+  "defects": [
+   8
+  ],
+  "epic": "E08",
+  "objective": "EvidenceSet::independent_weight counts each origin once, at its strongest item's weight: adding any number of further items from an origin already present, each no stronger than that origin's strongest, leaves the weight unchanged, and adding one item from a new origin strictly increases it. net_stance_disagreement, the decisive-weight floor and the red-team support read inherit the rule.",
+  "why": "evidence.rs:358-378 counts an origin's strongest item in full and every further copy at CORRELATED_DISCOUNT = 0.15, so N copies weigh w*(1 + 0.15*(N-1)) - linear and unbounded: ten copies of one press release weigh 2.35 sources and about 7.7 copies outweigh two independent ones. EVID-006 ('copies count as one source, not as many') is INCORRECT, and reasoning.rs:1020 one_dissenting_origin_restated_five_times_is_still_one_dissent asserts the forbidden arithmetic (0.64 = 0.4*(1+4*0.15)) - one contrary newsroom republishing itself shrinks a position. Confirmed at 42fb3c07; the discount has no other definition (grep -rn CORRELATED_DISCOUNT backend/crates -> evidence.rs only). Measured on a scratch copy with the discount set to zero (cargo test --workspace --no-fail-fast): the only failure it caused anywhere was reasoning.rs:1020 (at :1073); qip-kernel and every acceptance suite passed, and independent_weight_collapses_reports_from_one_origin passed too - it asserts only 'less than half of three origins', which the defect also satisfies, so it is tightened below.",
+  "requirements": [
+   "EVID-006"
+  ],
+  "owns": [
+   "backend/crates/services/qip-reasoning-engine/src/evidence.rs",
+   "backend/crates/services/qip-reasoning-engine/src/lib.rs",
+   "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs"
+  ],
+  "reads": [
+   "backend/crates/services/qip-reasoning-engine/src/redteam.rs",
+   "docs/blueprint/assessment/EVID.json",
+   "docs/adr/0005-confidence-is-arithmetic.md"
+  ],
+  "symbols": [
+   "EvidenceSet::independent_weight backend/crates/services/qip-reasoning-engine/src/evidence.rs:358 (CORRELATED_DISCOUNT :359)",
+   "EvidenceSet::net_stance_disagreement backend/crates/services/qip-reasoning-engine/src/evidence.rs:424 (doc from :413) (reads independent_weight)",
+   "deciding-weight floor backend/crates/services/qip-reasoning-engine/src/evidence.rs:443-444",
+   "red-team support read backend/crates/services/qip-reasoning-engine/src/redteam.rs:379",
+   "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:301 independent_weight_collapses_reports_from_one_origin (still true; tighten)",
+   "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:1020 one_dissenting_origin_restated_five_times_is_still_one_dissent (asserts 0.8 from the discount at :1068-1072 - pins the defect)",
+   "module docs backend/crates/services/qip-reasoning-engine/src/evidence.rs:9 and src/lib.rs:16 (describe the discount)"
+  ],
+  "depends_on": [],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "The per-origin weight is the maximum of that origin's item weights; the discount constant is deleted, not set to zero, so no reader can tune copies back into weight.",
+   "Syndications and rewrites under different origin labels are not detected today (dependence is exact origin equality); that is a separate capability, out of scope, and named in the hand-back rather than approximated here.",
+   "BTreeMap iteration order is kept (the weight reaches output); no f64 sort without a total order.",
+   "If a qip-kernel or acceptance test outside owns asserts a figure that moves with the discount, stop: that is escalate_if, not a widening."
+  ],
+  "tests": [
+   "reasoning.rs: `adding_copies_from_an_origin_already_present_leaves_the_weight_unchanged_and_a_new_origin_raises_it` - a seeded qip_core::rng::Xoshiro256 generates 1,000 claim sets; for each, appends 1-20 copies (weight <= the origin's strongest) and asserts equality to 1e-12, then appends one new-origin item and asserts a strict increase (EVID-006's property). Mutation: restore CORRELATED_DISCOUNT = 0.15; the first assertion fails.",
+   "reasoning.rs: one_dissenting_origin_restated_five_times_is_still_one_dissent asserts net_stance_disagreement == 0.4/0.8 = 0.5 (five restatements weigh one dissent) instead of 0.8 - mutation: the 0.15 discount; it reads 0.8 and fails.",
+   "reasoning.rs: independent_weight_collapses_reports_from_one_origin additionally asserts three copies from one origin weigh exactly one item - mutation: the 0.15 discount; 1.3 items and the test fails."
+  ],
+  "acceptance": [
+   "cd backend && cargo fmt --all --check -> exit 0, no diff printed",
+   "cd backend && cargo clippy -p qip-reasoning-engine --all-targets -- -D warnings -> exit 0, zero 'warning:' lines",
+   "cd backend && cargo test -p qip-reasoning-engine -p qip-kernel --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo test -p qip-acceptance --test cognition --test truth_loop --test acceptance --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo test --workspace --no-fail-fast -> every 'test result:' line reads '0 failed'; quote the summed passed/failed totals, and no binary is missing from the run (a run without --no-fail-fast is not evidence)",
+   "grep -rn 'CORRELATED_DISCOUNT' backend/crates -> no output",
+   "./scripts/check-dependencies.sh -> 'all permitted'",
+   "./scripts/check-secrets.sh -> 'nothing found'"
+  ],
+  "artifacts": [
+   "independent_weight counting each origin once",
+   "a generated-set property test and the pinning test rewritten"
+  ],
+  "tier": "T3",
+  "model_ceiling": "sonnet",
+  "token_budget": 160000,
+  "escalate_if": [
+   "a test outside owns (qip-kernel, qip-acceptance) asserts a thesis confidence, sizing figure or disagreement value that moves with the discount",
+   "the requirement's 'unchanged' is read by the reviewer as requiring copy detection beyond exact origin equality"
+  ],
+  "size": "S",
+  "wave": 1
+ },
+ {
+  "id": "FIX-09",
+  "title": "make test runs the whole workspace with --no-fail-fast",
+  "defects": [
+   9
+  ],
+  "epic": "E01",
+  "status": "deferred",
+  "deferred_until": "SLICE-46 merges (wave 9): the Makefile is its file",
+  "objective": "The Makefile's `test` target runs `cargo test --workspace --all-features --no-fail-fast`, so `make test` and `make check` report every failing binary rather than stopping at the first, and documentation.rs refuses a Makefile test target without the flag.",
+  "why": "Makefile:55 is `cd backend && cargo test --workspace --all-features` with no --no-fail-fast. .claude/rules/02-change-management.md and 01-testing-strategy.md require the flag because without it cargo stops at the first failing binary and the totals silently describe a fraction of the suite - 'a run that reports 64 passing tests out of 3,075 looks like a small suite rather than an aborted one'. ci.yml already runs with it (SLICE-46's own constraint says so); the local gate every agent is told to run does not. Confirmed at 42fb3c07.",
+  "requirements": [],
+  "owns": [
+   "Makefile",
+   "backend/crates/tests/qip-acceptance/tests/documentation.rs"
+  ],
+  "reads": [
+   ".claude/rules/02-change-management.md",
+   ".claude/rules/architecture/01-testing-strategy.md",
+   ".github/workflows/ci.yml",
+   "backend/crates/tests/qip-acceptance/tests/infrastructure.rs"
+  ],
+  "symbols": [
+   "Makefile:54-55 test target",
+   "Makefile:77 and :80 (single-suite targets; a focused --test run is not the gate and is left as is)",
+   "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:9234 (existing Makefile reader, for the parsing idiom)"
+  ],
+  "depends_on": [
+   "SLICE-46",
+   "FIX-10"
+  ],
+  "ordered_shares": [
+   {
+    "file": "Makefile",
+    "after": [
+     "SLICE-46"
+    ]
+   },
+   {
+    "file": "backend/crates/tests/qip-acceptance/tests/documentation.rs",
+    "after": [
+     "FIX-10"
+    ]
+   }
+  ],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "Deferred: start from the tree with SLICE-46 merged and re-read the Makefile. Only the Makefile edit is conditional: if SLICE-46 already added the flag, leave the Makefile alone and quote its recipe line. The documentation.rs test is added in either case and mutation-verified against the test recipe (Makefile:55 at 42fb3c07): the flag being present today is not a guard against it being removed tomorrow.",
+   "Ordered after FIX-10 because both add a test to documentation.rs; nothing else couples them.",
+   "Match the flag as a delimited token on the recipe line of the `test:` target, not anywhere in the file (the file may mention it in a comment)."
+  ],
+  "tests": [
+   "documentation.rs: `the_gates_test_target_runs_every_binary_rather_than_stopping_at_the_first_failure` - premise: the Makefile has a `test:` target whose recipe runs `cargo test --workspace`; asserts that recipe line carries `--no-fail-fast`. Mutation: remove the flag from Makefile:55; the test fails naming the line."
+  ],
+  "acceptance": [
+   "the hand-back states whether the Makefile was edited or SLICE-46 had already added the flag, and in both cases quotes the documentation.rs mutation run (flag removed -> the test fails naming the line; restored -> passes)",
+   "make -n test -> the printed cargo command contains '--no-fail-fast'",
+   "cd backend && cargo test -p qip-acceptance --test documentation --test infrastructure --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo fmt --all --check -> exit 0, no diff printed",
+   "cd backend && cargo clippy -p qip-acceptance --all-targets -- -D warnings -> exit 0, zero 'warning:' lines",
+   "cd backend && cargo test -p qip-acceptance --no-fail-fast -> every 'test result:' line reads '0 failed' (the touched crate, whole)",
+   "./scripts/check-secrets.sh -> 'nothing found'"
+  ],
+  "artifacts": [
+   "Makefile test target with --no-fail-fast",
+   "one documentation.rs test"
+  ],
+  "tier": "T1",
+  "model_ceiling": "haiku",
+  "token_budget": 60000,
+  "escalate_if": [
+   "SLICE-46 restructured the Makefile so `make check` no longer reaches `test`",
+   "documentation.rs::the_blueprint_views_are_what_their_sources_render_to fails for a reason unrelated to this change"
+  ],
+  "size": "S",
+  "wave": 10
+ },
+ {
+  "id": "FIX-10",
+  "title": "The safety rules name the guard hook that actually runs",
+  "defects": [
+   10
+  ],
+  "epic": "E01",
+  "status": "deferred",
+  "deferred_until": "SLICE-44 merges (wave 8): .claude/rules/01-security-and-safety.md is its file",
+  "objective": ".claude/rules/01-security-and-safety.md and docs/claude/managed-policy-recommendations.md name guard-dangerous-command.py, the hook .claude/settings.json wires, with nothing else in either document changed, and documentation.rs refuses any rule or policy document that names a hook file which does not exist - whether written as a .claude/hooks/ path or as a bare file name.",
+  "why": "01-security-and-safety.md:42 says `.claude/hooks/guard-dangerous-command.sh` blocks force pushes and teardowns; the file on disk and in settings.json's PreToolUse wiring is guard-dangerous-command.py (a rewrite that fixed a shell-quoting bug). The rule 'if the guard fires, do not route around it' depends on a reader finding the guard, and a grep for the named file finds nothing. docs/claude/managed-policy-recommendations.md:20 carries the same stale name. Confirmed at 42fb3c07: ls .claude/hooks -> format-rust-after-edit.py, guard-dangerous-command.py, test_hooks.py. Tier T4: 01-security-and-safety.md is the document that defines the three paper-trading layers, SLICE-44 edits it at T4, and ADR 0098 §2 keeps the paper-trading boundary with the lead 'whatever its size'. The edit is one file name, but a stray rewording of that file fails no test, so the ceiling follows the file, not the size of the diff.",
+  "requirements": [],
+  "owns": [
+   ".claude/rules/01-security-and-safety.md",
+   "docs/claude/managed-policy-recommendations.md",
+   "backend/crates/tests/qip-acceptance/tests/documentation.rs"
+  ],
+  "reads": [
+   ".claude/settings.json",
+   ".claude/hooks/guard-dangerous-command.py"
+  ],
+  "symbols": [
+   ".claude/rules/01-security-and-safety.md:42 guard-dangerous-command.sh",
+   "docs/claude/managed-policy-recommendations.md:20 guard-dangerous-command.sh",
+   ".claude/settings.json:75 hooks.PreToolUse (names the .py)"
+  ],
+  "depends_on": [
+   "SLICE-44"
+  ],
+  "ordered_shares": [
+   {
+    "file": ".claude/rules/01-security-and-safety.md",
+    "after": [
+     "SLICE-44"
+    ]
+   }
+  ],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "Deferred: SLICE-44 edits 01-security-and-safety.md to name the fourth fence; start from its merged text and change only the hook's file name.",
+   "Change nothing else in the safety rules: no rule is relaxed, reworded or reordered, and .claude/settings.json is not edited (.claude/rules/01-security-and-safety.md forbids adding exceptions).",
+   "The test extracts two kinds of token from every .md under .claude/rules and docs/claude, each delimited so a mention inside a longer path is not mistaken for one: (1) `.claude/hooks/<name>` paths; (2) bare `<name>.(sh|py)` tokens (no `/` in the token) whose stem equals the stem of a file under .claude/hooks, or which sit on a line containing the delimited word `hook` or `hooks`. Each must name a file that exists under .claude/hooks. At 42fb3c07 kind (2) matches only managed-policy-recommendations.md:20; `startup.sh` in observability.md matches neither rule and must not be flagged."
+  ],
+  "tests": [
+   "documentation.rs: `every_hook_a_rule_or_policy_names_exists_under_claude_hooks` - premise: at least one `.claude/hooks/` path token and at least one bare hook-file token are found (so neither extraction is vacuous); asserts each named file exists. Mutation: restore `guard-dangerous-command.sh` in 01-security-and-safety.md; the test fails naming the file and line.",
+   "documentation.rs: same test - mutation: restore the bare `guard-dangerous-command.sh` in managed-policy-recommendations.md:20; the test fails naming that file and line (a path-only extraction passed this, which is the gap the second token kind closes)."
+  ],
+  "acceptance": [
+   "grep -rn 'guard-dangerous-command.sh' .claude/rules .claude/agents .claude/skills docs/claude -> no output (not .claude/worktrees, which holds other lanes' checkouts)",
+   "git diff <merge-base>..HEAD -- .claude/rules/01-security-and-safety.md docs/claude/managed-policy-recommendations.md -> per file exactly one line removed and one added, differing only in `guard-dangerous-command.sh` -> `guard-dangerous-command.py`; the T4 reviewer quotes the diff",
+   "cd backend && cargo test -p qip-acceptance --test documentation --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo fmt --all --check -> exit 0, no diff printed",
+   "cd backend && cargo clippy -p qip-acceptance --all-targets -- -D warnings -> exit 0, zero 'warning:' lines",
+   "cd backend && cargo test -p qip-acceptance --no-fail-fast -> every 'test result:' line reads '0 failed' (the touched crate, whole)",
+   "python3 .claude/hooks/test_hooks.py -> exit 0 (the hook itself is untouched)",
+   "./scripts/check-secrets.sh -> 'nothing found'"
+  ],
+  "artifacts": [
+   "two documents naming the .py hook",
+   "one documentation.rs test"
+  ],
+  "tier": "T4",
+  "model_ceiling": "opus-lead",
+  "token_budget": 80000,
+  "escalate_if": [
+   "SLICE-44's merged text reworded the hook sentence so the fix is more than a file-name change",
+   "another document outside owns names a missing hook and the new test fails on it"
+  ],
+  "size": "S",
+  "wave": 9
+ },
+ {
+  "id": "FIX-11",
+  "title": "Every action in ci, infra, image and vendor is pinned to a full commit SHA",
+  "defects": [
+   11
+  ],
+  "epic": "E13",
+  "objective": "All 32 `uses:` lines in .github/workflows/ci.yml, infra.yml, image.yml and vendor.yml name a 40-hex commit SHA with a trailing `# <exact release tag>` comment (e.g. `# v4.2.2`, never the floating `# v4`), each SHA the dereferenced commit of that upstream tag and independently re-derived by a T4 reviewer before merge; a new acceptance suite refuses a tag- or branch-pinned action, or a floating-major comment, in any workflow except deploy.yml, which it names as the one outstanding file and requires to still be tag-pinned so the exemption cannot go stale.",
+  "why": "docs/reports/security-baseline.md:25 records Semgrep's github-actions-mutable-action-tag as real: actions are referenced by movable tags, which GCP v2.1 §28 lists as an anti-pattern and which this repository already refuses for container images (pinned by digest because a policy that trusts a tag trusts whoever can push it). Counted at 42fb3c07: 38 `uses:` lines across five workflows, none SHA-pinned (the baseline's 45 was Semgrep's finding count on an earlier tree): ci.yml 22, infra.yml 4, image.yml 3, vendor.yml 3, deploy.yml 6. deploy.yml is SLICE-18's file, so its six lines are FIX-15. Eight distinct actions: actions/checkout@v4, actions/setup-node@v4, actions/upload-artifact@v4, Swatinem/rust-cache@v2, trunk-io/trunk-action@v1, hashicorp/setup-terraform@v3, google-github-actions/auth@v2, google-github-actions/setup-gcloud@v2. No acceptance suite parses a `uses:` line today (grep of qip-acceptance/tests for uses:/@v -> nothing), so nothing pins the tags either. Tier T4, not T3: google-github-actions/auth and setup-gcloud at infra.yml:309,314, image.yml:487,492 and vendor.yml:139,144 run holding the Workload Identity credential, so this packet decides which third-party commit gets that credential. ADR 0098 §2 keeps credentials with the lead whatever the size, and sets the ceiling by 'if this comes back wrong, does something fail loudly?' - a SHA resolved to a fork's commit (GitHub serves a fork's commit under the parent's name) or to a hostile commit runs silently with the credential, and no test can tell a right SHA from a wrong one. Only an independent re-derivation can.",
+  "requirements": [],
+  "owns": [
+   ".github/workflows/ci.yml",
+   ".github/workflows/infra.yml",
+   ".github/workflows/image.yml",
+   ".github/workflows/vendor.yml",
+   "backend/crates/tests/qip-acceptance/tests/action_pins.rs"
+  ],
+  "reads": [
+   "docs/reports/security-baseline.md",
+   ".github/workflows/deploy.yml",
+   "backend/crates/tests/qip-acceptance/tests/infrastructure.rs",
+   "backend/crates/tests/qip-acceptance/tests/gitops.rs",
+   ".claude/rules/domains/infrastructure.md"
+  ],
+  "symbols": [
+   ".github/workflows/ci.yml:34,46,49,61,64,86,89,101,116,138,153,158,176,177,203,204,225,261,262,273,274,397",
+   ".github/workflows/infra.yml:218,309,314,437",
+   ".github/workflows/image.yml:218,487,492",
+   ".github/workflows/vendor.yml:68,139,144",
+   ".github/workflows/deploy.yml:294,376,381,605,664,669 (FIX-15, not here)"
+  ],
+  "depends_on": [],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "Resolve each action at the time of the change, from the upstream repository's own tag refs: take the highest vMAJOR.MINOR.PATCH tag in the major the workflow uses today (`gh api repos/<o>/<r>/git/matching-refs/tags/v<MAJOR>. --paginate -q '.[].ref'`), dereference it to a commit (`gh api repos/<o>/<r>/git/ref/tags/<tag>`; when object.type is `tag`, follow `gh api repos/<o>/<r>/git/tags/<object.sha> -q .object.sha`), confirm 40 hex characters, and confirm `gh api repos/<o>/<r>/compare/<tag>...<sha> -q .status` prints `identical`. Never accept a SHA because `repos/<o>/<r>/commits/<sha>` answers for it: that endpoint serves a fork's commit under the parent's name. Record the action -> exact tag -> SHA table in the commit message. One SHA per distinct action@tag, used identically at every occurrence, and the trailing comment is that exact tag.",
+   "Only the ref and its trailing comment change: every `with:` block, step name, condition and other comment stays byte-for-byte, and no action moves to a newer major (a newer patch or minor inside the same major is the point of pinning the exact tag).",
+   "No new `${{ vars.* }}` (an acceptance test refuses it) and no change to any job's permissions, environment or trigger.",
+   "deploy.yml is not edited (SLICE-18 owns it, FIX-15 pins it). The suite names it in a one-entry exemption list and asserts it still contains at least one tag-pinned `uses:` line, so FIX-15 must delete the exemption when it pins the file.",
+   "Parse `uses:` values as delimited tokens: `owner/repo(/path)?@ref`, where ref must match ^[0-9a-f]{40}$; a local `./` action or a `docker://...@sha256:` reference is admitted by its own rule, not by the SHA regex."
+  ],
+  "tests": [
+   "action_pins.rs: `every_action_a_workflow_uses_is_pinned_to_a_full_commit_sha` - premise: at least 30 `uses:` lines are found under .github/workflows outside the exemption; asserts each ref is 40 hex characters followed by a `# vX.Y.Z` comment naming an exact release (a floating `# v4` is refused). Mutation: restore `actions/checkout@v4` on ci.yml:34; the test fails naming the file and line. Second mutation: replace one `# v4.x.y` comment with `# v4`; the test fails naming that line.",
+   "action_pins.rs: `the_one_file_exempted_from_sha_pinning_is_still_unpinned` - asserts deploy.yml still has a tag-pinned line, so the exemption is not stale. Mutation: name the fully pinned ci.yml in the exemption list in place of deploy.yml (deploy.yml is SLICE-18's and is never edited here, not even temporarily); the exempted file has no tag-pinned line and the test fails, which is the failure FIX-15 will see and answer by deleting the exemption.",
+   "action_pins.rs: `the_same_action_at_the_same_tag_is_pinned_to_the_same_sha_everywhere` - keyed by owner/repo and exact tag. Mutation: change one checkout occurrence's SHA; the test fails naming both lines."
+  ],
+  "acceptance": [
+   "grep -rnE 'uses: *[^ ]+@' .github/workflows/ci.yml .github/workflows/infra.yml .github/workflows/image.yml .github/workflows/vendor.yml | grep -vE '@[0-9a-f]{40}( |$)' -> no output",
+   "independent T4 reviewer, before merge, not the worker: for every distinct owner/repo@sha in the diff, re-derive the exact tag's commit with the two `git/ref` / `git/tags` calls in `constraints` and run `gh api repos/<o>/<r>/compare/<tag>...<sha> -q .status` -> 'identical' for every row; quote the re-derived table beside the worker's. A reviewer who copied the worker's table has not reviewed",
+   "python3 -c 'import yaml,glob; [yaml.safe_load(open(f)) for f in glob.glob(\".github/workflows/*.yml\")]' -> exit 0 (every workflow still parses)",
+   "cd backend && cargo test -p qip-acceptance --test action_pins --test infrastructure --test gitops --test terraform_contract --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo fmt --all --check -> exit 0, no diff printed",
+   "cd backend && cargo clippy -p qip-acceptance --all-targets -- -D warnings -> exit 0, zero 'warning:' lines",
+   "cd backend && cargo test -p qip-acceptance --no-fail-fast -> every 'test result:' line reads '0 failed' (the touched crate, whole)",
+   "./scripts/check-secrets.sh -> 'nothing found'",
+   "actionlint, if installed, over the four files -> no finding (report 'not run' if absent)"
+  ],
+  "artifacts": [
+   "32 SHA-pinned uses: lines with '# <tag>' comments",
+   "backend/crates/tests/qip-acceptance/tests/action_pins.rs",
+   "tag-to-SHA table in the commit message"
+  ],
+  "tier": "T4",
+  "model_ceiling": "opus-lead",
+  "token_budget": 180000,
+  "escalate_if": [
+   "gh is unauthenticated or rate-limited, so a SHA cannot be derived from the upstream tag ref (never copy a SHA from a web page, a release page, memory or another repository's pin)",
+   "a tag's dereferenced commit is not `identical` to the pinned SHA under compare, or the exact tag is absent upstream",
+   "the highest exact tag in the current major differs from the commit the floating major tag points at and the upstream release notes do not explain why",
+   "an acceptance suite outside owns asserts a `uses:` value",
+   "a workflow run on the branch fails at an action step after pinning"
+  ],
+  "size": "S",
+  "wave": 1
+ },
+ {
+  "id": "FIX-12",
+  "title": "Transfer pricing refuses an unpriceable conversion instead of aborting the process",
+  "defects": [
+   12
+  ],
+  "epic": "E06",
+  "objective": "TransferCostModel::price prices the FX conversion through TransactionCostModel::checked_estimate and returns its refusal; TransferCostModel::new refuses an fx model that TransactionCostModel::checked refuses; and the panicking TransactionCostModel::estimate wrapper is deleted, so no Result-returning production path can reach a panic! on a bad rate or an unrepresentable notional.",
+  "why": "costs.rs:465-470 `estimate` matches checked_estimate's Err arm with `panic!(\"{refusal}\")`. TransferCostModel::price (transfer.rs:441, Result<TransferCost>) calls `self.fx.estimate(amount, participation)` at transfer.rs:472; its one prior check covers participation, not the fx model's bps rates (public fields, and TransferCostModel::new at transfer.rs:388-410 never checks them) nor an unrepresentable notional. Under the release profile's panic = \"abort\" a bad reference rate ends the process instead of refusing one transfer - the panic-in-a-Result-function core-rust.md prohibits. transfer.rs:472 is the only production caller (grep -rn '\\.estimate(' backend/crates, excluding checked_estimate and unrelated types); the others are qip-financial tests/costs.rs:148,163,172,173,737,825 and qip-simulation-engine tests/simulation.rs:339. Confirmed at 42fb3c07.",
+  "requirements": [],
+  "owns": [
+   "backend/crates/libs/qip-financial/src/costs.rs",
+   "backend/crates/libs/qip-financial/tests/costs.rs",
+   "backend/crates/services/qip-simulation-engine/tests/simulation.rs",
+   "backend/crates/services/qip-capital-fabric/src/transfer.rs",
+   "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs"
+  ],
+  "reads": [
+   "backend/crates/runtime/qip-kernel/src/platform.rs",
+   "backend/crates/services/qip-capital-fabric/src/lib.rs",
+   ".claude/rules/domains/core-rust.md",
+   "docs/reports/tech-debt/libs-finance.json"
+  ],
+  "symbols": [
+   "TransactionCostModel::estimate backend/crates/libs/qip-financial/src/costs.rs:465 (panic at :468)",
+   "TransactionCostModel::checked_estimate backend/crates/libs/qip-financial/src/costs.rs:413",
+   "TransactionCostModel::checked backend/crates/libs/qip-financial/src/costs.rs:365",
+   "TransferCostModel::new backend/crates/services/qip-capital-fabric/src/transfer.rs:388",
+   "TransferCostModel::price backend/crates/services/qip-capital-fabric/src/transfer.rs:441 (the call at :472)",
+   "TransferCostModel::new's production caller backend/crates/runtime/qip-kernel/src/platform.rs:4394 (already propagates a Result; read only)",
+   "calls of estimate in tests: qip-financial tests/costs.rs:148,163 (in :141 estimate_scales_with_notional_and_includes_the_fixed_fee), :172-173 (in :168), :737 (in :639) and :825 (in :753); qip-simulation-engine tests/simulation.rs:339"
+  ],
+  "depends_on": [],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "The paper-trading boundary is untouched: no Placer, gateway, venue class or autonomy ceiling changes. State in the hand-back that layers 1-3 (Terraform variables.tf, AutonomyLevel::deployable, Cell/Determinism typing) are intact.",
+   "Do not edit platform.rs (FIX-07 owns it): TransferCostModel::new already returns Result and platform.rs:4394 already handles it; if a refusal there would now fire on the kernel's own fixture, escalate.",
+   "The refusal is the existing unpriceable() error from costs.rs:443, naming the term, the rate and the notional; transfer.rs adds the corridor (from -> to currency) as context, not a new message.",
+   "Tests that used estimate switch to checked_estimate(...)? with the same assertions, and each such test's signature becomes `-> qip_core::Result<()>` ending in Ok(()). One exception: costs.rs:825 `assert_eq!(priced, sound.estimate(notional, 0.1))` compared the checked path to the panicking one, and switched as instructed it would compare checked_estimate to itself and guard nothing. It becomes an assertion against a hand-computed figure from TransactionCostModel::default() (costs.rs:288-298) on a notional of 1,000,000 at participation 0.1: fixed_fee 0 + commission 1bp (100) + half-spread 2.5bp (250) + impact 40bp x sqrt(0.1) = 12.649110640673518bp, which Decimal::from_f64 rounds at nine places to a factor of 0.001264911 (1,264.911) - so `dec!(\"1614.911\")`, with that derivation in a comment. If the run disagrees, the derivation is re-checked, not the figure copied from the run. None is weakened. The simulation test keeps comparing the backtest charge to the pre-trade quote.",
+   "Decimal for money; the f64 participation crossing is unchanged."
+  ],
+  "tests": [
+   "capital_fabric.rs: `a_transfer_whose_conversion_cannot_be_represented_is_refused_rather_than_aborting` - prices an amount whose conversion cost overflows Decimal through a valid fx model; asserts Err naming the term. Mutation: restore `self.fx.estimate(amount, participation)` at transfer.rs:472 (with estimate kept); the test panics and fails.",
+   "capital_fabric.rs: `a_transfer_model_built_on_an_fx_model_with_a_non_finite_spread_is_refused_at_construction` - mutation: remove the fx.checked() call from TransferCostModel::new; construction succeeds and the test fails.",
+   "qip-financial tests/costs.rs: estimate_scales_with_notional_and_includes_the_fixed_fee (:141) and estimate_uses_the_magnitude_of_a_negative_notional (:168) renamed for checked_estimate with identical expectations, and the estimate calls inside :639 and :753 switched to checked_estimate(...)? - mutation: make checked_estimate answer Ok(Decimal::ZERO) where it now refuses; a_cost_model_a_struct_literal_poisoned_refuses_to_price_instead_of_aborting_or_charging_zero (:753) fails.",
+   "qip-financial tests/costs.rs: a_cost_model_a_struct_literal_poisoned_refuses_to_price_instead_of_aborting_or_charging_zero's admitting half asserts the hand-computed 1614.911 in place of the self-comparison at :825 - mutation: drop the half-spread term from checked_estimate's loop; priced reads 1364.911 and the assertion fails (the self-comparison it replaces would have passed that mutation)."
+  ],
+  "acceptance": [
+   "cd backend && cargo fmt --all --check -> exit 0, no diff printed",
+   "cd backend && cargo clippy -p qip-financial -p qip-capital-fabric -p qip-simulation-engine --all-targets -- -D warnings -> exit 0, zero 'warning:' lines",
+   "cd backend && cargo test -p qip-financial -p qip-capital-fabric -p qip-simulation-engine -p qip-kernel --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo test --workspace --no-fail-fast -> every 'test result:' line reads '0 failed'; quote the summed passed/failed totals, and no binary is missing from the run (a run without --no-fail-fast is not evidence)",
+   "grep -rn 'fn estimate' backend/crates/libs/qip-financial/src/costs.rs -> no output",
+   "grep -n 'panic!' backend/crates/libs/qip-financial/src/costs.rs backend/crates/services/qip-capital-fabric/src/transfer.rs -> no output (before: costs.rs:468)",
+   "./scripts/check-dependencies.sh -> 'all permitted'",
+   "./scripts/check-secrets.sh -> 'nothing found'"
+  ],
+  "artifacts": [
+   "transfer pricing propagating checked_estimate's refusal",
+   "TransferCostModel::new checking its fx model",
+   "the panicking estimate wrapper deleted"
+  ],
+  "tier": "T4",
+  "model_ceiling": "opus-lead",
+  "token_budget": 150000,
+  "escalate_if": [
+   "TransactionCostModel::checked refuses the fx model any existing fixture or platform.rs:4394 builds (the refusal would then change the kernel's startup)",
+   "a caller outside owns uses estimate (the grep above found none)"
+  ],
+  "size": "S",
+  "wave": 1
+ },
+ {
+  "id": "FIX-14",
+  "title": "CapitalGrant has no Reduced variant, so no caller can clamp an order to an envelope",
+  "defects": [
+   4
+  ],
+  "epic": "E07",
+  "status": "deferred",
+  "deferred_until": "FIX-04 and FIX-05 merge, and SLICE-15/SLICE-20/SLICE-26 (cell.rs) have merged; wave 6",
+  "objective": "CapitalGrant is {Full, Refused(String)}: the Reduced variant, permitted_quantity's arm, cell.rs's two unreachable Reduced arms and the doc sentence contrasting Reduced with hold_region_capital, and chaos.rs's Reduced arm are deleted, so clamping an order to an envelope is unrepresentable rather than merely unused.",
+  "why": "FIX-04 makes admit refuse whole but leaves the variant and two dead arms in cell.rs because cell.rs is SLICE-15/20/26's until wave 4. CLAUDE.md principle 4: a guarantee the type system holds beats a runtime one - while the variant exists, a future caller can construct a reduction and cell.rs:3508 will send it. The claim is scoped to capital envelopes: the central pre-trade path's PreTradeDecision::Reduced (qip-risk-engine/src/pretrade.rs:79-114, sent by oms.rs:772-776) is the same shape and is outside CAPITAL-025.",
+  "requirements": [
+   "CAPITAL-025"
+  ],
+  "owns": [
+   "backend/crates/libs/qip-contracts/src/capital.rs",
+   "backend/crates/libs/qip-contracts/tests/contracts.rs",
+   "backend/crates/edge/qip-edge/src/cell.rs",
+   "backend/crates/edge/qip-edge/tests/cell.rs",
+   "backend/crates/tests/qip-acceptance/tests/chaos.rs",
+   "backend/crates/tests/qip-acceptance/tests/region_share.rs",
+   "backend/crates/tests/qip-acceptance/tests/stress.rs"
+  ],
+  "reads": [
+   "backend/crates/services/qip-risk-engine/src/pretrade.rs"
+  ],
+  "symbols": [
+   "CapitalGrant::Reduced backend/crates/libs/qip-contracts/src/capital.rs:166, permitted_quantity :175",
+   "backend/crates/edge/qip-edge/src/cell.rs:3508-3517 (`capital_reduced` arm) and :5934-5945 (`arbitrage_capital` arm), doc :7371-7373 (42fb3c07 lines; re-read after the slice merges)",
+   "backend/crates/tests/qip-acceptance/tests/chaos.rs:454-461 Reduced arm and the :447-448 comment ('full grants, reductions and refusals')",
+   "backend/crates/libs/qip-contracts/tests/contracts.rs, qip-edge/tests/cell.rs and qip-acceptance/tests/stress.rs as FIX-04 left them (FIX-04's tests assert via matches! without naming Reduced; edit them here only if they do)"
+  ],
+  "depends_on": [
+   "FIX-04",
+   "FIX-05",
+   "SLICE-15",
+   "SLICE-20",
+   "SLICE-26"
+  ],
+  "ordered_shares": [
+   {
+    "file": "backend/crates/libs/qip-contracts/src/capital.rs",
+    "after": [
+     "FIX-04"
+    ]
+   },
+   {
+    "file": "backend/crates/libs/qip-contracts/tests/contracts.rs",
+    "after": [
+     "FIX-04"
+    ]
+   },
+   {
+    "file": "backend/crates/edge/qip-edge/src/cell.rs",
+    "after": [
+     "SLICE-26",
+     "SLICE-15",
+     "SLICE-20",
+     "FIX-05"
+    ]
+   },
+   {
+    "file": "backend/crates/edge/qip-edge/tests/cell.rs",
+    "after": [
+     "FIX-04"
+    ]
+   },
+   {
+    "file": "backend/crates/tests/qip-acceptance/tests/stress.rs",
+    "after": [
+     "FIX-04"
+    ]
+   }
+  ],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "The paper-trading boundary is untouched: no Placer, gateway, venue class or autonomy ceiling changes. State in the hand-back that layers 1-3 (Terraform variables.tf, AutonomyLevel::deployable, Cell/Determinism typing) are intact.",
+   "Deferred and sequential: owns capital.rs, contracts.rs, qip-edge tests/cell.rs and stress.rs after FIX-04, and cell.rs after FIX-05; start from their merged tree. The three test files are FIX-04's rewritten tests: edit them only where they name the variant, keep each test's property, and list each edit in the hand-back.",
+   "A journal or delta that serialised a Reduced grant before FIX-04 must still be readable if any such record can exist on disk: check qip-edge's journal and mesh deltas for a serialised CapitalGrant before deleting the variant; if one exists, escalate rather than break replay (the event log is hash-chained and nothing may make a sealed record unreplayable).",
+   "The `capital_reduced` and `arbitrage_capital` gate literals disappear from cell.rs; region_share.rs:110 and :621 cite `capital_reduced` as the example prefix that makes delimited matching necessary, so their comments keep the rule and name `region_reservation_abandoned` alone. A runbook, alert or dashboard naming either literal is reported in the hand-back."
+  ],
+  "tests": [
+   "Compile-time proof, stated as what it is: after the deletion every match on CapitalGrant is exhaustive over {Full, Refused} with no wildcard - permitted_quantity (capital.rs), Cell's strategy path (cell.rs:3503-3521) and arbitrage path (:5928-5950), chaos.rs's arm and the new contracts.rs guard - so re-adding a variant fails compilation at every one of them. Mutation: re-add `Reduced(Decimal)` to CapitalGrant; `cargo build -p qip-contracts -p qip-edge -p qip-acceptance --all-targets` fails with E0004 (non-exhaustive patterns) naming each of those sites; quote the error lines, restore byte-for-byte and confirm it builds. A match site missing from the error list has a wildcard and is reported in the hand-back.",
+   "contracts.rs: `capital_grant_names_only_full_and_refused` - an exhaustive match with no wildcard in qip-contracts' own tests, so the guard holds in the crate that defines the type even if a downstream match later gains a wildcard; drives admit for a within-limit order (Full), an over-limit order (Refused naming the limit) and an expired envelope (Refused). Mutation: the same re-added variant; this file fails to compile naming the match. Restore and confirm it compiles and passes."
+  ],
+  "acceptance": [
+   "cd backend && cargo fmt --all --check -> exit 0, no diff printed",
+   "cd backend && cargo clippy -p qip-contracts -p qip-edge -p qip-acceptance --all-targets -- -D warnings -> exit 0, zero 'warning:' lines",
+   "cd backend && cargo test -p qip-contracts -p qip-edge -p qip-edge-node -p qip-cli --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo test --workspace --no-fail-fast -> every 'test result:' line reads '0 failed'; quote the summed passed/failed totals, and no binary is missing from the run (a run without --no-fail-fast is not evidence)",
+   "grep -rn 'CapitalGrant::Reduced' backend/crates --include=*.rs -> no output",
+   "grep -n '\"capital_reduced\"\\|\"arbitrage_capital\"' backend/crates/edge/qip-edge/src/cell.rs -> no output (qip-web's and qip-api's `arbitrage_capital` console panel is an unrelated field and stays)",
+   "./scripts/check-dependencies.sh -> 'all permitted'",
+   "./scripts/check-secrets.sh -> 'nothing found'"
+  ],
+  "artifacts": [
+   "CapitalGrant without Reduced; dead arms removed"
+  ],
+  "tier": "T4",
+  "model_ceiling": "opus-lead",
+  "token_budget": 120000,
+  "escalate_if": [
+   "a persisted record (journal, spool, delta) can hold a serialised Reduced grant",
+   "a slice packet's merged cell.rs added a new use of Reduced",
+   "a FIX-04 test names the variant in a way that cannot be rewritten without changing the property it guards"
+  ],
+  "hand_back": [
+   "Name qip-risk-engine's PreTradeDecision::Reduced (pretrade.rs:79-114, constructed at :235; oms.rs:772-776 sends the permitted quantity) as out of scope, the way FIX-07 names relationship.rs:147: this packet makes clamping unrepresentable for capital envelopes only. The lead decides whether principle 2 applies to risk limits.",
+   "Report any runbook, alert or dashboard naming the `capital_reduced` or `arbitrage_capital` gate literals."
+  ],
+  "size": "S",
+  "wave": 6
+ },
+ {
+  "id": "FIX-15",
+  "title": "deploy.yml's actions are pinned to full commit SHAs and the last exemption is removed",
+  "defects": [
+   11
+  ],
+  "epic": "E13",
+  "status": "deferred",
+  "deferred_until": "SLICE-18 merges (wave 3): deploy.yml is its file; FIX-11 must have merged",
+  "objective": "The six `uses:` lines in .github/workflows/deploy.yml name 40-hex commit SHAs with trailing `# <exact release tag>` comments, at the same SHA and tag FIX-11 recorded for each action, independently re-derived by a T4 reviewer before merge; action_pins.rs's deploy.yml exemption and its staleness test are removed, so the suite refuses a tag-pinned action in every workflow.",
+  "why": "The remainder of defect 11: deploy.yml:294,376,381,605,664,669 are tag-pinned (actions/checkout@v4, google-github-actions/auth@v2, google-github-actions/setup-gcloud@v2), and deploy.yml is the workflow that builds, signs and ships the images - the one where a moved tag does the most damage. Tier T4: google-github-actions/auth and setup-gcloud at deploy.yml:376,381,664,669 run holding the Workload Identity credential in the workflow that signs and ships images, so a SHA resolved to a fork's or a hostile commit is the highest-consequence silent failure in the workflow set; ADR 0098 §2 keeps credentials with the lead.",
+  "requirements": [],
+  "owns": [
+   ".github/workflows/deploy.yml",
+   "backend/crates/tests/qip-acceptance/tests/action_pins.rs"
+  ],
+  "reads": [
+   ".github/workflows/ci.yml",
+   "docs/reports/security-baseline.md"
+  ],
+  "symbols": [
+   ".github/workflows/deploy.yml:294,376,381,605,664,669 (42fb3c07; re-read after SLICE-18)",
+   "action_pins.rs's exemption list and the_one_file_exempted_from_sha_pinning_is_still_unpinned (FIX-11)"
+  ],
+  "depends_on": [
+   "SLICE-18",
+   "FIX-11"
+  ],
+  "ordered_shares": [
+   {
+    "file": ".github/workflows/deploy.yml",
+    "after": [
+     "SLICE-18"
+    ]
+   },
+   {
+    "file": "backend/crates/tests/qip-acceptance/tests/action_pins.rs",
+    "after": [
+     "FIX-11"
+    ]
+   }
+  ],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "Deferred: SLICE-18 edits deploy.yml's matrix comment; start from its merged text and change only refs.",
+   "Reuse FIX-11's action -> exact tag -> SHA table from its commit message, and re-derive every row this file uses by FIX-11's procedure (upstream `git/ref/tags/<tag>`, dereferenced; `compare/<tag>...<sha>` -> identical) rather than trusting the table; an action@tag FIX-11 did not pin is derived the same way. The trailing comment is the exact tag.",
+   "Only refs change; deploy.yml's gate job, permissions, environments and prod refusal stay byte-for-byte."
+  ],
+  "tests": [
+   "action_pins.rs: every_action_a_workflow_uses_is_pinned_to_a_full_commit_sha now covers deploy.yml (exemption removed) - mutation: restore `actions/checkout@v4` on deploy.yml's first checkout; the test fails naming it.",
+   "action_pins.rs: the_one_file_exempted_from_sha_pinning_is_still_unpinned is deleted with the exemption it guarded, and the deletion is named in the hand-back as the planned end of FIX-11's exemption, not a weakened test."
+  ],
+  "acceptance": [
+   "grep -rnE 'uses: *[^ ]+@' .github/workflows | grep -vE '@[0-9a-f]{40}( |$)' -> no output",
+   "independent T4 reviewer, before merge, not the worker: for every distinct owner/repo@sha in deploy.yml, re-derive the exact tag's commit from the upstream tag ref and run `gh api repos/<o>/<r>/compare/<tag>...<sha> -q .status` -> 'identical'; quote the table",
+   "python3 -c 'import yaml; yaml.safe_load(open(\".github/workflows/deploy.yml\"))' -> exit 0",
+   "cd backend && cargo test -p qip-acceptance --test action_pins --test infrastructure --test gitops --no-fail-fast -> every 'test result:' line reads '0 failed'",
+   "cd backend && cargo fmt --all --check -> exit 0, no diff printed",
+   "cd backend && cargo clippy -p qip-acceptance --all-targets -- -D warnings -> exit 0, zero 'warning:' lines",
+   "cd backend && cargo test -p qip-acceptance --no-fail-fast -> every 'test result:' line reads '0 failed' (the touched crate, whole)",
+   "./scripts/check-secrets.sh -> 'nothing found'"
+  ],
+  "artifacts": [
+   "six SHA-pinned uses: lines in deploy.yml",
+   "action_pins.rs with no exemption"
+  ],
+  "tier": "T4",
+  "model_ceiling": "opus-lead",
+  "token_budget": 110000,
+  "escalate_if": [
+   "SLICE-18 added a new action to deploy.yml that FIX-11 never resolved and gh cannot resolve",
+   "infrastructure.rs's deploy-gate tests read a `uses:` line"
+  ],
+  "size": "S",
+  "wave": 4
+ },
+ {
+  "id": "FIX-16",
+  "title": "No production build of the portal puts a one-time code in an HTTP response",
+  "defects": [],
+  "epic": "E13",
+  "status": "deferred",
+  "deferred_until": "FIX-01 merges (wave 1): identity.ts and tests/one-time-code-key.spec.ts are its files",
+  "objective": "On a production build (NODE_ENV=production, which every `next start` is), no response from /api/auth/sign-up, /api/auth/forgot-password or /api/auth/resend-verification carries a one-time code, and no rendered page shows one: one helper in identity.ts decides whether a code may enter a response and answers no on every production build, the three routes go through it and nothing else, forgot-password's answer stays identical for a registered and an unregistered address, and no environment variable, header or config can re-admit a code. In `next dev` behaviour is unchanged. Proven by a Playwright spec against a production-mode server on the development provider.",
+  "why": "Found in review of FIX-01, not in the numbered defect list. On the development provider (no ALGORIK_IDENTITY_PROJECT_ID) forgotPassword returns the plaintext reset code (identity.ts:476), signUp and resendVerification the verification code (:282, :456), and the routes put it in the HTTP response for any registered email (forgot-password/route.ts:27-28, sign-up/route.ts:54, resend-verification/route.ts:19-20). Nothing checks the build: identity.ts's own header (:46-54) says devCode 'is never populated once a real provider is configured', which is a statement about the provider, not about production. infrastructure/gitops/envs/dev/portal.yaml:96-107 deploys the portal on the development provider under `next start`, so on that deployment anyone who reaches the route can take over any account by requesting its reset code - the HMAC key FIX-01 fixes does not enter into it. Latent today: gitops_iap_members = [] (environments/dev/terraform.tfvars:648) and ADR 0093 suspends the reconciler; scripts/deploy-frontends.sh:265 sets ALGORIK_IDENTITY_PROJECT_ID and is unaffected. The test suite pins the exposure: auth.spec.ts:74-80 runs against `next start` (playwright.config.ts:103-109, :228-249) and asserts the development code IS surfaced on screen. Tier T4: authentication and credentials (ADR 0098 §2). Confirmed at 42fb3c07.",
+  "requirements": [],
+  "owns": [
+   "frontend/portal/src/app/api/auth/sign-up/route.ts",
+   "frontend/portal/src/app/api/auth/forgot-password/route.ts",
+   "frontend/portal/src/app/api/auth/resend-verification/route.ts",
+   "frontend/portal/src/lib/server/identity.ts",
+   "frontend/portal/src/lib/server/identity-store.ts",
+   "frontend/portal/playwright.config.ts",
+   "frontend/portal/tests/auth.spec.ts",
+   "frontend/portal/tests/one-time-code-key.spec.ts",
+   "frontend/portal/tests/one-time-code-response.spec.ts"
+  ],
+  "reads": [
+   "frontend/portal/src/lib/server/session.ts",
+   "frontend/portal/src/app/(auth)/_lib/forms.tsx",
+   "frontend/portal/src/app/(auth)/_lib/api.ts",
+   "frontend/portal/src/app/(auth)/sign-up/page.tsx",
+   "frontend/portal/src/app/(auth)/verify-email/page.tsx",
+   "frontend/portal/src/app/(auth)/forgot-password/page.tsx",
+   "frontend/portal/tests/identity-provider.spec.ts",
+   "frontend/portal/tests/iap.spec.ts",
+   "infrastructure/gitops/envs/dev/portal.yaml",
+   "scripts/deploy-frontends.sh",
+   "frontend/CLAUDE.md",
+   ".claude/rules/domains/frontend.md",
+   "docs/adr/0013-identity-verification-earns-a-dependency.md"
+  ],
+  "symbols": [
+   "signUp frontend/portal/src/lib/server/identity.ts:211 (devCode :261, :282)",
+   "resendVerification identity.ts:443 (devCode :456)",
+   "forgotPassword identity.ts:459 (devCode :476; the address-blind answers at :460-475)",
+   "developmentProviderActive identity.ts:142",
+   "identity.ts:41-54 header: 'The code itself exists in plaintext only in the response that delivers it (development)' and 'never populated once a real provider is configured' (both to be restated for production builds)",
+   "frontend/portal/src/app/api/auth/forgot-password/route.ts:27-28, sign-up/route.ts:54, resend-verification/route.ts:19-20 (the three responses that spread devCode)",
+   "storePath frontend/portal/src/lib/server/identity-store.ts:68-71 (identity.json under ALGORIK_IDENTITY_STORE_DIR; holds codes as HMACs only)",
+   "DevCodeBlock data-testid=\"dev-code\" frontend/portal/src/app/(auth)/_lib/forms.tsx:220; rendered by verify-email/page.tsx:155 and forgot-password/page.tsx:66 only when a code is present",
+   "frontend/portal/tests/auth.spec.ts:74-80 (asserts the development code is surfaced on a production build; pins the defect)",
+   "frontend/portal/tests/identity-provider.spec.ts:117 (asserts no dev-code under Identity Platform; keep)",
+   "frontend/portal/playwright.config.ts:103-109 (`next start` is NODE_ENV=production), :130-137 desktop-chromium testIgnore, :159-161 auth-chromium testMatch, :228-249 the auth instance (development provider, store .algorik-test-identity)",
+   "infrastructure/gitops/envs/dev/portal.yaml:96-107 (the deployed portal on the development provider; read only)"
+  ],
+  "depends_on": [
+   "FIX-01"
+  ],
+  "ordered_shares": [
+   {
+    "file": "frontend/portal/src/lib/server/identity.ts",
+    "after": [
+     "FIX-01"
+    ]
+   },
+   {
+    "file": "frontend/portal/tests/one-time-code-key.spec.ts",
+    "after": [
+     "FIX-01"
+    ]
+   }
+  ],
+  "constraints": [
+   "Touch only `owns`. 57 slice packets and the other fix packets run beside this one; an edit needed outside `owns` is an escalation, never a widening.",
+   "serde and serde_json only (ADR 0002, ADR 0009); no new crate, and no new package in any package.json.",
+   "Never weaken, #[ignore], skip or delete a test to obtain a pass. A test changed because it pinned the defect is changed in this packet, named in the commit message and the hand-back, with the reason it pinned the defect rather than a property.",
+   "Mutation-verify every new or changed test: reintroduce the defect exactly as named in `tests`, run the test, confirm it fails for that reason, restore byte-for-byte, confirm it passes, and report the mutation and that it fired (.claude/rules/02-change-management.md).",
+   "Tests are named as full sentences describing the property, assert their own premise first, and match delimited tokens rather than substrings (.claude/rules/architecture/01-testing-strategy.md).",
+   "Do not edit docs/blueprint/assessment/*.json, docs/blueprint/traceability-matrix.md or docs/reports/tech-debt*: SLICE-47 owns the rendered matrix, and an assessment row changed without a re-render fails documentation.rs::the_blueprint_views_are_what_their_sources_render_to. Name the row this fix closes in the hand-back instead.",
+   "No relaxing configuration (CLAUDE.md principle 3; .claude/rules/domains/frontend.md): no environment variable, header, cookie or config value re-admits a code into a response on a production build, and the test harness is not an exception - playwright.config.ts gains no such variable. A configuration that would relax a safety default stops the process rather than lowering it.",
+   "One decision point: a single exported helper in identity.ts answers whether a code may enter a response, false whenever NODE_ENV is production; the three routes go through it and build no devCode field any other way. identity.ts's header (:41-54) is restated to say production builds never populate the field, whatever the provider.",
+   "Mechanism for the auth journey, decided and recorded in the hand-back. Default (A): on a production build the development provider delivers each code it issues to an outbox file under ALGORIK_IDENTITY_STORE_DIR - a separate file from identity.json, which keeps holding HMACs only - as the offline stand-in for the email Identity Platform sends, and auth.spec.ts reads the code from that file. (B), only on the lead's written decision in the hand-back: the development provider refuses to issue codes on a production build with a 503 naming ALGORIK_IDENTITY_PROJECT_ID, in providerUnavailable's style - and only if the auth journey still runs whole; deleting or weakening the journey to make (B) pass is prohibited.",
+   "forgot-password stays address-blind: on a production build its response body for a registered and an unregistered address is byte-identical, as identity.ts:460-475 already requires on the Identity Platform branch.",
+   "The pages under src/app/(auth) are not edited: they render the dev block only when a code is present, so withholding the code is enough.",
+   "FIX-01's key resolution is not touched. Its spec passes unchanged under (A); under (B), if its production case can no longer observe the missing-secret refusal because the provider refuses first, change how that test observes the refusal, not the property, list it in the hand-back and re-run its mutation.",
+   "Do not edit infrastructure/gitops/envs/dev/portal.yaml or scripts/deploy-frontends.sh. After this change the gitops-deployed portal on the development provider issues codes nobody receives (A) or refuses to issue them (B); either way sign-up there cannot complete until Identity Platform is wired, which is the owner's decision and is named in the hand-back, not made here.",
+   "No secret, token or code in the spec, its fixtures, its names or its failure messages; the spec asserts absence, and a failure message names the route and the field, never the value.",
+   "No new npm dependency; node:crypto and node:fs only."
+  ],
+  "tests": [
+   "frontend/portal/tests/one-time-code-response.spec.ts: `a production build puts no one-time code in any auth response` - against the auth instance (development provider, `next start`), through the CSRF handshake the pages use: premise: each request reached the provider (sign-up answers ok or the named refusal, never a CSRF 403 or a 404) and forgot-password and resend-verification name an account the test created; asserts no body has a `devCode` key and none contains a run of six digits. Mutations, one per route, each run: spread `devCode` into the response bypassing the helper in forgot-password/route.ts, then sign-up/route.ts, then resend-verification/route.ts; each fails naming its route.",
+   "frontend/portal/tests/one-time-code-response.spec.ts: `forgot password answers a registered and an unregistered address identically on a production build` - premise: both requests reached the provider; asserts the two bodies are byte-identical. Mutation: make the helper answer true on a production build; the registered address's body gains the code and the test fails.",
+   "frontend/portal/tests/one-time-code-response.spec.ts: `the verification page of a production build shows no development code` - after sign-up through the UI, the verify-email page has zero `dev-code` elements. Mutation: make the helper answer true on a production build; the block renders and the test fails.",
+   "frontend/portal/tests/auth.spec.ts: the sign-up journey obtains its code by the mechanism in `constraints` and asserts `dev-code` is absent - changed because :74-80 asserted the code was surfaced on a production build, which pinned the defect; named in the commit message and the hand-back. Mutation: make the helper answer true on a production build; the absence assertion fails.",
+   "under mechanism (A) only: frontend/portal/tests/one-time-code-response.spec.ts: `the account store holds no plaintext code when the outbox delivers one` - after a sign-up, identity.json contains no six-digit run and the outbox does. Mutation: write the plaintext code into identity.json's code record; the test fails."
+  ],
+  "acceptance": [
+   "cd frontend/portal && npm run lint -> exit 0",
+   "cd frontend/portal && npm run typecheck -> exit 0",
+   "cd frontend/portal && npm run build -> exit 0",
+   "cd frontend/portal && npx playwright test tests/one-time-code-response.spec.ts -> every test passed, 0 failed, and the run names the auth-chromium project (the spec is routed to the development-provider instance explicitly in playwright.config.ts, not by a file name that happens to match a regex)",
+   "cd frontend/portal && npx playwright test --project=auth-chromium -> every test passed (the journey completes without a code on screen)",
+   "cd frontend/portal && npx playwright test tests/one-time-code-key.spec.ts --project=desktop-chromium -> '3 passed', 0 failed (FIX-01's spec)",
+   "cd frontend/portal && npx playwright test --project=identity-chromium --project=iap-chromium -> every test passed",
+   "cd frontend/portal && npx playwright test -> every project passed; quote the summary line",
+   "grep -n 'devCode' frontend/portal/src/app/api/auth/*/route.ts -> every match is inside a call to the one helper; quote them",
+   "./scripts/check-secrets.sh -> 'nothing found'"
+  ],
+  "artifacts": [
+   "one helper deciding whether a code may enter a response, false on every production build; the three routes through it",
+   "tests/one-time-code-response.spec.ts; auth.spec.ts's journey no longer depending on a code in a production response"
+  ],
+  "tier": "T4",
+  "model_ceiling": "opus-lead",
+  "token_budget": 250000,
+  "escalate_if": [
+   "the lead chooses (B) and the auth journey cannot run whole against any instance the suite has",
+   "NODE_ENV does not read as production inside a route handler of the built server, so the helper's answer cannot be observed from the running build",
+   "the owner wants the gitops-deployed portal to keep a working sign-up on the development provider (portal.yaml then needs Identity Platform, outside owns)",
+   "iap.spec.ts, gate.spec.ts or another suite relies on a code in a response or on the dev-code block",
+   "the outbox under (A) would have to live somewhere other than ALGORIK_IDENTITY_STORE_DIR (e.g. a deployment where that directory is shared between instances or readable from outside the process)"
+  ],
+  "hand_back": [
+   "State which mechanism was chosen and why; under (B), quote the lead's decision.",
+   "Name auth.spec.ts:74-80 as a test that pinned the defect and say what replaced it.",
+   "Name the gitops-deployed portal (portal.yaml:96-107): after this change sign-up there cannot complete until Identity Platform is wired, and that is the owner's decision."
+  ],
+  "size": "M",
+  "wave": 2
+ }
+]

@@ -418,7 +418,8 @@ impl CellMetrics {
         );
         m.describe(
             names::EDGE_HALTED,
-            "whether the cell is stopped, by which halt is in force: kill_switch, policy, polled",
+            "whether the cell is stopped, by which halt is in force: kill_switch, policy, polled, \
+             journal",
         );
         m.describe(
             names::EDGE_REFUSALS,
@@ -573,14 +574,20 @@ impl CellMetrics {
 
     /// The halt state, by source.
     ///
-    /// All three sources are written on every call, so a release shows as
-    /// the series falling to zero rather than as a series that stops being
-    /// updated. A gauge that goes stale at `1` and a cell that is still halted
-    /// look identical on a chart.
-    pub fn halt(&self, kill_switch: bool, policy: bool, polled: bool) {
-        // `source` takes exactly the three literals below — one per halt
-        // discipline the cell has — so this is three series per cell. The
-        // third is §46.2's second wire, charted on its own so an operator
+    /// Every source the cell has is written on every call, so a release
+    /// shows as the series falling to zero rather than as a series that stops
+    /// being updated. A gauge that goes stale at `1` and a cell that is still
+    /// halted look identical on a chart.
+    ///
+    /// `journal` is `None` on a cell built without the journal-pressure wire
+    /// (ADR 0100 §6), and then `source="journal"` is not written at all: a
+    /// cell that reads no spool has no journal halt to be at zero, and a
+    /// permanent zero there would be a number nobody computed.
+    pub fn halt(&self, kill_switch: bool, policy: bool, polled: bool, journal: Option<bool>) {
+        // `source` takes exactly the four literals below — one per halt
+        // discipline the cell has — so this is at most four series per cell,
+        // three on a cell without the journal wire. The third is §46.2's
+        // second wire, charted on its own so an operator
         // can see which path stopped the cell and, after an incident, which
         // one did not.
         self.metrics.gauge(
@@ -598,6 +605,16 @@ impl CellMetrics {
             self.with("source", "polled"),
             f64::from(u8::from(polled)),
         );
+        // The fourth wire, charted apart from the polled flag because its
+        // release is the spool recovering on its own, and an operator paged
+        // on it needs the disk or the mirror, not the flag file.
+        if let Some(journal) = journal {
+            self.metrics.gauge(
+                names::EDGE_HALTED,
+                self.with("source", "journal"),
+                f64::from(u8::from(journal)),
+            );
+        }
     }
 
     /// How many of the regions this cell mirrors into are dark, by source.
@@ -1040,7 +1057,7 @@ mod tests {
         // series would sit at 1 forever after the first halt and an operator
         // would page on a cell that resumed hours ago.
         let recorder = recorder();
-        recorder.halt(true, false, false);
+        recorder.halt(true, false, false, None);
         let halted = recorder.registry().snapshot();
         assert_eq!(
             halted.gauge(
@@ -1055,7 +1072,7 @@ mod tests {
             "the premise failed: the kill-switch gauge was never set to 1"
         );
 
-        recorder.halt(false, false, false);
+        recorder.halt(false, false, false, None);
         let released = recorder.registry().snapshot();
         assert_eq!(
             released.gauge(

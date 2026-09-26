@@ -1,13 +1,20 @@
 # ADR 0033 — OpenObserve becomes authenticated before it holds telemetry
 
-- **Status:** accepted, not yet applied — `infrastructure/terraform/catalogue.tf`
-  still declares `module "openobserve"` as `ingress_posture = "open-anonymous"`
-  with `invokers = ["allUsers"]`, and the acceptance suite still pins that
-  (`infrastructure.rs`, `egress.rs`). Until it is applied, the condition this
-  record fires on is enforced rather than assumed:
+- **Status:** accepted; **applied for the invoker half on 2026-09-26, not
+  applied for the front door.** No committed manifest grants OpenObserve to
+  an anonymous principal: `infrastructure/gitops/envs/dev/openobserve.yaml`
+  carries `ingress: INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`, `invokers.yaml`
+  names no invoker on it, and `catalogue.tf` instantiates
+  `modules/openobserve` as `module "openobserve_access"` at its authenticated
+  default, so every plan evaluates the prod refusal. No Identity-Aware Proxy
+  exists in front of the service, so it is reachable by **nobody** until one
+  is built; which door that is — this record's load balancer or ADR 0095's
+  IAP on the Cloud Run service itself — is an open decision, to be recorded
+  as an amendment here. See "Applied" below. The condition this record fires
+  on stays enforced:
   `terraform_contract.rs::no_deployment_points_telemetry_at_openobserve_while_it_is_anonymous`
-  refuses the first catalogue entry that sets `QIP_OPENOBSERVE_URL` while the
-  posture is anonymous.
+  now asserts the posture is not anonymous, so restoring it fails the suite
+  whether or not anything sets `QIP_OPENOBSERVE_URL`.
 - **Date:** 2026-09-04
 - **Amends:** ADR 0030, on the condition ADR 0030 set for itself
 - **Relates to:** ADR 0028 (OpenObserve adopted), ADR 0032 (the collector)
@@ -101,6 +108,68 @@ An argument that OpenObserve's own login suffices is an argument this
 document has already considered and rejected.
 
 ## Applied
+
+### 2026-09-26 — the invoker half
+
+**What changed.** The anonymous `roles/run.invoker` binding on
+`qip-dev-openobserve` is gone from `infrastructure/gitops/envs/dev/invokers.yaml`,
+and the RunService's ingress moved from `INGRESS_TRAFFIC_ALL` to
+`INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`, the value `modules/openobserve`
+derives for the authenticated posture. The module now has a caller:
+`module "openobserve_access"` in `catalogue.tf`, ungated and handed
+`var.environment`, with `access_posture` and `access_principals` left at their
+defaults — `authenticated`, and nobody. So the prod refusal described in the
+2026-09-05 record below is evaluated by every plan of the root, in every
+environment. A mocked plan of the root at `environment = "prod"` admits the
+default and, with `access_posture = "anonymous"` written into that call,
+stops at `catalogue.tf` with this record's refusal message.
+
+The mechanism differs from the one "The decision" names. `ingress_posture`
+and its `public-edge` arm left `modules/cloudrun` with the service resource
+under ADR 0036; the posture is now `modules/openobserve`'s, and the manifests
+carry what it derives.
+
+**What the acceptance suite holds.** Two suites pinned the anonymous posture
+as a property and were inverted in place:
+`gitops.rs::openobserve_is_deployed_at_the_reviewed_digest_on_ephemeral_storage_and_answers_no_anonymous_caller`
+(formerly `..._anonymous_as_adr_0030_records_...`) moves its pin on
+manifests naming an anonymous principal from one to zero, over every
+environment and every parsed manifest, annotations included; and
+`console_route.rs`'s OpenObserve arm asserts the load-balancer-only ingress
+where it demanded `INGRESS_TRAFFIC_ALL`. `infrastructure.rs`'s `.tf` scan lost
+a carve-out that admitted an anonymous HCL invoker line no file had contained
+since ADR 0036, and gained
+`the_openobserve_posture_module_is_instantiated_and_its_invokers_are_the_manifests`,
+which holds the catalogue call to the default and `invokers.yaml` to the
+module's member set.
+
+**What it costs, beyond what this record priced.** Reachability, for now.
+"The decision" says OpenObserve stays reachable from the internet behind IAP;
+no IAP exists, so after this change it is reachable by nobody. That is the
+trade "What would make this wrong" already permits — reachability may be
+traded, anonymity may not — and it fails in the direction a safety default
+has to. Nothing is running to lose access to: the dev environment's Cloud Run
+services were torn down on 2026-09-13, the 2026-09-20 re-apply created none,
+and the control-plane cluster that would reconcile these manifests is
+suspended under ADR 0093 (`infrastructure/CLAUDE.md`). The manifests are what
+the reconciler applies when it runs again.
+
+**Not applied: the front door.** Granting an operator is now one line in
+the catalogue call and its mirror in `invokers.yaml`, but a grant reaches
+nobody without a door. Building it needs `infra.yml`'s IAP enablement step and
+a choice between this record's external load balancer — which the ingress
+above already admits — and ADR 0095's IAP on the Cloud Run service itself,
+which would need `INGRESS_TRAFFIC_ALL` back beside an IAP-only invoker, as the
+portal has. That choice is an amendment to this record, not a manifest edit.
+
+**One stale sentence outside this change's reach.** `modules/openobserve/main.tf`'s
+header still says the module has no caller. It is outside the files this
+change could edit and is left for the next change to that module.
+
+### 2026-09-05 — the module, with no caller
+
+*Kept as written on 2026-09-05, when it was true; the section above says
+what changed. The status line read "not yet applied" until 2026-09-26.*
 
 **Not applied. What exists on 2026-09-05 is code with no caller and no
 plan behind it**, and the status line above stays as it is. This section

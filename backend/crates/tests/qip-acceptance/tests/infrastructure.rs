@@ -4139,10 +4139,12 @@ fn the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it() {
             let closed = line.matches('}').count();
             // `precondition` alongside `validation`: both are constructs that
             // can name an anonymous principal in order to REFUSE it, and
-            // neither grants anything. ADR 0030's pairing rules live in
-            // preconditions because a validation reading a second variable is
-            // skipped by terraform, so without this the scanner reads the
-            // guard against anonymity as the grant it exists to prevent.
+            // neither grants anything. ADR 0030's pairing rules lived in
+            // preconditions — until the service resource left
+            // `modules/cloudrun` under ADR 0036 — because a validation reading
+            // a second variable was skipped by terraform, and without this the
+            // scanner read the guard against anonymity as the grant it exists
+            // to prevent. The skip stays for the next refusal written that way.
             let entering = validation_depth == 0
                 && (line.trim_start().starts_with("validation")
                     || line.trim_start().starts_with("precondition"))
@@ -4163,16 +4165,21 @@ fn the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it() {
                  account in existence rather than the caller you meant",
                 path.display()
             );
-            // `allUsers` has exactly one, recorded in ADR 0030: the
-            // OpenObserve workload's own invoker list. The line is matched
-            // whole rather than by substring so that a second grant elsewhere
-            // in the same file still fails — the exception is one line, not
-            // one file.
+            // `allUsers` has no exception either. Until 2026-09-26 this
+            // assertion admitted one line, `invokers        = ["allUsers"]`,
+            // as ADR 0030's OpenObserve invoker list. That line had left the
+            // Terraform with ADR 0036 decision 5 — the binding became an
+            // `IAMPolicyMember` in `gitops/envs/<env>/invokers.yaml`, which
+            // this scan never reads — so the carve-out guarded nothing and
+            // would have admitted an anonymous grant the day one was written
+            // back into HCL. It is deleted rather than inverted: this is a
+            // scan of `.tf` files and makes no claim about the manifests.
+            // `gitops.rs` refuses the principal there, and ADR 0033 withdrew
+            // the grant the carve-out was written for.
             assert!(
-                !line.contains("allUsers") || line.trim() == "invokers        = [\"allUsers\"]",
-                "{} grants a role to allUsers somewhere other than the OpenObserve invoker \
-                 list ADR 0030 names, which tells an attacker exactly what is running and \
-                 lets them read it:\n{line}",
+                !line.contains("allUsers"),
+                "{} grants a role to allUsers, which admits the public internet with no \
+                 credential; no record permits it on any service since ADR 0033:\n{line}",
                 path.display()
             );
         }
@@ -5217,12 +5224,30 @@ fn every_step_output_a_workflow_reads_is_one_that_job_writes() {
 /// Kept as a list with a reason attached rather than as a filter in the test,
 /// because "why is this one exempt" is the question the next person will have
 /// and a predicate cannot answer it.
-const NOT_A_WORKLOAD: &[(&str, &str)] = &[(
-    // `qip-cli` builds a binary called `qip`.
-    "qip",
-    "an operator's tool, run by a person against a deployment rather than \
-     scheduled in one",
-)];
+const NOT_A_WORKLOAD: &[(&str, &str)] = &[
+    (
+        // `qip-cli` builds a binary called `qip`.
+        "qip",
+        "an operator's tool, run by a person against a deployment rather than \
+         scheduled in one",
+    ),
+    (
+        "qip-fabricd",
+        "ADR 0100 assigns this binary the event-fabric broker role, but its \
+         composition-root modules (config, health, archiver) are doc-only \
+         stubs and the binary refuses to start; scheduling a process that \
+         exits immediately is not a workload. See \
+         docs/adr/0010-what-gets-deployed.md",
+    ),
+    (
+        "qip-ledgerd",
+        "ADR 0100 assigns this binary the ledger's role, sole writer of the \
+         double-entry chain, but its composition-root modules (config, \
+         consumer, read_api, store) are doc-only stubs and the binary \
+         refuses to start; scheduling a process that exits immediately is \
+         not a workload. See docs/adr/0010-what-gets-deployed.md",
+    ),
+];
 
 /// Binaries the workspace builds that the pipeline deliberately builds no image
 /// for.
@@ -5237,12 +5262,34 @@ const NOT_A_WORKLOAD: &[(&str, &str)] = &[(
 /// `docs/adr/0010-what-gets-deployed.md`, and
 /// `every_deployment_exclusion_is_recorded_as_a_decision` is what keeps the two
 /// from drifting.
-const NOT_IN_THE_IMAGE_MATRIX: &[(&str, &str, &str)] = &[(
-    "qip-cli",
-    "qip",
-    "an operator's tool, run by a person against a deployment rather than \
-     scheduled in one",
-)];
+const NOT_IN_THE_IMAGE_MATRIX: &[(&str, &str, &str)] = &[
+    (
+        "qip-cli",
+        "qip",
+        "an operator's tool, run by a person against a deployment rather than \
+         scheduled in one",
+    ),
+    (
+        "qip-fabricd",
+        "qip-fabricd",
+        "ADR 0100 assigns the event-fabric broker role, but its \
+         composition-root modules are doc-only stubs and the binary refuses \
+         to start; an image built from it would ship a process that exits \
+         the instant Cloud Run started it. Excluded while its packets land \
+         and GCP placement waits on ADR 0099 C8. See \
+         docs/adr/0010-what-gets-deployed.md",
+    ),
+    (
+        "qip-ledgerd",
+        "qip-ledgerd",
+        "ADR 0100 assigns the ledger's role, but its composition-root \
+         modules are doc-only stubs and the binary refuses to start; an \
+         image built from it would ship a process that exits the instant \
+         Cloud Run started it. Excluded for the same reason as qip-fabricd, \
+         while GCP placement waits on ADR 0099 C8. See \
+         docs/adr/0010-what-gets-deployed.md",
+    ),
+];
 
 /// Images `deploy.yml` builds that are not workspace binaries: the crate
 /// each is *not*, the Dockerfile it is built from, and the record deciding
@@ -6552,13 +6599,15 @@ const POD_BEARING_KINDS: [&str; 7] = [
 ];
 
 /// The binaries the workspace builds, none of which may be a Pod's image.
-const TRADING_BINARIES: [&str; 6] = [
+const TRADING_BINARIES: [&str; 8] = [
     "qip-api",
     "qip-fastbrain",
     "qip-deepbrain",
     "qip-edge-node",
     "qip-web",
     "qip-cli",
+    "qip-fabricd",
+    "qip-ledgerd",
 ];
 
 /// The `kind:` values a directory under `infrastructure/gitops` may declare,
@@ -7937,6 +7986,352 @@ fn the_default_openobserve_posture_names_no_anonymous_invoker() {
         refusals >= 2,
         "only {refusals} line(s) inside a validation block name an anonymous member; the \
          condition and its message are two, so the refusal this test relies on is gone"
+    );
+}
+
+/// The column-zero `module "<name>" {` blocks in the catalogue whose source is
+/// `modules/openobserve`, as `(name, body)` with comments gone.
+///
+/// Found by `source`, not by name, so that a second instantiation under
+/// another name is counted rather than missed — two callers deciding the same
+/// posture is the shape where one of them is eventually changed and the other
+/// is not.
+fn openobserve_posture_calls() -> Vec<(String, String)> {
+    let catalogue = without_comments(&read(CATALOGUE));
+    let mut calls = Vec::new();
+    let mut lines = catalogue.lines();
+    while let Some(line) = lines.next() {
+        let Some(name) = line
+            .strip_prefix("module \"")
+            .and_then(|rest| rest.strip_suffix("\" {"))
+        else {
+            continue;
+        };
+        let body = lines
+            .by_ref()
+            .take_while(|line| *line != "}")
+            .collect::<Vec<_>>()
+            .join("\n");
+        if body
+            .lines()
+            .map(collapsed)
+            .any(|line| line == "source = \"./modules/openobserve\"")
+        {
+            calls.push((name.to_string(), body));
+        }
+    }
+    calls
+}
+
+/// A module block's top-level arguments — the lines indented exactly two
+/// spaces — as name and collapsed right-hand side.
+fn top_level_arguments(body: &str) -> std::collections::BTreeMap<String, String> {
+    body.lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("  ")?;
+            if rest.starts_with(' ') {
+                return None;
+            }
+            let (name, value) = rest.split_once('=')?;
+            let name = name.trim();
+            (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                .then(|| (name.to_string(), collapsed(value.trim())))
+        })
+        .collect()
+}
+
+/// A one-line HCL list of quoted strings, or `None` for anything else.
+///
+/// Deliberately narrow: a reference, a function call or a list split over
+/// lines is refused by the caller rather than read as empty, because "this
+/// test could not read the members" and "there are no members" must never be
+/// the same answer.
+fn quoted_string_list(value: &str) -> Option<Vec<String>> {
+    let inner = value.trim().strip_prefix('[')?.strip_suffix(']')?.trim();
+    if inner.is_empty() {
+        return Some(Vec::new());
+    }
+    inner
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            item.strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix('"'))
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// What this file reads of one Config Connector document: its kind, its
+/// name, and — for an IAM grant — the member, the role and the resource it
+/// names.
+#[derive(Debug, Default)]
+struct GitopsGrant {
+    path: String,
+    kind: String,
+    name: String,
+    member: Option<String>,
+    role: Option<String>,
+    resource: Option<String>,
+}
+
+/// Every document in every YAML file under `relative`, read by indentation.
+///
+/// Line-based, like everything else in this file: `metadata.name` at two
+/// spaces, `spec.member` and `spec.role` at two, `spec.resourceRef.name` at
+/// four. A document that is none of those kinds still yields its kind and
+/// name, so a caller can see that it was read.
+fn gitops_documents(relative: &str) -> Vec<GitopsGrant> {
+    let root = repository_root();
+    let mut documents = Vec::new();
+    for extension in ["yaml", "yml"] {
+        for path in files_with_extension(relative, extension) {
+            let display = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("cannot read {display}: {error}"));
+            let mut current = GitopsGrant {
+                path: display.clone(),
+                ..GitopsGrant::default()
+            };
+            let mut top = String::new();
+            let mut second = String::new();
+            for line in content.lines().chain(std::iter::once("---")) {
+                if line.trim() == "---" {
+                    if !current.kind.is_empty() {
+                        documents.push(std::mem::replace(
+                            &mut current,
+                            GitopsGrant {
+                                path: display.clone(),
+                                ..GitopsGrant::default()
+                            },
+                        ));
+                    }
+                    top.clear();
+                    second.clear();
+                    continue;
+                }
+                if line.trim_start().starts_with('#') || line.trim().is_empty() {
+                    continue;
+                }
+                let indent = line.len() - line.trim_start().len();
+                let Some((key, value)) = line.trim().split_once(':') else {
+                    continue;
+                };
+                let value = value
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
+                match indent {
+                    0 => {
+                        top = key.to_string();
+                        second.clear();
+                        if key == "kind" {
+                            current.kind = value;
+                        }
+                    }
+                    2 => {
+                        second = key.to_string();
+                        match (top.as_str(), key) {
+                            ("metadata", "name") => current.name = value,
+                            ("spec", "member") => current.member = Some(value),
+                            ("spec", "role") => current.role = Some(value),
+                            _ => {}
+                        }
+                    }
+                    4 if top == "spec" && second == "resourceRef" && key == "name" => {
+                        current.resource = Some(value);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    documents
+}
+
+#[test]
+fn the_openobserve_posture_module_is_instantiated_and_its_invokers_are_the_manifests() {
+    // ADR 0033 decided OpenObserve's access in `modules/openobserve`, and for
+    // three weeks nothing called the module. Its prod refusal was evaluated
+    // by no plan, its invoker list was compared to nothing, and
+    // `invokers.yaml` went on granting `roles/run.invoker` to the anonymous
+    // principal on the service while the module that exists to refuse that
+    // sat beside it reading as the control. A decision nobody instantiates is
+    // the `MaxExpectedShortfall` failure in Terraform: it reads as protection
+    // and cannot fire.
+    //
+    // So: exactly one call, on every plan, reading the real environment, at
+    // the module's authenticated default — and the manifests hold exactly the
+    // members that posture names, which today is nobody.
+    let calls = openobserve_posture_calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "{CATALOGUE} instantiates modules/openobserve {} time(s) ({:?}); exactly one call is the \
+         decision, none leaves ADR 0033's refusal unevaluated by any plan, and two are two \
+         postures one of which is eventually edited alone",
+        calls.len(),
+        calls.iter().map(|(name, _)| name).collect::<Vec<_>>()
+    );
+    let (name, body) = &calls[0];
+    let arguments = top_level_arguments(body);
+    // The premise: the argument walk read this block at all.
+    assert_eq!(
+        arguments.get("source").map(String::as_str),
+        Some("\"./modules/openobserve\""),
+        "the argument reader found no `source` in module.{name}, so every assertion below would \
+         be about a block it did not read:\n{body}"
+    );
+
+    // Every plan evaluates it. A `count` gated like the identity module's on
+    // the image digest would skip prod, whose plan the refusal exists for.
+    for gate in ["count", "for_each"] {
+        assert!(
+            !arguments.contains_key(gate),
+            "module.{name} is gated by `{gate} = {}`; the module holds no resource, and a gate \
+             on it skips the refusal in exactly the environments that deploy nothing yet, prod \
+             among them",
+            arguments.get(gate).map(String::as_str).unwrap_or_default()
+        );
+    }
+    // Against the environment actually being planned. A literal would make
+    // the prod refusal unreachable from any plan but the one it names.
+    assert_eq!(
+        arguments.get("environment").map(String::as_str),
+        Some("var.environment"),
+        "module.{name} is not handed `var.environment`, so its prod refusal reads a value other \
+         than the environment the plan is for"
+    );
+    // At the default, and the default is the authenticated posture. A call
+    // that writes `access_posture` at all has taken the decision back from
+    // the module; one that writes `anonymous` has reopened ADR 0030.
+    assert!(
+        !arguments.contains_key("access_posture"),
+        "module.{name} passes access_posture = {}; ADR 0033 is applied by leaving it at the \
+         module's authenticated default, and the anonymous posture it ended is not a value a \
+         caller sets in passing",
+        arguments
+            .get("access_posture")
+            .map(String::as_str)
+            .unwrap_or_default()
+    );
+    assert!(
+        openobserve_variable("access_posture")
+            .lines()
+            .map(collapsed)
+            .any(|line| line == "default = \"authenticated\""),
+        "modules/openobserve's `access_posture` no longer defaults to \"authenticated\", so the \
+         call above leaving it unset no longer selects ADR 0033's posture"
+    );
+
+    // The members that posture names: `access_principals` as the call passes
+    // it, or the module's own default where it does not.
+    let members = match arguments.get("access_principals") {
+        Some(value) => quoted_string_list(value).unwrap_or_else(|| {
+            panic!(
+                "module.{name} passes access_principals = {value}; this test reads a one-line \
+                 list of quoted members and nothing else, so it cannot say what the manifests \
+                 must carry"
+            )
+        }),
+        None => {
+            let block = openobserve_variable("access_principals");
+            let default = block
+                .lines()
+                .map(collapsed)
+                .find_map(|line| line.strip_prefix("default = ").map(str::to_string))
+                .unwrap_or_else(|| {
+                    panic!("modules/openobserve's `access_principals` has no default:\n{block}")
+                });
+            quoted_string_list(&default).unwrap_or_else(|| {
+                panic!(
+                    "modules/openobserve defaults `access_principals` to {default}, which this \
+                     test cannot read as a list of members"
+                )
+            })
+        }
+    };
+    let expected: std::collections::BTreeSet<(String, String)> = members
+        .iter()
+        .map(|member| ("roles/run.invoker".to_string(), member.clone()))
+        .collect();
+
+    // And the manifests carry exactly those, in every environment that
+    // deploys the service: no fewer, which is an operator the module named
+    // and nobody granted, and no more, which is a grant the decision never
+    // made — the anonymous one included.
+    let environments: Vec<String> = {
+        let mut found: Vec<String> =
+            std::fs::read_dir(repository_root().join("infrastructure/gitops/envs"))
+                .expect("infrastructure/gitops/envs is readable")
+                .flatten()
+                .filter(|entry| entry.path().is_dir())
+                .map(|entry| entry.file_name().to_string_lossy().to_string())
+                .collect();
+        found.sort();
+        found
+    };
+    let mut deployed = 0usize;
+    let mut grants_read = 0usize;
+    for environment in &environments {
+        let service = format!("qip-{environment}-openobserve");
+        let documents = gitops_documents(&format!("infrastructure/gitops/envs/{environment}"));
+        if !documents
+            .iter()
+            .any(|document| document.kind == "RunService" && document.name == service)
+        {
+            continue;
+        }
+        deployed += 1;
+        let mut granted = std::collections::BTreeSet::new();
+        for document in documents
+            .iter()
+            .filter(|document| document.kind.starts_with("IAM"))
+        {
+            grants_read += 1;
+            if document.resource.as_deref() != Some(service.as_str()) {
+                continue;
+            }
+            // One shape only: an authoritative `IAMPolicy` carries a
+            // `bindings` list this reader does not walk, and a grant it could
+            // not see is a grant this test would call absent.
+            assert_eq!(
+                document.kind, "IAMPolicyMember",
+                "{} `{}` in {} is an IAM grant on {service} in a shape this test does not read",
+                document.kind, document.name, document.path
+            );
+            granted.insert((
+                document.role.clone().unwrap_or_default(),
+                document.member.clone().unwrap_or_default(),
+            ));
+        }
+        assert_eq!(
+            granted, expected,
+            "infrastructure/gitops/envs/{environment} grants {granted:?} on {service}; \
+             module.{name} names {expected:?} under ADR 0033's authenticated posture, and the \
+             manifests are that decision's applied form. A member here the module does not \
+             name is a grant nobody decided — the anonymous one above all — and a member the \
+             module names that is missing here is an operator who was promised access"
+        );
+    }
+    // The premises of the loop: a service was found to compare, and the
+    // reader saw grants at all, so an empty `granted` is a finding and not a
+    // reader that stopped reading.
+    assert!(
+        deployed >= 1,
+        "no environment under infrastructure/gitops/envs deploys an OpenObserve RunService, so \
+         the manifests were compared with the module nowhere"
+    );
+    assert!(
+        grants_read >= 1,
+        "no IAM grant was read under infrastructure/gitops/envs; the reader has stopped seeing \
+         `invokers.yaml`, and the comparison above is against nothing"
     );
 }
 

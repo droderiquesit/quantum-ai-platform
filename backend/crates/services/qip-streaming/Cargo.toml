@@ -24,6 +24,8 @@ qip-sequencing.workspace = true
 # application` permits, so the port adapter for it lives here in `mesh.rs`
 # beside `local.rs` and `durable.rs` rather than in `qip-transport`'s tests.
 qip-transport.workspace = true
+# Durable envelope storage: message log and journal backing (ADR 0100).
+qip-storage.workspace = true
 
 [lints]
 workspace = true

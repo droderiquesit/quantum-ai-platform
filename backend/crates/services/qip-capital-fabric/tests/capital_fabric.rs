@@ -1707,3 +1707,116 @@ fn a_funding_rate_that_cannot_price_a_transfer_is_refused_by_currency_and_a_stat
     );
     Ok(())
 }
+
+#[test]
+fn a_transfer_whose_conversion_cannot_be_represented_is_refused_rather_than_aborting() -> Result<()>
+{
+    // `TransferCostModel::price` priced the conversion through
+    // `TransactionCostModel::estimate`, which panicked on the refusal
+    // `checked_estimate` returns. The release profile is `panic = "abort"`, so
+    // one transfer too large to price ended the process that could have
+    // refused it — from inside a function that returns a `Result`.
+    //
+    // The fx model is a sound one: every rate is under the per-trade ceiling
+    // `checked` enforces, so this is the notional failing, not the record.
+    let fx = TransactionCostModel {
+        impact_coefficient_bps: 9_000.0,
+        ..TransactionCostModel::default()
+    };
+    assert!(
+        fx.clone().checked().is_ok(),
+        "the premise is a valid fx model, and this one was refused"
+    );
+    // Premise: at a participation past the square-root cap of 4 the impact
+    // term is 9,000bp x 2 = 18,000bp, which on the largest representable
+    // amount has no representable product.
+    let amount = Decimal::MAX;
+    assert!(
+        amount.checked_apply_bps(18_000.0).is_none(),
+        "the premise is a conversion cost too large to represent"
+    );
+
+    let model = TransferCostModel::new(
+        fx,
+        LiquidityProfile::listed(Decimal::from_int(5_000_000_000), 1.0),
+        FundingCurve::flat(400.0)?,
+        dec!("25"),
+        300.0,
+    )?;
+    let quote = SettlementCalendar::weekday(SettlementConvention::T1)?.quote(thursday())?;
+    let euro_venue = CapitalLocation::new(
+        Region::new("emea"),
+        Currency::EUR,
+        VenueId::new("EURO-DESK"),
+    );
+    let refusal = model
+        .price(
+            amount,
+            &treasury(),
+            &euro_venue,
+            &quote,
+            Duration::from_days(3),
+        )
+        .expect_err("a conversion cost that cannot be represented prices no transfer");
+    assert_eq!(refusal.code(), "numeric", "got {refusal}");
+    let message = refusal.message();
+    assert!(
+        message.contains("bp of impact_coefficient_bps at this participation:"),
+        "the refusal must name the term that could not be priced: {message}"
+    );
+    assert!(
+        message.contains("the USD -> EUR conversion"),
+        "and the corridor it was pricing: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_transfer_model_built_on_an_fx_model_with_a_non_finite_spread_is_refused_at_construction()
+-> Result<()> {
+    // The fx model's fields are public, and `TransferCostModel::new` checked
+    // the wire fee and the opportunity rate but not the model every
+    // conversion is priced on. A spread that is not a number was admitted at
+    // construction and found only on the first cross-currency transfer,
+    // which is the latest and least attributable moment to find it.
+    let liquidity = || LiquidityProfile::listed(Decimal::from_int(5_000_000_000), 1.0);
+
+    // The admitting half: a finite spread builds.
+    let sound = TransactionCostModel {
+        half_spread_bps: 2.5,
+        ..TransactionCostModel::default()
+    };
+    TransferCostModel::new(
+        sound,
+        liquidity(),
+        FundingCurve::flat(400.0)?,
+        dec!("25"),
+        300.0,
+    )?;
+
+    for spread in [f64::INFINITY, f64::NAN] {
+        let poisoned = TransactionCostModel {
+            half_spread_bps: spread,
+            ..TransactionCostModel::default()
+        };
+        let refusal = TransferCostModel::new(
+            poisoned,
+            liquidity(),
+            FundingCurve::flat(400.0)?,
+            dec!("25"),
+            300.0,
+        )
+        .err()
+        .ok_or_else(|| {
+            qip_core::error::Error::invalid(format!(
+                "a transfer model on a {spread}bp spread was built; it must be refused"
+            ))
+        })?;
+        assert_eq!(refusal.code(), "invalid", "got {refusal}");
+        assert!(
+            refusal.message().contains("half_spread_bps is "),
+            "the refusal must name the field to correct: {refusal}"
+        );
+    }
+    Ok(())
+}

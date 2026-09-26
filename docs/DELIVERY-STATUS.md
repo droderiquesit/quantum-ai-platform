@@ -56,7 +56,7 @@ fails when this drifts.
 
 | Fact | Value |
 |---|---|
-| Crates | 58 |
+| Crates | 60 |
 | Blueprint sections scored | 181 |
 
 ---

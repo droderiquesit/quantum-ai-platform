@@ -161,8 +161,10 @@ pub struct Utilisation {
 pub enum CapitalGrant {
     /// Send it at the requested size.
     Full,
-    /// Send it, but smaller. Carries the size, so a caller cannot mistake a
-    /// reduction for an approval of what it asked for.
+    /// Send it, but smaller. [`CapitalEnvelope::admit`] no longer constructs
+    /// this: an order the envelope cannot take whole is refused whole. The
+    /// variant is kept only so a journal or delta written before that change
+    /// still deserialises; removing it is tracked separately.
     Reduced(Decimal),
     /// Do not send it.
     Refused(String),
@@ -216,15 +218,24 @@ impl CapitalEnvelope {
                 self.gross_limit
             ));
         }
-        let cap = if self.order_limit < headroom {
-            self.order_limit
-        } else {
-            headroom
-        };
-        if notional <= cap {
-            CapitalGrant::Full
-        } else {
-            CapitalGrant::Reduced(cap)
+        // Refused whole, never reduced to fit (CAPITAL-025). Answering a
+        // larger order with a smaller size sends something the strategy never
+        // asked for: the order was sized against a thesis, and a fraction of
+        // it is a different trade nobody decided. `Reduced` stays declared so
+        // a journal written before this change still reads; nothing here
+        // constructs it.
+        if notional > self.order_limit {
+            return CapitalGrant::Refused(format!(
+                "order notional {notional} exceeds the {} order limit",
+                self.order_limit
+            ));
         }
+        if notional > headroom {
+            return CapitalGrant::Refused(format!(
+                "order notional {notional} exceeds the {headroom} of the {} gross limit left",
+                self.gross_limit
+            ));
+        }
+        CapitalGrant::Full
     }
 }

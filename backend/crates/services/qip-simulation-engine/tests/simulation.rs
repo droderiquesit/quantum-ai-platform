@@ -307,7 +307,7 @@ fn the_simulations_default_costs_are_the_platforms_own() {
 }
 
 #[test]
-fn a_simulated_fill_is_charged_exactly_what_the_pre_trade_model_quotes() {
+fn a_simulated_fill_is_charged_exactly_what_the_pre_trade_model_quotes() -> Result<()> {
     // The whole point of the rewrite. A backtest that prices an order
     // differently from the pre-trade path makes a strategy look profitable in
     // simulation and not in production, and the disagreement is invisible
@@ -336,13 +336,14 @@ fn a_simulated_fill_is_charged_exactly_what_the_pre_trade_model_quotes() {
     let quoted = model
         .pricing_at(volatility)
         .expect("the default model prices at an ordinary volatility")
-        .estimate(cost.notional, participation);
+        .checked_estimate(cost.notional, participation)?;
     assert_eq!(
         cost.charged(),
         quoted,
         "the backtest charged {} where the pre-trade model quotes {quoted}",
         cost.charged()
     );
+    Ok(())
 }
 
 #[test]

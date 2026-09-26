@@ -22,10 +22,12 @@
 pub mod allocation;
 /// The arbitrage desk, built from the payload's whitelist once capital arrives.
 pub mod arbitrage;
+pub mod control;
 /// The §31.1 mirror: which venues are abroad, and this region's discipline.
 pub mod cross_region;
 /// The polled region-availability wire: which peers have gone dark (§36.3).
 pub mod dark;
+pub mod event_fabric;
 /// The simulated venue's quote feed, and the one value it may be configured as.
 pub mod feed;
 pub mod gateway;
@@ -35,13 +37,16 @@ pub mod mesh;
 pub mod mirror;
 /// One pass of the node: feed, decide, act, reconcile.
 pub mod pass;
+pub mod replay;
 /// Cancel-and-replace of a stale resting order, beneath the cell's placer
 /// seam — the caller `qip_routing::reprice` was written for.
 pub mod reprice;
+pub mod scheduler;
 /// The cell's share of its region's grant, as the health body reports it.
 pub mod share;
 /// The strategies the payload's plan names, deployed under their grants.
 pub mod strategies;
+pub mod tape;
 /// The node's own metric seam: the mesh link, rendered as a series.
 pub mod telemetry;
 pub mod venue;
@@ -50,10 +55,16 @@ use allocation::RegionCapital;
 use cross_region::CrossRegionMirror;
 use qip_core::Clock;
 use qip_core::error::Result;
+use qip_core::{Duration, ObjectId};
 use qip_edge::cell::{Cell, CellConfig};
+use qip_feature_dag::definition::ValueKind;
 use qip_feature_dag::engine::FeatureEngine;
+use qip_feature_dag::features::standard_suite;
+use qip_feature_dag::state::MarketState;
 use qip_observability::Telemetry;
 use qip_observability::metrics::Metrics;
+use qip_strategy::catalogue::FeatureCatalogue;
+use qip_strategy::ir::Type;
 use std::sync::Arc;
 use telemetry::MeshSeries;
 
@@ -159,4 +170,48 @@ pub fn assemble(
         cell,
         mesh_series,
     })
+}
+
+/// The standard feature suite for one instrument, registered into a fresh
+/// [`FeatureEngine`], and the [`FeatureCatalogue`] naming exactly the
+/// features that registration put there.
+///
+/// Before this, the engine and the catalogue were built independently by
+/// nobody in agreement: `main.rs` constructed
+/// `FeatureEngine::new(MarketState::default(), ..)` and registered nothing,
+/// and `strategies::StrategyInstaller` compiled every plan against
+/// `FeatureCatalogue::new()`. Two empty vocabularies never disagree, which is
+/// why no test caught it — every fixture plan used a literal condition
+/// (`Expr::Flag(true)`) rather than a computed feature. A plan naming
+/// `microprice` was refused at compile with "not registered in the feature
+/// graph" regardless of how the engine was built, and had the compiler
+/// somehow accepted it, the engine still had nothing to compute the value
+/// from. This function is the one place both are built, from the one call to
+/// [`standard_suite`], so the catalogue a strategy compiles against cannot
+/// name a feature the paired engine does not also carry.
+///
+/// Takes a subject rather than assuming one: [`standard_suite`] is defined
+/// per instrument, and this crate's binary does not yet know at start-up
+/// which instruments a cell will trade — a caller compiling a strategy
+/// already holds that instrument in the specification it is compiling, and a
+/// caller assembling a cell holds it in configuration or in the first plan
+/// applied. Neither is decided here.
+pub fn standard_engine_and_catalogue(
+    subject: &ObjectId,
+    max_staleness: Duration,
+) -> Result<(FeatureEngine, FeatureCatalogue)> {
+    let mut engine = FeatureEngine::new(MarketState::default(), max_staleness);
+    let mut catalogue = FeatureCatalogue::new();
+    for definition in standard_suite(subject) {
+        let key = definition.key();
+        let value_type = match definition.value_kind() {
+            ValueKind::Exact => Type::Exact,
+            ValueKind::Statistic => Type::Statistic,
+            ValueKind::Count => Type::Count,
+            ValueKind::Flag => Type::Flag,
+        };
+        catalogue.declare(key, value_type)?;
+        engine.register(definition)?;
+    }
+    Ok((engine, catalogue))
 }

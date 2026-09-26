@@ -21,7 +21,9 @@ use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation}
 use crate::mirror::MirrorArrangement;
 use crate::passive::{self, PassiveChoice, PassiveOutcome, WholeReason};
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
+use crate::pressure::{Exhaustion, JournalPressure};
 use crate::quoting::{Admission, Depletion, MessageKind, QuoteBudget, RateLimits};
+use crate::realised_loss::{Booking, Leg as RealisedLeg, RealisedLedger, Unpriced};
 use crate::region::RegionOutlook;
 use crate::reservation::RegionTable;
 use crate::resume::{ResumeDiscipline, VenueAccount};
@@ -38,7 +40,7 @@ use qip_contracts::policy::Dispositions;
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
 use qip_contracts::venue::{VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
-use qip_core::{Decimal, Duration, ObjectId, Timestamp};
+use qip_core::{Currency, Decimal, Duration, ObjectId, Timestamp};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_orderbook::venue::VenueState;
 use qip_protocols::registry::{FeedKey, ProtocolRegistry};
@@ -280,6 +282,29 @@ pub const GATE_AWAITING_RECONCILIATION: &str = "awaiting_reconciliation";
 /// new one, so `qip_edge_refusals_total{gate}` gains a value and no seam.
 pub const GATE_DISPOSITION: &str = "disposition";
 
+/// The gate a cell refuses under while the journal spool it writes through
+/// is exhausted, and the gate a narrowing of its sizing is journaled under
+/// (ADR 0100 §6).
+///
+/// A constant because it is passed to [`Cell::refuse`] and so becomes a
+/// value of `qip_edge_refusals_total{gate}`: a label is bounded only while
+/// every site hands it a constant or a literal.
+pub const GATE_JOURNAL_PRESSURE: &str = "journal_pressure";
+
+/// The gate a strategy's signal is refused under when its conviction is not
+/// a finite number (REFLEX-015).
+///
+/// `Conviction::new` clamps, and `f64::NAN.clamp(0.0, 1.0)` is `NaN`, so a
+/// rule whose conviction expression evaluates to `NaN` produces a signal
+/// that reads as a belief and is none. Left to the journal, the entry is
+/// refused at encoding and the signal carries on regardless: it is sized,
+/// netted and sent on a number nobody can read back, and the chain records
+/// a codec failure rather than the strategy that produced it. Refused here,
+/// at the one site a signal enters the cell, it goes no further and the
+/// refusal names the strategy. A constant for the same cardinality reason
+/// as [`GATE_JOURNAL_PRESSURE`].
+pub const GATE_SIGNAL_CONVICTION: &str = "signal_conviction";
+
 /// How long a disposition's intent is good for once built. It enters the
 /// netting set in the same pass, so this is documentation of the intent's
 /// scope rather than a bound anything waits on: the instruction is re-read
@@ -360,6 +385,24 @@ pub struct CellConfig {
     /// every later leg at its planned size, which is the position this
     /// control exists to stop.
     pub decomposition: DecompositionPolicy,
+    /// Whether this cell reads the journal-pressure wire (ADR 0100 §6).
+    ///
+    /// Off by default, and that is the decision rather than an omission. A
+    /// wired cell fails engaged until it is handed its first reading, which
+    /// is right for the node that owns a spool and wrong for every cell user
+    /// that has none: armed on every cell, the wire would halt the demo, the
+    /// chaos and e2e suites and the legacy node mode on a spool nobody
+    /// writes. Only [`Self::with_journal_wire`] turns it on.
+    pub journal_wire: bool,
+    /// Whether this cell's journal drops what it has shipped to a mirror.
+    ///
+    /// Off by default: every reader of `Cell::journal().entries()` written
+    /// before trimming existed — the chaos and region-share suites among
+    /// them — expects the whole session. A cell whose mirror is the durable
+    /// record turns it on with [`Self::with_journal_trimmed_on_ship`], so its
+    /// memory is bounded by what has not shipped rather than by uptime.
+    /// `Journal::len` reads the same either way.
+    pub journal_trimmed_on_ship: bool,
 }
 
 /// The rolling window §27.1's crossing cap is evaluated against.
@@ -402,7 +445,30 @@ impl CellConfig {
             quote_limits: RateLimits::default(),
             dispersion: DispersionPolicy::default(),
             decomposition: DecompositionPolicy::default(),
+            journal_wire: false,
+            journal_trimmed_on_ship: false,
         }
+    }
+
+    /// Build the cell's journal to trim behind every shipped batch.
+    #[must_use]
+    pub fn with_journal_trimmed_on_ship(mut self) -> Self {
+        self.journal_trimmed_on_ship = true;
+        self
+    }
+
+    /// Arm the journal-pressure wire (ADR 0100 §6).
+    ///
+    /// The cell this builds halts new exposure until
+    /// [`Cell::apply_journal_pressure`] hands it a reading, and afterwards
+    /// sizes and halts by the last reading handed. A composition root arms
+    /// this only where it also polls a spool on every pass: a wired cell
+    /// nobody feeds stays halted, which is the fail-closed reading of a
+    /// wire whose state is unknown.
+    #[must_use]
+    pub fn with_journal_wire(mut self) -> Self {
+        self.journal_wire = true;
+        self
     }
 
     /// Measure the crossing cap over `interval` rather than per net.
@@ -1032,6 +1098,15 @@ pub struct Cell {
     /// payload, however new, and no operator credential on the kill switch
     /// touches it. Two wires that shared a release would share a failure.
     polled_halt: Option<String>,
+    /// The fourth wire (ADR 0100 §6): the last journal-pressure reading
+    /// handed to this cell. `None` is a cell built without the wire, which
+    /// never reads it; a wired cell starts at
+    /// `Exhausted(NeverApplied)` so that a node which forgets to feed it
+    /// trades nothing rather than trading with no record. Released only by
+    /// a reading that does not halt — no payload, credential or flag
+    /// touches it, for the same reason the polled wire keeps its own
+    /// release.
+    journal_pressure: Option<JournalPressure>,
     dropcopy: DropCopyReconciler,
     /// The arbitrage desk, if the composition root installed one. `None` is
     /// a cell that runs strategy programs and scans no graph, which is every
@@ -1073,6 +1148,13 @@ pub struct Cell {
     /// is why the drop-copy reconciler never sees one.
     strategy_positions: BTreeMap<String, Decimal>,
     strategy_cash: BTreeMap<String, Decimal>,
+    /// The same two seams — each fill share and each cross leg — as
+    /// average-cost positions and each owner's realised P&L, which is where
+    /// every `Utilisation::realised_loss` this cell holds is written from.
+    /// Until it existed nothing wrote that field and no grant's drawdown
+    /// limit could fire (CAPITAL-026); see [`crate::realised_loss`]. Keyed
+    /// as `strategy_positions` is, so bounded by the same thing.
+    realised: RealisedLedger,
     /// Every disagreement between this cell's fills and the venue's own
     /// account, kept so the centre hears about it in the state delta as well as
     /// in the journal.
@@ -1198,6 +1280,9 @@ impl Cell {
         // changed.
         let budget = QuoteBudget::new(config.quote_limits, &config.venues);
         let fill_times = FillTimes::new(config.dispersion, &config.venues);
+        let journal_pressure = config
+            .journal_wire
+            .then_some(JournalPressure::Exhausted(Exhaustion::NeverApplied));
         Ok(Self {
             protocols: ProtocolRegistry::new(),
             sequencer: Sequencer::new(ReorderPolicy::default()),
@@ -1209,14 +1294,20 @@ impl Cell {
             policy_halted: false,
             policy_halt_barrier: None,
             polled_halt: None,
+            journal_pressure,
             dropcopy: DropCopyReconciler::new(),
             desk: None,
-            journal: Journal::new(),
+            journal: if config.journal_trimmed_on_ship {
+                Journal::trimmed_on_ship()
+            } else {
+                Journal::new()
+            },
             working: BTreeMap::new(),
             confirmed: Vec::new(),
             positions: BTreeMap::new(),
             strategy_positions: BTreeMap::new(),
             strategy_cash: BTreeMap::new(),
+            realised: RealisedLedger::default(),
             breaks: Vec::new(),
             breaks_omitted: 0,
             order_sequence: 0,
@@ -1820,6 +1911,7 @@ impl Cell {
             self.autonomy.kill_switch().is_globally_tripped(),
             self.policy_halted,
             self.polled_halt.is_some(),
+            self.journal_pressure.map(JournalPressure::halts),
         );
     }
 
@@ -1952,11 +2044,143 @@ impl Cell {
         )
     }
 
-    /// Whether the cell is stopped, by any of its three halts.
+    /// Whether the cell is stopped, by any of its four halts.
     pub fn is_halted(&self) -> bool {
+        self.halted_other_than_by_journal() || self.journal_exhausted()
+    }
+
+    /// Whether a halt other than the journal wire holds the cell.
+    ///
+    /// Separate because the journal wire releases itself the moment the
+    /// spool recovers. `break_on`, which trips the kill switch on a
+    /// reconciliation break, asks this rather than [`Self::is_halted`]:
+    /// asking the latter, a break found while the spool was exhausted would
+    /// trip nothing, and the cell would resume trading on a book that
+    /// disagrees with the venue as soon as the disk freed up.
+    /// `break_cycle` cannot run while the journal wire holds the cell, and
+    /// keeps `is_halted` — see the note there.
+    fn halted_other_than_by_journal(&self) -> bool {
         self.autonomy.kill_switch().is_globally_tripped()
             || self.policy_halted
             || self.polled_halt.is_some()
+    }
+
+    fn journal_exhausted(&self) -> bool {
+        self.journal_pressure.is_some_and(JournalPressure::halts)
+    }
+
+    /// The journal-pressure reading in force, or `None` on a cell built
+    /// without the wire.
+    pub fn journal_pressure(&self) -> Option<JournalPressure> {
+        self.journal_pressure
+    }
+
+    /// Apply what the journal spool read as, this pass (ADR 0100 §6).
+    ///
+    /// The discipline of [`Self::apply_polled_halt`]: the reading is the
+    /// state, every pass re-applies it, and a steady state is no event.
+    /// `Exhausted` halts new exposure; `Narrow` sizes it down; `Normal` does
+    /// neither. What the node hands is what the node judged, freshness
+    /// included — see [`crate::pressure::Freshness::judge`] — so the cell
+    /// reads no clock here and a replay acts on the same reading.
+    ///
+    /// Transitions are journaled with the variants the chain already has:
+    /// `HaltChanged` when the wire engages or releases, and `Refused` under
+    /// [`GATE_JOURNAL_PRESSURE`] when sizing becomes narrowed. The wired
+    /// cell's construction state, `Exhausted(NeverApplied)`, was never
+    /// journaled — there is no instant to stamp it with — so leaving it for
+    /// `Normal` is not journaled either; the passes it refused are, under
+    /// the gate. Leaving it for another exhausted cause is journaled as the
+    /// halt, because that is the first time a cause exists to name.
+    ///
+    /// Refused on a cell built without the wire, rather than ignored: a
+    /// reading the cell would drop is a reading the node believes is in
+    /// force. Refused too for `Exhausted(NeverApplied)`, which is the cell's
+    /// own state before any reading and not something a spool can report.
+    pub fn apply_journal_pressure(
+        &mut self,
+        reading: JournalPressure,
+        now: Timestamp,
+    ) -> Result<()> {
+        let Some(previous) = self.journal_pressure else {
+            return Err(Error::invalid(
+                "this cell was built without the journal wire and reads no journal pressure; \
+                 build it from CellConfig::with_journal_wire, or stop handing it readings",
+            ));
+        };
+        if reading == JournalPressure::Exhausted(Exhaustion::NeverApplied) {
+            return Err(Error::invalid(
+                "never_applied is the cell's own state before its first reading, not a reading; \
+                 hand the spool's actual state",
+            ));
+        }
+        let never_applied = previous == JournalPressure::Exhausted(Exhaustion::NeverApplied);
+        self.journal_pressure = Some(reading);
+        match (previous.halts(), reading.halts()) {
+            (false, true) => {
+                self.journal.record(
+                    Decision::HaltChanged {
+                        halted: true,
+                        reason: format!("journal pressure: {}", reading.describe()),
+                    },
+                    now,
+                );
+            }
+            (true, true) if never_applied => {
+                self.journal.record(
+                    Decision::HaltChanged {
+                        halted: true,
+                        reason: format!("journal pressure: {}", reading.describe()),
+                    },
+                    now,
+                );
+            }
+            (true, false) if !never_applied => {
+                // `halted` names the cell, not the wire, as in the polled
+                // wire's release: another halt may still hold it.
+                let halted = self.is_halted();
+                self.journal.record(
+                    Decision::HaltChanged {
+                        halted,
+                        reason: format!(
+                            "journal pressure reads {}; the cell is {}",
+                            reading.describe(),
+                            if halted {
+                                "still halted by another wire"
+                            } else {
+                                "released"
+                            }
+                        ),
+                    },
+                    now,
+                );
+            }
+            (true, false) | (true, true) | (false, false) => {}
+        }
+        if let JournalPressure::Narrow(narrowing) = reading
+            && previous != reading
+        {
+            self.journal.record(
+                Decision::Refused {
+                    gate: GATE_JOURNAL_PRESSURE.to_string(),
+                    reason: format!(
+                        "the journal spool is filling; new exposure is sized at {} of what it \
+                         would otherwise be until the spool drains",
+                        narrowing.multiplier()
+                    ),
+                },
+                now,
+            );
+        }
+        self.record_halt();
+        Ok(())
+    }
+
+    /// The multiplier the journal wire applies to a pass's sizing: one on a
+    /// cell built without it.
+    fn journal_sizing_multiplier(&self) -> Decimal {
+        self.journal_pressure
+            .map_or(Decimal::ONE, JournalPressure::sizing_multiplier)
     }
 
     /// The reason the polled halt wire is engaged, while it is.
@@ -2600,13 +2824,30 @@ impl Cell {
         // checks its own envelope's window, and the centre named only grants
         // live at its own clock, so the sum stays inside the centre's share.
         let verified_at = envelope.verified_at();
+        // The strategy's realised loss and any fill it could not price carry
+        // across a redeploy unless this grant was issued after them — see
+        // `RealisedLedger::redeployed`. A plan that changes one rule redeploys
+        // under the grant it lost money under, and a drawdown that an
+        // unsigned redeploy cleared would be a limit anyone holding the call
+        // could reset. The envelope states no issue instant a cell can read;
+        // its window is the statement of one, and an instant before its
+        // expiry at which it is not live is exactly an instant before it was
+        // granted.
+        let owner = envelope.strategy().as_str().to_string();
+        self.realised.redeployed(&owner, |at| {
+            at < envelope.expires_at() && !envelope.is_live(at)
+        });
+        let utilisation = Utilisation {
+            realised_loss: self.realised.realised_loss(&owner),
+            ..Utilisation::default()
+        };
         self.deployed.insert(
-            envelope.strategy().as_str().to_string(),
+            owner,
             Deployed {
                 strategy,
                 runtime,
                 envelope,
-                utilisation: Utilisation::default(),
+                utilisation,
                 class: StrategyClass::PriceOnly,
                 pricing,
             },
@@ -2931,8 +3172,10 @@ impl Cell {
                 "kill_switch"
             } else if self.policy_halted {
                 "policy_halt"
-            } else {
+            } else if self.polled_halt.is_some() {
                 "polled_halt"
+            } else {
+                GATE_JOURNAL_PRESSURE
             };
             self.refuse(&mut report, gate, "the cell is halted", now);
             return Ok(report);
@@ -2990,7 +3233,14 @@ impl Cell {
         // reads the same narrowing, so a payload applied mid-pass changes the
         // next pass, never half of this one.
         let narrowing = self.narrowing(now);
-        let multiplier = narrowing.sizing_multiplier();
+        // The journal wire compounds with the degradation table rather than
+        // replacing it: both narrow, and a pass is sized by the stricter
+        // product. A product that cannot be represented narrows to nothing,
+        // the same asymmetry the table keeps.
+        let multiplier = narrowing
+            .sizing_multiplier()
+            .checked_mul(self.journal_sizing_multiplier())
+            .unwrap_or(Decimal::ZERO);
         // Freshness is a function of `now`, so this is the instant it becomes
         // known and the only instant at which the recorded value is what the
         // cell actually sized against. Before this the whole table was
@@ -3063,6 +3313,27 @@ impl Cell {
                     continue;
                 }
             };
+            // Both readings are checked because both leave the cell: the
+            // probability sizes the intent and the shrunk value is what the
+            // journal hashes. Infinite probabilities are clamped by
+            // `Conviction::new`; `NaN` survives the clamp.
+            if !signal.conviction.probability().is_finite()
+                || !signal.conviction.shrunk().is_finite()
+            {
+                self.refuse(
+                    &mut report,
+                    GATE_SIGNAL_CONVICTION,
+                    &format!(
+                        "strategy {} raised a {} signal on {} whose conviction is not a finite \
+                         number; a belief nobody can read back is not acted on",
+                        signal.strategy.as_str(),
+                        signal.kind.as_str(),
+                        signal.object_id.as_str()
+                    ),
+                    now,
+                );
+                continue;
+            }
 
             self.journal.record(
                 Decision::SignalRaised {
@@ -3500,6 +3771,22 @@ impl Cell {
             return Ok(None);
         }
 
+        // A strategy holding a fill the cell could not price is stopped
+        // before its envelope is asked, because `admit` reads only the
+        // realised-loss number and that number does not contain the fill
+        // nobody could price. Asking anyway would treat an unknown loss as
+        // none and send the next order.
+        if let Some(unpriced) = self.realised.latched(&key) {
+            let reason = unpriced_refusal(
+                &key,
+                self.is_desk(&key),
+                deployed.envelope.signature(),
+                unpriced,
+            );
+            self.refuse(report, "capital", &reason, now);
+            return Ok(None);
+        }
+
         let quantity = match deployed
             .envelope
             .admit(&venue, notional, &deployed.utilisation, now)
@@ -3516,6 +3803,15 @@ impl Cell {
                 reduced
             }
             CapitalGrant::Refused(reason) => {
+                let reason = drawdown_refusal(
+                    &key,
+                    &deployed.envelope,
+                    &deployed.utilisation,
+                    &venue,
+                    notional,
+                    reason,
+                    now,
+                );
                 self.refuse(report, "capital", &reason, now);
                 return Ok(None);
             }
@@ -3629,11 +3925,21 @@ impl Cell {
         // its flagship case: see `cross_internally`, where the arithmetic that
         // makes a full cancellation permanently out of cap is set out.
         let crossed = self.cross_internally(net_intent, now, report);
+        // The unit the cross is priced in: the listing's own, from the placer
+        // whose book gave the mid, asked only when there is a cross to price.
+        // A cross leg booked with no unit against a position a venue fill
+        // opened in a stated one would read as a second unit and stop the
+        // strategy for a mismatch that is not there.
+        let cross_unit = crossed.as_ref().and_then(|_| {
+            gateway
+                .quote_terms(&net_intent.object_id, &net_intent.venue)
+                .map(|terms| terms.quote_unit.as_str().to_string())
+        });
 
         let Some(is_buy) = net_intent.is_buy() else {
             // Nothing reached the venue, so the cross — if the cap allowed one
             // — is final at this point and safe to seal into the chain.
-            self.settle_cross(net_intent, crossed, now, report);
+            self.settle_cross(net_intent, crossed, cross_unit.as_deref(), now, report);
             self.journal.record(
                 Decision::Refused {
                     gate: "internal_cross".to_string(),
@@ -3738,7 +4044,7 @@ impl Cell {
         // assert that two strategies traded during a pass that produced
         // nothing at all. The chain is the record; it may not carry a trade
         // the pass did not make.
-        self.settle_cross(net_intent, crossed, now, report);
+        self.settle_cross(net_intent, crossed, cross_unit.as_deref(), now, report);
 
         // Utilisation is charged per contributor, pro-rata on what each
         // wanted, so a netted order still spends each strategy's own envelope
@@ -4389,7 +4695,7 @@ impl Cell {
         }
         let mut confirmed = Vec::new();
         for execution in gateway.execution_reports() {
-            if let Some(fill) = self.confirm(execution, now) {
+            if let Some(fill) = self.confirm(execution, &*gateway, now) {
                 confirmed.push(fill);
             }
         }
@@ -4459,7 +4765,12 @@ impl Cell {
         self.break_on(detail, now);
     }
 
-    fn confirm(&mut self, execution: ExecutionReport, now: Timestamp) -> Option<ConfirmedFill> {
+    fn confirm(
+        &mut self,
+        execution: ExecutionReport,
+        gateway: &dyn Placer,
+        now: Timestamp,
+    ) -> Option<ConfirmedFill> {
         if !execution.quantity.is_positive() || !execution.price.is_positive() {
             self.break_on(
                 format!(
@@ -4515,6 +4826,13 @@ impl Cell {
             working.order.closed = Some("filled".to_string());
         }
         let shares = working.net.split_fill(execution.quantity);
+        // The listing's quote currency as the placer states it, read after
+        // the venue check above so it is asked about the venue that filled.
+        // `None` stays `None`: a price journaled in a currency the cell
+        // assumed is a posting in a unit nobody stated (LEDGER-021).
+        let quote_unit = gateway
+            .quote_terms(&working.order.object_id, &execution.venue)
+            .map(|terms| terms.quote_unit.as_str().to_string());
         let fill = ConfirmedFill {
             order_id: execution.order_id.clone(),
             venue: execution.venue.clone(),
@@ -4574,9 +4892,50 @@ impl Cell {
                     .iter()
                     .map(|(strategy, share)| (strategy.as_str().to_string(), share.to_string()))
                     .collect(),
+                // The side the cell sent, which is the side that filled:
+                // without it the ledger cannot tell a debit from a credit.
+                side: Some(fill.side),
+                quote_unit: quote_unit.clone(),
+                // No venue this cell reaches reports a fee on its execution
+                // report, so none is written. Absent means unreported and
+                // never zero (LEDGER-019); an estimate here would be the
+                // cell inventing a venue fact the ledger then books.
+                fee: None,
             },
             now,
         );
+        // The same shares into each owner's realised P&L, after the fill is
+        // in the chain so that a refusal naming a fill the cell could not
+        // price names one a reader can find. At the fill price and in the
+        // unit journaled beside it — the posting fields SLICE-15/20 put on
+        // `Filled` — and never with a fee: none is reported, and absent is
+        // not zero.
+        for (strategy, share) in &fill.shares {
+            let signed_share = if matches!(fill.side, BookSide::Ask) {
+                *share
+            } else {
+                -*share
+            };
+            let position = Self::strategy_position_key(strategy, &fill.venue, &fill.object_id);
+            self.book_realised(
+                RealisedLeg {
+                    owner: strategy.as_str(),
+                    position: &position,
+                    signed: signed_share,
+                    price: fill.price,
+                    unit: quote_unit.as_deref(),
+                },
+                || {
+                    format!(
+                        "fill on order {} at {} for {}",
+                        fill.order_id,
+                        fill.venue.as_str(),
+                        fill.object_id.as_str()
+                    )
+                },
+                now,
+            );
+        }
         self.metrics.fill_confirmed(&fill.venue);
         // §29.2's denominator. A trade is what the venue says filled and
         // nothing else — an order the cell sent is a message, and counting
@@ -4614,7 +4973,7 @@ impl Cell {
         self.metrics.reconciliation_break();
         self.journal
             .record(Decision::ReconciliationBreak { detail }, now);
-        if !self.is_halted() {
+        if !self.halted_other_than_by_journal() {
             self.autonomy.kill_switch_mut().trip_global(
                 now,
                 "drop-copy",
@@ -5907,6 +6266,27 @@ impl Cell {
             return None;
         };
 
+        // The desk is stopped on a fill it could not price exactly as a
+        // strategy is, and for the same reason: its envelope reads only the
+        // realised-loss number, which does not contain that fill.
+        let latched = self.desk.as_ref().and_then(|installed| {
+            let desk = &installed.desk;
+            self.realised
+                .latched(desk.strategy().as_str())
+                .map(|unpriced| {
+                    unpriced_refusal(
+                        desk.strategy().as_str(),
+                        true,
+                        desk.envelope().signature(),
+                        unpriced,
+                    )
+                })
+        });
+        if let Some(reason) = latched {
+            self.refuse(report, "capital", &reason, now);
+            return None;
+        }
+
         let grant = self.desk.as_ref().map(|installed| {
             let desk = &installed.desk;
             if !desk.envelope().is_live(now) {
@@ -5914,7 +6294,20 @@ impl Cell {
             }
             let mut used = desk.utilisation().clone();
             used.gross_committed += pending;
-            Some(desk.envelope().admit(&intent.venue, notional, &used, now))
+            Some(
+                match desk.envelope().admit(&intent.venue, notional, &used, now) {
+                    CapitalGrant::Refused(reason) => CapitalGrant::Refused(drawdown_refusal(
+                        desk.strategy().as_str(),
+                        desk.envelope(),
+                        &used,
+                        &intent.venue,
+                        notional,
+                        reason,
+                        now,
+                    )),
+                    other => other,
+                },
+            )
         });
         match grant {
             None => {
@@ -6723,6 +7116,12 @@ impl Cell {
             ),
             now,
         );
+        // `is_halted` rather than `halted_other_than_by_journal`, unlike
+        // `break_on`, and the two are equivalent here: a cycle leg is sent
+        // only inside `Cell::work` after the halt gate, and journal pressure
+        // is applied only between passes, so a cell held by the journal wire
+        // never reaches this line. A predicate distinction no input can
+        // exercise would be a guard no test can prove.
         if sent > 0 && !self.is_halted() {
             self.autonomy.kill_switch_mut().trip_global(
                 now,
@@ -6982,21 +7381,82 @@ impl Cell {
     /// cross would admit the persistent internal market the cap exists to
     /// prevent. Called only once the pass has an outcome, after the venue
     /// call that can fail — see `place_net`.
+    ///
+    /// The realised ledger is fed here too, from the cross the books took and
+    /// only that one, and after the record is sealed — so a refusal naming a
+    /// cross leg the cell could not price follows the record it names.
+    /// `quote_unit` is the unit the placer states for the listing whose mid
+    /// priced the cross.
     fn settle_cross(
         &mut self,
         net_intent: &NetIntent,
         crossed: Option<InternalCross>,
+        quote_unit: Option<&str>,
         now: Timestamp,
         report: &mut WorkReport,
     ) {
         let quantity = crossed
             .as_ref()
             .map_or(Decimal::ZERO, |cross| cross.quantity);
-        if let Some(cross) = &crossed {
-            self.book_cross(cross, now);
-        }
+        // `book_cross` moves both books or neither, and the realised ledger
+        // keeps the same rule: a cross whose books did not move is not
+        // priced, because its P&L would describe a trade no book holds.
+        let settled = match &crossed {
+            Some(cross) if self.book_cross(cross, now) => Some(cross.clone()),
+            _ => None,
+        };
         self.record_cross(crossed, now, report);
+        if let Some(cross) = settled {
+            self.book_cross_realised(&cross, quote_unit, now);
+        }
         self.observe_crossing(net_intent, quantity, now);
+    }
+
+    /// Both legs of a settled cross into their owners' realised P&L at the
+    /// cross price — the bought strategy as a buy, the sold one as a sell —
+    /// each against its own entry.
+    ///
+    /// A cross conserves the cell's net position and neither strategy's P&L,
+    /// and it moves each strategy's lot with no venue fill at all. Fed from
+    /// fills alone, a lot a cross opened and a venue fill closed would be
+    /// booked as the venue fill *opening* a position: the loss read zero and
+    /// the drawdown limit fired late or never. The reverse is the same hole
+    /// from the other side — a venue position closed by a cross at a worse
+    /// mid realised nothing.
+    fn book_cross_realised(
+        &mut self,
+        cross: &InternalCross,
+        quote_unit: Option<&str>,
+        now: Timestamp,
+    ) {
+        for (strategies, lot) in [
+            (&cross.bought, cross.quantity),
+            (&cross.sold, -cross.quantity),
+        ] {
+            for strategy in strategies {
+                let position =
+                    Self::strategy_position_key(strategy, &cross.venue, &cross.object_id);
+                self.book_realised(
+                    RealisedLeg {
+                        owner: strategy.as_str(),
+                        position: &position,
+                        signed: lot,
+                        price: cross.price,
+                        unit: quote_unit,
+                    },
+                    || {
+                        format!(
+                            "internal cross of {} {} at {} at {}",
+                            cross.quantity,
+                            cross.object_id.as_str(),
+                            cross.venue.as_str(),
+                            cross.price
+                        )
+                    },
+                    now,
+                );
+            }
+        }
     }
 
     /// Move both sides' lots and cash by what the cross record says, and
@@ -7016,7 +7476,9 @@ impl Cell {
     /// cross the books do not, which is the disagreement `break_on` exists
     /// to stop the cell on. `positions`, the venue-facing aggregate, is left
     /// alone: the two lots sum to zero and the venue saw nothing.
-    fn book_cross(&mut self, cross: &InternalCross, now: Timestamp) {
+    ///
+    /// Returns whether both books moved, which is what `settle_cross` prices.
+    fn book_cross(&mut self, cross: &InternalCross, now: Timestamp) -> bool {
         let ([buyer], [seller]) = (cross.bought.as_slice(), cross.sold.as_slice()) else {
             self.break_on(
                 format!(
@@ -7030,7 +7492,7 @@ impl Cell {
                 ),
                 now,
             );
-            return;
+            return false;
         };
         let Some(notional) = cross.quantity.checked_mul(cross.price) else {
             self.break_on(
@@ -7043,7 +7505,7 @@ impl Cell {
                 ),
                 now,
             );
-            return;
+            return false;
         };
         // Buyer first, then seller; equal and opposite on both legs. Every
         // next balance is worked out before any is written, so a leg that
@@ -7083,7 +7545,7 @@ impl Cell {
                     ),
                     now,
                 );
-                return;
+                return false;
             };
             settled.push((position_key, strategy, next_held, next_balance));
         }
@@ -7092,6 +7554,7 @@ impl Cell {
             self.strategy_cash
                 .insert(strategy.as_str().to_string(), next_balance);
         }
+        true
     }
 
     /// The instrument key the crossing window is kept by: what `net` groups
@@ -7487,11 +7950,14 @@ impl Cell {
         // Every gate a *pass* can refuse at funnels through here, so one
         // recording site covers all of them. `gate` is a string literal at
         // each call, and that is what bounds this series' cardinality. The
-        // three refusals that journal directly — a replayed halt, a release
-        // that predates its barrier, and a net that cancelled to zero — are
-        // not pass-time gates and are deliberately not counted here: the
+        // refusals that journal directly — a replayed halt, a release that
+        // predates its barrier, a net that cancelled to zero, and a fill or
+        // cross leg the realised ledger could not price (`book_realised`) —
+        // are not pass-time gates and are deliberately not counted here: the
         // first two are control-plane events with no "why was the cell
-        // quiet" reading, and the third is counted as a cancellation.
+        // quiet" reading, the third is counted as a cancellation, and the
+        // fourth is counted by the `capital` refusals its latch causes on
+        // every pass after it.
         self.metrics.refusal(gate);
         report.refusals.push((gate.to_string(), reason.to_string()));
         self.journal.record(
@@ -7501,6 +7967,76 @@ impl Cell {
             },
             now,
         );
+    }
+
+    /// Book one position change into its owner's realised P&L, and write the
+    /// owner's `realised_loss` from the result.
+    ///
+    /// A change the ledger cannot price is journaled as a `capital` refusal
+    /// naming it and latches its owner. Journaled directly rather than
+    /// through [`Self::refuse`]: this runs wherever a fill is confirmed,
+    /// including outside a pass, so there is no report to carry it and it is
+    /// not a pass gate for the refusal series to count. The refusals the
+    /// latch then causes are pass gates, and are counted there.
+    fn book_realised(
+        &mut self,
+        leg: RealisedLeg<'_>,
+        describe: impl FnOnce() -> String,
+        now: Timestamp,
+    ) {
+        if let Booking::Unpriced(why) = self.realised.book(leg, now) {
+            let described = describe();
+            let clear = clear_for(leg.owner, self.is_desk(leg.owner), now);
+            self.journal.record(
+                Decision::Refused {
+                    gate: "capital".to_string(),
+                    reason: format!(
+                        "the {described} could not be priced into {owner}'s realised loss: \
+                         {why}. It books nothing, and nothing more is committed for {owner} \
+                         {clear}",
+                        owner = leg.owner
+                    ),
+                },
+                now,
+            );
+            self.realised.latch(
+                leg.owner,
+                Unpriced {
+                    leg: described,
+                    why,
+                    at: now,
+                },
+            );
+        }
+        self.write_realised_loss(leg.owner);
+    }
+
+    /// Write `owner`'s realised loss where its envelope reads it: the
+    /// deployed strategy's `Utilisation`, or the desk's.
+    ///
+    /// The ledger is the one source and this is its projection — every
+    /// booking and every redeploy ends here — so the figure `admit` reads, the
+    /// figure the state delta reports and the figure the ledger holds are one
+    /// number and cannot disagree.
+    fn write_realised_loss(&mut self, owner: &str) {
+        let loss = self.realised.realised_loss(owner);
+        if let Some(deployed) = self.deployed.get_mut(owner) {
+            deployed.utilisation.realised_loss = loss;
+        }
+        if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk)
+            && desk.strategy().as_str() == owner
+        {
+            desk.utilisation_mut().realised_loss = loss;
+        }
+    }
+
+    /// Whether `owner` is the installed arbitrage desk, whose one clear is a
+    /// renewal: it cannot be installed a second time, so "redeployed" names
+    /// a remedy a desk can never receive.
+    fn is_desk(&self, owner: &str) -> bool {
+        self.desk
+            .as_ref()
+            .is_some_and(|installed| installed.desk.strategy().as_str() == owner)
     }
 
     // --- the mesh seam ------------------------------------------------------
@@ -7644,15 +8180,28 @@ impl Cell {
     ///   that started running something because capital arrived for it would be
     ///   promoting its own strategy — the thing ADR 0008 says a cell never
     ///   does. An envelope for a strategy that is not deployed is refused.
-    /// * **It does not reset utilisation.** What a strategy has committed is
-    ///   measured against positions that are still open, and a renewal that
-    ///   zeroed it would hand the strategy its whole gross limit again while
-    ///   the previous commitment was still live. Carrying it across is the
-    ///   conservative direction, and it is the one that is right.
+    /// * **It does not reset what was committed.** What a strategy has
+    ///   committed is measured against positions that are still open, and a
+    ///   renewal that zeroed it would hand the strategy its whole gross limit
+    ///   again while the previous commitment was still live. Carrying it
+    ///   across is the conservative direction, and it is the one that is
+    ///   right.
     /// * **It does not widen anything by itself.** The new envelope replaces
     ///   the old one entirely — wider or narrower — because that is what the
     ///   centre signed. A cell that merged the two would be constructing a
     ///   grant nobody approved.
+    ///
+    /// One thing it does clear, and only under a grant issued after it: the
+    /// owner's realised loss and any latch on a fill the cell could not price
+    /// (`RealisedLedger::redeployed`, the rule `install` applies). A grant
+    /// signed after the loss is a decision somebody made knowing the loss
+    /// could exist; one signed before it cannot have been, so a renewal under
+    /// an older grant clears nothing. This is the clear an owner actually
+    /// receives while the process runs: the node routes every fresh grant for
+    /// an installed desk or a deployed strategy here, and a desk cannot be
+    /// installed twice. Without it a stopped desk stayed stopped until a
+    /// restart — and a restart forgets every owner's loss, so the only remedy
+    /// left to an operator was the one that fails open.
     pub fn renew_capital(&mut self, envelope: VerifiedEnvelope, now: Timestamp) -> Result<()> {
         // `verify` has already checked the cell, and this checks it again
         // against the cell's own identity rather than against the string a
@@ -7669,12 +8218,26 @@ impl Cell {
         let key = envelope.strategy().as_str().to_string();
         let approver = envelope.approver().to_string();
         let expires_at = envelope.expires_at();
-        if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk)
-            && desk.strategy().as_str() == key
-        {
+        let is_desk = self.is_desk(&key);
+        if !is_desk && !self.deployed.contains_key(&key) {
+            return Err(Error::not_found(format!(
+                "no strategy {key} is deployed at this cell, so there is nothing for the grant to \
+                 fund; a cell does not deploy a strategy because capital arrived for it"
+            )));
+        }
+        // Asked of the grant's own window, as `install` asks it: the envelope
+        // states no issue instant a cell can read, and an instant before its
+        // expiry at which it is not live is an instant before it was granted.
+        self.realised.redeployed(&key, |at| {
+            at < envelope.expires_at() && !envelope.is_live(at)
+        });
+        if is_desk {
             // The desk is renewed by the same rules as a strategy: the grant
-            // replaces the old one whole and utilisation carries across.
-            desk.replace_envelope(envelope);
+            // replaces the old one whole and what it committed carries across.
+            if let Some(installed) = self.desk.as_mut() {
+                installed.desk.replace_envelope(envelope);
+            }
+            self.write_realised_loss(&key);
             self.journal.record(
                 Decision::CapitalRenewed {
                     strategy: key,
@@ -7685,13 +8248,10 @@ impl Cell {
             );
             return Ok(());
         }
-        let Some(deployed) = self.deployed.get_mut(&key) else {
-            return Err(Error::not_found(format!(
-                "no strategy {key} is deployed at this cell, so there is nothing for the grant to \
-                 fund; a cell does not deploy a strategy because capital arrived for it"
-            )));
-        };
-        deployed.envelope = envelope;
+        if let Some(deployed) = self.deployed.get_mut(&key) {
+            deployed.envelope = envelope;
+        }
+        self.write_realised_loss(&key);
         self.journal.record(
             Decision::CapitalRenewed {
                 strategy: key,
@@ -7746,7 +8306,18 @@ impl Cell {
     /// Spends nothing. Asked before the repricer is consulted so that the
     /// repricer's own throttle budgets — which count instructions sent —
     /// are never spent on an instruction the venue session could not carry.
+    ///
+    /// Not fundable at all while the journal spool is exhausted (red-team
+    /// M16). A requote is a cancel and a *new* order, and requotes run
+    /// before [`Cell::work`], so a halt checked only in `work` never saw
+    /// them: an exhausted cell would go on replacing resting orders with no
+    /// record of the replacements. Answering `false` here means the order is
+    /// not replaced; the mass cancel [`Cell::withdraw_expired`] runs on a
+    /// halted cell withdraws it.
     pub fn requote_fundable(&mut self, venue: &VenueId, now: Timestamp) -> bool {
+        if self.journal_exhausted() {
+            return false;
+        }
         self.budget.requote_fundable(venue, now)
     }
 
@@ -7764,7 +8335,28 @@ impl Cell {
     /// pushed onto a [`WorkReport`], because a requote happens outside
     /// [`Cell::work`] and there is no report to push onto — the same reason
     /// [`Cell::send`] records directly.
+    ///
+    /// Refused while the journal spool is exhausted, for the reason
+    /// [`Self::requote_fundable`] answers `false`: this is the spend a
+    /// caller that skipped the peek would reach, and the peek alone is not
+    /// the guarantee. Journaled under [`GATE_JOURNAL_PRESSURE`] and spends
+    /// nothing.
     pub fn spend_requote(&mut self, venue: &VenueId, now: Timestamp) -> Admission {
+        if self.journal_exhausted() {
+            let reason = format!(
+                "the journal spool is exhausted; a requote at {} would place a new order the \
+                 cell cannot record, so the order is withdrawn and not replaced",
+                venue.as_str()
+            );
+            self.journal.record(
+                Decision::Refused {
+                    gate: GATE_JOURNAL_PRESSURE.to_string(),
+                    reason: reason.clone(),
+                },
+                now,
+            );
+            return Admission::Refused { reason };
+        }
         let admission = self.budget.admit_requote(venue, now);
         if !admission.is_admitted() {
             self.metrics.refusal(GATE_QUOTE_BUDGET);
@@ -8025,6 +8617,68 @@ fn region_hold_id(pass: u64, strategy: &str) -> String {
     format!("{pass}:strategy:{strategy}")
 }
 
+/// The `capital` refusal of a commitment by an owner latched on a leg the
+/// cell could not price: whose, under which grant, which leg and why, and
+/// what clears it.
+fn unpriced_refusal(owner: &str, is_desk: bool, signature: &str, unpriced: &Unpriced) -> String {
+    format!(
+        "strategy {owner} under grant {signature} holds a {} the cell could not price ({}); its \
+         realised loss is unknown, so nothing is committed for it {}",
+        unpriced.leg,
+        unpriced.why,
+        clear_for(owner, is_desk, unpriced.at)
+    )
+}
+
+/// What releases `owner` from a latch set at `at`, in the words of the
+/// remedy that owner can actually receive.
+///
+/// The journal is hash-chained and nothing in it can be corrected, so a
+/// reason naming a clear that does not exist stays wrong for good. A draft
+/// of this refusal told the desk it would resume once redeployed, which a
+/// desk cannot be; review caught it before it shipped. The desk's only clear
+/// is a renewal (`Cell::renew_capital`).
+fn clear_for(owner: &str, is_desk: bool, at: Timestamp) -> String {
+    if is_desk {
+        format!("until a renewal of {owner}'s capital under a grant issued after {at}")
+    } else {
+        format!("until {owner} is renewed or redeployed under a grant issued after {at}")
+    }
+}
+
+/// The reason for a `capital` refusal, naming the owner and its grant when
+/// the grant's drawdown limit is what refused.
+///
+/// `admit`'s own reason for that arm names the loss and the limit and nothing
+/// else, and "realised loss 240 reached the 200 limit" does not say whose, or
+/// under which grant — the two facts an operator needs before a fresh grant
+/// can be argued for. Whether the loss decided it is asked of the envelope
+/// rather than read from its wording: the same order against the same use
+/// with no loss booked. A different answer means the loss is what refused.
+/// Every other refusal keeps its reason exactly as the envelope gave it.
+fn drawdown_refusal(
+    owner: &str,
+    envelope: &VerifiedEnvelope,
+    used: &Utilisation,
+    venue: &VenueId,
+    notional: Decimal,
+    reason: String,
+    now: Timestamp,
+) -> String {
+    let without_loss = Utilisation {
+        realised_loss: Decimal::ZERO,
+        ..used.clone()
+    };
+    if envelope.admit(venue, notional, &without_loss, now) == CapitalGrant::Refused(reason.clone())
+    {
+        return reason;
+    }
+    format!(
+        "strategy {owner} under grant {}: {reason}; the grant's drawdown limit has fired",
+        envelope.signature()
+    )
+}
+
 /// The key one cycle's region hold is taken under. A cycle is admitted and
 /// refused whole, so it holds once for the sum of its legs.
 fn region_hold_id_for_cycle(pass: u64, cycle_id: &str) -> String {
@@ -8041,6 +8695,18 @@ const fn scan_gate(stage: RejectionStage) -> &'static str {
         RejectionStage::NetEdge => "arbitrage_scan_net_edge",
         RejectionStage::Plan => "arbitrage_scan_plan",
     }
+}
+
+/// What a venue's listing states about the unit an instrument is priced in.
+///
+/// A type rather than a bare currency so that what the venue states and what
+/// the cell writes stay one field apart: the fee a venue charges belongs to
+/// the execution report, not to the listing, and is deliberately not here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuoteTerms {
+    /// The currency the listing quotes the instrument's price in, validated
+    /// by [`Currency`]'s own parse — never a default the cell supplied.
+    pub quote_unit: Currency,
 }
 
 /// Where a cell sends an order.
@@ -8083,6 +8749,18 @@ pub trait Placer: std::fmt::Debug {
     /// order on the pass it is placed and so never holds one to be late with.
     fn unreleased(&mut self) -> Vec<UnreleasedOrder> {
         Vec::new()
+    }
+
+    /// The terms the venue quotes `object_id` in, as its listing states
+    /// them, for the fills the cell journals (LEDGER-021).
+    ///
+    /// Defaults to `None`, which the cell journals as an absent quote unit
+    /// rather than a guessed one: a gateway with no listing record has
+    /// nothing to state, and a default currency here would put every fill
+    /// it reports into a unit no venue named. A gateway that wraps another
+    /// must delegate, or the terms vanish at the wrapper.
+    fn quote_terms(&self, _object_id: &ObjectId, _venue: &VenueId) -> Option<QuoteTerms> {
+        None
     }
 
     /// What a production deployment must supply, empty when usable as is.
@@ -8351,7 +9029,7 @@ mod crossing_tests {
 
         let mut report = WorkReport::default();
         let crossed = cell.cross_internally(&net_intent, at(10), &mut report);
-        cell.settle_cross(&net_intent, crossed, at(10), &mut report);
+        cell.settle_cross(&net_intent, crossed, None, at(10), &mut report);
 
         assert_eq!(report.crosses.len(), 1, "nothing was crossed: {report:?}");
         assert_eq!(
@@ -8572,7 +9250,7 @@ mod crossing_tests {
 
         let mut report = WorkReport::default();
         let crossed = cell.cross_internally(&opposed, at(10), &mut report);
-        cell.settle_cross(&opposed, crossed, at(10), &mut report);
+        cell.settle_cross(&opposed, crossed, None, at(10), &mut report);
 
         assert!(
             report.crosses.is_empty(),
@@ -8612,7 +9290,7 @@ mod crossing_tests {
         let mut report = WorkReport::default();
         let net_intent = offsetting_net(Decimal::parse("12345").expect("a decimal literal"));
         let crossed = cell.cross_internally(&net_intent, at(10), &mut report);
-        cell.settle_cross(&net_intent, crossed, at(10), &mut report);
+        cell.settle_cross(&net_intent, crossed, None, at(10), &mut report);
 
         assert!(report.crosses.is_empty(), "a cross was priced with no mid");
         assert!(
@@ -8713,7 +9391,7 @@ mod crossing_tests {
         cell.pass = cell.pass.saturating_add(1);
         let mut report = WorkReport::default();
         let crossed = cell.cross_internally(net_intent, now, &mut report);
-        cell.settle_cross(net_intent, crossed, now, &mut report);
+        cell.settle_cross(net_intent, crossed, None, now, &mut report);
         report
     }
 

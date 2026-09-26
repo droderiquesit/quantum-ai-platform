@@ -10,432 +10,158 @@
 //! [`crate::Cell::work`]. That is not an optimisation, it is the reason the
 //! mirror is asynchronous at all: a decision loop that blocks on a disk is a
 //! decision loop whose latency is a storage system's problem.
+//!
+//! [`Decision`] and [`JournalEntry`] themselves live in
+//! [`qip_contracts::reflex`] and are re-exported here, so a reader that must
+//! not depend on `qip-edge` — the ledger, the API — can read the journal
+//! contract without reaching the cell, the order manager or a venue adapter
+//! that happen to share this crate (ADR 0100 §1). This module keeps the
+//! in-memory [`Journal`], the [`Mirror`] that ships it and [`MirrorBatch`],
+//! none of which a reader needs in order to verify a chain it was handed.
 
+use qip_contracts::reflex::{ChainVersion, seal_v2};
+pub use qip_contracts::reflex::{Decision, JournalEntry};
+use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
-use qip_core::{Timestamp, sha256_hex};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-
-/// One thing the cell did, or refused to do.
-///
-/// Refusals are first-class. A cell that records only its trades can answer
-/// "why did this happen" and not "why did nothing happen", and the second
-/// question is the one asked after a quiet morning that should not have been.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Decision {
-    /// Bytes arrived and decoded into this many messages on this feed.
-    Ingested {
-        feed: String,
-        decoded: usize,
-        skipped: usize,
-    },
-    /// A sequence gap was detected and the affected books reset.
-    GapDetected { stream: String, detail: String },
-    /// A strategy emitted a signal.
-    SignalRaised {
-        strategy: String,
-        object: String,
-        kind: String,
-        conviction_shrunk_f64: f64,
-    },
-    /// An opportunity was priced and its net edge computed.
-    EdgePriced {
-        opportunity: String,
-        net: String,
-        positive: bool,
-    },
-    /// An order was sent to a venue.
-    ///
-    /// `release_at` and `equalised` are ADR 0084's: the instant the gateway
-    /// was told not to release the order before, and whether the schedule
-    /// that produced it had a median for every venue in the set. Both are
-    /// absent on entries sealed before the fields existed, and the chain is
-    /// hash-linked over the serialised entry, so an absent field is *not*
-    /// written back on re-serialisation — `skip_serializing_if` — or every
-    /// old journal would fail to verify. A reader treats an absent
-    /// `release_at` as "released at the entry's own instant, unequalised",
-    /// which is what such an order was, and never as zero.
-    OrderSent {
-        order_id: String,
-        venue: String,
-        quantity: String,
-        simulated: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        release_at: Option<Timestamp>,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        equalised: bool,
-    },
-    /// The venue reported part or all of an order traded, and the cell
-    /// booked it.
-    ///
-    /// Distinct from [`Self::OrderSent`] on purpose, and the distinction is
-    /// the whole record: an order sent is a request the venue accepted, and
-    /// a fill is a venue fact about what traded. The chain once carried only
-    /// the first and every reader took it for the second. `shares` is the
-    /// pro-rata attribution of this fill's quantity to the strategies whose
-    /// intent the order carried, summing to `quantity` exactly, so the
-    /// journal alone answers who traded what. Decimals as strings, as
-    /// everywhere in this enum.
-    Filled {
-        order_id: String,
-        venue: String,
-        object: String,
-        quantity: String,
-        price: String,
-        simulated: bool,
-        shares: Vec<(String, String)>,
-    },
-    /// A resting order passed its time to live and the cell withdrew what
-    /// remained, `withdrawn` being the venue's own answer to the cancel.
-    /// Whatever filled before this is in its own [`Self::Filled`] entries;
-    /// this closes the order without claiming anything about them.
-    OrderExpired {
-        order_id: String,
-        venue: String,
-        withdrawn: String,
-    },
-    /// A resting order was withdrawn because the cell is halted, rather
-    /// than because its own time to live ran out (§29.2).
-    ///
-    /// Distinct from [`Self::OrderExpired`] on purpose, and the distinction is
-    /// the record: the two are the same action for entirely different reasons,
-    /// and an incident review reading a chain full of expiries cannot see the
-    /// moment a kill switch emptied the book. `withdrawn` is the venue's own
-    /// answer to the cancel, as it is there.
-    MassCancelled {
-        order_id: String,
-        venue: String,
-        withdrawn: String,
-    },
-    /// Something was refused, with the gate that refused it.
-    Refused { gate: String, reason: String },
-    /// The venue and the cell's book disagree about a fill.
-    ReconciliationBreak { detail: String },
-    /// The cell halted or resumed.
-    HaltChanged { halted: bool, reason: String },
-    /// A verified policy payload was applied by atomic swap.
-    ///
-    /// `narrowed` names the capabilities the payload leaves less than fresh,
-    /// in order, so the reason a cell sized small is reconstructable from the
-    /// journal alone.
-    PolicyApplied {
-        sequence: u64,
-        halted: bool,
-        narrowed: Vec<String>,
-    },
-    /// A capital envelope the centre issued was verified and installed.
-    ///
-    /// Recorded like a decision because it is one: it is the moment the cell's
-    /// authority changed, and "why was this cell allowed to commit that much"
-    /// is a question the journal has to answer as precisely as "why did this
-    /// trade". The approver and the expiry are carried because those are the
-    /// two facts an incident review asks for first.
-    CapitalRenewed {
-        strategy: String,
-        approver: String,
-        expires_at: Timestamp,
-    },
-    /// Two or more strategies' intents offset and the offsetting part was
-    /// crossed inside the cell instead of reaching a venue (§27.1).
-    ///
-    /// The blueprint calls this a ledger entry rather than an optimisation
-    /// detail, and a regulatory expectation: an internal cross is a trade
-    /// between two of the platform's own strategies, and a trade nobody can
-    /// point at afterwards is the thing an examiner asks about. Both sides and
-    /// the price are named for that reason — "who traded with whom, at what
-    /// price, and who decided the price" has to be answerable from the chain
-    /// alone.
-    ///
-    /// `price` is the prevailing mid at the netting instant, which is a price
-    /// neither side chose. Decimals are carried as strings for the same reason
-    /// the rest of this enum does: the journal is a record, and a record that
-    /// reformats a number is a record of a different number.
-    CrossedInternally {
-        object: String,
-        venue: String,
-        quantity: String,
-        price: String,
-        /// The strategies on the buying side, and on the selling side. Both,
-        /// because a cross with one named side is not a cross anybody can
-        /// check.
-        bought: Vec<String>,
-        sold: Vec<String>,
-    },
-    /// A found cycle was assigned one of blueprint §30.2's eight execution
-    /// paths (ADR 0068).
-    ///
-    /// Recorded at the router's own seam rather than at the send, and for
-    /// every cycle the router assigned rather than for every cycle that
-    /// traded, so the chain holds the classification whether or not a later
-    /// gate vetoed the cycle. The pairing is the point: a cycle that reached
-    /// the router leaves either this entry or a [`Self::Refused`] under the
-    /// `path_router` gate, and never neither. An assignment that appeared
-    /// only for cycles that traded would answer "how did this execute" and
-    /// not "what did the router think of what it saw", and the second is the
-    /// question asked when the cell is quiet.
-    ///
-    /// An entry here is **not** a claim that anything was sent. §30.2's
-    /// assignment is a classification — which coordination mechanism and
-    /// which latency budget the cycle would be executed under — and nothing
-    /// in `qip-routing`'s path vocabulary can name a venue or produce an
-    /// order.
-    ///
-    /// `path` is §30.2's own row number and `path_name` the identifier, both,
-    /// because an operator reads the table by number and everything else here
-    /// by name. `eligible` is every path the composition admitted, in order,
-    /// so a replay can tell a cycle that had one possible path from one where
-    /// the preference chose between several — and the preference is the
-    /// caller's, which is exactly the fact a later argument about routing will
-    /// turn on.
-    CyclePathAssigned {
-        cycle_id: String,
-        path: u8,
-        path_name: String,
-        eligible: Vec<String>,
-        rationale: String,
-    },
-    /// Blueprint §33.1's extension for the assigned path held (§31.1, §33.1).
-    ///
-    /// §33.1: *"Every verdict, including silence, is logged."* This is the
-    /// half that held; the half that refused is a `Refused` entry under the
-    /// `path_extension` gate, so both outcomes are on the chain and neither
-    /// has to be inferred from the other's absence.
-    ///
-    /// `has_row` is the fact a count of these entries would otherwise hide:
-    /// §33.1's table starts at path 3, so for paths 1 and 2 the honest
-    /// record is that the blueprint asks for no additional check — which is
-    /// a different thing from a check that passed, and reads identically in
-    /// any log that stores only success.
-    PathExtensionChecked {
-        cycle_id: String,
-        path: u8,
-        has_row: bool,
-        rationale: String,
-    },
-    /// Every leg of an arbitrage cycle was sent (§30, §27.2).
-    ///
-    /// Recorded once the last leg is past the venue call, naming the orders
-    /// that make up the atomic set, so a reader of the chain can tell which
-    /// `order_sent` entries belong together without re-running the scan.
-    /// The net edge is the scanner's, in units of the instrument the cycle
-    /// started from, carried as a string for the reason every other decimal
-    /// here is.
-    CycleCommitted {
-        cycle_id: String,
-        orders: Vec<String>,
-        net: String,
-    },
-    /// A leg of an arbitrage cycle went out smaller than the scanner priced
-    /// it, because an earlier leg of the same cycle filled short (§32.1).
-    ///
-    /// Recorded at the moment the size is chosen and before the leg is sent,
-    /// with the planned size beside the one that went out, so the chain
-    /// answers "why is this order not the size the cycle was admitted at"
-    /// without anybody having to re-derive it from the fills. `fraction` is
-    /// what the cycle can still complete at — the minimum over every leg the
-    /// venues have answered on, not this leg alone — and is carried as a
-    /// string for the reason every other decimal here is.
-    CycleDecomposed {
-        cycle_id: String,
-        leg: usize,
-        planned: String,
-        size: String,
-        fraction: String,
-    },
-    /// One leg of an arbitrage cycle was sent alone and left to rest, the
-    /// rest of the cycle held back until the venue answers it (§32.1's
-    /// passive-first mechanism).
-    ///
-    /// Recorded at the instant the choice is taken and before the leg is
-    /// sent, because "why did only one leg of this cycle reach a venue" is a
-    /// question a chain reader will ask of the very next entry. `median` is
-    /// the measured fill time in milliseconds that made this venue the
-    /// slowest of the cycle's — the evidence, not the conclusion, so a
-    /// replay can tell a cell that rested on measurement from one that
-    /// rested on a tie nobody broke. A statistic rather than money, so it is
-    /// a number here and not a decimal string.
-    CycleRested {
-        cycle_id: String,
-        leg: usize,
-        venue: String,
-        order_id: String,
-        median_millis: i64,
-    },
-    /// A cycle whose resting leg was withdrawn without filling anything, so
-    /// no leg of it ever became a position (§32.1).
-    ///
-    /// This is the entry that distinguishes passive-first from a delay. Under
-    /// the all-at-once discipline the fast legs would already be crossed
-    /// against a slow leg that never filled, and the cell would be holding
-    /// the difference. `reason` names what closed the resting order — its own
-    /// time to live elapsing, or a mass cancel on a halt — because the two
-    /// send an operator to different places.
-    CycleAbandoned {
-        cycle_id: String,
-        leg: usize,
-        venue: String,
-        reason: String,
-    },
-    /// A deployed strategy was withdrawn from the cell, its envelope handed
-    /// back to the caller.
-    ///
-    /// Recorded because it is the moment the cell stopped being able to act
-    /// on that strategy's signals, and "why did this strategy go quiet" has
-    /// the same standing as "why did it trade": a plan that dropped it is
-    /// the usual answer, and the answer belongs in the chain, not in the
-    /// node's log.
-    StrategyWithdrawn { strategy: String },
-    /// The region table was re-based to this cell's share of its region's
-    /// grant, as a verified policy payload's grant manifest named it
-    /// (ADR 0039).
-    ///
-    /// Recorded because it is the moment the cell's total authority changed,
-    /// which has the same standing as [`Self::CapitalRenewed`] for one
-    /// strategy. `grants` is how many verified envelopes the manifest named
-    /// and the cell counted; `deficit` is non-zero when the share fell below
-    /// what the cell had already held or committed, which zeroes `free` and
-    /// un-sends nothing — a stated ledger state, and the reason the cell was
-    /// then refused under `region_reservation` until its orders settled.
-    /// Decimals as strings, as everywhere in this enum.
-    RegionShareApplied {
-        sequence: u64,
-        grants: usize,
-        share: String,
-        bound: String,
-        free: String,
-        deficit: String,
-    },
-    /// What the cell has been told about the other regions changed (§36.3).
-    ///
-    /// Recorded because it is the moment the cell stopped — or started —
-    /// taking one side of a cross-region mirror, and "why did this cell stop
-    /// mirroring" has the same standing as "why did it trade". `source` is
-    /// the reading's own kind and `regions` the names it carried, which is
-    /// empty for the unreadable reading: that one darkens every region other
-    /// than this cell's own and names none, so a reader who saw only a list
-    /// would think nothing had changed.
-    RegionOutlookChanged {
-        source: String,
-        regions: Vec<String>,
-        detail: String,
-    },
-    /// The cell was told to reconcile against every venue before resuming
-    /// (§36.3's node-crash row).
-    ///
-    /// The venues are named, because the discipline clears venue by venue
-    /// and a chain that recorded only "reconciliation required" could not
-    /// say which venue was still outstanding when the cell was quiet.
-    ReconciliationRequired { reason: String, venues: Vec<String> },
-    /// One venue's own account agreed with the cell's record, after a
-    /// restart (§36.3).
-    ///
-    /// `open` and `quotes` are what the venue said it was holding — both
-    /// zero for the ordinary clean answer — and `pending` names the venues
-    /// still to answer. `resumed` is the fact the pending list implies and
-    /// this states, so a replay does not have to infer the moment the cell
-    /// was allowed to form an order again from an empty vector.
-    VenueReconciled {
-        venue: String,
-        open: usize,
-        quotes: usize,
-        pending: Vec<String>,
-        resumed: bool,
-    },
-    /// The venue a signal's intent was reasoned at, chosen among the venues
-    /// whose book for the instrument was usable at the pass instant, by the
-    /// tightest quoted spread (ADR 0078, §27.2's consolidation).
-    ///
-    /// `candidates` is every venue compared and the spread it was compared
-    /// on, in venue order, decimals as strings — so a reader can verify the
-    /// pick from the chain alone. A pick a replay cannot verify is a pick
-    /// nobody can audit.
-    VenueChosen {
-        object: String,
-        venue: String,
-        candidates: Vec<(String, String)>,
-    },
-    /// ADR 0080: the applied policy named a retired strategy's lot and the
-    /// cell built a reduce-only intent for it. Its own kind rather than a
-    /// `SignalRaised`, because no strategy raised anything: the instruction
-    /// came down the policy wire and the size came from this cell's book.
-    /// `flatten_by` is what the centre asked, `held` what the cell held, and
-    /// `signed_size` the smaller of the two in the instruction's direction —
-    /// three numbers because a reader of a partial unwind needs to see that
-    /// the cell chose the lot over the instruction, not that it misread one.
-    /// Every quantity is a `Decimal` rendered to text, as `Filled` renders
-    /// its own.
-    DispositionIntent {
-        strategy: String,
-        object: String,
-        venue: String,
-        flatten_by: String,
-        held: String,
-        signed_size: String,
-    },
-}
-
-impl Decision {
-    /// A short label for the kind of decision, for counting without matching.
-    pub const fn kind(&self) -> &'static str {
-        match self {
-            Self::Ingested { .. } => "ingested",
-            Self::GapDetected { .. } => "gap_detected",
-            Self::SignalRaised { .. } => "signal_raised",
-            Self::EdgePriced { .. } => "edge_priced",
-            Self::OrderSent { .. } => "order_sent",
-            Self::Filled { .. } => "filled",
-            Self::OrderExpired { .. } => "order_expired",
-            Self::MassCancelled { .. } => "mass_cancelled",
-            Self::Refused { .. } => "refused",
-            Self::ReconciliationBreak { .. } => "reconciliation_break",
-            Self::HaltChanged { .. } => "halt_changed",
-            Self::PolicyApplied { .. } => "policy_applied",
-            Self::CapitalRenewed { .. } => "capital_renewed",
-            Self::CrossedInternally { .. } => "crossed_internally",
-            Self::CyclePathAssigned { .. } => "cycle_path_assigned",
-            Self::PathExtensionChecked { .. } => "path_extension_checked",
-            Self::CycleCommitted { .. } => "cycle_committed",
-            Self::CycleDecomposed { .. } => "cycle_decomposed",
-            Self::CycleRested { .. } => "cycle_rested",
-            Self::CycleAbandoned { .. } => "cycle_abandoned",
-            Self::StrategyWithdrawn { .. } => "strategy_withdrawn",
-            Self::RegionShareApplied { .. } => "region_share_applied",
-            Self::RegionOutlookChanged { .. } => "region_outlook_changed",
-            Self::ReconciliationRequired { .. } => "reconciliation_required",
-            Self::VenueReconciled { .. } => "venue_reconciled",
-            Self::VenueChosen { .. } => "venue_chosen",
-            Self::DispositionIntent { .. } => "disposition_intent",
-        }
-    }
-}
-
-/// A decision with its position in the chain.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct JournalEntry {
-    pub sequence: u64,
-    pub at: Timestamp,
-    pub decision: Decision,
-    /// `sha256(previous_digest | sequence | at | decision)`.
-    pub digest: String,
-}
 
 /// An append-only, hash-chained record of everything the cell decided.
 ///
 /// The chain is what lets the centre detect a cell that dropped entries: a
 /// mirror batch whose first entry does not chain onto the last one received is
 /// a gap, whatever the sequence numbers claim.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+///
+/// # Retention
+///
+/// By default every entry is kept for the session, shipped or not, so a
+/// replay can reconstruct it from memory and every existing reader of
+/// [`Self::entries`] sees what it always saw. A journal built with
+/// [`Self::trimmed_on_ship`] instead drops what [`ship`] has handed to a
+/// mirror (red-team m6: the default grows without bound on a cell that runs
+/// for days). Trimming never renumbers: `base_sequence` is how many entries
+/// have been dropped, the next entry's sequence is `base_sequence` plus what
+/// is retained, and `trimmed_tail` is the digest the first retained entry
+/// chains onto — so a sequence is never issued twice and a batch shipped
+/// after a trim still chains onto the one before it (F2).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(try_from = "JournalRecord")]
 pub struct Journal {
     entries: Vec<JournalEntry>,
-    /// How many entries have been handed to a mirror. Entries are kept after
-    /// shipping so a replay can reconstruct the session; a production cell
-    /// would trim behind an acknowledged watermark.
+    /// How many entries of the session have been handed to a mirror, counted
+    /// from the session's first entry and not from the first retained one —
+    /// which is what it always counted, since nothing was trimmed before.
     shipped: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    base_sequence: usize,
+    #[serde(skip_serializing_if = "is_genesis")]
+    trimmed_tail: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    trim_on_ship: bool,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
+fn is_genesis(value: &str) -> bool {
+    value == Journal::GENESIS
+}
+
+fn genesis() -> String {
+    Journal::GENESIS.to_string()
+}
+
+/// The largest `base_sequence` a deserialised journal may claim.
+///
+/// A journal read from a file supplies its own counters, and a counter near
+/// `usize::MAX` would make the next sequence wrap to zero — a silent
+/// reordering of the chain. At this bound a cell recording a billion
+/// decisions a second takes 292 years to exhaust the rest of the range.
+pub const MAX_BASE_SEQUENCE: usize = i64::MAX as usize;
+
+/// The wire form of a [`Journal`], checked before it becomes one.
+#[derive(Deserialize)]
+struct JournalRecord {
+    entries: Vec<JournalEntry>,
+    shipped: usize,
+    #[serde(default)]
+    base_sequence: usize,
+    #[serde(default = "genesis")]
+    trimmed_tail: String,
+    #[serde(default)]
+    trim_on_ship: bool,
+}
+
+impl TryFrom<JournalRecord> for Journal {
+    type Error = Error;
+
+    fn try_from(record: JournalRecord) -> Result<Self> {
+        if record.base_sequence > MAX_BASE_SEQUENCE {
+            return Err(Error::invalid(format!(
+                "a journal claiming to have trimmed {} entries is beyond the {MAX_BASE_SEQUENCE} a \
+                 session can reach; its counters were not written by a journal",
+                record.base_sequence
+            )));
+        }
+        let recorded = record
+            .base_sequence
+            .checked_add(record.entries.len())
+            .ok_or_else(|| {
+                Error::invalid("a journal's trimmed and retained entries overflow a count")
+            })?;
+        if record.shipped < record.base_sequence || record.shipped > recorded {
+            return Err(Error::invalid(format!(
+                "a journal claims {} entries shipped with {} trimmed and {recorded} recorded; \
+                 shipped must lie between the two, since only shipped entries are trimmed and \
+                 nothing unrecorded ships",
+                record.shipped, record.base_sequence
+            )));
+        }
+        Ok(Self {
+            entries: record.entries,
+            shipped: record.shipped,
+            base_sequence: record.base_sequence,
+            trimmed_tail: record.trimmed_tail,
+            trim_on_ship: record.trim_on_ship,
+        })
+    }
+}
+
+impl Default for Journal {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            shipped: 0,
+            base_sequence: 0,
+            trimmed_tail: genesis(),
+            trim_on_ship: false,
+        }
+    }
 }
 
 impl Journal {
+    /// A journal that keeps every entry for the session.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A journal that drops every entry [`ship`] hands to a mirror.
+    ///
+    /// For a cell whose mirror is the durable record — the fabric-mode cell
+    /// (SLICE-36) — where keeping shipped entries in memory is an unbounded
+    /// second copy. Opt-in because every reader of [`Self::entries`] written
+    /// before this existed assumes it sees the whole session.
+    pub fn trimmed_on_ship() -> Self {
+        Self {
+            trim_on_ship: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether [`ship`] trims this journal behind what it shipped.
+    pub fn trims_on_ship(&self) -> bool {
+        self.trim_on_ship
     }
 
     /// The digest an empty chain starts from.
@@ -445,37 +171,65 @@ impl Journal {
     /// went missing.
     pub const GENESIS: &'static str = "genesis";
 
+    /// Seal `decision` at the next sequence under chain v2.
+    ///
+    /// A decision with no canonical form is sealed as a refusal under
+    /// `qip_contracts::reflex::GATE_JOURNAL_ENCODING` naming its kind —
+    /// see `seal_v2` — so the returned entry is not always the decision
+    /// passed in, and a caller that needs to know reads its `decision`.
     pub fn record(&mut self, decision: Decision, at: Timestamp) -> &JournalEntry {
-        let sequence = self.entries.len() as u64;
+        // `base_sequence` is bounded by `MAX_BASE_SEQUENCE` on every path
+        // that sets it and grows by one per entry recorded, so this cannot
+        // reach `usize::MAX` inside any session a clock can measure; the
+        // saturation is unreachable, and is not a wrap if it were reached.
+        let sequence = self.base_sequence.saturating_add(self.entries.len()) as u64;
         let previous = self
             .entries
             .last()
-            .map_or(Self::GENESIS.to_string(), |entry| entry.digest.clone());
-        let digest = chain_digest(&previous, sequence, at, &decision);
+            .map_or_else(|| self.trimmed_tail.clone(), |entry| entry.digest.clone());
+        let (decision, digest) = seal_v2(&previous, sequence, at, decision);
         self.entries.push(JournalEntry {
             sequence,
             at,
             decision,
             digest,
+            version: ChainVersion::V2,
         });
         self.entries
             .last()
             .unwrap_or_else(|| unreachable!("an entry was just pushed"))
     }
 
+    /// The entries held in memory: the whole session on a journal that does
+    /// not trim, and what has not yet shipped on one that does.
     pub fn entries(&self) -> &[JournalEntry] {
         &self.entries
     }
 
+    /// How many entries the session has recorded, trimmed or retained.
+    ///
+    /// Means what it meant before trimming existed, so a count taken on a
+    /// trimming journal and one that does not are the same number for the
+    /// same decisions. [`Self::retained`] is the in-memory count.
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.base_sequence.saturating_add(self.entries.len())
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.len() == 0
     }
 
-    /// How many decisions of each kind the cell has recorded.
+    /// How many entries are held in memory.
+    pub fn retained(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// The sequence of the first retained entry — how many have been trimmed.
+    pub fn base_sequence(&self) -> u64 {
+        self.base_sequence as u64
+    }
+
+    /// How many decisions of each kind the retained entries hold.
     pub fn tally(&self) -> BTreeMap<&'static str, usize> {
         let mut counts = BTreeMap::new();
         for entry in &self.entries {
@@ -484,35 +238,114 @@ impl Journal {
         counts
     }
 
-    /// Verify the chain, returning the sequence where it first breaks.
+    /// Verify the retained chain, returning the sequence where it first
+    /// breaks.
+    ///
+    /// Each entry is checked under the version it names. Once a v2 entry
+    /// has been seen a later v1 entry is a break: nothing seals v1 any more,
+    /// so a v1 entry after a v2 one is either a rolled-back writer or an
+    /// entry relabelled to escape v2's sub-second check. A sequence that is
+    /// not the next one is a break too, whatever its digest says.
     pub fn verify(&self) -> std::result::Result<(), u64> {
-        let mut previous = Self::GENESIS.to_string();
-        for entry in &self.entries {
-            let expected = chain_digest(&previous, entry.sequence, entry.at, &entry.decision);
-            if expected != entry.digest {
-                return Err(entry.sequence);
-            }
-            previous = entry.digest.clone();
-        }
-        Ok(())
+        verify_run(
+            &self.trimmed_tail,
+            Some(self.base_sequence as u64),
+            &self.entries,
+        )
     }
 
     /// Everything not yet handed to a mirror.
     pub fn unshipped(&self) -> &[JournalEntry] {
-        &self.entries[self.shipped.min(self.entries.len())..]
+        let start = self
+            .shipped
+            .saturating_sub(self.base_sequence)
+            .min(self.entries.len());
+        &self.entries[start..]
+    }
+
+    /// The digest the next batch [`ship`] builds must chain onto: that of
+    /// the last shipped entry, or the chain's start if nothing has shipped.
+    ///
+    /// Read from what the journal holds — the retained entry or the trimmed
+    /// tail — never by indexing [`Self::entries`] with a sequence number,
+    /// which after a trim names a different entry or none.
+    fn shipped_tail(&self) -> String {
+        match self.shipped.checked_sub(self.base_sequence) {
+            Some(0) | None => self.trimmed_tail.clone(),
+            Some(count) => self
+                .entries
+                .get(count - 1)
+                .map_or_else(|| self.trimmed_tail.clone(), |entry| entry.digest.clone()),
+        }
     }
 
     fn mark_shipped(&mut self, count: usize) {
-        self.shipped = (self.shipped + count).min(self.entries.len());
+        self.shipped = self.shipped.saturating_add(count).min(self.len());
+    }
+
+    /// Drop every retained entry up to and including `sequence`, keeping the
+    /// sequence count and the digest the next retained entry chains onto.
+    ///
+    /// Refused for an entry not yet shipped: a trimmed entry exists nowhere
+    /// else, and dropping one before a mirror holds it is a hole in the only
+    /// record there is. Returns how many were dropped, zero when `sequence`
+    /// is already behind the base.
+    pub fn trim_through(&mut self, sequence: u64) -> Result<usize> {
+        let through = usize::try_from(sequence)
+            .ok()
+            .and_then(|sequence| sequence.checked_add(1))
+            .ok_or_else(|| Error::invalid(format!("sequence {sequence} is beyond any journal")))?;
+        if through <= self.base_sequence {
+            return Ok(0);
+        }
+        if through > self.shipped {
+            return Err(Error::invalid(format!(
+                "cannot trim through sequence {sequence}: only {} entries have shipped, and an \
+                 entry dropped before a mirror holds it is lost; ship first",
+                self.shipped
+            )));
+        }
+        let count = through - self.base_sequence;
+        let Some(last) = self.entries.get(count - 1) else {
+            return Err(Error::invalid(format!(
+                "cannot trim through sequence {sequence}: the journal holds only {} entries",
+                self.len()
+            )));
+        };
+        self.trimmed_tail = last.digest.clone();
+        self.entries.drain(..count);
+        self.base_sequence = through;
+        Ok(count)
     }
 }
 
-fn chain_digest(previous: &str, sequence: u64, at: Timestamp, decision: &Decision) -> String {
-    // The decision is hashed through its serialized form so the chain covers
-    // every field. Hashing a summary would let a field change without the
-    // digest noticing, which is the failure a chain exists to prevent.
-    let body = serde_json::to_string(decision).unwrap_or_else(|_| decision.kind().to_string());
-    sha256_hex(format!("{previous}|{sequence}|{}|{body}", at.as_secs()).as_bytes())
+/// Verify a run of entries chaining onto `previous`, returning the sequence
+/// where it first breaks. `first` pins the first entry's sequence where the
+/// caller knows it; a mirror batch does not.
+fn verify_run(
+    previous: &str,
+    first: Option<u64>,
+    entries: &[JournalEntry],
+) -> std::result::Result<(), u64> {
+    let mut previous = previous.to_string();
+    let mut expected_sequence = first;
+    let mut seen_v2 = false;
+    for entry in entries {
+        if expected_sequence.is_some_and(|expected| expected != entry.sequence) {
+            return Err(entry.sequence);
+        }
+        if seen_v2 && entry.version == ChainVersion::V1 {
+            return Err(entry.sequence);
+        }
+        seen_v2 |= entry.version == ChainVersion::V2;
+        match entry.expected_digest(&previous) {
+            Ok(expected) if expected == entry.digest => {}
+            _ => return Err(entry.sequence),
+        }
+        previous = entry.digest.clone();
+        expected_sequence = entry.sequence.checked_add(1);
+    }
+    Ok(())
 }
 
 /// A batch of journal entries, carrying enough chain to be checked.
@@ -539,18 +372,12 @@ impl MirrorBatch {
                 self.cell, self.chains_onto
             )));
         }
-        let mut previous = self.chains_onto.clone();
-        for entry in &self.entries {
-            let expected = chain_digest(&previous, entry.sequence, entry.at, &entry.decision);
-            if expected != entry.digest {
-                return Err(Error::invalid(format!(
-                    "mirror batch from {} breaks its chain at sequence {}",
-                    self.cell, entry.sequence
-                )));
-            }
-            previous = entry.digest.clone();
-        }
-        Ok(())
+        verify_run(&self.chains_onto, None, &self.entries).map_err(|sequence| {
+            Error::invalid(format!(
+                "mirror batch from {} breaks its chain at sequence {sequence}",
+                self.cell
+            ))
+        })
     }
 
     /// The digest a following batch must chain onto.
@@ -649,6 +476,10 @@ impl Mirror for FileMirror {
 ///
 /// Public so a caller holding a journal without a whole [`crate::Cell`] can
 /// ship it, and so the chaining property can be tested without one.
+///
+/// On a journal built with [`Journal::trimmed_on_ship`] the shipped entries
+/// are then dropped from memory; on any other journal they are kept, as they
+/// always were.
 pub fn ship(
     journal: &mut Journal,
     mirror: &mut dyn Mirror,
@@ -660,18 +491,15 @@ pub fn ship(
     if pending.is_empty() {
         return Ok(0);
     }
-    let chains_onto = journal
-        .entries()
-        .get(pending[0].sequence as usize)
-        .and_then(|first| {
-            first
-                .sequence
-                .checked_sub(1)
-                .and_then(|previous| journal.entries().get(previous as usize))
-        })
-        .map_or(Journal::GENESIS.to_string(), |entry| entry.digest.clone());
+    // From the journal's own record of what it last shipped, not from
+    // `entries()[first - 1]`: after a trim the retained entries no longer
+    // start at sequence zero, and indexing by sequence reads the wrong entry
+    // or none — and none reads as genesis, a batch that claims to start the
+    // session in the middle of it.
+    let chains_onto = journal.shipped_tail();
 
     let count = pending.len();
+    let last_shipped = pending.last().map(|entry| entry.sequence);
     mirror.ship(MirrorBatch {
         cell: cell.to_string(),
         at: now,
@@ -680,5 +508,10 @@ pub fn ship(
         watermarks,
     })?;
     journal.mark_shipped(count);
+    // Only after the mirror accepted the batch: a batch the mirror refused
+    // is still pending, and trimming it would lose the only copy.
+    if let (true, Some(through)) = (journal.trim_on_ship, last_shipped) {
+        journal.trim_through(through)?;
+    }
     Ok(count)
 }

@@ -28,7 +28,7 @@ being able to say precisely why it did what it did is.
 
 ## Stack, as found in the tree
 
-- **Rust 2024**, resolver 3, one workspace, 58 crates. `unsafe_code = "forbid"`;
+- **Rust 2024**, resolver 3, one workspace, 60 crates. `unsafe_code = "forbid"`;
   `todo!`/`unimplemented!`/`panic_in_result_fn` denied; no `unwrap()` outside
   tests.
 - **Two dependencies only** — `serde`, `serde_json` (ADR 0002, ADR 0009).
@@ -51,10 +51,10 @@ Four top-level domains, plus the repo-wide concerns (ADR 0016):
 | Path | What lives there |
 |---|---|
 | `backend/` | The entire Rust workspace — `Cargo.toml`, `Cargo.lock`, toolchain pins |
-| `backend/crates/libs/` | Shared, dependency-light, no I/O side effects |
+| `backend/crates/libs/` | Shared, dependency-light, no I/O side effects, except that `qip-transport` owns sockets under ADR 0100 (see `.claude/rules/architecture/00-boundaries.md`) |
 | `backend/crates/services/` | Domain engines — ingestion, risk, portfolio, execution |
 | `backend/crates/runtime/` | `qip-kernel`: the cycle and the composition of everything |
-| `backend/crates/apps/` | Deployable binaries: api, fastbrain, deepbrain, edge-node, web, cli |
+| `backend/crates/apps/` | Deployable binaries: api, fastbrain, deepbrain, edge-node, web, cli, fabricd, ledgerd |
 | `backend/crates/edge/` | Regional cell: routing, order book, sequencing, envelopes |
 | `backend/crates/tests/` | `qip-acceptance` — cross-cutting suites |
 | `frontend/portal/` | The authenticated Next.js console and installed PWA |

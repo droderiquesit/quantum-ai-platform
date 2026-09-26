@@ -99,5 +99,13 @@ qip-twin.workspace = true
 # nothing re-exports. An in-tree crate; the two-dependency rule is untouched.
 qip-lifecycle.workspace = true
 
+# ADR 0100's broker library, so a later packet's acceptance test can walk the
+# event fabric without a second manifest edge.
+qip-streaming.workspace = true
+
+# ADR 0100's ledger posting logic, so a later packet's acceptance test can
+# walk fill-to-ledger reconciliation without a second manifest edge.
+qip-portfolio.workspace = true
+
 [lints]
 workspace = true

@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::topic::Topic;
 
+pub use qip_core::canonical::canonical_json;
+
 /// A payload that can travel on the bus.
 ///
 /// Implementors declare their topic and schema version as associated
@@ -171,35 +173,5 @@ impl AnyEvent {
             self.occurred_at.to_rfc3339(),
             self.lineage.correlation_id
         )
-    }
-}
-
-/// Serialise a JSON value with object keys in sorted order.
-///
-/// `serde_json::Value` uses a map that already preserves insertion order, but
-/// two logically identical payloads built in different field orders would hash
-/// differently. Canonicalising first makes the content hash a genuine identity.
-pub fn canonical_json(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-            let parts: Vec<String> = keys
-                .iter()
-                .map(|k| {
-                    format!(
-                        "{}:{}",
-                        serde_json::Value::String((*k).clone()),
-                        canonical_json(&map[*k])
-                    )
-                })
-                .collect();
-            format!("{{{}}}", parts.join(","))
-        }
-        serde_json::Value::Array(items) => {
-            let parts: Vec<String> = items.iter().map(canonical_json).collect();
-            format!("[{}]", parts.join(","))
-        }
-        other => other.to_string(),
     }
 }

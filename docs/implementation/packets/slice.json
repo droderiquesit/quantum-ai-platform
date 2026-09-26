@@ -3245,7 +3245,8 @@
       "backend/crates/apps/qip-edge-node/src/main.rs",
       "backend/crates/apps/qip-edge-node/src/lib.rs",
       "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs",
-      "backend/crates/apps/qip-edge-node/tests/node_process.rs"
+      "backend/crates/apps/qip-edge-node/tests/node_process.rs",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_harness.rs"
     ],
     "reads": [
       "backend/crates/apps/qip-edge-node/src/pass.rs",
@@ -3273,7 +3274,8 @@
       "SLICE-32",
       "SLICE-53",
       "SLICE-55",
-      "SLICE-57"
+      "SLICE-57",
+      "SLICE-11"
     ],
     "constraints": [
       "pass.rs is not edited; run_pass is driven verbatim (through SLICE-55) and keeps naming SimulatedGateway.",
@@ -3285,7 +3287,8 @@
       "No thread pinning (ADR 0082 retires it; REFLEX-051 PARTIAL).",
       "lib.rs is handed over from SLICE-13; main.rs is handed on to SLICE-39 (replay dispatch) and manifest_wiring.rs to SLICE-40.",
       "Existing edge-node tests pass unchanged.",
-      "Isolation (orchestration policy §6; ADR 0098 measured 169 worktrees on the reference desktop): run in a dedicated git worktree on branch `slice/SLICE-36`, cut from the integration branch only after every depends_on packet has merged, with its own CARGO_TARGET_DIR (a shared target lets one lane's build replace another lane's binaries); apply and restore every mutation in that worktree only; the orchestrator merges in DAG order and re-runs this packet's acceptance plus `cargo test --workspace --no-fail-fast` on the integration branch after the merge"
+      "Isolation (orchestration policy §6; ADR 0098 measured 169 worktrees on the reference desktop): run in a dedicated git worktree on branch `slice/SLICE-36`, cut from the integration branch only after every depends_on packet has merged, with its own CARGO_TARGET_DIR (a shared target lets one lane's build replace another lane's binaries); apply and restore every mutation in that worktree only; the orchestrator merges in DAG order and re-runs this packet's acceptance plus `cargo test --workspace --no-fail-fast` on the integration branch after the merge",
+      "Added 2026-09-26 by the lead after SLICE-11's review: qip-edge-node's startup banner must print listener.local_addr() (the bound address), not the configured `0.0.0.0:{port}`, and this packet re-adds the qip-edge-node entry to event_fabric_harness.rs's every_real_startup_banner_ends_in_the_address_the_harness_parses."
     ],
     "tests": [
       "passes_run_on_their_own_timer_and_a_health_probe_neither_drives_nor_delays_them (F1) — mutation: run the pass from the probe handler -> fails",
@@ -3295,7 +3298,8 @@
       "a_restart_found_by_the_spool_requires_reconciliation_before_the_first_new_order (M9) — mutation: arm only from StoreMirror -> fails",
       "a_spool_budget_that_cannot_hold_a_seal_ages_worth_of_its_streams_peak_rate_is_refused_not_clamped (B3) — inputs from a test catalogue; mutation: clamp the budget upward -> fails",
       "a_halt_flag_that_blocks_forever_does_not_stop_the_pass_cadence — `mkfifo` at QIP_HALT_FLAG_PATH, never opened for writing; mutation: poll the flag inside the pass loop -> passes stop -> fails",
-      "journal_memory_stays_bounded_across_a_long_session — retained() stays under its bound across many passes while len() grows; mutation: never trim -> fails"
+      "journal_memory_stays_bounded_across_a_long_session — retained() stays under its bound across many passes while len() grows; mutation: never trim -> fails",
+      "a_node_started_on_port_zero_prints_the_port_it_actually_bound — mutation: print the configured address instead of listener.local_addr()"
     ],
     "acceptance": [
       "cd backend && cargo fmt --all --check -> exit 0, no diff printed",
@@ -3305,7 +3309,8 @@
       "cd backend && cargo test -p qip-acceptance --test manifest_wiring --test paper_boundary --test infrastructure --test egress --no-fail-fast -> every 'test result:' line reads '0 failed'",
       "./scripts/check-dependencies.sh -> 'all permitted'",
       "cd backend && cargo test --workspace --no-fail-fast -> every 'test result:' line reads '0 failed' (quote the totals; a missing binary is a failure, not a skip)",
-      "mutation report: for every new test, apply its named mutation in this packet's worktree, run the test and quote the failure (it must fail for the stated reason), restore byte-for-byte (`git diff --stat` shows no change to the mutated file, and after any Cargo.toml mutation `git diff --stat backend/Cargo.lock` shows none either), rerun and quote the pass"
+      "mutation report: for every new test, apply its named mutation in this packet's worktree, run the test and quote the failure (it must fail for the stated reason), restore byte-for-byte (`git diff --stat` shows no change to the mutated file, and after any Cargo.toml mutation `git diff --stat backend/Cargo.lock` shows none either), rerun and quote the pass",
+      "cd backend && cargo test -p qip-acceptance --test event_fabric_harness -> '0 failed', with qip-edge-node back in the banner list"
     ],
     "artifacts": [
       "qip-edge-node fabric mode"

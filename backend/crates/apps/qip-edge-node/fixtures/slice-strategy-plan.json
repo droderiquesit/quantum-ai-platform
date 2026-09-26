@@ -1,0 +1,37 @@
+{
+  "strategies": [
+    {
+      "id": "microprice-guard",
+      "rules": [
+        {
+          "condition": {
+            "compare": {
+              "left": {
+                "feature": {
+                  "name": "microprice",
+                  "parameters": [],
+                  "subject": "obj-SLICE13"
+                }
+              },
+              "op": "greater",
+              "right": {
+                "exact": "0"
+              }
+            }
+          },
+          "conviction": {
+            "statistic": 0.6
+          },
+          "kind": "Enter",
+          "name": "microprice-defined",
+          "observations": 10,
+          "size": {
+            "exact": "10"
+          }
+        }
+      ],
+      "subject": "obj-SLICE13",
+      "validity": 30000000000
+    }
+  ]
+}
