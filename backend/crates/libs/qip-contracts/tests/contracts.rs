@@ -501,9 +501,40 @@ fn every_capital_refusal_names_the_bound_that_stopped_it() -> Result<()> {
 }
 
 #[test]
-fn an_oversized_order_is_reduced_rather_than_approved_as_requested() -> Result<()> {
-    // A `Reduced` that a caller can mistake for approval is how an order goes
-    // out at the size the strategy wanted rather than the size it was allowed.
+fn an_order_larger_than_its_envelopes_order_limit_is_refused_whole_naming_the_limit() -> Result<()>
+{
+    // The envelope used to answer this with a reduction to 400, and the cell
+    // sent 400 of an order sized at 600 — a trade nobody decided, sent under
+    // a grant that was meant to refuse it (CAPITAL-025).
+    let grant = envelope("1000", "400", "100")?;
+    let venue = VenueId::new("XNYS");
+    let used = Utilisation::default();
+    // Premise: the gross limit alone would take it, so only the order limit
+    // can be what stops it.
+    assert!(dec!("600") < grant.gross_limit());
+    let answer = grant.admit(&venue, dec!("600"), &used, t(10));
+    assert!(
+        matches!(answer, CapitalGrant::Refused(_)),
+        "an order over the order limit must be refused whole, got {answer:?}"
+    );
+    assert_eq!(answer.permitted_quantity(dec!("600")), Decimal::ZERO);
+    assert_eq!(
+        answer,
+        CapitalGrant::Refused("order notional 600 exceeds the 400 order limit".into())
+    );
+    // The bound is inclusive: exactly the order limit is taken whole.
+    assert_eq!(
+        grant.admit(&venue, dec!("400"), &used, t(10)),
+        CapitalGrant::Full
+    );
+    Ok(())
+}
+
+#[test]
+fn an_order_larger_than_the_headroom_left_is_refused_whole_naming_the_headroom() -> Result<()> {
+    // Headroom binding below the order limit is the case the old reduction
+    // hid best: the 400 fitted the order limit, so a caller reading only the
+    // order limit expected it to go, and 200 went instead.
     let grant = envelope("1000", "400", "100")?;
     let venue = VenueId::new("XNYS");
     let used = Utilisation {
@@ -511,21 +542,77 @@ fn an_oversized_order_is_reduced_rather_than_approved_as_requested() -> Result<(
         realised_loss: Decimal::ZERO,
         orders_sent: 1,
     };
-    // Headroom is 200, below the 400 per-order cap, so the tighter one binds.
-    match grant.admit(&venue, dec!("400"), &used, t(10)) {
-        CapitalGrant::Reduced(size) => {
-            assert_eq!(size, dec!("200"));
-            assert_eq!(
-                CapitalGrant::Reduced(size).permitted_quantity(dec!("400")),
-                dec!("200")
-            );
-        }
-        other => panic!("expected a reduction, got {other:?}"),
-    }
+    // Premise: headroom is positive and below the order limit, so headroom
+    // and not the order limit is the bound that stops it.
+    let headroom = grant.gross_limit() - used.gross_committed;
+    assert!(headroom > Decimal::ZERO);
+    assert!(headroom < dec!("400"));
+    let answer = grant.admit(&venue, dec!("400"), &used, t(10));
+    assert!(
+        matches!(answer, CapitalGrant::Refused(_)),
+        "an order over the headroom must be refused whole, got {answer:?}"
+    );
+    assert_eq!(
+        answer,
+        CapitalGrant::Refused(
+            "order notional 400 exceeds the 200 of the 1000 gross limit left".into()
+        )
+    );
     assert!(matches!(
         grant.admit(&venue, dec!("150"), &used, t(10)),
         CapitalGrant::Full
     ));
+    assert!(matches!(
+        grant.admit(&venue, dec!("200"), &used, t(10)),
+        CapitalGrant::Full
+    ));
+    Ok(())
+}
+
+#[test]
+fn for_generated_commitment_sequences_nothing_is_admitted_in_part_and_nothing_past_the_gross_limit()
+-> Result<()> {
+    // CAPITAL-025 as a property rather than an example: whatever sequence of
+    // orders arrives, each is taken whole or not at all, and what was taken
+    // never sums past the gross limit.
+    use qip_core::rng::{Rng, Xoshiro256};
+    let grant = envelope("100000", "5000", "100")?;
+    let venue = VenueId::new("XNYS");
+    let mut rng = Xoshiro256::seeded(0x0CA9_17A1_0025);
+    let mut used = Utilisation::default();
+    let (mut full, mut refused_with_room) = (0_u32, 0_u32);
+    for _ in 0..10_000 {
+        // Whole units from 1 to 8000, so the draw straddles the 5000 order
+        // limit and, once commitment builds, the headroom as well.
+        let draw = i64::try_from(rng.below(8000)).unwrap_or(0) + 1;
+        let notional = Decimal::from_int(draw);
+        let answer = grant.admit(&venue, notional, &used, t(10));
+        assert!(
+            matches!(answer, CapitalGrant::Full | CapitalGrant::Refused(_)),
+            "{notional} against {} committed was admitted in part: {answer:?}",
+            used.gross_committed
+        );
+        if answer == CapitalGrant::Full {
+            used.gross_committed += notional;
+            used.orders_sent += 1;
+            full += 1;
+        } else if grant.gross_limit() - used.gross_committed > Decimal::ZERO {
+            refused_with_room += 1;
+        }
+        assert!(
+            used.gross_committed <= grant.gross_limit(),
+            "committed {} past the {} gross limit",
+            used.gross_committed,
+            grant.gross_limit()
+        );
+    }
+    // Premise: the sequence exercised both answers, and refused orders while
+    // there was still room — the case a reduction would have taken in part.
+    assert!(full > 0, "no order was ever admitted");
+    assert!(
+        refused_with_room > 0,
+        "no order was refused with headroom left"
+    );
     Ok(())
 }
 
