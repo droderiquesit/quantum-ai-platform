@@ -411,8 +411,11 @@ fn the_vendored_openobserve_image_is_pinned_and_every_environment_that_names_it_
 
     // The image, the posture and the storage are the manifest's since ADR
     // 0036: gitops.rs's OpenObserve test asserts the mirrored image at this
-    // reviewed digest, both halves of ADR 0030's anonymous posture, and
-    // ephemeral storage, on every environment's RunService. What Terraform
+    // reviewed digest, ADR 0033's authenticated ingress with no anonymous
+    // principal in any manifest, and ephemeral storage, on every
+    // environment's RunService. The posture itself is decided by
+    // `module "openobserve_access"`, a separate block the split below does
+    // not reach, and `infrastructure.rs` holds that call. What Terraform
     // still holds is the identity and its grants, gated on the same root
     // variable that gates the deployment, and the ADR 0031 root login as
     // `secret_env` — the grant for which the module keys on that input.

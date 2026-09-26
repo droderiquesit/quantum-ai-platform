@@ -645,11 +645,15 @@ fn a_module_block_omitting_a_required_input_is_found_by_this_scan() {
 //
 // ADR 0030 put OpenObserve on the internet anonymously *because it was empty*,
 // and wrote its own revisit trigger: "the moment any deployment sets
-// `QIP_OPENOBSERVE_URL`". ADR 0033 is that trigger firing and is not yet
-// applied. Nothing checked the trigger — the comment beside the posture in
-// `catalogue.tf` said it, and a comment stops nobody. The first catalogue
-// entry to name the variable would have pointed the platform's telemetry at a
-// store anyone on the internet can read and write, with every gate green.
+// `QIP_OPENOBSERVE_URL`". ADR 0033 is that trigger firing, and since
+// 2026-09-26 it is applied for the invoker half: the RunService carries the
+// load-balancer-only ingress `modules/openobserve` derives and no manifest
+// grants the anonymous principal. Before that nothing checked the trigger —
+// the comment beside the posture in `catalogue.tf` said it, and a comment
+// stops nobody. The first catalogue entry to name the variable would have
+// pointed the platform's telemetry at a store anyone on the internet can read
+// and write, with every gate green. The tripwire stays: the posture that
+// made it necessary is one manifest line away from returning.
 
 /// The variable whose first appearance in a deployment is ADR 0030's trigger.
 const OPENOBSERVE_URL_VARIABLE: &str = "QIP_OPENOBSERVE_URL";
@@ -830,10 +834,18 @@ fn no_deployment_points_telemetry_at_openobserve_while_it_is_anonymous() {
             .expect("catalogue.tf is readable"),
     );
     // The premises, each stated so the assertion below cannot pass by
-    // scanning the wrong thing. First: OpenObserve is deployed and is
-    // anonymous today, on its RunService in every environment. When ADR
-    // 0033 is applied this line fails alongside the pins in gitops.rs, and
-    // the change is to retire this tripwire with them, not to loosen it.
+    // scanning the wrong thing. First: OpenObserve is deployed, and is
+    // **not** anonymous, on its RunService in every environment.
+    //
+    // This premise read the other way until 2026-09-26 — it asserted the
+    // service *was* anonymous, and told whoever applied ADR 0033 to retire
+    // the tripwire. It is inverted instead. With the posture authenticated
+    // the tripwire below is handed `false` and returns `Ok` whatever the
+    // catalogue says, so a test left asserting only the tripwire would be
+    // vacuous in exactly the direction that matters: `INGRESS_TRAFFIC_ALL`
+    // restored on the manifest, and every deployment free to point its
+    // telemetry at a store anyone can write to. Asserting the posture here
+    // is what keeps this test able to fail.
     assert!(
         module_block_body(&catalogue, "openobserve").is_some(),
         "catalogue.tf no longer declares module \"openobserve\"; the workload's identity is gone \
@@ -841,9 +853,11 @@ fn no_deployment_points_telemetry_at_openobserve_while_it_is_anonymous() {
     );
     let anonymous = openobserve_is_anonymous();
     assert!(
-        anonymous,
-        "OpenObserve's RunService is no longer INGRESS_TRAFFIC_ALL; ADR 0033 has been applied \
-         and this tripwire's premise is gone — retire it with the pins in gitops.rs"
+        !anonymous,
+        "OpenObserve's RunService is INGRESS_TRAFFIC_ALL again — ADR 0030's anonymous posture, \
+         which ADR 0033 ended. Put it back on the load-balancer-only ingress modules/openobserve \
+         derives for the authenticated posture; if it must be public, that is a new record \
+         amending ADR 0033, not a manifest edit"
     );
     // Second: the scanner sees the catalogue's variables at all. The three
     // built entries each set the autonomy ceiling, so a walk that found fewer
