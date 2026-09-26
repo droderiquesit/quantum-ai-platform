@@ -1233,4 +1233,50 @@ pub mod names {
     /// that never filled in.
     pub const TELEMETRY_EXPORT_ATTEMPTS: &str = "qip_observability_export_attempts_total";
     pub const TELEMETRY_EXPORT_FAILURES: &str = "qip_observability_export_failures_total";
+
+    // Event fabric and ledger metrics. The event fabric carries platform
+    // events; ledgers record amendments to authoritative state. Both are bounded
+    // by their configured stream catalogue or known enums, never by order id or
+    // key. Labelled by the stream catalogue's names, operational outcomes, or
+    // refusal reasons, all bounded at deployment or in source.
+
+    // Event fabric metrics (fabricd)
+    pub const EVENT_FABRIC_APPEND: &str = "qip_event_fabric_append_total";
+    pub const EVENT_FABRIC_APPEND_LATENCY_MS: &str = "qip_event_fabric_append_latency_ms";
+    pub const EVENT_FABRIC_HIGH_WATERMARK: &str = "qip_event_fabric_high_watermark";
+    pub const EVENT_FABRIC_ARCHIVED_THROUGH: &str = "qip_event_fabric_archived_through";
+    pub const EVENT_FABRIC_DUPLICATES: &str = "qip_event_fabric_duplicates_total";
+    pub const EVENT_FABRIC_REFUSALS: &str = "qip_event_fabric_refusals_total";
+    pub const EVENT_FABRIC_SHED: &str = "qip_event_fabric_shed_total";
+    pub const EVENT_FABRIC_FENCED: &str = "qip_event_fabric_fenced";
+    pub const EVENT_FABRIC_LEADER_EPOCH: &str = "qip_event_fabric_leader_epoch";
+    pub const EVENT_FABRIC_SEGMENTS_SEALED: &str = "qip_event_fabric_segments_sealed_total";
+    pub const EVENT_FABRIC_ARCHIVE_LAG: &str = "qip_event_fabric_archive_lag_segments";
+    pub const EVENT_FABRIC_GROUP_LAG: &str = "qip_event_fabric_group_lag";
+
+    // Edge journal metrics (edge-node)
+    pub const EDGE_JOURNAL_RING_DEPTH: &str = "qip_edge_journal_ring_depth";
+    pub const EDGE_JOURNAL_SPOOL_BYTES: &str = "qip_edge_journal_spool_bytes";
+    pub const EDGE_JOURNAL_SPOOL_UNARCHIVED_BYTES: &str = "qip_edge_journal_spool_unarchived_bytes";
+    pub const EDGE_JOURNAL_PRESSURE: &str = "qip_edge_journal_pressure";
+
+    // Edge event fabric metrics (edge-node)
+    pub const EDGE_EVENT_FABRIC_DRAIN: &str = "qip_edge_event_fabric_drain_total";
+    pub const EDGE_EVENT_FABRIC_CONNECTED: &str = "qip_edge_event_fabric_connected";
+    pub const EDGE_EVENT_FABRIC_INPUT_GAPS: &str = "qip_edge_event_fabric_input_gaps_total";
+    pub const EDGE_EVENT_FABRIC_CONTROL_APPLIED: &str =
+        "qip_edge_event_fabric_control_applied_total";
+    pub const EDGE_EVENT_FABRIC_CONTROL_REFUSED: &str =
+        "qip_edge_event_fabric_control_refused_total";
+    pub const EDGE_EVENT_FABRIC_PASS_DURATION_MS: &str = "qip_edge_event_fabric_pass_duration_ms";
+
+    // Ledger metrics (ledgerd)
+    pub const LEDGER_COMMITS: &str = "qip_ledger_commits_total";
+    pub const LEDGER_COMMIT_LATENCY_MS: &str = "qip_ledger_commit_latency_ms";
+    pub const LEDGER_DUPLICATES: &str = "qip_ledger_duplicates_total";
+    pub const LEDGER_PARKED_KEYS: &str = "qip_ledger_parked_keys";
+    pub const LEDGER_LIVE_FILL_REFUSED: &str = "qip_ledger_live_fill_refused_total";
+    pub const LEDGER_UNBALANCED_REFUSED: &str = "qip_ledger_unbalanced_refused_total";
+    pub const LEDGER_LAG: &str = "qip_ledger_lag_records";
+    pub const LEDGER_STORE_RETRIES: &str = "qip_ledger_store_retries_total";
 }
