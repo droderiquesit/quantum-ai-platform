@@ -59,11 +59,16 @@ qip-financial.workspace = true
 # the pass loop beneath the cell's placer seam. A workspace crate the edge's
 # order model already comes from, not a third external dependency.
 qip-routing.workspace = true
-# Event envelope for cell-to-centre communication (ADR 0100).
+# Moved from dev-dependencies: apps/qip-edge-node::event_fabric (ADR 0100 § 1)
+# is this binary's own reflex-ring-to-spool-to-drain composition, so the
+# envelope type is a production dependency here, not a test-only fixture.
 qip-events.workspace = true
 
 [dev-dependencies]
-# The streaming fabric's test fixtures for envelope transport (ADR 0100).
+# ADR 0100 § 1's broker library (qip-streaming::event_fabric). Dev-only: this
+# binary's production path drains through qip-transport's client, not the
+# broker crate; a later packet's tests exercise the drain against an
+# in-process broker double built from it.
 qip-streaming.workspace = true
 
 [lints]

@@ -1,3 +1,3 @@
-//! Observability and metrics emission for the fabric broker.
+//! Observability and metrics emission for the event fabric broker.
 //! See ADR 0100 § 1 for this module's role.
-//! Implemented in SLICE-50.
+//! Implemented in SLICE-08.

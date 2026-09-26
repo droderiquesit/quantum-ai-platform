@@ -1,6 +1,6 @@
 [package]
 name = "qip-ledgerd"
-description = "Ledger composition root: single-writer durable store and read-side API for order settlement."
+description = "Ledger composition root: sole writer of the ledger chain of double-entry postings for fills, and its own read-side API (ADR 0100)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
