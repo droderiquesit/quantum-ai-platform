@@ -80,11 +80,18 @@
 //!
 //! ## Decoding a batch out of a buffer holding more than one
 //!
-//! [`Batch::decode`] answers only "is the whole rest of this buffer one
-//! batch", which a caller with several batches concatenated in one buffer —
-//! `qip_transport`'s `FetchResponse::batches`, whose own documentation says
-//! it may carry more than one — cannot use to find where the first one ends.
-//! [`Batch::decode_prefix`] answers that instead: the same three outcomes,
+//! [`Batch::decode`] does **not** answer "is the whole rest of this buffer
+//! one batch". It reads only the declared body from the *front* of the
+//! buffer and never inspects, and never refuses, anything after it: a buffer
+//! holding one complete, valid batch followed by a second one — or by seven
+//! bytes of unrelated garbage — decodes as [`DecodeOutcome::Complete`]
+//! either way, identically. That silence is exactly what a caller with
+//! several batches concatenated in one buffer — `qip_transport`'s
+//! `FetchResponse::batches`, whose own documentation says it may carry more
+//! than one — cannot build on: nothing in `Batch::decode`'s return value
+//! says whether the buffer held one batch or ten, so it cannot be used to
+//! find where the first one ends. [`Batch::decode_prefix`] answers that
+//! question instead: the same three outcomes,
 //! [`PrefixDecodeOutcome::Complete`] additionally carrying `consumed`, the
 //! exact byte length of the frame just decoded, so the caller's next frame
 //! (if any) starts at `&bytes[consumed..]`. It shares [`Batch::decode`]'s own

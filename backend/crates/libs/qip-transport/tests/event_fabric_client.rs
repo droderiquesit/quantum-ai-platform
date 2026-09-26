@@ -514,17 +514,23 @@ fn a_producer_runs_over_an_in_memory_transport_without_opening_a_socket() {
 // --- FU-CODEC / SLICE-28: every batch in a fetch --------------------------
 
 /// SLICE-28 found `Consumer::fetch` decoding only the first batch of a
-/// `FetchResponse` and silently dropping the rest, with no error at all — a
-/// broker answering with more than one concatenated batch lost every record
-/// past the first. `Batch::decode_prefix` (FU-CODEC) reports how many bytes
-/// one frame consumed, so this client can walk every frame in the response
-/// and deliver each in turn.
+/// `FetchResponse` and moving `next_offset` only past that one batch's own
+/// records, with no error at all — a broker answering with more than one
+/// concatenated batch left every record past the first to be re-requested by
+/// a later fetch rather than delivered from this one, an extra round trip
+/// and re-spent credit each time but never a permanently lost record (the
+/// broker still held them at the offset the next fetch would ask for).
+/// `Batch::decode_prefix` (FU-CODEC) reports how many bytes one frame
+/// consumed, so this client can walk every frame in the response and deliver
+/// each in turn without a second round trip.
 ///
 /// Mutation: in `Consumer::fetch`, after decoding, keep only
 /// `batches.next()` and never populate `self.pending` with the rest (the
-/// behaviour this test replaces) — fails, because the second and third calls
-/// to `fetch()` below then return `Ok(None)` (the transport's one scripted
-/// answer is already spent) instead of the second and third batches.
+/// behaviour this test replaces) — fails, because the second call to
+/// `fetch()` below then issues a fresh network request against a transport
+/// whose one scripted answer is already spent, returning `Err("test bug: the
+/// scripted transport's script ran out of answers")` instead of the second
+/// batch.
 #[test]
 fn a_fetch_carrying_three_concatenated_batches_delivers_all_three_in_order() {
     let hex = concatenated_batches_hex(&[10, 11, 12]);
@@ -535,6 +541,11 @@ fn a_fetch_carrying_three_concatenated_batches_delivers_all_three_in_order() {
 
     // Premise: nothing has touched the transport yet.
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        consumer.next_offset(),
+        0,
+        "premise: the consumer has not advanced before the first fetch"
+    );
 
     let first = consumer
         .fetch()
@@ -548,6 +559,13 @@ fn a_fetch_carrying_three_concatenated_batches_delivers_all_three_in_order() {
         calls.load(Ordering::SeqCst),
         1,
         "the first batch must come from the transport's one scripted network call"
+    );
+    assert_eq!(
+        consumer.next_offset(),
+        11,
+        "next_offset must already sit one past the first batch's own record before the second \
+         batch is ever asked for, exactly as `advance_past`'s own documentation promises \
+         between calls — not only once every batch has been drained"
     );
 
     let second = consumer
@@ -564,6 +582,12 @@ fn a_fetch_carrying_three_concatenated_batches_delivers_all_three_in_order() {
         "the second batch must come from what this consumer already decoded, not a second \
          network call — the transport's script holds only one scripted answer, so a second \
          call here would already have failed"
+    );
+    assert_eq!(
+        consumer.next_offset(),
+        12,
+        "next_offset must sit one past the second batch's own record immediately, before the \
+         third batch is delivered"
     );
 
     let third = consumer
@@ -629,10 +653,18 @@ fn a_corrupt_second_batch_in_a_fetch_is_refused_naming_its_offset_not_skipped() 
         "a corrupt batch after a good one must refuse the whole fetch, not deliver the good \
          batch while silently skipping the corrupt one",
     );
+    // A bare `contains(&first_len.to_string())` is a substring trap here:
+    // the corrupt batch's own inner CRC-mismatch message names a *second*
+    // offset (relative to the corrupt batch's own bytes, not the response),
+    // and nothing stops that inner number from containing this one's digits
+    // as a substring by coincidence on a future fixture change. Matching the
+    // delimited phrase the outer wrapper actually writes pins this down to
+    // the offset this test means to check.
+    let expected_phrase = format!("byte offset {first_len} of");
     assert!(
-        err.message().contains(&first_len.to_string()),
+        err.message().contains(&expected_phrase),
         "the refusal must name the byte offset within the response's decoded body at which \
-         the corrupt batch begins ({first_len}): {}",
+         the corrupt batch begins (\"{expected_phrase}\"): {}",
         err.message()
     );
     assert_eq!(
@@ -646,4 +678,446 @@ fn a_corrupt_second_batch_in_a_fetch_is_refused_naming_its_offset_not_skipped() 
         "a refused fetch must not advance the offset past the good batch that preceded the \
          corrupt one — the same offset must be retried"
     );
+}
+
+/// FU-CODEC rework, defect 3: a *torn* batch (a truncated frame, not a
+/// corrupt one) after a good batch must be refused the same way a corrupt
+/// one is — naming its offset, never silently dropped in favour of the good
+/// batch that preceded it. Before this test, nothing in this crate drove a
+/// good-batch-then-torn-batch fetch, so a change to `decode_every_batch`'s
+/// `Torn` arm that special-cased "torn after at least one good batch" by
+/// breaking out of the loop instead of refusing would leave every test in
+/// this file green.
+///
+/// Mutation: in `decode_every_batch`, replace the `Ok(PrefixDecodeOutcome::Torn) => { return
+/// Err(...) }` arm with `Ok(PrefixDecodeOutcome::Torn) if offset > 0 => break` (falling through
+/// to `Ok(batches)` with only the good batch collected so far) — fails, because
+/// `consumer.fetch()` then returns `Ok(Some(_))` carrying the first, good batch instead of the
+/// `Err` this test requires, and the offset assertion never runs.
+#[test]
+fn a_torn_second_batch_in_a_fetch_is_refused_naming_its_offset_not_skipped() {
+    let first_bytes = encoded_batch_bytes(40);
+    let first_len = first_bytes.len();
+    let full_second_bytes = encoded_batch_bytes(41);
+    // Cut the second batch's own bytes short mid-frame: past the prefix (so
+    // its declared length is read and trusted) but short of that declared
+    // length, exactly what a batch cut off mid-write looks like on the wire.
+    let torn_second_bytes = &full_second_bytes[..full_second_bytes.len() - 5];
+
+    let mut bytes = first_bytes.clone();
+    bytes.extend_from_slice(torn_second_bytes);
+
+    // Premise: the first batch's own bytes, still at the front of the
+    // buffer, are untouched, and the second batch really is shorter than a
+    // complete frame.
+    assert_eq!(&bytes[..first_len], first_bytes.as_slice());
+    assert!(
+        torn_second_bytes.len() < full_second_bytes.len(),
+        "premise: the second batch is genuinely truncated, not a full frame"
+    );
+
+    let hex = qip_core::hash::to_hex(&bytes);
+    let (transport, calls, _last_request) = ScriptedTransport::new(vec![Response::Fetch(
+        FetchResponse::new("orders", 0, 42, 0, hex).expect("a coherent fetch response"),
+    )]);
+    let mut consumer = new_consumer(Box::new(transport));
+
+    // Premise: the offset has not moved before the refused fetch.
+    assert_eq!(consumer.next_offset(), 0);
+
+    let err = consumer.fetch().expect_err(
+        "a torn batch after a good one must refuse the whole fetch, not deliver the good batch \
+         while silently dropping the torn one",
+    );
+    let expected_phrase = format!("byte offset {first_len} of");
+    assert!(
+        err.message().contains(&expected_phrase),
+        "the refusal must name the byte offset within the response's decoded body at which the \
+         torn batch begins (\"{expected_phrase}\"): {}",
+        err.message()
+    );
+    assert!(
+        err.message().contains("torn"),
+        "the refusal must say the frame is torn, not merely corrupt, so an operator does not \
+         chase a CRC mismatch that was never there: {}",
+        err.message()
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "premise: the refusal came from the transport's one scripted network call, not a retry"
+    );
+    assert_eq!(
+        consumer.next_offset(),
+        0,
+        "a refused fetch must not advance the offset past the good batch that preceded the torn \
+         one — the same offset must be retried"
+    );
+}
+
+/// FU-CODEC rework, defect 1 (most severe): a batch that cannot be advanced
+/// past — here, one whose `base_offset + records.len()` overflows `u64` —
+/// must not leave any *later* batch from the same response sitting in
+/// `pending`. Before this fix, `Consumer::fetch` populated `pending` with
+/// every batch after the first *before* calling `advance_past` on the first,
+/// so a first batch that failed to advance still left the second batch
+/// cached; the very next `fetch()` call served that second batch straight
+/// out of `pending` with **no network call and no error at all**, silently
+/// skipping the batch this call had just refused. This is reachable in
+/// production: `qip-edge-node`'s control loop records a fetch `Err` and
+/// keeps stepping, so its next fetch would skip a refused control-stream
+/// batch rather than being refused again on it.
+///
+/// Mutation: in `Consumer::fetch`'s network-response arm, swap the order back
+/// to `self.pending.extend(...)` before `self.advance_past(&first)?` — fails,
+/// because the second `fetch()` call below then returns `Ok(Some(_))` for the
+/// batch at offset 5 straight out of `pending`, with the call count staying
+/// at 1 (no second network request), instead of the fresh `Err` this test
+/// requires from a genuine retry at the same offset.
+#[test]
+fn a_fetch_whose_first_batch_cannot_advance_the_offset_leaves_nothing_pending_for_the_next_call() {
+    let hex = concatenated_batches_hex(&[u64::MAX, 5]);
+    let retry_hex = encoded_batch_hex(0);
+    let (transport, calls, last_request) = ScriptedTransport::new(vec![
+        Response::Fetch(
+            FetchResponse::new("orders", 0, 0, 0, hex).expect("a coherent fetch response"),
+        ),
+        Response::Fetch(
+            FetchResponse::new("orders", 0, 1, 0, retry_hex).expect("a coherent fetch response"),
+        ),
+    ]);
+    let mut consumer = new_consumer(Box::new(transport));
+
+    // Premise: nothing has moved yet.
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(consumer.next_offset(), 0);
+
+    let err = consumer.fetch().expect_err(
+        "a batch whose base offset plus its own record count overflows u64 must refuse the \
+         fetch rather than silently wrap or truncate the arithmetic",
+    );
+    assert!(
+        err.message().contains("overflow"),
+        "the refusal must name the overflow: {}",
+        err.message()
+    );
+    assert!(
+        err.message().contains(&u64::MAX.to_string()),
+        "the refusal must name the base offset that overflowed: {}",
+        err.message()
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "premise: the failing fetch consumed exactly the first scripted network call"
+    );
+    assert_eq!(
+        consumer.next_offset(),
+        0,
+        "a fetch that fails to advance past its first batch must leave next_offset untouched, \
+         so the very same offset is retried rather than skipped"
+    );
+
+    let delivered = consumer
+        .fetch()
+        .expect("the retry succeeds")
+        .expect("a batch is delivered on retry");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "the batch after a failed advance must come from a fresh network call, never from a \
+         batch this consumer already cached in `pending` — caching it there would let this call \
+         silently skip whatever made the previous batch unrefusable, with no request to the \
+         broker at all"
+    );
+    assert_eq!(
+        delivered.batch.base_offset, 0,
+        "the retry must genuinely re-ask the broker at offset 0, not resume from a batch at \
+         offset 5 left over in `pending` by the failed call"
+    );
+    let request = last_request
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+        .expect("the transport recorded the retry's request");
+    let Request::Fetch(fetch) = request else {
+        panic!("expected the retry to be a Fetch request: {request:?}");
+    };
+    assert_eq!(
+        fetch.offset, 0,
+        "the retry must actually ask the broker for offset 0, the offset the failed fetch never \
+         advanced past"
+    );
+}
+
+/// FU-CODEC rework, defect 1's other flaw: the *pending* path had the same
+/// bug in mirror image. Before this fix, `Consumer::fetch` popped a batch out
+/// of `pending` and only then called `advance_past` on it; a failure there
+/// returned `Err` with the batch already removed from the queue, so it was
+/// gone for good rather than refused-and-retryable. A caller retrying after
+/// the `Err` (exactly what a control loop that keeps stepping on a fetch
+/// error does) would then either fall through to a brand-new network call at
+/// whatever offset was never advanced past, or — with more than one bad batch
+/// queued — silently move on to the *next* queued batch, skipping the one
+/// that had just failed.
+///
+/// Mutation: in `Consumer::fetch`'s pending branch, go back to `if let
+/// Some(fetched) = self.pending.pop_front() { self.advance_past(&fetched.batch)?; return
+/// Ok(Some(fetched)); }` — fails, because the third `fetch()` call below then issues a fresh
+/// network request (the popped, overflowing batch is already gone from `pending`) against a
+/// transport whose one scripted answer is already spent, so both the call count and the
+/// "overflow" wording in the error diverge from what this test requires.
+#[test]
+fn a_batch_queued_in_pending_that_cannot_advance_the_offset_is_refused_again_not_dropped() {
+    let hex = concatenated_batches_hex(&[10, u64::MAX]);
+    let (transport, calls, _last_request) = ScriptedTransport::new(vec![Response::Fetch(
+        FetchResponse::new("orders", 0, 0, 0, hex).expect("a coherent fetch response"),
+    )]);
+    let mut consumer = new_consumer(Box::new(transport));
+
+    let first = consumer
+        .fetch()
+        .expect("fetch succeeds")
+        .expect("the first of two concatenated batches is delivered");
+    assert_eq!(
+        first.batch.base_offset, 10,
+        "premise: the first batch delivered is base offset 10, leaving the overflowing batch \
+         cached in `pending`"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(consumer.next_offset(), 11);
+
+    let first_refusal = consumer.fetch().expect_err(
+        "a batch queued in `pending` whose base offset plus its own record count overflows u64 \
+         must refuse the fetch rather than being silently dropped from the queue",
+    );
+    assert!(
+        first_refusal.message().contains("overflow"),
+        "{}",
+        first_refusal.message()
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "premise: the refusal came from the already-decoded queue, not a new network call"
+    );
+
+    // The failing batch must still be sitting in `pending` to be retried —
+    // never popped and lost the moment `advance_past` first refused it.
+    let second_refusal = consumer.fetch().expect_err(
+        "retrying the same failed batch must refuse identically, not silently move past it to a \
+         network call the transport's script holds no answer for",
+    );
+    assert!(
+        second_refusal.message().contains("overflow"),
+        "the same overflowing batch must still be the one refused, not a different failure from \
+         a network call the mock cannot answer: {}",
+        second_refusal.message()
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the overflowing batch must still be the one being retried out of `pending` on every \
+         call, never popped, dropped, and replaced by a fresh network request"
+    );
+}
+
+/// FU-CODEC rework, defect 2: `seek` must control what the *next* `fetch()`
+/// returns, not merely what `next_offset()` reports. Before this fix, `seek`
+/// overwrote `next_offset` but left `pending` untouched, so a caller seeking
+/// after a multi-batch fetch would still be served whatever this consumer had
+/// already cached from *before* the seek — silently undoing the seek one
+/// `fetch()` call later.
+///
+/// Mutation: remove `self.pending.clear()` from `Consumer::seek` — fails,
+/// because the fetch after `seek(0)` below then delivers the batch at offset
+/// 11 straight out of the stale `pending` queue, over the transport's one
+/// scripted network call, instead of asking the broker for offset 0.
+#[test]
+fn seeking_after_a_multi_batch_fetch_clears_whatever_was_left_pending() {
+    let hex = concatenated_batches_hex(&[10, 11, 12]);
+    let (transport, calls, last_request) = ScriptedTransport::new(vec![
+        Response::Fetch(
+            FetchResponse::new("orders", 0, 13, 0, hex).expect("a coherent fetch response"),
+        ),
+        Response::Fetch(
+            FetchResponse::new("orders", 0, 1, 0, encoded_batch_hex(0))
+                .expect("a coherent fetch response"),
+        ),
+    ]);
+    let mut consumer = new_consumer(Box::new(transport));
+
+    let first = consumer
+        .fetch()
+        .expect("fetch succeeds")
+        .expect("the first of three concatenated batches is delivered");
+    assert_eq!(
+        first.batch.base_offset, 10,
+        "premise: the first batch delivered is base offset 10, leaving batches 11 and 12 cached \
+         in `pending`"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    consumer.seek(0);
+    assert_eq!(
+        consumer.next_offset(),
+        0,
+        "premise: seek(0) moved next_offset back to 0"
+    );
+
+    let after_seek = consumer
+        .fetch()
+        .expect("fetch after seek succeeds")
+        .expect("a batch is delivered after seeking");
+    assert_eq!(
+        after_seek.batch.base_offset, 0,
+        "a fetch after seek(0) must deliver the batch actually at offset 0, not a batch still \
+         cached in `pending` from before the seek"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "seek must have cleared whatever `pending` held, forcing the delivery above to come \
+         from a fresh network request rather than the stale cache"
+    );
+    let request = last_request
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+        .expect("the transport recorded the post-seek request");
+    let Request::Fetch(fetch) = request else {
+        panic!("expected the post-seek call to be a Fetch request: {request:?}");
+    };
+    assert_eq!(
+        fetch.offset, 0,
+        "the fetch after seek(0) must actually ask the broker for offset 0"
+    );
+}
+
+/// FU-CODEC rework, defect 2's other call site: `resume` has the identical
+/// flaw `seek` has, and for the identical reason — it overwrites
+/// `next_offset` from the broker's own lag answer but, before this fix, left
+/// `pending` untouched.
+///
+/// Mutation: remove `self.pending.clear()` from `Consumer::resume` — fails,
+/// because the fetch after `resume()` below then delivers the batch at
+/// offset 11 straight out of the stale `pending` queue instead of the batch
+/// actually sitting at the resumed offset 100, and the network call count
+/// stays at two instead of reaching three.
+#[test]
+fn resuming_after_a_multi_batch_fetch_clears_whatever_was_left_pending() {
+    let hex = concatenated_batches_hex(&[10, 11, 12]);
+    let (transport, calls, _last_request) = ScriptedTransport::new(vec![
+        Response::Fetch(
+            FetchResponse::new("orders", 0, 13, 0, hex).expect("a coherent fetch response"),
+        ),
+        Response::GroupLag(GroupLagResponse::new(99, 200).expect("a coherent lag answer")),
+        Response::Fetch(
+            FetchResponse::new("orders", 0, 101, 100, encoded_batch_hex(100))
+                .expect("a coherent fetch response"),
+        ),
+    ]);
+    let mut consumer = new_consumer(Box::new(transport));
+
+    let first = consumer
+        .fetch()
+        .expect("fetch succeeds")
+        .expect("the first of three concatenated batches is delivered");
+    assert_eq!(
+        first.batch.base_offset, 10,
+        "premise: the first batch delivered is base offset 10, leaving batches 11 and 12 cached \
+         in `pending`"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let resumed = consumer.resume().expect("resume succeeds");
+    assert_eq!(
+        resumed, 100,
+        "premise: the broker's committed offset of 99 resumes this consumer at 100"
+    );
+    assert_eq!(consumer.next_offset(), 100);
+
+    let after_resume = consumer
+        .fetch()
+        .expect("fetch after resume succeeds")
+        .expect("a batch is delivered after resuming");
+    assert_eq!(
+        after_resume.batch.base_offset, 100,
+        "a fetch after resume() must deliver the batch actually at the resumed offset, not a \
+         batch still cached in `pending` from before the resume"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "resume must have cleared whatever `pending` held, forcing the delivery above to come \
+         from a fresh network request (the GroupLag call plus this fetch) rather than the stale \
+         cache"
+    );
+}
+
+/// FU-CODEC rework, defect 8: `decode_every_batch` must preserve the class
+/// the codec itself assigned a refusal, not flatten every one of them to
+/// `Error::schema`. An oversized declared length is the codec's own
+/// `Error::invalid` (a value refused outright, checked before any record is
+/// parsed) — distinct from `Error::schema` (a value that parsed but failed a
+/// CRC), and a caller matching on `Error::code()` must see that distinction
+/// survive a second batch in the same response exactly as it would from the
+/// first.
+///
+/// Mutation: in `decode_every_batch`'s `Err(error)` arm, go back to
+/// `Error::schema(format!(...))` instead of `error.relabelled(format!(...))`
+/// — fails, because the refusal's `code()` then reads `"schema"` instead of
+/// the `"invalid"` this test requires.
+#[test]
+fn a_second_batch_with_an_oversized_declared_length_keeps_the_codecs_own_invalid_class() {
+    let first_bytes = encoded_batch_bytes(50);
+    let first_len = first_bytes.len();
+
+    // A second frame whose own declared length claims more than the codec's
+    // ceiling allows — refused by the codec itself as `Error::invalid`,
+    // checked before any byte past the prefix is trusted.
+    const PREFIX_FIELDS_LEN: usize = 4 + 2 + 4;
+    const PREFIX_LEN: usize = PREFIX_FIELDS_LEN + 4;
+    let mut oversized_prefix = vec![0u8; PREFIX_LEN];
+    oversized_prefix[0..4].copy_from_slice(b"QEVB");
+    oversized_prefix[4..6].copy_from_slice(&1u16.to_le_bytes());
+    let huge_len = u32::MAX;
+    oversized_prefix[6..10].copy_from_slice(&huge_len.to_le_bytes());
+    let prefix_crc =
+        qip_events::event_fabric::crc32c::crc32c(&oversized_prefix[..PREFIX_FIELDS_LEN]);
+    oversized_prefix[PREFIX_FIELDS_LEN..PREFIX_LEN].copy_from_slice(&prefix_crc.to_le_bytes());
+
+    let mut bytes = first_bytes.clone();
+    bytes.extend_from_slice(&oversized_prefix);
+
+    // Premise: the first batch's own bytes are untouched, and the fixture
+    // appended is exactly one prefix's worth of bytes (a torn frame would
+    // hide the oversized-length refusal behind a `Torn` outcome instead).
+    assert_eq!(&bytes[..first_len], first_bytes.as_slice());
+    assert_eq!(bytes.len(), first_len + PREFIX_LEN);
+
+    let hex = qip_core::hash::to_hex(&bytes);
+    let (transport, calls, _last_request) = ScriptedTransport::new(vec![Response::Fetch(
+        FetchResponse::new("orders", 0, 51, 0, hex).expect("a coherent fetch response"),
+    )]);
+    let mut consumer = new_consumer(Box::new(transport));
+
+    let err = consumer.fetch().expect_err(
+        "a second batch declaring a body over the codec's ceiling must refuse the whole fetch",
+    );
+    assert_eq!(
+        err.code(),
+        "invalid",
+        "the codec's own `Error::invalid` class for an oversized declared length must survive \
+         decode_every_batch's own wrapping, not be flattened to \"schema\": {}",
+        err.message()
+    );
+    let expected_phrase = format!("byte offset {first_len} of");
+    assert!(
+        err.message().contains(&expected_phrase),
+        "the refusal must still name the byte offset within the response at which the second \
+         batch begins (\"{expected_phrase}\"): {}",
+        err.message()
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }

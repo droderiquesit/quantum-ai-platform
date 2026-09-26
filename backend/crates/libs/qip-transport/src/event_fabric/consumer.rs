@@ -59,11 +59,18 @@
 //! issuing another [`super::protocol::FetchRequest`], so a broker answering
 //! with more than one batch per fetch has every one of them delivered, in
 //! order, across successive calls. This closes what was a known limitation:
-//! this client used to decode only the first batch of a response and
-//! silently drop the rest with no error at all, losing records a broker had
-//! genuinely sent. A batch after a good one that fails to decode is refused,
-//! naming the byte offset within the response's decoded body at which it
-//! begins, never silently skipped in favour of whatever came after it.
+//! this client used to decode only the first batch of a response and move
+//! [`Consumer::next_offset`] only past that one batch's own records, so
+//! every batch after the first sat un-decoded in a response this client had
+//! already paid the round trip for — the next [`Consumer::fetch`] asked the
+//! broker again, from the offset the first batch had left off at, and the
+//! broker (which still held them; nothing here ever told it otherwise)
+//! answered with them a second time. The cost was an extra round trip and
+//! fetch credit spent on records already in hand, never a lost record: no
+//! record a broker had sent was ever unrecoverable, only re-requested. A
+//! batch after a good one that fails to decode is refused, naming the byte
+//! offset within the response's decoded body at which it begins, never
+//! silently skipped in favour of whatever came after it.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -280,8 +287,16 @@ impl Consumer {
     /// asking the broker anything. For a caller that already knows where to
     /// start (a fresh consumer reading from the beginning starts at the
     /// default of zero without ever calling this).
+    ///
+    /// Clears [`Self::pending`]: a batch queued there was decoded from a
+    /// fetch at the *old* offset, and delivering it after a seek would hand
+    /// the caller a record from the position the seek just moved away from
+    /// while quietly walking [`Self::next_offset`] past it again — undoing
+    /// the seek one [`Self::fetch`] call later, and doing so silently,
+    /// because nothing about that delivery looks wrong on its own.
     pub fn seek(&mut self, offset: u64) {
         self.next_offset = offset;
+        self.pending.clear();
     }
 
     /// Join this consumer's group, refusing an answer that does not assign
@@ -339,6 +354,13 @@ impl Consumer {
                     ))
                 })?;
                 self.next_offset = resumed;
+                // See `seek`'s documentation for why a queued batch cannot
+                // be allowed to survive a change to `next_offset`: it was
+                // decoded from a fetch at whatever offset this consumer held
+                // before resuming, and delivering it now would walk
+                // `next_offset` back past a position `resume` just moved
+                // away from.
+                self.pending.clear();
                 Ok(resumed)
             }
             Response::Refused(refusal) => Err(describe_refusal(Route::GroupLag, refusal)),
@@ -383,8 +405,19 @@ impl Consumer {
     /// successive calls, oldest first, rather than only the first ever being
     /// decoded.
     pub fn fetch(&mut self) -> Result<Option<FetchedBatch>> {
-        if let Some(fetched) = self.pending.pop_front() {
+        if let Some(fetched) = self.pending.front().cloned() {
+            // Advance past the queued batch *before* removing it from
+            // `pending`: if a stream's own records ever overflowed the
+            // arithmetic `advance_past` does, popping first and advancing
+            // second would drop the popped batch on the floor the moment
+            // `advance_past` returned `Err` — the caller never sees it and
+            // the next call moves on to whatever was queued after it, which
+            // is a batch silently skipped rather than refused. Cloning the
+            // front entry costs one `Batch` clone on the already-decoded,
+            // already-in-memory queue; `pop_front` only runs once the queued
+            // batch is confirmed deliverable.
             self.advance_past(&fetched.batch)?;
+            self.pending.pop_front();
             return Ok(Some(fetched));
         }
         let request = Request::Fetch(FetchRequest {
@@ -400,6 +433,19 @@ impl Consumer {
                 let Some(first) = batches.next() else {
                     return Ok(None);
                 };
+                // Advance past the first batch *before* queuing the rest in
+                // `pending`. Queuing them first and advancing second would,
+                // on an `advance_past` failure, leave the later batches
+                // sitting in `pending` even though this call is about to
+                // return `Err` for the first one — the very next `fetch()`
+                // would then serve the second batch straight out of
+                // `pending` with no network call and no error at all, which
+                // is silently skipping whatever made the first batch
+                // unrefusable in the first place. With the order below, a
+                // failure here leaves `pending` untouched, so the next call
+                // genuinely re-asks the broker at the same offset instead of
+                // resuming from a queue this call never should have filled.
+                self.advance_past(&first)?;
                 // Every batch after the first waits in `pending` so a later
                 // call dispenses it without asking the broker again — see
                 // the module documentation's "every batch in a fetch, in
@@ -409,7 +455,6 @@ impl Consumer {
                     batch,
                     high_watermark,
                 }));
-                self.advance_past(&first)?;
                 Ok(Some(FetchedBatch {
                     batch: first,
                     high_watermark,
@@ -527,11 +572,24 @@ fn decode_every_batch(hex: &str) -> Result<Vec<Batch>> {
                 )));
             }
             Err(error) => {
-                return Err(Error::schema(format!(
+                // `relabelled` keeps whatever class the codec itself
+                // assigned — `Invalid` for a declared length over the
+                // codec's own ceiling, `Schema` for a CRC mismatch — and
+                // only rewrites the text to add this response's own framing.
+                // Forcing every one of these to `Error::schema` here would
+                // discard a distinction the codec already made deliberately:
+                // an oversized declared length is `Invalid` (a value refused
+                // outright), not `Schema` (a value that parsed but failed
+                // verification), and a caller matching on `Error::code()`
+                // deserves to see the same class whether the corrupt batch
+                // was the first in the response (decoded straight through
+                // `Batch::decode_prefix`) or came after a good one (decoded
+                // here).
+                let inner_message = error.message().to_string();
+                return Err(error.relabelled(format!(
                     "a fetch response's batch beginning at byte offset {offset} of its decoded \
                      body is corrupt and the whole response is refused rather than decoding \
-                     past it to whatever batch comes after: {}",
-                    error.message()
+                     past it to whatever batch comes after: {inner_message}"
                 )));
             }
         }
