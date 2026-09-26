@@ -77,6 +77,27 @@
 //! record is parsed, so a wrong magic, an unknown version, an oversized
 //! length or a corrupted length is refused without the reader ever indexing
 //! into a payload it has not yet proven is there.
+//!
+//! ## Decoding a batch out of a buffer holding more than one
+//!
+//! [`Batch::decode`] does **not** answer "is the whole rest of this buffer
+//! one batch". It reads only the declared body from the *front* of the
+//! buffer and never inspects, and never refuses, anything after it: a buffer
+//! holding one complete, valid batch followed by a second one — or by seven
+//! bytes of unrelated garbage — decodes as [`DecodeOutcome::Complete`]
+//! either way, identically. That silence is exactly what a caller with
+//! several batches concatenated in one buffer — `qip_transport`'s
+//! `FetchResponse::batches`, whose own documentation says it may carry more
+//! than one — cannot build on: nothing in `Batch::decode`'s return value
+//! says whether the buffer held one batch or ten, so it cannot be used to
+//! find where the first one ends. [`Batch::decode_prefix`] answers that
+//! question instead: the same three outcomes,
+//! [`PrefixDecodeOutcome::Complete`] additionally carrying `consumed`, the
+//! exact byte length of the frame just decoded, so the caller's next frame
+//! (if any) starts at `&bytes[consumed..]`. It shares [`Batch::decode`]'s own
+//! framing implementation rather than re-deriving it, so a caller splitting a
+//! multi-batch buffer this way can never disagree with this module about
+//! where a batch ends.
 
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256;
@@ -417,127 +438,168 @@ impl Batch {
     /// Decode a batch from `bytes`. See the module documentation for the
     /// three outcomes and the order refusals happen in.
     pub fn decode(bytes: &[u8]) -> Result<DecodeOutcome> {
-        if bytes.len() < PREFIX_LEN {
-            return Ok(DecodeOutcome::Torn);
-        }
-        if bytes.iter().all(|b| *b == 0) {
-            // A crash can leave a tail of zeroes where a block was allocated
-            // but never written; that is a torn tail, not damage, and it
-            // must be recognised before the prefix CRC below — computed over
-            // real magic/version/length bytes — is compared against a
-            // stored value of all zeroes and misread as corruption.
-            return Ok(DecodeOutcome::Torn);
-        }
+        Ok(match decode_frame(bytes)? {
+            Frame::Complete(batch, _consumed) => DecodeOutcome::Complete(batch),
+            Frame::Torn => DecodeOutcome::Torn,
+        })
+    }
 
-        // The prefix CRC is checked before magic, version or the declared
-        // length is trusted for anything: see the module documentation for
-        // why a bit flipped inside the length field specifically must be
-        // caught here rather than later.
-        let prefix_fields = &bytes[..PREFIX_FIELDS_LEN];
-        let expected_prefix_crc = u32::from_le_bytes([
-            bytes[PREFIX_FIELDS_LEN],
-            bytes[PREFIX_FIELDS_LEN + 1],
-            bytes[PREFIX_FIELDS_LEN + 2],
-            bytes[PREFIX_FIELDS_LEN + 3],
-        ]);
-        let actual_prefix_crc = crc32c(prefix_fields);
-        if actual_prefix_crc != expected_prefix_crc {
-            return Err(Error::schema(format!(
-                "corrupt batch at byte offset 0: prefix CRC mismatch over the magic, \
-                 version and declared length (recorded {expected_prefix_crc:#010x}, \
-                 computed {actual_prefix_crc:#010x})"
-            )));
-        }
+    /// Decode one batch from the *front* of `bytes`, reporting exactly how
+    /// many bytes that batch's frame occupied so a caller holding more than
+    /// one batch concatenated in a single buffer — `qip_transport`'s
+    /// `FetchResponse::batches`, which its own module documentation says may
+    /// carry more than one — can decode the next one from
+    /// `&bytes[consumed..]` without re-deriving this codec's own framing.
+    /// [`Batch::decode`] cannot answer that question: it reports only
+    /// whether the batch it found is complete, torn or corrupt, never where
+    /// it ended, and a caller once had no way to find out short of a second
+    /// definition of this format outside this module — exactly what ADR 0100
+    /// §1 forbids. Shares [`Batch::decode`]'s framing implementation (see
+    /// [`decode_frame`]) rather than re-parsing the prefix, so the two can
+    /// never disagree about where a batch ends.
+    pub fn decode_prefix(bytes: &[u8]) -> Result<PrefixDecodeOutcome> {
+        Ok(match decode_frame(bytes)? {
+            Frame::Complete(batch, consumed) => PrefixDecodeOutcome::Complete { batch, consumed },
+            Frame::Torn => PrefixDecodeOutcome::Torn,
+        })
+    }
+}
 
-        if bytes[..4] != BATCH_MAGIC {
-            return Err(Error::schema(format!(
-                "corrupt batch at byte offset 0: expected the event-fabric batch \
-                 magic, found {:02x?}",
-                &bytes[..4]
-            )));
-        }
-        let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-        if version != FORMAT_VERSION {
-            return Err(Error::schema(format!(
-                "batch at byte offset 0 is format version {version}, this build reads \
-                 version {FORMAT_VERSION}"
-            )));
-        }
-        let declared_len = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]) as usize;
-        // Checked before anything past the prefix is read: an oversized
-        // declared length is refused outright rather than treated as a torn
-        // tail, which is what skipping this check would otherwise disguise
-        // it as.
-        if declared_len > MAX_BATCH_LEN {
-            return Err(Error::invalid(format!(
-                "batch at byte offset 0 declares a body of {declared_len} bytes, over \
-                 the {MAX_BATCH_LEN}-byte ceiling"
-            )));
-        }
-        let end = PREFIX_LEN + declared_len;
-        if bytes.len() < end {
-            return Ok(DecodeOutcome::Torn);
-        }
-        // From here on `body` is exactly the declared length: any field that
-        // does not fit inside it is corruption, not a torn write, because a
-        // torn write is precisely what the length check above already ruled
-        // out.
-        let body = &bytes[PREFIX_LEN..end];
+/// What parsing one batch frame from the front of a buffer found. Shared by
+/// [`Batch::decode`] and [`Batch::decode_prefix`] so both answer from the one
+/// place this codec's framing is derived (ADR 0100 §1): the two differ only
+/// in whether a caller needs the consumed length, never in how a frame is
+/// found or judged complete, torn or corrupt.
+enum Frame {
+    /// `usize` is the number of bytes of the input this frame occupied —
+    /// [`PREFIX_LEN`] plus the declared body length that was checked against
+    /// it.
+    Complete(Batch, usize),
+    Torn,
+}
 
-        let mut cursor = Cursor::new(body, PREFIX_LEN);
-        let header_start = cursor.pos;
-        let message_type_pos = cursor.pos;
-        let message_type =
-            MessageType::from_tag(cursor.read_u8()?, cursor.absolute(message_type_pos))?;
-        let flags_pos = cursor.pos;
-        let flags = cursor.read_u8()?;
-        if flags != FLAGS_NONE {
-            return Err(Error::schema(format!(
-                "corrupt batch at byte offset {}: flags byte {flags:#04x} sets a bit \
-                 this build does not understand; refusing rather than guessing what it means",
-                cursor.absolute(flags_pos)
-            )));
-        }
-        let encoding_pos = cursor.pos;
-        let encoding = PayloadCodec::from_tag(cursor.read_u8()?, cursor.absolute(encoding_pos))?;
-        let schema_id = cursor.read_u32()?;
-        let schema_version = cursor.read_u32()?;
-        let producer_id = cursor.read_string()?;
-        let producer_epoch = cursor.read_u64()?;
-        let base_sequence = cursor.read_u64()?;
-        let base_offset = cursor.read_u64()?;
-        let leader_epoch = cursor.read_u64()?;
-        let physical_ns = cursor.read_i64()?;
-        let logical = cursor.read_u32()?;
-        let previous_batch_hash = decode_previous_hash(&mut cursor)?;
-        let record_count = cursor.read_u32()?;
-        let header_end = cursor.pos;
-        let header_bytes = cursor.slice(header_start, header_end);
-        let expected_batch_crc = cursor.read_u32()?;
-        let actual_batch_crc = crc32c(header_bytes);
-        if actual_batch_crc != expected_batch_crc {
-            return Err(Error::schema(format!(
-                "corrupt batch at byte offset {}: batch CRC mismatch over {} header \
-                 bytes (recorded {expected_batch_crc:#010x}, computed {actual_batch_crc:#010x})",
-                cursor.absolute(header_start),
-                header_bytes.len()
-            )));
-        }
+fn decode_frame(bytes: &[u8]) -> Result<Frame> {
+    if bytes.len() < PREFIX_LEN {
+        return Ok(Frame::Torn);
+    }
+    if bytes.iter().all(|b| *b == 0) {
+        // A crash can leave a tail of zeroes where a block was allocated
+        // but never written; that is a torn tail, not damage, and it
+        // must be recognised before the prefix CRC below — computed over
+        // real magic/version/length bytes — is compared against a
+        // stored value of all zeroes and misread as corruption.
+        return Ok(Frame::Torn);
+    }
 
-        let mut records = Vec::new();
-        for _ in 0..record_count {
-            records.push(decode_record(&mut cursor)?);
-        }
-        if cursor.remaining() != 0 {
-            return Err(Error::schema(format!(
-                "corrupt batch at byte offset {}: {} trailing bytes after {record_count} \
-                 declared records",
-                cursor.absolute(cursor.pos),
-                cursor.remaining()
-            )));
-        }
+    // The prefix CRC is checked before magic, version or the declared
+    // length is trusted for anything: see the module documentation for
+    // why a bit flipped inside the length field specifically must be
+    // caught here rather than later.
+    let prefix_fields = &bytes[..PREFIX_FIELDS_LEN];
+    let expected_prefix_crc = u32::from_le_bytes([
+        bytes[PREFIX_FIELDS_LEN],
+        bytes[PREFIX_FIELDS_LEN + 1],
+        bytes[PREFIX_FIELDS_LEN + 2],
+        bytes[PREFIX_FIELDS_LEN + 3],
+    ]);
+    let actual_prefix_crc = crc32c(prefix_fields);
+    if actual_prefix_crc != expected_prefix_crc {
+        return Err(Error::schema(format!(
+            "corrupt batch at byte offset 0: prefix CRC mismatch over the magic, \
+             version and declared length (recorded {expected_prefix_crc:#010x}, \
+             computed {actual_prefix_crc:#010x})"
+        )));
+    }
 
-        Ok(DecodeOutcome::Complete(Batch {
+    if bytes[..4] != BATCH_MAGIC {
+        return Err(Error::schema(format!(
+            "corrupt batch at byte offset 0: expected the event-fabric batch \
+             magic, found {:02x?}",
+            &bytes[..4]
+        )));
+    }
+    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+    if version != FORMAT_VERSION {
+        return Err(Error::schema(format!(
+            "batch at byte offset 0 is format version {version}, this build reads \
+             version {FORMAT_VERSION}"
+        )));
+    }
+    let declared_len = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]) as usize;
+    // Checked before anything past the prefix is read: an oversized
+    // declared length is refused outright rather than treated as a torn
+    // tail, which is what skipping this check would otherwise disguise
+    // it as.
+    if declared_len > MAX_BATCH_LEN {
+        return Err(Error::invalid(format!(
+            "batch at byte offset 0 declares a body of {declared_len} bytes, over \
+             the {MAX_BATCH_LEN}-byte ceiling"
+        )));
+    }
+    let end = PREFIX_LEN + declared_len;
+    if bytes.len() < end {
+        return Ok(Frame::Torn);
+    }
+    // From here on `body` is exactly the declared length: any field that
+    // does not fit inside it is corruption, not a torn write, because a
+    // torn write is precisely what the length check above already ruled
+    // out.
+    let body = &bytes[PREFIX_LEN..end];
+
+    let mut cursor = Cursor::new(body, PREFIX_LEN);
+    let header_start = cursor.pos;
+    let message_type_pos = cursor.pos;
+    let message_type = MessageType::from_tag(cursor.read_u8()?, cursor.absolute(message_type_pos))?;
+    let flags_pos = cursor.pos;
+    let flags = cursor.read_u8()?;
+    if flags != FLAGS_NONE {
+        return Err(Error::schema(format!(
+            "corrupt batch at byte offset {}: flags byte {flags:#04x} sets a bit \
+             this build does not understand; refusing rather than guessing what it means",
+            cursor.absolute(flags_pos)
+        )));
+    }
+    let encoding_pos = cursor.pos;
+    let encoding = PayloadCodec::from_tag(cursor.read_u8()?, cursor.absolute(encoding_pos))?;
+    let schema_id = cursor.read_u32()?;
+    let schema_version = cursor.read_u32()?;
+    let producer_id = cursor.read_string()?;
+    let producer_epoch = cursor.read_u64()?;
+    let base_sequence = cursor.read_u64()?;
+    let base_offset = cursor.read_u64()?;
+    let leader_epoch = cursor.read_u64()?;
+    let physical_ns = cursor.read_i64()?;
+    let logical = cursor.read_u32()?;
+    let previous_batch_hash = decode_previous_hash(&mut cursor)?;
+    let record_count = cursor.read_u32()?;
+    let header_end = cursor.pos;
+    let header_bytes = cursor.slice(header_start, header_end);
+    let expected_batch_crc = cursor.read_u32()?;
+    let actual_batch_crc = crc32c(header_bytes);
+    if actual_batch_crc != expected_batch_crc {
+        return Err(Error::schema(format!(
+            "corrupt batch at byte offset {}: batch CRC mismatch over {} header \
+             bytes (recorded {expected_batch_crc:#010x}, computed {actual_batch_crc:#010x})",
+            cursor.absolute(header_start),
+            header_bytes.len()
+        )));
+    }
+
+    let mut records = Vec::new();
+    for _ in 0..record_count {
+        records.push(decode_record(&mut cursor)?);
+    }
+    if cursor.remaining() != 0 {
+        return Err(Error::schema(format!(
+            "corrupt batch at byte offset {}: {} trailing bytes after {record_count} \
+             declared records",
+            cursor.absolute(cursor.pos),
+            cursor.remaining()
+        )));
+    }
+
+    Ok(Frame::Complete(
+        Batch {
             message_type,
             schema_id,
             schema_version,
@@ -553,8 +615,9 @@ impl Batch {
                 logical,
             },
             previous_batch_hash,
-        }))
-    }
+        },
+        end,
+    ))
 }
 
 /// What decoding a batch produced. See the module documentation for what
@@ -567,6 +630,23 @@ pub enum DecodeOutcome {
     Complete(Batch),
     /// The buffer ends before the batch's declared length. Discard it and
     /// wait for the rest, exactly as a torn WAL frame is handled.
+    Torn,
+}
+
+/// What [`Batch::decode_prefix`] found at the front of a buffer. Same three
+/// outcomes as [`Batch::decode`] (`Err` for corruption is not a variant of
+/// either enum), plus the one fact [`DecodeOutcome`] cannot carry: how many
+/// bytes the decoded frame actually occupied, for a caller holding more than
+/// one batch concatenated in one buffer.
+#[derive(Debug)]
+pub enum PrefixDecodeOutcome {
+    /// The frame at the front of the buffer decoded completely. `consumed`
+    /// is exactly [`PREFIX_LEN`] plus that frame's declared body length —
+    /// never more than the input's own length — so a caller's next frame, if
+    /// any, starts at `&bytes[consumed..]`.
+    Complete { batch: Batch, consumed: usize },
+    /// Identical meaning to [`DecodeOutcome::Torn`]: the buffer's front does
+    /// not yet hold a complete frame.
     Torn,
 }
 

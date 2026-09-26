@@ -5,7 +5,7 @@
 use qip_core::{CorrelationId, EventId, Lineage, Timestamp, TraceId};
 use qip_events::event_fabric::codec::{
     BATCH_MAGIC, Batch, ContentHash, DecodeOutcome, LogicalTimestamp, MAX_BATCH_LEN, MessageType,
-    PayloadCodec, Record, stamp_broker, stamp_drain,
+    PayloadCodec, PrefixDecodeOutcome, Record, stamp_broker, stamp_drain,
 };
 use qip_events::event_fabric::crc32c::crc32c;
 use qip_events::{AnyEvent, Envelope, EventBody, Topic};
@@ -76,6 +76,25 @@ fn one_record_batch() -> (AnyEvent, Batch) {
     )
     .expect("one record makes a valid batch");
     (event, batch)
+}
+
+/// A one-record batch shaped like [`one_record_batch`]'s but tagged with
+/// `schema_id`, so two batches built with different tags are distinguishable
+/// after decoding — used only by the concatenated-buffer tests below, where
+/// several batches are glued together and a test must tell which one a
+/// decode call actually returned.
+fn tagged_batch(schema_id: u32, event_id: &str) -> Batch {
+    let event = make_event(event_id, "TAG", Timestamp::from_civil(2026, 3, 1), None);
+    let record =
+        Record::from_any_event(&event, PayloadCodec::CanonicalJson).expect("record encodes");
+    Batch::new(
+        MessageType::Data,
+        schema_id,
+        1,
+        PayloadCodec::CanonicalJson,
+        vec![record],
+    )
+    .expect("one record makes a valid batch")
 }
 
 // --- CRC32C ------------------------------------------------------------
@@ -417,6 +436,77 @@ fn a_blake3_content_hash_or_a_non_json_encoding_is_refused_naming_c2() {
         err.message()
     );
     assert!(err.message().contains("C2"), "{}", err.message());
+}
+
+// --- decode_prefix: splitting a multi-batch buffer --------------------------
+
+/// FU-CODEC / SLICE-28: a fetch response may carry more than one encoded
+/// batch concatenated in one buffer (`qip_transport::event_fabric::protocol`'s
+/// `FetchResponse::batches`), and a caller splitting them apart needs to know
+/// exactly where the first one ends without re-deriving this codec's own
+/// framing. Before `Batch::decode_prefix` existed, nothing exposed that
+/// length, and `qip-transport`'s consumer decoded only the first batch of
+/// every fetch and silently dropped the rest.
+///
+/// Mutation: in `decode_frame`, report `bytes.len()` (the whole input) as the
+/// consumed length instead of `end` (the first frame's own length) — fails,
+/// because `consumed` then equals the length of the *concatenated* buffer,
+/// not the first batch alone, and the assertion on `first_bytes.len()` catches
+/// it.
+#[test]
+fn decoding_two_concatenated_batches_consumes_exactly_the_first() {
+    let first = tagged_batch(101, "EVT0000000000000000000101");
+    let second = tagged_batch(102, "EVT0000000000000000000102");
+    let first_bytes = first.encode().expect("first batch encodes");
+    let second_bytes = second.encode().expect("second batch encodes");
+
+    let mut concatenated = first_bytes.clone();
+    concatenated.extend_from_slice(&second_bytes);
+
+    // Premise: the two batches really are distinct, differently-sized frames
+    // glued together, not one buffer that happens to satisfy the assertions
+    // below by coincidence.
+    assert_ne!(first_bytes, second_bytes, "premise: the two batches differ");
+    assert_eq!(
+        concatenated.len(),
+        first_bytes.len() + second_bytes.len(),
+        "premise: the buffer under test is genuinely both frames concatenated"
+    );
+
+    let (decoded_first, consumed) = match Batch::decode_prefix(&concatenated) {
+        Ok(PrefixDecodeOutcome::Complete { batch, consumed }) => (batch, consumed),
+        other => panic!("expected the first frame to decode as complete, got {other:?}"),
+    };
+    assert_eq!(
+        decoded_first.schema_id, 101,
+        "decode_prefix must return the first batch, not the second"
+    );
+    assert_eq!(
+        consumed,
+        first_bytes.len(),
+        "decode_prefix must report exactly the first batch's own byte length as consumed, \
+         not the length of the whole concatenated buffer"
+    );
+
+    // The boundary `consumed` names must be exact: what is left over is
+    // byte-for-byte the second batch's own encoding, and decoding it on its
+    // own must recover it.
+    let remainder = &concatenated[consumed..];
+    assert_eq!(
+        remainder,
+        second_bytes.as_slice(),
+        "the bytes after `consumed` must be exactly the second batch's own encoding"
+    );
+    match Batch::decode_prefix(remainder) {
+        Ok(PrefixDecodeOutcome::Complete {
+            batch,
+            consumed: second_consumed,
+        }) => {
+            assert_eq!(batch.schema_id, 102);
+            assert_eq!(second_consumed, second_bytes.len());
+        }
+        other => panic!("expected the remainder to decode as the second batch, got {other:?}"),
+    }
 }
 
 // --- per-stage stamping ------------------------------------------------
