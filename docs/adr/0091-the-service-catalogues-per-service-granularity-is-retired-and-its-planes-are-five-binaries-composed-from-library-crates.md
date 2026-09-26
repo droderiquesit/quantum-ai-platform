@@ -9,6 +9,14 @@
 - **Date**: 2026-09-20
 - **Supersedes**: nothing. Corrects two counts the register's §41.6 row
   carried — "twelve planes" and "six binaries" — both re-counted below.
+- **Amended by**: ADR 0100 (2026-09-25), which raises decision 2's binary
+  count from five to seven, adding `qip-fabricd` and `qip-ledgerd`. Each
+  passes this record's own §2 test — "a writer of the log or a clock of its
+  own": `qip-fabricd` is the sole writer of every partition's batch chain and
+  runs its own segment-roll clock, and `qip-ledgerd` is the sole writer of
+  the ledger's double-entry chain. This record's decision text is not
+  rewritten to say seven; ADR 0100 §2 is where that argument now lives, and a
+  reader counting binaries here should read it next.
 - **Related**: ADR 0001 and ADR 0011 (one language, one workspace; no
   managed client in the process), ADR 0009 (what the dependency policy
   actually forbids is clients), ADR 0010 (four of the six application

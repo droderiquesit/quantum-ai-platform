@@ -228,7 +228,7 @@ jobs:
   # One image per deployed artefact. Four of the five are workspace binaries
   # built from the one Dockerfile, so those four cannot drift apart.
   #
-  # The workspace builds five binaries and this matrix names four of them.
+  # The workspace builds seven binaries and this matrix names four of them.
   # Which ones deploy, and why the others do not, is decided in
   # docs/adr/0010-what-gets-deployed.md rather than here — a reason living only
   # in a matrix comment is a reason only the person editing the matrix reads.

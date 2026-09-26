@@ -118,7 +118,7 @@ Three properties of it are load-bearing for any replacement:
 `qip-api` links it and serves it on its own port under the `Viewer` role —
 "a page is not a lower bar than the JSON it renders" (`qip-api/src/web.rs:3-6`)
 — behind `default-src 'none'; style-src 'self'; img-src 'self'; form-action
-'self'; frame-ancestors 'none'; base-uri 'none'` (`qip-api/src/http.rs:200-201`).
+'self'; frame-ancestors 'none'; base-uri 'none'` (`qip-transport/src/server.rs:205`).
 
 Its tests: fifteen in `qip-web/tests/web.rs` (escaping, no script element, the
 banner on every surface, a halted paper platform still saying paper, an order
