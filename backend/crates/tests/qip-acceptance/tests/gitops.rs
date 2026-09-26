@@ -69,13 +69,15 @@ const ENVIRONMENTS: [&str; 4] = ["dev", "test", "stage", "prod"];
 /// The binaries the workspace builds. None may be the image of a Kubernetes
 /// workload anywhere under `infrastructure/gitops`; three of them are the
 /// images of `RunService` manifests, which is a different thing.
-const TRADING_BINARIES: [&str; 6] = [
+const TRADING_BINARIES: [&str; 8] = [
     "qip-api",
     "qip-fastbrain",
     "qip-deepbrain",
     "qip-edge-node",
     "qip-web",
     "qip-cli",
+    "qip-fabricd",
+    "qip-ledgerd",
 ];
 
 /// The marker an implementer may leave on an image reference that has not

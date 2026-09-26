@@ -54,7 +54,7 @@ Four top-level domains, plus the repo-wide concerns (ADR 0016):
 | `backend/crates/libs/` | Shared, dependency-light, no I/O side effects |
 | `backend/crates/services/` | Domain engines — ingestion, risk, portfolio, execution |
 | `backend/crates/runtime/` | `qip-kernel`: the cycle and the composition of everything |
-| `backend/crates/apps/` | Deployable binaries: api, fastbrain, deepbrain, edge-node, web, cli |
+| `backend/crates/apps/` | Deployable binaries: api, fastbrain, deepbrain, edge-node, web, cli, fabricd, ledgerd |
 | `backend/crates/edge/` | Regional cell: routing, order book, sequencing, envelopes |
 | `backend/crates/tests/` | `qip-acceptance` — cross-cutting suites |
 | `frontend/portal/` | The authenticated Next.js console and installed PWA |

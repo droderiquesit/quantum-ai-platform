@@ -5217,12 +5217,30 @@ fn every_step_output_a_workflow_reads_is_one_that_job_writes() {
 /// Kept as a list with a reason attached rather than as a filter in the test,
 /// because "why is this one exempt" is the question the next person will have
 /// and a predicate cannot answer it.
-const NOT_A_WORKLOAD: &[(&str, &str)] = &[(
-    // `qip-cli` builds a binary called `qip`.
-    "qip",
-    "an operator's tool, run by a person against a deployment rather than \
-     scheduled in one",
-)];
+const NOT_A_WORKLOAD: &[(&str, &str)] = &[
+    (
+        // `qip-cli` builds a binary called `qip`.
+        "qip",
+        "an operator's tool, run by a person against a deployment rather than \
+         scheduled in one",
+    ),
+    (
+        "qip-fabricd",
+        "ADR 0100 assigns this binary the event-fabric broker role, but its \
+         composition-root modules (config, health, archiver) are doc-only \
+         stubs and the binary refuses to start; scheduling a process that \
+         exits immediately is not a workload. See \
+         docs/adr/0010-what-gets-deployed.md",
+    ),
+    (
+        "qip-ledgerd",
+        "ADR 0100 assigns this binary the ledger's role, sole writer of the \
+         double-entry chain, but its composition-root modules (config, \
+         consumer, read_api, store) are doc-only stubs and the binary \
+         refuses to start; scheduling a process that exits immediately is \
+         not a workload. See docs/adr/0010-what-gets-deployed.md",
+    ),
+];
 
 /// Binaries the workspace builds that the pipeline deliberately builds no image
 /// for.
@@ -5237,12 +5255,34 @@ const NOT_A_WORKLOAD: &[(&str, &str)] = &[(
 /// `docs/adr/0010-what-gets-deployed.md`, and
 /// `every_deployment_exclusion_is_recorded_as_a_decision` is what keeps the two
 /// from drifting.
-const NOT_IN_THE_IMAGE_MATRIX: &[(&str, &str, &str)] = &[(
-    "qip-cli",
-    "qip",
-    "an operator's tool, run by a person against a deployment rather than \
-     scheduled in one",
-)];
+const NOT_IN_THE_IMAGE_MATRIX: &[(&str, &str, &str)] = &[
+    (
+        "qip-cli",
+        "qip",
+        "an operator's tool, run by a person against a deployment rather than \
+         scheduled in one",
+    ),
+    (
+        "qip-fabricd",
+        "qip-fabricd",
+        "ADR 0100 assigns the event-fabric broker role, but its \
+         composition-root modules are doc-only stubs and the binary refuses \
+         to start; an image built from it would ship a process that exits \
+         the instant Cloud Run started it. Excluded while its packets land \
+         and GCP placement waits on ADR 0099 C8. See \
+         docs/adr/0010-what-gets-deployed.md",
+    ),
+    (
+        "qip-ledgerd",
+        "qip-ledgerd",
+        "ADR 0100 assigns the ledger's role, but its composition-root \
+         modules are doc-only stubs and the binary refuses to start; an \
+         image built from it would ship a process that exits the instant \
+         Cloud Run started it. Excluded for the same reason as qip-fabricd, \
+         while GCP placement waits on ADR 0099 C8. See \
+         docs/adr/0010-what-gets-deployed.md",
+    ),
+];
 
 /// Images `deploy.yml` builds that are not workspace binaries: the crate
 /// each is *not*, the Dockerfile it is built from, and the record deciding
@@ -6552,13 +6592,15 @@ const POD_BEARING_KINDS: [&str; 7] = [
 ];
 
 /// The binaries the workspace builds, none of which may be a Pod's image.
-const TRADING_BINARIES: [&str; 6] = [
+const TRADING_BINARIES: [&str; 8] = [
     "qip-api",
     "qip-fastbrain",
     "qip-deepbrain",
     "qip-edge-node",
     "qip-web",
     "qip-cli",
+    "qip-fabricd",
+    "qip-ledgerd",
 ];
 
 /// The `kind:` values a directory under `infrastructure/gitops` may declare,
