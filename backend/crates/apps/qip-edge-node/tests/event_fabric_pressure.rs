@@ -67,10 +67,27 @@ fn spool_pressure_reads_narrow_before_exhausted_and_a_fenced_producer_reads_exha
     let lines = thresholds();
     assert_eq!(lines.narrow_bytes(), NARROW_LINE);
     assert_eq!(lines.exhaust_bytes(), EXHAUST_LINE);
-    assert!(Thresholds::new(BUDGET, fraction("0.9"), fraction("0.9")).is_err());
-    assert!(Thresholds::new(BUDGET, fraction("0.95"), fraction("0.9")).is_err());
+    // Each refusal names its own cause: an inverted pair told it "coincides
+    // in whole bytes" would send the operator to the budget, not the lines.
+    for (narrow_at, exhaust_at) in [("0.9", "0.9"), ("0.95", "0.9")] {
+        let refused = Thresholds::new(BUDGET, fraction(narrow_at), fraction(exhaust_at))
+            .expect_err("a narrowing line not below the exhaustion line is refused");
+        assert!(
+            refused
+                .message()
+                .contains("is not below the exhaustion line"),
+            "{narrow_at} against {exhaust_at}: {}",
+            refused.message()
+        );
+    }
     // Distinct fractions that floor to the same whole byte skip it too.
-    assert!(Thresholds::new(3, fraction("0.5"), fraction("0.6")).is_err());
+    let floored = Thresholds::new(3, fraction("0.5"), fraction("0.6"))
+        .expect_err("lines that coincide in whole bytes are refused");
+    assert!(
+        floored.message().contains("coincide in whole bytes"),
+        "{}",
+        floored.message()
+    );
 
     let (_clock, gauge, mut spool, mut drain) = gauge();
     spool.set_used_bytes(Some(0));
