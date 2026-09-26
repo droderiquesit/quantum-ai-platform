@@ -1,3 +1,2 @@
-//! HTTP/1.1 server — ADR 0100 §1.
-//!
-//! Scaffolded by SLICE-50.
+//! HTTP/1.1 server, moved from `qip-api`. See ADR 0100 §1. Filled by
+//! SLICE-09.

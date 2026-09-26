@@ -1,3 +1,2 @@
-//! ADR 0100 §1.
-//!
-//! Scaffolded by SLICE-50.
+//! Bearer-token producer identity: header and constant-time verify.
+//! See ADR 0100 §7. Filled by SLICE-10.

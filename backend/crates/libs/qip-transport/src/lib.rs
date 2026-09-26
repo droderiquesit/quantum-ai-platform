@@ -4,13 +4,21 @@
 //! transport". This is it: the wire nine regional cells push state deltas up
 //! and the central plane pushes signed capital envelopes down.
 //!
-//! Two halves:
+//! Two halves, and two reserved modules a later packet fills:
 //!
 //! * [`http`] — an HTTP/1.1 **client** on `std::net::TcpStream`, the other half
 //!   of `qip_api::http`'s server, with every limit the server has and one more
 //!   reason for them: here it is the *peer* that is untrusted.
 //! * [`mesh`] — the transport that carries `qip_events::AnyEvent` frames over
 //!   that client, with the reliability a managed bus would have provided.
+//! * [`server`] — reserved. ADR 0100 §1 moves the HTTP/1.1 **server** here
+//!   from `qip_api::http`, so this crate ends up owning sockets in both
+//!   directions; that is the one amendment to 00-boundaries' "no lib performs
+//!   I/O", stated there rather than left as precedent. Empty until SLICE-09
+//!   fills it.
+//! * [`event_fabric`] — reserved. ADR 0100 §1 places the event fabric's
+//!   client SDK and wire protocol here, beside the client this crate already
+//!   has. Empty until SLICE-10, SLICE-22 and SLICE-28 fill it.
 //!
 //! # What the reliability costs, made explicit
 //!

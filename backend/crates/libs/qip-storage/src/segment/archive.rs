@@ -1,3 +1,2 @@
-//! ADR 0100 §1.
-//!
-//! Scaffolded by SLICE-50.
+//! Segment archive: content-addressed manifest and hydrate. See ADR 0100 §1.
+//! Filled by SLICE-21.
