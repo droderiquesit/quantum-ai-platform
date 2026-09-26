@@ -692,6 +692,84 @@ fn clearing_the_kill_switch_while_the_polled_flag_is_present_leaves_the_cell_hal
     Ok(())
 }
 
+// --- the journal-pressure wire -----------------------------------------------
+
+#[test]
+fn the_halted_gauge_reports_the_journal_source() -> Result<()> {
+    // ADR 0100 §6's fourth wire must chart under its own `source`. Its
+    // release is the spool recovering, not the flag file and not a payload,
+    // so an operator paged on it under `polled` would go looking at the
+    // wrong thing. And a cell built without the wire must publish no
+    // journal series at all: a permanent zero there is a number nobody
+    // computed.
+    use qip_edge::cell::GATE_JOURNAL_PRESSURE;
+    use qip_edge::pressure::{Exhaustion, JournalPressure};
+    let (_unwired, unwired_metrics) = wired_cell()?;
+    assert_eq!(
+        unwired_metrics
+            .snapshot()
+            .gauge(names::EDGE_HALTED, &by("source", "polled")),
+        Some(0.0),
+        "the premise failed: the unwired cell published no halt gauge at all"
+    );
+    assert_eq!(
+        unwired_metrics
+            .snapshot()
+            .gauge(names::EDGE_HALTED, &by("source", "journal")),
+        None,
+        "a cell built without the journal wire published a journal halt series"
+    );
+
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_journal_wire();
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?.with_metrics(Arc::clone(&metrics));
+    cell.track(book()?);
+
+    // Wired and never fed: halted at wiring time, before any pass.
+    assert_eq!(
+        metrics
+            .snapshot()
+            .gauge(names::EDGE_HALTED, &by("source", "journal")),
+        Some(1.0),
+        "a wired cell with no reading did not chart the journal halt at wiring time"
+    );
+
+    cell.apply_journal_pressure(JournalPressure::Exhausted(Exhaustion::Fenced), t(10))?;
+    let halted = metrics.snapshot();
+    assert_eq!(
+        halted.gauge(names::EDGE_HALTED, &by("source", "journal")),
+        Some(1.0),
+        "an exhausted spool left the journal gauge at zero"
+    );
+    assert_eq!(
+        halted.gauge(names::EDGE_HALTED, &by("source", "polled")),
+        Some(0.0),
+        "the journal halt was charted as the polled flag, which has a different release"
+    );
+    let report = work(&mut cell, t(11))?;
+    assert!(report.halted && report.orders.is_empty());
+    assert_eq!(
+        metrics
+            .snapshot()
+            .counter(names::EDGE_REFUSALS, &by("gate", GATE_JOURNAL_PRESSURE)),
+        1,
+        "the halted pass was not refused under the journal-pressure gate"
+    );
+
+    cell.apply_journal_pressure(JournalPressure::Normal, t(12))?;
+    assert_eq!(
+        metrics
+            .snapshot()
+            .gauge(names::EDGE_HALTED, &by("source", "journal")),
+        Some(0.0),
+        "a recovered spool still charts the journal halt"
+    );
+    Ok(())
+}
+
 // --- reconciliation ----------------------------------------------------------
 
 #[test]

@@ -203,9 +203,15 @@ resource "google_monitoring_alert_policy" "edge_halted" {
       An execution node reports itself halted. The `source` label says which
       discipline stopped it: `kill_switch` is an operator or the platform
       tripping the switch, `policy` is the cell refusing on its own envelope,
-      and `polled` is the halt flag the node polls on its own filesystem —
+      `polled` is the halt flag the node polls on its own filesystem —
       the second wire of §46.2, so a node cut off from the centre can still
-      be stopped by hand on the machine.
+      be stopped by hand on the machine — and `journal` is the spool the
+      node writes its journal through reading exhausted (ADR 0100 §6):
+      fenced by another writer, unwritable, over its budget, a heartbeat
+      older than its bound, or never yet read. A `journal` halt stops new
+      exposure only; withdrawals and fill confirmations continue, and it
+      releases itself when the spool recovers, so look at the node's disk
+      and journal mirror, not at the flag file.
 
       A halt is the correct response to whatever caused it. Find the cause in
       the node's journal before clearing anything; clearing a halt whose

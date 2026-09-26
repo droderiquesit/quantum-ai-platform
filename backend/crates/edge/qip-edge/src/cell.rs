@@ -21,6 +21,7 @@ use crate::mesh::{CellStateDelta, DeltaOrder, DeltaRefusal, StrategyUtilisation}
 use crate::mirror::MirrorArrangement;
 use crate::passive::{self, PassiveChoice, PassiveOutcome, WholeReason};
 use crate::policy::{VerifiedHalt, VerifiedPolicy};
+use crate::pressure::{Exhaustion, JournalPressure};
 use crate::quoting::{Admission, Depletion, MessageKind, QuoteBudget, RateLimits};
 use crate::region::RegionOutlook;
 use crate::reservation::RegionTable;
@@ -280,6 +281,15 @@ pub const GATE_AWAITING_RECONCILIATION: &str = "awaiting_reconciliation";
 /// new one, so `qip_edge_refusals_total{gate}` gains a value and no seam.
 pub const GATE_DISPOSITION: &str = "disposition";
 
+/// The gate a cell refuses under while the journal spool it writes through
+/// is exhausted, and the gate a narrowing of its sizing is journaled under
+/// (ADR 0100 §6).
+///
+/// A constant because it is passed to [`Cell::refuse`] and so becomes a
+/// value of `qip_edge_refusals_total{gate}`: a label is bounded only while
+/// every site hands it a constant or a literal.
+pub const GATE_JOURNAL_PRESSURE: &str = "journal_pressure";
+
 /// How long a disposition's intent is good for once built. It enters the
 /// netting set in the same pass, so this is documentation of the intent's
 /// scope rather than a bound anything waits on: the instruction is re-read
@@ -360,6 +370,15 @@ pub struct CellConfig {
     /// every later leg at its planned size, which is the position this
     /// control exists to stop.
     pub decomposition: DecompositionPolicy,
+    /// Whether this cell reads the journal-pressure wire (ADR 0100 §6).
+    ///
+    /// Off by default, and that is the decision rather than an omission. A
+    /// wired cell fails engaged until it is handed its first reading, which
+    /// is right for the node that owns a spool and wrong for every cell user
+    /// that has none: armed on every cell, the wire would halt the demo, the
+    /// chaos and e2e suites and the legacy node mode on a spool nobody
+    /// writes. Only [`Self::with_journal_wire`] turns it on.
+    pub journal_wire: bool,
 }
 
 /// The rolling window §27.1's crossing cap is evaluated against.
@@ -402,7 +421,22 @@ impl CellConfig {
             quote_limits: RateLimits::default(),
             dispersion: DispersionPolicy::default(),
             decomposition: DecompositionPolicy::default(),
+            journal_wire: false,
         }
+    }
+
+    /// Arm the journal-pressure wire (ADR 0100 §6).
+    ///
+    /// The cell this builds halts new exposure until
+    /// [`Cell::apply_journal_pressure`] hands it a reading, and afterwards
+    /// sizes and halts by the last reading handed. A composition root arms
+    /// this only where it also polls a spool on every pass: a wired cell
+    /// nobody feeds stays halted, which is the fail-closed reading of a
+    /// wire whose state is unknown.
+    #[must_use]
+    pub fn with_journal_wire(mut self) -> Self {
+        self.journal_wire = true;
+        self
     }
 
     /// Measure the crossing cap over `interval` rather than per net.
@@ -1032,6 +1066,15 @@ pub struct Cell {
     /// payload, however new, and no operator credential on the kill switch
     /// touches it. Two wires that shared a release would share a failure.
     polled_halt: Option<String>,
+    /// The fourth wire (ADR 0100 §6): the last journal-pressure reading
+    /// handed to this cell. `None` is a cell built without the wire, which
+    /// never reads it; a wired cell starts at
+    /// `Exhausted(NeverApplied)` so that a node which forgets to feed it
+    /// trades nothing rather than trading with no record. Released only by
+    /// a reading that does not halt — no payload, credential or flag
+    /// touches it, for the same reason the polled wire keeps its own
+    /// release.
+    journal_pressure: Option<JournalPressure>,
     dropcopy: DropCopyReconciler,
     /// The arbitrage desk, if the composition root installed one. `None` is
     /// a cell that runs strategy programs and scans no graph, which is every
@@ -1198,6 +1241,9 @@ impl Cell {
         // changed.
         let budget = QuoteBudget::new(config.quote_limits, &config.venues);
         let fill_times = FillTimes::new(config.dispersion, &config.venues);
+        let journal_pressure = config
+            .journal_wire
+            .then_some(JournalPressure::Exhausted(Exhaustion::NeverApplied));
         Ok(Self {
             protocols: ProtocolRegistry::new(),
             sequencer: Sequencer::new(ReorderPolicy::default()),
@@ -1209,6 +1255,7 @@ impl Cell {
             policy_halted: false,
             policy_halt_barrier: None,
             polled_halt: None,
+            journal_pressure,
             dropcopy: DropCopyReconciler::new(),
             desk: None,
             journal: Journal::new(),
@@ -1820,6 +1867,7 @@ impl Cell {
             self.autonomy.kill_switch().is_globally_tripped(),
             self.policy_halted,
             self.polled_halt.is_some(),
+            self.journal_pressure.map(JournalPressure::halts),
         );
     }
 
@@ -1952,11 +2000,143 @@ impl Cell {
         )
     }
 
-    /// Whether the cell is stopped, by any of its three halts.
+    /// Whether the cell is stopped, by any of its four halts.
     pub fn is_halted(&self) -> bool {
+        self.halted_other_than_by_journal() || self.journal_exhausted()
+    }
+
+    /// Whether a halt other than the journal wire holds the cell.
+    ///
+    /// Separate because the journal wire releases itself the moment the
+    /// spool recovers. `break_on`, which trips the kill switch on a
+    /// reconciliation break, asks this rather than [`Self::is_halted`]:
+    /// asking the latter, a break found while the spool was exhausted would
+    /// trip nothing, and the cell would resume trading on a book that
+    /// disagrees with the venue as soon as the disk freed up.
+    /// `break_cycle` cannot run while the journal wire holds the cell, and
+    /// keeps `is_halted` — see the note there.
+    fn halted_other_than_by_journal(&self) -> bool {
         self.autonomy.kill_switch().is_globally_tripped()
             || self.policy_halted
             || self.polled_halt.is_some()
+    }
+
+    fn journal_exhausted(&self) -> bool {
+        self.journal_pressure.is_some_and(JournalPressure::halts)
+    }
+
+    /// The journal-pressure reading in force, or `None` on a cell built
+    /// without the wire.
+    pub fn journal_pressure(&self) -> Option<JournalPressure> {
+        self.journal_pressure
+    }
+
+    /// Apply what the journal spool read as, this pass (ADR 0100 §6).
+    ///
+    /// The discipline of [`Self::apply_polled_halt`]: the reading is the
+    /// state, every pass re-applies it, and a steady state is no event.
+    /// `Exhausted` halts new exposure; `Narrow` sizes it down; `Normal` does
+    /// neither. What the node hands is what the node judged, freshness
+    /// included — see [`crate::pressure::Freshness::judge`] — so the cell
+    /// reads no clock here and a replay acts on the same reading.
+    ///
+    /// Transitions are journaled with the variants the chain already has:
+    /// `HaltChanged` when the wire engages or releases, and `Refused` under
+    /// [`GATE_JOURNAL_PRESSURE`] when sizing becomes narrowed. The wired
+    /// cell's construction state, `Exhausted(NeverApplied)`, was never
+    /// journaled — there is no instant to stamp it with — so leaving it for
+    /// `Normal` is not journaled either; the passes it refused are, under
+    /// the gate. Leaving it for another exhausted cause is journaled as the
+    /// halt, because that is the first time a cause exists to name.
+    ///
+    /// Refused on a cell built without the wire, rather than ignored: a
+    /// reading the cell would drop is a reading the node believes is in
+    /// force. Refused too for `Exhausted(NeverApplied)`, which is the cell's
+    /// own state before any reading and not something a spool can report.
+    pub fn apply_journal_pressure(
+        &mut self,
+        reading: JournalPressure,
+        now: Timestamp,
+    ) -> Result<()> {
+        let Some(previous) = self.journal_pressure else {
+            return Err(Error::invalid(
+                "this cell was built without the journal wire and reads no journal pressure; \
+                 build it from CellConfig::with_journal_wire, or stop handing it readings",
+            ));
+        };
+        if reading == JournalPressure::Exhausted(Exhaustion::NeverApplied) {
+            return Err(Error::invalid(
+                "never_applied is the cell's own state before its first reading, not a reading; \
+                 hand the spool's actual state",
+            ));
+        }
+        let never_applied = previous == JournalPressure::Exhausted(Exhaustion::NeverApplied);
+        self.journal_pressure = Some(reading);
+        match (previous.halts(), reading.halts()) {
+            (false, true) => {
+                self.journal.record(
+                    Decision::HaltChanged {
+                        halted: true,
+                        reason: format!("journal pressure: {}", reading.describe()),
+                    },
+                    now,
+                );
+            }
+            (true, true) if never_applied => {
+                self.journal.record(
+                    Decision::HaltChanged {
+                        halted: true,
+                        reason: format!("journal pressure: {}", reading.describe()),
+                    },
+                    now,
+                );
+            }
+            (true, false) if !never_applied => {
+                // `halted` names the cell, not the wire, as in the polled
+                // wire's release: another halt may still hold it.
+                let halted = self.is_halted();
+                self.journal.record(
+                    Decision::HaltChanged {
+                        halted,
+                        reason: format!(
+                            "journal pressure reads {}; the cell is {}",
+                            reading.describe(),
+                            if halted {
+                                "still halted by another wire"
+                            } else {
+                                "released"
+                            }
+                        ),
+                    },
+                    now,
+                );
+            }
+            (true, false) | (true, true) | (false, false) => {}
+        }
+        if let JournalPressure::Narrow(narrowing) = reading
+            && previous != reading
+        {
+            self.journal.record(
+                Decision::Refused {
+                    gate: GATE_JOURNAL_PRESSURE.to_string(),
+                    reason: format!(
+                        "the journal spool is filling; new exposure is sized at {} of what it \
+                         would otherwise be until the spool drains",
+                        narrowing.multiplier()
+                    ),
+                },
+                now,
+            );
+        }
+        self.record_halt();
+        Ok(())
+    }
+
+    /// The multiplier the journal wire applies to a pass's sizing: one on a
+    /// cell built without it.
+    fn journal_sizing_multiplier(&self) -> Decimal {
+        self.journal_pressure
+            .map_or(Decimal::ONE, JournalPressure::sizing_multiplier)
     }
 
     /// The reason the polled halt wire is engaged, while it is.
@@ -2931,8 +3111,10 @@ impl Cell {
                 "kill_switch"
             } else if self.policy_halted {
                 "policy_halt"
-            } else {
+            } else if self.polled_halt.is_some() {
                 "polled_halt"
+            } else {
+                GATE_JOURNAL_PRESSURE
             };
             self.refuse(&mut report, gate, "the cell is halted", now);
             return Ok(report);
@@ -2990,7 +3172,14 @@ impl Cell {
         // reads the same narrowing, so a payload applied mid-pass changes the
         // next pass, never half of this one.
         let narrowing = self.narrowing(now);
-        let multiplier = narrowing.sizing_multiplier();
+        // The journal wire compounds with the degradation table rather than
+        // replacing it: both narrow, and a pass is sized by the stricter
+        // product. A product that cannot be represented narrows to nothing,
+        // the same asymmetry the table keeps.
+        let multiplier = narrowing
+            .sizing_multiplier()
+            .checked_mul(self.journal_sizing_multiplier())
+            .unwrap_or(Decimal::ZERO);
         // Freshness is a function of `now`, so this is the instant it becomes
         // known and the only instant at which the recorded value is what the
         // cell actually sized against. Before this the whole table was
@@ -4614,7 +4803,7 @@ impl Cell {
         self.metrics.reconciliation_break();
         self.journal
             .record(Decision::ReconciliationBreak { detail }, now);
-        if !self.is_halted() {
+        if !self.halted_other_than_by_journal() {
             self.autonomy.kill_switch_mut().trip_global(
                 now,
                 "drop-copy",
@@ -6723,6 +6912,12 @@ impl Cell {
             ),
             now,
         );
+        // `is_halted` rather than `halted_other_than_by_journal`, unlike
+        // `break_on`, and the two are equivalent here: a cycle leg is sent
+        // only inside `Cell::work` after the halt gate, and journal pressure
+        // is applied only between passes, so a cell held by the journal wire
+        // never reaches this line. A predicate distinction no input can
+        // exercise would be a guard no test can prove.
         if sent > 0 && !self.is_halted() {
             self.autonomy.kill_switch_mut().trip_global(
                 now,
@@ -7746,7 +7941,18 @@ impl Cell {
     /// Spends nothing. Asked before the repricer is consulted so that the
     /// repricer's own throttle budgets — which count instructions sent —
     /// are never spent on an instruction the venue session could not carry.
+    ///
+    /// Not fundable at all while the journal spool is exhausted (red-team
+    /// M16). A requote is a cancel and a *new* order, and requotes run
+    /// before [`Cell::work`], so a halt checked only in `work` never saw
+    /// them: an exhausted cell would go on replacing resting orders with no
+    /// record of the replacements. Answering `false` here means the order is
+    /// not replaced; the mass cancel [`Cell::withdraw_expired`] runs on a
+    /// halted cell withdraws it.
     pub fn requote_fundable(&mut self, venue: &VenueId, now: Timestamp) -> bool {
+        if self.journal_exhausted() {
+            return false;
+        }
         self.budget.requote_fundable(venue, now)
     }
 
@@ -7764,7 +7970,28 @@ impl Cell {
     /// pushed onto a [`WorkReport`], because a requote happens outside
     /// [`Cell::work`] and there is no report to push onto — the same reason
     /// [`Cell::send`] records directly.
+    ///
+    /// Refused while the journal spool is exhausted, for the reason
+    /// [`Self::requote_fundable`] answers `false`: this is the spend a
+    /// caller that skipped the peek would reach, and the peek alone is not
+    /// the guarantee. Journaled under [`GATE_JOURNAL_PRESSURE`] and spends
+    /// nothing.
     pub fn spend_requote(&mut self, venue: &VenueId, now: Timestamp) -> Admission {
+        if self.journal_exhausted() {
+            let reason = format!(
+                "the journal spool is exhausted; a requote at {} would place a new order the \
+                 cell cannot record, so the order is withdrawn and not replaced",
+                venue.as_str()
+            );
+            self.journal.record(
+                Decision::Refused {
+                    gate: GATE_JOURNAL_PRESSURE.to_string(),
+                    reason: reason.clone(),
+                },
+                now,
+            );
+            return Admission::Refused { reason };
+        }
         let admission = self.budget.admit_requote(venue, now);
         if !admission.is_admitted() {
             self.metrics.refusal(GATE_QUOTE_BUDGET);
