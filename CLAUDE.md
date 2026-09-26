@@ -51,7 +51,7 @@ Four top-level domains, plus the repo-wide concerns (ADR 0016):
 | Path | What lives there |
 |---|---|
 | `backend/` | The entire Rust workspace — `Cargo.toml`, `Cargo.lock`, toolchain pins |
-| `backend/crates/libs/` | Shared, dependency-light, no I/O side effects |
+| `backend/crates/libs/` | Shared, dependency-light, no I/O side effects, except that `qip-transport` owns sockets under ADR 0100 (see `.claude/rules/architecture/00-boundaries.md`) |
 | `backend/crates/services/` | Domain engines — ingestion, risk, portfolio, execution |
 | `backend/crates/runtime/` | `qip-kernel`: the cycle and the composition of everything |
 | `backend/crates/apps/` | Deployable binaries: api, fastbrain, deepbrain, edge-node, web, cli, fabricd, ledgerd |
