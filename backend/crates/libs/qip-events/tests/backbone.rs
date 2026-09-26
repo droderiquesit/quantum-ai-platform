@@ -2413,7 +2413,7 @@ fn every_topic_declares_the_retention_class_its_record_carries() {
     // Premise: the closed set is the size the registry says, so a topic
     // added to `ALL` without a row below is a failure here and not a silent
     // default.
-    assert_eq!(Topic::ALL.len(), 79, "the topic registry changed size");
+    assert_eq!(Topic::ALL.len(), 85, "the topic registry changed size");
 
     let expected = |topic: Topic| match topic {
         Topic::MarketTick | Topic::MarketQuote | Topic::MarketOrderBook => {
@@ -2481,7 +2481,13 @@ fn every_topic_declares_the_retention_class_its_record_carries() {
         | Topic::KillSwitchReleased
         | Topic::AutonomyLevelChanged
         | Topic::BudgetExhausted
-        | Topic::SystemAlert => RetentionClass::Irreplaceable,
+        | Topic::SystemAlert
+        | Topic::ReflexOutcomeRecorded
+        | Topic::ReflexChainSpan
+        | Topic::EventFabricGap => RetentionClass::Irreplaceable,
+        Topic::ReflexPassMarked | Topic::ReflexJournalRecorded | Topic::MarketEventApplied => {
+            RetentionClass::EventAnchored
+        }
         Topic::OutcomeObserved
         | Topic::AttributionCompleted
         | Topic::HypothesisScored
@@ -2620,4 +2626,45 @@ fn the_kill_switchs_release_is_as_permanent_as_its_engagement() {
         "a release was dropped to make room"
     );
     assert_eq!(log.evicted_observations(), 0);
+}
+
+#[test]
+fn every_event_fabric_topic_has_the_retention_class_adr_0089_assigns_it() {
+    use qip_events::retention::RetentionClass;
+    // The six reflex fabric topics are the ADR 0100 event fabric's own
+    // messages: pass start, journal record, market event, outcome, chain
+    // proof, gap detection. ADR 0089 enforces that every topic declares its
+    // row, with no wildcard arm to silent-default a class. These six must
+    // read back the class the topic.rs file assigned them, with no guessing
+    // from the group.
+    assert_eq!(
+        Topic::ReflexPassMarked.retention_class(),
+        RetentionClass::EventAnchored,
+        "ReflexPassMarked must be EventAnchored: book state at the reflex pass start"
+    );
+    assert_eq!(
+        Topic::ReflexJournalRecorded.retention_class(),
+        RetentionClass::EventAnchored,
+        "ReflexJournalRecorded must be EventAnchored: book state at the journal entry"
+    );
+    assert_eq!(
+        Topic::MarketEventApplied.retention_class(),
+        RetentionClass::EventAnchored,
+        "MarketEventApplied must be EventAnchored: book state at the market event"
+    );
+    assert_eq!(
+        Topic::ReflexOutcomeRecorded.retention_class(),
+        RetentionClass::Irreplaceable,
+        "ReflexOutcomeRecorded must be Irreplaceable: only the event fabric has its outcomes"
+    );
+    assert_eq!(
+        Topic::ReflexChainSpan.retention_class(),
+        RetentionClass::Irreplaceable,
+        "ReflexChainSpan must be Irreplaceable: only the event fabric proves its chain integrity"
+    );
+    assert_eq!(
+        Topic::EventFabricGap.retention_class(),
+        RetentionClass::Irreplaceable,
+        "EventFabricGap must be Irreplaceable: only the event fabric detects its own gaps"
+    );
 }

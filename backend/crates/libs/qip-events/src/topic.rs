@@ -235,12 +235,46 @@ pub enum Topic {
     AutonomyLevelChanged,
     BudgetExhausted,
     SystemAlert,
+
+    // --- REFLEX FABRIC ---
+    /// A reflex pass was marked in the journal — the instant a pass began
+    /// (ADR 0100 §26.1). Retained as event-anchored state per pass, with the
+    /// journal controlling its lifetime. Only the event fabric writes this;
+    /// the reflex body is not the API's business.
+    ReflexPassMarked,
+    /// The journal recorded a reflex outcome — decision, fills, fills' side
+    /// and quote unit and fee (ADR 0100's reflex contract and §26.1).
+    /// Event-anchored, retained for 90 days. Part of the fabric's own
+    /// journaling, not the platform's control loop.
+    ReflexJournalRecorded,
+    /// A market event was applied to the journal — a tick, trade, quote or
+    /// book delta fetched by the fabric from the ingestion layer (ADR 0100
+    /// §26.1). Event-anchored. Transient on its own (the next tick arrives
+    /// in milliseconds), but under an event-anchored table's retention while
+    /// a pass is open.
+    MarketEventApplied,
+    /// A reflex journal was closed with its outcomes recorded and the chain
+    /// hashed — the completed record of what the journal observed, what it
+    /// decided and what it ordered (ADR 0100). The fabric's own verdict,
+    /// irreplaceable. Only the event fabric writes this.
+    ReflexOutcomeRecorded,
+    /// An outcome's chain hash (ADR 0043 and ADR 0100's chain digest) was
+    /// validated against the previous outcome's chain, proving an unbroken
+    /// causality from genesis (ADR 0100 §26.3 "chain property"). The record
+    /// of the fabric's chain integrity proof, irreplaceable.
+    ReflexChainSpan,
+    /// The event fabric detected a gap in the sequence — an outcome missing,
+    /// a chain hash broken, a report interval elapsed with no outcome
+    /// reported (ADR 0100 §26.3). Records the detection and the evidence, so
+    /// an operator can decide whether to halt. Only the event fabric writes
+    /// this; the decision to fail the cell is the cell's own.
+    EventFabricGap,
 }
 
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 79] = [
+    pub const ALL: [Self; 85] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -320,6 +354,12 @@ impl Topic {
         Self::AutonomyLevelChanged,
         Self::BudgetExhausted,
         Self::SystemAlert,
+        Self::ReflexPassMarked,
+        Self::ReflexJournalRecorded,
+        Self::MarketEventApplied,
+        Self::ReflexOutcomeRecorded,
+        Self::ReflexChainSpan,
+        Self::EventFabricGap,
     ];
 
     /// The wire name, e.g. `market.tick`. Stable across releases — changing one
@@ -405,6 +445,12 @@ impl Topic {
             Self::AutonomyLevelChanged => "system.autonomy_changed",
             Self::BudgetExhausted => "system.budget_exhausted",
             Self::SystemAlert => "system.alert",
+            Self::ReflexPassMarked => "reflex.pass_marked",
+            Self::ReflexJournalRecorded => "reflex.journal_recorded",
+            Self::MarketEventApplied => "reflex.market_event_applied",
+            Self::ReflexOutcomeRecorded => "reflex.outcome_recorded",
+            Self::ReflexChainSpan => "reflex.chain_span",
+            Self::EventFabricGap => "reflex.fabric_gap",
         }
     }
 
@@ -501,7 +547,13 @@ impl Topic {
             | Self::KillSwitchReleased
             | Self::AutonomyLevelChanged
             | Self::BudgetExhausted
-            | Self::SystemAlert => TopicGroup::System,
+            | Self::SystemAlert
+            | Self::ReflexPassMarked
+            | Self::ReflexJournalRecorded
+            | Self::MarketEventApplied
+            | Self::ReflexOutcomeRecorded
+            | Self::ReflexChainSpan
+            | Self::EventFabricGap => TopicGroup::System,
         }
     }
 
@@ -636,6 +688,17 @@ impl Topic {
             | Self::AutonomyLevelChanged
             | Self::BudgetExhausted
             | Self::SystemAlert => RetentionClass::Irreplaceable,
+            // A reflex pass and the journal records and market events within it:
+            // book state at each event in the fabric's own timeline, retained
+            // for 90 days under the reflex body's ledger.
+            Self::ReflexPassMarked | Self::ReflexJournalRecorded | Self::MarketEventApplied => {
+                RetentionClass::EventAnchored
+            }
+            // A reflex outcome, its chain proof, and a gap in the fabric's own
+            // causality chain: facts only the fabric has, permanently.
+            Self::ReflexOutcomeRecorded | Self::ReflexChainSpan | Self::EventFabricGap => {
+                RetentionClass::Irreplaceable
+            }
         }
     }
 
