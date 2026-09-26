@@ -392,6 +392,10 @@ impl TransferCostModel {
         wire_fee: Decimal,
         opportunity_bps_annual: f64,
     ) -> Result<Self> {
+        // The fx model's rates are public fields, so a caller can hand in one
+        // that no conversion can be priced on. Refused here, once, naming the
+        // field, rather than discovered on the first cross-currency transfer.
+        let fx = fx.checked()?;
         if wire_fee.is_negative() {
             return Err(Error::invalid("a wire fee cannot be negative"));
         }
@@ -469,7 +473,24 @@ impl TransferCostModel {
                     from.currency, to.currency
                 )));
             }
-            (self.fx.estimate(amount, participation), participation)
+            // Checked rather than panicking: the release profile is
+            // `panic = "abort"`, so an amount whose conversion cost is too large
+            // to represent would otherwise end the process instead of refusing
+            // this one transfer. The corridor is prefixed because the cost
+            // model's own refusal names the term but not which cross it was.
+            let conversion =
+                self.fx
+                    .checked_estimate(amount, participation)
+                    .map_err(|refusal| {
+                        let message = format!(
+                            "the {} -> {} conversion cannot be priced: {}",
+                            from.currency,
+                            to.currency,
+                            refusal.message()
+                        );
+                        refusal.relabelled(message)
+                    })?;
+            (conversion, participation)
         } else {
             (Decimal::ZERO, 0.0)
         };
