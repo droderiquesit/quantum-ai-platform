@@ -58,7 +58,7 @@ use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, OrderId};
 use qip_core::time::{Duration, Timestamp};
-use qip_edge::cell::{ExecutionReport, Placer, UnreleasedOrder};
+use qip_edge::cell::{ExecutionReport, Placer, QuoteTerms, UnreleasedOrder};
 use qip_edge::dispersion::DEFAULT_DISPERSION_BOUND;
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::resume::VenueAccount;
@@ -665,6 +665,21 @@ impl Placer for SimulatedGateway {
         std::mem::take(&mut self.unreleased)
     }
 
+    /// The currency the venue's own listing quotes the instrument in, read
+    /// from the matching engine's record through [`Self::listing`] — the
+    /// same record a risk engine would read — and never from anything this
+    /// gateway assumes. `None` for another venue, which this gateway does
+    /// not reach and so cannot speak for, and for an instrument the venue
+    /// has not listed.
+    fn quote_terms(&self, object_id: &ObjectId, venue: &VenueId) -> Option<QuoteTerms> {
+        if venue != &self.venue {
+            return None;
+        }
+        self.listing(object_id).map(|listing| QuoteTerms {
+            quote_unit: listing.currency,
+        })
+    }
+
     fn execution_reports(&mut self) -> Vec<ExecutionReport> {
         let mut reports = std::mem::take(&mut self.reports);
         // What the venue says about each order that rested, from its own
@@ -1196,6 +1211,16 @@ impl Placer for NodeGateway {
         match self {
             Self::Simulated(gateway) => gateway.execution_reports(),
             Self::Live(gateway) => gateway.execution_reports(),
+        }
+    }
+
+    fn quote_terms(&self, object_id: &ObjectId, venue: &VenueId) -> Option<QuoteTerms> {
+        match self {
+            Self::Simulated(gateway) => gateway.quote_terms(object_id, venue),
+            // Delegated rather than defaulted, so the REST gateway's answer
+            // is its own: today it keeps no listing record and so states
+            // none, and its fills are journaled without a quote unit.
+            Self::Live(gateway) => gateway.quote_terms(object_id, venue),
         }
     }
 

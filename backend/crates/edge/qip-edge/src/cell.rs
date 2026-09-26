@@ -39,7 +39,7 @@ use qip_contracts::policy::Dispositions;
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
 use qip_contracts::venue::{VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
-use qip_core::{Decimal, Duration, ObjectId, Timestamp};
+use qip_core::{Currency, Decimal, Duration, ObjectId, Timestamp};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_orderbook::venue::VenueState;
 use qip_protocols::registry::{FeedKey, ProtocolRegistry};
@@ -289,6 +289,20 @@ pub const GATE_DISPOSITION: &str = "disposition";
 /// value of `qip_edge_refusals_total{gate}`: a label is bounded only while
 /// every site hands it a constant or a literal.
 pub const GATE_JOURNAL_PRESSURE: &str = "journal_pressure";
+
+/// The gate a strategy's signal is refused under when its conviction is not
+/// a finite number (REFLEX-015).
+///
+/// `Conviction::new` clamps, and `f64::NAN.clamp(0.0, 1.0)` is `NaN`, so a
+/// rule whose conviction expression evaluates to `NaN` produces a signal
+/// that reads as a belief and is none. Left to the journal, the entry is
+/// refused at encoding and the signal carries on regardless: it is sized,
+/// netted and sent on a number nobody can read back, and the chain records
+/// a codec failure rather than the strategy that produced it. Refused here,
+/// at the one site a signal enters the cell, it goes no further and the
+/// refusal names the strategy. A constant for the same cardinality reason
+/// as [`GATE_JOURNAL_PRESSURE`].
+pub const GATE_SIGNAL_CONVICTION: &str = "signal_conviction";
 
 /// How long a disposition's intent is good for once built. It enters the
 /// netting set in the same pass, so this is documentation of the intent's
@@ -3273,6 +3287,27 @@ impl Cell {
                     continue;
                 }
             };
+            // Both readings are checked because both leave the cell: the
+            // probability sizes the intent and the shrunk value is what the
+            // journal hashes. Infinite probabilities are clamped by
+            // `Conviction::new`; `NaN` survives the clamp.
+            if !signal.conviction.probability().is_finite()
+                || !signal.conviction.shrunk().is_finite()
+            {
+                self.refuse(
+                    &mut report,
+                    GATE_SIGNAL_CONVICTION,
+                    &format!(
+                        "strategy {} raised a {} signal on {} whose conviction is not a finite \
+                         number; a belief nobody can read back is not acted on",
+                        signal.strategy.as_str(),
+                        signal.kind.as_str(),
+                        signal.object_id.as_str()
+                    ),
+                    now,
+                );
+                continue;
+            }
 
             self.journal.record(
                 Decision::SignalRaised {
@@ -4599,7 +4634,7 @@ impl Cell {
         }
         let mut confirmed = Vec::new();
         for execution in gateway.execution_reports() {
-            if let Some(fill) = self.confirm(execution, now) {
+            if let Some(fill) = self.confirm(execution, &*gateway, now) {
                 confirmed.push(fill);
             }
         }
@@ -4669,7 +4704,12 @@ impl Cell {
         self.break_on(detail, now);
     }
 
-    fn confirm(&mut self, execution: ExecutionReport, now: Timestamp) -> Option<ConfirmedFill> {
+    fn confirm(
+        &mut self,
+        execution: ExecutionReport,
+        gateway: &dyn Placer,
+        now: Timestamp,
+    ) -> Option<ConfirmedFill> {
         if !execution.quantity.is_positive() || !execution.price.is_positive() {
             self.break_on(
                 format!(
@@ -4725,6 +4765,13 @@ impl Cell {
             working.order.closed = Some("filled".to_string());
         }
         let shares = working.net.split_fill(execution.quantity);
+        // The listing's quote currency as the placer states it, read after
+        // the venue check above so it is asked about the venue that filled.
+        // `None` stays `None`: a price journaled in a currency the cell
+        // assumed is a posting in a unit nobody stated (LEDGER-021).
+        let quote_unit = gateway
+            .quote_terms(&working.order.object_id, &execution.venue)
+            .map(|terms| terms.quote_unit.as_str().to_string());
         let fill = ConfirmedFill {
             order_id: execution.order_id.clone(),
             venue: execution.venue.clone(),
@@ -4784,10 +4831,14 @@ impl Cell {
                     .iter()
                     .map(|(strategy, share)| (strategy.as_str().to_string(), share.to_string()))
                     .collect(),
-                // SLICE-20 fills these from the execution report. Absent
-                // here means unreported, never zero — a fee especially.
-                side: None,
-                quote_unit: None,
+                // The side the cell sent, which is the side that filled:
+                // without it the ledger cannot tell a debit from a credit.
+                side: Some(fill.side),
+                quote_unit,
+                // No venue this cell reaches reports a fee on its execution
+                // report, so none is written. Absent means unreported and
+                // never zero (LEDGER-019); an estimate here would be the
+                // cell inventing a venue fact the ledger then books.
                 fee: None,
             },
             now,
@@ -8296,6 +8347,18 @@ const fn scan_gate(stage: RejectionStage) -> &'static str {
     }
 }
 
+/// What a venue's listing states about the unit an instrument is priced in.
+///
+/// A type rather than a bare currency so that what the venue states and what
+/// the cell writes stay one field apart: the fee a venue charges belongs to
+/// the execution report, not to the listing, and is deliberately not here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuoteTerms {
+    /// The currency the listing quotes the instrument's price in, validated
+    /// by [`Currency`]'s own parse — never a default the cell supplied.
+    pub quote_unit: Currency,
+}
+
 /// Where a cell sends an order.
 ///
 /// Narrower than the routing crate's `Gateway` on purpose: the cell needs to
@@ -8336,6 +8399,18 @@ pub trait Placer: std::fmt::Debug {
     /// order on the pass it is placed and so never holds one to be late with.
     fn unreleased(&mut self) -> Vec<UnreleasedOrder> {
         Vec::new()
+    }
+
+    /// The terms the venue quotes `object_id` in, as its listing states
+    /// them, for the fills the cell journals (LEDGER-021).
+    ///
+    /// Defaults to `None`, which the cell journals as an absent quote unit
+    /// rather than a guessed one: a gateway with no listing record has
+    /// nothing to state, and a default currency here would put every fill
+    /// it reports into a unit no venue named. A gateway that wraps another
+    /// must delegate, or the terms vanish at the wrapper.
+    fn quote_terms(&self, _object_id: &ObjectId, _venue: &VenueId) -> Option<QuoteTerms> {
+        None
     }
 
     /// What a production deployment must supply, empty when usable as is.

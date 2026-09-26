@@ -67,7 +67,7 @@ use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::{ObjectId, OrderId};
 use qip_core::time::Timestamp;
-use qip_edge::cell::{Cell, ExecutionReport, OpenOrder, Placer, UnreleasedOrder};
+use qip_edge::cell::{Cell, ExecutionReport, OpenOrder, Placer, QuoteTerms, UnreleasedOrder};
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::priority::{Candidate, allocate, worth};
 use qip_edge::telemetry::CellMetrics;
@@ -816,6 +816,13 @@ impl Placer for RequotingPlacer<'_> {
             }
         }
         reports
+    }
+
+    fn quote_terms(&self, object_id: &ObjectId, venue: &VenueId) -> Option<QuoteTerms> {
+        // Delegated: the pass loop hands the cell this wrapper and not the
+        // gateway, so a wrapper answering the trait's default would journal
+        // every simulated fill without the unit its listing states.
+        self.venue.quote_terms(object_id, venue)
     }
 
     fn unreleased(&mut self) -> Vec<UnreleasedOrder> {
