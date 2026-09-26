@@ -165,6 +165,40 @@ impl OutboxTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qip_observability::metrics::{MetricValue, SeriesSnapshot, Snapshot};
+    use std::collections::BTreeSet;
+
+    /// A series must not exist before its recorder has been called. Checking
+    /// only presence after recording would pass identically if the series
+    /// had somehow been there from construction — `Metrics::describe`
+    /// registers help text, never a series.
+    fn assert_absent(snapshot: &Snapshot, name: &str) {
+        assert!(
+            !snapshot.series.iter().any(|s| s.name == name),
+            "premise: {name} must be absent before its recorder is called"
+        );
+    }
+
+    fn find<'a>(snapshot: &'a Snapshot, name: &str) -> &'a SeriesSnapshot {
+        snapshot
+            .series
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("{name} series was not recorded"))
+    }
+
+    /// Set equality on label keys, not subset or superset: an extra label is
+    /// unbounded cardinality from a key or spool id nobody reviewed, and a
+    /// missing one is a fact the series claims to carry and does not.
+    fn assert_label_keys(found: &SeriesSnapshot, expected: &[&str]) {
+        let actual: BTreeSet<&str> = found.labels.keys().map(String::as_str).collect();
+        let expected: BTreeSet<&str> = expected.iter().copied().collect();
+        assert_eq!(
+            actual, expected,
+            "{}'s label key set must match exactly",
+            found.name
+        );
+    }
 
     #[test]
     fn each_outbox_recorder_writes_its_named_series_with_bounded_labels() {
@@ -178,38 +212,145 @@ mod tests {
             "premise: registry starts empty before any recording"
         );
 
-        // Record a journal metric and verify the series appeared with the
-        // expected name. spool_unarchived_bytes and spool_bytes are two distinct
-        // series tracking different facts, not a mutation of one name.
-        recorder.spool_bytes(1024);
-        recorder.spool_unarchived_bytes(512);
+        // drain_total{outcome} — a counter.
+        assert_absent(&snapshot, names::EDGE_EVENT_FABRIC_DRAIN);
+        recorder.drain("success");
         let snapshot = metrics.snapshot();
-        assert!(!snapshot.series.is_empty(), "series moved after recording");
+        let found = find(&snapshot, names::EDGE_EVENT_FABRIC_DRAIN);
+        assert_label_keys(found, &["outcome"]);
+        assert_eq!(
+            found.labels.get("outcome").map(String::as_str),
+            Some("success"),
+            "outcome label is bounded by enum"
+        );
+        match &found.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "counter incremented by one"),
+            other => panic!("expected Counter for drain_total, got {other:?}"),
+        }
 
-        // Verify spool_bytes was recorded.
-        let spool_bytes_found = snapshot
-            .series
-            .iter()
-            .find(|s| s.name == names::EDGE_JOURNAL_SPOOL_BYTES)
-            .expect("spool_bytes series was recorded");
+        // connected — a gauge, unlabelled: 1 connected, 0 disconnected.
+        assert_absent(&snapshot, names::EDGE_EVENT_FABRIC_CONNECTED);
+        recorder.connected(true);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EDGE_EVENT_FABRIC_CONNECTED);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Gauge(v) => {
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(*v, 1.0, "connected gauge reads 1 when connected");
+                }
+            }
+            other => panic!("expected Gauge for connected, got {other:?}"),
+        }
+
+        // input_gaps_total — a counter, unlabelled.
+        assert_absent(&snapshot, names::EDGE_EVENT_FABRIC_INPUT_GAPS);
+        recorder.input_gap();
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EDGE_EVENT_FABRIC_INPUT_GAPS);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "counter incremented by one"),
+            other => panic!("expected Counter for input_gaps_total, got {other:?}"),
+        }
+
+        // control_applied_total{kind} — a counter.
+        assert_absent(&snapshot, names::EDGE_EVENT_FABRIC_CONTROL_APPLIED);
+        recorder.control_applied("halt");
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EDGE_EVENT_FABRIC_CONTROL_APPLIED);
+        assert_label_keys(found, &["kind"]);
+        assert_eq!(
+            found.labels.get("kind").map(String::as_str),
+            Some("halt"),
+            "kind label is bounded by enum"
+        );
+        match &found.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "counter incremented by one"),
+            other => panic!("expected Counter for control_applied_total, got {other:?}"),
+        }
+
+        // control_refused_total{reason} — a counter, distinct from
+        // control_applied_total: a control that was refused and one that
+        // was applied are opposite facts about the same kind of event.
+        assert_absent(&snapshot, names::EDGE_EVENT_FABRIC_CONTROL_REFUSED);
+        recorder.control_refused("stale_sequence");
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EDGE_EVENT_FABRIC_CONTROL_REFUSED);
+        assert_label_keys(found, &["reason"]);
+        assert_eq!(
+            found.labels.get("reason").map(String::as_str),
+            Some("stale_sequence"),
+            "reason label is bounded by enum"
+        );
+        match &found.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "counter incremented by one"),
+            other => panic!("expected Counter for control_refused_total, got {other:?}"),
+        }
+        assert_ne!(
+            names::EDGE_EVENT_FABRIC_CONTROL_APPLIED,
+            names::EDGE_EVENT_FABRIC_CONTROL_REFUSED,
+            "control_applied_total and control_refused_total are distinct series"
+        );
+
+        // pass_duration_ms — a histogram, unlabelled, one observation.
+        assert_absent(&snapshot, names::EDGE_EVENT_FABRIC_PASS_DURATION_MS);
+        recorder.pass_duration_ms(3.5);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EDGE_EVENT_FABRIC_PASS_DURATION_MS);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Histogram(h) => {
+                assert_eq!(h.count, 1, "one duration observation recorded");
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(h.sum, 3.5, "the observation carries the recorded duration");
+                }
+            }
+            other => panic!("expected Histogram for pass_duration_ms, got {other:?}"),
+        }
+
+        // ring_depth — a gauge, unlabelled.
+        assert_absent(&snapshot, names::EDGE_JOURNAL_RING_DEPTH);
+        recorder.ring_depth(42);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EDGE_JOURNAL_RING_DEPTH);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Gauge(v) => {
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(*v, 42.0, "ring_depth gauge holds the recorded depth");
+                }
+            }
+            other => panic!("expected Gauge for ring_depth, got {other:?}"),
+        }
+
+        // spool_bytes and spool_unarchived_bytes — two distinct gauges
+        // tracking different facts, not a mutation of one name.
+        assert_absent(&snapshot, names::EDGE_JOURNAL_SPOOL_BYTES);
+        recorder.spool_bytes(1024);
+        let snapshot = metrics.snapshot();
+        let spool_bytes_found = find(&snapshot, names::EDGE_JOURNAL_SPOOL_BYTES);
+        assert_label_keys(spool_bytes_found, &[]);
         match &spool_bytes_found.value {
-            qip_observability::metrics::MetricValue::Gauge(v) => {
+            MetricValue::Gauge(v) => {
                 #[allow(clippy::float_cmp)]
                 {
                     assert_eq!(*v, 1024.0, "spool_bytes gauge set to recorded value");
                 }
             }
-            other => panic!("expected Gauge for spool_bytes, got {:?}", other),
+            other => panic!("expected Gauge for spool_bytes, got {other:?}"),
         }
 
-        // Verify spool_unarchived_bytes was recorded distinctly.
-        let spool_unarchived_found = snapshot
-            .series
-            .iter()
-            .find(|s| s.name == names::EDGE_JOURNAL_SPOOL_UNARCHIVED_BYTES)
-            .expect("spool_unarchived_bytes series was recorded");
+        assert_absent(&snapshot, names::EDGE_JOURNAL_SPOOL_UNARCHIVED_BYTES);
+        recorder.spool_unarchived_bytes(512);
+        let snapshot = metrics.snapshot();
+        let spool_unarchived_found = find(&snapshot, names::EDGE_JOURNAL_SPOOL_UNARCHIVED_BYTES);
+        assert_label_keys(spool_unarchived_found, &[]);
         match &spool_unarchived_found.value {
-            qip_observability::metrics::MetricValue::Gauge(v) => {
+            MetricValue::Gauge(v) => {
                 #[allow(clippy::float_cmp)]
                 {
                     assert_eq!(
@@ -218,13 +359,35 @@ mod tests {
                     );
                 }
             }
-            other => panic!("expected Gauge for spool_unarchived_bytes, got {:?}", other),
+            other => panic!("expected Gauge for spool_unarchived_bytes, got {other:?}"),
         }
-
-        // Verify both are distinct series, not one.
         assert_ne!(
-            spool_bytes_found.name, spool_unarchived_found.name,
+            names::EDGE_JOURNAL_SPOOL_BYTES,
+            names::EDGE_JOURNAL_SPOOL_UNARCHIVED_BYTES,
             "spool_bytes and spool_unarchived_bytes are distinct series"
         );
+
+        // pressure{state} — a gauge. Mutation: swapping this recorder to
+        // write EDGE_EVENT_FABRIC_CONNECTED's name must fail this find(),
+        // since connected carries no state label and this series does.
+        assert_absent(&snapshot, names::EDGE_JOURNAL_PRESSURE);
+        recorder.pressure("high");
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EDGE_JOURNAL_PRESSURE);
+        assert_label_keys(found, &["state"]);
+        assert_eq!(
+            found.labels.get("state").map(String::as_str),
+            Some("high"),
+            "state label is bounded by enum: low, medium, high"
+        );
+        match &found.value {
+            MetricValue::Gauge(v) => {
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(*v, 1.0, "pressure gauge holds the recorded value");
+                }
+            }
+            other => panic!("expected Gauge for pressure, got {other:?}"),
+        }
     }
 }

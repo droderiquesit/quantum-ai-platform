@@ -56,7 +56,7 @@ impl FabricdTelemetry {
         );
         m.describe(
             names::EVENT_FABRIC_FENCED,
-            "whether the broker is fenced (1) or accepting appends (0)",
+            "fencing events: the broker lost its epoch and stopped accepting appends",
         );
         m.describe(
             names::EVENT_FABRIC_LEADER_EPOCH,
@@ -149,14 +149,17 @@ impl FabricdTelemetry {
             .increment(names::EVENT_FABRIC_SHED, labels, count);
     }
 
-    /// The fenced state of the broker.
-    pub fn fenced(&self, is_fenced: bool) {
+    /// A fencing event: the broker lost its epoch and stopped accepting
+    /// appends.
+    ///
+    /// A counter incremented by one per event, never a gauge holding the
+    /// current boolean state — a gauge that a broker forgot to reset back to
+    /// zero on recovery would read "fenced" forever, and a gauge nobody ever
+    /// set back to zero would read "never fenced" through an outage a
+    /// counter cannot un-ring. Unlabelled: there is only the one fact.
+    pub fn fenced(&self) {
         let labels = Labels::new();
-        self.metrics.gauge(
-            names::EVENT_FABRIC_FENCED,
-            labels,
-            f64::from(u8::from(is_fenced)),
-        );
+        self.metrics.count(names::EVENT_FABRIC_FENCED, labels);
     }
 
     /// The current leader epoch.
@@ -194,6 +197,42 @@ impl FabricdTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qip_observability::metrics::{MetricValue, SeriesSnapshot, Snapshot};
+    use std::collections::BTreeSet;
+
+    /// A series must not exist before its recorder has been called. Checking
+    /// only presence after recording would pass identically if the series
+    /// had somehow been there from construction — `Metrics::describe`
+    /// registers help text, never a series — so absence is asserted first,
+    /// against the exact name a reader would otherwise have to trust blind.
+    fn assert_absent(snapshot: &Snapshot, name: &str) {
+        assert!(
+            !snapshot.series.iter().any(|s| s.name == name),
+            "premise: {name} must be absent before its recorder is called"
+        );
+    }
+
+    fn find<'a>(snapshot: &'a Snapshot, name: &str) -> &'a SeriesSnapshot {
+        snapshot
+            .series
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("{name} series was not recorded"))
+    }
+
+    /// Set equality on label keys, not subset or superset: an extra label is
+    /// unbounded cardinality nobody reviewed (a key, an offset, an event id),
+    /// and a missing one is a fact the constraint list promises the series
+    /// carries and it does not.
+    fn assert_label_keys(found: &SeriesSnapshot, expected: &[&str]) {
+        let actual: BTreeSet<&str> = found.labels.keys().map(String::as_str).collect();
+        let expected: BTreeSet<&str> = expected.iter().copied().collect();
+        assert_eq!(
+            actual, expected,
+            "{}'s label key set must match exactly",
+            found.name
+        );
+    }
 
     #[test]
     fn each_fabricd_recorder_writes_its_named_series_with_bounded_labels() {
@@ -207,43 +246,244 @@ mod tests {
             "premise: registry starts empty before any recording"
         );
 
-        // Record an append outcome and verify the series appeared with
-        // the expected name and bounded labels: stream (catalogue), class
-        // and outcome (enums). Never a key, offset or event id.
+        // append_total{stream,class,outcome} — a counter, bounded by the
+        // stream catalogue and two enums. Never a key, offset or event id.
+        assert_absent(&snapshot, names::EVENT_FABRIC_APPEND);
         recorder.append("orders", "submitted", "success");
         let snapshot = metrics.snapshot();
-        assert!(!snapshot.series.is_empty(), "series moved after recording");
-
-        let found = snapshot
-            .series
-            .iter()
-            .find(|s| s.name == names::EVENT_FABRIC_APPEND)
-            .expect("append_total series was recorded");
-
-        // Labels are bounded: stream is from the catalogue, class and outcome
-        // are from the enums.
+        let found = find(&snapshot, names::EVENT_FABRIC_APPEND);
+        assert_label_keys(found, &["stream", "class", "outcome"]);
         assert_eq!(
-            found.labels.get("stream").map(|s| s.as_str()),
+            found.labels.get("stream").map(String::as_str),
             Some("orders"),
             "stream label is bounded by catalogue"
         );
         assert_eq!(
-            found.labels.get("class").map(|s| s.as_str()),
+            found.labels.get("class").map(String::as_str),
             Some("submitted"),
             "class label is bounded by enum"
         );
         assert_eq!(
-            found.labels.get("outcome").map(|s| s.as_str()),
+            found.labels.get("outcome").map(String::as_str),
             Some("success"),
             "outcome label is bounded by enum"
         );
-
-        // The value is a counter (monotonic).
         match &found.value {
-            qip_observability::metrics::MetricValue::Counter(v) => {
-                assert_eq!(*v, 1, "counter incremented by one");
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "counter incremented by one"),
+            other => panic!("expected Counter for append_total, got {other:?}"),
+        }
+
+        // append_latency_ms{class} — a histogram of one observation.
+        assert_absent(&snapshot, names::EVENT_FABRIC_APPEND_LATENCY_MS);
+        recorder.append_latency_ms("submitted", 12.5);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_APPEND_LATENCY_MS);
+        assert_label_keys(found, &["class"]);
+        assert_eq!(
+            found.labels.get("class").map(String::as_str),
+            Some("submitted")
+        );
+        match &found.value {
+            MetricValue::Histogram(h) => {
+                assert_eq!(h.count, 1, "one latency observation recorded");
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(h.sum, 12.5, "the observation carries the recorded latency");
+                }
             }
-            other => panic!("expected Counter, got {:?}", other),
+            other => panic!("expected Histogram for append_latency_ms, got {other:?}"),
+        }
+
+        // high_watermark{stream,partition} — a gauge, the current offset.
+        assert_absent(&snapshot, names::EVENT_FABRIC_HIGH_WATERMARK);
+        recorder.high_watermark("orders", 3);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_HIGH_WATERMARK);
+        assert_label_keys(found, &["stream", "partition"]);
+        assert_eq!(
+            found.labels.get("stream").map(String::as_str),
+            Some("orders")
+        );
+        assert_eq!(found.labels.get("partition").map(String::as_str), Some("3"));
+        match &found.value {
+            MetricValue::Gauge(v) => {
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(*v, 0.0, "high_watermark gauge holds the recorded value");
+                }
+            }
+            other => panic!("expected Gauge for high_watermark, got {other:?}"),
+        }
+
+        // archived_through{stream,partition} — a gauge, the highest archived
+        // offset. A distinct series from high_watermark, not a relabelling
+        // of it: an archiver that fell behind the log's head must be able to
+        // disagree with the head, and one series could never say so.
+        assert_absent(&snapshot, names::EVENT_FABRIC_ARCHIVED_THROUGH);
+        recorder.archived_through("orders", 3);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_ARCHIVED_THROUGH);
+        assert_label_keys(found, &["stream", "partition"]);
+        assert_eq!(
+            found.labels.get("stream").map(String::as_str),
+            Some("orders")
+        );
+        assert_eq!(found.labels.get("partition").map(String::as_str), Some("3"));
+        match &found.value {
+            MetricValue::Gauge(v) => {
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(*v, 0.0, "archived_through gauge holds the recorded value");
+                }
+            }
+            other => panic!("expected Gauge for archived_through, got {other:?}"),
+        }
+        assert_ne!(
+            names::EVENT_FABRIC_HIGH_WATERMARK,
+            names::EVENT_FABRIC_ARCHIVED_THROUGH,
+            "high_watermark and archived_through are distinct series"
+        );
+
+        // duplicates_total{stream} — a counter.
+        assert_absent(&snapshot, names::EVENT_FABRIC_DUPLICATES);
+        recorder.duplicate("orders");
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_DUPLICATES);
+        assert_label_keys(found, &["stream"]);
+        assert_eq!(
+            found.labels.get("stream").map(String::as_str),
+            Some("orders")
+        );
+        match &found.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "counter incremented by one"),
+            other => panic!("expected Counter for duplicates_total, got {other:?}"),
+        }
+
+        // refusals_total{class,reason} — a counter.
+        assert_absent(&snapshot, names::EVENT_FABRIC_REFUSALS);
+        recorder.refusal("submitted", "fenced");
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_REFUSALS);
+        assert_label_keys(found, &["class", "reason"]);
+        assert_eq!(
+            found.labels.get("class").map(String::as_str),
+            Some("submitted")
+        );
+        assert_eq!(
+            found.labels.get("reason").map(String::as_str),
+            Some("fenced")
+        );
+        match &found.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "counter incremented by one"),
+            other => panic!("expected Counter for refusals_total, got {other:?}"),
+        }
+
+        // shed_total{class} — a counter incremented by the shed count, not
+        // always by one: a ring can shed a whole batch in one report.
+        assert_absent(&snapshot, names::EVENT_FABRIC_SHED);
+        recorder.shed("submitted", 3);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_SHED);
+        assert_label_keys(found, &["class"]);
+        assert_eq!(
+            found.labels.get("class").map(String::as_str),
+            Some("submitted")
+        );
+        match &found.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 3, "counter incremented by the shed count"),
+            other => panic!("expected Counter for shed_total, got {other:?}"),
+        }
+
+        // fenced_total — a counter, unlabelled, incremented once per fencing
+        // event (the broker lost its epoch and stopped accepting appends).
+        // The first attempt at this packet recorded this as a 0/1 gauge
+        // named without `_total`: a gauge a recovered broker never resets
+        // reads as permanently fenced, and one that does get reset erases
+        // the very outage the series exists to keep visible. A counter
+        // cannot un-ring that bell, which is the point.
+        assert_absent(&snapshot, names::EVENT_FABRIC_FENCED);
+        recorder.fenced();
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_FENCED);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "one fencing event recorded"),
+            other => panic!(
+                "expected Counter for fenced_total, got {other:?} — fenced() must not be a gauge"
+            ),
+        }
+
+        // leader_epoch — a gauge, unlabelled: the current epoch this broker
+        // holds.
+        assert_absent(&snapshot, names::EVENT_FABRIC_LEADER_EPOCH);
+        recorder.leader_epoch(7);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_LEADER_EPOCH);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Gauge(v) => {
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(*v, 7.0, "leader_epoch gauge holds the recorded epoch");
+                }
+            }
+            other => panic!("expected Gauge for leader_epoch, got {other:?}"),
+        }
+
+        // segments_sealed_total — a counter, unlabelled.
+        assert_absent(&snapshot, names::EVENT_FABRIC_SEGMENTS_SEALED);
+        recorder.segments_sealed();
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_SEGMENTS_SEALED);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "counter incremented by one"),
+            other => panic!("expected Counter for segments_sealed_total, got {other:?}"),
+        }
+
+        // archive_lag_segments — a gauge, unlabelled.
+        assert_absent(&snapshot, names::EVENT_FABRIC_ARCHIVE_LAG);
+        recorder.archive_lag(4);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_ARCHIVE_LAG);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Gauge(v) => {
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(*v, 4.0, "archive_lag gauge holds the recorded value");
+                }
+            }
+            other => panic!("expected Gauge for archive_lag_segments, got {other:?}"),
+        }
+
+        // group_lag{group,stream,partition} — a gauge, distinct from
+        // archive_lag_segments: a consumer group's offset lag and the
+        // broker's own unarchived-segment count are two different facts, and
+        // a recorder that wrote one under the other's name would silently
+        // erase whichever fact lost the race to be read.
+        assert_absent(&snapshot, names::EVENT_FABRIC_GROUP_LAG);
+        recorder.group_lag("consumers", "orders", 3);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_GROUP_LAG);
+        assert_label_keys(found, &["group", "stream", "partition"]);
+        assert_eq!(
+            found.labels.get("group").map(String::as_str),
+            Some("consumers")
+        );
+        assert_eq!(
+            found.labels.get("stream").map(String::as_str),
+            Some("orders")
+        );
+        assert_eq!(found.labels.get("partition").map(String::as_str), Some("3"));
+        match &found.value {
+            MetricValue::Gauge(v) => {
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(*v, 0.0, "group_lag gauge holds the recorded value");
+                }
+            }
+            other => panic!("expected Gauge for group_lag, got {other:?}"),
         }
     }
 }

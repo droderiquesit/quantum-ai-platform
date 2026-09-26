@@ -130,6 +130,41 @@ impl LedgerTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qip_observability::metrics::{MetricValue, SeriesSnapshot, Snapshot};
+    use std::collections::BTreeSet;
+
+    /// A series must not exist before its recorder has been called. Checking
+    /// only presence after recording would pass identically if the series
+    /// had somehow been there from construction — `Metrics::describe`
+    /// registers help text, never a series.
+    fn assert_absent(snapshot: &Snapshot, name: &str) {
+        assert!(
+            !snapshot.series.iter().any(|s| s.name == name),
+            "premise: {name} must be absent before its recorder is called"
+        );
+    }
+
+    fn find<'a>(snapshot: &'a Snapshot, name: &str) -> &'a SeriesSnapshot {
+        snapshot
+            .series
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("{name} series was not recorded"))
+    }
+
+    /// Set equality on label keys, not subset or superset: an extra label is
+    /// unbounded cardinality from a partition key, strategy id or order id
+    /// nobody reviewed, and a missing one is a fact the series claims to
+    /// carry and does not.
+    fn assert_label_keys(found: &SeriesSnapshot, expected: &[&str]) {
+        let actual: BTreeSet<&str> = found.labels.keys().map(String::as_str).collect();
+        let expected: BTreeSet<&str> = expected.iter().copied().collect();
+        assert_eq!(
+            actual, expected,
+            "{}'s label key set must match exactly",
+            found.name
+        );
+    }
 
     #[test]
     fn each_ledgerd_recorder_writes_its_named_series_with_bounded_labels() {
@@ -143,39 +178,137 @@ mod tests {
             "premise: registry starts empty before any recording"
         );
 
-        // Record a commit and verify the series appeared with the expected name
-        // and bounded label: outcome (enum). Never a partition key, strategy id
-        // or order id.
+        // commits_total{outcome} — a counter. The outcome label is bounded by
+        // the enum of possible outcomes, never a partition key, strategy id
+        // or order id from the commit content.
+        assert_absent(&snapshot, names::LEDGER_COMMITS);
         recorder.commit("success");
         let snapshot = metrics.snapshot();
-        assert!(!snapshot.series.is_empty(), "series moved after recording");
-
-        let found = snapshot
-            .series
-            .iter()
-            .find(|s| s.name == names::LEDGER_COMMITS)
-            .expect("commits_total series was recorded");
-
-        // The outcome label is bounded by the enum of possible outcomes,
-        // not by a partition key or order id from the commit content. Only
-        // one label, never unbounded cardinality from keys.
+        let found = find(&snapshot, names::LEDGER_COMMITS);
+        assert_label_keys(found, &["outcome"]);
         assert_eq!(
-            found.labels.len(),
-            1,
-            "only one label (outcome), never partition keys or ids"
-        );
-        assert_eq!(
-            found.labels.get("outcome").map(|s| s.as_str()),
+            found.labels.get("outcome").map(String::as_str),
             Some("success"),
             "outcome label is bounded by enum"
         );
-
-        // The value is a counter (monotonic).
         match &found.value {
-            qip_observability::metrics::MetricValue::Counter(v) => {
-                assert_eq!(*v, 1, "counter incremented by one");
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "counter incremented by one"),
+            other => panic!("expected Counter for commits_total, got {other:?}"),
+        }
+
+        // commit_latency_ms — a histogram, unlabelled, one observation.
+        assert_absent(&snapshot, names::LEDGER_COMMIT_LATENCY_MS);
+        recorder.commit_latency_ms(8.25);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::LEDGER_COMMIT_LATENCY_MS);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Histogram(h) => {
+                assert_eq!(h.count, 1, "one latency observation recorded");
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(h.sum, 8.25, "the observation carries the recorded latency");
+                }
             }
-            other => panic!("expected Counter, got {:?}", other),
+            other => panic!("expected Histogram for commit_latency_ms, got {other:?}"),
+        }
+
+        // duplicates_total{kind} — a counter.
+        assert_absent(&snapshot, names::LEDGER_DUPLICATES);
+        recorder.duplicate("replay");
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::LEDGER_DUPLICATES);
+        assert_label_keys(found, &["kind"]);
+        assert_eq!(
+            found.labels.get("kind").map(String::as_str),
+            Some("replay"),
+            "kind label is bounded by enum"
+        );
+        match &found.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "counter incremented by one"),
+            other => panic!("expected Counter for duplicates_total, got {other:?}"),
+        }
+
+        // parked_keys — a gauge, unlabelled: the current count, not a rate.
+        assert_absent(&snapshot, names::LEDGER_PARKED_KEYS);
+        recorder.parked_keys(5);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::LEDGER_PARKED_KEYS);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Gauge(v) => {
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(*v, 5.0, "parked_keys gauge holds the recorded count");
+                }
+            }
+            other => panic!("expected Gauge for parked_keys, got {other:?}"),
+        }
+
+        // live_fill_refused_total — a counter, unlabelled: the paper-trading
+        // boundary refusing a commit that would record a live fill.
+        assert_absent(&snapshot, names::LEDGER_LIVE_FILL_REFUSED);
+        recorder.live_fill_refused();
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::LEDGER_LIVE_FILL_REFUSED);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "counter incremented by one"),
+            other => panic!("expected Counter for live_fill_refused_total, got {other:?}"),
+        }
+
+        // unbalanced_refused_total — a counter, unlabelled, distinct from
+        // live_fill_refused_total: the two refuse for different reasons and
+        // an operator investigating one must not be reading the other's
+        // count.
+        assert_absent(&snapshot, names::LEDGER_UNBALANCED_REFUSED);
+        recorder.unbalanced_refused();
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::LEDGER_UNBALANCED_REFUSED);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "counter incremented by one"),
+            other => panic!("expected Counter for unbalanced_refused_total, got {other:?}"),
+        }
+        assert_ne!(
+            names::LEDGER_LIVE_FILL_REFUSED,
+            names::LEDGER_UNBALANCED_REFUSED,
+            "live_fill_refused_total and unbalanced_refused_total are distinct series"
+        );
+
+        // lag_records{partition} — a gauge. Mutation: swapping this
+        // recorder to write LEDGER_PARKED_KEYS's name (its neighbour above)
+        // must fail this find(), since parked_keys carries no partition
+        // label and this series does.
+        assert_absent(&snapshot, names::LEDGER_LAG);
+        recorder.lag("p3");
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::LEDGER_LAG);
+        assert_label_keys(found, &["partition"]);
+        assert_eq!(
+            found.labels.get("partition").map(String::as_str),
+            Some("p3"),
+            "partition is a bounded identifier"
+        );
+        match &found.value {
+            MetricValue::Gauge(v) => {
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(*v, 0.0, "lag_records gauge holds the recorded value");
+                }
+            }
+            other => panic!("expected Gauge for lag_records, got {other:?}"),
+        }
+
+        // store_retries_total — a counter, unlabelled.
+        assert_absent(&snapshot, names::LEDGER_STORE_RETRIES);
+        recorder.store_retry();
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::LEDGER_STORE_RETRIES);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Counter(v) => assert_eq!(*v, 1, "counter incremented by one"),
+            other => panic!("expected Counter for store_retries_total, got {other:?}"),
         }
     }
 }
