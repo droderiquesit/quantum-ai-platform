@@ -350,31 +350,34 @@ impl EvidenceSet {
         origins
     }
 
-    /// Weight per stance after collapsing correlated evidence.
+    /// Weight per stance, counting each origin once.
     ///
-    /// Within one origin the strongest item counts in full and the rest are
-    /// heavily discounted: three articles from one newsroom on one press
-    /// release are more than one article, but nothing like three.
+    /// EVID-006: copies count as one source, not as many. An origin's
+    /// contribution is its strongest item's weight and nothing more — three
+    /// articles from one newsroom on one press release weigh exactly what
+    /// the strongest of the three weighs, because the other two say nothing
+    /// it did not already say. A per-copy discount used to live here,
+    /// letting each further copy add a fraction of its own weight on top of
+    /// the strongest; ten copies of one release then outweighed two
+    /// genuinely independent origins, which is the opposite of what
+    /// "independent" is supposed to mean. That discount is deleted rather
+    /// than set to zero so nothing can tune copies back into weight.
+    ///
+    /// Detecting that two *different* origin labels are secretly the same
+    /// underlying source — a wire story re-bylined by a second outlet — is a
+    /// separate capability this does not attempt: dependence here is exact
+    /// origin equality, nothing looser.
     pub fn independent_weight(&self, stance: Stance) -> f64 {
-        const CORRELATED_DISCOUNT: f64 = 0.15;
-        let mut by_origin: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
+        let mut strongest_by_origin: BTreeMap<&str, f64> = BTreeMap::new();
         for item in self.items.iter().filter(|e| e.stance == stance) {
-            by_origin
+            let strongest = strongest_by_origin
                 .entry(item.origin.as_str())
-                .or_default()
-                .push(item.weight());
+                .or_insert(0.0);
+            if item.weight() > *strongest {
+                *strongest = item.weight();
+            }
         }
-        by_origin
-            .into_values()
-            .map(|mut weights| {
-                weights.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-                weights
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, w)| if i == 0 { w } else { w * CORRELATED_DISCOUNT })
-                    .sum::<f64>()
-            })
-            .sum()
+        strongest_by_origin.into_values().sum()
     }
 
     /// Whether any primary source stands behind the claim.
