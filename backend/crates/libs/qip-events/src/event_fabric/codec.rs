@@ -2,4 +2,4 @@
 //!
 //! Encodes and decodes event records with CRC32C checksums and chain continuity.
 //! See ADR 0100 §1 for the event fabric's architecture.
-//! Implemented by SLICE-14.
+//! Implemented by SLICE-06.
