@@ -367,7 +367,13 @@ fn the_http_transport_and_an_in_memory_transport_answer_one_request_with_identic
         .call(request.clone(), Timeouts::default())
         .expect("the in-memory transport answers the scripted handler");
 
-    let mut http = HttpTransport::new(format!("http://{address}"));
+    let mut http = HttpTransport::new(
+        format!("http://{address}"),
+        qip_transport::event_fabric::auth::BearerToken::new(
+            "sliceTestHarnessTokenForTheHttpTransport0123".to_string(),
+        )
+        .expect("a well-formed test token"),
+    );
     let http_response = http
         .call(request, Timeouts::default())
         .expect("the http transport answers the scripted handler over a real socket");
