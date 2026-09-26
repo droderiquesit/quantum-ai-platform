@@ -52,9 +52,10 @@ use qip_core::hash::sha256_hex;
 use qip_core::{Duration, Timestamp};
 use qip_edge::cell::{Cell, PricingPolicy};
 use qip_edge::envelope::VerifiedEnvelope;
-use qip_strategy::catalogue::FeatureCatalogue;
-use qip_strategy::compile::StrategyCompiler;
+use qip_feature_dag::state::DEFAULT_MAX_STALENESS;
+use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::StrategySpec;
+use qip_strategy::program::Program;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -293,6 +294,34 @@ impl StrategyInstaller {
         Ok(())
     }
 
+    /// Check and lower one specification against the standard feature suite
+    /// for its own subject, without touching a cell.
+    ///
+    /// Before this compiled inline against `FeatureCatalogue::new()` — an
+    /// empty vocabulary no plan naming a computed feature could ever compile
+    /// against, though nothing noticed until a plan named one, because every
+    /// fixture strategy so far used a literal condition instead. The
+    /// catalogue here comes from [`crate::standard_engine_and_catalogue`],
+    /// the one function that also builds the engine a cell evaluates
+    /// against, so the vocabulary this compiles a strategy against cannot
+    /// silently diverge from the vocabulary the strategy will actually run
+    /// on. The engine half of that pair is discarded: a compile does not run
+    /// anything, and rebuilding the vocabulary once per strategy costs
+    /// nothing a plan change does not already pay for.
+    ///
+    /// Taking only the specification — no `&mut Cell` — is what lets a
+    /// caller compile a fresh plan's strategies ahead of the decision that
+    /// deploys them, off the thread that runs `Cell::work`, and hand
+    /// [`Self::install`] (or a future deploy-only entry point) only the cheap
+    /// step of installing an already-compiled program under a grant.
+    pub fn compile(spec: &StrategySpec) -> Result<(CompiledStrategy, Program)> {
+        let (_, catalogue) =
+            crate::standard_engine_and_catalogue(&spec.subject, DEFAULT_MAX_STALENESS)?;
+        let mut compiler = StrategyCompiler::new(catalogue);
+        let compiled = compiler.compile(spec)?;
+        Ok((compiled, compiler.into_program()))
+    }
+
     /// Deploy what the fresh plan names and withdraw what it dropped, and
     /// say what happened either way.
     pub fn install(&mut self, cell: &mut Cell, now: Timestamp) -> PlanInstallation {
@@ -352,9 +381,8 @@ impl StrategyInstaller {
             // One compiler per strategy, so each deployment gets the arena
             // its plan was compiled against and nothing else's — the
             // aliasing `Cell::deploy` refuses is never built here.
-            let mut compiler = StrategyCompiler::new(FeatureCatalogue::new());
-            let compiled = match compiler.compile(spec) {
-                Ok(compiled) => compiled,
+            let (compiled, program) = match Self::compile(spec) {
+                Ok(pair) => pair,
                 Err(error) => {
                     outcome
                         .refused
@@ -362,7 +390,6 @@ impl StrategyInstaller {
                     continue;
                 }
             };
-            let program = compiler.into_program();
             match cell.deploy_with_pricing(compiled, program, envelope, pricing) {
                 Ok(()) => {
                     // Spent: the cell holds it now, and `renew_capital`
