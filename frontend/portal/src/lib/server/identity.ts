@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomInt } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import type { AccountAgreements, AccountType, AuthFailure } from "@algorik/auth";
 import { identityStore, type StoredUser } from "./identity-store";
 import {
@@ -15,9 +15,9 @@ import {
 } from "./identity-platform";
 import type { IapIdentity } from "./iap";
 import {
-  configuredSessionSecret,
   hashPassword,
   newSessionId,
+  oneTimeCodeHash,
   SESSION_TTL_MS,
   verifyPassword,
 } from "./session";
@@ -41,7 +41,11 @@ import {
  * **One-time codes are stored as HMACs with spend-down attempts.** Five
  * guesses at a six-digit code is a 1-in-200,000 chance; unlimited guesses is
  * a certainty. The code itself exists in plaintext only in the response that
- * delivers it (development) or in the email (production).
+ * delivers it (development) or in the email (production). The HMAC is
+ * `session.ts`'s `oneTimeCodeHash`, keyed by the cookie signer's own
+ * resolution, and this file resolves no key of its own: it once did, falling
+ * back to a string literal where the signer refuses, and a hash under a key
+ * printed in the source protects nothing.
  *
  * **Two providers, one journey.** With no ALGORIK_IDENTITY_PROJECT_ID this
  * is the development provider, self-contained and testable offline. With a
@@ -100,24 +104,22 @@ function failure(code: AuthFailure["code"], message: string, next?: AuthFailure[
   return next ? { code, message, next } : { code, message };
 }
 
-/** HMAC of a one-time code, so the store never holds the code itself. */
-function codeHash(code: string): string {
-  // The same resolver as the cookie signer, so a secret mounted as a file
-  // keys the code store too; read directly, this fell back to the development
-  // key in a production deployment whose secret was a file.
-  const key = configuredSessionSecret() ?? "algorik-development";
-  return createHmac("sha256", key).update(code).digest("base64url");
-}
-
 function newCode(): string {
   // randomInt is unbiased; Math.random would skew the first digit.
   return String(randomInt(0, 1_000_000)).padStart(6, "0");
 }
 
+/**
+ * Mint a code and store only its HMAC.
+ *
+ * The hash is computed as `putCode`'s argument, before the store is touched,
+ * so a key refusal in `oneTimeCodeHash` throws with the store as it was
+ * rather than after a record keyed by nothing anyone chose has been written.
+ */
 function issueCode(purpose: "verify-email" | "reset-password", userId: string): string {
   const code = newCode();
   identityStore.putCode(`${purpose}:${userId}`, {
-    codeHash: codeHash(code),
+    codeHash: oneTimeCodeHash(code),
     purpose,
     userId,
     expiresAt: Date.now() + CODE_TTL_MS,
@@ -130,7 +132,7 @@ function redeemCode(purpose: "verify-email" | "reset-password", userId: string, 
   const key = `${purpose}:${userId}`;
   const stored = identityStore.code(key);
   if (!stored) return false;
-  if (stored.codeHash !== codeHash(code.trim())) {
+  if (stored.codeHash !== oneTimeCodeHash(code.trim())) {
     identityStore.spendCodeAttempt(key);
     return false;
   }
