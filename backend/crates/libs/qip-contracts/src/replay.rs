@@ -1,1 +1,1 @@
-//! Replay contract. See ADR 0100 §1. Filled by SLICE-07.
+//! Replay contract. See ADR 0100 §8. Filled by SLICE-12.

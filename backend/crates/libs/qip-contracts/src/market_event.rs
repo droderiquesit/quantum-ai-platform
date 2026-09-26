@@ -1,1 +1,1 @@
-//! Market event contract. See ADR 0100 §1. Filled by SLICE-12.
+//! Market event contract. See ADR 0100 §8. Filled by SLICE-12.

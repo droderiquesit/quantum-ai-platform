@@ -1,1 +1,1 @@
-//! Ledger posting contract. See ADR 0100 §1. Filled by SLICE-07.
+//! Ledger posting contract. See ADR 0100 §8 and §9. Filled by SLICE-23.
