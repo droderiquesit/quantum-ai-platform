@@ -11,6 +11,7 @@
 //! 3. **Everything is traceable.** [`Lineage`] threads a correlation id through
 //!    every event so any investment decision can be reconstructed end to end.
 
+pub mod canonical;
 pub mod config;
 pub mod decimal;
 pub mod error;
