@@ -1,1 +1,3 @@
-//! ADR 0100 §2: the API's ledger writer view and reader surface. SLICE-52.
+//! ADR 0100 §2: relays `qip-ledgerd`'s paper-ledger view as decimal text.
+//! `qip-ledgerd` is the sole writer of the ledger chain; this crate holds no
+//! ledger state (`api_boundary.rs`). SLICE-40.

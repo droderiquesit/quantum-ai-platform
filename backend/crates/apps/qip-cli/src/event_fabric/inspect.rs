@@ -1,1 +1,2 @@
-//! ADR 0100 §2: inspect command of the event fabric CLI. SLICE-52.
+//! ADR 0100 §1: `fabric-inspect`'s verifier, following `qip replay`'s
+//! AGREES=0 / DIFFERS=3 discipline. SLICE-37.

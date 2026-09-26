@@ -47,8 +47,6 @@ pub mod mirror;
 /// §32.1's passive-first mechanism: which leg of a cycle rests, and why.
 pub mod passive;
 pub mod policy;
-/// ADR 0100 §1: pressure applies the cell's available capital to each pass's
-/// sizing of reserves and consumption. SLICE-52.
 pub mod pressure;
 /// §29.2 priority allocation: which quote update gets the message.
 pub mod priority;

@@ -22,14 +22,11 @@
 pub mod allocation;
 /// The arbitrage desk, built from the payload's whitelist once capital arrives.
 pub mod arbitrage;
-/// ADR 0100 §2: the node's gate to the event fabric's control plane. SLICE-52.
 pub mod control;
 /// The §31.1 mirror: which venues are abroad, and this region's discipline.
 pub mod cross_region;
 /// The polled region-availability wire: which peers have gone dark (§36.3).
 pub mod dark;
-/// ADR 0100 §2: the event fabric surface: control, drain, inputs, mirror,
-/// pressure, telemetry and writer. SLICE-52.
 pub mod event_fabric;
 /// The simulated venue's quote feed, and the one value it may be configured as.
 pub mod feed;
@@ -40,18 +37,15 @@ pub mod mesh;
 pub mod mirror;
 /// One pass of the node: feed, decide, act, reconcile.
 pub mod pass;
-/// ADR 0100 §2: the node's gate to the event fabric's replay seam. SLICE-52.
 pub mod replay;
 /// Cancel-and-replace of a stale resting order, beneath the cell's placer
 /// seam — the caller `qip_routing::reprice` was written for.
 pub mod reprice;
-/// ADR 0100 §2: the node's scheduling gate to the event fabric. SLICE-52.
 pub mod scheduler;
 /// The cell's share of its region's grant, as the health body reports it.
 pub mod share;
 /// The strategies the payload's plan names, deployed under their grants.
 pub mod strategies;
-/// ADR 0100 §2: the node's wire recording to the event fabric's tape. SLICE-52.
 pub mod tape;
 /// The node's own metric seam: the mesh link, rendered as a series.
 pub mod telemetry;

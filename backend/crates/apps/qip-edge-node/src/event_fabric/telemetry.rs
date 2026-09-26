@@ -1,1 +1,2 @@
-//! ADR 0100 §2: telemetry seam of the event fabric. SLICE-52.
+//! ADR 0100 §8: the event fabric's own `/metrics` surface, named beside every
+//! other process's in the vertical-slice diagram. SLICE-08.

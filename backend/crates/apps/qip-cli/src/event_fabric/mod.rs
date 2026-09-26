@@ -1,5 +1,6 @@
-//! ADR 0100 §2: the CLI's event fabric operator commands: grant and inspect.
-//! SLICE-52.
+//! ADR 0100 §1: the `qip event-fabric …` subcommand family. Filled by
+//! SLICE-34 (`grant`) and SLICE-37 (`inspect`), both of which own this file
+//! to add their subcommand's match arm.
 
 pub mod grant;
 pub mod inspect;

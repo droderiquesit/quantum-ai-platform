@@ -1,1 +1,3 @@
-//! ADR 0100 §2: mirror seam of the event fabric. SLICE-52.
+//! ADR 0100 §1: the node's composition behind the existing
+//! `qip_edge::journal::Mirror` seam — the fabric gains no new mirror type.
+//! SLICE-24.

@@ -48,7 +48,6 @@ pub mod mesh;
 pub mod missing;
 pub mod openapi;
 pub mod openobserve;
-/// ADR 0100 §2: the API's ledger writer view and reader surface. SLICE-52.
 pub mod paper_ledger;
 pub mod registration_views;
 pub mod routes;

@@ -1,5 +1,7 @@
-//! ADR 0100 §2: the event fabric surface: control, drain, inputs, mirror,
-//! pressure, telemetry and writer. SLICE-52.
+//! ADR 0100 §1: "Reflex ring → spool → drain" — the node's composition of
+//! that chain behind the existing `qip_edge::journal::Mirror` seam. This
+//! module only declares the seams below; each names the packet that fills
+//! it in its own doc comment. SLICE-52.
 
 pub mod control;
 pub mod drain;

@@ -1,1 +1,2 @@
-//! ADR 0100 §2: the node's gate to the event fabric's control plane. SLICE-52.
+//! ADR 0100 §6: off-thread compilation of control frames — halt-wire polling
+//! and file reads — so the decision thread never waits on them. SLICE-33.
