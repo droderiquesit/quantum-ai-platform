@@ -81,11 +81,21 @@ caller bug that survives."
   currently locks the clamp in.
 - `Fact::new` defaults confidence to 1.0 and `CausalEdge::new` to 0.7. Out-of-range or NaN confidences are clamped or passed through (WORLD-008, WORLD-056).
 
-**3. Controls that cannot fire.** `risk-and-execution.md` calls this "a defect,
+**3. A control that cannot fire.** `risk-and-execution.md` calls this "a defect,
 not a spare part".
 - The grant's drawdown limit (CAPITAL-026).
-- `DegradationState::halts()` is hard-coded to `false`, so an expired capital
-  envelope narrows but never halts (debt register, libs-foundation).
+- *Corrected 2026-09-26.* This paragraph also listed `DegradationState::halts()`
+  returning `false` as a halt that cannot fire. The defect-packet planner showed
+  that is wrong on both counts:
+  - it is deliberate and documented: under §6.2, losing a cognitive capability
+    narrows the platform and only the kill switch halts it, and
+    `nothing_in_the_degradation_table_halts_the_platform` pins it on purpose;
+  - an expired capital envelope does not narrow, it **refuses** every new order
+    (`capital.rs:197`, `cell.rs:3493` and `:5908`, proven by
+    `an_expired_envelope_stops_the_cell_rather_than_letting_it_continue`).
+- The real residual is narrower: an expired envelope does not *withdraw* that
+  strategy's resting orders. Whether it should is an owner decision, not a
+  defect fix.
 
 **4. Knowledge without evidence.**
 - One extracted news item becomes asserted graph facts and a belief feature
@@ -179,8 +189,7 @@ the current posture.
    under ADR 0100. The slice closes the whole hot-path group of INCORRECT rows
    and is the first end-to-end demonstration.
 3. **Cheap INCORRECT fixes in parallel.** Refuse-not-clamp in the capital
-   envelope, the confidence defaults, and the drawdown limit and halt that
-   cannot fire. Security: the HMAC fallback, OpenObserve, the VIP range. CI:
+   envelope, the confidence defaults, and the drawdown limit that cannot fire. Security: the HMAC fallback, OpenObserve, the VIP range. CI:
    action pinning, the Makefile's `--no-fail-fast`. None of these touches the
    fabric's files, so they can run beside it.
 4. **Deployment** waits on the owner for billing, and for the C8 cost ceiling
