@@ -55,6 +55,7 @@
 
 pub mod durable;
 pub mod envelope;
+pub mod event_fabric;
 pub mod local;
 pub mod mesh;
 pub mod ports;
