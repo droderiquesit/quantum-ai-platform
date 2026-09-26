@@ -1,0 +1,21 @@
+[package]
+name = "qip-fabricd"
+description = "Event fabric composition root: the in-tree single-node broker, sole writer of every partition's batch chain (ADR 0100)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-events.workspace = true
+qip-storage.workspace = true
+qip-streaming.workspace = true
+qip-transport.workspace = true
+qip-observability.workspace = true
+
+[lints]
+workspace = true

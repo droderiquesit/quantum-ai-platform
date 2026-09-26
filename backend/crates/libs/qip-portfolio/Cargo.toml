@@ -12,6 +12,10 @@ serde.workspace = true
 qip-core.workspace = true
 qip-events.workspace = true
 qip-financial.workspace = true
+# The reflex journal's `Decision`/`Filled` contract (ADR 0100 § 1), so this
+# crate's double-entry posting logic can consume a fill without depending on
+# qip-edge (api_boundary.rs).
+qip-contracts.workspace = true
 
 [lints]
 workspace = true
