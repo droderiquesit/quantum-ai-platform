@@ -97,6 +97,12 @@ impl HaltFlag {
 
     /// Read the flag and apply it to the cell, returning what was read so
     /// the caller can report a change.
+    ///
+    /// Reads on the caller's thread, so a flag on a hung mount stops the
+    /// caller with it (red-team M5). Kept for the mesh path's loop until
+    /// SLICE-36 moves it over; a decision thread takes the reading from
+    /// [`crate::control::Poller`] instead, whose thread calls [`Self::read`]
+    /// and whose silence reads as engaged.
     pub fn poll(&self, cell: &mut Cell, now: Timestamp) -> PolledHalt {
         let reading = self.read();
         cell.apply_polled_halt(reading.clone(), now);

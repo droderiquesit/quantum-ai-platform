@@ -104,6 +104,10 @@ impl DarkRegionWire {
 
     /// Read the wire and apply it to the cell, returning what was read so the
     /// caller can report a change.
+    ///
+    /// Reads on the caller's thread, as [`crate::halt::HaltFlag::poll`]
+    /// does and for the same interim reason; a decision thread takes the
+    /// reading from [`crate::control::Poller`] instead.
     pub fn poll(&self, cell: &mut Cell, now: Timestamp) -> RegionOutlook {
         let reading = self.read();
         cell.apply_region_outlook(reading.clone(), now);
