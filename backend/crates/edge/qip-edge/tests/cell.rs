@@ -154,9 +154,10 @@ fn an_expired_envelope_stops_the_cell_rather_than_letting_it_continue() -> Resul
 }
 
 #[test]
-fn a_verified_envelope_admits_then_reduces_then_refuses_as_capital_is_used() -> Result<()> {
-    // The three answers in the order a cell meets them, so a `Reduced` cannot
-    // be mistaken for approval of what was asked for.
+fn a_verified_envelope_admits_then_refuses_whole_as_capital_is_used() -> Result<()> {
+    // The answers in the order a cell meets them. The middle one used to be a
+    // reduction to 200, and the cell sent 200 of an order sized at 400 — a
+    // trade nobody decided (CAPITAL-025). It is now refused whole.
     let verified =
         VerifiedEnvelope::verify(signed_envelope(CELL, "1000", "400", KEY)?, KEY, CELL, t(10))?;
     let venue = VenueId::new("XLON");
@@ -171,10 +172,24 @@ fn a_verified_envelope_admits_then_reduces_then_refuses_as_capital_is_used() -> 
         realised_loss: Decimal::ZERO,
         orders_sent: 2,
     };
-    match verified.admit(&venue, dec!("400"), &mostly_used, t(10)) {
-        CapitalGrant::Reduced(size) => assert_eq!(size, dec!("200")),
-        other => panic!("expected a reduction, got {other:?}"),
-    }
+    // Premise: 400 is within the order limit, so only the 200 of headroom can
+    // be what stops it.
+    let over_headroom = verified.admit(&venue, dec!("400"), &mostly_used, t(10));
+    assert!(
+        matches!(over_headroom, CapitalGrant::Refused(_)),
+        "400 against 200 of headroom must be refused whole, got {over_headroom:?}"
+    );
+    assert_eq!(
+        over_headroom,
+        CapitalGrant::Refused(
+            "order notional 400 exceeds the 200 of the 1000 gross limit left".into()
+        )
+    );
+    // What still fits is still taken whole.
+    assert!(matches!(
+        verified.admit(&venue, dec!("200"), &mostly_used, t(10)),
+        CapitalGrant::Full
+    ));
 
     let exhausted = Utilisation {
         gross_committed: dec!("1000"),
@@ -192,6 +207,131 @@ fn a_verified_envelope_admits_then_reduces_then_refuses_as_capital_is_used() -> 
         verified
             .admit(&VenueId::new("XNYS"), dec!("10"), &fresh, t(10))
             .is_refused()
+    );
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct RecordingPlacer {
+    placed: Vec<(BookSide, Decimal)>,
+}
+
+impl qip_edge::cell::Placer for RecordingPlacer {
+    fn is_simulated(&self) -> bool {
+        true
+    }
+
+    fn place(
+        &mut self,
+        _order_id: &str,
+        _object_id: &ObjectId,
+        _venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        _price: Decimal,
+        _at: Timestamp,
+    ) -> Result<()> {
+        self.placed.push((side, quantity));
+        Ok(())
+    }
+}
+
+#[test]
+fn a_strategy_order_larger_than_its_envelope_allows_sends_nothing_and_is_refused_under_the_capital_gate()
+-> Result<()> {
+    // The cell half of CAPITAL-025. Before, the envelope answered an oversized
+    // order with a smaller size and the cell sent that size under a
+    // `capital_reduced` record: an order was placed that no strategy sized.
+    use qip_contracts::signal::SignalKind;
+    use qip_edge::cell::{Cell, CellConfig, PricingPolicy};
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::state::MarketState;
+    use qip_strategy::catalogue::FeatureCatalogue;
+    use qip_strategy::compile::StrategyCompiler;
+    use qip_strategy::ir::{Expr, Rule, StrategySpec};
+
+    let config = CellConfig::new(CELL, "europe-west2").with_venue(VenueId::new("XLON"));
+    let engine = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, engine)?;
+    cell.track(book_with_depth("XLON", "ACME"));
+
+    // One hundred at a price near 100 is roughly ten thousand of notional
+    // against a 1000 order limit; the gross limit alone would take it, and
+    // the book holds four hundred at the touch, so nothing but the order
+    // limit stands in its way.
+    let mut compiler = StrategyCompiler::new(FeatureCatalogue::new());
+    let spec = StrategySpec::new(
+        StrategyId::new("mean-reversion-1"),
+        object("ACME"),
+        Duration::from_secs(30),
+    )
+    .with_rule(Rule::new(
+        "always",
+        SignalKind::Enter,
+        Expr::Flag(true),
+        Expr::Exact(dec!("100")),
+        Expr::Statistic(0.5),
+        10,
+    ));
+    let compiled = compiler.compile(&spec)?;
+    let grant = VerifiedEnvelope::verify(
+        signed_envelope(CELL, "1000000", "1000", KEY)?,
+        KEY,
+        CELL,
+        t(10),
+    )?;
+    cell.deploy_with_pricing(
+        compiled,
+        compiler.into_program(),
+        grant,
+        PricingPolicy::Marketable,
+    )?;
+
+    let mut placer = RecordingPlacer::default();
+    let report = cell.work(t(50), &mut placer)?;
+
+    // Premise: the strategy fired, so an empty placer means a gate refused
+    // rather than that nothing was asked for.
+    assert_eq!(
+        report.signals.len(),
+        1,
+        "the premise failed: the strategy did not fire: {:?}",
+        report.refusals
+    );
+    assert!(
+        placer.placed.is_empty(),
+        "an order the envelope could not take whole reached the venue: {:?}",
+        placer.placed
+    );
+    assert!(report.orders.is_empty(), "{:?}", report.orders);
+
+    // Delimited equality, not `contains`: `capital_reduced` has `capital` as
+    // a prefix, and a substring match would read the reduction as the refusal.
+    let capital: Vec<&str> = report
+        .refusals
+        .iter()
+        .filter(|(gate, _)| gate == "capital")
+        .map(|(_, reason)| reason.as_str())
+        .collect();
+    assert_eq!(
+        capital.len(),
+        1,
+        "the capital gate did not refuse exactly once: {:?}",
+        report.refusals
+    );
+    assert!(
+        capital[0].starts_with("order notional ")
+            && capital[0].ends_with(" exceeds the 1000 order limit"),
+        "the refusal did not name the order limit that stopped it: {}",
+        capital[0]
+    );
+    assert!(
+        !report
+            .refusals
+            .iter()
+            .any(|(gate, _)| gate == "capital_reduced"),
+        "the cell still recorded a reduction: {:?}",
+        report.refusals
     );
     Ok(())
 }

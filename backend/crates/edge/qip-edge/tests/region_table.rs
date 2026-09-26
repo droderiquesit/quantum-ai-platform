@@ -1123,12 +1123,16 @@ fn a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_e
     // clock. A second expiry on the share would double the partition
     // failure mode without bounding anything the envelope does not.
     let one = one_pass_holds(PricingPolicy::Marketable)?;
-    // The envelope admits three orders; the operator's ceiling bounds the
-    // share at two, so the region gate — not the envelope — is what refuses
-    // the third. The share the centre named is the envelope's gross; the
-    // bound is `min(share, ceiling)`.
+    // The envelope admits four orders whole; the operator's ceiling bounds
+    // the share at two, so the region gate — not the envelope — is what
+    // refuses the third. Four and not three: the envelope books each order at
+    // the price it went at, which sits above the price the region holds
+    // against, so three holds' worth of gross leaves less than a third order
+    // after two, and an envelope that refuses whole (CAPITAL-025) would then
+    // be what stopped it. The share the centre named is the envelope's
+    // gross; the bound is `min(share, ceiling)`.
     let share = one + one;
-    let envelope = envelope_of(FIRST_CELL, "alpha", one + one + one, t(7200))?;
+    let envelope = envelope_of(FIRST_CELL, "alpha", share + share, t(7200))?;
     let signature = envelope.signature().to_string();
     let (mut cell, table) = unfunded_cell_under(FIRST_CELL, envelope, share)?;
     cell.apply_policy(
@@ -1154,11 +1158,11 @@ fn a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_e
         "the cell stopped spending within its share when the slot went stale: {:?}",
         stale.refusals
     );
-    // Within the share, not necessarily to the unit: the envelope's own
-    // utilisation may trim the second order, which is the envelope bounding
-    // and not the share.
-    assert!(
-        table.committed_total() > one && table.committed_total() <= share,
+    // Exactly the share: the envelope takes an order whole or not at all,
+    // so two sends commit two holds and nothing trimmed sits in between.
+    assert_eq!(
+        table.committed_total(),
+        share,
         "two passes committed {} against a share of {share}",
         table.committed_total()
     );
