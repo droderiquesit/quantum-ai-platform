@@ -237,37 +237,59 @@ pub enum Topic {
     SystemAlert,
 
     // --- REFLEX FABRIC ---
-    /// A reflex pass was marked in the journal — the instant a pass began
-    /// (ADR 0100 §26.1). Retained as event-anchored state per pass, with the
-    /// journal controlling its lifetime. Only the event fabric writes this;
-    /// the reflex body is not the API's business.
+    /// A reflex pass was marked in the journal — the instant a pass began,
+    /// with the readings the pass applied (v11.6 §26.1's fabric; SLICE-24's
+    /// `PassMarker`, on ADR 0100 §5's P2 row: "every reflex journal entry").
+    /// Event-anchored. Only the event fabric writes this; the reflex body is
+    /// not the API's business.
     ReflexPassMarked,
-    /// The journal recorded a reflex outcome — decision, fills, fills' side
-    /// and quote unit and fee (ADR 0100's reflex contract and §26.1).
-    /// Event-anchored, retained for 90 days. Part of the fabric's own
-    /// journaling, not the platform's control loop.
+    /// A reflex journal entry, on P2 — decision, fills, fills' side and quote
+    /// unit and fee (ADR 0100's reflex contract; v11.6 §26.1). ADR 0100 §5's
+    /// P2 row carries *every* journal entry, not only the ones that resolve
+    /// to an outcome; an entry that does carry an outcome (an order sent,
+    /// filled or expired, a mass cancel, an internal cross, a reconciliation
+    /// break) is additionally written to P1 as `ReflexOutcomeRecorded` —
+    /// this topic alone is not where an outcome is guaranteed to survive,
+    /// since P2 is throttled and shed behind an explicit `EventFabricGap`
+    /// under overload (§5), where P1 is never dropped. Its class declares
+    /// `RetentionClass::EventAnchored`, whose `Rolling(90 days)` policy the
+    /// log does not yet act on for any topic (ADR 0089 §3). Part of the
+    /// fabric's own journaling, not the platform's control loop.
     ReflexJournalRecorded,
-    /// A market event was applied to the journal — a tick, trade, quote or
-    /// book delta fetched by the fabric from the ingestion layer (ADR 0100
-    /// §26.1). Event-anchored. Transient on its own (the next tick arrives
-    /// in milliseconds), but under an event-anchored table's retention while
-    /// a pass is open.
+    /// A market event the tape driver applied to the simulated venue and the
+    /// cell's book at a pass instant (SLICE-19), on P2 alongside the journal
+    /// entries it produced (ADR 0100 §5). Event-anchored. Raw venue feed
+    /// bytes are never recorded (ADR 0089's `Transient` class; M18) — this
+    /// topic carries only the tape events actually applied, which is also
+    /// what replay reads back, never the committed tape file itself
+    /// (SLICE-39).
     MarketEventApplied,
-    /// A reflex journal was closed with its outcomes recorded and the chain
-    /// hashed — the completed record of what the journal observed, what it
-    /// decided and what it ordered (ADR 0100). The fabric's own verdict,
-    /// irreplaceable. Only the event fabric writes this.
+    /// The P1 outcome record the producer writes beside a journal entry's P2
+    /// copy, for the entry kinds ADR 0100 §5's P1 row names: fills, cancels,
+    /// settlement records. Carries that entry's journal digest, so the
+    /// outcome and the journal entry it came from can be matched. This lane
+    /// is never dropped under overload (§5) — irreplaceable, because an
+    /// order fill lost here has no other copy. Only the event fabric writes
+    /// this.
     ReflexOutcomeRecorded,
-    /// An outcome's chain hash (ADR 0043 and ADR 0100's chain digest) was
-    /// validated against the previous outcome's chain, proving an unbroken
-    /// causality from genesis (ADR 0100 §26.3 "chain property"). The record
-    /// of the fabric's chain integrity proof, irreplaceable.
+    /// A P1 continuity record the producer writes to span a run of
+    /// non-outcome journal entries, so P1 stays chain-verifiable without
+    /// carrying every entry's own trace (ADR 0100 §5's P1 row:
+    /// "`ChainSpan` continuity records"). It is a producer-written record of
+    /// what ran, not a validator's finding: an unkeyed SHA-256 chain detects
+    /// an edited byte, not a rewrite that recomputed the hash, so this is
+    /// custody of the run, not a cryptographic proof of it (ADR 0043). This
+    /// lane is never dropped under overload — irreplaceable, because it is
+    /// the only record of that run reaching P1.
     ReflexChainSpan,
-    /// The event fabric detected a gap in the sequence — an outcome missing,
-    /// a chain hash broken, a report interval elapsed with no outcome
-    /// reported (ADR 0100 §26.3). Records the detection and the evidence, so
-    /// an operator can decide whether to halt. Only the event fabric writes
-    /// this; the decision to fail the cell is the cell's own.
+    /// An explicit gap the producer declares — a P2 window shed under
+    /// overload, or a recorded-inputs backlog overflow (ADR 0100 §4: "a shed
+    /// window is an explicit `Gap` record the broker accepts") — carrying
+    /// the next dense sequence, so a consumer or a replay sees the
+    /// discontinuity rather than reading silence as continuity (replay's
+    /// UNREPRODUCIBLE exit, SLICE-39). Irreplaceable: only the producer that
+    /// declared the gap knows where it fell. Only the event fabric writes
+    /// this.
     EventFabricGap,
 }
 
@@ -577,10 +599,10 @@ impl Topic {
     /// produced it, and a log that kept every resolution for ever would
     /// refuse the next fill to keep one); the Simulate group and a data
     /// quality failure are *compact derived* series; and every System
-    /// lifecycle fact is *irreplaceable*, because only this platform has
-    /// them — which makes the kill switch's release as permanent as its
-    /// engagement, where the group-derived tier kept one and dropped the
-    /// other.
+    /// lifecycle fact except the reflex fabric's own journal (below) is
+    /// *irreplaceable*, because only this platform has them — which makes
+    /// the kill switch's release as permanent as its engagement, where the
+    /// group-derived tier kept one and dropped the other.
     pub const fn retention_class(&self) -> RetentionClass {
         match self {
             // Raw ticks, book deltas, quote updates: a bounded ring, then
@@ -688,14 +710,19 @@ impl Topic {
             | Self::AutonomyLevelChanged
             | Self::BudgetExhausted
             | Self::SystemAlert => RetentionClass::Irreplaceable,
-            // A reflex pass and the journal records and market events within it:
-            // book state at each event in the fabric's own timeline, retained
-            // for 90 days under the reflex body's ledger.
+            // A pass marker, a journal entry and an applied market event:
+            // book state at each of the cell's own decisions (ADR 0100 §5's
+            // P2 row), not the raw feed (ADR 0089's Transient; M18). The
+            // class's Rolling(90 days) policy is declared but not yet read
+            // by the log for any topic (ADR 0089 §3) — the exception, among
+            // System-group facts, to "every System lifecycle fact is
+            // irreplaceable" above.
             Self::ReflexPassMarked | Self::ReflexJournalRecorded | Self::MarketEventApplied => {
                 RetentionClass::EventAnchored
             }
-            // A reflex outcome, its chain proof, and a gap in the fabric's own
-            // causality chain: facts only the fabric has, permanently.
+            // A reflex outcome, a P1 continuity span and a declared gap:
+            // facts only the fabric's own producer has, on the P1 lane ADR
+            // 0100 §5 says is never dropped. Permanently.
             Self::ReflexOutcomeRecorded | Self::ReflexChainSpan | Self::EventFabricGap => {
                 RetentionClass::Irreplaceable
             }
