@@ -289,7 +289,13 @@ fn a_stalled_broker_times_out_on_the_explicit_read_timeout_and_opens_the_breaker
         let _ = server.serve_once();
     });
 
-    let mut config = producer_config(Box::new(HttpTransport::new(format!("http://{address}"))));
+    let mut config = producer_config(Box::new(HttpTransport::new(
+        format!("http://{address}"),
+        qip_transport::event_fabric::auth::BearerToken::new(
+            "sliceTestHarnessTokenForTheHttpTransport0123".to_string(),
+        )
+        .expect("a well-formed test token"),
+    )));
     config.retry_policy.max_attempts = 1;
     config.breaker_policy.failure_threshold = 1;
     config.timeouts = Timeouts::new(

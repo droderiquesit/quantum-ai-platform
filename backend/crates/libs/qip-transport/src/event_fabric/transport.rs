@@ -15,16 +15,23 @@
 //! file, and the swap ADR 0100 names is a transport swap, not a widening of
 //! what a cell may do.
 //!
-//! # No identity attached here
+//! # Identity is a property of the transport
 //!
-//! ADR 0100 §7's bearer-token identity
-//! (`qip_transport::event_fabric::auth::BearerToken`) is not wired into
-//! [`HttpTransport`]. This packet's [`FabricTransport::call`] signature
-//! carries only a request and its timeouts, and a producer's identity is a
-//! property of *who is calling*, decided by whichever packet builds the typed
-//! producer and consumer on top of this seam. Attaching a token here, ahead
-//! of that packet, would be a header this seam never has anything to verify
-//! against and a shape the real caller might not want.
+//! ADR 0100 §7's bearer-token identity is attached here, once per call, from
+//! the [`BearerToken`] an [`HttpTransport`] is built with. It is not a
+//! parameter of [`FabricTransport::call`]. Who is calling is a fact about the
+//! connection a composition root opened, not about each request; a trait
+//! that took a token per call would let one producer send under two
+//! identities. There is no constructor without a token, because the
+//! broker's `verify` refuses a request that carries none. A transport that
+//! could be built unauthenticated would only fail later, at the far end,
+//! with every produce refused and nothing near the caller saying why.
+//!
+//! This section said the opposite until the lead's review of SLICE-28. It
+//! found that no packet in the slice owned attaching the token: SLICE-22
+//! deferred it to the SDK, and the SDK (SLICE-28) could not reach the
+//! request this seam builds. The producer and consumer therefore ran over
+//! an HTTP transport that no broker would ever authenticate.
 
 use std::time::Duration;
 
@@ -32,6 +39,7 @@ use qip_core::error::{Error, Result};
 
 use crate::http::{ClientLimits, HttpClient, HttpRequest, Method};
 
+use super::auth::{self, BearerToken};
 use super::protocol::{Direction, Request, Response, decode_response, encode_request};
 
 /// Explicit connect, read and write timeouts for one [`FabricTransport::call`].
@@ -86,20 +94,29 @@ pub trait FabricTransport {
 /// The production [`FabricTransport`]: one HTTP/1.1 request per call, over
 /// this crate's own [`HttpClient`], to a fabric endpoint's own scheme and
 /// authority.
-#[derive(Clone, Debug)]
+///
+/// Not `Clone`: [`BearerToken`] is deliberately not, so a token is not copied
+/// into places nobody chose. `Debug` is safe; the token's own `Debug` is
+/// redacted.
+#[derive(Debug)]
 pub struct HttpTransport {
     /// Scheme and authority only — `http://host:port`, no path. Each call
     /// appends the request's own `Route::path`.
     base_url: String,
+    /// Sent as `Authorization: Bearer <token>` on every call.
+    identity: BearerToken,
 }
 
 impl HttpTransport {
     /// `base_url` is the fabric endpoint's scheme and authority, with no
     /// trailing slash and no path — `http://fabricd.internal:7100`, not
     /// `.../v1/event-fabric`. Every call appends the request's own route.
-    pub fn new(base_url: impl Into<String>) -> Self {
+    /// `identity` is the token every call presents; the broker checks it
+    /// against its identities file and refuses anything else.
+    pub fn new(base_url: impl Into<String>, identity: BearerToken) -> Self {
         Self {
             base_url: base_url.into(),
+            identity,
         }
     }
 }
@@ -110,10 +127,12 @@ impl FabricTransport for HttpTransport {
         let url = format!("{}{}", self.base_url, route.path());
         let body = encode_request(&request)?;
 
-        let http_request = HttpRequest::json(Method::Post, &url, body).map_err(|error| {
-            let message = format!("cannot build the event-fabric {route:?} request: {error}");
-            Error::from(error).relabelled(message)
-        })?;
+        let http_request = HttpRequest::json(Method::Post, &url, body)
+            .map_err(|error| {
+                let message = format!("cannot build the event-fabric {route:?} request: {error}");
+                Error::from(error).relabelled(message)
+            })?
+            .with_header(auth::HEADER, &self.identity.header_value());
 
         let limits = ClientLimits {
             connect_timeout: timeouts.connect,
