@@ -56,6 +56,7 @@ dependencies = [
  "qip-observability",
  "qip-optimization-engine",
  "qip-orderbook",
+ "qip-portfolio",
  "qip-portfolio-engine",
  "qip-quantum",
  "qip-reasoning-engine",
@@ -66,6 +67,7 @@ dependencies = [
  "qip-simulation-engine",
  "qip-storage",
  "qip-strategy",
+ "qip-streaming",
  "qip-training",
  "qip-transport",
  "qip-twin",
@@ -359,6 +361,7 @@ dependencies = [
  "qip-routing",
  "qip-storage",
  "qip-strategy",
+ "qip-streaming",
  "qip-transport",
  "serde",
  "serde_json",
@@ -405,6 +408,20 @@ dependencies = [
  "qip-market",
  "qip-risk",
  "qip-risk-engine",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "qip-fabricd"
+version = "0.1.0"
+dependencies = [
+ "qip-core",
+ "qip-events",
+ "qip-observability",
+ "qip-storage",
+ "qip-streaming",
+ "qip-transport",
  "serde",
  "serde_json",
 ]
@@ -527,6 +544,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "qip-ledgerd"
+version = "0.1.0"
+dependencies = [
+ "qip-contracts",
+ "qip-core",
+ "qip-events",
+ "qip-observability",
+ "qip-portfolio",
+ "qip-storage",
+ "qip-streaming",
+ "qip-transport",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "qip-lifecycle"
 version = "0.1.0"
 dependencies = [
@@ -640,6 +673,7 @@ dependencies = [
 name = "qip-portfolio"
 version = "0.1.0"
 dependencies = [
+ "qip-contracts",
  "qip-core",
  "qip-events",
  "qip-financial",
@@ -800,6 +834,7 @@ dependencies = [
  "qip-financial",
  "qip-market",
  "qip-sequencing",
+ "qip-storage",
  "qip-transport",
  "serde",
  "serde_json",

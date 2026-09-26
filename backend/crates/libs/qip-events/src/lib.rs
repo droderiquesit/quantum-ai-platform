@@ -15,6 +15,7 @@
 
 pub mod bus;
 pub mod envelope;
+pub mod event_fabric;
 pub mod log;
 pub mod registry;
 pub mod retention;

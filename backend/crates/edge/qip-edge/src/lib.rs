@@ -47,6 +47,7 @@ pub mod mirror;
 /// §32.1's passive-first mechanism: which leg of a cycle rests, and why.
 pub mod passive;
 pub mod policy;
+pub mod pressure;
 /// §29.2 priority allocation: which quote update gets the message.
 pub mod priority;
 pub mod quoting;

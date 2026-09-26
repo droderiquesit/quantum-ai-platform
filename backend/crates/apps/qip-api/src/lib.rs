@@ -48,6 +48,7 @@ pub mod mesh;
 pub mod missing;
 pub mod openapi;
 pub mod openobserve;
+pub mod paper_ledger;
 pub mod registration_views;
 pub mod routes;
 pub mod rule_views;
