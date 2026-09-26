@@ -1,38 +1,18 @@
+//! `qip_events::envelope::canonical_json` must be the foundation function,
+//! not a copy of it. Two copies are two definitions of one identity: a fix to
+//! one would re-key half the platform's digests and leave the other half
+//! alone, and every event hashed through this crate would stop matching the
+//! reflex chain hashed through `qip-contracts`.
+
 use serde_json::json;
 
 #[test]
 fn qip_events_canonical_json_is_the_foundation_function() {
-    // Test premise: qip_events re-exports canonical_json from qip_core,
-    // so the same function is used everywhere. Call it through the re-export
-    // and verify it handles nested structures correctly.
-    let val = json!({
-        "outer_z": {
-            "inner_z": 1,
-            "inner_a": 2
-        },
-        "outer_a": [
-            {"b": 1, "a": 2},
-            {"z": 3, "x": 4}
-        ]
-    });
+    // A key that needs escaping is where a hand-copied serialiser most often
+    // diverges, so it is the input that tells a copy from the original.
+    let value = json!({"outer": [{"q\"k": 1, "a": 2}], "b": null});
+    let through_events = qip_events::envelope::canonical_json(&value);
 
-    // Call through qip_events' re-export
-    let canonical = qip_events::envelope::canonical_json(&val);
-
-    // Verify that it recurses into arrays (preserving array order)
-    // and sorts object keys at every depth
-    let parts: Vec<&str> = canonical.split(',').collect();
-    assert!(!parts.is_empty(), "canonical form should contain parts");
-
-    // Verify the outer object has sorted keys: outer_a before outer_z
-    assert!(
-        canonical.find("\"outer_a\":").unwrap() < canonical.find("\"outer_z\":").unwrap(),
-        "outer keys should be sorted"
-    );
-
-    // Verify that array order is preserved (array comes before second object)
-    let array_pos = canonical.find('[').unwrap();
-    let second_obj_pos = canonical.rfind('[').unwrap();
-    // Since we have one array, both should be the same position
-    assert_eq!(array_pos, second_obj_pos);
+    assert_eq!(through_events, qip_core::canonical::canonical_json(&value));
+    assert_eq!(through_events, r#"{"b":null,"outer":[{"a":2,"q\"k":1}]}"#);
 }

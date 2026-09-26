@@ -1,43 +1,55 @@
+//! The bytes `canonical_json` produces are an identity: every content hash in
+//! the platform is taken over them, so a change here silently re-keys every
+//! stored digest. These tests pin the bytes rather than properties of them.
+//!
+//! The first version of this file asserted that keys come out sorted, and
+//! passed with the sort deleted — in this build `serde_json::Map` already
+//! iterates in key order, so no input could tell the difference. A test that
+//! survives the deletion of the thing it names guards nothing. What follows
+//! pins what *can* change, and a sentinel for the day the sort starts to
+//! matter.
+
+use qip_core::canonical::canonical_json;
 use serde_json::json;
 
 #[test]
-fn canonical_json_sorts_object_keys_at_every_depth_and_keeps_array_order() {
-    // Test premise: canonical form must sort object keys at every depth,
-    // even when the source object has them in reverse order. If keys.sort() is
-    // deleted, this test will fail because "z" will appear before "a".
-    let obj = json!({"z": {"z": 1, "a": 2}, "a": 3});
+fn a_key_that_needs_escaping_is_written_as_a_json_string() {
+    // A key formatted without escaping would emit `{"a"b":1}` — invalid JSON,
+    // and a digest over bytes no reader can parse back to the value hashed.
+    let value = json!({"a\"b": 1, "line\nbreak": 2});
+    let canonical = canonical_json(&value);
 
-    let canonical = qip_core::canonical::canonical_json(&obj);
+    assert_eq!(canonical, r#"{"a\"b":1,"line\nbreak":2}"#);
+    let reparsed: serde_json::Value = serde_json::from_str(&canonical).unwrap();
+    assert_eq!(reparsed, value);
+}
 
-    // The canonical form should have keys in sorted order.
-    // If sort() was removed, the original order (z before a) would be preserved.
-    // Split by root-level keys: {"a":3,"z":{...}}
-    let canonical_str = canonical.to_string();
+#[test]
+fn array_order_is_kept_and_every_nested_value_is_written_compactly() {
+    // Arrays are sequences, not sets: reordering one changes the value, so
+    // canonicalising must not sort them. Separators are part of the identity
+    // too; one extra space re-keys every digest.
+    let value = json!({"b": {"c": "d"}, "a": [3, 1, {"y": [true, null], "x": 1.5}]});
 
-    // "a":3 should appear before "z":{ when keys are sorted
-    let a_pos = canonical_str.find("\"a\":3").expect("a field should exist");
-    let z_pos = canonical_str.find("\"z\":{").expect("z field should exist");
-
-    assert!(
-        a_pos < z_pos,
-        "root keys should be sorted with 'a' before 'z', but got: {}",
-        canonical_str
+    assert_eq!(
+        canonical_json(&value),
+        r#"{"a":[3,1,{"x":1.5,"y":[true,null]}],"b":{"c":"d"}}"#
     );
 }
 
 #[test]
-fn the_same_value_built_in_two_field_orders_serialises_to_identical_bytes() {
-    // Test premise: two logically identical objects built in different field orders
-    // must canonicalize to identical bytes to preserve deterministic hashing,
-    // regardless of how they were constructed.
-    let obj_x_first = json!({"x": 1, "y": 2, "z": 3});
-    let obj_z_first = json!({"z": 3, "x": 1, "y": 2});
+fn serde_json_map_does_not_preserve_insertion_order_in_this_build() {
+    // Sentinel, not a test of canonical_json. While this holds, the explicit
+    // key sort in canonical_json changes no output and no test can kill its
+    // deletion. If this fails, serde_json's `preserve_order` feature has been
+    // switched on somewhere in the build graph (cargo unifies features): the
+    // sort is now load-bearing. Add a test that builds an object in reverse
+    // key order and pins sorted bytes, prove it fails with the sort deleted,
+    // and only then adjust this sentinel.
+    let mut map = serde_json::Map::new();
+    map.insert("z".to_owned(), json!(1));
+    map.insert("a".to_owned(), json!(2));
 
-    // Canonicalise both objects
-    let canonical_x = qip_core::canonical::canonical_json(&obj_x_first);
-    let canonical_z = qip_core::canonical::canonical_json(&obj_z_first);
-
-    // Canonical forms must be identical for content hashing to work correctly
-    assert_eq!(canonical_x.as_bytes(), canonical_z.as_bytes());
-    assert_eq!(canonical_x, canonical_z);
+    let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["a", "z"]);
 }
