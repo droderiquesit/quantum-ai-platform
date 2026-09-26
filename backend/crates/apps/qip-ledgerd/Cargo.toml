@@ -1,0 +1,25 @@
+[package]
+name = "qip-ledgerd"
+description = "Ledger composition root: single-writer durable store and read-side API for order settlement."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+qip-contracts.workspace = true
+qip-events.workspace = true
+qip-storage.workspace = true
+qip-transport.workspace = true
+qip-portfolio.workspace = true
+qip-observability.workspace = true
+
+[dev-dependencies]
+qip-streaming.workspace = true
+
+[lints]
+workspace = true

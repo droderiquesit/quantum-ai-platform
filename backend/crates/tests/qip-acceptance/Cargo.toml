@@ -99,5 +99,11 @@ qip-twin.workspace = true
 # nothing re-exports. An in-tree crate; the two-dependency rule is untouched.
 qip-lifecycle.workspace = true
 
+# The streaming fabric tests, for envelope serialization and deduplication gates (ADR 0100).
+qip-streaming.workspace = true
+
+# Settlement ledger tests, for double-entry accounting and fill reconciliation (ADR 0100).
+qip-portfolio.workspace = true
+
 [lints]
 workspace = true

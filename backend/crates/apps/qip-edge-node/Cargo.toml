@@ -59,13 +59,12 @@ qip-financial.workspace = true
 # the pass loop beneath the cell's placer seam. A workspace crate the edge's
 # order model already comes from, not a third external dependency.
 qip-routing.workspace = true
+# Event envelope for cell-to-centre communication (ADR 0100).
+qip-events.workspace = true
 
 [dev-dependencies]
-# The mesh tests frame a capital grant the way the central plane does, so the
-# node is exercised against a payload built independently of it rather than
-# against one this crate also produced. Dev-only: nothing in the binary needs
-# the event envelope directly.
-qip-events.workspace = true
+# The streaming fabric's test fixtures for envelope transport (ADR 0100).
+qip-streaming.workspace = true
 
 [lints]
 workspace = true
