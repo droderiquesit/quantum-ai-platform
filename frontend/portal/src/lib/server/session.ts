@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
-import { secretFromEnvironment } from "./secret";
+import { FILE_SUFFIX, secretFromEnvironment } from "./secret";
 
 /**
  * Server-side session and credential handling.
@@ -92,7 +92,7 @@ export function csrfCookieName(): string {
 export const CSRF_HEADER = "x-algorik-csrf";
 
 /**
- * The key sessions are signed with.
+ * The key sessions and one-time codes are signed with.
  *
  * In production it must be supplied; a process that invented one would issue
  * sessions no other replica could verify, and every user would be signed out
@@ -101,6 +101,12 @@ export const CSRF_HEADER = "x-algorik-csrf";
  * hard-coded, so a default secret cannot escape into a deployment.
  */
 let developmentKey: Buffer | null = null;
+
+/**
+ * The shortest configured secret accepted. Below it a signing key is a
+ * guessable one, for a cookie and a one-time code alike.
+ */
+const MINIMUM_SECRET_LENGTH = 32;
 
 /**
  * The credential sessions are signed with.
@@ -128,6 +134,15 @@ const SESSION_SECRET_VARIABLE = "ALGORIK_SESSION_SECRET";
  * another replica whose file differs by one line cannot verify. Trailing
  * whitespace is already stripped by `./secret`, so `echo`'s newline is not
  * what this catches.
+ *
+ * **Never key anything with this directly.** `null` here is not a key, and a
+ * caller that supplies its own for that case has bypassed every refusal in
+ * `signingKey`. That happened: `identity.ts` keyed one-time codes with
+ * `configuredSessionSecret() ?? <a string literal>`, so a production process
+ * with no secret hashed every code under a key anyone could read in this
+ * repository, while the refusal stayed in `signingKey` where that path never
+ * went. Hash through {@link oneTimeCodeHash}, or add an export beside it that
+ * goes through `signingKey`.
  */
 export function configuredSessionSecret(): string | null {
   const configured = secretFromEnvironment(SESSION_SECRET_VARIABLE);
@@ -141,23 +156,54 @@ export function configuredSessionSecret(): string | null {
   return configured;
 }
 
+/**
+ * The one key resolution for every HMAC this console computes: the configured
+ * secret, refused when short; refused outright in production when absent; a
+ * per-process random key in development.
+ *
+ * The refusals name both halves of the `_FILE` contract and never the value,
+ * because a deployment mounts the secret as a file and an operator told only
+ * about `ALGORIK_SESSION_SECRET` goes looking for an environment variable that
+ * was never meant to exist.
+ */
 function signingKey(): Buffer {
   const configured = configuredSessionSecret();
   if (configured) {
-    if (configured.length < 32) {
+    if (configured.length < MINIMUM_SECRET_LENGTH) {
       throw new Error(
-        "ALGORIK_SESSION_SECRET is shorter than 32 characters. A short signing key is a guessable one.",
+        `${SESSION_SECRET_VARIABLE} (or the file ${SESSION_SECRET_VARIABLE}${FILE_SUFFIX} names) is ` +
+          `shorter than ${MINIMUM_SECRET_LENGTH} characters. A short signing key is a guessable one.`,
       );
     }
     return Buffer.from(configured, "utf8");
   }
   if (process.env.NODE_ENV === "production") {
     throw new Error(
-      "ALGORIK_SESSION_SECRET must be set in production. Refusing to sign sessions with a key this process invented, which no other replica could verify.",
+      `${SESSION_SECRET_VARIABLE} or ${SESSION_SECRET_VARIABLE}${FILE_SUFFIX} must be set in production. ` +
+        `Refusing to sign sessions or one-time codes with a key this process invented, which no ` +
+        `other replica could verify.`,
     );
   }
   developmentKey ??= randomBytes(32);
   return developmentKey;
+}
+
+/**
+ * HMAC of a one-time code, keyed exactly as the session cookie is.
+ *
+ * Email-verification and password-reset codes are stored only as this hash, so
+ * the key is the whole of what stands between a copy of the development store
+ * and every code in it: a six-digit code under a known key falls to at most a
+ * million HMACs offline. `identity.ts` used to resolve this key itself, as the
+ * configured secret or else a fixed development string written in its source,
+ * and so keyed every code with a string published in this repository whenever
+ * a production process had no secret — the one case the cookie signer
+ * refuses. Keyed through `signingKey`, a code is refused wherever a cookie is,
+ * and in development it shares the per-process key, so a code outlives a
+ * restart no better than a session does.
+ */
+export function oneTimeCodeHash(code: string): string {
+  return createHmac("sha256", signingKey()).update(code).digest("base64url");
 }
 
 /** Equal-length constant-time comparison over UTF-8 strings. */
