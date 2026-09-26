@@ -13,7 +13,8 @@
 use qip_agents::finding::{AgentFinding, Direction, NumericFact};
 use qip_core::error::Result;
 use qip_core::ids::{AgentRunId, ChallengeId, EvidenceId, HypothesisId, ObjectId};
-use qip_core::testing::is_exactly_zero;
+use qip_core::rng::{Rng, Xoshiro256};
+use qip_core::testing::{Property, check_approx, is_exactly_zero};
 use qip_core::time::{Duration, Timestamp};
 use qip_reasoning_engine::bayes::{BaseRate, EvidenceStrength, from_log_odds, to_log_odds, update};
 use qip_reasoning_engine::engine::{ReasoningEngine, SynthesisInput};
@@ -333,8 +334,138 @@ fn independent_weight_collapses_reports_from_one_origin() {
     let collapsed = three_from_one.independent_weight(Stance::Supports);
     let genuine = three_origins.independent_weight(Stance::Supports);
     assert!(collapsed < 0.5 * genuine, "{collapsed} vs {genuine}");
+
+    // EVID-006: copies count as one source, not as many. Three identical
+    // copies of one origin must weigh exactly what a single one of them
+    // weighs — not "less than three, but still more than one", which is what
+    // a partial per-copy discount produces.
+    let one_item = evidence(
+        "solo",
+        EvidenceKind::News,
+        Stance::Supports,
+        "wire",
+        0.7,
+        0.8,
+    )
+    .weight();
+    assert!(
+        (collapsed - one_item).abs() < 1e-12,
+        "three copies from one origin must weigh exactly one item: {collapsed} vs {one_item}"
+    );
     assert!((three_from_one.concentration() - 1.0).abs() < 1e-12);
     assert!((three_origins.concentration() - 1.0 / 3.0).abs() < 1e-9);
+}
+
+/// A generated corroboration case: a two-origin base set, the strongest
+/// weight already carried by one of those origins, a batch of further
+/// same-origin copies each no stronger than that, and the weight for one
+/// item from a brand-new origin.
+#[derive(Debug)]
+struct CorroborationCase {
+    base: EvidenceSet,
+    strongest: f64,
+    copies: Vec<f64>,
+    new_origin_weight: f64,
+}
+
+fn weighted_supporter(id: &str, origin: &str, weight: f64) -> Evidence {
+    // `weight() == reliability * diagnosticity`; fixing diagnosticity at 1.0
+    // makes the item's weight exactly the `weight` argument, with no clamp in
+    // play as long as it stays inside `Filing`'s 0.98 reliability ceiling.
+    evidence(
+        id,
+        EvidenceKind::Filing,
+        Stance::Supports,
+        origin,
+        weight,
+        1.0,
+    )
+}
+
+fn generated_corroboration_case(rng: &mut Xoshiro256) -> CorroborationCase {
+    let strongest = rng.uniform(0.05, 0.98);
+    let other_origin_weight = rng.uniform(0.01, 0.98);
+    let base = EvidenceSet::from_items(vec![
+        weighted_supporter("base-present", "origin-present", strongest),
+        weighted_supporter("base-other", "origin-other", other_origin_weight),
+    ]);
+    let copy_count = rng.below(20) + 1; // 1..=20 further copies, per EVID-006.
+    let copies = (0..copy_count)
+        .map(|_| rng.uniform(0.0, strongest))
+        .collect();
+    let new_origin_weight = rng.uniform(0.01, 0.98);
+    CorroborationCase {
+        base,
+        strongest,
+        copies,
+        new_origin_weight,
+    }
+}
+
+#[test]
+fn adding_copies_from_an_origin_already_present_leaves_the_weight_unchanged_and_a_new_origin_raises_it()
+ {
+    // EVID-006's whole content, checked as arithmetic rather than on one
+    // fixed example: any number of further items from an origin the set
+    // already holds, each no stronger than that origin's strongest, must
+    // leave `independent_weight` exactly where it was, and one item from a
+    // genuinely new origin must always raise it. The deleted per-copy
+    // discount let a copy add a fraction of its own weight on top of the
+    // strongest, which breaks the first half for any non-empty batch of
+    // copies.
+    Property::new("copies from a present origin do not move independent_weight")
+        .cases(1_000)
+        .for_all(generated_corroboration_case, |case| {
+            // Premise: the generated base actually carries weight from two
+            // distinct origins, so there is something for a copy to fail to
+            // leave alone and something for a new origin to raise.
+            let baseline = case.base.independent_weight(Stance::Supports);
+            if baseline <= 0.0 {
+                return Err(format!("generated base carried no weight: {baseline}"));
+            }
+            if case.base.origins().len() != 2 {
+                return Err(format!(
+                    "generated base did not have two distinct origins: {:?}",
+                    case.base.origins()
+                ));
+            }
+
+            let mut with_copies = case.base.clone();
+            for (i, weight) in case.copies.iter().enumerate() {
+                if *weight > case.strongest {
+                    return Err(format!(
+                        "generated copy {weight} exceeded the origin's strongest {}",
+                        case.strongest
+                    ));
+                }
+                with_copies.push(weighted_supporter(
+                    &format!("copy-{i}"),
+                    "origin-present",
+                    *weight,
+                ));
+            }
+            let after_copies = with_copies.independent_weight(Stance::Supports);
+            check_approx(
+                "weight after correlated copies from a present origin",
+                after_copies,
+                baseline,
+                1e-12,
+            )?;
+
+            let mut with_new_origin = with_copies.clone();
+            with_new_origin.push(weighted_supporter(
+                "new-origin-item",
+                "origin-new",
+                case.new_origin_weight,
+            ));
+            let after_new_origin = with_new_origin.independent_weight(Stance::Supports);
+            if after_new_origin <= after_copies {
+                return Err(format!(
+                    "one item from a new origin did not raise the weight: {after_copies} -> {after_new_origin}"
+                ));
+            }
+            Ok(())
+        });
 }
 
 #[test]
@@ -1065,14 +1196,14 @@ fn one_dissenting_origin_restated_five_times_is_still_one_dissent() {
         1
     );
 
-    // Each item weighs 0.4. Support: two origins, 0.8. Dissent: one origin,
-    // the strongest in full and the other four at the correlated discount,
-    // 0.4 * (1 + 4 * 0.15) = 0.64. So 0.64 / 0.8 = 0.8, where a raw sum would
-    // have given 0.8 / 2.0 = 0.4 the other way up and read as the support
-    // being the minority view.
+    // Each item weighs 0.4. Support: two origins, each counted once, 0.8.
+    // Dissent: one origin, so the four restatements beyond the first add
+    // nothing — 0.4, not 0.4 * (1 + 4 * 0.15) = 0.64. So 0.4 / 0.8 = 0.5: one
+    // dissenting origin restated five times weighs exactly what one
+    // dissenting item would, no more.
     assert!(
-        (set.net_stance_disagreement() - 0.8).abs() < 1e-12,
-        "correlated dissent was counted as independent: {}",
+        (set.net_stance_disagreement() - 0.5).abs() < 1e-12,
+        "five copies of one dissenting origin must weigh what one would: {}",
         set.net_stance_disagreement()
     );
 }
