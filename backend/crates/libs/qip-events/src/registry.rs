@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::envelope::EventBody;
+use crate::event_fabric::schema_id::{SchemaId, Shape};
 use crate::topic::Topic;
 
 /// The registered shape of one event body.
@@ -24,6 +25,13 @@ pub struct SchemaDescriptor {
     pub fields: Vec<String>,
     /// Hash over topic, version and fields — the contract fingerprint.
     pub fingerprint: String,
+    /// Content-derived id over topic, version and the full recursive shape
+    /// (`event_fabric::schema_id`). Unlike `fingerprint`, this changes when a
+    /// *nested* field's kind changes even though the top-level field names
+    /// this descriptor also carries did not — see that module's doc comment
+    /// for why the top-level fingerprint alone is not enough for a stream to
+    /// admit a producer by schema id.
+    pub schema_id: SchemaId,
 }
 
 /// All registered event schemas.
@@ -58,12 +66,16 @@ impl SchemaRegistry {
             T::SCHEMA_VERSION,
             fields.join(",")
         );
+        // Reuses `value`, already computed above, rather than serialising
+        // `sample` a second time to learn its shape.
+        let shape = Shape::from_json(&value);
         let descriptor = SchemaDescriptor {
             topic: T::TOPIC,
             version: T::SCHEMA_VERSION,
             type_name,
             fields,
             fingerprint: qip_core::hash::sha256_hex(material.as_bytes()),
+            schema_id: SchemaId::new(T::TOPIC.name(), T::SCHEMA_VERSION, &shape),
         };
 
         if let Some(existing) = self.descriptors.get(&T::TOPIC)
