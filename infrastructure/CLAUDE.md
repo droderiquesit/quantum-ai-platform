@@ -77,6 +77,7 @@ Rules: `.claude/rules/domains/infrastructure.md`.
 | `environments/<env>/terraform.tfvars` | dev, test, stage, prod — the only per-environment inputs. There is no `images.tfvars` any more: what an environment serves is `gitops/envs/<env>/kustomization.yaml` |
 | `gitops/` | ADR 0036's delivery path: vendored controller manifests under `bootstrap/`, one `RunService` per catalogue workload under `envs/<env>/`, the Argo CD project and Applications, the Kargo chain — `gitops/README.md` |
 | `egress/` | The one Envoy bootstrap and the vendored-images list the pipeline mirrors and attests — ten images now, eight of them the control plane's |
+| `event-fabric/` | `streams.local.json`, the committed stream catalogue for the event fabric's first local slice (ADR 0100 §5, §7): four streams with every policy field declared, and the grants that are the P0 control stream's ACL. Runtime configuration beside `egress/envoy.yaml`'s precedent, and the single source of seal age and peak byte rate. No Terraform references it yet (C8). `qip-acceptance`'s `event_fabric_catalogue` suite holds its contents |
 | `docker/` | Image definitions |
 
 There is one Kubernetes cluster here, and it runs controllers. ADR 0024
