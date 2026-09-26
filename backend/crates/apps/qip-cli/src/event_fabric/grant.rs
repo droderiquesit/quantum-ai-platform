@@ -240,10 +240,20 @@ pub struct Fixture {
     pub plan: PlanDigest,
 }
 
+/// The local slice's one P0 control stream (SLICE-53's catalogue).
+pub const LOCAL_CONTROL_STREAM: &str = "control.local";
+
 impl Fixture {
-    /// The P0 stream this fixture's control goes to.
+    /// The P0 stream this fixture's control goes to: `control.local`, the one
+    /// P0 stream the committed local catalogue declares
+    /// (`infrastructure/event-fabric/streams.local.json`, SLICE-53) and the one
+    /// the node's control consumer reads (SLICE-57's `CONTROL_STREAM`). It is
+    /// not derived from the region. `control.<region>` named a stream no
+    /// catalogue declared, so a grant published there would have been refused
+    /// by the broker, or never read by the cell. The region still stamps the
+    /// envelope; it just does not name the stream.
     pub fn stream(&self) -> String {
-        format!("control.{}", self.region)
+        LOCAL_CONTROL_STREAM.to_string()
     }
 }
 
@@ -704,16 +714,11 @@ pub fn publish(
 
 /// The production transport to a checked loopback peer.
 ///
-/// MERGE NOTE (SLICE-34): on the integration branch `HttpTransport::new`
-/// takes the identity as its second argument and sends it as
-/// `Authorization: Bearer <token>` on every call. This base predates that
-/// change, so the token is dropped here and the call below must become
-/// `HttpTransport::new(format!("http://{peer}"), identity)` at merge. Until
-/// it does, a broker enforcing identity refuses every publish from this
-/// command, which fails closed.
+/// The release-controller token goes on every call as
+/// `Authorization: Bearer <token>` (FABRIC-AUTH), so the broker can check
+/// that this publisher may produce to P0.
 pub fn http_transport(peer: SocketAddr, identity: BearerToken) -> Box<dyn FabricTransport + Send> {
-    drop(identity);
-    Box::new(HttpTransport::new(format!("http://{peer}")))
+    Box::new(HttpTransport::new(format!("http://{peer}"), identity))
 }
 
 /// `qip event-fabric grant --fixture <path> --peer <addr>`.

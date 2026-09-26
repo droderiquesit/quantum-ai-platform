@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex};
 /// constant was changed to.
 const SIGNATORY: &str = "fixture:qip-event-fabric-grant";
 const CELL: &str = "london-1";
-const STREAM: &str = "control.europe-west2";
+const STREAM: &str = "control.local";
 const LOOPBACK: &str = "127.0.0.1:7100";
 
 fn now() -> Timestamp {
