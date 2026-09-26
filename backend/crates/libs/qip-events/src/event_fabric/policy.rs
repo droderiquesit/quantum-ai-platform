@@ -192,6 +192,46 @@ impl Entitlement {
     }
 }
 
+/// Whether a record filed under this retention class must survive to an
+/// archive before its spool can release it, rather than being allowed to
+/// roll by age inside the log's own working set.
+///
+/// SLICE-53's catalogue suite found the stream schema carries no
+/// `archive_required` field and derived the answer locally as
+/// `!retention.is_replaceable()`; SLICE-38's broker needs the identical
+/// answer for the same retention class, and a rule stated twice drifts one
+/// edit at a time — the same shape of defect as
+/// `RiskState::expected_shortfall` being always empty while
+/// `MaxExpectedShortfall` shipped as though it could fire (see
+/// `.claude/rules/domains/risk-and-execution.md`). So the rule lives once,
+/// here, and both callers read it.
+///
+/// [`RetentionClass::is_replaceable`] names the two rows whose retaining
+/// structure is bounded by something other than the log — a bounded ring, a
+/// fixed in-memory size — and every other row is archive-required because
+/// nothing else bounds it: `retain_before` (SLICE-16) trusts the caller's
+/// flag, and a stream wrongly judged replaceable would let retention delete
+/// history nothing has archived yet.
+///
+/// Matched with every variant named and no wildcard arm, so a tenth
+/// retention class added to §22.1's table is a compile error here until
+/// someone decides which way it goes, rather than silently inheriting
+/// `false`.
+impl RetentionClass {
+    pub const fn archive_required(&self) -> bool {
+        match self {
+            Self::Transient | Self::DerivedState => false,
+            Self::Irreplaceable
+            | Self::CompactDerived
+            | Self::Episodic
+            | Self::Semantic
+            | Self::EventAnchored
+            | Self::FallbackSeries
+            | Self::Referenced => true,
+        }
+    }
+}
+
 /// Every value a [`StreamPolicy`] needs, gathered so [`StreamPolicy::new`]
 /// takes one argument that names its fields rather than fourteen positional
 /// ones two of which would eventually be swapped.
@@ -333,5 +373,13 @@ impl StreamPolicy {
     }
     pub fn peak_bytes_per_second(&self) -> u64 {
         self.peak_bytes_per_second
+    }
+
+    /// [`RetentionClass::archive_required`] of this stream's declared
+    /// retention — the single rule the broker (SLICE-38) and the catalogue
+    /// acceptance suite both read, rather than each deriving its own answer
+    /// from [`Self::retention`].
+    pub const fn archive_required(&self) -> bool {
+        self.retention.archive_required()
     }
 }

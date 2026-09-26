@@ -2,7 +2,10 @@
 //! stream policy, catalogue and topic bindings (CONTRACT-036, CONTRACT-037,
 //! CONTRACT-044, FABRIC-041/049/057/067/075/013; ADR 0100).
 
+use std::collections::BTreeMap;
+
 use qip_core::{Context, CorrelationId, Duration, Lineage, Timestamp};
+use qip_events::RetentionClass;
 use qip_events::envelope::EventBody;
 use qip_events::event_fabric::catalogue::Catalogue;
 use qip_events::event_fabric::envelope::{FabricEnvelope, FabricFacts};
@@ -470,4 +473,51 @@ fn a_cell_grant_must_be_scoped_to_its_own_key_and_only_the_release_controller_ma
     });
     Catalogue::parse(&catalogue_bytes(streams, vec![controller_to_p0]))
         .expect("the release controller must be able to produce to a P0 stream");
+}
+
+// --- archive-required -----------------------------------------------------
+
+#[test]
+fn archive_required_is_decided_for_every_retention_class_with_no_wildcard() {
+    // Every one of §22.1's nine rows gets its own named answer, so a tenth
+    // row added later has nothing to inherit silently — the match in
+    // `RetentionClass::archive_required` has no wildcard arm, and this table
+    // would then be missing a key rather than quietly agreeing with it.
+    let expected: BTreeMap<RetentionClass, bool> = BTreeMap::from([
+        (RetentionClass::Transient, false),
+        (RetentionClass::DerivedState, false),
+        (RetentionClass::Irreplaceable, true),
+        (RetentionClass::CompactDerived, true),
+        (RetentionClass::Episodic, true),
+        (RetentionClass::Semantic, true),
+        (RetentionClass::EventAnchored, true),
+        (RetentionClass::FallbackSeries, true),
+        (RetentionClass::Referenced, true),
+    ]);
+    // Premise: the table above names every declared row before any single
+    // comparison below is trusted to mean anything.
+    assert_eq!(
+        expected.len(),
+        RetentionClass::ALL.len(),
+        "this table must name every retention class or the loop below skips one silently"
+    );
+
+    for class in RetentionClass::ALL {
+        assert_eq!(
+            class.archive_required(),
+            expected[&class],
+            "'{}' disagrees with the expected archive-required answer",
+            class.as_str()
+        );
+        // The rule is exactly "not replaceable" (§22.1): a working-set record
+        // that already rolls by age behind a bound the log does not own is
+        // never what an archive exists to rescue, and every other row must
+        // be, because nothing else bounds it before an archive does.
+        assert_eq!(
+            class.archive_required(),
+            !class.is_replaceable(),
+            "'{}' must be archive-required exactly when it is not replaceable",
+            class.as_str()
+        );
+    }
 }
