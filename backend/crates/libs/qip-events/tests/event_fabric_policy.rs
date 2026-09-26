@@ -286,7 +286,9 @@ fn the_partition_hlc_never_decreases_and_never_follows_a_producer_past_its_futur
     // Premise: the clock starts where it was told to, at logical zero.
     assert_eq!(clock.last(), HlcTimestamp::new(t0, 0));
 
-    let first = clock.tick(t0.saturating_add(Duration::from_millis(10)));
+    let first = clock
+        .tick(t0.saturating_add(Duration::from_millis(10)))
+        .expect("a forward tick must be accepted");
     assert_eq!(
         first,
         HlcTimestamp::new(t0.saturating_add(Duration::from_millis(10)), 0)
@@ -295,7 +297,7 @@ fn the_partition_hlc_never_decreases_and_never_follows_a_producer_past_its_futur
     // A caller supplying an earlier physical time than the clock already
     // holds must not move it backwards; it must still make forward
     // progress through the logical counter.
-    let second = clock.tick(t0);
+    let second = clock.tick(t0).expect("a backward tick must be accepted");
     assert!(
         second >= first,
         "the clock decreased: {second:?} < {first:?}"
@@ -303,8 +305,31 @@ fn the_partition_hlc_never_decreases_and_never_follows_a_producer_past_its_futur
     assert_eq!(second.physical, first.physical);
     assert_eq!(second.logical, first.logical + 1);
 
+    // The wall clock stepping backwards is exactly the case an HLC exists
+    // for, and `receive` must resist it too, not only `tick`: a `now` *and*
+    // a producer reading both behind the clock's own last physical time must
+    // still leave the clock at its own last physical time, not regress to
+    // whichever of `now` or the producer happens to be newer between
+    // themselves. A comparison that dropped the clock's own last reading
+    // from the max would pass `now.max(producer.physical)` here as `t0`,
+    // strictly behind `second.physical` — a decrease.
+    let backward_now = t0;
+    let backward_producer = HlcTimestamp::new(t0, 0);
+    let third = clock
+        .receive(backward_now, backward_producer, Duration::from_secs(5))
+        .expect("a receive with both readings behind the clock must be accepted");
+    assert_eq!(
+        third.physical, second.physical,
+        "a receive with an earlier now and an earlier producer reading must not regress the clock's physical time"
+    );
+    assert!(
+        third > second,
+        "the clock decreased: {third:?} < {second:?}"
+    );
+    assert_eq!(third.logical, second.logical + 1);
+
     let cap = Duration::from_secs(5);
-    let now = second.physical;
+    let now = third.physical;
 
     // In bounds: a producer at most `cap` ahead is merged, moving the clock
     // forward to the newest reading among the three and never behind it.
@@ -314,7 +339,7 @@ fn the_partition_hlc_never_decreases_and_never_follows_a_producer_past_its_futur
         .expect("a producer within the cap must be accepted");
     assert_eq!(merged.physical, close_producer.physical);
     assert_eq!(merged.logical, close_producer.logical + 1);
-    assert!(merged >= second);
+    assert!(merged >= third);
 
     // Out of bounds: a producer claiming to be more than the cap ahead of
     // `now` must be refused outright, never silently adopted — adopting it
@@ -329,6 +354,33 @@ fn the_partition_hlc_never_decreases_and_never_follows_a_producer_past_its_futur
         clock.last(),
         before,
         "a refused merge must not mutate the clock"
+    );
+}
+
+#[test]
+fn a_partition_hlc_refuses_to_advance_its_logical_counter_past_its_maximum_rather_than_wrap() {
+    let t0 = Timestamp::from_civil(2026, 9, 25);
+    let mut clock = PartitionClock::new(t0);
+
+    // Premise: the clock starts at logical zero, so the refusal below is
+    // caused by the producer's saturated counter and nothing else.
+    let before = clock.last();
+    assert_eq!(before.logical, 0);
+
+    // A producer reporting the same physical time as the clock's own last
+    // reading, with its logical counter already at u64::MAX, forces the
+    // tie-break increment to overflow. Wrapping to zero would read as a
+    // clock that had just reset — the exact decrease this type exists to
+    // prevent — so it must be refused instead.
+    let saturated_producer = HlcTimestamp::new(t0, u64::MAX);
+    let err = clock
+        .receive(t0, saturated_producer, Duration::from_secs(5))
+        .expect_err("a logical counter already at its maximum must be refused rather than wrapped");
+    assert!(err.to_string().contains(&u64::MAX.to_string()), "{err}");
+    assert_eq!(
+        clock.last(),
+        before,
+        "a refused advance must not mutate the clock"
     );
 }
 

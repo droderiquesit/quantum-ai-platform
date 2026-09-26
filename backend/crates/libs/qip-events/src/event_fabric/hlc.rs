@@ -72,14 +72,17 @@ impl PartitionClock {
     /// only advances the logical counter, which is what two events minted in
     /// the same nanosecond — or a caller whose `now` briefly regressed —
     /// both need in order to still be ordered against everything already
-    /// stamped.
-    pub fn tick(&mut self, now: Timestamp) -> HlcTimestamp {
-        self.last = if now > self.last.physical {
+    /// stamped. Refuses rather than wraps if the logical counter is already
+    /// at its maximum; see [`Self::receive`]'s doc comment for why a wrap is
+    /// the one outcome this type must never produce.
+    pub fn tick(&mut self, now: Timestamp) -> Result<HlcTimestamp> {
+        let next = if now > self.last.physical {
             HlcTimestamp::new(now, 0)
         } else {
-            HlcTimestamp::new(self.last.physical, self.last.logical + 1)
+            HlcTimestamp::new(self.last.physical, checked_increment(self.last.logical)?)
         };
-        self.last
+        self.last = next;
+        Ok(self.last)
     }
 
     /// Merge in a reading a producer attached to a record this partition is
@@ -96,6 +99,20 @@ impl PartitionClock {
     /// leaves the caller free to discard the record, quarantine the
     /// producer, or re-derive its own physical time and try again — all of
     /// which are answers this clock cannot give on its own.
+    ///
+    /// The physical reading that wins is the newest of `now`, this
+    /// partition's own clock and the producer's — never `now` or the
+    /// producer's alone, because either of those without this partition's
+    /// own last reading in the comparison could still move the clock
+    /// backwards whenever the wall clock (or an unauthenticated producer)
+    /// briefly regresses. Where two or three of those readings tie on
+    /// physical time, the logical counter must still advance past every tied
+    /// reading; on a `u64` counter that only fails at a value no partition
+    /// plausibly reaches in one process's lifetime, but "implausible" is not
+    /// "impossible" for a counter a remote, unauthenticated producer partly
+    /// controls, so the increment is checked and refused on overflow — a
+    /// wrapped counter would silently produce exactly the decrease this
+    /// whole type exists to prevent.
     pub fn receive(
         &mut self,
         now: Timestamp,
@@ -110,15 +127,32 @@ impl PartitionClock {
         }
         let physical = now.max(self.last.physical).max(producer.physical);
         let logical = if physical == self.last.physical && physical == producer.physical {
-            self.last.logical.max(producer.logical) + 1
+            checked_increment(self.last.logical.max(producer.logical))?
         } else if physical == self.last.physical {
-            self.last.logical + 1
+            checked_increment(self.last.logical)?
         } else if physical == producer.physical {
-            producer.logical + 1
+            checked_increment(producer.logical)?
         } else {
             0
         };
         self.last = HlcTimestamp::new(physical, logical);
         Ok(self.last)
     }
+}
+
+/// `logical + 1`, refused rather than wrapped at `u64::MAX`.
+///
+/// A wrapped counter would read as zero — the value a *reset* clock starts
+/// at — indistinguishable from a partition that had just ticked forward to a
+/// new physical instant. That is the exact decrease [`PartitionClock`]
+/// exists to make impossible, so overflow is refused here rather than
+/// clamped or wrapped: a caller that hits this has a real problem (a
+/// producer flooding one physical instant, or a clock that has run far
+/// longer than the counter was sized for) that silently wrapping would hide.
+fn checked_increment(logical: u64) -> Result<u64> {
+    logical.checked_add(1).ok_or_else(|| {
+        Error::denied(format!(
+            "partition clock's logical counter is already at its maximum ({logical}) and refuses to advance by wrapping"
+        ))
+    })
 }
