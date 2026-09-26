@@ -2145,7 +2145,9 @@ fn prod_is_promoted_by_nobody_until_an_adr_says_otherwise() {
 /// test written for it rather than by the parity walk, which compares a
 /// manifest against a catalogue entry that does not exist for either of
 /// these. `the_portal_is_reachable_only_behind_its_iap_edge_and_holds_only_what_it_needs`
-/// below is the portal's.
+/// below is the portal's, and
+/// `openobserve_is_deployed_at_the_reviewed_digest_on_ephemeral_storage_and_answers_no_anonymous_caller`
+/// is OpenObserve's.
 const NOT_A_CATALOGUE_WORKLOAD: [&str; 2] = ["openobserve", "portal"];
 
 /// The RunServices under one environment, each matched to the catalogue key
@@ -2277,7 +2279,7 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
         for (key, entry, service, siblings) in run_services(&environment) {
             let Some(entry) = entry else {
                 // A `NOT_A_CATALOGUE_WORKLOAD` service. OpenObserve carries
-                // ADR 0030's posture and ADR 0031's secret_env; the portal
+                // ADR 0033's authenticated posture and ADR 0031's secret_env; the portal
                 // carries ADR 0094's load-balancer ingress and runs as an
                 // account this module never created. Neither has a catalogue
                 // entry to be compared against, and each has a test of its
@@ -4534,21 +4536,133 @@ fn the_egress_sidecar_in_every_manifest_holds_no_credential_and_the_workload_wai
     );
 }
 
+/// The two IAM members that name everybody. `allUsers` is the public
+/// internet; `allAuthenticatedUsers` is every Google account in existence,
+/// and reads as a restriction in an audit while being none.
+const ANONYMOUS_PRINCIPALS: [&str; 2] = ["allUsers", "allAuthenticatedUsers"];
+
+/// The anonymous principals a parsed manifest names anywhere — a binding's
+/// `member`, an annotation, any key or value — each matched as a whole token.
+///
+/// Over the manifest's serialised form rather than its `member` field alone,
+/// because an annotation is part of what Config Connector is handed and a
+/// principal written there is a principal in the applied object. A token and
+/// not a substring, because a substring check on a principal is the shape
+/// that has already passed a mutation in this repository.
+fn anonymous_principals_named(manifest: &Manifest) -> Vec<&'static str> {
+    let text = serde_json::to_string(&manifest.value).expect("a parsed manifest serialises");
+    ANONYMOUS_PRINCIPALS
+        .iter()
+        .copied()
+        .filter(|principal| {
+            text.split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|token| token == *principal)
+        })
+        .collect()
+}
+
+/// The ingress `modules/openobserve` derives for the authenticated posture:
+/// the true arm of its `run_service_ingress` local.
+///
+/// Read out of the module rather than written here, so the manifest is held
+/// to the decision where it is made; a module whose authenticated arm moved
+/// and a manifest that did not would otherwise both stay green.
+fn authenticated_openobserve_ingress() -> String {
+    const MODULE: &str = "infrastructure/terraform/modules/openobserve/main.tf";
+    const PREFIX: &str = "run_service_ingress = local.authenticated ? \"";
+    let module = without_comments(&read(MODULE));
+    let derived: Vec<String> = module
+        .lines()
+        .map(collapsed)
+        .filter_map(|line| {
+            line.strip_prefix(PREFIX)
+                .and_then(|rest| rest.split('"').next())
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(
+        derived.len(),
+        1,
+        "{MODULE} derives `run_service_ingress` {} time(s) in the form `{PREFIX}…`; expected \
+         exactly one, so the ingress OpenObserve's manifest must carry cannot be read",
+        derived.len()
+    );
+    derived[0].clone()
+}
+
 #[test]
-fn openobserve_is_deployed_at_the_reviewed_digest_anonymous_as_adr_0030_records_and_on_ephemeral_storage()
+fn openobserve_is_deployed_at_the_reviewed_digest_on_ephemeral_storage_and_answers_no_anonymous_caller()
  {
-    // ADR 0028 adopted OpenObserve as a vendored image; ADR 0030 exposed it
-    // anonymously on the owner's instruction and ADR 0031 let it take its
-    // root credential as an environment value. The catalogue's module block
-    // carried all three until ADR 0036; the manifest carries them now, and
-    // each is pinned here because each is an exception to a rule the parity
-    // test holds for every other service. Both halves of the anonymous
-    // posture are asserted — the open ingress and the allUsers invoker —
-    // because either alone is a deployment that lies about itself.
+    // ADR 0028 adopted OpenObserve as a vendored image and ADR 0031 let it
+    // take its root credential as an environment value; both are exceptions
+    // to a rule the parity test holds for every other service, and both are
+    // pinned here.
+    //
+    // **This test pinned the defect it now refuses, and was inverted rather
+    // than deleted.** Until 2026-09-26 it was
+    // `openobserve_is_deployed_at_the_reviewed_digest_anonymous_as_adr_0030_records_and_on_ephemeral_storage`,
+    // and it asserted ADR 0030's posture as a property: `INGRESS_TRAFFIC_ALL`
+    // on the RunService and exactly one manifest per environment naming the
+    // anonymous principal, the `roles/run.invoker` binding on OpenObserve. So
+    // the one change that closed the hole — a store of the desk's cycle,
+    // refusal and order telemetry, writable by anyone the moment the
+    // reconciler ran — was the change that turned this suite red. ADR 0033
+    // decided to end that binding before the store held telemetry, and
+    // `modules/openobserve` derives the posture that replaces it.
+    //
+    // Both halves are asserted again, each inverted, because either alone is
+    // a deployment that lies about itself: the ingress the module derives for
+    // the authenticated posture, and **zero** manifests under any
+    // environment naming either anonymous principal — counted over whole
+    // parsed manifests, annotations included, and over every environment
+    // whether OpenObserve is deployed there or not, because a grant is a
+    // grant wherever it is written. Which posture is in force is
+    // `module.openobserve_access` in catalogue.tf, and `infrastructure.rs`
+    // holds that call to the authenticated default and `invokers.yaml` to its
+    // member set.
     let digest = vendored_digest("vendor/openobserve");
+    let authenticated_ingress = authenticated_openobserve_ingress();
+    // The premise the manifest assertion rests on: the authenticated arm is
+    // the value that admits a load balancer and nothing else from outside the
+    // VPC. A module whose authenticated arm became `INGRESS_TRAFFIC_ALL`
+    // would have the manifest below agree with it and publish the run.app
+    // URL around the proxy the posture is named for.
+    assert_eq!(
+        authenticated_ingress, INTERNAL_LOAD_BALANCER,
+        "modules/openobserve derives `{authenticated_ingress}` for the authenticated posture; \
+         ADR 0033 puts the service behind Identity-Aware Proxy on a load balancer, which only \
+         {INTERNAL_LOAD_BALANCER} admits without leaving the run.app URL answering around it"
+    );
     let mut checked = 0usize;
+    let mut manifests_read = 0usize;
+    let mut bindings_read = 0usize;
     for environment in environment_directories() {
         let manifests = manifests_under(&format!("{ENVS}/{environment}"));
+        manifests_read += manifests.len();
+        bindings_read += manifests
+            .iter()
+            .filter(|manifest| manifest.kind() == "IAMPolicyMember")
+            .count();
+        // No anonymous principal in any manifest, before anything about
+        // whether OpenObserve is deployed here: the refusal is not
+        // OpenObserve's, it is the environment's.
+        let anonymous: Vec<String> = manifests
+            .iter()
+            .filter_map(|manifest| {
+                let named = anonymous_principals_named(manifest);
+                (!named.is_empty()).then(|| format!("{} names {named:?}", manifest.describe()))
+            })
+            .collect();
+        assert!(
+            anonymous.is_empty(),
+            "{} manifest(s) under {ENVS}/{environment} name an anonymous principal, and none \
+             may. ADR 0033 ended the one ADR 0030 granted — `roles/run.invoker` on OpenObserve \
+             — because an anonymous invoker is anonymous in both directions, and a store anyone \
+             can write to cannot be evidence for a gate. Name the operators, the group or the \
+             service account instead, through `module.openobserve_access`:\n{}",
+            anonymous.len(),
+            anonymous.join("\n")
+        );
         // Deployed exactly where the tfvars name the digest: the catalogue
         // gates OpenObserve's identity on `vendored_openobserve_image_digest`,
         // and a manifest for an environment with no identity is a service
@@ -4564,12 +4678,6 @@ fn openobserve_is_deployed_at_the_reviewed_digest_anonymous_as_adr_0030_records_
                 "{environment}'s tfvars name vendored_openobserve_image_digest and {ENVS}/\
                  {environment} deploys no openobserve RunService"
             );
-            assert!(
-                !manifests
-                    .iter()
-                    .any(|manifest| strings_of(&manifest.value).iter().any(|s| s == "allUsers")),
-                "{ENVS}/{environment} names allUsers with no OpenObserve to bind it to"
-            );
             continue;
         };
         assert!(
@@ -4579,34 +4687,19 @@ fn openobserve_is_deployed_at_the_reviewed_digest_anonymous_as_adr_0030_records_
             service.describe()
         );
         let describe = service.describe();
+        // Equality with the derived value, never the absence of
+        // `INGRESS_TRAFFIC_ALL`: a RunService with no `ingress` line is one
+        // Cloud Run reads as all traffic, so a deleted line is the public
+        // posture rather than a safe omission.
+        let ingress = text_at(&service.value, &["spec", "ingress"]);
         assert_eq!(
-            text_at(&service.value, &["spec", "ingress"]).as_deref(),
-            Some("INGRESS_TRAFFIC_ALL"),
-            "{describe} is not anonymously reachable; ADR 0030 records that it is, and a service \
-             behind an internal posture with an allUsers invoker is a public 403"
-        );
-        let anonymous: Vec<&Manifest> = manifests
-            .iter()
-            .filter(|manifest| {
-                serde_json::to_string(&manifest.value)
-                    .unwrap_or_default()
-                    .contains("allUsers")
-            })
-            .collect();
-        assert_eq!(
-            anonymous.len(),
-            1,
-            "{} manifest(s) under {ENVS}/{environment} name allUsers ({:?}); exactly one, the \
-             invoker binding on OpenObserve, may",
-            anonymous.len(),
-            anonymous.iter().map(|m| m.describe()).collect::<Vec<_>>()
-        );
-        let binding = serde_json::to_string(&anonymous[0].value).unwrap_or_default();
-        assert!(
-            binding.contains(&service.name()) && binding.contains("run.invoker"),
-            "{} names allUsers but is not the run.invoker binding on {}",
-            anonymous[0].describe(),
-            service.name()
+            ingress.as_deref(),
+            Some(authenticated_ingress.as_str()),
+            "{describe} carries ingress {ingress:?}; ADR 0033's authenticated posture is \
+             `{authenticated_ingress}`, the value modules/openobserve derives, which admits a \
+             load balancer and nothing else from outside the VPC. `INGRESS_TRAFFIC_ALL` is ADR \
+             0030's anonymous posture: it leaves the run.app URL answering the internet around \
+             any proxy put in front of it"
         );
         let containers = list_at(&service.value, &["spec", "template", "containers"]);
         assert_eq!(
@@ -4656,6 +4749,15 @@ fn openobserve_is_deployed_at_the_reviewed_digest_anonymous_as_adr_0030_records_
     assert!(
         checked >= 1,
         "no environment deploys OpenObserve; every assertion above was skipped"
+    );
+    // The refusal's own premises. A walk that read no manifest, or read
+    // manifests holding no invoker binding at all, would have found no
+    // anonymous principal by never looking where one is written.
+    assert!(
+        manifests_read > 0 && bindings_read > 0,
+        "the anonymous-principal refusal read {manifests_read} manifest(s) holding \
+         {bindings_read} IAMPolicyMember binding(s) under {ENVS}; with none it proved nothing \
+         about who may invoke anything"
     );
 }
 

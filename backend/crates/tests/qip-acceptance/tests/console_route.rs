@@ -51,16 +51,23 @@ const ENVS: &str = "infrastructure/gitops/envs";
 
 /// The one ingress a service on the console's route may carry.
 const INTERNAL_ONLY: &str = "INGRESS_TRAFFIC_INTERNAL_ONLY";
-/// The ingress ADR 0030 grants exactly one service, OpenObserve.
+/// The ingress exactly one service may carry: the portal, behind Cloud Run's
+/// own IAP in an environment that names no hostname (ADR 0095).
+///
+/// OpenObserve carried it under ADR 0030, beside an anonymous invoker, until
+/// ADR 0033 was applied for the invoker half on 2026-09-26.
 const ALL_TRAFFIC: &str = "INGRESS_TRAFFIC_ALL";
-/// The ingress ADR 0094 grants exactly one service, the portal.
+/// The ingress of a service reached only through a load balancer: the portal
+/// in an environment naming a hostname (ADR 0094), and OpenObserve under ADR
+/// 0033's authenticated posture, which `modules/openobserve` derives
+/// (`run_service_ingress`).
 ///
 /// A third value, and the table below is by service name rather than by rule
 /// because three postures are no longer something a reader holds in mind.
-/// This one is *not* the public posture: it admits the global external load
-/// balancer `modules/iap-edge` creates and nothing else from the internet, so
-/// the service's own `run.app` URL stays unreachable and IAP cannot be walked
-/// around by dialling the origin.
+/// This one is *not* the public posture: it admits a global external load
+/// balancer and nothing else from the internet, so the service's own
+/// `run.app` URL stays unreachable and IAP cannot be walked around by dialling
+/// the origin. With no load balancer built, it admits nobody.
 const LOAD_BALANCER_ONLY: &str = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER";
 
 // ---------------------------------------------------------------------------
@@ -440,11 +447,14 @@ fn the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may() {
             } else if target == portal {
                 on_portal.push(document);
             } else if target == openobserve {
-                // ADR 0030's one anonymous grant. `gitops.rs`'s
-                // `openobserve_is_deployed_at_the_reviewed_digest_anonymous_as_adr_0030_records_and_on_ephemeral_storage`
-                // pins it to exactly one `allUsers` per environment, on that
-                // service, and refuses `allUsers` wherever OpenObserve is not
-                // deployed. Not asserted twice here.
+                // OpenObserve's grants are ADR 0033's named principals, and
+                // none is named today. `infrastructure.rs`'s
+                // `the_openobserve_posture_module_is_instantiated_and_its_invokers_are_the_manifests`
+                // holds them to `module.openobserve_access`'s member set, and
+                // `gitops.rs`'s
+                // `openobserve_is_deployed_at_the_reviewed_digest_on_ephemeral_storage_and_answers_no_anonymous_caller`
+                // refuses an anonymous principal in any manifest under
+                // {ENVS}. Not asserted twice here.
             } else {
                 // The brains, or anything else: nothing calls them over HTTP,
                 // and a grant on one is a route in that the catalogue's
@@ -563,15 +573,16 @@ fn the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may() {
         all_authenticated.join("\n")
     );
     // `allUsers` outside `envs/` has nothing to be bound to; inside, the
-    // gitops.rs test named above holds it to OpenObserve's one grant.
+    // gitops.rs test named above refuses it in every manifest, since ADR 0033
+    // withdrew the one grant ADR 0030 made.
     let anonymous_outside_envs: Vec<String> = lines_naming_principal(GITOPS, "allUsers")
         .into_iter()
         .filter(|line| !line.starts_with(&format!("{ENVS}/")))
         .collect();
     assert!(
         anonymous_outside_envs.is_empty(),
-        "allUsers is named under {GITOPS} outside {ENVS}, where no service exists for ADR \
-         0030's one exception to apply to:\n{}",
+        "allUsers is named under {GITOPS} outside {ENVS}, where no service exists to bind it to \
+         and no record permits it:\n{}",
         anonymous_outside_envs.join("\n")
     );
 }
@@ -624,20 +635,32 @@ fn the_api_is_reachable_only_from_inside_the_vpc_and_its_address_is_a_terraform_
         // `every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held`
         // pins each catalogue workload — the two brains included — to
         // internal ingress; this is the complement, over every RunService
-        // the environment declares whatever it is named: the one that may
-        // answer the internet is OpenObserve (ADR 0030, revisited by ADR
-        // 0033), it does so through exactly the one value, and no other
-        // service carries any other posture.
+        // the environment declares whatever it is named: OpenObserve admits a
+        // load balancer and nothing else (ADR 0033), the portal carries the
+        // pairing below, and no other service carries any posture but
+        // internal.
         let portal = format!("qip-{environment}-portal");
         for service in &services {
             let ingress = service.field(2, "ingress");
             if service.name == openobserve {
+                // ADR 0033's authenticated posture: the value
+                // `modules/openobserve/main.tf` derives as
+                // `run_service_ingress` when `access_posture` is
+                // `authenticated`, which is its default and what
+                // `module.openobserve_access` in catalogue.tf leaves it at.
+                // This arm demanded `{ALL_TRAFFIC}` under ADR 0030 — the
+                // anonymous posture — so the fix was the change that failed
+                // it; it is inverted in place rather than removed, because
+                // without it an OpenObserve RunService falls through to the
+                // `{INTERNAL_ONLY}` arm below and fails for the wrong reason.
                 assert_eq!(
                     ingress.as_deref(),
-                    Some(ALL_TRAFFIC),
-                    "{} is ADR 0030's anonymous service and carries ingress {ingress:?} rather \
-                     than {ALL_TRAFFIC}; a public grant behind an internal posture is a public \
-                     403 that reads as an exposure",
+                    Some(LOAD_BALANCER_ONLY),
+                    "{} carries ingress {ingress:?} rather than {LOAD_BALANCER_ONLY}, the value \
+                     modules/openobserve derives for ADR 0033's authenticated posture. \
+                     {ALL_TRAFFIC} leaves the run.app URL answering the internet around any \
+                     proxy put in front of it, which is ADR 0030's anonymous posture and the \
+                     one ADR 0033 ended",
                     service.describe()
                 );
                 continue;
@@ -685,9 +708,10 @@ fn the_api_is_reachable_only_from_inside_the_vpc_and_its_address_is_a_terraform_
             assert_eq!(
                 ingress.as_deref(),
                 Some(INTERNAL_ONLY),
-                "{} carries ingress {ingress:?}; only `{openobserve}` may answer the internet \
-                 (ADR 0030) and only `{portal}` may be reached through a load balancer (ADR \
-                 0094), and every other service under {ENVS}/{environment} is {INTERNAL_ONLY}",
+                "{} carries ingress {ingress:?}; only `{portal}` may be reached from the \
+                 internet, behind IAP (ADR 0094, ADR 0095), `{openobserve}` admits a load \
+                 balancer and nothing else (ADR 0033), and every other service under \
+                 {ENVS}/{environment} is {INTERNAL_ONLY}",
                 service.describe()
             );
         }

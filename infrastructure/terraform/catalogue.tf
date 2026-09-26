@@ -774,17 +774,17 @@ resource "terraform_data" "openobserve_is_placed" {
 # the same shape `execution_nodes` uses for "no node configured yet".
 #
 # The service itself is `infrastructure/gitops/envs/<env>/openobserve.yaml`
-# (ADR 0036 decision 4), and the three facts ADR 0028, 0030 and 0031 record
+# (ADR 0036 decision 4), and the three facts ADR 0028, 0033 and 0031 record
 # about it live there and in the parity test rather than as module inputs:
 #
-#   * anonymous on the public internet, on the owner's instruction (ADR
-#     0030, amending ADR 0028 decision 5). The manifest is the only one under
-#     envs/ whose ingress is `INGRESS_TRAFFIC_ALL`, and its `allUsers`
-#     invoker is an `IAMPolicyMember` beside it; the test admits exactly that
-#     one and refuses a second. The trigger ADR 0030 set for itself stands:
-#     the service is empty today and stops being empty the moment any
-#     deployment sets QIP_OPENOBSERVE_URL, and that change is the one that
-#     must move it behind IAP or re-argue the exposure.
+#   * authenticated, with no anonymous invoker (ADR 0033, which amended ADR
+#     0030's anonymous posture on the condition ADR 0030 set for itself). The
+#     decision is `module.openobserve_access` below; the manifest carries the
+#     ingress it derives and `invokers.yaml` the members it names, and the
+#     acceptance suite refuses either anonymous principal in any manifest
+#     under envs/. No Identity-Aware Proxy fronts the service yet, so it
+#     answers nobody: ADR 0033 prefers that to answering anybody, and the
+#     front door is open work, not a gap this block papers over.
 #   * the image is the mirrored, attested copy at the digest the root names
 #     below, `<registry>/vendor/openobserve@<digest>`; a manifest naming the
 #     upstream repository, a tag, or a digest vendored-images.txt never
@@ -871,6 +871,34 @@ module "openobserve" {
   # beside the three built workloads'. Null where there is no control plane.
   deployer_present         = var.gitops_enabled
   deployer_service_account = var.gitops_enabled ? module.gitops_control_plane[0].kcc_service_account_email : null
+}
+
+# Who may reach OpenObserve, decided once (ADR 0033).
+#
+# The module creates nothing and writes no binding; it derives the RunService
+# ingress and the `roles/run.invoker` members the manifests under
+# `gitops/envs/<env>/` must carry, and refuses the anonymous posture for prod.
+# It sat in the tree with no caller from 2026-09-05, which meant that refusal
+# was evaluated by no plan and the manifest went on granting the anonymous
+# principal with nothing in Terraform saying otherwise.
+#
+# Deliberately **not** gated on `vendored_openobserve_image_digest` the way
+# the identity above is: it holds no resource, so instantiating it everywhere
+# costs nothing, and a `count` would skip exactly the environments — prod
+# among them — whose plans the refusal exists for.
+#
+# `access_posture` is left at the module's default, `authenticated`, and
+# `access_principals` at its default of nobody. Naming an operator is a grant,
+# made here and mirrored in `invokers.yaml`; `infrastructure.rs` holds the two
+# to the same member set, and holds this block to passing no posture at all,
+# because a caller that writes one has taken back the decision this module
+# exists to make. Named `openobserve_access` because `egress.rs` and
+# `terraform_contract.rs` find the identity block above by its exact name,
+# and a second block under it would hand them the wrong one.
+module "openobserve_access" {
+  source = "./modules/openobserve"
+
+  environment = var.environment
 }
 
 # --- The portal (ADR 0018, ADR 0036, ADR 0094) -------------------------------

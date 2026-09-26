@@ -7,6 +7,19 @@
 # Who may call each service. Nothing, unless a member is named here: the
 # module's invoker binding left with the service (ADR 0036 decision 5), and
 # these are its manifest form.
+#
+# OpenObserve has no binding here, and that is ADR 0033 applied rather than
+# an omission. Its invoker set is `module.openobserve_access.invoker_members`
+# in catalogue.tf — the named principals under the authenticated posture, and
+# nobody while none is named — and `infrastructure.rs` holds this file to it.
+# Until 2026-09-26 a binding here gave the anonymous principal
+# `roles/run.invoker` on qip-dev-openobserve under ADR 0030, which made the
+# store holding the desk's cycle, refusal and order telemetry writable by
+# anyone the moment the reconciler ran. No grant means OpenObserve answers
+# nobody until an operator is named, which is the direction ADR 0033 chose.
+# `gitops.rs` refuses any manifest under envs/ that names either anonymous
+# principal, annotations included, so a `qip.algorik.ai/why` below must not
+# spell one; this comment is not parsed and may describe it.
 apiVersion: iam.cnrm.cloud.google.com/v1beta1
 kind: IAMPolicyMember
 metadata:
@@ -26,22 +39,6 @@ spec:
 apiVersion: iam.cnrm.cloud.google.com/v1beta1
 kind: IAMPolicyMember
 metadata:
-  name: qip-dev-openobserve-invoker-all-users
-  annotations:
-    cnrm.cloud.google.com/deletion-policy: abandon
-    qip.algorik.ai/why: Anonymous on the public internet on the owner's instruction (ADR 0030, revisited
-      by ADR 0033); the one anonymous workload the parity test admits.
-spec:
-  member: allUsers
-  role: roles/run.invoker
-  resourceRef:
-    apiVersion: run.cnrm.cloud.google.com/v1beta1
-    kind: RunService
-    name: qip-dev-openobserve
----
-apiVersion: iam.cnrm.cloud.google.com/v1beta1
-kind: IAMPolicyMember
-metadata:
   name: qip-dev-portal-invoker-iap
   annotations:
     cnrm.cloud.google.com/deletion-policy: abandon
@@ -50,13 +47,13 @@ metadata:
       unchanged by ADR 0095 — IAP forwards as its agent whether it sits on a load balancer or on
       the service itself, and Google's own Cloud Run IAP instructions ask for exactly this grant).
       Without this, IAP authenticates the caller correctly and the service answers 403, which
-      reads as an access-list problem and is not one. The alternative — an anonymous invoker, as
-      ADR 0030 grants OpenObserve above — is what makes ingress INGRESS_TRAFFIC_ALL safe here by
-      its absence — with no anonymous grant a browser cannot reach this service without passing
-      IAP, and an unenabled gate is a console nobody can reach rather than one anybody can. (The
-      anonymous principal is deliberately not named in this sentence. `gitops.rs` counts the
-      manifests under this directory whose serialised text contains that identifier and admits
-      exactly one, so writing it here would fail the test by documenting it — the same trap
+      reads as an access-list problem and is not one. The alternative — an anonymous invoker, which
+      ADR 0030 once granted OpenObserve and ADR 0033 withdrew — is what makes ingress
+      INGRESS_TRAFFIC_ALL safe here by its absence — with no anonymous grant a browser cannot reach
+      this service without passing IAP, and an unenabled gate is a console nobody can reach rather
+      than one anybody can. (The anonymous principal is deliberately not named in this sentence.
+      `gitops.rs` counts the manifests under this directory whose serialised text names that
+      identifier and admits none, so writing it here would fail the test by documenting it — the same trap
       `infrastructure.rs` names about the accessor role.) The principal below is written out
       rather than derived because a manifest has no variables; it is the agent Google creates for
       this project number, and `console_route.rs` rebuilds it from the tfvars and compares.

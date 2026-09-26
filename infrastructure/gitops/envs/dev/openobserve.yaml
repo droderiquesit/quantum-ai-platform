@@ -24,7 +24,18 @@ spec:
   projectRef:
     external: projects/algorik-dev
   location: us-east4
-  ingress: INGRESS_TRAFFIC_ALL
+  # ADR 0033's authenticated posture, as modules/openobserve derives it
+  # (`run_service_ingress`, instantiated from catalogue.tf as
+  # `module.openobserve_access`): a load balancer is the only thing admitted
+  # from outside the VPC, so the service's own run.app URL is no route around
+  # the Identity-Aware Proxy that load balancer is to carry. No such load
+  # balancer exists yet, and `invokers.yaml` names no invoker on this service,
+  # so today OpenObserve answers nobody. That is the failure direction ADR 0033
+  # chose: reachable by nobody until the front door is built, never reachable
+  # by anybody. This line was `INGRESS_TRAFFIC_ALL` under ADR 0030, beside an
+  # anonymous invoker, which made a store of the desk's cycle, refusal and
+  # order telemetry anonymously writable the moment the reconciler ran.
+  ingress: INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER
   binaryAuthorization:
     useDefault: true
   template:
