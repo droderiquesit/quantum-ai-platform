@@ -451,24 +451,6 @@ impl TransactionCostModel {
         ))
     }
 
-    /// [`Self::checked_estimate`], panicking on a model that cannot price.
-    ///
-    /// Kept because callers outside this crate quote a cost inline; prefer
-    /// [`Self::checked_estimate`] anywhere the refusal can be handled, which
-    /// under `panic = "abort"` is the difference between refusing an order and
-    /// losing the process.
-    ///
-    /// # Panics
-    ///
-    /// If any rate is not a finite number, or if a term or the total is too
-    /// large to represent.
-    pub fn estimate(&self, notional: Decimal, participation: f64) -> Decimal {
-        match self.checked_estimate(notional, participation) {
-            Ok(cost) => cost,
-            Err(refusal) => panic!("{refusal}"),
-        }
-    }
-
     /// Market impact in basis points at a given participation rate.
     pub fn impact_bps(&self, participation: f64) -> f64 {
         if !participation.is_finite() || participation <= 0.0 {

@@ -13,6 +13,11 @@
 // capped case yields exactly zero or exactly the cap, not merely something
 // close to it.
 #![allow(clippy::float_cmp)]
+// The workspace denies `panic_in_result_fn` for production code, where an
+// assertion that aborts a `Result`-returning function is a bug. In a test the
+// assertion is the deliverable, and `?` on `checked_estimate` is what keeps a
+// refusal a test failure rather than a panic in the setup.
+#![allow(clippy::panic_in_result_fn)]
 
 use qip_core::testing::approx_eq;
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
@@ -138,14 +143,14 @@ fn total_bps_is_the_sum_of_every_component_at_the_given_participation() {
 }
 
 #[test]
-fn estimate_scales_with_notional_and_includes_the_fixed_fee() {
+fn checked_estimate_scales_with_notional_and_includes_the_fixed_fee() -> qip_core::Result<()> {
     let m = TransactionCostModel {
         fixed_fee: qip_core::dec!("5"),
         ..TransactionCostModel::default()
     };
     let notional = qip_core::dec!("1000000");
     let participation = 0.1;
-    let cost = m.estimate(notional, participation);
+    let cost = m.checked_estimate(notional, participation)?;
 
     // Premise: the total-bps figure is non-zero, so the estimate below is
     // actually checking a computed cost rather than a coincidental zero.
@@ -160,18 +165,20 @@ fn estimate_scales_with_notional_and_includes_the_fixed_fee() {
     assert!(approx_eq(cost.to_f64(), expected.to_f64(), 1e-6));
 
     // A trade with zero notional still pays the fixed fee.
-    let zero_notional_cost = m.estimate(qip_core::Decimal::ZERO, participation);
+    let zero_notional_cost = m.checked_estimate(qip_core::Decimal::ZERO, participation)?;
     assert_eq!(zero_notional_cost, m.fixed_fee);
+    Ok(())
 }
 
 #[test]
-fn estimate_uses_the_magnitude_of_a_negative_notional() {
+fn checked_estimate_uses_the_magnitude_of_a_negative_notional() -> qip_core::Result<()> {
     // A sell is represented with a negative notional in some callers; the
     // cost of trading it is the same as the cost of the equivalent buy.
     let m = model();
-    let buy = m.estimate(qip_core::dec!("100000"), 0.1);
-    let sell = m.estimate(qip_core::dec!("-100000"), 0.1);
+    let buy = m.checked_estimate(qip_core::dec!("100000"), 0.1)?;
+    let sell = m.checked_estimate(qip_core::dec!("-100000"), 0.1)?;
     assert_eq!(buy, sell);
+    Ok(())
 }
 
 #[test]
@@ -636,7 +643,8 @@ fn a_committed_record_the_tape_does_not_cover_is_quoted_no_tighter_than_every_re
 }
 
 #[test]
-fn a_cost_model_whose_spread_is_not_a_number_is_refused_before_it_reaches_the_money_path() {
+fn a_cost_model_whose_spread_is_not_a_number_is_refused_before_it_reaches_the_money_path()
+-> qip_core::Result<()> {
     // The premise first, because the refusal below is only worth having if the
     // figure really is unusable. Every component of `estimate` crosses through
     // `Decimal::apply_bps`, which is `Decimal::from_f64(bps / 10_000.0)`
@@ -734,7 +742,7 @@ fn a_cost_model_whose_spread_is_not_a_number_is_refused_before_it_reaches_the_mo
         serde_json::from_str(document).expect("an ordinary listed cost model decodes");
     assert_eq!(sound, TransactionCostModel::default());
     assert!(
-        sound.estimate(notional, 0.1).is_positive(),
+        sound.checked_estimate(notional, 0.1)?.is_positive(),
         "a stated cost model prices a million-dollar trade above zero"
     );
     // And the wide end is admitted too: a hard-to-borrow name really does quote
@@ -747,10 +755,12 @@ fn a_cost_model_whose_spread_is_not_a_number_is_refused_before_it_reaches_the_mo
         hard_to_borrow.checked().is_ok(),
         "a 450% annual borrow is a rate a lending desk writes down"
     );
+    Ok(())
 }
 
 #[test]
-fn a_cost_model_a_struct_literal_poisoned_refuses_to_price_instead_of_aborting_or_charging_zero() {
+fn a_cost_model_a_struct_literal_poisoned_refuses_to_price_instead_of_aborting_or_charging_zero()
+-> qip_core::Result<()> {
     // `checked` and `FinancialObject::validate` keep an unpriceable rate off a
     // record. Neither sees a model assembled field by field, and the fields are
     // public — `qip-simulation-engine`'s `CostModel::pricing_at` builds one that
@@ -811,16 +821,28 @@ fn a_cost_model_a_struct_literal_poisoned_refuses_to_price_instead_of_aborting_o
     }
 
     // The admitting half, which is what makes this a validation rather than a
-    // wall: an ordinary listed model still prices, and it prices the same
-    // figure the panicking form quotes, so the checked path is not a
-    // second-class approximation of it.
+    // wall: an ordinary listed model still prices, and it prices the figure
+    // computed by hand from `TransactionCostModel::default()` on 1,000,000 at a
+    // participation of 0.1:
+    //
+    //   fixed fee                         0
+    //   commission 1bp + tax 0bp        100
+    //   half-spread 2.5bp               250
+    //   impact 40bp x sqrt(0.1) = 12.649110640673518bp, whose factor
+    //     Decimal::from_f64 rounds at nine places to 0.001264911   1,264.911
+    //                                                            ---------
+    //                                                             1,614.911
+    //
+    // This compared the checked path to the panicking `estimate` until that
+    // wrapper was deleted, and the self-comparison it would have become guards
+    // nothing: a term dropped from the loop moves both sides at once. A figure
+    // derived outside the code does not.
     let sound = TransactionCostModel::default();
-    let priced = sound
-        .checked_estimate(notional, 0.1)
-        .expect("an ordinary listed cost model prices a million-dollar trade");
+    let priced = sound.checked_estimate(notional, 0.1)?;
     assert!(
         priced.is_positive(),
         "a stated cost model prices a million-dollar trade above zero, got {priced}"
     );
-    assert_eq!(priced, sound.estimate(notional, 0.1));
+    assert_eq!(priced, qip_core::dec!("1614.911"));
+    Ok(())
 }

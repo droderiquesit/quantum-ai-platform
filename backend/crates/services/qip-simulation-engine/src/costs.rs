@@ -456,7 +456,7 @@ impl CostModel {
     ///
     /// `daily_volume` sets the participation and `daily_volatility` scales the
     /// impact coefficient; the arithmetic is
-    /// [`TransactionCostModel::estimate`]'s, term for term, so
+    /// [`TransactionCostModel::checked_estimate`]'s, term for term, so
     /// [`TradeCost::charged`] and the pre-trade estimate for the same order are
     /// the same number rather than two opinions about it.
     ///
@@ -506,9 +506,9 @@ impl CostModel {
                 .map_err(|error| Unfillable::Unpriceable {
                     reason: error.to_string(),
                 })?;
-        // The three terms of `TransactionCostModel::estimate`, split so a
+        // The three terms of `TransactionCostModel::checked_estimate`, split so a
         // result can be decomposed into what the strategy earned and what the
-        // market took. They sum to `estimate` exactly, and
+        // market took. They sum to `checked_estimate` exactly, and
         // `a_simulated_fill_is_charged_exactly_what_the_pre_trade_model_quotes`
         // is what keeps it that way.
         //
@@ -545,7 +545,7 @@ impl CostModel {
     /// Commission and levies on a filled notional.
     ///
     /// The same two terms [`Self::cost_of`] charges and
-    /// [`TransactionCostModel::estimate`] quotes. A notional too large for a
+    /// [`TransactionCostModel::checked_estimate`] quotes. A notional too large for a
     /// [`Decimal`] never reaches here through [`Self::cost_of`], which refuses
     /// it as [`Unfillable::NotRepresentable`] before any fee is computed — but
     /// this is a `pub fn` and that is a fact about one caller, not about this
