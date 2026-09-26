@@ -2008,11 +2008,13 @@ impl Cell {
     /// Whether a halt other than the journal wire holds the cell.
     ///
     /// Separate because the journal wire releases itself the moment the
-    /// spool recovers. The two seams that trip the kill switch on a
-    /// reconciliation or cycle break ask this rather than
-    /// [`Self::is_halted`]: asking the latter, a break found while the spool
-    /// was exhausted would trip nothing, and the cell would resume trading
-    /// on a book that disagrees with the venue as soon as the disk freed up.
+    /// spool recovers. `break_on`, which trips the kill switch on a
+    /// reconciliation break, asks this rather than [`Self::is_halted`]:
+    /// asking the latter, a break found while the spool was exhausted would
+    /// trip nothing, and the cell would resume trading on a book that
+    /// disagrees with the venue as soon as the disk freed up.
+    /// `break_cycle` cannot run while the journal wire holds the cell, and
+    /// keeps `is_halted` — see the note there.
     fn halted_other_than_by_journal(&self) -> bool {
         self.autonomy.kill_switch().is_globally_tripped()
             || self.policy_halted
@@ -6910,7 +6912,13 @@ impl Cell {
             ),
             now,
         );
-        if sent > 0 && !self.halted_other_than_by_journal() {
+        // `is_halted` rather than `halted_other_than_by_journal`, unlike
+        // `break_on`, and the two are equivalent here: a cycle leg is sent
+        // only inside `Cell::work` after the halt gate, and journal pressure
+        // is applied only between passes, so a cell held by the journal wire
+        // never reaches this line. A predicate distinction no input can
+        // exercise would be a guard no test can prove.
+        if sent > 0 && !self.is_halted() {
             self.autonomy.kill_switch_mut().trip_global(
                 now,
                 "arbitrage",

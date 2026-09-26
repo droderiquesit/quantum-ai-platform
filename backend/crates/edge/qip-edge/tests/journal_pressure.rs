@@ -24,17 +24,20 @@ use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::cell::{
     Cell, CellConfig, ExecutionReport, GATE_JOURNAL_PRESSURE, Placer, PricingPolicy, WorkReport,
 };
+use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
 use qip_edge::pressure::{Exhaustion, Freshness, JournalPressure, Narrowing};
 use qip_edge::quoting::Admission;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
+use qip_observability::metrics::{Metrics, labels, names};
 use qip_orderbook::venue::VenueState;
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::{Expr, Rule, StrategySpec};
 use qip_strategy::program::Program;
+use std::sync::Arc;
 
 const CELL: &str = "london-1";
 const REGION: &str = "europe-west2";
@@ -540,6 +543,105 @@ fn a_requote_under_exhausted_journal_pressure_withdraws_and_does_not_replace() -
         gateway.placed.len(),
         1,
         "the withdrawn order was replaced at the venue"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_reconciliation_break_found_while_the_journal_is_exhausted_still_trips_the_kill_switch()
+-> Result<()> {
+    // The journal wire releases itself when the spool recovers. If a break
+    // found while it held the cell asked "is the cell already halted?" and
+    // took the journal halt for an answer, it would trip nothing — and the
+    // cell would resume trading on a book that disagrees with the venue the
+    // moment the disk freed up. The break must trip the kill switch, whose
+    // release needs an operator credential, whatever else is holding the
+    // cell.
+    //
+    // `break_cycle`, the other kill-switch seam, is not driven here: it is
+    // reached only from inside `Cell::work` after the halt gate, so a cell
+    // held by the journal wire returns before any cycle leg is sent and no
+    // cycle can break while the wire is engaged.
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_journal_wire();
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?.with_metrics(Arc::clone(&metrics));
+    cell.track(book()?);
+    let (compiled, program) = firing_strategy("alpha", "10")?;
+    cell.deploy_with_pricing(
+        compiled,
+        program,
+        signed_envelope("alpha")?,
+        PricingPolicy::Marketable,
+    )?;
+    let by = |key: &str, value: &str| labels([("cell", CELL), ("region", REGION), (key, value)]);
+
+    cell.apply_journal_pressure(JournalPressure::Normal, t(9))?;
+    let mut gateway = ScriptedVenue::default();
+    let first = cell.work(t(10), &mut gateway)?;
+    let Some(order) = first.orders.first().cloned() else {
+        panic!(
+            "the premise failed: nothing was sent for the venue to disagree about: {:?}",
+            first.refusals
+        );
+    };
+
+    cell.apply_journal_pressure(JournalPressure::Exhausted(Exhaustion::Unwritable), t(11))?;
+    assert!(
+        cell.is_halted() && !cell.autonomy().kill_switch().is_globally_tripped(),
+        "the premise is a cell held by the journal wire alone"
+    );
+
+    // The venue's own account says half the order traded; the cell has
+    // confirmed nothing. That is a break.
+    cell.observe_drop_copy(DropCopyFill {
+        order_id: order.order_id.clone(),
+        venue: order.venue.clone(),
+        quantity: order.quantity / d("2"),
+        price: order.price,
+        at: t(12),
+    });
+    let breaks = cell.reconcile(t(12));
+    assert_eq!(
+        breaks.len(),
+        1,
+        "the premise failed: a half fill the cell never confirmed reconciled clean"
+    );
+    assert!(
+        cell.autonomy().kill_switch().is_globally_tripped(),
+        "a break found while the journal was exhausted did not trip the kill switch"
+    );
+
+    // The spool recovers. The journal wire releases; the kill switch must not.
+    cell.apply_journal_pressure(JournalPressure::Normal, t(13))?;
+    assert!(
+        cell.is_halted(),
+        "the spool recovering resumed a cell that had found a reconciliation break"
+    );
+    let pass = cell.work(t(14), &mut gateway)?;
+    assert!(
+        pass.halted && pass.orders.is_empty(),
+        "the cell traded again after a break because the spool recovered: {:?}",
+        pass.orders
+    );
+    assert_eq!(
+        refusals_under(&pass, "kill_switch").len(),
+        1,
+        "the pass after recovery was not refused under the kill switch: {:?}",
+        pass.refusals
+    );
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.gauge(names::EDGE_HALTED, &by("source", "kill_switch")),
+        Some(1.0),
+        "the kill switch the break tripped is not charted"
+    );
+    assert_eq!(
+        snapshot.gauge(names::EDGE_HALTED, &by("source", "journal")),
+        Some(0.0),
+        "the recovered spool still charts the journal halt"
     );
     Ok(())
 }
