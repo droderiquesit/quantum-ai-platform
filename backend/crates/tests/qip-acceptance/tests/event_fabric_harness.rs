@@ -472,16 +472,18 @@ fn every_real_startup_banner_ends_in_the_address_the_harness_parses() {
     // banner reworded there fails in this file — not in a §8 suite waiting
     // out its deadline on a line that will never come. `println!` rather than
     // `eprintln!` is part of the check: `wait_for_line` reads stdout.
-    let banners = [
-        (
-            "backend/crates/apps/qip-api/src/main.rs",
-            "qip-api listening on ",
-        ),
-        (
-            "backend/crates/apps/qip-edge-node/src/main.rs",
-            "qip-edge-node: health on ",
-        ),
-    ];
+    //
+    // qip-edge-node is deliberately absent. Its banner has the right shape, but
+    // it prints the *configured* address (`format!("0.0.0.0:{}", config.health_port)`
+    // in qip-edge-node/src/main.rs), not `listener.local_addr()`. Under the
+    // harness's `:0` ports that is `0.0.0.0:0`, which names no port a test can
+    // reach. Certifying its shape here would pass a banner the harness cannot
+    // use. SLICE-36, which owns that main.rs, prints the bound address and adds
+    // the entry back.
+    let banners = [(
+        "backend/crates/apps/qip-api/src/main.rs",
+        "qip-api listening on ",
+    )];
     for (file, prefix) in banners {
         let source = qip_acceptance::read(file);
         let opening = format!("println!(\"{prefix}{{");
