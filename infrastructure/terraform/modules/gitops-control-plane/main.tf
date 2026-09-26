@@ -205,7 +205,11 @@ resource "google_container_cluster" "control_plane" {
   # rebuild rather than after it, which is the ordering that matters: a
   # cluster created while this reads `false` is unprotected from its first
   # minute, and nothing would say so.
-  deletion_protection = true
+  # Flipped to `false` on 2026-09-26 for one apply, on the owner's instruction
+  # in session to suspend the dev control plane again now that billing is back
+  # (ADR 0093's two-apply sequence: this in-place apply, then `suspend`, then
+  # the literal restored before anything can rebuild the cluster).
+  deletion_protection = false
 
   # Private in both directions. The endpoint has no public address at all,
   # rather than one behind an allowlist, and the only range that may reach
