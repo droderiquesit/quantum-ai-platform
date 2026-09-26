@@ -2713,9 +2713,10 @@ const REVIEWED_WEIGHT_MOVERS: [(&str, &str, &str); 12] = [
     ),
     (
         "apps/qip-edge-node/src/strategies.rs",
-        "install",
+        "reconcile",
         "drops a held grant once the strategy it funds is deployed; a removal that can only \
-         reduce what the cell holds",
+         reduce what the cell holds. Shared by `install` and `install_compiled` since \
+         SLICE-33, so the legacy and off-thread paths drop grants by one rule",
     ),
     (
         "apps/qip-edge-node/src/strategies.rs",
