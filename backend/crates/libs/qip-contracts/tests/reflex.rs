@@ -35,6 +35,9 @@ fn a_journal_entry_digest_is_unchanged_by_the_move_to_the_contract_layer() {
         price: "101.5".to_string(),
         simulated: true,
         shares: vec![("alpha".to_string(), "10".to_string())],
+        side: None,
+        quote_unit: None,
+        fee: None,
     };
 
     // Assert the premise before the pinned value: the fixture really is the

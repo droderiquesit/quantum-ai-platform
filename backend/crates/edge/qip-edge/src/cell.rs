@@ -379,6 +379,15 @@ pub struct CellConfig {
     /// chaos and e2e suites and the legacy node mode on a spool nobody
     /// writes. Only [`Self::with_journal_wire`] turns it on.
     pub journal_wire: bool,
+    /// Whether this cell's journal drops what it has shipped to a mirror.
+    ///
+    /// Off by default: every reader of `Cell::journal().entries()` written
+    /// before trimming existed — the chaos and region-share suites among
+    /// them — expects the whole session. A cell whose mirror is the durable
+    /// record turns it on with [`Self::with_journal_trimmed_on_ship`], so its
+    /// memory is bounded by what has not shipped rather than by uptime.
+    /// `Journal::len` reads the same either way.
+    pub journal_trimmed_on_ship: bool,
 }
 
 /// The rolling window §27.1's crossing cap is evaluated against.
@@ -422,7 +431,15 @@ impl CellConfig {
             dispersion: DispersionPolicy::default(),
             decomposition: DecompositionPolicy::default(),
             journal_wire: false,
+            journal_trimmed_on_ship: false,
         }
+    }
+
+    /// Build the cell's journal to trim behind every shipped batch.
+    #[must_use]
+    pub fn with_journal_trimmed_on_ship(mut self) -> Self {
+        self.journal_trimmed_on_ship = true;
+        self
     }
 
     /// Arm the journal-pressure wire (ADR 0100 §6).
@@ -1258,7 +1275,11 @@ impl Cell {
             journal_pressure,
             dropcopy: DropCopyReconciler::new(),
             desk: None,
-            journal: Journal::new(),
+            journal: if config.journal_trimmed_on_ship {
+                Journal::trimmed_on_ship()
+            } else {
+                Journal::new()
+            },
             working: BTreeMap::new(),
             confirmed: Vec::new(),
             positions: BTreeMap::new(),
@@ -4763,6 +4784,11 @@ impl Cell {
                     .iter()
                     .map(|(strategy, share)| (strategy.as_str().to_string(), share.to_string()))
                     .collect(),
+                // SLICE-20 fills these from the execution report. Absent
+                // here means unreported, never zero — a fee especially.
+                side: None,
+                quote_unit: None,
+                fee: None,
             },
             now,
         );
