@@ -107,21 +107,24 @@ impl FabricdTelemetry {
     ///
     /// A gauge, because it is the current position, not a rate. The stream
     /// is bounded by the catalogue; the partition is a number.
-    pub fn high_watermark(&self, stream: &str, partition: u32) {
+    // Offsets and lags are u64 and a gauge holds an f64: exact to 2^53, past
+    // which the gauge rounds. This is the crossing point, stated once here for
+    // high_watermark, archived_through and group_lag alike.
+    pub fn high_watermark(&self, stream: &str, partition: u32, offset: u64) {
         let mut labels = Labels::new();
         labels.insert("stream".to_string(), stream.to_string());
         labels.insert("partition".to_string(), partition.to_string());
         self.metrics
-            .gauge(names::EVENT_FABRIC_HIGH_WATERMARK, labels, 0.0);
+            .gauge(names::EVENT_FABRIC_HIGH_WATERMARK, labels, offset as f64);
     }
 
     /// The highest archived offset for a stream and partition.
-    pub fn archived_through(&self, stream: &str, partition: u32) {
+    pub fn archived_through(&self, stream: &str, partition: u32, offset: u64) {
         let mut labels = Labels::new();
         labels.insert("stream".to_string(), stream.to_string());
         labels.insert("partition".to_string(), partition.to_string());
         self.metrics
-            .gauge(names::EVENT_FABRIC_ARCHIVED_THROUGH, labels, 0.0);
+            .gauge(names::EVENT_FABRIC_ARCHIVED_THROUGH, labels, offset as f64);
     }
 
     /// A duplicate append was detected.
@@ -184,13 +187,13 @@ impl FabricdTelemetry {
     }
 
     /// Consumer group lag for a group, stream and partition.
-    pub fn group_lag(&self, group: &str, stream: &str, partition: u32) {
+    pub fn group_lag(&self, group: &str, stream: &str, partition: u32, lag: u64) {
         let mut labels = Labels::new();
         labels.insert("group".to_string(), group.to_string());
         labels.insert("stream".to_string(), stream.to_string());
         labels.insert("partition".to_string(), partition.to_string());
         self.metrics
-            .gauge(names::EVENT_FABRIC_GROUP_LAG, labels, 0.0);
+            .gauge(names::EVENT_FABRIC_GROUP_LAG, labels, lag as f64);
     }
 }
 
@@ -296,7 +299,7 @@ mod tests {
 
         // high_watermark{stream,partition} — a gauge, the current offset.
         assert_absent(&snapshot, names::EVENT_FABRIC_HIGH_WATERMARK);
-        recorder.high_watermark("orders", 3);
+        recorder.high_watermark("orders", 3, 1_234);
         let snapshot = metrics.snapshot();
         let found = find(&snapshot, names::EVENT_FABRIC_HIGH_WATERMARK);
         assert_label_keys(found, &["stream", "partition"]);
@@ -309,7 +312,7 @@ mod tests {
             MetricValue::Gauge(v) => {
                 #[allow(clippy::float_cmp)]
                 {
-                    assert_eq!(*v, 0.0, "high_watermark gauge holds the recorded value");
+                    assert_eq!(*v, 1_234.0, "high_watermark gauge holds the recorded value");
                 }
             }
             other => panic!("expected Gauge for high_watermark, got {other:?}"),
@@ -320,7 +323,7 @@ mod tests {
         // of it: an archiver that fell behind the log's head must be able to
         // disagree with the head, and one series could never say so.
         assert_absent(&snapshot, names::EVENT_FABRIC_ARCHIVED_THROUGH);
-        recorder.archived_through("orders", 3);
+        recorder.archived_through("orders", 3, 1_000);
         let snapshot = metrics.snapshot();
         let found = find(&snapshot, names::EVENT_FABRIC_ARCHIVED_THROUGH);
         assert_label_keys(found, &["stream", "partition"]);
@@ -333,7 +336,10 @@ mod tests {
             MetricValue::Gauge(v) => {
                 #[allow(clippy::float_cmp)]
                 {
-                    assert_eq!(*v, 0.0, "archived_through gauge holds the recorded value");
+                    assert_eq!(
+                        *v, 1_000.0,
+                        "archived_through gauge holds the recorded value"
+                    );
                 }
             }
             other => panic!("expected Gauge for archived_through, got {other:?}"),
@@ -463,7 +469,7 @@ mod tests {
         // a recorder that wrote one under the other's name would silently
         // erase whichever fact lost the race to be read.
         assert_absent(&snapshot, names::EVENT_FABRIC_GROUP_LAG);
-        recorder.group_lag("consumers", "orders", 3);
+        recorder.group_lag("consumers", "orders", 3, 42);
         let snapshot = metrics.snapshot();
         let found = find(&snapshot, names::EVENT_FABRIC_GROUP_LAG);
         assert_label_keys(found, &["group", "stream", "partition"]);
@@ -480,7 +486,7 @@ mod tests {
             MetricValue::Gauge(v) => {
                 #[allow(clippy::float_cmp)]
                 {
-                    assert_eq!(*v, 0.0, "group_lag gauge holds the recorded value");
+                    assert_eq!(*v, 42.0, "group_lag gauge holds the recorded value");
                 }
             }
             other => panic!("expected Gauge for group_lag, got {other:?}"),

@@ -4,6 +4,31 @@
 use qip_observability::metrics::{Labels, Metrics, names};
 use std::sync::Arc;
 
+/// The journal pressure a pass applied, as the `state` label of
+/// `qip_edge_journal_pressure`. The three states are qip-edge's
+/// `JournalPressure` arms (ADR 0100's journal-pressure wire, SLICE-26). An
+/// enum rather than a string so the label set is bounded by the type, not by
+/// every caller remembering the spelling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PressureState {
+    Normal,
+    Narrow,
+    Exhausted,
+}
+
+impl PressureState {
+    /// Every state, so a recorder can zero the ones not in force.
+    pub const ALL: [PressureState; 3] = [Self::Normal, Self::Narrow, Self::Exhausted];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Narrow => "narrow",
+            Self::Exhausted => "exhausted",
+        }
+    }
+}
+
 /// Records metrics for the edge's journal and event fabric connections.
 ///
 /// Takes an Arc<Metrics> at construction — never reached for one itself —
@@ -151,14 +176,18 @@ impl OutboxTelemetry {
         );
     }
 
-    /// Pressure on the journal buffer.
-    ///
-    /// Recorded with `state` bounded by the enum: low, medium, high.
-    pub fn pressure(&self, state: &str) {
-        let mut labels = Labels::new();
-        labels.insert("state".to_string(), state.to_string());
-        self.metrics
-            .gauge(names::EDGE_JOURNAL_PRESSURE, labels, 1.0);
+    /// The journal pressure now in force: 1 on the state in force and 0 on
+    /// the other two. Writing only the current state would leave the last
+    /// one at 1 forever, and after narrow and then normal a chart would show
+    /// both in force at once.
+    pub fn pressure(&self, state: PressureState) {
+        for candidate in PressureState::ALL {
+            let mut labels = Labels::new();
+            labels.insert("state".to_string(), candidate.as_str().to_string());
+            let value = if candidate == state { 1.0 } else { 0.0 };
+            self.metrics
+                .gauge(names::EDGE_JOURNAL_PRESSURE, labels, value);
+        }
     }
 }
 
@@ -367,27 +396,30 @@ mod tests {
             "spool_bytes and spool_unarchived_bytes are distinct series"
         );
 
-        // pressure{state} — a gauge. Mutation: swapping this recorder to
-        // write EDGE_EVENT_FABRIC_CONNECTED's name must fail this find(),
-        // since connected carries no state label and this series does.
+        // pressure{state} — one-hot across the three journal states. Two
+        // failures are guarded here: a recorder that writes only the current
+        // state (the previous one stays at 1, so after narrow then normal both
+        // read as in force), and one that writes another series' name.
         assert_absent(&snapshot, names::EDGE_JOURNAL_PRESSURE);
-        recorder.pressure("high");
+        let state = |snapshot: &Snapshot, name: &str| {
+            let mut labels = Labels::new();
+            labels.insert("state".to_string(), name.to_string());
+            snapshot.gauge(names::EDGE_JOURNAL_PRESSURE, &labels)
+        };
+        recorder.pressure(PressureState::Narrow);
         let snapshot = metrics.snapshot();
-        let found = find(&snapshot, names::EDGE_JOURNAL_PRESSURE);
-        assert_label_keys(found, &["state"]);
+        assert_label_keys(find(&snapshot, names::EDGE_JOURNAL_PRESSURE), &["state"]);
+        assert_eq!(state(&snapshot, "narrow"), Some(1.0));
+        assert_eq!(state(&snapshot, "normal"), Some(0.0));
+        assert_eq!(state(&snapshot, "exhausted"), Some(0.0));
+        recorder.pressure(PressureState::Normal);
+        let snapshot = metrics.snapshot();
         assert_eq!(
-            found.labels.get("state").map(String::as_str),
-            Some("high"),
-            "state label is bounded by enum: low, medium, high"
+            state(&snapshot, "narrow"),
+            Some(0.0),
+            "the state that is no longer in force must read 0, not stay at 1"
         );
-        match &found.value {
-            MetricValue::Gauge(v) => {
-                #[allow(clippy::float_cmp)]
-                {
-                    assert_eq!(*v, 1.0, "pressure gauge holds the recorded value");
-                }
-            }
-            other => panic!("expected Gauge for pressure, got {other:?}"),
-        }
+        assert_eq!(state(&snapshot, "normal"), Some(1.0));
+        assert_eq!(state(&snapshot, "exhausted"), Some(0.0));
     }
 }

@@ -114,10 +114,12 @@ impl LedgerTelemetry {
     /// Records in a partition waiting to be applied.
     ///
     /// Recorded with the partition label. The partition is a bounded identifier.
-    pub fn lag(&self, partition: &str) {
+    pub fn lag(&self, partition: &str, records: u64) {
         let mut labels = Labels::new();
         labels.insert("partition".to_string(), partition.to_string());
-        self.metrics.gauge(names::LEDGER_LAG, labels, 0.0);
+        // records is a u64; the gauge is an f64, exact to 2^53.
+        self.metrics
+            .gauge(names::LEDGER_LAG, labels, records as f64);
     }
 
     /// A store operation had to be retried.
@@ -281,7 +283,7 @@ mod tests {
         // must fail this find(), since parked_keys carries no partition
         // label and this series does.
         assert_absent(&snapshot, names::LEDGER_LAG);
-        recorder.lag("p3");
+        recorder.lag("p3", 17);
         let snapshot = metrics.snapshot();
         let found = find(&snapshot, names::LEDGER_LAG);
         assert_label_keys(found, &["partition"]);
@@ -294,7 +296,7 @@ mod tests {
             MetricValue::Gauge(v) => {
                 #[allow(clippy::float_cmp)]
                 {
-                    assert_eq!(*v, 0.0, "lag_records gauge holds the recorded value");
+                    assert_eq!(*v, 17.0, "lag_records gauge holds the recorded value");
                 }
             }
             other => panic!("expected Gauge for lag_records, got {other:?}"),
