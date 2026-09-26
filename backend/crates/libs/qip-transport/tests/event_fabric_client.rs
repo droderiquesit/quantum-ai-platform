@@ -80,12 +80,31 @@ fn one_record_batch(id: &str) -> Batch {
     .expect("one record makes a valid batch")
 }
 
+/// A whole, encoded batch stamped at `base_offset` with one record, as raw
+/// wire bytes — what a fetch response's `batches` field carries hex-encoded,
+/// before that encoding, so a test can concatenate several of these to build
+/// a multi-batch response.
+fn encoded_batch_bytes(base_offset: u64) -> Vec<u8> {
+    let mut batch = one_record_batch(&format!("EVT{base_offset:023}"));
+    batch.base_offset = base_offset;
+    batch.encode().expect("batch encodes")
+}
+
 /// A whole, encoded, hex batch stamped at `base_offset` with one record — a
 /// fetch response's `batches` field, exactly as a broker would send it.
 fn encoded_batch_hex(base_offset: u64) -> String {
-    let mut batch = one_record_batch(&format!("EVT{base_offset:023}"));
-    batch.base_offset = base_offset;
-    let bytes = batch.encode().expect("batch encodes");
+    qip_core::hash::to_hex(&encoded_batch_bytes(base_offset))
+}
+
+/// Several whole, encoded batches at the given base offsets, concatenated
+/// and hex-encoded as one fetch response's `batches` field — a broker
+/// answering with more than one batch in a single fetch, exactly as
+/// `FetchResponse`'s own module documentation says it may.
+fn concatenated_batches_hex(base_offsets: &[u64]) -> String {
+    let mut bytes = Vec::new();
+    for &offset in base_offsets {
+        bytes.extend_from_slice(&encoded_batch_bytes(offset));
+    }
     qip_core::hash::to_hex(&bytes)
 }
 
@@ -489,5 +508,142 @@ fn a_producer_runs_over_an_in_memory_transport_without_opening_a_socket() {
         2,
         "every call this producer made (one init, one send) must have gone through the \
          in-memory transport, and only it"
+    );
+}
+
+// --- FU-CODEC / SLICE-28: every batch in a fetch --------------------------
+
+/// SLICE-28 found `Consumer::fetch` decoding only the first batch of a
+/// `FetchResponse` and silently dropping the rest, with no error at all — a
+/// broker answering with more than one concatenated batch lost every record
+/// past the first. `Batch::decode_prefix` (FU-CODEC) reports how many bytes
+/// one frame consumed, so this client can walk every frame in the response
+/// and deliver each in turn.
+///
+/// Mutation: in `Consumer::fetch`, after decoding, keep only
+/// `batches.next()` and never populate `self.pending` with the rest (the
+/// behaviour this test replaces) — fails, because the second and third calls
+/// to `fetch()` below then return `Ok(None)` (the transport's one scripted
+/// answer is already spent) instead of the second and third batches.
+#[test]
+fn a_fetch_carrying_three_concatenated_batches_delivers_all_three_in_order() {
+    let hex = concatenated_batches_hex(&[10, 11, 12]);
+    let (transport, calls, _last_request) = ScriptedTransport::new(vec![Response::Fetch(
+        FetchResponse::new("orders", 0, 13, 0, hex).expect("a coherent fetch response"),
+    )]);
+    let mut consumer = new_consumer(Box::new(transport));
+
+    // Premise: nothing has touched the transport yet.
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let first = consumer
+        .fetch()
+        .expect("fetch succeeds")
+        .expect("the first of three concatenated batches is delivered");
+    assert_eq!(
+        first.batch.base_offset, 10,
+        "the first batch delivered must be the first in order"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the first batch must come from the transport's one scripted network call"
+    );
+
+    let second = consumer
+        .fetch()
+        .expect("fetch succeeds")
+        .expect("the second of three concatenated batches is delivered");
+    assert_eq!(
+        second.batch.base_offset, 11,
+        "the second batch delivered must be the second in order"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the second batch must come from what this consumer already decoded, not a second \
+         network call — the transport's script holds only one scripted answer, so a second \
+         call here would already have failed"
+    );
+
+    let third = consumer
+        .fetch()
+        .expect("fetch succeeds")
+        .expect("the third of three concatenated batches is delivered");
+    assert_eq!(
+        third.batch.base_offset, 12,
+        "the third batch delivered must be the third in order"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    assert_eq!(
+        consumer.next_offset(),
+        13,
+        "after every batch has been delivered, the next offset must sit one past the last \
+         record of the last batch, exactly as if each had been fetched over the wire on its own"
+    );
+}
+
+/// SLICE-28's known limitation, closed the other way: a fetch response must
+/// never be partly trusted. A batch after a good one that fails to decode is
+/// refused, naming the byte offset within the response's decoded body at
+/// which it begins, rather than the good batch being handed to the caller
+/// while the corrupt one is quietly dropped.
+///
+/// Mutation: in `decode_every_batch`, replace the `Err(error) => return
+/// Err(...)` arm with `Err(_) => break` — the batches found so far are
+/// returned as `Ok` instead of the whole response being refused. Fails,
+/// because `consumer.fetch()` then returns `Ok(Some(_))` carrying the first,
+/// good batch instead of the `Err` this test requires, and the offset
+/// assertion never runs.
+#[test]
+fn a_corrupt_second_batch_in_a_fetch_is_refused_naming_its_offset_not_skipped() {
+    let first_bytes = encoded_batch_bytes(30);
+    let first_len = first_bytes.len();
+    let mut second_bytes = encoded_batch_bytes(31);
+    // Flip the last bit of the second batch's own final byte — inside its
+    // last record's trailing CRC — so only that record's own CRC, not its
+    // prefix or header CRC, catches it. The same corruption
+    // `qip-events`' own `flipping_any_bit_of_a_complete_batch_is_refused_as_corruption_naming_its_offset`
+    // uses.
+    let flip_at = second_bytes.len() - 1;
+    second_bytes[flip_at] ^= 0x01;
+
+    let mut bytes = first_bytes.clone();
+    bytes.extend_from_slice(&second_bytes);
+
+    // Premise: corrupting the second batch's own bytes left the first
+    // batch's bytes, still sitting at the front of the buffer, untouched.
+    assert_eq!(&bytes[..first_len], first_bytes.as_slice());
+
+    let hex = qip_core::hash::to_hex(&bytes);
+    let (transport, calls, _last_request) = ScriptedTransport::new(vec![Response::Fetch(
+        FetchResponse::new("orders", 0, 32, 0, hex).expect("a coherent fetch response"),
+    )]);
+    let mut consumer = new_consumer(Box::new(transport));
+
+    // Premise: the offset has not moved before the refused fetch.
+    assert_eq!(consumer.next_offset(), 0);
+
+    let err = consumer.fetch().expect_err(
+        "a corrupt batch after a good one must refuse the whole fetch, not deliver the good \
+         batch while silently skipping the corrupt one",
+    );
+    assert!(
+        err.message().contains(&first_len.to_string()),
+        "the refusal must name the byte offset within the response's decoded body at which \
+         the corrupt batch begins ({first_len}): {}",
+        err.message()
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "premise: the refusal came from the transport's one scripted network call, not a retry"
+    );
+    assert_eq!(
+        consumer.next_offset(),
+        0,
+        "a refused fetch must not advance the offset past the good batch that preceded the \
+         corrupt one — the same offset must be retried"
     );
 }

@@ -43,21 +43,29 @@
 //! for as long as the fetch thread's own retry ladder might still be
 //! spending, which defeats the reason `subscribe` exists in the first place.
 //!
-//! # One batch decoded per fetch, honestly
+//! # Every batch in a fetch, in order
 //!
 //! A [`super::protocol::FetchResponse`] may in principle carry more than one
 //! encoded batch concatenated (see its own documentation). Splitting that
-//! requires knowing how many bytes one encoded batch consumed, and
-//! `qip_events::event_fabric::codec` does not expose that to a caller — only
-//! [`qip_events::event_fabric::codec::Batch::decode`] itself walks a frame's
-//! length. Rather than duplicate that framing logic here, against the
-//! architecture's own rule that a batch is decoded in exactly one place,
-//! [`Consumer::fetch`] decodes at most the first batch in the response and
-//! advances past exactly the records it contained. A broker answering with
-//! more than one batch per fetch is not yet fully consumed by this client;
-//! this is a known limitation, not a silent truncation, because nothing here
-//! claims to have consumed bytes it never decoded.
+//! needs knowing how many bytes one encoded batch consumed;
+//! [`qip_events::event_fabric::codec::Batch::decode_prefix`] answers exactly
+//! that, from the codec's own framing implementation, so nothing here
+//! re-derives it — the architecture's rule that a batch is decoded in exactly
+//! one place still holds, [`Batch::decode_prefix`] is simply the one that
+//! also reports where a frame ended. [`Consumer::fetch`] decodes every batch
+//! the response carries in a single pass over the response's bytes and holds
+//! whatever it does not immediately return in [`Consumer::pending`], oldest
+//! first; each later call drains one more from that queue before ever
+//! issuing another [`super::protocol::FetchRequest`], so a broker answering
+//! with more than one batch per fetch has every one of them delivered, in
+//! order, across successive calls. This closes what was a known limitation:
+//! this client used to decode only the first batch of a response and
+//! silently drop the rest with no error at all, losing records a broker had
+//! genuinely sent. A batch after a good one that fails to decode is refused,
+//! naming the byte offset within the response's decoded body at which it
+//! begins, never silently skipped in favour of whatever came after it.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -67,7 +75,7 @@ use qip_core::error::{Error, Result};
 use qip_core::hash::from_hex;
 use qip_core::rng::Xoshiro256;
 use qip_core::time::Clock;
-use qip_events::event_fabric::codec::{Batch, DecodeOutcome};
+use qip_events::event_fabric::codec::{Batch, PrefixDecodeOutcome};
 
 use crate::breaker::{BreakerPolicy, BreakerState, CircuitBreaker};
 use crate::retry::{RetryPolicy, Sleeper};
@@ -130,6 +138,14 @@ pub struct Consumer {
     timeouts: Timeouts,
     next_offset: u64,
     fetch_credit_bytes: u32,
+    /// Batches already decoded from the most recent [`FetchedBatch`]'s wire
+    /// response but not yet handed to a caller, oldest first. See the module
+    /// documentation's "every batch in a fetch, in order" section: a
+    /// [`super::protocol::FetchResponse`] may carry more than one batch
+    /// concatenated, and this is where every one after the first waits so a
+    /// later [`Self::fetch`] call can dispense it without another network
+    /// round trip.
+    pending: VecDeque<FetchedBatch>,
 }
 
 impl fmt::Debug for Consumer {
@@ -142,6 +158,7 @@ impl fmt::Debug for Consumer {
             .field("generation", &self.generation)
             .field("next_offset", &self.next_offset)
             .field("fetch_credit_bytes", &self.fetch_credit_bytes)
+            .field("pending_batches", &self.pending.len())
             .field("breaker_state", &self.breaker.state(&self.peer_key))
             .finish_non_exhaustive()
     }
@@ -226,6 +243,7 @@ impl Consumer {
             timeouts: config.timeouts,
             next_offset: 0,
             fetch_credit_bytes: config.fetch_credit_bytes,
+            pending: VecDeque::new(),
         })
     }
 
@@ -361,8 +379,14 @@ impl Consumer {
     /// Fetch within this consumer's fixed credit, at its own next offset.
     /// `Ok(None)` is a legitimate answer — the broker had nothing new — and
     /// leaves [`Self::next_offset`] unchanged. See the module documentation
-    /// for why at most one batch is ever decoded from one response.
+    /// for how a response carrying more than one batch is delivered across
+    /// successive calls, oldest first, rather than only the first ever being
+    /// decoded.
     pub fn fetch(&mut self) -> Result<Option<FetchedBatch>> {
+        if let Some(fetched) = self.pending.pop_front() {
+            self.advance_past(&fetched.batch)?;
+            return Ok(Some(fetched));
+        }
         let request = Request::Fetch(FetchRequest {
             stream: self.stream.clone(),
             partition: self.partition,
@@ -371,26 +395,47 @@ impl Consumer {
         });
         match self.call(request)? {
             Response::Fetch(fetched) => {
-                let Some(batch) = decode_one_batch(fetched.batches())? else {
+                let high_watermark = fetched.high_watermark();
+                let mut batches = decode_every_batch(fetched.batches())?.into_iter();
+                let Some(first) = batches.next() else {
                     return Ok(None);
                 };
-                let records = u64::try_from(batch.records.len()).map_err(|_| {
-                    Error::invalid("a fetched batch carries more records than a u64 can count")
-                })?;
-                self.next_offset = batch.base_offset.checked_add(records).ok_or_else(|| {
-                    Error::invalid(format!(
-                        "the next offset for {}:{} would overflow past base offset {}",
-                        self.stream, self.partition, batch.base_offset
-                    ))
-                })?;
-                Ok(Some(FetchedBatch {
+                // Every batch after the first waits in `pending` so a later
+                // call dispenses it without asking the broker again — see
+                // the module documentation's "every batch in a fetch, in
+                // order" section for why a response is never partially
+                // consumed.
+                self.pending.extend(batches.map(|batch| FetchedBatch {
                     batch,
-                    high_watermark: fetched.high_watermark(),
+                    high_watermark,
+                }));
+                self.advance_past(&first)?;
+                Ok(Some(FetchedBatch {
+                    batch: first,
+                    high_watermark,
                 }))
             }
             Response::Refused(refusal) => Err(describe_refusal(Route::Fetch, refusal)),
             other => Err(wrong_route(Route::Fetch, &other)),
         }
+    }
+
+    /// Move [`Self::next_offset`] to one past `batch`'s own records — the one
+    /// place that arithmetic happens, whether `batch` just came off the wire
+    /// or out of [`Self::pending`], so a caller reading [`Self::next_offset`]
+    /// between two [`Self::fetch`] calls always sees where the *next*
+    /// delivered batch (buffered or not) will pick up from.
+    fn advance_past(&mut self, batch: &Batch) -> Result<()> {
+        let records = u64::try_from(batch.records.len()).map_err(|_| {
+            Error::invalid("a fetched batch carries more records than a u64 can count")
+        })?;
+        self.next_offset = batch.base_offset.checked_add(records).ok_or_else(|| {
+            Error::invalid(format!(
+                "the next offset for {}:{} would overflow past base offset {}",
+                self.stream, self.partition, batch.base_offset
+            ))
+        })?;
+        Ok(())
     }
 
     /// FABRIC-034: subscribe without polling on the caller's own thread.
@@ -445,22 +490,51 @@ impl Consumer {
     }
 }
 
-/// Decode the first batch in a fetch response's hex-encoded `batches` field.
-/// `None` for an empty answer (no new data); `Err` for hex that does not
-/// decode or a frame the codec itself calls torn — a broker must only ever
-/// answer with whole batches over this protocol, so a torn one here is the
-/// broker's bug, not an ordinary end-of-log condition.
-fn decode_one_batch(hex: &str) -> Result<Option<Batch>> {
+/// Decode every batch concatenated in a fetch response's hex-encoded
+/// `batches` field, in order, walking each frame's own consumed length
+/// ([`Batch::decode_prefix`]) to find where the next one starts rather than
+/// re-deriving this codec's framing here. An empty answer decodes to `vec![]`
+/// — the broker had nothing new, not zero-length garbage. `Err` for hex that
+/// does not decode, a torn frame, or a frame the codec refuses as corrupt: a
+/// broker must only ever answer with whole, valid batches over this
+/// protocol, so any of these here is the broker's bug, not an ordinary
+/// end-of-log condition. A torn or corrupt frame *after* at least one good
+/// batch fails the whole call rather than returning the good batches and
+/// dropping the rest — SLICE-28 found the previous version of this client
+/// doing exactly that silently, with no error at all, for every batch past
+/// the first.
+fn decode_every_batch(hex: &str) -> Result<Vec<Batch>> {
     let bytes = from_hex(hex)
         .ok_or_else(|| Error::schema("a fetch response's batches field is not valid hex"))?;
-    if bytes.is_empty() {
-        return Ok(None);
+    let mut batches = Vec::new();
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        match Batch::decode_prefix(&bytes[offset..]) {
+            Ok(PrefixDecodeOutcome::Complete { batch, consumed }) => {
+                batches.push(batch);
+                offset = offset.checked_add(consumed).ok_or_else(|| {
+                    Error::invalid(
+                        "a fetch response's cumulative consumed batch length overflowed while \
+                         walking its concatenated batches",
+                    )
+                })?;
+            }
+            Ok(PrefixDecodeOutcome::Torn) => {
+                return Err(Error::schema(format!(
+                    "a fetch response carried a torn batch frame beginning at byte offset \
+                     {offset} of its decoded body; a broker must only ever return whole \
+                     batches over the wire, never a partial one"
+                )));
+            }
+            Err(error) => {
+                return Err(Error::schema(format!(
+                    "a fetch response's batch beginning at byte offset {offset} of its decoded \
+                     body is corrupt and the whole response is refused rather than decoding \
+                     past it to whatever batch comes after: {}",
+                    error.message()
+                )));
+            }
+        }
     }
-    match Batch::decode(&bytes)? {
-        DecodeOutcome::Complete(batch) => Ok(Some(batch)),
-        DecodeOutcome::Torn => Err(Error::schema(
-            "a fetch response carried a torn batch frame; a broker must only ever return whole \
-             batches over the wire, never a partial one",
-        )),
-    }
+    Ok(batches)
 }
