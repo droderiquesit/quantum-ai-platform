@@ -85,6 +85,33 @@ resource "google_compute_security_policy" "edge" {
     }
   }
 
+  # The WAF third of section 40.14. Preconfigured OWASP sets, evaluated before
+  # the rate limit so an injection attempt is refused on its content rather
+  # than merely counted against a budget. Blocking at sensitivity 1 (the
+  # set's lowest, fewest false positives) because a WAF in preview mode reads
+  # as protection and refuses nothing.
+  rule {
+    action   = "deny(403)"
+    priority = 1500
+    match {
+      expr {
+        expression = "evaluatePreconfiguredWaf('sqli-v33-stable', {'sensitivity': 1})"
+      }
+    }
+    description = "Refuse SQL injection patterns."
+  }
+
+  rule {
+    action   = "deny(403)"
+    priority = 1600
+    match {
+      expr {
+        expression = "evaluatePreconfiguredWaf('xss-v33-stable', {'sensitivity': 1})"
+      }
+    }
+    description = "Refuse cross-site scripting patterns."
+  }
+
   # The rate limit, per client address. `rate_based_ban` rather than
   # `throttle`: a throttle refuses the excess and lets the next minute start
   # clean, which an automated client does not notice; a ban makes the refusal
@@ -165,6 +192,48 @@ resource "google_storage_bucket" "static_shell" {
   labels = var.labels
 }
 
+# Backend buckets take an edge policy, a different kind from the one above:
+# it is evaluated at Google's edge before the cache and supports no WAF
+# expression or rate limit, so it carries only the geographic refusal. Without
+# it the shell bucket would be the one backend behind this load balancer that
+# no policy covers.
+resource "google_compute_security_policy" "static_shell_edge" {
+  count = local.enabled
+
+  project     = var.project_id
+  name        = "${local.name}-shell-armor"
+  type        = "CLOUD_ARMOR_EDGE"
+  description = "The static shell's edge policy: geographic refusal, then allow. Blueprint section 40.14."
+
+  dynamic "rule" {
+    for_each = length(var.permitted_regions) > 0 ? [1] : []
+    content {
+      action   = "deny(403)"
+      priority = 1000
+      match {
+        expr {
+          expression = "!(origin.region_code in [${join(", ", [for code in var.permitted_regions : "'${code}'"])}])"
+        }
+      }
+      description = "Refuse a client arriving from outside the countries the desk operates from."
+    }
+  }
+
+  rule {
+    action   = "allow"
+    priority = 2147483647
+
+    match {
+      versioned_expr = "SRC_IPS_V1"
+      config {
+        src_ip_ranges = ["*"]
+      }
+    }
+
+    description = "The default rule Google requires."
+  }
+}
+
 resource "google_compute_backend_bucket" "static_shell" {
   count = local.enabled
 
@@ -174,6 +243,8 @@ resource "google_compute_backend_bucket" "static_shell" {
   description = "The installable shell §40.5 puts behind Cloud CDN. Static bytes from the commit; no origin to compromise."
 
   enable_cdn = true
+
+  edge_security_policy = google_compute_security_policy.static_shell_edge[0].id
 
   cdn_policy {
     cache_mode = "CACHE_ALL_STATIC"

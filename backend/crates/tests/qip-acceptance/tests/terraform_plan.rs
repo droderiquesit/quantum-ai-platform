@@ -289,6 +289,67 @@ fn the_public_edge_attaches_every_backend_to_the_cloud_armor_policy() {
 }
 
 #[test]
+fn the_public_edge_policy_blocks_injection_and_every_backend_behind_it_carries_a_policy() {
+    // GCP-054. The test above found the policy attached and the rate limit
+    // present; it passed while the policy held no WAF rule at all and the
+    // static-shell bucket had no policy. Each half is asserted on the block
+    // it belongs to, so a string living in a neighbouring resource cannot
+    // satisfy it.
+    let module = without_comments(&read(PUBLIC_EDGE));
+    let blocks = |kind: &str| -> Vec<(String, String)> {
+        let marker = format!("resource \"{kind}\" \"");
+        module
+            .split(&marker)
+            .skip(1)
+            .map(|rest| {
+                let (name, body) = rest.split_once('"').unwrap_or((rest, ""));
+                let body = body.split("\nresource ").next().unwrap_or(body);
+                (name.to_string(), body.to_string())
+            })
+            .collect()
+    };
+
+    let policies = blocks("google_compute_security_policy");
+    let (_, edge) = policies
+        .iter()
+        .find(|(name, _)| name == "edge")
+        .expect("the public edge declares its application policy");
+    for set in ["sqli-v33-stable", "xss-v33-stable"] {
+        let at = edge
+            .find(&format!("evaluatePreconfiguredWaf('{set}'"))
+            .unwrap_or_else(|| panic!("the edge policy carries no `{set}` WAF rule"));
+        assert!(
+            edge[..at]
+                .rsplit("rule {")
+                .next()
+                .is_some_and(|rule| rule.contains("action   = \"deny(403)\"")),
+            "the `{set}` rule does not block; a WAF rule that only allows or previews refuses nothing"
+        );
+    }
+
+    let services = blocks("google_compute_backend_service");
+    let buckets = blocks("google_compute_backend_bucket");
+    assert!(
+        !services.is_empty() && !buckets.is_empty(),
+        "the walk found {} backend services and {} buckets; it is not reading the module",
+        services.len(),
+        buckets.len()
+    );
+    for (name, body) in &services {
+        assert!(
+            body.contains("security_policy = google_compute_security_policy.edge["),
+            "backend service `{name}` sits behind the edge with no Cloud Armor policy"
+        );
+    }
+    for (name, body) in &buckets {
+        assert!(
+            body.contains("edge_security_policy = google_compute_security_policy."),
+            "backend bucket `{name}` sits behind the edge with no Cloud Armor edge policy"
+        );
+    }
+}
+
+#[test]
 fn the_public_edge_can_front_only_a_zone_a_client_may_reach() {
     // §40.5's load-bearing sentence: customer traffic and trading traffic never
     // share a load balancer, an identity, a credential or a route. The plan
