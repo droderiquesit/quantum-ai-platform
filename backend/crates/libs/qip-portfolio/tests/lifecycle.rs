@@ -1,4 +1,5 @@
 //! A position's lifecycle field, tracked independently of its lot ledger.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::{ObjectId, Timestamp, dec};
 use qip_portfolio::position::Position;

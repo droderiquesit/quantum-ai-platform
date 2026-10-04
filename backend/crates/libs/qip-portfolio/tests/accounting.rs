@@ -1,4 +1,5 @@
 //! Portfolio accounting. The identities here must hold exactly.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::testing::{Property, any_positive_decimal, approx_eq};
 use qip_core::{Context, Currency, Decimal, Duration, ObjectId, PortfolioId, Timestamp, dec};

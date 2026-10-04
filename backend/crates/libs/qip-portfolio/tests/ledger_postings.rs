@@ -3,6 +3,7 @@
 //! ADR 0100 §1 puts the posting logic here, pure; §9 makes the refusal of a
 //! fill not marked simulated the fourth paper fence. Each test below names
 //! the failure it prevents.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::ledger::{Account, Direction, FeeReport, Settlement};
 use qip_contracts::message::BookSide;

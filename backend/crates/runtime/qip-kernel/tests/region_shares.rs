@@ -9,6 +9,7 @@
 //! that can issue one.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_capital::allocation::{Allocation, AllocationPlan};
 use qip_contracts::signal::StrategyId;
