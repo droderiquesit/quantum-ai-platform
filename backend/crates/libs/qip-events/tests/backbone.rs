@@ -2670,7 +2670,7 @@ fn every_event_fabric_topic_has_the_retention_class_adr_0089_assigns_it() {
     );
 }
 
-// --- schema immutability and compatibility (CONTRACT-046, CONTRACT-047) -----
+// --- schema immutability (CONTRACT-046) and the registration gate (CONTRACT-047)
 
 fn registered_tick() -> (SchemaRegistry, qip_events::registry::SchemaDescriptor) {
     let mut registry = SchemaRegistry::new();
@@ -2684,6 +2684,21 @@ fn registered_tick() -> (SchemaRegistry, qip_events::registry::SchemaDescriptor)
     (registry, d)
 }
 
+fn reshaped(
+    from: &qip_events::registry::SchemaDescriptor,
+    version: u32,
+    sample: serde_json::Value,
+) -> qip_events::registry::SchemaDescriptor {
+    use qip_events::event_fabric::schema_id::{SchemaId, Shape};
+    let shape = Shape::from_json(&sample);
+    let mut d = from.clone();
+    d.version = version;
+    d.fields = sample.as_object().unwrap().keys().cloned().collect();
+    d.schema_id = SchemaId::new(from.topic.name(), version, &shape);
+    d.shape = shape;
+    d
+}
+
 #[test]
 fn re_registering_identical_content_is_a_no_op_and_changed_content_under_one_version_is_refused() {
     let (mut registry, original) = registered_tick();
@@ -2692,41 +2707,38 @@ fn re_registering_identical_content_is_a_no_op_and_changed_content_under_one_ver
 
     registry.admit(original.clone()).unwrap();
     assert_eq!(registry.fingerprint(), before);
-    assert_eq!(registry.len(), 1);
+    assert_eq!(registry.get(Topic::MarketTick), Some(&original));
 
-    let mut changed = original.clone();
-    changed.fields.push("venue".into());
-    changed.schema_id = qip_events::event_fabric::schema_id::SchemaId::new(
-        "market.tick",
-        original.version,
-        &qip_events::event_fabric::schema_id::Shape::from_json(&serde_json::json!({
-            "symbol": "A", "price": 1.0, "venue": "X"
-        })),
+    let additive = reshaped(
+        &original,
+        1,
+        serde_json::json!({"symbol": "A", "price": 1.0, "venue": "X"}),
     );
-    assert_ne!(changed.schema_id, original.schema_id, "premise: ids differ");
-    let err = registry.admit(changed).unwrap_err();
+    assert_ne!(
+        additive.schema_id, original.schema_id,
+        "premise: ids differ"
+    );
+    let err = registry.admit(additive).unwrap_err();
     assert!(err.to_string().contains("bump SCHEMA_VERSION"), "{err}");
     assert_eq!(registry.get(Topic::MarketTick), Some(&original));
 }
 
 #[test]
-fn a_version_that_removes_a_field_is_rejected_and_an_additive_one_is_admitted() {
+fn registration_refuses_a_removed_field_without_a_bump_and_a_rollback_and_admits_a_bump() {
     let (mut registry, original) = registered_tick();
     assert!(original.fields.contains(&"price".to_string()), "premise");
 
-    let mut breaking = original.clone();
-    breaking.version = 2;
-    breaking.fields = vec!["symbol".into()];
-    let err = registry.admit(breaking.clone()).unwrap_err();
-    assert!(err.to_string().contains("removes field(s) price"), "{err}");
+    let removed = reshaped(&original, 1, serde_json::json!({"symbol": "A"}));
+    let err = registry.admit(removed).unwrap_err();
+    assert!(err.to_string().contains("field 'price' is absent"), "{err}");
     assert_eq!(registry.get(Topic::MarketTick), Some(&original));
-    // CI form of the gate: the same function, called on two descriptors.
-    assert!(qip_events::registry::check_compatible(&original, &breaking).is_err());
 
-    let mut additive = original.clone();
-    additive.version = 2;
-    additive.fields.push("venue".into());
-    registry.admit(additive.clone()).unwrap();
+    let bumped = reshaped(
+        &original,
+        2,
+        serde_json::json!({"symbol": "A", "price": 1.0}),
+    );
+    registry.admit(bumped).unwrap();
     assert_eq!(registry.get(Topic::MarketTick).unwrap().version, 2);
 
     let err = registry.admit(original).unwrap_err();

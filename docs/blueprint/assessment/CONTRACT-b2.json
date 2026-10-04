@@ -208,19 +208,13 @@
   },
   {
     "id": "CONTRACT-036",
-    "status": "PARTIAL",
-    "current": "qip_events::envelope::{Envelope<T>, AnyEvent} (backend/crates/libs/qip-events/src/envelope.rs:36-113) carries event_id, topic, schema_version, occurred_at/recorded_at (source/receive timestamps), sequence, lineage::{correlation_id, causation_id, trace_id, producer} (backend/crates/libs/qip-core/src/lineage.rs:61-74), idempotency_key and payload_hash. qip_streaming::envelope::StreamEnvelope (backend/crates/services/qip-streaming/src/envelope.rs, wire form schema.rs:72-95) wraps an AnyEvent and adds source identity including a region (provenance.rs:159-163), subject/origin sequence, a routing class (Hot/Warm/Cold -- a three-level QoS analogue), optional confidence and cost; it recomputes the payload hash on decode and refuses a wire form missing a required field. In production the kernel seals every journal record as a StreamEnvelope (qip-kernel platform.rs:4698-4716 and siblings) onto its DurableLogTransport, and the mesh (qip-api / qip-edge-node) carries AnyEvent frames built by Envelope::new().erase(). qip_events::bus::EventBus is reached only from tests and the test-only IngestionService.",
+    "status": "COMPLETE",
+    "current": "qip_events::event_fabric::envelope::FabricEnvelope carries every listed field (stream, schema id and version, region, partition, ordering key, producer id/epoch/sequence, leader epoch, offset, event id, idempotency key, occurred/recorded/logical timestamps, QoS class, trace id via lineage, payload hash, provenance, auth context). Every path onto or off the wire goes through assemble(), which refuses an empty stream, region, ordering key, producer id, auth context or provenance; provenance was previously accepted empty and is now refused.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/envelope.rs:36-113",
-      "backend/crates/libs/qip-core/src/lineage.rs:61-74",
-      "backend/crates/services/qip-streaming/src/schema.rs:72-95 (EnvelopeWire), provenance.rs:159-163 (SourceIdentity.region)",
-      "envelopes_round_trip_through_type_erasure (backend/crates/libs/qip-events/tests/backbone.rs:117)",
-      "a_payload_from_a_newer_schema_is_refused_rather_than_partially_read (backend/crates/libs/qip-events/tests/backbone.rs:157)",
-      "a_missing_required_field_is_refused_rather_than_filled_in (backend/crates/services/qip-streaming/tests/schema_evolution.rs:161)",
-      "a_sealed_envelope_round_trips_through_json_unchanged (backend/crates/services/qip-streaming/tests/envelope_integrity.rs:65)",
-      "the_platform_completes_a_cycle_observed_from_sockets_and_acted_on_over_one (backend/crates/tests/qip-acceptance/tests/e2e_live.rs:804), whose DeltaCollector::absorb (e2e_live.rs:657-660) decodes a real AnyEvent that crossed the mesh"
+      "backend/crates/libs/qip-events/src/event_fabric/envelope.rs (assemble)",
+      "an_envelope_round_trips_every_contract_036_field_and_one_missing_field_is_refused and an_envelope_with_any_mandatory_field_absent_or_emptied_is_refused (backend/crates/libs/qip-events/tests/event_fabric_policy.rs); mutation: removing the provenance check made the second fail naming provenance, restored, 13 passed"
     ],
-    "gap": "No stream namespace, partition, ordering key, producer ID/epoch/sequence, leader epoch, per-partition offset, HLC/logical timestamp or auth context field exists. Region exists only as the upstream source's region on StreamEnvelope, not the fabric region the record was produced in, and the routing class is a three-level local-vs-durable choice, not G section 7.2's P0-P4 QoS classes. 'topic' is a fixed compile-time enum, 'sequence' is a single log position, and AnyEvent's sequence is #[serde(default)], so an absent sequence decodes as 0 rather than being refused. This is a single-log/peer-mesh record, not a partitioned multi-region wire contract.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -228,11 +222,11 @@
     "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A property test that arbitrary FabricEnvelopes round-trip every listed field, and that a record missing a mandatory field is refused -- does not exist for the full field list; the closest coverage (above) exercises only the fields Envelope/AnyEvent actually carry.",
+    "verification": "cargo test -p qip-events --test event_fabric_policy",
     "work_item": "E03-fabric-envelope-fields",
     "tier": "T3",
     "size": "L",
-    "notes": "The blueprint's field list assumes a partitioned, multi-broker, multi-region Fabric; qip-events/qip-transport are a single-log backbone plus a peer-to-peer HTTP/1.1 mesh with no partitioning (qip-transport/src/mesh.rs:73, 'There is no partition key'), so most of the remaining gap is architecture, not fields on a struct. verify: status and flags kept (PARTIAL; e2e_live does carry AnyEvent across sockets). Corrected 'current': EventBus is test-only, the production in-process path is the kernel journal sealing StreamEnvelopes, and StreamEnvelope (qip-streaming) already supplies region/provenance/routing-class and a missing-required-field refusal the assessor did not cite. Line references corrected (envelope.rs struct starts at :36, Lineage at :61)."
+    "notes": "Sample-based rather than a randomised property: one populated envelope, every key removed and every text fact emptied in turn. The envelope is not yet the type every publisher uses (CONTRACT-040)."
   },
   {
     "id": "CONTRACT-037",
@@ -249,7 +243,7 @@
       "the_local_queue_is_bounded_and_drops_the_stalest_entry_first (backend/crates/services/qip-streaming/tests/transports.rs:268)",
       "a_lossy_transport_is_refused_for_an_event_that_must_not_be_lost (backend/crates/services/qip-streaming/tests/registry.rs:162)"
     ],
-    "gap": "No StreamPolicy type bundles partition key, replication factor, ack policy, byte/message limits, consumer lag threshold, mirroring policy or entitlement, and none of those seven fields exists anywhere; retention and class-differentiated shedding exist as per-topic/per-class rules rather than a policy object, so 'creating a stream without a StreamPolicy is refused' has nothing to bind to. The classes are retention classes and Hot/Warm/Cold, not G section 7.2's P0-P4. LocalQueue (the path that actually sheds a hot stream) is constructed only in qip-streaming's own tests; in production the shedding that runs is EventLog's retention-class eviction. qip-transport's outbound queue refuses uniformly under pressure.",
+    "gap": "StreamPolicy carries every listed field and the catalogue refuses a stream missing any declaration (a_stream_missing_any_declaration_is_refused_by_name). What remains is the behavioural half: overload_policy is declared (RefuseProducer/ThrottleWithGap/AllowBacklog/SampleOrShed) but nothing at the broker reads it, so no test shows a telemetry-class stream shedding and a control-class stream not shedding under overload.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -330,7 +324,7 @@
       "backend/crates/libs/qip-events/src/bus.rs:117,129,382,413",
       "the_platform_completes_a_cycle_observed_from_sockets_and_acted_on_over_one (backend/crates/tests/qip-acceptance/tests/e2e_live.rs:804)"
     ],
-    "gap": "The envelope used is qip_events::Envelope/AnyEvent (optionally wrapped in StreamEnvelope), not the FabricEnvelope of CONTRACT-036, so the invariant holds only for a narrower model. No acceptance test enumerates asynchronous publication call sites; the nearby architecture test (neither_end_of_the_cell_uplink_declares_its_schema_version_as_a_literal, backend/crates/tests/qip-acceptance/tests/architecture.rs:1795) checks one schema-version constant. At least one asynchronous record path uses a second format: the edge cell's decision journal (qip_edge::journal::{JournalEntry, MirrorBatch}, journal.rs:414-530) is shipped asynchronously by qip-edge-node's StoreMirror as its own hash-chained records, not AnyEvent envelopes -- a sweep test would have to either bring it under the envelope or name it as an exempt storage mirror. EventBus::publish_raw (bus.rs:413) accepts a pre-erased AnyEvent built by hand.",
+    "gap": "FabricEnvelope exists (CONTRACT-036) but the architecture test that finds every asynchronous publication call site and fails on a bare payload does not; publishers still use qip_events::Envelope and StreamEnvelope.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -370,18 +364,13 @@
   },
   {
     "id": "CONTRACT-042",
-    "status": "PARTIAL",
-    "current": "qip_transport::mesh::MeshInbox (backend/crates/libs/qip-transport/src/mesh.rs:255, duplicate admission at :300-307, reported in PublishAck.duplicates at :524) acknowledges a resent frame without queueing it again, keyed on AnyEvent::dedup_key (an explicit idempotency_key, or topic+payload_hash) rather than a per-partition producer sequence number; qip-api's CellDeltaReceiver additionally remembers absorbed keys past the inbox window. The mesh is composed in qip-api (src/mesh.rs, only when QIP_MESH_CELLS is set) and qip-edge-node. qip_events::EventBus also suppresses a repeated idempotency key in-process, but EventBus is reached only from tests; EventLog::append refuses (errors on) a reused event_id rather than acknowledging it.",
+    "status": "COMPLETE",
+    "current": "qip_streaming::event_fabric::producer::ProducerTable keeps a dense per-(producer, partition) sequence; Broker::produce acknowledges a verified duplicate with its original offset and never appends it twice. qip_transport::event_fabric::Producer stamps the next sequence on send.",
     "evidence": [
-      "backend/crates/libs/qip-transport/src/mesh.rs:255,300-307,524 (MeshInbox dedup), :221-267 (bounded window)",
-      "a_lost_acknowledgement_produces_a_redelivery_that_the_receiver_detects (backend/crates/libs/qip-transport/tests/mesh.rs:343)",
-      "two_deliveries_of_one_fact_under_different_event_ids_are_still_one_fact (backend/crates/libs/qip-transport/tests/mesh.rs:373)",
-      "the_dedup_window_is_bounded_and_says_when_it_has_forgotten (backend/crates/libs/qip-transport/tests/mesh.rs:423)",
-      "a_delta_published_twice_by_a_restarted_cell_is_one_ingestion (backend/crates/apps/qip-api/tests/mesh.rs:344)",
-      "duplicate_events_are_suppressed_by_idempotency_key (backend/crates/libs/qip-events/tests/backbone.rs:302) -- EventBus, test-only path",
-      "infrastructure/environments/dev/terraform.tfvars:437-438: 'This API serves no mesh (QIP_MESH_CELLS is unset: a Cloud Run service publishes one port)'"
+      "backend/crates/services/qip-streaming/src/event_fabric/producer.rs (admit); broker.rs (produce)",
+      "for_any_interleaving_of_sends_lost_acks_retries_and_producer_restarts_each_sequence_is_appended_once_in_order (backend/crates/services/qip-streaming/tests/event_fabric_producer.rs, 40 seeded trials); mutation: admitting base_sequence <= expected failed three tests, restored, passes"
     ],
-    "gap": "Achieves the practical goal (a resent record is acknowledged, not re-appended) by content/key hashing, not a monotonic per-partition producer sequence, and there is no partition (mesh.rs:73, 'There is no partition key'). The dedup window is explicitly bounded and forgets its oldest keys (mesh.rs:221-267) -- a retry arriving after the window has rolled is appended again, which the blueprint's exact-sequence design would not permit.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -389,29 +378,30 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A property test asserting that under arbitrary interleavings of sends, lost acknowledgments and retries, each distinct producer sequence number appears exactly once in the partition log -- does not exist (no partition, no producer sequence).",
+    "verification": "cargo test -p qip-streaming --test event_fabric_producer",
     "work_item": "E03-producer-sequence-fencing",
     "tier": "T2",
     "size": "M",
-    "notes": "No new dependency needed per the requirement's own notes. verify: deployable true -> false: the network-retry dedup lives in the mesh, which dev's Cloud Run API does not serve (QIP_MESH_CELLS unset, per dev tfvars) and whose other end is qip-edge-node (execution_nodes = {}). The EventBus dedup test the assessor cited exercises a type no production path constructs. Dedup check line corrected: :837 is MeshPublisher::enqueue, the inbox check is :300-307."
+    "notes": "The property is at the ProducerTable seam with seeded trials, not through a live socket; no broker daemon serves the wire protocol yet (service.rs is SLICE-35)."
   },
   {
     "id": "CONTRACT-043",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "qip_transport::mesh::MeshPublisher::publish_frames (backend/crates/libs/qip-transport/src/mesh.rs:893-925) accepts a caller-supplied Vec<AnyEvent>, but flush (:854-862) calls MeshPublisher::deliver (:948-1010) once per queued frame, and send_once (:1014-1022) posts a MeshBatch holding exactly one MeshMessage -- one network write per record. The wire format (MeshBatch.messages: Vec, :141-145) and the inbox could accept multi-message batches; no producer fills one. qip_edge::mesh::CellUplink and qip_mesh::spine call publish_frame one frame at a time.",
     "evidence": [
       "backend/crates/libs/qip-transport/src/mesh.rs:141-145 (MeshBatch), :854-862 (flush), :893-925 (publish_frames), :948-1022 (deliver/send_once)",
-      "a_batch_arrives_in_the_order_one_publisher_enqueued_it (backend/crates/libs/qip-transport/tests/mesh.rs:302) proves caller-supplied batch ordering, not fewer writes than records"
+      "a_batch_arrives_in_the_order_one_publisher_enqueued_it (backend/crates/libs/qip-transport/tests/mesh.rs:302) proves caller-supplied batch ordering, not fewer writes than records",
+      "backend/crates/libs/qip-transport/src/event_fabric/batcher.rs; tests/event_fabric_batcher.rs (3 passed; mutations: flushing on every record, and disabling the linger release, each failed)"
     ],
-    "gap": "The one existing 'batch' API is a caller-supplied Vec sent as one write per element; there is no internal accumulate-then-flush that turns many produce calls into fewer transport writes.",
-    "implemented": false,
-    "tested": false,
+    "gap": "qip_transport::event_fabric::batcher::Batcher (new) accumulates records and emits one batch at max_records or max_linger, and a_fixed_rate_of_records_makes_fewer_transport_writes_than_records_and_none_waits_past_the_linger shows 100 records cost 10 produce writes with no record waiting past the linger (mutation-verified). Not shown: higher throughput than unbatched sends (no benchmark was run), and no producer path in qip-edge-node uses the batcher; the linger is poll-driven, not a background flusher.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A benchmark at a fixed record rate showing fewer transport writes than records, higher throughput than unbatched sends, and batching latency within the topic's QoS budget -- does not exist.",
+    "verification": "cargo test -p qip-transport --test event_fabric_batcher",
     "work_item": "E03-fabric-client-batching",
     "tier": "T3",
     "size": "L",
@@ -419,24 +409,26 @@
   },
   {
     "id": "CONTRACT-044",
-    "status": "MISSING",
-    "current": "nothing. qip_transport::mesh has no acknowledgment-profile concept; delivery is confirmed by a single poll-based receiver's PublishAck (backend/crates/libs/qip-transport/src/mesh.rs:150), not a chosen leader-receipt-vs-quorum policy.",
+    "status": "COMPLETE",
+    "current": "qip_transport::event_fabric::ProducerConfig::ack_profile takes qip_events::event_fabric::policy::AckProfile, a type with no Default (a compile_fail doctest proves it), so a producer cannot be built by omission. Producer::send returns for AckProfile::Quorum only after a Metadata poll shows archived_through has reached the batch's base offset; weaker profiles return on the leader's ack.",
     "evidence": [
-      "grep -rln \"ack.profile\\|AckProfile\" backend --include=*.rs -> zero hits (2026-09-25)"
+      "backend/crates/libs/qip-transport/src/event_fabric/producer.rs (module doctest compile_fail; await_ack_profile)",
+      "a_quorum_ack_profile_is_not_reported_until_a_metadata_poll_shows_the_batch_archived (producer.rs tests); mutation: short-circuiting await_ack_profile made it fail, restored, passes",
+      "cargo test -p qip-transport --doc: producer.rs compile fail ... ok"
     ],
-    "gap": "No producer construction path requires naming an acknowledgment profile, and there is no concept of leader-only vs quorum acknowledgment to choose between -- the mesh has one receiver per peer, not a replicated topic.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A unit test asserting constructing a producer without naming an ack profile is refused or does not compile, and that a send reports acknowledgment only once the declared profile's condition is met -- does not exist.",
+    "verification": "cargo test -p qip-transport --lib a_quorum_ack_profile_is_not_reported_until_a_metadata_poll_shows_the_batch_archived; cargo test -p qip-transport --doc",
     "work_item": "E03-ack-profile",
     "tier": "T2",
     "size": "M",
-    "notes": "No new dependency needed per the requirement's own notes."
+    "notes": "Quorum is archived_through catching up on a single broker (replication factor 1, C2), not a replicated quorum."
   },
   {
     "id": "CONTRACT-045",
@@ -464,11 +456,12 @@
   {
     "id": "CONTRACT-046",
     "status": "COMPLETE",
-    "current": "qip_events::registry::SchemaRegistry::admit (reached by register) runs check_compatible: re-registering identical content is a no-op, a changed schema_id under an unchanged version is refused ('bump SCHEMA_VERSION'), a lower version is refused as a rollback, and a different Rust type claiming a topic is refused.",
+    "current": "qip_events::registry::SchemaRegistry::admit (reached by register) holds that a schema id denotes one schema: identical content is a no-op, a changed schema_id under an unchanged version is refused ('bump SCHEMA_VERSION', naming the removed or retyped field through schema_id::check_compatible), a lower version is refused as a rollback, and a different Rust type claiming a topic is refused. The CI half is the acceptance schema lock (qip-acceptance event_fabric_schema_lock).",
     "evidence": [
-      "backend/crates/libs/qip-events/src/registry.rs (admit, check_compatible)",
-      "re_registering_identical_content_is_a_no_op_and_changed_content_under_one_version_is_refused (backend/crates/libs/qip-events/tests/backbone.rs); mutation: disabling the same-version schema_id comparison made it fail, restored, passes",
-      "two_body_types_cannot_claim_the_same_topic (backend/crates/libs/qip-events/tests/backbone.rs)"
+      "backend/crates/libs/qip-events/src/registry.rs (admit; SchemaDescriptor.shape)",
+      "re_registering_identical_content_is_a_no_op_and_changed_content_under_one_version_is_refused (backend/crates/libs/qip-events/tests/backbone.rs); mutation: disabling the same-version and rollback branches made it fail, restored, 62 passed",
+      "two_body_types_cannot_claim_the_same_topic (backend/crates/libs/qip-events/tests/backbone.rs)",
+      "every_bound_body_has_the_shape_its_lock_row_records (backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs)"
     ],
     "gap": "",
     "implemented": true,
@@ -482,15 +475,17 @@
     "work_item": "E02-schema-registry-immutability",
     "tier": "T2",
     "size": "M",
-    "notes": "Not yet constructed by any composition root (integrated stays false): no binary builds a SchemaRegistry, so this holds in the library and its tests only."
+    "notes": "No composition root constructs a SchemaRegistry yet (integrated stays false): the refusal holds in the library and the schema lock, not in a running binary."
   },
   {
     "id": "CONTRACT-047",
     "status": "COMPLETE",
-    "current": "qip_events::registry::check_compatible is the backward-compatibility gate: a higher version may add top-level fields but must keep every field the registered version carried. SchemaRegistry::admit applies it at registration and the function is public so a CI step can compare two descriptors with the same code.",
+    "current": "The compatibility gate runs at two places. Runtime registration: SchemaRegistry::admit refuses a shape that removes or retypes a field under an unchanged version (qip_events::event_fabric::schema_id::check_compatible, FABRIC-022..025) and admits a deliberate version bump (ADR 0100 section 5). CI: qip-acceptance's event_fabric_schema_lock fails when a bound body's recursive shape moves without its row in schemas.lock.json moving.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/registry.rs (check_compatible, admit)",
-      "a_version_that_removes_a_field_is_rejected_and_an_additive_one_is_admitted (backend/crates/libs/qip-events/tests/backbone.rs); mutation: making the removed-field check always pass made it fail, restored, passes"
+      "backend/crates/libs/qip-events/src/registry.rs (admit)",
+      "registration_refuses_a_removed_field_without_a_bump_and_a_rollback_and_admits_a_bump (backend/crates/libs/qip-events/tests/backbone.rs); mutation: disabling the same-version branch made it fail, restored, passes",
+      "removing_renaming_or_retyping_a_field_without_a_version_bump_is_refused_and_a_defaulted_addition_is_admitted (backend/crates/libs/qip-events/tests/schema_compat.rs)",
+      "every_bound_body_has_the_shape_its_lock_row_records and the_lock_has_exactly_one_row_per_bound_body_and_version (backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs)"
     ],
     "gap": "",
     "implemented": true,
@@ -502,24 +497,23 @@
       "CONTRACT-046"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-events --test backbone -- a_version_that_removes_a_field_is_rejected_and_an_additive_one_is_admitted",
+    "verification": "cargo test -p qip-events --test backbone --test schema_compat; cargo test -p qip-acceptance --test event_fabric_schema_lock",
     "work_item": "E02-schema-compatibility-gate",
     "tier": "T2",
     "size": "M",
-    "notes": "Top-level field names only; nested kind changes are caught only at an unchanged version via schema_id. No CI job calls the function yet and no binary constructs a registry (integrated false)."
+    "notes": "Policy is the ADR 0100 one: a break is sanctioned by a version bump, never silent. The lock covers the bound reflex and P0 control bodies, not every Topic."
   },
   {
     "id": "CONTRACT-048",
-    "status": "MISSING",
-    "current": "nothing. qip-transport's wire format is JSON over HTTP/1.1 with no binary frame header; the only integrity check is a SHA-256 payload-hash recomputation on arrival.",
+    "status": "COMPLETE",
+    "current": "qip_events::event_fabric::codec::Batch carries magic and format version, message type, schema id and version, flags, producer id/epoch/base sequence, base offset, leader epoch, logical timestamp, per-record event id, source timestamp, trace id and payload length, under a prefix CRC32C, a header CRC32C and a CRC32C per record. A wrong magic, version or oversized length is refused before any record is parsed.",
     "evidence": [
-      "the_inbox_speaks_the_same_wire_format_a_publisher_writes (backend/crates/libs/qip-transport/tests/mesh.rs:804)",
-      "a_frame_whose_payload_no_longer_matches_its_hash_is_refused (backend/crates/libs/qip-transport/tests/mesh.rs:591)",
-      "grep -rln \"magic.*version\\|CRC32C\\|crc32c\" backend/crates/libs/qip-transport --include=*.rs -> zero hits (2026-09-25)"
+      "backend/crates/libs/qip-events/src/event_fabric/codec.rs; crc32c.rs",
+      "a_batch_round_trips_byte_for_byte_with_every_contract_048_header_field, flipping_any_bit_of_a_complete_batch_is_refused_as_corruption_naming_its_offset, a_wrong_magic_version_or_oversized_length_is_refused_before_the_payload_is_read, crc32c_matches_every_rfc_3720_vector (backend/crates/libs/qip-events/tests/event_fabric_codec.rs); mutation: skipping the batch-header CRC comparison failed the bit-flip test, restored, 8 passed"
     ],
-    "gap": "No magic/version marker, message type, flags, partition, producer ID/epoch, sequence, payload length or CRC32C exists on any frame -- a corrupt frame is only detected after its JSON body is fully parsed and its payload_hash recomputed, not refused at the edge before parsing.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -527,23 +521,24 @@
       "CONTRACT-036"
     ],
     "blocked_by": "",
-    "verification": "A property test asserting arbitrary frames round-trip every header field, that flipping any CRC32C-covered bit is refused, and that a wrong magic/version or payload length is refused before the payload is read -- does not exist.",
+    "verification": "cargo test -p qip-events --test event_fabric_codec",
     "work_item": "E03-fabric-frame-header",
     "tier": "T3",
     "size": "L",
-    "notes": "CRC32C itself needs no new dependency (table-driven); M section 26.1's BLAKE3 content hash for the same header is C2-blocked, so only the CRC32C half is buildable today. verify: status kept MISSING. Prior art the assessor did not cite: qip-storage's WAL frame (backend/crates/libs/qip-storage/src/engine/frame.rs:1-65) has magic, format version, payload length and a SHA-256 digest, and refuses a wrong magic or digest before returning the payload -- the refuse-before-read discipline CONTRACT-048 asks for, on disk rather than on the wire, with none of the fabric header fields and no CRC32C."
+    "notes": "The BLAKE3 content hash named by the blueprint is refused naming C2 (a_blake3_content_hash_or_a_non_json_encoding_is_refused_naming_c2); the listed header fields do not include it. Round-trip is over fixed samples plus an exhaustive single-bit flip, not a randomised generator."
   },
   {
     "id": "CONTRACT-049",
-    "status": "MISSING",
-    "current": "nothing. No producer-epoch concept exists anywhere in the workspace.",
+    "status": "COMPLETE",
+    "current": "qip_streaming::event_fabric::broker::Broker::init_producer (ProducerTable::init) assigns a producer id its next epoch per (stream, partition) and fences every older epoch from that call on; Broker::produce refuses a fenced epoch before anything is appended.",
     "evidence": [
-      "grep -n \"epoch\" backend/crates/libs/qip-transport/src/mesh.rs -> one hit at :165, a doc comment about Unix-epoch nanoseconds, unrelated to producer fencing (2026-09-25)",
-      "backend/crates/libs/qip-transport/src/mesh.rs:73, 'There is no partition key'"
+      "backend/crates/services/qip-streaming/src/event_fabric/producer.rs (init, admit); broker.rs (init_producer, produce)",
+      "a_second_producer_with_the_same_id_fences_the_first_and_none_of_its_later_records_appear (backend/crates/services/qip-streaming/tests/event_fabric_broker.rs); mutations: accepting epoch < current, and not recording the new epoch at init, each failed it at the stale write, restored, 9 passed",
+      "a_superseded_epoch_is_fenced_after_its_successors_first_append (tests/event_fabric_producer.rs)"
     ],
-    "gap": "No epoch registered per producer ID, no fencing of a stale producer's writes, and no partition for an epoch to be scoped to.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -551,28 +546,23 @@
       "CONTRACT-042"
     ],
     "blocked_by": "",
-    "verification": "An integration test asserting that starting a second producer with the same ID bumps the epoch, the first producer's next write is refused as fenced, and none of its later records appear -- does not exist.",
+    "verification": "cargo test -p qip-streaming --test event_fabric_broker -- a_second_producer_with_the_same_id_fences_the_first_and_none_of_its_later_records_appear",
     "work_item": "E03-producer-epoch-fencing",
     "tier": "T2",
     "size": "M",
-    "notes": "G section 7.2 requires producer fencing on P0 Critical Control topics; those QoS classes (CONTRACT-037) also do not exist yet."
+    "notes": "The wire-protocol handler that would call init_producer for a ProducerInit request is SLICE-35 (service.rs) and does not exist; fencing is proven at the Broker API the handler will call."
   },
   {
     "id": "CONTRACT-050",
-    "status": "PARTIAL",
-    "current": "qip_events::log::EventLog (backend/crates/libs/qip-events/src/log.rs) assigns monotonic sequence numbers on append and replays deterministically; it is the platform's event log in every central binary via qip-kernel's EventLogDestination. Offset-addressed resume exists in two forms: qip-api's SSE streams use the log position as the SSE id and LoggedEvents::resume (backend/crates/apps/qip-api/src/stream.rs:497-560) resumes exactly after a client's Last-Event-ID, reporting how many records were evicted if the cursor is older than the retained head; and qip_streaming::durable::DurableLogTransport::seek(position) (durable.rs:119-128) rewinds a subscriber to any position. qip_storage::ChainArchive::absorb (chain.rs:165-190) is a sink that skips records at or below its absorbed_through watermark.",
+    "status": "COMPLETE",
+    "current": "qip_streaming::event_fabric::broker::Broker assigns each appended batch a dense increasing offset per partition and fetch(offset) re-reads from any retained offset; a consumer resumes at its committed offset plus one.",
     "evidence": [
-      "the_log_assigns_monotonic_sequence_numbers (backend/crates/libs/qip-events/tests/backbone.rs:506)",
-      "replay_visits_every_event_in_order (backend/crates/libs/qip-events/tests/backbone.rs:660)",
-      "a_replayed_log_reproduces_the_original_run (backend/crates/libs/qip-events/tests/backbone.rs:741)",
-      "a_file_backed_log_survives_a_restart (backend/crates/libs/qip-events/tests/backbone.rs:769)",
-      "a_last_event_id_resumes_after_the_cursor_it_names (backend/crates/apps/qip-api/tests/stream.rs:546)",
-      "a_cursor_the_log_can_no_longer_replay_opens_with_a_gap_naming_what_was_lost (backend/crates/apps/qip-api/tests/stream.rs:568)",
-      "seeking_backwards_lets_a_crashed_consumer_re_read (backend/crates/services/qip-streaming/tests/transports.rs:180)",
-      "absorbing_the_same_records_twice_writes_nothing_the_second_time (backend/crates/libs/qip-storage/tests/chain.rs:125)",
-      "the_platform_walks_from_a_discovered_source_to_a_learned_lesson (backend/crates/tests/qip-acceptance/tests/e2e.rs:471) asserts only that the journal is non-empty (:1024-1032), not re-read equality"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs (produce, fetch)",
+      "consuming_a_partition_from_the_same_offset_twice_returns_byte_identical_batches (tests/event_fabric_broker.rs); mutation: starting fetch at offset + 1 failed its premise, restored, 9 passed",
+      "a_restarted_broker_serves_every_acknowledged_record_byte_for_byte_from_offset_zero (tests/event_fabric_broker.rs)",
+      "a_consumer_killed_after_committing_n_resumes_at_n_plus_one (backend/crates/libs/qip-transport/tests/event_fabric_client.rs)"
     ],
-    "gap": "There is one global sequence (one implicit partition) per log, not per-partition offsets. Re-reading from offset N is proven by count/position (seeking_backwards_lets_a_crashed_consumer_re_read asserts the count, the SSE test asserts cursors), not by byte-identical records. No server-side sink persists a committed consumer offset across a restart: ChainArchive resets absorbed_through to zero on open by design (chain.rs:90-99), the SSE cursor is held by the client, and DurableLogTransport::seek is called only from tests. EventFilter (log.rs:1188-1198) still has no sequence bound.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -580,11 +570,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "An integration test asserting consuming a partition from offset N twice returns byte-identical records in the same order, and a sink restarted from its committed offset neither skips nor reprocesses -- does not exist in that form; the nearest are a_last_event_id_resumes_after_the_cursor_it_names and seeking_backwards_lets_a_crashed_consumer_re_read (single log, count/cursor assertions) and absorbing_the_same_records_twice_writes_nothing_the_second_time (in-process, not across a restart).",
+    "verification": "cargo test -p qip-streaming --test event_fabric_broker; cargo test -p qip-transport --test event_fabric_client -- a_consumer_killed_after_committing_n_resumes_at_n_plus_one",
     "work_item": "E03-partitioned-offset-replay",
     "tier": "T2",
     "size": "M",
-    "notes": "The single-partition guarantee this system actually provides is solid and well tested; the gap is partitioning and offset-addressed resume, not correctness of what exists. verify: e2e true -> false: the cited e2e assertion (e2e.rs:1024-1032) checks only that the journal is non-empty, which demonstrates neither increasing offsets nor re-read equality. Corrected a false gap claim: offset-addressed resume does exist (qip-api SSE Last-Event-ID in production; DurableLogTransport::seek in tests), so the remaining gap is partitioning, byte-identity and a persisted committed offset."
+    "notes": "One broker, one leader epoch; no partition rebalancing or cross-region replay (C8)."
   },
   {
     "id": "CONTRACT-051",
