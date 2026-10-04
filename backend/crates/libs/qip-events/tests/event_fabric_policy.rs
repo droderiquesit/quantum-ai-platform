@@ -579,3 +579,60 @@ fn a_stream_missing_any_of_the_seven_declarations_is_refused_naming_it_and_a_ful
         );
     }
 }
+
+/// CONTRACT-036's second half: a record with any mandatory field absent is
+/// refused. Removes each key of the wire document in turn, and empties each
+/// text fact in turn, so a field added later without validation is caught by
+/// the premise count rather than silently admitted.
+///
+/// Mutation: stop checking `provenance` in `FabricEnvelope::assemble` — the
+/// emptied `provenance` below is then admitted and this test fails naming it.
+#[test]
+fn an_envelope_with_any_mandatory_field_absent_or_emptied_is_refused() {
+    let (ctx, now) = context();
+    let envelope = FabricEnvelope::seal(
+        ctx.ids().generate(now),
+        root_lineage("event-fabric-test"),
+        TestTick { price: 101 },
+        now,
+        now,
+        HlcTimestamp::new(now, 4),
+        sample_facts(),
+    )
+    .expect("a fully populated envelope must be accepted");
+    let wire = serde_json::to_value(&envelope).expect("serialises");
+    let keys: Vec<String> = wire
+        .as_object()
+        .expect("an object")
+        .keys()
+        .cloned()
+        .collect();
+    assert!(
+        keys.len() >= 14,
+        "premise: the wire form carries every CONTRACT-036 fact, found {keys:?}"
+    );
+
+    for key in &keys {
+        let mut broken = wire.clone();
+        broken.as_object_mut().expect("an object").remove(key);
+        assert!(
+            serde_json::from_value::<FabricEnvelope>(broken).is_err(),
+            "an envelope with `{key}` removed must be refused"
+        );
+    }
+    for key in [
+        "stream",
+        "region",
+        "ordering_key",
+        "producer_id",
+        "auth_context",
+        "provenance",
+    ] {
+        let mut broken = wire.clone();
+        broken[key] = serde_json::json!("");
+        assert!(
+            serde_json::from_value::<FabricEnvelope>(broken).is_err(),
+            "an envelope with `{key}` emptied must be refused"
+        );
+    }
+}

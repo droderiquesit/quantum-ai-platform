@@ -678,3 +678,128 @@ fn a_declared_stream_returns_its_whole_policy_and_cannot_be_redeclared_under_ano
     assert!(broker.stream_policy("never-declared").is_err());
     Ok(())
 }
+
+// --- a_second_producer_with_the_same_id_fences_the_first_and_none_of_its_later_records_appear
+
+/// CONTRACT-049. A restarted producer holds a higher epoch under the same
+/// producer id; the stale instance (a paused process that wakes up, say) must
+/// not interleave records into the partition, even when its sequence number
+/// happens to be exactly the one the stream expects next.
+///
+/// Mutation: in `ProducerTable::admit`, accept an epoch lower than the
+/// current one, or make `init` not record the new epoch — the stale write then appends and the high watermark and the
+/// fetched payloads below both change.
+#[test]
+fn a_second_producer_with_the_same_id_fences_the_first_and_none_of_its_later_records_appear()
+-> Result<()> {
+    let dir = temp_dir("fencing");
+    let stream = "orders";
+    let broker = Broker::open(&dir, clock())?;
+    broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+    broker.register_schema(stream, 1, 1, sample_shape())?;
+    let partition = partition::partition_for("k", 1)?;
+
+    let first = broker.init_producer(stream, partition, "cell-eu-1")?;
+    broker.produce(stream, "k", drain_batch("cell-eu-1", first, 0, 0, b"old-0"))?;
+    // Starting a second producer under the same id bumps the epoch; the first
+    // is fenced from this call on, before the second has appended anything.
+    let second = broker.init_producer(stream, partition, "cell-eu-1")?;
+    assert_eq!(
+        (first, second),
+        (1, 2),
+        "premise: init hands out successive epochs"
+    );
+    let high_water = broker.metadata(stream, partition)?.high_watermark();
+    assert_eq!(
+        high_water, 1,
+        "premise: only the first producer's record is in the partition"
+    );
+
+    // The first producer's next write carries exactly the sequence the
+    // partition expects, so only the epoch can refuse it.
+    for attempt in 0..3u64 {
+        let err = broker
+            .produce(
+                stream,
+                "k",
+                drain_batch("cell-eu-1", first, 1, 10 + attempt, b"stale"),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("is fenced by epoch 2"), "{err}");
+    }
+
+    assert_eq!(
+        broker.metadata(stream, partition)?.high_watermark(),
+        high_water,
+        "a fenced producer's records must never reach the partition"
+    );
+    let fetched = broker.fetch(stream, partition, 0, 65_536)?;
+    let bytes = qip_core::hash::from_hex(fetched.batches()).expect("valid hex");
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains("stale"),
+        "no fenced payload may be readable from the partition"
+    );
+
+    // The current epoch still writes, continuing the dense sequence.
+    broker.produce(
+        stream,
+        "k",
+        drain_batch("cell-eu-1", second, 1, 20, b"new-1"),
+    )?;
+    assert_eq!(broker.metadata(stream, partition)?.high_watermark(), 2);
+    Ok(())
+}
+
+// --- consuming_a_partition_from_the_same_offset_twice_returns_byte_identical_batches
+
+/// CONTRACT-050. Replay is the whole point of a per-partition offset: reading
+/// from offset N must return the same bytes in the same order however many
+/// times, and across a broker restart, or a sink restarted from its committed
+/// offset would reprocess different records than it first saw.
+///
+/// Mutation: in `Broker::fetch`, start the loop at `cursor = offset + 1` — the
+/// first record is skipped and the two reads no longer carry offset 2's
+/// payload.
+#[test]
+fn consuming_a_partition_from_the_same_offset_twice_returns_byte_identical_batches() -> Result<()> {
+    let dir = temp_dir("replay");
+    let stream = "orders";
+    let partition = partition::partition_for("k", 1)?;
+    let read_from_two = |broker: &Broker| -> Result<String> {
+        Ok(broker
+            .fetch(stream, partition, 2, 1_000_000)?
+            .batches()
+            .to_string())
+    };
+
+    let first_read = {
+        let broker = Broker::open(&dir, clock())?;
+        broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+        broker.register_schema(stream, 1, 1, sample_shape())?;
+        for i in 0..5u64 {
+            let payload = format!("payload-{i}").into_bytes();
+            broker.produce(stream, "k", drain_batch("producer-a", 1, i, i, &payload))?;
+        }
+        let a = read_from_two(&broker)?;
+        let b = read_from_two(&broker)?;
+        assert_eq!(a, b, "two reads of one offset must be byte-identical");
+        a
+    };
+    assert!(
+        !first_read.is_empty() && first_read.contains(&qip_core::hash::to_hex(b"payload-2")),
+        "premise: the read starts at offset 2 and carries payload-2's bytes"
+    );
+    assert!(
+        !first_read.contains(&qip_core::hash::to_hex(b"payload-1")),
+        "premise: nothing before offset 2 is returned"
+    );
+
+    let broker = Broker::open(&dir, clock())?;
+    broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+    assert_eq!(
+        read_from_two(&broker)?,
+        first_read,
+        "a restart must not change a single byte a consumer re-reads"
+    );
+    Ok(())
+}

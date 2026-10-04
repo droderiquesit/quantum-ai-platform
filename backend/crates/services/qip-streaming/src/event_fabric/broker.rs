@@ -511,6 +511,15 @@ impl Broker {
         }
     }
 
+    /// Assign `producer_id` its next epoch at `(stream, partition)`, fencing
+    /// every earlier incarnation of the same id immediately (CONTRACT-049).
+    pub fn init_producer(&self, stream: &str, partition: u32, producer_id: &str) -> Result<u64> {
+        self.partition_state(stream, partition)?;
+        let label = partition_label(stream, partition);
+        let mut producers = self.producers.lock().unwrap_or_else(|e| e.into_inner());
+        producers.init(producer_id, &label)
+    }
+
     /// Fetch batches from `(stream, partition)` starting at `offset`,
     /// accumulating up to `max_bytes` of encoded batch bytes (always at
     /// least one batch, so a consumer facing one oversized batch can still
