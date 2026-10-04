@@ -21,6 +21,7 @@ pub mod confounder;
 pub mod exposure;
 pub mod falsification;
 pub mod features;
+pub mod federation;
 pub mod granger;
 pub mod graph;
 pub mod liquidity;

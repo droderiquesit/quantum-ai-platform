@@ -157,36 +157,37 @@
   },
   {
     "id": "WORLD-040",
-    "status": "MISSING",
-    "current": "qip_ai::registry::ModelCard (backend/crates/libs/qip-ai/src/registry.rs:56-96) is the nearest construct: it declares purpose, stage, training_datasets, evaluations, drift_score/drift_threshold and retired_at, but none of the five named fields (scope, evidence lineage, calibration, update cadence, expiry) is present -- rg -i 'scope|lineage|cadence|expiry' over registry.rs returns nothing -- and ModelCard has no constructor that refuses a card missing one of them.",
+    "status": "COMPLETE",
+    "current": "WorldModelSpec::declare refuses a declaration without scope, evidence lineage, calibration, update cadence or expiry, naming the field. backend/crates/services/qip-world-model/src/federation.rs",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/registry.rs:56-96"
+      "backend/crates/services/qip-world-model/src/federation.rs",
+      "backend/crates/services/qip-world-model/tests/federation.rs -- a_declaration_missing_any_of_the_five_fields_is_refused_naming_it"
     ],
-    "gap": "No WorldModelSpec-shaped declaration with scope/evidence-lineage/calibration/update-cadence/expiry exists, and nothing refuses a declaration missing one of the five; ModelCard's fields are a different, adjacent set.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-world-model --test federation -- a_declaration_missing_any_of_the_five_fields_is_refused_naming_it (mutation-verified: defaulting the expiry fails it.)",
     "work_item": "E02",
     "tier": "T1",
     "size": "M",
-    "notes": "WORLD-023 (expiry enforcement) and WORLD-024 (calibration scoring) and CONTRACT-023 are named by the catalogue as the enforcement/scoring/contract halves of this; none was found implemented either."
+    "notes": "Library-level: the federation is in-process with a journal; no composition root builds one and the journal is not yet appended to the central event log (integrated=false). | WORLD-023 (expiry enforcement) and WORLD-024 (calibration scoring) and CONTRACT-023 are named by the catalogue as the enforcement/scoring/contract halves of this; none was found implemented either."
   },
   {
     "id": "WORLD-041",
-    "status": "MISSING",
-    "current": "nothing. qip_world_model::falsification (backend/crates/services/qip-world-model/src/falsification.rs) tracks a single hypothesis's Verdict (Refuted/Survived/Insufficient, enum at falsification.rs:717) against held-out data and qip_world_model::causal's EdgeStanding (causal.rs:328) retires an edge after RETIREMENT_CONSECUTIVE_FAILURES=3 (causal.rs:52) consecutive failures -- both are single-hypothesis lifecycles, not a set of competing branches updated and compared side by side until reality resolves them.",
+    "status": "COMPLETE",
+    "current": "Federation keeps several branches live and updated until resolve(); a refuted branch is closed with its Brier score recorded and stays readable. backend/crates/services/qip-world-model/src/federation.rs",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/falsification.rs:717-735",
-      "backend/crates/services/qip-world-model/src/causal.rs:52,169,328-343"
+      "backend/crates/services/qip-world-model/src/federation.rs",
+      "backend/crates/services/qip-world-model/tests/federation.rs -- competing_branches_stay_live_until_the_outcome_and_the_refuted_one_is_closed_with_its_score"
     ],
-    "gap": "No type holds several live, competing branches at once; falsification and causal retirement each judge one hypothesis/edge in isolation, and a refuted edge is retired (its standing changes) rather than closed-with-score while the branch record stays separately readable.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -194,11 +195,11 @@
       "WORLD-040"
     ],
     "blocked_by": "",
-    "verification": "No test replays two branches predicting opposite outcomes and asserts both update until resolution.",
+    "verification": "cargo test -p qip-world-model --test federation -- competing_branches_stay_live_until_the_outcome_and_the_refuted_one_is_closed_with_its_score (mutation-verified: never closing fails it.)",
     "work_item": "E09",
     "tier": "T2",
     "size": "L",
-    "notes": "M p10's Lane 3 'competing hypothesis branches' is the same placement (catalogue's own cross-reference, WORLD-027, not in this batch)."
+    "notes": "Library-level: the federation is in-process with a journal; no composition root builds one and the journal is not yet appended to the central event log (integrated=false). | M p10's Lane 3 'competing hypothesis branches' is the same placement (catalogue's own cross-reference, WORLD-027, not in this batch)."
   },
   {
     "id": "WORLD-042",
