@@ -311,6 +311,29 @@ fn a_small_discrete_problem_does_not_justify_a_quantum_attempt() -> Result<()> {
 }
 
 #[test]
+fn a_problem_larger_than_the_devices_qubits_is_declined_with_the_reason_and_an_eligible_one_is_attempted()
+-> Result<()> {
+    let policy = RoutingPolicy {
+        minimum_assets_for_quantum: 4,
+        ..RoutingPolicy::default()
+    };
+    let router = ComputeRouter::classical(1)
+        .with_policy(policy)
+        .with_quantum(Arc::new(SimulatedProvider::new(1).with_max_qubits(12)));
+
+    // Premise: the same router attempts a discrete problem that fits, so the
+    // decline below is the qubit bound and not a router that never attempts.
+    let (fits, note) = router.quantum_assessment(&discrete(10, 4)?);
+    assert!(fits, "{note}");
+    assert!(note.contains("attempting QAOA"), "{note}");
+
+    let (attempted, note) = router.quantum_assessment(&discrete(14, 4)?);
+    assert!(!attempted);
+    assert!(note.contains("exceeds the provider's 12 qubits"), "{note}");
+    Ok(())
+}
+
+#[test]
 fn a_simulated_result_is_labelled_as_not_being_evidence_of_advantage() -> Result<()> {
     let policy = RoutingPolicy {
         minimum_assets_for_quantum: 4,
