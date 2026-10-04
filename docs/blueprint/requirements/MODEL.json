@@ -2193,5 +2193,73 @@
       "DEVFACTORY"
     ],
     "notes": "Split from H's fan-out extraction; the knowledge-layer and training edges are merged into MODEL-014. P2 because autonomous development is GCP Phase 9."
+  },
+  {
+    "id": "MODEL-072",
+    "domain": "MODEL",
+    "title": "A model tournament earns each specialist's influence from calibration, information value, regime accuracy, cost and latency",
+    "statement": "Many specialist and temporary models forecast the same questions; influence is earned from Brier and log loss, calibration, tail accuracy, economic usefulness and robustness by regime. Disagreement is preserved as a research signal.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "19",
+        "section": "§9.8 Predictive World Swarm & Model Tournament"
+      },
+      {
+        "doc": "G3",
+        "page": "12-13",
+        "section": "§11.4 Model and agent society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two models forecast one question, resolve, and their influence weights diverge by the stated scores; a dissent is retained."
+    },
+    "policy_flags": [
+      "COST",
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "EXPAND"
+    ]
+  },
+  {
+    "id": "MODEL-073",
+    "domain": "MODEL",
+    "title": "The Forecast Market's synthetic reputation or capital can never be converted to, or denominated against, a real CapitalGrant",
+    "statement": "Internal synthetic capital and reputation, if built, are labelled synthetic, drive only model influence and compute allocation, and have no path to a CapitalGrant. The Forecast Market is not a trading venue (a platform non-goal).",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "19",
+        "section": "§9.8 Forecast Market"
+      },
+      {
+        "doc": "M12",
+        "page": "32",
+        "section": "§22.1"
+      },
+      {
+        "doc": "G3",
+        "page": "13",
+        "section": "§11.4"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A type-level or test-level proof that no synthetic-capital value constructs a CapitalGrant."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "CAPITAL"
+    ]
   }
 ]

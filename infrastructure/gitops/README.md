@@ -69,7 +69,7 @@ reached, and the way `infra.yml` itself reaches it:
 
 ```
 gcloud container fleet memberships get-credentials qip-dev-gitops \
-  --project algorik-dev
+  --project algorik-platform-dev
 
 kubectl -n argocd port-forward svc/argocd-server 8080:443   # https://localhost:8080
 kubectl -n kargo  port-forward svc/kargo-api     8081:443   # https://localhost:8081

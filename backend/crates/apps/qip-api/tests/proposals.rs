@@ -16,6 +16,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_api::auth::{Authenticator, Credential, RateLimiter, Role};
 use qip_api::http::{Handler, Method, Request, Response};

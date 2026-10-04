@@ -795,5 +795,29 @@
     "policy_flags": ["MANAGED_SERVICE"],
     "secondary_domains": ["CICD", "REFLEX"],
     "notes": "Split from the H item. The SRE/Learning agent's consumption of these outcomes is OBS-007.\n\nConflict C3: Argo Rollouts assumes GKE, and ADR 0024 retired Kubernetes for Cloud Run. ADR 0036 brought Argo back on a control-plane cluster only, and ADR 0093 suspended that cluster.\n\nG p13 §14.2 step 9 says Reflex and the Fabric use component-specific drain/stage/epoch activation instead of pod canaries, which is why the package controller reports separately."
+  },
+  {
+    "id": "OBS-042",
+    "domain": "OBS",
+    "title": "Calibration is exported as a production SLO with a stated target",
+    "statement": "Forecast calibration is measured continuously and exposed as an SLO with an explicit target. v12.0 names none, so the target is a configured value that must be set before the SLO can be claimed.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "invariant",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "20",
+        "section": "§9.14 (calibration is a production SLO)"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A calibration series is recorded per horizon and an alert fires when it breaches the configured target."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CONTRACT"
+    ]
   }
 ]

@@ -1,0 +1,112 @@
+[
+  {
+    "id": "GCP-060",
+    "status": "BLOCKED",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "GKE persistent services, Bigtable, Spanner Graph, GPU and TPU pools exist in no Terraform. ADR 0024, 0091, 0093 and C3, C4, C7, C8.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3, C4, C7, C8",
+    "verification": "No resource for any of the 27 is added without an ADR; infrastructure acceptance suite passes.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "GCP-061",
+    "status": "BLOCKED",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "Not authorised by ADR 0101; conflicts with ADR 0093 and the 25 USD/day ceiling (C8) and with C5 for JAX/PyTorch.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C5, C8",
+    "verification": "`grep -rEi 'tpu|gpu|accelerator' infrastructure/terraform` finds no resource.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "GCP-062",
+    "status": "BLOCKED",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "A new managed runtime and store with no Terraform precedent, no price in the source and no ADR; C4 and the boundaries rule.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C4",
+    "verification": "No Agent Engine resource exists and forecast outcomes live only in the event log.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "GCP-063",
+    "status": "BLOCKED",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "No resource or ADR exists for any; ADR 0101 says none is authorised.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C4, C8",
+    "verification": "No such resource is declared and the infrastructure acceptance suite passes.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "GCP-064",
+    "status": "BLOCKED",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "C2: QUIC, TLS and prost are dependency decisions; the egress proxy is applied nowhere.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C2",
+    "verification": "No edge in the matrix is implemented with a crate beyond serde and serde_json.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  }
+]

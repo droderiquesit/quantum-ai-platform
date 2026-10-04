@@ -4,6 +4,7 @@
 //! together, because the two failures that matter most are ones no single part
 //! can have: a health surface that cannot answer while a cycle is running, and
 //! a stop request that never reaches the loop.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::error::Result;
 use qip_core::{Clock, Duration, SystemClock, Timestamp};

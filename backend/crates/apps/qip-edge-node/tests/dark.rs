@@ -7,6 +7,7 @@
 //! cell that keeps taking one side of a mirror whose other side may be gone.
 //! Every test here puts a real path in front of `DarkRegionWire::read` and
 //! asserts what the assembled cell did about it.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::venue::VenueId;
 use qip_core::{Duration, SystemClock, Timestamp};

@@ -24,6 +24,7 @@
 //! everything would satisfy the refusals alone and carry no data at all.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::Timestamp;
 use qip_core::error::Result;

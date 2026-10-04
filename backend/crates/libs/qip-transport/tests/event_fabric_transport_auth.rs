@@ -6,6 +6,7 @@
 //! would ever authenticate, and each packet's report said so as a limitation
 //! rather than as a failure. These tests drive the real socket path, because
 //! the property is what arrives at the far end, not what the struct holds.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use std::sync::Arc;
 
