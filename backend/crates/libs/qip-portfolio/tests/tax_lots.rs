@@ -104,7 +104,8 @@ fn a_fill_in_an_instrument_that_names_one_jurisdiction_opens_a_position_in_it() 
         dec!("0"),
         now(),
         None,
-    );
+    )
+    .unwrap();
 
     let position = book
         .position(&object.object_id)
@@ -140,7 +141,8 @@ fn a_fill_in_an_instrument_that_names_two_jurisdictions_opens_a_position_in_neit
         dec!("0"),
         now(),
         None,
-    );
+    )
+    .unwrap();
 
     let position = book
         .position(&object.object_id)
@@ -161,7 +163,8 @@ fn a_fill_in_an_instrument_that_names_no_jurisdiction_opens_a_position_in_none()
         dec!("0"),
         now(),
         None,
-    );
+    )
+    .unwrap();
 
     assert_eq!(
         book.position(&object.object_id)
@@ -363,7 +366,8 @@ fn a_realised_gain_booked_through_the_portfolio_carries_the_term_the_rule_gives_
         dec!("0"),
         now(),
         None,
-    );
+    )
+    .unwrap();
     book.apply_fill(
         &object,
         Decimal::from_int(100),
@@ -371,7 +375,8 @@ fn a_realised_gain_booked_through_the_portfolio_carries_the_term_the_rule_gives_
         dec!("0"),
         days_after(400),
         None,
-    );
+    )
+    .unwrap();
 
     // Premise: the jurisdiction arrived from the instrument, so the rule can
     // be attached at all.
@@ -391,7 +396,8 @@ fn a_realised_gain_booked_through_the_portfolio_carries_the_term_the_rule_gives_
         dec!("0"),
         days_after(500),
         None,
-    );
+    )
+    .unwrap();
 
     let position = book.position(&object.object_id).expect("still held");
     let split = position.realised_by_term();
@@ -419,7 +425,8 @@ fn a_gain_booked_with_no_rule_declared_is_reported_undetermined_and_not_short() 
         dec!("0"),
         now(),
         None,
-    );
+    )
+    .unwrap();
     book.apply_fill(
         &object,
         Decimal::from_int(-100),
@@ -427,7 +434,8 @@ fn a_gain_booked_with_no_rule_declared_is_reported_undetermined_and_not_short() 
         dec!("0"),
         days_after(500),
         None,
-    );
+    )
+    .unwrap();
 
     let position = book.position(&object.object_id).expect("still held");
     let split = position.realised_by_term();

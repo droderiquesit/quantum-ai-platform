@@ -30,27 +30,26 @@
   },
   {
     "id": "LEDGER-002",
-    "status": "PARTIAL",
-    "current": "The kernel's book of record, TrackedCapital (backend/crates/runtime/qip-kernel/src/platform.rs:3721), holds one currency-less cash: Decimal and books every fill into it with no unit (apply_fill, platform.rs:3834-3857). qip_portfolio::Portfolio likewise holds a single cash in one base_currency (portfolio.rs:46-59). qip_capital::ledger::StrategyBook keys CashBalance by Currency (book.rs:108-114), but UserLedger refuses to enrol a mandate or admit a request in any currency other than the desk's (user_ledger.rs:432-446, 709-716), so that per-unit keying never holds a second unit. qip_capital_fabric::wallet keys observed holdings by VenueAsset (venue, asset), e.g. USD and BTC in one statement.",
+    "status": "COMPLETE",
+    "current": "qip_portfolio::Portfolio::apply_fill now refuses a fill whose instrument is priced in a unit other than the book's base_currency (backend/crates/libs/qip-portfolio/src/portfolio.rs), so no cross-unit netting enters cash; the simulated clearing account (qip-brokers ledger.rs) propagates the refusal and the backtest records it as a rejected order. The ledger's posting path balances per unit under a property test.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:3721-3746,3834-3857 (TrackedCapital: one cash figure, apply_fill takes no currency)",
-      "backend/crates/libs/qip-portfolio/src/portfolio.rs:46-59,103-140 (single cash, single base_currency, apply_fill has no currency parameter)",
-      "backend/crates/services/qip-capital/src/ledger/book.rs:108-114 (StrategyBook cash: BTreeMap<Currency, CashBalance>)",
-      "backend/crates/services/qip-capital/tests/user_ledger.rs:432-446 (a mandate in EUR is refused -- the desk is single-currency)"
+      "backend/crates/libs/qip-portfolio/src/portfolio.rs (apply_fill returns Result, refuses object.currency != base_currency)",
+      "backend/crates/libs/qip-portfolio/tests/accounting.rs a_fill_priced_in_another_unit_is_refused_and_leaves_the_book_untouched",
+      "backend/crates/libs/qip-portfolio/tests/ledger_postings.rs every_ledger_event_balances_in_every_unit_for_any_side_quantity_price_and_share_split"
     ],
-    "gap": "The trading subledger (Portfolio) assumes every fill's price is already denominated in one base currency and has no explicit exchange-entry mechanism; a fill in an instrument priced in a currency other than base_currency would be added to base-currency cash with no conversion entry and no refusal, which is exactly the implicit cross-unit netting the invariant forbids. Only the per-user capital ledger side is genuinely multi-unit.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. The cited 'cargo test -p qip-capital ledger:: proves per-currency CashBalance isolation' matches no test: qip-capital has no test posting two currencies to one book, and the only EUR cases in user_ledger.rs assert a refusal at enrolment/admission. The property test the requirement names (per-unit debits = credits; cross-unit offset refused) does not exist.",
+    "verification": "cargo test -p qip-portfolio --test accounting -- a_fill_priced_in_another_unit_is_refused_and_leaves_the_book_untouched; cargo test -p qip-portfolio --test ledger_postings -- every_ledger_event_balances_in_every_unit_for_any_side_quantity_price_and_share_split. Mutation: disabling the currency check made the first fail with 'a EUR fill into a USD book must be refused'.",
     "work_item": "E05-portfolio-multi-currency",
     "tier": "T2",
     "size": "M",
-    "notes": "Low practical exposure today because every configured paper universe trades in USD, but the gap is structural, not incidental. verify: tested true -> false (no test exercises multi-unit balances; the cited test filter matches nothing that does). Current rewritten: the kernel's real book is TrackedCapital, which has no currency at all; UserLedger's per-currency keying is structurally present but refuses every non-desk currency."
+    "notes": "Low practical exposure today because every configured paper universe trades in USD, but the gap is structural, not incidental. verify: tested true -> false (no test exercises multi-unit balances; the cited test filter matches nothing that does). Current rewritten: the kernel's real book is TrackedCapital, which has no currency at all; UserLedger's per-currency keying is structurally present but refuses every non-desk currency. | COMPLETE: Portfolio side closed. Not claimed: qip_kernel TrackedCapital (the desk's book of record) is still one currency-less cash figure; that is tracked under LEDGER-001/LEDGER-007."
   },
   {
     "id": "LEDGER-003",
@@ -236,7 +235,7 @@
       "backend/crates/libs/qip-portfolio/tests/accounting.rs:91 (the_lot_method_changes_the_realised_gain)",
       "backend/crates/libs/qip-portfolio/tests/tax_lots.rs:262,294 (long/short-term-first selection tests)"
     ],
-    "gap": "The requirement says each disposal records the relief method that was applied; RealisedTrade carries no method (only a holding term), so a disposal cannot say which method relieved it. And the platform's ledger does not maintain lots at all: TrackedCapital averages the price, so lot relief exists only in backtests and the undeployed edge-node clearing account. No property test covers 'open-lot quantities sum to the position; relieved plus open basis equals total acquisition cost'.",
+    "gap": "Lot relief method is now recorded on every RealisedTrade (RealisedTrade::relief, set by close_lots_under) and a property test proves open plus relieved quantity and basis equal what was held and paid, per method. Still open: the platform's book of record (qip_kernel TrackedCapital) averages price and keeps no lots, so lot relief exists only in Portfolio-backed paths (backtests, the undeployed edge-node clearing account).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -244,7 +243,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-portfolio --test accounting the_lot_method_changes_the_realised_gain; cargo test -p qip-portfolio --test tax_lots. These prove the library type. grep -rn 'declare_selection' backend/crates --include=*.rs shows no production caller outside qip-portfolio.",
+    "verification": "cargo test -p qip-portfolio --test accounting -- every_disposal_names_its_relief_method_and_open_plus_relieved_basis_is_what_was_paid. Mutation: relief None and a shifted open_price each made it fail.",
     "work_item": "E05-ledger-tax-lots",
     "tier": "T2",
     "size": "M",
