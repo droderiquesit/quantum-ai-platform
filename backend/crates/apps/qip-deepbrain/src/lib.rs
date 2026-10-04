@@ -49,6 +49,7 @@
 //! deterministic templates narrating — which is what every deployment does
 //! today.
 
+pub mod artifacts;
 pub mod attestation;
 pub mod campaign;
 pub mod config;

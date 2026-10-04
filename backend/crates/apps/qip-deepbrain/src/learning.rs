@@ -127,7 +127,7 @@ use qip_core::error::{Error, Result};
 use qip_core::{ObjectId, Timestamp};
 use qip_evolution::scoring::{Outcome, Scoreboard};
 use qip_kernel::Platform;
-use qip_kernel::central::models::{ModelRegistration, register_fit};
+use qip_kernel::central::models::{ModelRegistration, register_fit, require_calibrated_baseline};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
 use qip_training::dataset::TrainingDataset;
@@ -221,6 +221,12 @@ pub struct ClassChoice {
     /// fitted at all; a fit the trainer refused is not an observation of
     /// failure and is not scored as one.
     pub challenger_skilled: Option<bool>,
+    /// The baseline (champion) and challenger scorecards side by side in
+    /// every regime both have been scored in, after this round's outcomes
+    /// joined the board (MODEL-043). One line per regime, and the word
+    /// "split" when the challenger leads in some and not all, so a regime
+    /// win is not averaged into an overall ranking.
+    pub standing: String,
 }
 
 impl ClassChoice {
@@ -231,7 +237,7 @@ impl ClassChoice {
             None => "was not fitted".to_string(),
         };
         format!(
-            "registered {} in {} ({}); baseline {} the bar, challenger {}",
+            "registered {} in {} ({}); baseline {} the bar, challenger {}; standing by regime: {}",
             self.registered,
             self.regime,
             self.reason.as_str(),
@@ -240,7 +246,8 @@ impl ClassChoice {
             } else {
                 "missed"
             },
-            challenger
+            challenger,
+            self.standing
         )
     }
 }
@@ -410,6 +417,17 @@ pub struct LearningRound {
     /// engine asked (`LearningDesk::promote_candidate`). `None` on a round
     /// that fitted nothing, or one a test drove without a platform.
     pub promotion: Option<PromotionOutcome>,
+    /// Production models retired this round for drifting past their own
+    /// threshold, each with the displaced model reactivated in its place
+    /// (`LearningDesk::roll_back_degraded`).
+    pub rolled_back: Vec<RollBack>,
+}
+
+/// One automatic retirement and the known-good model that replaced it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RollBack {
+    pub retired: String,
+    pub reactivated: String,
 }
 
 /// The promote stage's answer for one round's candidate.
@@ -520,6 +538,7 @@ impl LearningRound {
             campaign: None,
             refused_by_door: Some(reason.into()),
             promotion: None,
+            rolled_back: Vec::new(),
             class_choice: None,
         }
     }
@@ -591,6 +610,12 @@ impl LearningRound {
             Some(outcome) => format!("; {}", outcome.describe()),
             None => String::new(),
         };
+        let promotion = self.rolled_back.iter().fold(promotion, |line, rolled| {
+            format!(
+                "{line}; rolled back: {} retired for drift, {} reactivated",
+                rolled.retired, rolled.reactivated
+            )
+        });
         format!(
             "learning: {registered}{class}; {} model(s) measured for drift, {} \
              ineligible{unattributed}{degraded}{distilled}{promotion}{campaign}",
@@ -653,6 +678,11 @@ pub struct LearningDesk {
     /// absent here — a card promoted by a process this desk did not run —
     /// blocks a promotion by name rather than being assumed beaten.
     promoted_artifacts: BTreeMap<String, ModelArtifact>,
+    /// Artifacts of models a promotion displaced, kept so a rollback can put
+    /// the incumbent back in the position to be rescored (MODEL-045). Bounded
+    /// by the number of references ever displaced in this process, one entry
+    /// each, and an entry leaves when its model is reactivated.
+    displaced_artifacts: BTreeMap<String, ModelArtifact>,
     /// Per registered model, the feature columns it was fitted on and the
     /// instrument those columns are of.
     ///
@@ -735,6 +765,7 @@ impl LearningDesk {
             registry: ModelRegistry::new(),
             candidate: None,
             promoted_artifacts: BTreeMap::new(),
+            displaced_artifacts: BTreeMap::new(),
             reference: BTreeMap::new(),
             stream_reference: BTreeMap::new(),
             classes: Scoreboard::models(),
@@ -937,7 +968,9 @@ impl LearningDesk {
             Err(error) => return not_promoted(error.message().to_string()),
         };
         for incumbent in &incumbents {
-            self.promoted_artifacts.remove(incumbent);
+            if let Some(artifact) = self.promoted_artifacts.remove(incumbent) {
+                self.displaced_artifacts.insert(incumbent.clone(), artifact);
+            }
         }
         self.promoted_artifacts
             .insert(reference.clone(), artifact.clone());
@@ -951,6 +984,47 @@ impl LearningDesk {
             incumbent_rmse: best_incumbent,
             holdout_rows: rows.len(),
         }))
+    }
+
+    /// Retire every production model that has drifted past its own threshold
+    /// and reactivate the one it displaced (blueprint §21.2, MODEL-045).
+    ///
+    /// Run after the promote stage, so a model this round's candidate already
+    /// displaced is not rolled back to. A degraded model with no known-good
+    /// predecessor is left where it is: `decision_eligibility` already refuses
+    /// it a decision on its drift, and retiring it with nothing behind it
+    /// would only empty the slot. Returns what was rolled back.
+    pub fn roll_back_degraded(
+        &mut self,
+        platform: &mut Platform,
+        now: Timestamp,
+    ) -> Result<Vec<RollBack>> {
+        let degraded: Vec<String> = self
+            .registry
+            .iter()
+            .filter(|card| card.stage == ModelStage::Production)
+            .filter(|card| card.drift_score > card.drift_threshold)
+            .map(ModelCard::reference)
+            .collect();
+        let mut rolled_back = Vec::new();
+        for reference in degraded {
+            let Ok(reactivated) = platform.rollback_model(&mut self.registry, &reference, now)
+            else {
+                continue;
+            };
+            if let Some(artifact) = self.promoted_artifacts.remove(&reference) {
+                self.displaced_artifacts.insert(reference.clone(), artifact);
+            }
+            if let Some(artifact) = self.displaced_artifacts.remove(&reactivated) {
+                self.promoted_artifacts
+                    .insert(reactivated.clone(), artifact);
+            }
+            rolled_back.push(RollBack {
+                retired: reference,
+                reactivated,
+            });
+        }
+        Ok(rolled_back)
     }
 
     /// Whether the cadence says a round runs this cycle. Split from
@@ -1153,6 +1227,7 @@ impl LearningDesk {
                         refused_by_door: None,
                         class_choice: None,
                         promotion: None,
+                        rolled_back: Vec::new(),
                     });
                 }
             };
@@ -1177,6 +1252,7 @@ impl LearningDesk {
             refused_by_door: None,
             class_choice,
             promotion: None,
+            rolled_back: Vec::new(),
         })
     }
 
@@ -1314,7 +1390,22 @@ impl LearningDesk {
         // on the choice and given no outcome on the board, because a fit
         // that never happened is not evidence that the class fails here.
         let trainer = LocalTrainer::new();
-        let baseline = trainer.fit(&spec_for(BASELINE_CLASS), &dataset, now)?;
+        // The baseline is calibrated on the fit set (never the holdout its
+        // skill is judged on) and put on record before the challenger is
+        // fitted: a challenger is only ever evaluated against a baseline the
+        // registry can show, calibration included (ADR 0006, MODEL-031).
+        let (fit_set, _) = dataset.split_at_fraction(spec.holdout_fraction)?;
+        let baseline = trainer
+            .fit(&spec_for(BASELINE_CLASS), &dataset, now)?
+            .calibrated_on(&fit_set)?;
+        let baseline_registration = register_fit(
+            &mut self.registry,
+            &baseline,
+            &self.policy,
+            "central-research",
+            now,
+        )?;
+        require_calibrated_baseline(&self.registry, &baseline_registration.reference)?;
         let challenger = trainer.fit(&spec_for(CHALLENGER_CLASS), &dataset, now);
         let baseline_skilled = baseline
             .fit()
@@ -1343,14 +1434,23 @@ impl LearningDesk {
             reason,
             baseline_skilled,
             challenger_skilled,
+            standing: self
+                .classes
+                .head_to_head(BASELINE_CLASS.as_str(), CHALLENGER_CLASS.as_str())
+                .summarise(),
         };
-        let registration = register_fit(
-            &mut self.registry,
-            &teacher,
-            &self.policy,
-            "central-research",
-            now,
-        )?;
+        // The baseline is already on record; only a challenger still needs
+        // registering.
+        let registration = match chosen {
+            ModelFamily::Linear { .. } => baseline_registration,
+            ModelFamily::BoostedStumps { .. } => register_fit(
+                &mut self.registry,
+                &teacher,
+                &self.policy,
+                "central-research",
+                now,
+            )?,
+        };
 
         // Distil the teacher into the linear form the execution path is
         // actually allowed to run, probed on the same holdout tail the
@@ -1555,6 +1655,108 @@ mod tests {
             qip_risk::limits::LimitSet::conservative_default(),
             Box::new(InTreeProvider),
         )
+    }
+
+    #[test]
+    fn a_production_model_that_drifts_past_its_threshold_is_retired_and_the_one_it_displaced_returns()
+    -> Result<()> {
+        let mut desk = learning_desk();
+        let mut platform = serving_platform()?;
+        let bars = super::tests_support::learnable(400);
+
+        let first_round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the first round"))?;
+        let first_reference = first_round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        desk.promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a first candidate"))?;
+
+        // A successor the platform promotes over it, as a better fit would be.
+        let second_round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 2, at())?
+            .ok_or_else(|| Error::not_found("the second round"))?;
+        let second_reference = second_round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a second registration"))?
+            .reference
+            .clone();
+        let second_artifact = InTreeProvider::pack(
+            &desk
+                .candidate
+                .as_ref()
+                .ok_or_else(|| Error::not_found("the second candidate"))?
+                .teacher,
+        )?;
+        let later = at().saturating_add(qip_core::Duration::from_mins(1));
+        platform.promote_model(
+            &mut desk.registry,
+            &second_artifact,
+            None,
+            std::slice::from_ref(&first_reference),
+            later,
+        )?;
+        // The bookkeeping `promote_candidate` does when it displaces.
+        if let Some(artifact) = desk.promoted_artifacts.remove(&first_reference) {
+            desk.displaced_artifacts
+                .insert(first_reference.clone(), artifact);
+        }
+        desk.promoted_artifacts
+            .insert(second_reference.clone(), second_artifact);
+        assert!(
+            !desk.promoted_artifacts.contains_key(&first_reference),
+            "premise: the displaced model is no longer held for rescoring"
+        );
+
+        // Premise: the successor stands, undrifted, so a rollback now would be
+        // a rollback of a healthy model.
+        assert_eq!(
+            desk.registry.get(&second_reference).map(|card| card.stage),
+            Some(ModelStage::Production)
+        );
+        assert!(
+            desk.roll_back_degraded(&mut platform, later)?.is_empty(),
+            "a model within its drift threshold was rolled back"
+        );
+
+        let threshold = desk
+            .registry
+            .get(&second_reference)
+            .map(|card| card.drift_threshold)
+            .ok_or_else(|| Error::not_found("the second card"))?;
+        desk.registry
+            .record_drift(&second_reference, threshold * 2.0)?;
+        let rolled = desk.roll_back_degraded(
+            &mut platform,
+            later.saturating_add(qip_core::Duration::from_mins(1)),
+        )?;
+        assert_eq!(
+            rolled,
+            vec![RollBack {
+                retired: second_reference.clone(),
+                reactivated: first_reference.clone()
+            }]
+        );
+        assert_eq!(
+            desk.registry.get(&second_reference).map(|card| card.stage),
+            Some(ModelStage::Retired)
+        );
+        assert_eq!(
+            desk.registry.get(&first_reference).map(|card| card.stage),
+            Some(ModelStage::Production)
+        );
+        assert!(platform.model_promotions().contains_key(&first_reference));
+        assert!(!platform.model_promotions().contains_key(&second_reference));
+        assert!(
+            desk.promoted_artifacts.contains_key(&first_reference),
+            "the reactivated model cannot be rescored by the next candidate"
+        );
+        Ok(())
     }
 
     #[test]
@@ -2277,6 +2479,91 @@ mod tests {
             round.describe().contains("no established precedent"),
             "the round line does not say why the class was chosen: {}",
             round.describe()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_challenger_ahead_in_one_regime_and_behind_in_another_is_reported_split_on_the_round_line()
+    -> Result<()> {
+        let mut desk = learning_desk();
+        for _ in 0..60 {
+            desk.observe_class(&CHALLENGER_CLASS, REGIME, true);
+            desk.observe_class(&BASELINE_CLASS, REGIME, false);
+            desk.observe_class(&CHALLENGER_CLASS, OTHER_REGIME, false);
+            desk.observe_class(&BASELINE_CLASS, OTHER_REGIME, true);
+        }
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("a round"))?;
+        let choice = round
+            .class_choice
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a class choice"))?;
+        // Premise: both regimes carry a scorecard for each class.
+        for regime in [REGIME, OTHER_REGIME] {
+            for class in [BASELINE_CLASS, CHALLENGER_CLASS] {
+                assert!(desk.class_board().score(class.as_str(), regime).is_some());
+            }
+        }
+        assert!(
+            choice.standing.starts_with("split; "),
+            "{}",
+            choice.standing
+        );
+        assert!(
+            choice.standing.contains(&format!("{REGIME}: challenger"))
+                && choice
+                    .standing
+                    .contains(&format!("{OTHER_REGIME}: challenger")),
+            "{}",
+            choice.standing
+        );
+        assert!(round.describe().contains("standing by regime: split; "));
+        Ok(())
+    }
+
+    #[test]
+    fn a_round_that_registers_the_challenger_still_leaves_a_calibrated_baseline_on_record()
+    -> Result<()> {
+        let mut desk = learning_desk();
+        for _ in 0..60 {
+            desk.observe_class(&CHALLENGER_CLASS, REGIME, true);
+            desk.observe_class(&BASELINE_CLASS, REGIME, false);
+        }
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+        // Premise: the challenger is the class this round registered, so the
+        // baseline's card cannot be the registered one by accident.
+        let choice = round
+            .class_choice
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a class choice"))?;
+        assert_eq!(choice.registered, CHALLENGER_CLASS.as_str());
+
+        let baseline_name = format!("bar-{}-{}", BASELINE_CLASS.as_str(), subject().as_str());
+        let baseline = desk
+            .registry()
+            .get(&format!("{baseline_name}@0.1.0"))
+            .ok_or_else(|| Error::not_found("the baseline's card"))?;
+        let scale: f64 = baseline
+            .parameters
+            .get("calibration_scale")
+            .ok_or_else(|| Error::not_found("a recorded calibration scale"))?
+            .parse()
+            .map_err(|_| Error::invalid("the recorded scale is not a number"))?;
+        let offset: f64 = baseline
+            .parameters
+            .get("calibration_offset")
+            .ok_or_else(|| Error::not_found("a recorded calibration offset"))?
+            .parse()
+            .map_err(|_| Error::invalid("the recorded offset is not a number"))?;
+        assert!(
+            (scale - 1.0).abs() > f64::EPSILON || offset.abs() > f64::EPSILON,
+            "the baseline's calibration is the identity every fit starts with"
         );
         Ok(())
     }

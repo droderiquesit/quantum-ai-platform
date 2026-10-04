@@ -396,3 +396,350 @@ fn a_displaced_incumbent_is_retired_on_the_same_record_and_leaves_the_manifest()
     let _ = std::fs::remove_dir_all(&directory);
     Ok(())
 }
+
+// --- one version, one artifact (MODEL-034) -----------------------------------
+
+#[test]
+fn over_generated_publish_sequences_a_version_always_resolves_to_the_digest_first_published_under_it()
+-> Result<()> {
+    use qip_core::{Rng, Xoshiro256};
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-versions-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+
+    // The same version carries different bytes by changing only the ridge.
+    let variant = |version: &str, ridge: f64| -> Result<TrainedTeacher> {
+        let data = dataset("versioned-data")?;
+        let spec = TrainingSpec::new(
+            "bar-linear-versioned",
+            version,
+            "serving-tests",
+            data.name(),
+            ModelFamily::Linear { ridge },
+        )
+        .with_holdout(0.25);
+        LocalTrainer::new().fit(&spec, &data, start())
+    };
+    let ridges = [1e-6, 1e-2, 1.0];
+    let versions = ["0.1.0", "0.2.0", "0.3.0"];
+    // Premise: the variants really are different bytes, or a refusal below
+    // could never be told from an admission.
+    let digests: Vec<String> = ridges
+        .iter()
+        .map(|ridge| Ok(InTreeProvider::pack(&variant("0.1.0", *ridge)?)?.digest))
+        .collect::<Result<_>>()?;
+    assert!(digests[0] != digests[1] && digests[1] != digests[2] && digests[0] != digests[2]);
+
+    let mut rng = Xoshiro256::seeded(34);
+    let mut first: BTreeMap<String, String> = BTreeMap::new();
+    let (mut refused, mut admitted, mut restarts) = (0, 0, 0);
+    let mut platform = platform_serving(PlatformConfig::default().with_event_log_file(&path))?;
+    for step in 0..36 {
+        if step % 9 == 8 {
+            // A restart over the same log: a new process, a new registry and a
+            // fit counter that begins again at the same versions.
+            drop(platform);
+            platform = platform_serving(PlatformConfig::default().with_event_log_file(&path))?;
+            restarts += 1;
+        }
+        let version = versions[(rng.next_f64() * 3.0) as usize % 3];
+        let ridge = ridges[(rng.next_f64() * 3.0) as usize % 3];
+        let teacher = variant(version, ridge)?;
+        let mut registry = ModelRegistry::new();
+        let reference = registered(&mut registry, &teacher)?;
+        let artifact = InTreeProvider::pack(&teacher)?;
+        let now = start().saturating_add(qip_core::Duration::from_mins(step + 1));
+        let outcome = platform.promote_model(&mut registry, &artifact, None, &[], now);
+        match first.get(&reference) {
+            Some(digest) if *digest != artifact.digest => {
+                assert!(
+                    outcome.is_err(),
+                    "{reference} was republished with other bytes"
+                );
+                refused += 1;
+            }
+            _ => {
+                outcome?;
+                first
+                    .entry(reference)
+                    .or_insert_with(|| artifact.digest.clone());
+                admitted += 1;
+            }
+        }
+    }
+    // The sequence exercised what it claims to: admissions, refusals, restarts.
+    assert!(
+        admitted > 0 && refused > 0 && restarts > 0,
+        "{admitted}/{refused}/{restarts}"
+    );
+    // And the platform resolves every version to its first digest.
+    for (reference, digest) in &first {
+        let held = platform.model_promotions().get(reference);
+        assert!(
+            held.is_none_or(|record| &record.artifact_digest == digest),
+            "{reference} resolves to a later digest"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+// --- rollback to the last known-good (MODEL-045) -----------------------------
+
+fn teacher_with_ridge(name: &str, version: &str, ridge: f64) -> Result<TrainedTeacher> {
+    let data = dataset(&format!("{name}-data"))?;
+    let spec = TrainingSpec::new(
+        name,
+        version,
+        "serving-tests",
+        data.name(),
+        ModelFamily::Linear { ridge },
+    )
+    .with_holdout(0.25);
+    LocalTrainer::new().fit(&spec, &data, start())
+}
+
+#[test]
+fn a_degraded_model_is_retired_and_the_one_it_displaced_returns_at_the_digest_that_passed()
+-> Result<()> {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-rollback-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let mut registry = ModelRegistry::new();
+    let (first_manifest, first_digest, second_reference, first_reference);
+    {
+        let mut platform = platform_serving(PlatformConfig::default().with_event_log_file(&path))?;
+        let old = teacher_with_ridge("bar-linear-rb", "0.1.0", 1e-6)?;
+        let new = teacher_with_ridge("bar-linear-rb", "0.2.0", 1.0)?;
+        first_reference = registered(&mut registry, &old)?;
+        second_reference = registered(&mut registry, &new)?;
+        let old_artifact = InTreeProvider::pack(&old)?;
+        let new_artifact = InTreeProvider::pack(&new)?;
+        assert_ne!(
+            old_artifact.digest, new_artifact.digest,
+            "premise: the two versions are different bytes"
+        );
+        let old_student = DistilledModel::linear("bar-linear-rb", 0.1, vec![0.5, -0.25])?;
+        let new_student = DistilledModel::linear("bar-linear-rb", 0.1, vec![0.4, -0.2])?;
+        platform.promote_model(
+            &mut registry,
+            &old_artifact,
+            Some(&old_student),
+            &[],
+            start(),
+        )?;
+        first_manifest = platform.model_manifest()?.manifest().clone();
+        let later = start().saturating_add(qip_core::Duration::from_mins(1));
+        platform.promote_model(
+            &mut registry,
+            &new_artifact,
+            Some(&new_student),
+            std::slice::from_ref(&first_reference),
+            later,
+        )?;
+        // Premise: the successor is what stands, and the manifest says so, so
+        // a rollback has something to undo.
+        assert_ne!(platform.model_manifest()?.manifest(), &first_manifest);
+        assert_eq!(
+            registry.get(&first_reference).map(|card| card.stage),
+            Some(ModelStage::Retired)
+        );
+        first_digest = old_artifact.digest.clone();
+
+        let reactivated = platform.rollback_model(
+            &mut registry,
+            &second_reference,
+            later.saturating_add(qip_core::Duration::from_mins(1)),
+        )?;
+        assert_eq!(reactivated, first_reference);
+        assert_eq!(
+            registry.get(&second_reference).map(|card| card.stage),
+            Some(ModelStage::Retired)
+        );
+        let card = registry
+            .get(&first_reference)
+            .ok_or_else(|| Error::not_found("the card"))?;
+        assert_eq!(card.stage, ModelStage::Production);
+        assert_eq!(card.artifact_digest.as_deref(), Some(first_digest.as_str()));
+        assert_eq!(
+            platform.model_manifest()?.manifest(),
+            &first_manifest,
+            "the cells are told the old distillate again"
+        );
+        assert!(!platform.model_promotions().contains_key(&second_reference));
+        assert_eq!(promotion_records(&platform), 3);
+    }
+    // The rollback is a record, so a restart over the log lands in the same place.
+    let mut restart_config = PlatformConfig::default().with_event_log_file(&path);
+    // A resumed deterministic run mints the ids a fresh one would at the same
+    // instant; a different seed keeps the restart off the first run's ids.
+    restart_config.seed ^= 1;
+    let restarted = platform_serving(restart_config)?;
+    assert_eq!(restarted.model_manifest()?.manifest(), &first_manifest);
+    assert!(restarted.model_promotions().contains_key(&first_reference));
+    assert!(!restarted.model_promotions().contains_key(&second_reference));
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+#[test]
+fn a_rollback_refuses_a_predecessor_whose_card_no_longer_carries_the_digest_that_passed()
+-> Result<()> {
+    let mut platform = platform_serving(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let old = teacher_with_ridge("bar-linear-rb-edit", "0.1.0", 1e-6)?;
+    let new = teacher_with_ridge("bar-linear-rb-edit", "0.2.0", 1.0)?;
+    let old_reference = registered(&mut registry, &old)?;
+    let new_reference = registered(&mut registry, &new)?;
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&old)?,
+        None,
+        &[],
+        start(),
+    )?;
+    let later = start().saturating_add(qip_core::Duration::from_mins(1));
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&new)?,
+        None,
+        std::slice::from_ref(&old_reference),
+        later,
+    )?;
+    registry
+        .get_mut(&old_reference)
+        .ok_or_else(|| Error::not_found("the old card"))?
+        .artifact_digest = Some("0".repeat(64));
+    let refused = platform
+        .rollback_model(&mut registry, &new_reference, later)
+        .unwrap_err();
+    assert!(
+        refused.message().contains("first recorded"),
+        "the refusal does not name the digest mismatch: {refused}"
+    );
+    assert_eq!(
+        registry.get(&new_reference).map(|card| card.stage),
+        Some(ModelStage::Production),
+        "a refused rollback retired the live model"
+    );
+    assert_eq!(promotion_records(&platform), 2);
+    Ok(())
+}
+
+#[test]
+fn a_rollback_with_no_known_good_predecessor_is_refused_and_changes_nothing() -> Result<()> {
+    let mut platform = platform_serving(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let teacher = teacher_with_ridge("bar-linear-rb-alone", "0.1.0", 1e-6)?;
+    let reference = registered(&mut registry, &teacher)?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    platform.promote_model(&mut registry, &artifact, None, &[], start())?;
+    let refused = platform
+        .rollback_model(&mut registry, &reference, start())
+        .unwrap_err();
+    assert!(refused.message().contains("known-good"), "{refused}");
+    assert_eq!(
+        registry.get(&reference).map(|card| card.stage),
+        Some(ModelStage::Production),
+        "a refused rollback retired the only model"
+    );
+    assert_eq!(promotion_records(&platform), 1);
+    assert!(platform.model_promotions().contains_key(&reference));
+    Ok(())
+}
+
+// --- the producer of a candidate (MODEL-067) --------------------------------
+
+#[test]
+fn a_candidate_produced_by_the_quantum_gateway_is_refused_and_leaves_no_record() -> Result<()> {
+    use qip_kernel::ModelProducer;
+    let mut platform = platform_serving(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let teacher = teacher("bar-linear-qgw", "0.1.0")?;
+    let reference = registered(&mut registry, &teacher)?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+
+    // Premise: the very same artifact is promotable when the training
+    // pipeline produced it, so the refusal is about the producer alone.
+    let mut elsewhere = registry.clone();
+    platform_serving(PlatformConfig::default())?.promote_model_from(
+        ModelProducer::TrainingPipeline,
+        &mut elsewhere,
+        &artifact,
+        None,
+        &[],
+        start(),
+    )?;
+
+    let refused = platform
+        .promote_model_from(
+            ModelProducer::QuantumGateway,
+            &mut registry,
+            &artifact,
+            None,
+            &[],
+            start(),
+        )
+        .unwrap_err();
+    assert!(refused.message().contains("quantum gateway"), "{refused}");
+    assert_eq!(
+        registry.get(&reference).map(|card| card.stage),
+        Some(ModelStage::Development)
+    );
+    assert_eq!(promotion_records(&platform), 0);
+    Ok(())
+}
+
+#[test]
+fn a_quantum_informed_candidate_is_admitted_only_with_its_calibrated_baseline_attached()
+-> Result<()> {
+    use qip_kernel::ModelProducer;
+    let mut platform = platform_serving(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let candidate = teacher("bar-linear-qi", "0.1.0")?;
+    let reference = registered(&mut registry, &candidate)?;
+    let artifact = InTreeProvider::pack(&candidate)?;
+
+    let baseline = teacher("bar-baseline", "0.1.0")?;
+    let baseline_reference = baseline.reference();
+    let informed = || ModelProducer::QuantumInformed {
+        baseline: baseline_reference.clone(),
+    };
+
+    // No baseline on record: refused.
+    let refused = platform
+        .promote_model_from(informed(), &mut registry, &artifact, None, &[], start())
+        .unwrap_err();
+    assert!(refused.message().contains("baseline"), "{refused}");
+
+    // On record but never calibrated: refused.
+    registered(&mut registry, &baseline)?;
+    assert!(
+        platform
+            .promote_model_from(informed(), &mut registry, &artifact, None, &[], start())
+            .is_err()
+    );
+    assert_eq!(promotion_records(&platform), 0, "a refusal reached the log");
+
+    // Calibrated and on record: admitted, and the log names the producer.
+    let data = dataset("bar-baseline-data")?;
+    let (fit_set, _) = data.split_at_fraction(0.25)?;
+    registered(&mut registry, &baseline.calibrated_on(&fit_set)?)?;
+    platform.promote_model_from(informed(), &mut registry, &artifact, None, &[], start())?;
+    assert_eq!(
+        platform
+            .model_promotions()
+            .get(&reference)
+            .map(|record| record.producer.clone()),
+        Some(informed())
+    );
+    Ok(())
+}

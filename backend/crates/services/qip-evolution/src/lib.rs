@@ -135,4 +135,7 @@ pub use grammar::{Grammar, GrammarLimits};
 pub use mutate::{Challenger, Mutation, MutationKind, MutationRun, Mutator, RejectedMutation};
 pub use palette::FeaturePalette;
 pub use promotion::{ChampionBook, Succession, advance, advance_challenger};
-pub use scoring::{ContextualScore, Outcome, ScoreBand, ScoreDomain, Scoreboard, evidence_weight};
+pub use scoring::{
+    ContextStanding, ContextualScore, HeadToHead, Outcome, ScoreBand, ScoreDomain, Scoreboard,
+    Standing, evidence_weight,
+};

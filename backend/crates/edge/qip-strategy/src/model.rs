@@ -61,19 +61,15 @@ impl DistilledModel {
     /// a NaN score, which compares false against every threshold and so reads
     /// as a quiet decision not to trade.
     pub fn linear(name: impl Into<String>, intercept: f64, coefficients: Vec<f64>) -> Result<Self> {
-        if coefficients.is_empty() {
-            return Err(Error::invalid("a linear model needs at least one input"));
-        }
-        if !intercept.is_finite() || coefficients.iter().any(|c| !c.is_finite()) {
-            return Err(Error::invalid("model coefficients must all be finite"));
-        }
-        Ok(Self {
+        let model = Self {
             name: name.into(),
             form: ModelForm::Linear {
                 intercept,
                 coefficients,
             },
-        })
+        };
+        model.validate()?;
+        Ok(model)
     }
 
     /// A decision tree over `arity` inputs, rooted at node zero.
@@ -82,52 +78,81 @@ impl DistilledModel {
     /// point backwards is a loop, and a loop has no worst-case cost to put in
     /// a latency budget.
     pub fn tree(name: impl Into<String>, arity: usize, nodes: Vec<TreeNode>) -> Result<Self> {
-        if nodes.is_empty() {
-            return Err(Error::invalid("a decision tree needs at least one node"));
-        }
-        if arity == 0 {
-            return Err(Error::invalid("a decision tree needs at least one input"));
-        }
-        for (index, node) in nodes.iter().enumerate() {
-            match node {
-                TreeNode::Branch {
-                    input,
-                    threshold,
-                    below,
-                    at_or_above,
-                } => {
-                    if *input >= arity {
-                        return Err(Error::invalid(format!(
-                            "tree node {index} reads input {input} of {arity}"
-                        )));
-                    }
-                    if !threshold.is_finite() {
-                        return Err(Error::invalid(format!(
-                            "tree node {index} has a non-finite threshold"
-                        )));
-                    }
-                    for target in [*below, *at_or_above] {
-                        if target <= index || target >= nodes.len() {
-                            return Err(Error::invalid(format!(
-                                "tree node {index} descends to {target}, which is not a later node \
-                                 — the descent would not be bounded"
-                            )));
-                        }
-                    }
+        let model = Self {
+            name: name.into(),
+            form: ModelForm::Tree { arity, nodes },
+        };
+        model.validate()?;
+        Ok(model)
+    }
+
+    /// Re-run every check the constructors make.
+    ///
+    /// `DistilledModel` derives `Deserialize`, so a plan read from a file
+    /// reaches the compiler without passing through `linear` or `tree`; a
+    /// tree whose branch points backwards would then be admitted with a
+    /// `cost()` that no longer bounds its evaluation. The compiler calls this
+    /// on every model it lowers, so the bound holds for the value, however it
+    /// was built.
+    pub fn validate(&self) -> Result<()> {
+        match &self.form {
+            ModelForm::Linear {
+                intercept,
+                coefficients,
+            } => {
+                if coefficients.is_empty() {
+                    return Err(Error::invalid("a linear model needs at least one input"));
                 }
-                TreeNode::Leaf { value } => {
-                    if !value.is_finite() {
-                        return Err(Error::invalid(format!(
-                            "tree leaf {index} has a non-finite value"
-                        )));
+                if !intercept.is_finite() || coefficients.iter().any(|c| !c.is_finite()) {
+                    return Err(Error::invalid("model coefficients must all be finite"));
+                }
+            }
+            ModelForm::Tree { arity, nodes } => {
+                if nodes.is_empty() {
+                    return Err(Error::invalid("a decision tree needs at least one node"));
+                }
+                if *arity == 0 {
+                    return Err(Error::invalid("a decision tree needs at least one input"));
+                }
+                for (index, node) in nodes.iter().enumerate() {
+                    match node {
+                        TreeNode::Branch {
+                            input,
+                            threshold,
+                            below,
+                            at_or_above,
+                        } => {
+                            if *input >= *arity {
+                                return Err(Error::invalid(format!(
+                                    "tree node {index} reads input {input} of {arity}"
+                                )));
+                            }
+                            if !threshold.is_finite() {
+                                return Err(Error::invalid(format!(
+                                    "tree node {index} has a non-finite threshold"
+                                )));
+                            }
+                            for target in [*below, *at_or_above] {
+                                if target <= index || target >= nodes.len() {
+                                    return Err(Error::invalid(format!(
+                                        "tree node {index} descends to {target}, which is not a later node \
+                                         — the descent would not be bounded"
+                                    )));
+                                }
+                            }
+                        }
+                        TreeNode::Leaf { value } => {
+                            if !value.is_finite() {
+                                return Err(Error::invalid(format!(
+                                    "tree leaf {index} has a non-finite value"
+                                )));
+                            }
+                        }
                     }
                 }
             }
         }
-        Ok(Self {
-            name: name.into(),
-            form: ModelForm::Tree { arity, nodes },
-        })
+        Ok(())
     }
 
     pub fn name(&self) -> &str {
@@ -191,6 +216,12 @@ impl DistilledModel {
 
     /// Evaluate against inputs already reduced to statistics.
     pub fn evaluate(&self, inputs: &[f64]) -> Result<f64> {
+        self.evaluate_counted(inputs).map(|(value, _)| value)
+    }
+
+    /// As [`Self::evaluate`], also reporting the steps taken, so a test can
+    /// hold the steps to [`Self::cost`] — the figure the budget charged.
+    pub fn evaluate_counted(&self, inputs: &[f64]) -> Result<(f64, usize)> {
         if inputs.len() != self.arity() {
             return Err(Error::invalid(format!(
                 "model {} takes {} inputs, given {}",
@@ -214,15 +245,15 @@ impl DistilledModel {
                 for (coefficient, input) in coefficients.iter().zip(inputs) {
                     total += coefficient * input;
                 }
-                Ok(total)
+                Ok((total, coefficients.len() + 1))
             }
             ModelForm::Tree { nodes, .. } => {
                 let mut cursor = 0usize;
                 // Bounded by construction — every branch descends forward —
                 // and bounded again here, so a hand-built value cannot spin.
-                for _ in 0..nodes.len() {
+                for step in 1..=nodes.len() {
                     match nodes.get(cursor) {
-                        Some(TreeNode::Leaf { value }) => return Ok(*value),
+                        Some(TreeNode::Leaf { value }) => return Ok((*value, step)),
                         Some(TreeNode::Branch {
                             input,
                             threshold,
