@@ -20,6 +20,7 @@
 // assertion that aborts instead of returning is a bug. In a test the assertion
 // is the deliverable and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::governance::Usage;
 use qip_core::error::Result;

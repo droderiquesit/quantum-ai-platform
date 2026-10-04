@@ -33,6 +33,7 @@
 
 // See the note in `acceptance.rs`: in a test the assertion is the deliverable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_agents::finding::{AgentFinding, Direction};
 use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry, ModelStage};

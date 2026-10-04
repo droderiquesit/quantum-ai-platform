@@ -1,4 +1,5 @@
 //! Storage ports and their local adapters.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::Timestamp;
 use qip_storage::kv::{key_for, split_key};

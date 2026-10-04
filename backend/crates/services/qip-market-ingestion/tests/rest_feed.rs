@@ -6,6 +6,7 @@
 //! process will hold, or with nothing at all, produces a named error instead of
 //! a truncated record or a wait with no end — and those are the failures an
 //! adapter that talks to a vendor exists to survive.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 mod server;
 
