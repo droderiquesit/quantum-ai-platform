@@ -1,5 +1,6 @@
 //! SBE decoding against an in-tree schema, with the version tolerance that
 //! decides whether a venue's schema roll-out is an outage.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::{BookSide, MessageBody, VenueId, VenueStatus};
 use qip_core::{Decimal, Timestamp};

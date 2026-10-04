@@ -11,6 +11,7 @@
 //! refuses — without either side knowing about the other.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 mod common;
 

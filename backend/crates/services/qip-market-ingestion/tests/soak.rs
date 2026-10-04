@@ -59,6 +59,7 @@
 //! that works for this source, and the run exercises exactly that edge.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, ManualClock, ObjectId, Timestamp};

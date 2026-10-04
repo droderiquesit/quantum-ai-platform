@@ -51,6 +51,7 @@
 //! `Cargo.lock`, or a profile, edition or feature setting in a manifest. A
 //! check on those files' mtimes would also fire on the edits cargo ignores,
 //! and so could not tell the two apart.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_acceptance::repository_root;
 use std::collections::{BTreeMap, BTreeSet};
