@@ -1723,7 +1723,7 @@ fn an_exit_is_costed_from_depth_and_an_unavailable_quote_or_borrow_is_not_costed
         (impact_bps - 40.0 * 0.1_f64.sqrt()).abs() < 1e-9,
         "{impact_bps}"
     );
-    assert_eq!(borrow_bps_annual, 0.0);
+    assert!(borrow_bps_annual.abs() < 1e-12, "{borrow_bps_annual}");
     let short = estimate_exit(
         Decimal::from_int(-250_000),
         &profile,
@@ -1733,7 +1733,7 @@ fn an_exit_is_costed_from_depth_and_an_unavailable_quote_or_borrow_is_not_costed
         true,
     )?;
     assert!(
-        matches!(short, ExitCost::Estimated { borrow_bps_annual, .. } if borrow_bps_annual == 50.0)
+        matches!(short, ExitCost::Estimated { borrow_bps_annual, .. } if (borrow_bps_annual - 50.0).abs() < 1e-12)
     );
 
     // Unavailable is its own answer, not a zero.

@@ -8,6 +8,7 @@
 //! directory is gone — and asserts what the assembled cell did about it.
 //! The wiring test and the mesh tests share nothing: no link is built here,
 //! which is the independence §46.2 asks for, held by construction.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::venue::VenueId;
 use qip_core::{Duration, SystemClock, Timestamp};

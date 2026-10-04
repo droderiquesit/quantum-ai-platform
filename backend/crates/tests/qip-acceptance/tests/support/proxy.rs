@@ -42,6 +42,7 @@
 //! workspace forbids raw sockets and hand-rolled protocol stacks (ADR 0009),
 //! so "drop acks" is not TCP-ACK manipulation — that needs a raw socket this
 //! crate may not open. The request gets through; the acknowledgement does not.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::Rng as _;
 use std::io::{Read, Write};

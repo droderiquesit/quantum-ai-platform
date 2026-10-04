@@ -605,5 +605,37 @@
       "GOV"
     ],
     "notes": "Split from G p21's cost-anomalies bullet. Detection-to-task is FINOPS-018. P0 because this is a safety invariant: deleting production state destroys the record every decision is reproduced from. 'Shortens its retention' is included because a shortened lifecycle rule is a deferred delete. MANAGED_SERVICE and NEW_DEPENDENCY came with the raw item's detection half and are removed here. COST added. Consistent with .claude/rules/02-change-management.md (no irreversible operation without explicit approval) and with the guard hook's refusal of cloud-resource deletion."
+  },
+  {
+    "id": "FINOPS-020",
+    "domain": "FINOPS",
+    "title": "Autonomous development at scale runs under explicit per-role agent budgets set below the daily ceiling",
+    "statement": "Ephemeral agent workers, sandboxes and the Agent Orchestrator run under per-role daily and monthly model, build and tool budgets, set by the owner below the 25 USD/day ceiling. The blueprint gives no number. A model-gateway vendor call needs egress approval and a licensing check first.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G3",
+        "page": "15",
+        "section": "§13.1 Autonomous development at superintelligence scale"
+      },
+      {
+        "doc": "G3",
+        "page": "2",
+        "section": "§23 FinOps"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A budget value exists per role and a run exceeding it is stopped."
+    },
+    "policy_flags": [
+      "COST",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "CICD"
+    ]
   }
 ]
