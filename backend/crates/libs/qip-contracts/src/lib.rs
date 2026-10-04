@@ -35,6 +35,7 @@ pub mod feature;
 pub mod gate;
 pub mod governance;
 pub mod intent;
+pub mod knowledge_pack;
 pub mod ledger;
 pub mod market_event;
 pub mod message;
