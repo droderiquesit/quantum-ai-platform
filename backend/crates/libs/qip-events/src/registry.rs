@@ -78,16 +78,29 @@ impl SchemaRegistry {
             schema_id: SchemaId::new(T::TOPIC.name(), T::SCHEMA_VERSION, &shape),
         };
 
-        if let Some(existing) = self.descriptors.get(&T::TOPIC)
-            && existing.type_name != descriptor.type_name
-        {
-            return Err(Error::schema(format!(
-                "topic {} is already claimed by {}",
-                T::TOPIC,
-                existing.type_name
-            )));
+        self.admit(descriptor)
+    }
+
+    /// Admit a descriptor through the compatibility gate. `register` goes
+    /// through here, so a descriptor built by hand (a candidate read from a
+    /// CI manifest, say) meets the same rules as a registered type.
+    pub fn admit(&mut self, descriptor: SchemaDescriptor) -> Result<()> {
+        let topic = descriptor.topic;
+        if let Some(existing) = self.descriptors.get(&topic) {
+            if existing.type_name != descriptor.type_name {
+                return Err(Error::schema(format!(
+                    "topic {} is already claimed by {}",
+                    topic, existing.type_name
+                )));
+            }
+            // An identical re-registration is a no-op; a changed shape under
+            // the same version, a rollback or a field removal is refused.
+            check_compatible(existing, &descriptor)?;
+            if existing == &descriptor {
+                return Ok(());
+            }
         }
-        self.descriptors.insert(T::TOPIC, descriptor);
+        self.descriptors.insert(topic, descriptor);
         Ok(())
     }
 
@@ -125,5 +138,53 @@ impl SchemaRegistry {
             .map(|d| format!("{}={}", d.topic.name(), d.fingerprint))
             .collect();
         qip_core::hash::sha256_hex(material.join(";").as_bytes())
+    }
+}
+
+/// Backward-compatibility gate between a registered schema and a candidate
+/// for the same topic (CONTRACT-046, CONTRACT-047).
+///
+/// Prevents a payload silently losing or changing a field under a version
+/// number consumers already trust. The same version must carry the same
+/// `schema_id`; a lower version is a rollback; a higher version may add
+/// fields but must keep every field the registered one had, because a
+/// consumer built against the old shape would otherwise read a missing field.
+/// Top-level names only: nested kinds are covered by the `schema_id` equality
+/// at an unchanged version.
+pub fn check_compatible(registered: &SchemaDescriptor, candidate: &SchemaDescriptor) -> Result<()> {
+    use std::cmp::Ordering;
+    match candidate.version.cmp(&registered.version) {
+        Ordering::Equal if candidate.schema_id != registered.schema_id => {
+            Err(Error::schema(format!(
+                "topic {} version {} is already registered with different content; \
+                 bump SCHEMA_VERSION to publish a changed shape",
+                registered.topic, registered.version
+            )))
+        }
+        Ordering::Equal => Ok(()),
+        Ordering::Less => Err(Error::schema(format!(
+            "topic {} is registered at version {}; version {} would roll it back",
+            registered.topic, registered.version, candidate.version
+        ))),
+        Ordering::Greater => {
+            let removed: Vec<&str> = registered
+                .fields
+                .iter()
+                .filter(|f| !candidate.fields.contains(f))
+                .map(String::as_str)
+                .collect();
+            if removed.is_empty() {
+                Ok(())
+            } else {
+                Err(Error::schema(format!(
+                    "topic {} version {} removes field(s) {} that version {} carried; \
+                     keep them or publish a new topic",
+                    registered.topic,
+                    candidate.version,
+                    removed.join(","),
+                    registered.version
+                )))
+            }
+        }
     }
 }

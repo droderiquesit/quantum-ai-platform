@@ -2668,3 +2668,66 @@ fn every_event_fabric_topic_has_the_retention_class_adr_0089_assigns_it() {
         "EventFabricGap must be Irreplaceable: only the event fabric detects its own gaps"
     );
 }
+
+// --- schema immutability and compatibility (CONTRACT-046, CONTRACT-047) -----
+
+fn registered_tick() -> (SchemaRegistry, qip_events::registry::SchemaDescriptor) {
+    let mut registry = SchemaRegistry::new();
+    registry
+        .register(&Tick {
+            symbol: "A".into(),
+            price: 1.0,
+        })
+        .unwrap();
+    let d = registry.get(Topic::MarketTick).unwrap().clone();
+    (registry, d)
+}
+
+#[test]
+fn re_registering_identical_content_is_a_no_op_and_changed_content_under_one_version_is_refused() {
+    let (mut registry, original) = registered_tick();
+    let before = registry.fingerprint();
+    assert_eq!(registry.len(), 1, "premise: one schema registered");
+
+    registry.admit(original.clone()).unwrap();
+    assert_eq!(registry.fingerprint(), before);
+    assert_eq!(registry.len(), 1);
+
+    let mut changed = original.clone();
+    changed.fields.push("venue".into());
+    changed.schema_id = qip_events::event_fabric::schema_id::SchemaId::new(
+        "market.tick",
+        original.version,
+        &qip_events::event_fabric::schema_id::Shape::from_json(&serde_json::json!({
+            "symbol": "A", "price": 1.0, "venue": "X"
+        })),
+    );
+    assert_ne!(changed.schema_id, original.schema_id, "premise: ids differ");
+    let err = registry.admit(changed).unwrap_err();
+    assert!(err.to_string().contains("bump SCHEMA_VERSION"), "{err}");
+    assert_eq!(registry.get(Topic::MarketTick), Some(&original));
+}
+
+#[test]
+fn a_version_that_removes_a_field_is_rejected_and_an_additive_one_is_admitted() {
+    let (mut registry, original) = registered_tick();
+    assert!(original.fields.contains(&"price".to_string()), "premise");
+
+    let mut breaking = original.clone();
+    breaking.version = 2;
+    breaking.fields = vec!["symbol".into()];
+    let err = registry.admit(breaking.clone()).unwrap_err();
+    assert!(err.to_string().contains("removes field(s) price"), "{err}");
+    assert_eq!(registry.get(Topic::MarketTick), Some(&original));
+    // CI form of the gate: the same function, called on two descriptors.
+    assert!(qip_events::registry::check_compatible(&original, &breaking).is_err());
+
+    let mut additive = original.clone();
+    additive.version = 2;
+    additive.fields.push("venue".into());
+    registry.admit(additive.clone()).unwrap();
+    assert_eq!(registry.get(Topic::MarketTick).unwrap().version, 2);
+
+    let err = registry.admit(original).unwrap_err();
+    assert!(err.to_string().contains("roll it back"), "{err}");
+}

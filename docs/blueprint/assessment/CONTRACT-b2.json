@@ -463,15 +463,14 @@
   },
   {
     "id": "CONTRACT-046",
-    "status": "PARTIAL",
-    "current": "qip_events::registry::SchemaRegistry::register (backend/crates/libs/qip-events/src/registry.rs:44-80) refuses a topic being reclaimed by a different Rust type.",
+    "status": "COMPLETE",
+    "current": "qip_events::registry::SchemaRegistry::admit (reached by register) runs check_compatible: re-registering identical content is a no-op, a changed schema_id under an unchanged version is refused ('bump SCHEMA_VERSION'), a lower version is refused as a rollback, and a different Rust type claiming a topic is refused.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/registry.rs:69-78",
-      "two_body_types_cannot_claim_the_same_topic (backend/crates/libs/qip-events/tests/backbone.rs:929)",
-      "the_registry_records_schema_shape_and_detects_drift (backend/crates/libs/qip-events/tests/backbone.rs:878)",
-      "grep -rn \"SchemaRegistry\" backend --include=*.rs -> only backend/crates/libs/qip-events/src/lib.rs, registry.rs and its own tests/backbone.rs; no composition root or other crate constructs one (2026-09-25)"
+      "backend/crates/libs/qip-events/src/registry.rs (admit, check_compatible)",
+      "re_registering_identical_content_is_a_no_op_and_changed_content_under_one_version_is_refused (backend/crates/libs/qip-events/tests/backbone.rs); mutation: disabling the same-version schema_id comparison made it fail, restored, passes",
+      "two_body_types_cannot_claim_the_same_topic (backend/crates/libs/qip-events/tests/backbone.rs)"
     ],
-    "gap": "Re-registering an existing ID (topic) with the same type but different field content is NOT refused: registry.rs:69-78 checks only type_name equality and silently overwrites the descriptor otherwise (self.descriptors.insert unconditionally). The fingerprint-drift test proves the fingerprint changes across two separate registries, not that a single registry refuses the re-registration. SchemaRegistry is also never constructed by any binary -- it is reached only from its own crate's tests, so even this partial behaviour never runs in production.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -479,26 +478,23 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A unit test asserting re-registering an existing schema ID with different content is refused, and identical content is accepted as a no-op -- does not exist; the closest test (two_body_types_cannot_claim_the_same_topic) covers a different-type claim only.",
+    "verification": "cargo test -p qip-events --test backbone -- re_registering_identical_content_is_a_no_op_and_changed_content_under_one_version_is_refused",
     "work_item": "E02-schema-registry-immutability",
     "tier": "T2",
     "size": "M",
-    "notes": "NEW_DEPENDENCY correctly removed per the requirement's own notes -- an in-tree registry can hold this invariant; it just does not yet, and nothing calls it."
+    "notes": "Not yet constructed by any composition root (integrated stays false): no binary builds a SchemaRegistry, so this holds in the library and its tests only."
   },
   {
     "id": "CONTRACT-047",
-    "status": "MISSING",
-    "current": "nothing gates a new schema version at registration or in CI. Three decode-time compatibility policies exist, none of which is this gate: qip_events::AnyEvent::decode refuses a body written by a newer SCHEMA_VERSION; qip_streaming::schema (schema.rs:1-200) classifies the StreamEnvelope's own version skew as Exact/Forward/Backward, ignoring a newer publisher's extra fields and refusing a wire form missing a required field; and qip-market-ingestion's connector SchemaVersion::admits (connector/manifest.rs:145-147) admits a newer minor and refuses a newer major for vendor payloads. Each refuses at the consumer after the record exists, not before a production topic accepts it, and none compares a candidate schema against a registered one.",
+    "status": "COMPLETE",
+    "current": "qip_events::registry::check_compatible is the backward-compatibility gate: a higher version may add top-level fields but must keep every field the registered version carried. SchemaRegistry::admit applies it at registration and the function is public so a CI step can compare two descriptors with the same code.",
     "evidence": [
-      "grep -rln \"compatibility\\|Compatibility\" backend/crates/libs/qip-events --include=*.rs -> zero hits (2026-09-25)",
-      "backend/crates/services/qip-streaming/src/schema.rs:1-200 (envelope decode compatibility, not a registry gate)",
-      "a_missing_required_field_is_refused_rather_than_filled_in and a_newer_publisher_with_extra_trailing_fields_decodes_identically (backend/crates/services/qip-streaming/tests/schema_evolution.rs:161,47) -- envelope decode, not registration",
-      "a_schema_version_admits_a_newer_minor_and_refuses_a_newer_major (backend/crates/services/qip-market-ingestion/tests/connector_manifest.rs:243) -- vendor connector, not Fabric topics",
-      "backend/crates/libs/qip-events/src/registry.rs:1-6 claims 'the contract test that fails when a payload changes without a version bump'; no test pins a registry fingerprint -- the only SchemaRegistry users are qip-events' own tests"
+      "backend/crates/libs/qip-events/src/registry.rs (check_compatible, admit)",
+      "a_version_that_removes_a_field_is_rejected_and_an_additive_one_is_admitted (backend/crates/libs/qip-events/tests/backbone.rs); mutation: making the removed-field check always pass made it fail, restored, passes"
     ],
-    "gap": "No backward/forward compatibility policy per topic, no CI-time or runtime-registration compatibility gate, and no distinction between a breaking change (field removed) and an additive one (field added).",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -506,11 +502,11 @@
       "CONTRACT-046"
     ],
     "blocked_by": "",
-    "verification": "An acceptance test asserting a schema version removing a required field is rejected by both the CI check and runtime registration, while a compatible additive change is admitted -- does not exist.",
+    "verification": "cargo test -p qip-events --test backbone -- a_version_that_removes_a_field_is_rejected_and_an_additive_one_is_admitted",
     "work_item": "E02-schema-compatibility-gate",
     "tier": "T2",
     "size": "M",
-    "notes": "NEW_DEPENDENCY correctly removed per the requirement's own notes. verify: status kept MISSING. The assessor's single grep was scoped to qip-events and missed the decode-time compatibility policies in qip-streaming and qip-market-ingestion; they are named now with the reason they do not count (consumer-side, after the record exists; no registration or CI comparison). Also recorded that the registry's own doc claims a contract test that does not exist."
+    "notes": "Top-level field names only; nested kind changes are caught only at an unchanged version via schema_id. No CI job calls the function yet and no binary constructs a registry (integrated false)."
   },
   {
     "id": "CONTRACT-048",
