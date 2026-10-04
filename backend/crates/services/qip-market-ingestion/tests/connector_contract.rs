@@ -8,6 +8,7 @@
 //! opt-in tests in `live_connectors.rs` are for.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 // The loopback server is shared by every integration-test binary and compiled
 // into each on its own; this binary scripts one of its four answers, and the

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::envelope::EventBody;
-use crate::event_fabric::schema_id::{SchemaId, Shape};
+use crate::event_fabric::schema_id::{SchemaId, Shape, check_compatible};
 use crate::topic::Topic;
 
 /// The registered shape of one event body.
@@ -32,6 +32,9 @@ pub struct SchemaDescriptor {
     /// for why the top-level fingerprint alone is not enough for a stream to
     /// admit a producer by schema id.
     pub schema_id: SchemaId,
+    /// The recursive shape `schema_id` hashes, kept so a later registration
+    /// of the same topic can be compared field by field rather than by hash.
+    pub shape: Shape,
 }
 
 /// All registered event schemas.
@@ -76,18 +79,56 @@ impl SchemaRegistry {
             fields,
             fingerprint: qip_core::hash::sha256_hex(material.as_bytes()),
             schema_id: SchemaId::new(T::TOPIC.name(), T::SCHEMA_VERSION, &shape),
+            shape,
         };
 
-        if let Some(existing) = self.descriptors.get(&T::TOPIC)
-            && existing.type_name != descriptor.type_name
-        {
-            return Err(Error::schema(format!(
-                "topic {} is already claimed by {}",
-                T::TOPIC,
-                existing.type_name
-            )));
+        self.admit(descriptor)
+    }
+
+    /// Admit a descriptor, holding CONTRACT-046's rule that a schema id
+    /// always denotes one schema. Without it a second registration overwrote
+    /// the first, so a payload could change shape under a version consumers
+    /// already trusted. Identical content is a no-op; a changed shape under
+    /// the same version is refused naming the field that moved
+    /// (`schema_id::check_compatible`, the same gate the CI schema lock
+    /// uses); a lower version is a rollback; a higher one is the producer's
+    /// deliberate break (ADR 0100 §5) and replaces the descriptor.
+    pub fn admit(&mut self, descriptor: SchemaDescriptor) -> Result<()> {
+        let topic = descriptor.topic;
+        if let Some(existing) = self.descriptors.get(&topic) {
+            if existing.type_name != descriptor.type_name {
+                return Err(Error::schema(format!(
+                    "topic {} is already claimed by {}",
+                    topic, existing.type_name
+                )));
+            }
+            if descriptor.version < existing.version {
+                return Err(Error::schema(format!(
+                    "topic {} is registered at version {}; version {} would roll it back",
+                    topic, existing.version, descriptor.version
+                )));
+            }
+            if descriptor.version == existing.version {
+                if descriptor.schema_id == existing.schema_id {
+                    return Ok(());
+                }
+                // Name the field if it is a removal or retype; an additive
+                // change is compatible but still changes the id, so it needs
+                // a bump too.
+                check_compatible(
+                    existing.version,
+                    &existing.shape,
+                    descriptor.version,
+                    &descriptor.shape,
+                )?;
+                return Err(Error::schema(format!(
+                    "topic {} version {} is already registered with different content; \
+                     bump SCHEMA_VERSION to publish a changed shape",
+                    topic, existing.version
+                )));
+            }
         }
-        self.descriptors.insert(T::TOPIC, descriptor);
+        self.descriptors.insert(topic, descriptor);
         Ok(())
     }
 

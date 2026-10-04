@@ -138,7 +138,7 @@ impl FabricEnvelope {
             logical_timestamp,
             qos_class: facts.qos_class,
             auth_context: require_non_empty(facts.auth_context, "auth context")?,
-            provenance: facts.provenance,
+            provenance: require_non_empty(facts.provenance, "provenance")?,
         })
     }
 

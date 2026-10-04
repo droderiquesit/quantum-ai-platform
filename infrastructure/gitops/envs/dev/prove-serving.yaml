@@ -13,7 +13,7 @@ kind: ServiceAccount
 metadata:
   name: qip-prove-serving
   annotations:
-    iam.gke.io/gcp-service-account: qip-dev-argocd@algorik-dev.iam.gserviceaccount.com
+    iam.gke.io/gcp-service-account: qip-dev-argocd@algorik-platform-dev.iam.gserviceaccount.com
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
