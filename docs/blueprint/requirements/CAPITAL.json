@@ -1038,5 +1038,100 @@
       "RES"
     ],
     "notes": "From 'Warm capital recommendations/grants' in G §8. The H citation was added during consolidation: in view 02 the Capital/Treasury service exchanges data and control only with the Fabric brokers and has no edge to the reflex node. Two passages outside the raw set support it: G §22 (p21), where losing GKE regional services means cells 'continue local execution; no new warm policy/capital intelligence', and M §4 (p9), Lane 2. KUBERNETES is not carried because the invariant holds whatever the runtime. It is P0 as a correctness invariant of the local fast path that master Phase 1 and GCP Phase 3 (one Reflex cell) establish."
+  },
+  {
+    "id": "CAPITAL-034",
+    "domain": "CAPITAL",
+    "title": "Competing capital plans from treasury, liquidity, funding, leverage, collateral, strategy, region, venue, tax and survival agents are bounded by a deterministic Capital Kernel",
+    "statement": "Capital agents submit competing plans; a deterministic Capital Kernel enforces authoritative balances, obligations and hard limits. Whether the Capital Kernel and the Capital Survival Kernel are one thing is unstated.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "26",
+        "section": "§13.1 Capital Intelligence Society"
+      },
+      {
+        "doc": "G3",
+        "page": "13-14",
+        "section": "§11.7 capital-society-coordinator"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two conflicting plans are submitted and the kernel admits only the combination within hard limits."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "RISK"
+    ]
+  },
+  {
+    "id": "CAPITAL-035",
+    "domain": "CAPITAL",
+    "title": "The Capital Survival Kernel accounts for NAV, reserved cash, margin, collateral, settlement and funding maturity, and withholds hedge and stressed-liquidity capital before releasing opportunity capital",
+    "statement": "Every strategy receives an expiring capital grant; capital is withheld for hedge capacity and stressed liquidity before opportunity capital is released; ledger truth remains authoritative. Cross-currency, cross-venue, cross-entity funding and collateral movement is real money movement and is built only as paper or simulation.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "27",
+        "section": "§13.2 Capital Survival Kernel"
+      },
+      {
+        "doc": "G3",
+        "page": "13-14",
+        "section": "§11.7 survival-kernel"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A paper book withholds the stressed-liquidity reserve before releasing any opportunity capital, and no transfer leaves the simulator."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "LEDGER"
+    ]
+  },
+  {
+    "id": "CAPITAL-036",
+    "domain": "CAPITAL",
+    "title": "Shadow portfolios run counterfactual allocations beside every paper allocation",
+    "statement": "For every allocation, counterfactual shadow portfolios hold alternate sizes, hedges, timing, venues and rejected opportunities, so the realised choice is scored against what it declined.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "27",
+        "section": "§13.3 Shadow Portfolio Universe"
+      },
+      {
+        "doc": "G3",
+        "page": "14",
+        "section": "§11.7 shadow-portfolio-farm"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "One allocation yields at least one alternate-size and one rejected-opportunity shadow, scored after resolution."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "AMBIENT"
+    ]
   }
 ]

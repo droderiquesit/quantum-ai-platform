@@ -11,6 +11,7 @@
 //! the instant it was written, because a node stamped at write time makes
 //! every point-in-time query return facts the platform did not hold, and the
 //! backtest reads better than the platform was.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::{Duration, Timestamp};
 use qip_world_model::graph::NodeKind;

@@ -4,6 +4,7 @@
 //! exchange: state derived from a withdrawn block goes with it, a rollback
 //! followed by a replay lands exactly where a direct application would, and a
 //! reverted transaction is never a trade however much it looks like one.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_chain::adapter::{
     ChainAdapter, ChainUpdate, NodeChainAdapter, NodeConfig, SyntheticChain, SyntheticChainConfig,

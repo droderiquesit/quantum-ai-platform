@@ -1,0 +1,68 @@
+[
+  {
+    "id": "AMBIENT-029",
+    "status": "MISSING",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "Curiosity models exist as requirements (AMBIENT-015) but no value-of-information calculation or stopping rule does; the thresholds are unstated in v12.0.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Given two candidate observations, the ranking matches the stated product and acquisition halts at the cost or deadline bound.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "AMBIENT-030",
+    "status": "BLOCKED",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "Undefined in the source (open question 10) and, if it touches a live venue, outside the paper boundary.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C1, ADR 0021",
+    "verification": "No code path issues a probe to a live venue; paper layers 1-3 intact.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "AMBIENT-031",
+    "status": "MISSING",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "AMBIENT-010/011/019/023 and RES-037 cover attention routing; no compute-capacity allocation across substrates exists.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C8",
+    "verification": "An allocation under a fixed budget favours the higher-value request and a zero-value job is killed.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  }
+]

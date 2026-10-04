@@ -6,6 +6,7 @@
 // cases and identities where the function must return an exact sentinel value,
 // not merely something close to it.
 #![allow(clippy::float_cmp)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::testing::approx_eq;

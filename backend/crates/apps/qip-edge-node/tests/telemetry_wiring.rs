@@ -17,6 +17,7 @@
 //! registry the scrape serves are one `Arc`, by pointer identity, and a
 //! series the cell wrote is readable through the responder the health thread
 //! calls.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::venue::VenueId;
 use qip_core::{Duration, SystemClock};

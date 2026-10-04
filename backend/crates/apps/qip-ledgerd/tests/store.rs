@@ -3,6 +3,7 @@
 //!
 //! ADR 0100 §4 is the contract. Each test names the failure it prevents and
 //! the mutation it was verified against.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::ledger::{Account, Direction, LedgerEvent};
 use qip_contracts::message::BookSide;

@@ -3,6 +3,7 @@
 //! Scaffolded by SLICE-50.
 
 pub mod auth;
+pub mod batcher;
 pub mod consumer;
 pub mod producer;
 pub mod protocol;
