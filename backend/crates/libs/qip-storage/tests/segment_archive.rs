@@ -395,3 +395,156 @@ fn reading_from_offset_zero_across_archive_and_hot_log_equals_the_original_byte_
         );
     }
 }
+
+/// The name an archived object must carry: the hash of its bytes, restated
+/// here rather than imported so the test does not share the reader with the
+/// code it checks.
+fn object_name(hash: &qip_events::event_fabric::codec::ContentHash) -> String {
+    match hash {
+        qip_events::event_fabric::codec::ContentHash::Sha256(digest) => {
+            format!("segments/sha256/{}", qip_core::hash::to_hex(digest))
+        }
+        other => panic!("this build only produces Sha256, got {other:?}"),
+    }
+}
+
+// --- FABRIC-026: the manifest alone proves hash, range, entitlements and index
+
+/// FABRIC-026's stated check. Archive two consecutive sealed segments under
+/// real entitlements, then judge them from their manifests: the object's hash
+/// matches, the offset ranges are contiguous with each other and the second
+/// chains onto the first, entitlements are present and survive the manifest's
+/// own wire round trip, the replay index resolves sampled offsets to the
+/// right record without scanning, and one corrupted byte fails verification.
+///
+/// Mutation: in `Archiver::archive`, build the `Manifest` with
+/// `entitlements: BTreeSet::new()` instead of `entitlements.clone()` — fails
+/// on the first entitlement assertion, because licensing then silently stops
+/// travelling with archived data.
+#[test]
+fn a_manifest_alone_proves_the_hash_a_contiguous_range_its_entitlements_and_a_replay_index() {
+    let dir = temp_dir("manifest-proof");
+    let log = SegmentLog::open(&dir, config_with(manual_clock(), 500)).unwrap();
+    let mut tag = 0u64;
+    append_until_sealed_count(&log, 2, &mut tag);
+    let mut starts: Vec<u64> = log
+        .segments()
+        .into_iter()
+        .filter(|s| s.sealed)
+        .map(|s| s.start_offset)
+        .collect();
+    starts.sort_unstable();
+    assert!(starts.len() >= 2, "premise: two sealed segments to archive");
+
+    let entitlements: BTreeSet<String> = ["internal-reflex:trade".to_string()].into();
+    let blob_store: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::new());
+    let archiver = Archiver::new(Arc::clone(&blob_store));
+    let first = archiver
+        .archive(&log, starts[0], "orders", 2, &entitlements)
+        .unwrap();
+    let second = archiver
+        .archive(&log, starts[1], "orders", 2, &entitlements)
+        .unwrap();
+
+    assert_eq!(first.entitlements, entitlements);
+    assert_eq!(second.entitlements, entitlements);
+    assert_eq!((first.stream.as_str(), first.partition), ("orders", 2));
+    assert_eq!(
+        second.base_offset,
+        first.last_offset + 1,
+        "the second segment's offset range must be contiguous with the first's"
+    );
+    assert_eq!(
+        second.chain_in.as_ref(),
+        Some(&first.chain_out),
+        "the second manifest must chain onto the first, so a missing segment is detectable"
+    );
+
+    // Entitlements survive the manifest's own wire form: a later archive of
+    // the same segment (a no-op) reads the stored manifest back and must
+    // return it with the entitlements intact, whatever the caller now says.
+    let reread = archiver
+        .archive(&log, starts[0], "orders", 2, &BTreeSet::new())
+        .unwrap();
+    assert_eq!(reread.entitlements, entitlements);
+
+    let key = object_name(&first.content_hash);
+    let stored = blob_store
+        .get(&key)
+        .unwrap()
+        .expect("object under its hash name");
+    first.verify(&stored).unwrap();
+
+    // The replay index locates records by offset without a scan: each entry
+    // opens a batch whose record is the one that offset names.
+    assert_eq!(first.replay_index.len() as u64, first.record_count);
+    for (offset, byte_start) in first.replay_index.iter().step_by(2) {
+        let decoded = Batch::decode(&stored[*byte_start as usize..]).unwrap();
+        let qip_events::event_fabric::codec::DecodeOutcome::Complete(batch) = decoded else {
+            panic!("the replay index pointed at a torn batch for offset {offset}");
+        };
+        assert_eq!(
+            batch.records[0].event_id,
+            format!("evt-{offset}"),
+            "the replay index must resolve offset {offset} to its own record"
+        );
+    }
+
+    let mut corrupted = stored.clone();
+    let middle = corrupted.len() / 2;
+    corrupted[middle] ^= 0x01;
+    assert!(first.verify(&corrupted).is_err());
+}
+
+// --- FABRIC-090: a tampered object fails its name check on the way back
+
+/// FABRIC-090's last clause, which the test above it in this file names but
+/// does not exercise: an object stored under its content name, then altered,
+/// must not be served. The flipped byte sits in the *last* batch and the read
+/// asks for the *first*, so the batch actually decoded is intact — only the
+/// whole-object hash check can refuse it.
+///
+/// Mutation: in `ArchiveReader::hydrate`, delete the `manifest.verify(&bytes)?`
+/// call — fails, because the read of the first batch then succeeds from an
+/// object that no longer matches its name.
+#[test]
+fn a_tampered_archived_object_is_refused_on_read_even_when_the_requested_batch_is_intact() {
+    let dir = temp_dir("tamper-by-name");
+    let log = SegmentLog::open(&dir, config_with(manual_clock(), 500)).unwrap();
+    let mut tag = 0u64;
+    append_until_sealed_count(&log, 1, &mut tag);
+    let start = log
+        .segments()
+        .into_iter()
+        .find(|s| s.sealed)
+        .expect("premise: one sealed segment")
+        .start_offset;
+
+    let blob_store: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::new());
+    let manifest = Archiver::new(Arc::clone(&blob_store))
+        .archive(&log, start, "orders", 0, &no_entitlements())
+        .unwrap();
+    let keys = blob_store.list("").unwrap();
+    assert_eq!(keys.len(), 1);
+    let name = object_name(&manifest.content_hash);
+    assert_eq!(
+        keys[0], name,
+        "the object's name must be the hash of its bytes"
+    );
+
+    let reader = ArchiveReader::new(Arc::clone(&blob_store));
+    assert!(
+        reader.read(&log, start).unwrap().is_some(),
+        "premise: the untampered object serves its first batch"
+    );
+
+    let mut tampered = blob_store.get(&name).unwrap().unwrap();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 0x01;
+    blob_store.put(&name, tampered).unwrap();
+
+    let err = reader
+        .read(&log, start)
+        .expect_err("an object that no longer matches its name must not be served");
+    assert!(err.to_string().contains("content hash"), "{err}");
+}

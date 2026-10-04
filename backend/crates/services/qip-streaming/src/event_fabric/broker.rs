@@ -41,6 +41,7 @@ use qip_storage::{DurableStore, EngineConfig, KeyValueStore};
 
 use qip_events::event_fabric::codec::{Batch, ContentHash, LogicalTimestamp, stamp_broker};
 use qip_events::event_fabric::hlc::{HlcTimestamp, PartitionClock};
+use qip_events::event_fabric::policy::StreamPolicy;
 use qip_events::event_fabric::schema_id::{Shape, check_compatible};
 
 use qip_transport::event_fabric::protocol::{FetchResponse, Metadata, ProduceAck};
@@ -104,6 +105,7 @@ struct StreamSchemas {
 #[derive(Clone, Debug)]
 struct DeclaredStream {
     partition_count: u32,
+    policy: StreamPolicy,
     config: SegmentLogConfig,
 }
 
@@ -191,6 +193,16 @@ fn partition_label(stream: &str, partition: u32) -> String {
     format!("{stream}:{partition}")
 }
 
+fn checkpoint_key(group: &str, stream: &str, partition: u32) -> Result<String> {
+    if group.trim().is_empty() || group.contains('|') || stream.contains('|') {
+        return Err(Error::invalid(
+            "a consumer group and stream name must be non-empty and must not contain '|', which \
+             separates the parts of a checkpoint key",
+        ));
+    }
+    Ok(format!("{group}|{stream}|{partition}"))
+}
+
 /// A bounded, per-`(producer_id, partition label)` window of recently
 /// assigned offsets, keyed the same way as
 /// [`super::producer::ProducerTable`]'s own internal table. Named as a type
@@ -215,6 +227,12 @@ pub struct Broker {
     /// [`Admission::Duplicate`] can be acknowledged with the same offset its
     /// first attempt received rather than a fabricated one.
     recent_offsets: Mutex<RecentOffsets>,
+    /// Every consumer group's committed offset per `(stream, partition)`,
+    /// in a store of its own so a restart serves the checkpoint back
+    /// (FABRIC-016). Separate from `metadata/` for the reason that
+    /// directory's own constant gives: the leader epoch is a fact about the
+    /// process, a checkpoint is a fact about a consumer.
+    checkpoints: DurableStore,
 }
 
 impl Broker {
@@ -227,6 +245,8 @@ impl Broker {
         let metadata_dir = data_dir.join("metadata");
         let epoch_store = DurableStore::open(&metadata_dir, EngineConfig::new(clock.clone()))?;
         let leader_epoch = next_leader_epoch(&epoch_store)?;
+        let checkpoints =
+            DurableStore::open(data_dir.join("consumers"), EngineConfig::new(clock.clone()))?;
         Ok(Self {
             data_dir,
             clock,
@@ -236,6 +256,7 @@ impl Broker {
             producers: Mutex::new(ProducerTable::new()),
             schemas: Mutex::new(BTreeMap::new()),
             recent_offsets: Mutex::new(BTreeMap::new()),
+            checkpoints,
         })
     }
 
@@ -255,10 +276,20 @@ impl Broker {
     /// Redeclaring with the same count (as a restarted process's own
     /// caller does, since this fact is not persisted — see the module
     /// documentation) is idempotent.
+    ///
+    /// Takes the stream's whole [`StreamPolicy`] (FABRIC-057): class,
+    /// partitioning key, ordering, retention, replication, overload,
+    /// mirroring, acknowledgement floor, quotas and lag limit. `StreamPolicy`
+    /// has no `Default` and one validating constructor, so a stream cannot be
+    /// declared here with any of them left to an unspecified default — the
+    /// call does not type-check. Redeclaring a stream under a *different*
+    /// policy is refused for the same reason a different partition count is:
+    /// it would change what the stream's existing records were promised.
     pub fn declare_stream(
         &self,
         stream: &str,
         partition_count: u32,
+        policy: StreamPolicy,
         config: SegmentLogConfig,
     ) -> Result<()> {
         if partition_count == 0 {
@@ -276,14 +307,36 @@ impl Broker {
                 existing.partition_count
             )));
         }
+        if let Some(existing) = declared.get(stream)
+            && existing.policy != policy
+        {
+            return Err(Error::denied(format!(
+                "stream '{stream}' is already declared under a different stream policy; \
+                 redeclaring it would change what its existing records were promised"
+            )));
+        }
         declared.insert(
             stream.to_string(),
             DeclaredStream {
                 partition_count,
+                policy,
                 config,
             },
         );
         Ok(())
+    }
+
+    /// The policy `stream` was declared under, exactly as declared.
+    pub fn stream_policy(&self, stream: &str) -> Result<StreamPolicy> {
+        let declared = self.declared.lock().unwrap_or_else(|e| e.into_inner());
+        declared
+            .get(stream)
+            .map(|d| d.policy.clone())
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "stream '{stream}' was never declared; call Broker::declare_stream first"
+                ))
+            })
     }
 
     /// Register a schema id's version and shape for `stream`.
@@ -514,6 +567,64 @@ impl Broker {
             high_watermark,
             archived_through,
         )
+    }
+
+    /// FABRIC-016: commit `group`'s checkpoint for `(stream, partition)` at
+    /// `offset`, the last batch offset the group has finished processing.
+    /// Durable before it returns, so a consumer killed after this call
+    /// resumes from [`Self::committed_offset`] plus one on this broker or on
+    /// a restart of it.
+    ///
+    /// Refuses an offset the partition has not reached (a checkpoint over
+    /// data that does not exist would make the group skip whatever is later
+    /// written there), and refuses moving a checkpoint backwards: an old
+    /// instance of the group resuming after a pause would otherwise rewind
+    /// its successor and re-deliver what was processed. Committing the
+    /// offset already held is idempotent.
+    pub fn commit_offset(
+        &self,
+        group: &str,
+        stream: &str,
+        partition: u32,
+        offset: u64,
+    ) -> Result<u64> {
+        let key = checkpoint_key(group, stream, partition)?;
+        let state = self.partition_state(stream, partition)?;
+        let high_watermark = state.log.high_water();
+        if offset >= high_watermark {
+            return Err(Error::invalid(format!(
+                "group '{group}' tried to commit offset {offset} of {stream}:{partition}, which \
+                 holds offsets below {high_watermark}; commit only an offset already read"
+            )));
+        }
+        if let Some(held) = self.committed_offset(group, stream, partition)?
+            && offset < held
+        {
+            return Err(Error::denied(format!(
+                "group '{group}' tried to move its checkpoint on {stream}:{partition} back from \
+                 {held} to {offset}; seek a fresh consumer instead of rewinding the group"
+            )));
+        }
+        self.checkpoints.put(&key, serde_json::to_value(offset)?)?;
+        Ok(offset)
+    }
+
+    /// `group`'s last committed offset for `(stream, partition)`, or `None`
+    /// if it has never committed — in which case it resumes from wherever it
+    /// chooses to seek, not from a guess made here.
+    pub fn committed_offset(
+        &self,
+        group: &str,
+        stream: &str,
+        partition: u32,
+    ) -> Result<Option<u64>> {
+        let key = checkpoint_key(group, stream, partition)?;
+        match self.checkpoints.get(&key)? {
+            Some(value) => serde_json::from_value::<u64>(value).map(Some).map_err(|e| {
+                Error::schema(format!("stored checkpoint {key} is not an integer: {e}"))
+            }),
+            None => Ok(None),
+        }
     }
 
     /// Record that the sealed segment starting at `start_offset` of
