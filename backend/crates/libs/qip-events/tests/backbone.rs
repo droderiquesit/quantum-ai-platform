@@ -1,4 +1,5 @@
 //! Topics, envelopes, the deterministic bus and the hash-chained log.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::error::Result;
 use qip_core::{Context, CorrelationId, Duration, Lineage, Timestamp};
@@ -2667,4 +2668,79 @@ fn every_event_fabric_topic_has_the_retention_class_adr_0089_assigns_it() {
         RetentionClass::Irreplaceable,
         "EventFabricGap must be Irreplaceable: only the event fabric detects its own gaps"
     );
+}
+
+// --- schema immutability (CONTRACT-046) and the registration gate (CONTRACT-047)
+
+fn registered_tick() -> (SchemaRegistry, qip_events::registry::SchemaDescriptor) {
+    let mut registry = SchemaRegistry::new();
+    registry
+        .register(&Tick {
+            symbol: "A".into(),
+            price: 1.0,
+        })
+        .unwrap();
+    let d = registry.get(Topic::MarketTick).unwrap().clone();
+    (registry, d)
+}
+
+fn reshaped(
+    from: &qip_events::registry::SchemaDescriptor,
+    version: u32,
+    sample: serde_json::Value,
+) -> qip_events::registry::SchemaDescriptor {
+    use qip_events::event_fabric::schema_id::{SchemaId, Shape};
+    let shape = Shape::from_json(&sample);
+    let mut d = from.clone();
+    d.version = version;
+    d.fields = sample.as_object().unwrap().keys().cloned().collect();
+    d.schema_id = SchemaId::new(from.topic.name(), version, &shape);
+    d.shape = shape;
+    d
+}
+
+#[test]
+fn re_registering_identical_content_is_a_no_op_and_changed_content_under_one_version_is_refused() {
+    let (mut registry, original) = registered_tick();
+    let before = registry.fingerprint();
+    assert_eq!(registry.len(), 1, "premise: one schema registered");
+
+    registry.admit(original.clone()).unwrap();
+    assert_eq!(registry.fingerprint(), before);
+    assert_eq!(registry.get(Topic::MarketTick), Some(&original));
+
+    let additive = reshaped(
+        &original,
+        1,
+        serde_json::json!({"symbol": "A", "price": 1.0, "venue": "X"}),
+    );
+    assert_ne!(
+        additive.schema_id, original.schema_id,
+        "premise: ids differ"
+    );
+    let err = registry.admit(additive).unwrap_err();
+    assert!(err.to_string().contains("bump SCHEMA_VERSION"), "{err}");
+    assert_eq!(registry.get(Topic::MarketTick), Some(&original));
+}
+
+#[test]
+fn registration_refuses_a_removed_field_without_a_bump_and_a_rollback_and_admits_a_bump() {
+    let (mut registry, original) = registered_tick();
+    assert!(original.fields.contains(&"price".to_string()), "premise");
+
+    let removed = reshaped(&original, 1, serde_json::json!({"symbol": "A"}));
+    let err = registry.admit(removed).unwrap_err();
+    assert!(err.to_string().contains("field 'price' is absent"), "{err}");
+    assert_eq!(registry.get(Topic::MarketTick), Some(&original));
+
+    let bumped = reshaped(
+        &original,
+        2,
+        serde_json::json!({"symbol": "A", "price": 1.0}),
+    );
+    registry.admit(bumped).unwrap();
+    assert_eq!(registry.get(Topic::MarketTick).unwrap().version, 2);
+
+    let err = registry.admit(original).unwrap_err();
+    assert!(err.to_string().contains("roll it back"), "{err}");
 }

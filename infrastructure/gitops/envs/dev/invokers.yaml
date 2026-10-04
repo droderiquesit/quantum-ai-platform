@@ -29,7 +29,7 @@ metadata:
     qip.algorik.ai/why: The console reaches the API as its named invoker over the VPC (ADR 0018); catalogue.tf's
       api.invokers.
 spec:
-  member: serviceAccount:qip-dev-console@algorik-dev.iam.gserviceaccount.com
+  member: serviceAccount:qip-dev-console@algorik-platform-dev.iam.gserviceaccount.com
   role: roles/run.invoker
   resourceRef:
     apiVersion: run.cnrm.cloud.google.com/v1beta1
@@ -58,7 +58,7 @@ metadata:
       rather than derived because a manifest has no variables; it is the agent Google creates for
       this project number, and `console_route.rs` rebuilds it from the tfvars and compares.
 spec:
-  member: serviceAccount:service-95200532413@gcp-sa-iap.iam.gserviceaccount.com
+  member: serviceAccount:service-523718313246@gcp-sa-iap.iam.gserviceaccount.com
   role: roles/run.invoker
   resourceRef:
     apiVersion: run.cnrm.cloud.google.com/v1beta1

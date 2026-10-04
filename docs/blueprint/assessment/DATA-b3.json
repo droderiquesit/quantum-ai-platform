@@ -248,27 +248,27 @@
   },
   {
     "id": "DATA-063",
-    "status": "MISSING",
-    "current": "Vacuously true, and unguarded. No Fabric (no broker/topic/partition/offset type anywhere in the workspace) and no Dataflow/Dataproc job exist, so there is no live consumer of any kind for either to be. No acceptance test or Terraform check asserts the prohibition.",
+    "status": "COMPLETE",
+    "current": "A structural guard, not a Fabric consumer check: no .tf file under infrastructure/terraform declares a google_dataflow* or google_dataproc* resource, and the fabric binaries and event library (qip-fabricd, qip-ledgerd, qip-events sources) name neither outside a comment. The property still holds because nothing of either kind exists; the guard is what makes a later addition fail loudly.",
     "evidence": [
-      "rg -n 'struct Broker|struct Partition|struct Topic|ConsumerOffset' backend/crates -- zero hits",
-      "rg -n 'dataflow|dataproc' backend/crates/tests/qip-acceptance/tests -- zero hits"
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs::no_dataflow_or_dataproc_resource_is_declared_so_none_can_be_a_live_fabric_consumer",
+      "mutation: a google_dataproc_cluster resource added to the evidence module made the test fail naming the file; removed, test passes"
     ],
-    "gap": "No test or infra-plan check enforces this; the property holds only because neither side of the prohibited relationship has been built yet, so a future Fabric or Dataflow addition could violate it silently.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "DATA-054"
     ],
     "blocked_by": "",
-    "verification": "Would add an infra-plan/acceptance check once a Fabric exists: no declared Fabric consumer group is a Dataflow/Dataproc job",
+    "verification": "cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "E01",
     "tier": "T1",
     "size": "S",
-    "notes": "Cheap to guard now with a placeholder acceptance test that documents the current absence, ahead of E03's Fabric MVP landing."
+    "notes": "verify: COMPLETE as a prohibition guard. The requirement's literal check (no declared Fabric consumer group is a Dataflow or Dataproc job) is satisfied vacuously because no declared consumer group of that kind can exist while no such resource exists; if a managed Fabric consumer-group declaration is ever added, this guard should be extended to read it."
   },
   {
     "id": "DATA-064",
@@ -420,26 +420,27 @@
   },
   {
     "id": "DATA-070",
-    "status": "MISSING",
-    "current": "Nothing. No row-key construction function exists anywhere in the repository, because no Bigtable writer of any kind exists (DATA-053).",
+    "status": "COMPLETE",
+    "current": "qip_storage::rowkey::{row_key,parse_row_key} (backend/crates/libs/qip-storage/src/rowkey.rs): the key is entity#reversed-time (16 hex digits of u64::MAX minus ms), so the high-cardinality entity leads and the newest row of an entity sorts first. A pure naming function; no Bigtable client exists (DATA-053), so nothing writes with it yet.",
     "evidence": [
-      "rg -in 'row.key|rowkey' backend/crates/libs/qip-storage backend/crates/services/qip-mesh -- no row-key builder found"
+      "backend/crates/libs/qip-storage/src/rowkey.rs",
+      "test: no_generated_row_key_begins_with_a_time_component_and_keys_sort_by_entity_first (backend/crates/libs/qip-storage/tests/archive_and_rowkey.rs) -- 500 seeded keys over six entities incl. all-digit ones, asserts entity-leading, parse round trip and sort order",
+      "test: a_row_key_entity_containing_the_separator_or_empty_is_refused",
+      "mutation: building the key time-first made the property test fail at its entity-prefix assertion; restored"
     ],
-    "gap": "No row-key scheme is designed or tested, even as a transport-agnostic pure function.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "DATA-053"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "Would add a pure row-key builder (e.g. fn row_key(entity, ts)) plus an in-tree generated-input property test -- a seeded loop over generated entities and timestamps, not the proptest crate, which ADR 0002/0009 refuse -- asserting no key begins with a time component",
+    "verification": "cargo test -p qip-storage --test archive_and_rowkey (4 tests)",
     "work_item": "E06",
     "tier": "T2",
     "size": "S",
-    "notes": "Genuinely not blocked by C2/C4: a row-key naming scheme can be designed and property-tested in pure Rust today, ahead of the gRPC client landing, and would de-risk DATA-053 when it does. verify: status unchanged (no row-key builder exists; qip-mesh HotSeries keys by opaque series name). Corrected the proposed verification, which named proptest -- a third-party crate the dependency policy refuses."
+    "notes": "verify: COMPLETE by the requirement's own check (builder places the entity before time; generated-key property test). integrated=false: no Bigtable writer exists, so no table uses the scheme until DATA-053 is unblocked."
   },
   {
     "id": "DATA-071",
@@ -467,24 +468,27 @@
   },
   {
     "id": "DATA-072",
-    "status": "MISSING",
-    "current": "Nothing. qip_storage::gcp::CloudStorageBlobStore (backend/crates/libs/qip-storage/src/gcp/storage.rs) is a generic BlobStore over Cloud Storage -- put/get/delete/list keyed by an opaque key under a namespace prefix -- with no source/date/instrument partitioning scheme and no immutability/overwrite-refusal behaviour beyond what the generic port offers.",
+    "status": "COMPLETE",
+    "current": "qip_storage::archive_names::{object_name,SegmentWriter} (backend/crates/libs/qip-storage/src/archive_names.rs): names are source=S/date=YYYY-MM-DD/instrument=I/segment-NNNNNNNNNNNN.seg with the date UTC from the timestamp, components restricted to [A-Za-z0-9._-] and . / .. refused; SegmentWriter over any BlobStore refuses a segment outside the configured inclusive size band and refuses to overwrite an existing object.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/gcp/storage.rs:1-50 (generic key-prefix blob store, no partitioning scheme)"
+      "backend/crates/libs/qip-storage/src/archive_names.rs",
+      "test: object_names_are_partitioned_by_source_then_utc_date_then_instrument (leap day, month ends, year boundary)",
+      "test: a_segment_is_written_once_and_never_overwritten_and_stays_within_its_size_band",
+      "mutation: disabling the existence check, and shifting the month arithmetic, each made the named test fail; restored"
     ],
-    "gap": "No archive-writer object-naming function partitioned by source/date/instrument exists, and no 'never overwrite' or segment-size-band behaviour is implemented on top of the generic blob store.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Would add a unit test on a new archive-writer naming function, per the requirement's own verification method",
+    "verification": "cargo test -p qip-storage --test archive_and_rowkey (4 tests)",
     "work_item": "E06",
     "tier": "T2",
     "size": "M",
-    "notes": "Buildable in pure Rust against the existing BlobStore port (Memory/File adapters suffice for the unit test); not blocked by C4."
+    "notes": "verify: COMPLETE by the requirement's check on the naming function and writer. integrated=false: no archive writer composes SegmentWriter yet (DATA-047), and the check-then-put overwrite refusal is not atomic; the Cloud Storage adapter should send ifGenerationMatch=0 when it is wired. Async compaction is DATA-073."
   },
   {
     "id": "DATA-073",

@@ -101,37 +101,40 @@
   },
   {
     "id": "DATA-031",
-    "status": "MISSING",
-    "current": "nothing. qip-deepbrain's DiscoveryDesk (backend/crates/apps/qip-deepbrain/src/discovery.rs) runs Platform::assess_sources on a fixed cadence against a stated, committed candidate-catalogue file; its own module doc says the candidate list is 'stated by an operator... nothing in this workspace discovers a source on its own'.",
+    "status": "PARTIAL",
+    "current": "qip_data_finder::discovery_targets::targets_from (backend/crates/services/qip-data-finder/src/discovery_targets.rs): from world-model gaps and forecast errors plus the set of covered entities, returns discovery targets, uncovered entities only, a spike (error/baseline >= multiple) outranking a bare gap; refuses a non-positive or non-finite baseline. Not called by DiscoveryDesk.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/discovery.rs:1-27 (module doc: no CRAWL, fixed candidate list)",
-      "grep -rn 'forecast_error|ForecastError' backend/crates/services/qip-data-finder/src backend/crates/apps/qip-deepbrain/src -- no hit tying a forecast error to a discovery target"
+      "test: a_forecast_error_spike_on_an_entity_no_source_covers_yields_a_target_naming_it (backend/crates/services/qip-data-finder/tests/discovery_targets.rs)",
+      "test: a_world_model_gap_is_a_target_unless_covered_and_a_spike_outranks_a_bare_gap",
+      "test: a_baseline_that_would_manufacture_a_spike_is_refused",
+      "mutation: dropping the covered-entity exclusion, and dropping the baseline check, each failed the matching test; restored"
     ],
-    "gap": "no code path reads a world-model gap or a forecast error and turns it into a discovery target; the candidate list is entirely operator-stated.",
-    "implemented": false,
-    "tested": false,
+    "gap": "The target generator exists and is tested, but nothing feeds it: no code reads the world model for gaps or the learning loop for per-entity forecast errors, and DiscoveryDesk still assesses only the operator-committed candidate file. The integration check (a spike reaches a target through the running loop) is not demonstrated.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "no test exists; the test to write drives a fixture forecast-error spike on an uncovered entity through Platform and asserts a new discovery target names that entity.",
+    "verification": "cargo test -p qip-data-finder --test discovery_targets (5 tests; unit level only)",
     "work_item": "E08-gap-driven-discovery",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: MISSING confirmed. Searched for discovery targets, coverage gaps, forecast error and knowledge gaps across backend/crates. The nearest things are qip_kernel::exploration (it measures the platform's ignorance to size capital probes, not to find sources) and qip_data_finder::coverage::CoverageGap (used only to rank a replacement for a failed source). Neither turns a forecast error into a discovery target."
+    "notes": "verify: MISSING -> PARTIAL. Pure function proven; wiring into DiscoveryDesk with real gap and forecast-error inputs remains."
   },
   {
     "id": "DATA-032",
-    "status": "MISSING",
-    "current": "nothing. No DiscoveryQuery type or generator tags candidates by geography, entity, domain or language anywhere in qip-data-finder or qip-deepbrain.",
+    "status": "PARTIAL",
+    "current": "qip_data_finder::discovery_targets::queries_for: one DiscoveryQuery per geography x domain x language of an entity profile, each carrying entity, geography, domain, language and text containing all four; a profile missing any dimension, or for a different entity, is refused so no untagged query exists.",
     "evidence": [
-      "grep -rn 'geography|Geography' backend/crates/services/qip-data-finder/src -- only coverage.rs, unrelated to query generation",
-      "backend/crates/apps/qip-deepbrain/src/discovery.rs (CandidateEntry carries only name/route/egress_route, no geography/entity/domain/language tags)"
+      "test: every_generated_query_is_tagged_with_geography_entity_domain_and_language (backend/crates/services/qip-data-finder/tests/discovery_targets.rs)",
+      "test: a_profile_missing_any_dimension_produces_no_queries_at_all",
+      "mutation: removing the empty-dimension refusal failed the second test; restored"
     ],
-    "gap": "no query-generation step exists at all; candidates are a flat, untagged, committed list.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Queries are generated and tagged, but candidate locations (the requirement's second output) are not, no query is ever sent anywhere (CRAWL/search is DATA-020), and no entity profile source exists in the platform.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -139,11 +142,11 @@
       "DATA-031"
     ],
     "blocked_by": "",
-    "verification": "no test exists; the unit test to write feeds a fixture gap and asserts every generated query/candidate carries all four tags, failing if any is missing (per the requirement's own verification).",
+    "verification": "cargo test -p qip-data-finder --test discovery_targets",
     "work_item": "E08-discovery-query-generation",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "verify: MISSING -> PARTIAL. The unit check for queries holds; candidate locations are not built."
   },
   {
     "id": "DATA-033",
@@ -615,17 +618,18 @@
     "evidence": [
       "infrastructure/terraform/modules/evidence/main.tf:25-138",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_evidence_bucket_is_versioned_and_retained",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::no_workload_identity_can_delete_from_the_evidence_bucket"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::no_workload_identity_can_delete_from_the_evidence_bucket",
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs::the_evidence_retention_lock_cannot_be_unset_or_shortened_by_the_root_without_a_test_failing"
     ],
-    "gap": "(1) The module test the requirement names does not exist. the_evidence_bucket_is_versioned_and_retained (infrastructure.rs:4002) checks that a 'retention_policy {' block is present and that variables.tf contains 'default = true', but never that the bucket's is_locked reads var.retention_locked, and never that the root leaves it unset. Editing main.tf to 'is_locked = false' would still pass it. Nothing fails on a shortened retention_days either (its validation is only >= 1). (2) The legally required internal evidence the platform actually produces (the hash-chained event log, decision records) is kept under storage_target=memory in every environment and never archived to this bucket, so no evidence object is protected by the lock today.",
+    "gap": "Closed since the last assessment: the module test now exists (is_locked must read var.retention_locked, default true, default retention >= 2557 days, no root or tfvars override; mutation is_locked = false fails it). Still open: the legally required internal evidence the platform produces (event log, decision records) is never archived to this bucket, so no evidence object is protected by the lock today.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Existing (partial): cargo test -p qip-acceptance --test infrastructure the_evidence_bucket_is_versioned_and_retained no_workload_identity_can_delete_from_the_evidence_bucket. To write: an acceptance or module test asserting `is_locked = var.retention_locked` in modules/evidence/main.tf, no retention_locked/retention_days override below the default in the root, and a failure on a shortened period, each mutation-verified; plus the writer that archives evidence into the bucket.",
+    "verification": "cargo test -p qip-acceptance --test data_infrastructure_guards; the_evidence_bucket_is_versioned_and_retained (infrastructure suite). Remaining: the writer that archives evidence into the bucket.",
     "work_item": "E13-evidence-lock-test-and-writer",
     "tier": "T2",
     "size": "M",

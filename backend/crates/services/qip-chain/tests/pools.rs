@@ -3,6 +3,7 @@
 //! The pricing properties are checked against the curve's own invariant rather
 //! than against recorded outputs: a golden number proves the code still does
 //! what it did, while the invariant proves it does what the pool does.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_chain::amm::{
     FeeBps, FeeSide, Pool, PoolCurve, PoolId, PoolInvariant, constant_product_holds,

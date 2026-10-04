@@ -7,6 +7,7 @@
 //! published, and text carries a licence that a price does not. Each of those
 //! is a way to be wrong that no amount of correct HTTP prevents, so each has a
 //! test that fails if the adapter gets it wrong.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 mod server;
 

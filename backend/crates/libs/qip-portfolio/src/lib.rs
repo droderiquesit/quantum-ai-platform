@@ -18,12 +18,14 @@
 
 pub mod exposure;
 pub mod ledger;
+pub mod life_stage;
 pub mod lifecycle;
 pub mod lot;
 pub mod portfolio;
 pub mod position;
 
 pub use exposure::{Exposure, ExposureBreakdown};
+pub use life_stage::LifeStage;
 pub use lifecycle::PositionLifecycle;
 pub use lot::{HoldingPeriodTest, HoldingTerm, Lot, LotMethod, LotSelection, RealisedTrade};
 pub use portfolio::{Portfolio, PortfolioSnapshot, Valuation};
