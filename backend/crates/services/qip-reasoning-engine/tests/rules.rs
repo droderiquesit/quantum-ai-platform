@@ -24,7 +24,10 @@ fn rule(id: &str, when: Cond, fact: &str, value: Value) -> Rule {
     }
 }
 fn facts(pairs: &[(&str, Value)]) -> Vec<(String, Value)> {
-    pairs.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), v.clone()))
+        .collect()
 }
 fn pack(name: &str, rules: Vec<Rule>, invariants: Vec<Invariant>) -> RulePack {
     RulePack {
@@ -42,7 +45,10 @@ fn fired(v: &Verdict) -> Vec<&str> {
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self, n: u64) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 33) % n
     }
 }
@@ -69,7 +75,9 @@ fn guarded_pack() -> RulePack {
             Invariant {
                 id: "no-negative-balance-posting".into(),
                 forbidden: Cond::And(vec![
-                    Cond::Present { fact: "eligible".into() },
+                    Cond::Present {
+                        fact: "eligible".into(),
+                    },
                     cmp("balance", Op::Lt, Value::Int(0)),
                 ]),
             },
@@ -102,7 +110,10 @@ fn each_named_use_yields_a_verdict_citing_the_pack_version_and_the_rules_that_fi
         vec![],
     );
     let v = p
-        .evaluate(&facts(&[("age", Value::Int(30)), ("kyc", Value::Bool(true))]))
+        .evaluate(&facts(&[
+            ("age", Value::Int(30)),
+            ("kyc", Value::Bool(true)),
+        ]))
         .unwrap();
     assert_eq!(
         (v.version, v.pack.as_str(), fired(&v)),
@@ -110,7 +121,10 @@ fn each_named_use_yields_a_verdict_citing_the_pack_version_and_the_rules_that_fi
     );
     assert_eq!(v.facts["eligible"], Value::Bool(true));
     let none = p
-        .evaluate(&facts(&[("age", Value::Int(12)), ("kyc", Value::Bool(true))]))
+        .evaluate(&facts(&[
+            ("age", Value::Int(12)),
+            ("kyc", Value::Bool(true)),
+        ]))
         .unwrap();
     assert!(fired(&none).is_empty() && !none.facts.contains_key("eligible"));
 
@@ -132,19 +146,34 @@ fn each_named_use_yields_a_verdict_citing_the_pack_version_and_the_rules_that_fi
         }],
     );
     let ok = acct
-        .evaluate(&facts(&[("open", Value::Bool(true)), ("difference", Value::Int(0))]))
+        .evaluate(&facts(&[
+            ("open", Value::Bool(true)),
+            ("difference", Value::Int(0)),
+        ]))
         .unwrap();
     assert_eq!(fired(&ok), vec!["post-when-open"]);
     let err = acct
-        .evaluate(&facts(&[("open", Value::Bool(true)), ("difference", Value::Int(5))]))
+        .evaluate(&facts(&[
+            ("open", Value::Bool(true)),
+            ("difference", Value::Int(5)),
+        ]))
         .unwrap_err();
-    assert!(err.message().contains("'trial-balance'"), "{}", err.message());
+    assert!(
+        err.message().contains("'trial-balance'"),
+        "{}",
+        err.message()
+    );
 
     // market structure: halt wins, chained through a second rule.
     let mkt = pack(
         "structure",
         vec![
-            rule("halt", cmp("halted", Op::Eq, Value::Bool(true)), "may_trade", Value::Bool(false)),
+            rule(
+                "halt",
+                cmp("halted", Op::Eq, Value::Bool(true)),
+                "may_trade",
+                Value::Bool(false),
+            ),
             rule(
                 "open-session",
                 Cond::And(vec![
@@ -163,14 +192,22 @@ fn each_named_use_yields_a_verdict_citing_the_pack_version_and_the_rules_that_fi
             ("halted", Value::Bool(true)),
         ]))
         .unwrap();
-    assert_eq!((fired(&v), &v.facts["may_trade"]), (vec!["halt"], &Value::Bool(false)));
+    assert_eq!(
+        (fired(&v), &v.facts["may_trade"]),
+        (vec!["halt"], &Value::Bool(false))
+    );
 
     // contract term: a notional above the threshold needs approval, chained
     // into a second conclusion.
     let con = pack(
         "contract",
         vec![
-            rule("large", cmp("notional", Op::Gt, Value::Int(1_000_000)), "needs_approval", Value::Bool(true)),
+            rule(
+                "large",
+                cmp("notional", Op::Gt, Value::Int(1_000_000)),
+                "needs_approval",
+                Value::Bool(true),
+            ),
             rule(
                 "route",
                 cmp("needs_approval", Op::Eq, Value::Bool(true)),
@@ -180,7 +217,9 @@ fn each_named_use_yields_a_verdict_citing_the_pack_version_and_the_rules_that_fi
         ],
         vec![],
     );
-    let v = con.evaluate(&facts(&[("notional", Value::Int(2_000_000))])).unwrap();
+    let v = con
+        .evaluate(&facts(&[("notional", Value::Int(2_000_000))]))
+        .unwrap();
     assert_eq!(fired(&v), vec!["large", "route"]);
     assert_eq!(v.facts["route"], Value::Text("desk-head".into()));
 }
@@ -200,20 +239,28 @@ fn no_emitted_conclusion_violates_a_declared_invariant_and_every_refusal_names_o
                     Value::Int(a) => a,
                     _ => unreachable!(),
                 };
-                assert!(!(eligible && age < 18), "emitted a minor as eligible: {v:?}");
+                assert!(
+                    !(eligible && age < 18),
+                    "emitted a minor as eligible: {v:?}"
+                );
             }
             Err(e) => {
                 refused += 1;
                 let m = e.message();
                 assert!(
-                    p.invariants.iter().any(|i| m.contains(&format!("'{}'", i.id))),
+                    p.invariants
+                        .iter()
+                        .any(|i| m.contains(&format!("'{}'", i.id))),
                     "refusal names no invariant: {m}"
                 );
             }
         }
     }
     // Premise: both outcomes occurred, so the loops above asserted something.
-    assert!(accepted > 20 && refused > 20, "accepted {accepted}, refused {refused}");
+    assert!(
+        accepted > 20 && refused > 20,
+        "accepted {accepted}, refused {refused}"
+    );
 
     // Remove the minor invariant: the same generator now emits the violation,
     // proving the check was what stopped it.
@@ -235,9 +282,16 @@ fn no_emitted_conclusion_violates_a_declared_invariant_and_every_refusal_names_o
 #[test]
 fn a_refused_step_names_the_rule_and_the_invariant_it_would_have_broken() {
     let err = guarded_pack()
-        .evaluate(&facts(&[("age", Value::Int(10)), ("kyc", Value::Bool(true)), ("balance", Value::Int(1))]))
+        .evaluate(&facts(&[
+            ("age", Value::Int(10)),
+            ("kyc", Value::Bool(true)),
+            ("balance", Value::Int(1)),
+        ]))
         .unwrap_err();
-    assert!(err.message().contains("'eligible-if-kyc'") && err.message().contains("'no-minor-eligible'"));
+    assert!(
+        err.message().contains("'eligible-if-kyc'")
+            && err.message().contains("'no-minor-eligible'")
+    );
 }
 
 fn demo_pack() -> RulePack {
@@ -252,7 +306,11 @@ fn demo_pack() -> RulePack {
     )
 }
 fn demo_facts(rev: bool) -> Vec<(String, Value)> {
-    let mut f = facts(&[("x", Value::Int(4)), ("q", Value::Text("t".into())), ("k", Value::Bool(false))]);
+    let mut f = facts(&[
+        ("x", Value::Int(4)),
+        ("q", Value::Text("t".into())),
+        ("k", Value::Bool(false)),
+    ]);
     if rev {
         f.reverse();
     }
@@ -275,7 +333,12 @@ fn child_emit_verdict() {
 fn run_child(order: &str) -> String {
     let exe = std::env::current_exe().unwrap();
     let out = Command::new(exe)
-        .args(["--exact", "child_emit_verdict", "--nocapture", "--test-threads=1"])
+        .args([
+            "--exact",
+            "child_emit_verdict",
+            "--nocapture",
+            "--test-threads=1",
+        ])
         .env("QIP_RULES_CHILD_ORDER", order)
         .output()
         .unwrap();
@@ -305,9 +368,21 @@ fn the_same_pack_and_facts_give_byte_identical_verdicts_across_processes_and_fac
 fn the_evaluation_path_makes_no_model_call() {
     // Structural: the module names no language-model, clock, random or I/O
     // facility. A regression that threaded one in would have to add the name.
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/rules.rs")).unwrap();
-    let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect();
-    for banned in ["qip_ai", "providers", "qip_transport", "SystemTime", "Instant", "std::net", "std::env"] {
+    let src =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/rules.rs")).unwrap();
+    let code: String = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect();
+    for banned in [
+        "qip_ai",
+        "providers",
+        "qip_transport",
+        "SystemTime",
+        "Instant",
+        "std::net",
+        "std::env",
+    ] {
         assert!(!code.contains(banned), "rules.rs names {banned}");
     }
 }
@@ -364,7 +439,10 @@ fn jviolated(pack: &Json, f: &BTreeMap<String, Json>) -> Vec<String> {
         .collect()
 }
 fn jinputs(inputs: &[(String, Value)]) -> BTreeMap<String, Json> {
-    inputs.iter().map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap())).collect()
+    inputs
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap()))
+        .collect()
 }
 /// Accepts a trace only if every step is a rule that held, none repeats, no
 /// invariant breaks, and nothing that should have fired was left unfired.
@@ -374,8 +452,14 @@ fn check_trace(pack: &Json, inputs: &[(String, Value)], trace: &Json) -> bool {
     let mut used = Vec::new();
     for step in trace.as_array().unwrap() {
         let id = step["rule"].as_str().unwrap();
-        let Some(r) = rules.iter().find(|r| r["id"] == id) else { return false };
-        if used.contains(&id) || !jholds(&r["when"], &f) || r["fact"] != step["fact"] || r["value"] != step["value"] {
+        let Some(r) = rules.iter().find(|r| r["id"] == id) else {
+            return false;
+        };
+        if used.contains(&id)
+            || !jholds(&r["when"], &f)
+            || r["fact"] != step["fact"]
+            || r["value"] != step["value"]
+        {
             return false;
         }
         used.push(id);
@@ -384,12 +468,17 @@ fn check_trace(pack: &Json, inputs: &[(String, Value)], trace: &Json) -> bool {
             return false;
         }
     }
-    rules.iter().all(|r| used.contains(&r["id"].as_str().unwrap()) || !jholds(&r["when"], &f))
+    rules
+        .iter()
+        .all(|r| used.contains(&r["id"].as_str().unwrap()) || !jholds(&r["when"], &f))
 }
 
 #[test]
 fn an_independent_checker_agrees_with_every_constraint_verdict() {
-    let constraints_only = RulePack { rules: vec![], ..guarded_pack() };
+    let constraints_only = RulePack {
+        rules: vec![],
+        ..guarded_pack()
+    };
     let pj = serde_json::to_value(&constraints_only).unwrap();
     let mut g = Lcg(5);
     let (mut broke, mut held) = (0, 0);
@@ -402,12 +491,17 @@ fn an_independent_checker_agrees_with_every_constraint_verdict() {
         match constraints_only.evaluate(&inputs) {
             Ok(_) => {
                 held += 1;
-                assert!(theirs.is_empty(), "checker found {theirs:?} where the fabric accepted");
+                assert!(
+                    theirs.is_empty(),
+                    "checker found {theirs:?} where the fabric accepted"
+                );
             }
             Err(e) => {
                 broke += 1;
                 assert!(
-                    theirs.iter().any(|id| e.message().contains(&format!("'{id}'"))),
+                    theirs
+                        .iter()
+                        .any(|id| e.message().contains(&format!("'{id}'"))),
                     "fabric refused ({}) where checker found {theirs:?}",
                     e.message()
                 );
@@ -434,11 +528,21 @@ fn the_checker_accepts_untampered_traces_and_rejects_and_the_pack_refuses_any_on
             Value::Bool(b) => Value::Bool(!b),
             Value::Text(s) => Value::Text(format!("{s}x")),
         };
-        assert!(!check_trace(&pj, &inputs, &serde_json::to_value(&bad.trace).unwrap()), "step {i}");
-        assert!(p.verify(&inputs, &bad).is_err(), "step {i} accepted by verify");
+        assert!(
+            !check_trace(&pj, &inputs, &serde_json::to_value(&bad.trace).unwrap()),
+            "step {i}"
+        );
+        assert!(
+            p.verify(&inputs, &bad).is_err(),
+            "step {i} accepted by verify"
+        );
     }
     // Dropping a step is also a mutation: the unfired rule is then detected.
     let mut short = v.trace.clone();
     short.pop();
-    assert!(!check_trace(&pj, &inputs, &serde_json::to_value(&short).unwrap()));
+    assert!(!check_trace(
+        &pj,
+        &inputs,
+        &serde_json::to_value(&short).unwrap()
+    ));
 }
