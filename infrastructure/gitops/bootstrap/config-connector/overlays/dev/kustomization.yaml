@@ -10,4 +10,4 @@ patches:
     kind: ConfigConnector
     name: configconnector.core.cnrm.cloud.google.com
   patch: "apiVersion: core.cnrm.cloud.google.com/v1beta1\nkind: ConfigConnector\nmetadata:\n  name: configconnector.core.cnrm.cloud.google.com\n\
-    spec:\n  googleServiceAccount: qip-dev-kcc@algorik-dev.iam.gserviceaccount.com\n"
+    spec:\n  googleServiceAccount: qip-dev-kcc@algorik-platform-dev.iam.gserviceaccount.com\n"
