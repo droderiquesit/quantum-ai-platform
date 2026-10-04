@@ -226,6 +226,29 @@ impl ProducerTable {
             .and_then(|state| state.epoch)
     }
 
+    /// Register a new incarnation of `producer_id` at `partition` and return
+    /// its epoch (CONTRACT-049): one past the highest this table knows. Every
+    /// older epoch is fenced from this moment, not from the successor's first
+    /// append, so a paused process that wakes after its replacement started
+    /// cannot slip a write in during the gap.
+    pub fn init(&mut self, producer_id: &str, partition: &str) -> Result<u64> {
+        let state = self
+            .producers
+            .entry(lookup_key(producer_id, partition))
+            .or_default();
+        let next = match state.epoch {
+            Some(epoch) => epoch.checked_add(1).ok_or_else(|| {
+                Error::numeric(format!(
+                    "producer {producer_id} at partition {partition} has used every epoch a \
+                     u64 can carry; refusing rather than wrapping to 0"
+                ))
+            })?,
+            None => 1,
+        };
+        state.epoch = Some(next);
+        Ok(next)
+    }
+
     /// Offer one batch already stamped with a drain-assigned producer
     /// identity and sequence. See the module documentation for the decision
     /// order this follows.
