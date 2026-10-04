@@ -564,11 +564,13 @@ instead.
 
 ## 13. The agent fleet
 
-The development and research agent fleet on GCP (up to 40 low-cost agents on
-Vertex AI and Cloud Run Jobs under the 25 USD/day ceiling) is **planned**.
-Its number is claimed as ADR 0102 in `docs/adr/README.md` ("Number claimed
-2026-10-04; body to follow"); there is no ADR file yet, so there is no link and
-no fleet. Today's agents are the in-process roster each brain hosts (18 agents
+The development and research agent fleet on GCP (up to 40 single-packet Cloud Run
+Job tasks calling Vertex AI under the 25 USD/day ceiling) is **planned and not running**.
+[ADR 0102](../adr/0102-the-development-and-research-fleet-is-up-to-forty-single-packet-cloud-run-job-tasks-on-vertex-ai-under-a-25-usd-day-ceiling-and-it-supersedes-adr-0098s-claude-only-clause.md) is written and its status is
+**Proposed**; its own text separates what was observed from what is unproven. No
+fleet exists, no Cloud Run Job exists (the Cloud Run API is not enabled in
+`algorik-platform-dev`, **ran**, section 1.1), and this runbook describes no
+fleet operation. Today's agents are the in-process roster each brain hosts (18 agents
 declared; `qip-fastbrain` hosts one model-free agent, `qip-deepbrain` hosts 17,
 **ran**, both banners), governed by `AgentManifest::validate`. The development
 factory that works on this repository from the owner's desktop is ADR 0098.
