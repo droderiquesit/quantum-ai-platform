@@ -27,7 +27,7 @@
   },
   {
     "id": "REFLEX-027",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip_arbitrage::scan::OpportunityScanner + qip_arbitrage::netedge::NetEdgeCalculator (9-deduction net edge, not theoretical spread), held by qip_edge::arbitrage::ArbitrageDesk. qip-edge-node's ArbitrageInstaller (constructed in main.rs:574-577, driven at main.rs:873) builds the graph from the policy payload's CycleWhitelist and installs it via Cell::install_arbitrage (cell.rs:1367); Cell::work re-quotes and scans it every pass (cell.rs:5340) and journals each survivor as Decision::EdgePriced. The whole behaviour is implemented and reached; the after-cost veto is not demonstrated by any test.",
     "evidence": [
       "backend/crates/edge/qip-arbitrage/src/scan.rs:173-273 (scan(); net_edge.is_positive() veto at :256-261)",
@@ -39,9 +39,11 @@
       "test a_scan_reports_an_executable_opportunity_with_a_complete_edge_and_a_plan (qip-arbitrage/tests/arbitrage.rs:1091) -- positive case only",
       "test a_cycle_on_the_cells_own_books_becomes_its_legs_as_orders_in_one_pass (backend/crates/edge/qip-edge/tests/arbitrage.rs:374)",
       "test the_node_installs_a_desk_from_the_payloads_whitelist_once_capital_for_it_has_arrived (backend/crates/apps/qip-edge-node/tests/arbitrage.rs:152) -- installs from a whitelist, never scans",
-      "grep -rn 'arbitrage_scan_net_edge\\|RejectionStage::NetEdge' backend/crates --include=*.rs -> scan.rs and cell.rs only; no test references either"
+      "grep -rn 'arbitrage_scan_net_edge\\|RejectionStage::NetEdge' backend/crates --include=*.rs -> scan.rs and cell.rs only; no test references either",
+      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs::a_cycle_that_pays_on_the_walked_book_is_refused_when_the_nine_deductions_consume_it",
+      "backend/crates/apps/qip-edge-node/tests/arbitrage.rs::a_whitelisted_triangle_becomes_an_opportunity_once_its_books_are_read"
     ],
-    "gap": "No test drives a cycle that is profitable on the walked book but non-positive after the nine NetEdgeCalculator deductions (fees, slippage, uncertainty, ...). The only refusal test is rejected at RejectionStage::Book, ahead of the net-edge check, so deleting the `!net_edge.is_positive()` veto at scan.rs:256-261 would leave every test green: the after-cost half of 'executable expected value, not theoretical spread' is implemented but undemonstrated. Nor does any test drive whitelist -> graph -> scan -> opportunity in one run (node tests install from a whitelist but never scan; scanner tests never use a whitelist). No qip-edge-node pass test installs a desk, so nothing crosses stages.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -49,7 +51,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Existing: qip-arbitrage/tests/arbitrage.rs::a_path_that_pays_on_mid_prices_is_refused_once_the_book_is_walked and ::a_scan_reports_an_executable_opportunity_with_a_complete_edge_and_a_plan. Needed: a scanner test whose cycle is profitable on the book but not after deductions, asserting it lands in rejected_at(RejectionStage::NetEdge) and raises no opportunity, mutation-verified by deleting the net-edge veto; ideally driven through a desk installed from a CycleWhitelist.",
+    "verification": "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs::a_cycle_that_pays_on_the_walked_book_is_refused_when_the_nine_deductions_consume_it (net-edge veto, mutation-verified by disabling it) and backend/crates/apps/qip-edge-node/tests/arbitrage.rs::a_whitelisted_triangle_becomes_an_opportunity_once_its_books_are_read (whitelist -> graph -> refresh -> scan -> opportunity, mutation-verified by breaking the ask-side re-quote).",
     "work_item": "E11",
     "tier": "T1",
     "size": "S",
@@ -169,13 +171,14 @@
   },
   {
     "id": "REFLEX-032",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip_edge::feasibility::assess (feasibility.rs:355-461) is a pure function of (VenueModel, FeasibilityConstraints, Intent, touch_size) with no I/O anywhere in qip-edge's hot path (on_bytes/work are memory-only by module doc); the no-model-call half is proven structurally by a dependency-graph test.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/feasibility.rs:329,355-461 (assess, pure)",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:714-751 (no_edge_cell_can_reach_a_language_model)"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:714-751 (no_edge_cell_can_reach_a_language_model)",
+      "backend/crates/edge/qip-edge/src/feasibility.rs::tests::the_gate_returns_the_same_verdict_for_the_same_facts_however_often_or_in_what_order_it_is_asked"
     ],
-    "gap": "No literal property/replay test asserts the gate's verdict is byte-identical across repeated evaluation or with every network/model client disabled; purity is structural (no I/O anywhere in the crate) rather than demonstrated by a dedicated determinism test as REFLEX-032's own verification method (property) asks.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -183,7 +186,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "no_edge_cell_can_reach_a_language_model (architecture.rs:714) covers 'no model'; a replay-determinism property test for feasibility::assess over generated (order, state, package) triples does not exist and must be written",
+    "verification": "backend/crates/edge/qip-edge/src/feasibility.rs::tests::the_gate_returns_the_same_verdict_for_the_same_facts_however_often_or_in_what_order_it_is_asked (a generated grid of 120 triples asked twice and in reverse order; mutation-verified with a call-counting verdict flip) plus architecture.rs::no_edge_cell_can_reach_a_language_model for the no-model/no-network half, which is structural: assess takes no client and performs no I/O.",
     "work_item": "E02",
     "tier": "T1",
     "size": "S",

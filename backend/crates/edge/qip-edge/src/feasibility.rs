@@ -760,6 +760,55 @@ mod tests {
         );
     }
 
+    /// REFLEX-032. The gate has no clock, no I/O and takes no client, so its
+    /// verdict can only be a function of its arguments. Asserted rather than
+    /// left structural: a verdict that depended on call count or call order
+    /// (a cache, a counter, a lazily built table) would make a replay judge
+    /// differently from the live run it reproduces.
+    #[test]
+    fn the_gate_returns_the_same_verdict_for_the_same_facts_however_often_or_in_what_order_it_is_asked()
+     {
+        let coarser = constraints("XLON", "0.1", "100", "0.5");
+        let model = model();
+        let mut cases = Vec::new();
+        for quantity in ["10", "-10", "9", "0.5", "7.5"] {
+            for price in ["100", "100.01", "10", "100.05"] {
+                for touch in [None, Some(dec!("9")), Some(dec!("500"))] {
+                    for with_policy in [false, true] {
+                        cases.push((intent(quantity, price), touch, with_policy));
+                    }
+                }
+            }
+        }
+        let verdict = |(intent, touch, with_policy): &(Intent, Option<Decimal>, bool)| {
+            assess(
+                Some(&model),
+                with_policy.then_some(&coarser),
+                intent,
+                *touch,
+            )
+        };
+
+        let first: Vec<_> = cases.iter().map(verdict).collect();
+        // Premise: the grid reaches admission and several different gates, or
+        // equality of two runs proves nothing about a rule that never fired.
+        let refusals: std::collections::BTreeSet<&str> = first
+            .iter()
+            .filter_map(|outcome| outcome.as_ref().err().map(|refusal| refusal.gate))
+            .collect();
+        assert!(
+            first.iter().any(|outcome| outcome.is_ok()),
+            "nothing was admitted"
+        );
+        assert!(refusals.len() >= 4, "only {refusals:?} fired");
+
+        let second: Vec<_> = cases.iter().map(verdict).collect();
+        assert_eq!(first, second, "a second ask changed a verdict");
+        let mut backwards: Vec<_> = cases.iter().rev().map(verdict).collect();
+        backwards.reverse();
+        assert_eq!(first, backwards, "the order of asking changed a verdict");
+    }
+
     #[test]
     fn the_fixed_cost_fraction_is_fee_plus_gas_over_notional() {
         // Fee 0.5 on 10 × 100 = 1000 notional is 0.0005.
