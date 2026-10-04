@@ -32,6 +32,7 @@
 //! from the file the paper-trading boundary rests on. The second is the one
 //! that would not have existed before this change, because before it there was
 //! no edge from `qip-edge` to `qip-routing` at all.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_arbitrage::graph::{ArbitrageGraph, Node, VenueFacts};
 use qip_arbitrage::search::{SearchSettings, search_candidates};

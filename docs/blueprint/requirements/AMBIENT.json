@@ -590,5 +590,92 @@
     "policy_flags": ["MANAGED_SERVICE"],
     "secondary_domains": ["DATA"],
     "notes": "The raw extraction said the mesh 'bypasses' the federation. The diagram has both edges (state -> amb and wm -> amb, both on L292), so the direct read is in addition to the federation feed, not instead of it. View 04 (L260) shows only the federation feeding the ambient node. The raw citation L292-293 was narrowed to the node line (L275) and the edge line (L292)."
+  },
+  {
+    "id": "AMBIENT-029",
+    "domain": "AMBIENT",
+    "title": "Evidence acquisition is driven by expected value of information and stops when marginal value falls below cost or the decision deadline",
+    "statement": "A major uncertain decision may compute expected value of information and launch the cheapest lawful observation, ranked by economic significance, uncertainty reduction, urgency and acquisition cost. Acquisition stops when marginal information value falls below compute or data cost, or at the deadline.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "20",
+        "section": "§9.10 Active Sensing, Curiosity & Value-of-Information"
+      },
+      {
+        "doc": "G3",
+        "page": "13",
+        "section": "§11.4 InformationRequest"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Given two candidate observations, the ranking matches the stated product and acquisition halts at the cost or deadline bound."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPAND"
+    ]
+  },
+  {
+    "id": "AMBIENT-030",
+    "domain": "AMBIENT",
+    "title": "A market microstructure probe is not issued until it is defined, and is never a live order",
+    "statement": "Active sensing's 'market microstructure probe' is undefined in v12.0. It is treated as an external action and is not built; a probe of a live venue is not a simulation.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "20",
+        "section": "§9.10 (microstructure probe)"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "No code path issues a probe to a live venue; paper layers 1-3 intact."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION",
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "TICK"
+    ]
+  },
+  {
+    "id": "AMBIENT-031",
+    "domain": "AMBIENT",
+    "title": "A Meta-Intelligence brain allocates attention and CPU, GPU, TPU and QPU capacity by expected value and kills unproductive work",
+    "statement": "Scarce attention and compute are allocated by expected uncertainty reduction or economic value; model reputation is kept by domain, horizon and regime; redundant or persistently unproductive work is killed so scale follows value, not agent count. Its relationship to the v11.6 Attention Router is unstated.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "20",
+        "section": "§9.12 Meta-Intelligence Brain & Cognitive Attention Market"
+      },
+      {
+        "doc": "G3",
+        "page": "13",
+        "section": "§11.4 Meta-Intelligence"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An allocation under a fixed budget favours the higher-value request and a zero-value job is killed."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "RES"
+    ]
   }
 ]

@@ -13,7 +13,7 @@ patches:
     kind: Stage
     name: dev
   patch: "apiVersion: kargo.akuity.io/v1alpha1\nkind: Stage\nmetadata:\n  name: dev\n  namespace: qip\n\
-    spec:\n  promotionTemplate:\n    spec:\n      vars:\n      - name: registry\n        value: us-east4-docker.pkg.dev/algorik-dev/qip-dev\n\
+    spec:\n  promotionTemplate:\n    spec:\n      vars:\n      - name: registry\n        value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev\n\
     \      - name: warehouseRegistry\n        value: europe-west2-docker.pkg.dev/unprovisioned/qip-prod\n\
     \      - name: argocdApplication\n        value: ''\n"
 - target:

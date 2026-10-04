@@ -1,0 +1,182 @@
+# Plan, and with confirmation apply, the development fleet (ADR 0102).
+#
+# `infrastructure/fleet/` is its own Terraform root with its own state
+# (prefix `fleet`, in the same bucket infra.yml uses), so a run here cannot
+# plan a change to the platform and an infra.yml run cannot plan one to the
+# fleet. That separation is the reason this is a workflow of its own rather
+# than an `action` on infra.yml, whose blast radius includes KMS, the control
+# plane and teardown.
+#
+# **Manual dispatch, dev only.** The fleet is development tooling and the
+# root's own `environment` variable refuses prod; the guard step refuses
+# everything but dev a second time, before anything authenticates, because
+# the `choice` list is GitHub's validation and not this file's.
+#
+# **Apply applies the plan this run saved, and only that.** `apply` plans
+# first, prints the plan, requires `confirm` to equal the project id the plan
+# targets, and then runs `terraform apply tfplan`. There is no path that
+# applies a configuration the plan did not show. Read a `plan` run first: an
+# `apply` run replans, and what it applies is its own plan, printed above the
+# apply, not the earlier run's.
+#
+# Identity comes from the committed tfvars, exactly as infra.yml derives it,
+# and no repository variable is read: the reasons are argued at length in
+# infra.yml's header and in its `derive the identity from the tfvars` step.
+# Workload Identity Federation only; no key file exists in this path.
+name: fleet
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "plan (read-only) or apply (plan, then apply that saved plan; requires confirm)"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - apply
+      environment:
+        description: "Only dev. prod, stage and test are refused by a guard step."
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+      image:
+        description: "The worker image, pinned by digest (name@sha256:<64 hex>). Terraform refuses a tag."
+        required: true
+        type: string
+      confirm:
+        description: "Only for apply: the project id the plan prints. Anything else refuses."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fleet-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  fleet:
+    name: ${{ inputs.action }} fleet ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: refuse what this workflow must never do
+        env:
+          # Through the environment, never pasted into the script: an
+          # environment value reaches bash as data, an expression as source.
+          ENVIRONMENT: ${{ inputs.environment }}
+          ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          case "$ENVIRONMENT" in
+            ''|*[!a-z0-9-]*)
+              echo "environment is not an environment name: lowercase letters, digits and - only." >&2
+              exit 1
+              ;;
+          esac
+          if [ "$ENVIRONMENT" != "dev" ]; then
+            echo "the fleet is development tooling: only dev is permitted, not '$ENVIRONMENT'." >&2
+            echo "prod is never changed from a workflow; stage and test have no fleet." >&2
+            exit 1
+          fi
+          case "$ACTION" in
+            plan|apply) ;;
+            *) echo "action must be plan or apply." >&2; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v4
+
+      # Same derivation as infra.yml's step of this name, narrowed to what the
+      # fleet needs. Deliberately nothing from repository variables.
+      - name: derive the identity from the tfvars
+        id: identity
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          tfvars="infrastructure/environments/${ENVIRONMENT}/terraform.tfvars"
+          project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          number="$(sed -n 's/^project_number[[:space:]]*=[[:space:]]*\([0-9]*\)/\1/p' "$tfvars" | head -1)"
+          [ -n "$project" ] && [ -n "$number" ] || {
+            echo "the tfvars carry no project_id/project_number; nothing to authenticate against" >&2
+            exit 1
+          }
+          case "$project" in
+            *[!a-z0-9-]*)
+              echo "$tfvars names a project containing a character no project id contains: '$project'" >&2
+              exit 1
+              ;;
+          esac
+          # The marker an environment carries before a project exists: the
+          # pool and account below are created by its first bootstrap, so
+          # there is nothing here to plan against.
+          if [ "$project" = "unprovisioned" ]; then
+            echo "environment '${ENVIRONMENT}' is not provisioned: $tfvars carries the 'unprovisioned' marker." >&2
+            exit 1
+          fi
+          {
+            echo "project=$project"
+            echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${ENVIRONMENT}/providers/github"
+            echo "account=qip-infra-${ENVIRONMENT}@$project.iam.gserviceaccount.com"
+          } >> "$GITHUB_OUTPUT"
+          echo "this run targets project: $project"
+
+      # Before authenticating: a confirmation that does not match costs
+      # nothing and touches nothing.
+      - name: apply requires the project id typed back
+        if: inputs.action == 'apply'
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          PROJECT: ${{ steps.identity.outputs.project }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM" != "$PROJECT" ]; then
+            echo "confirm must equal the project id this run targets ($PROJECT); got '$CONFIRM'." >&2
+            exit 1
+          fi
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ steps.identity.outputs.provider }}
+          service_account: ${{ steps.identity.outputs.account }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: terraform init
+        env:
+          PROJECT: ${{ steps.identity.outputs.project }}
+        run: |
+          terraform -chdir=infrastructure/fleet init -input=false \
+            -backend-config="bucket=${PROJECT}-qip-tfstate"
+
+      - name: plan
+        env:
+          # Values, not credentials: Terraform reads TF_VAR_<name>.
+          TF_VAR_project_id: ${{ steps.identity.outputs.project }}
+          TF_VAR_environment: ${{ inputs.environment }}
+          TF_VAR_image: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=infrastructure/fleet plan -input=false -out=tfplan
+          terraform -chdir=infrastructure/fleet show -no-color tfplan | tee "$RUNNER_TEMP/fleet-plan.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fleet-plan
+          path: ${{ runner.temp }}/fleet-plan.txt
+          retention-days: 14
+
+      # The saved plan and nothing else: no -var, no re-evaluation.
+      - name: apply the saved plan
+        if: inputs.action == 'apply'
+        run: terraform -chdir=infrastructure/fleet apply -input=false tfplan

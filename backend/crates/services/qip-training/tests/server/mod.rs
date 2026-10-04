@@ -18,6 +18,7 @@
 //!
 //! Port 0 asks the operating system for a free port, so these tests run beside
 //! every other test binary without a hard-coded number.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};

@@ -12,6 +12,7 @@
 //! bodies in order, the update endpoint with those, and the last answer of each
 //! script repeats. A test that lists two snapshot bodies is a test that expects
 //! a rebuild.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 mod server;
 

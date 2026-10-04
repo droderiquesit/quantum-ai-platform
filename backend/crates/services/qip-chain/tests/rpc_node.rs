@@ -9,6 +9,7 @@
 //! The finality tests are the ones this file exists for. An unfinalised block
 //! is a fact that can be reorganised away, and an adapter that reports one as
 //! settled hands the rest of the platform history that may not have happened.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 mod node;
 
