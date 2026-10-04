@@ -1,4 +1,5 @@
 //! Topics, envelopes, the deterministic bus and the hash-chained log.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::error::Result;
 use qip_core::{Context, CorrelationId, Duration, Lineage, Timestamp};

@@ -31,7 +31,11 @@
       "Bash(head:*)",
       "Bash(tail:*)",
       "Bash(wc:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(claude plugin list*)",
+      "Bash(podman images*)",
+      "Bash(terraform version)",
+      "Bash(graphify --help)"
     ],
     "ask": [
       "Bash(git push:*)",

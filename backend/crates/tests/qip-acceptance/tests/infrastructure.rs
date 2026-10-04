@@ -14,6 +14,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_acceptance::{files_with_extension, read, repository_root};
 
@@ -8694,7 +8695,9 @@ fn the_infrastructure_workflows_marker_refusal_is_an_equality_and_admits_a_proje
          broken bootstrap. It printed: {printed}"
     );
     assert!(
-        written.lines().any(|line| line == "project=algorik-dev"),
+        written
+            .lines()
+            .any(|line| line == "project=algorik-platform-dev"),
         "the identity step admitted `dev` and wrote no `project=` output naming dev's project; \
          it exited 0 without reaching its end, which is the failure the four steps that read \
          `steps.identity.outputs.project` cannot see"
@@ -8824,7 +8827,7 @@ fn the_bootstrap_script_refuses_a_malformed_project_and_the_marker_and_admits_wh
     //    stops. The project id it echoes is printed only after both guards.
     let (code, printed) = run(&real, "dev");
     assert!(
-        printed.contains("project:") && printed.contains("algorik-dev"),
+        printed.contains("project:") && printed.contains("algorik-platform-dev"),
         "scripts/bootstrap-deploy.sh did not get past its own guards for `dev`, the one \
          provisioned environment: it never echoed the project it would act on. A guard that \
          refuses everything is not a guard. It exited {code} and printed: {printed}"

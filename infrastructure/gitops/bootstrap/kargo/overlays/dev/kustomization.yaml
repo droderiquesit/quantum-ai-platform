@@ -9,7 +9,7 @@ resources:
 - ../../base
 images:
 - name: ghcr.io/akuity/kargo
-  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/kargo
+  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/vendor/kargo
   digest: sha256:1413bdb63b1ad409c0a38a0ae5d6f4080e1fd3226aaf8344dfe0e5552921f533
 patches:
 - target:
@@ -17,4 +17,4 @@ patches:
     name: kargo-controller
     namespace: kargo
   patch: "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: kargo-controller\n  namespace: kargo\n\
-    \  annotations:\n    iam.gke.io/gcp-service-account: qip-dev-kargo@algorik-dev.iam.gserviceaccount.com\n"
+    \  annotations:\n    iam.gke.io/gcp-service-account: qip-dev-kargo@algorik-platform-dev.iam.gserviceaccount.com\n"
