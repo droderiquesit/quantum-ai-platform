@@ -16,7 +16,7 @@ Branch: `docs/hermes-phase-0`, worktree `.claude/worktrees/hermes-phase-0`.
 
 ## Blocked
 - SMS: no Twilio credentials, no mail agent. See DECISIONS.md.
-- Cloud: `billingEnabled: false` on `algorik-dev` (verified). No apply can succeed until the account owner enables billing.
+- Cloud: new project `algorik-platform-dev` has billing enabled and a 750 USD/month budget (DECISIONS.md). tfvars still name `algorik-dev`; repoint next.
 - SMS: `scripts/send-sms.py` built; needs HERMES_SMTP_USER and a password file.
 
 ## Next three actions

@@ -32,3 +32,9 @@ Newest last. Each entry: decision, why, alternatives rejected, how to reverse.
 - **Why.** No mail agent or Twilio exists here; the script is the smallest thing that works.
 - **Not done.** Not sent: SMTP user and password file are not configured, so no message has gone out. Default host `smtp.comcast.net:587` is a guess from David's address, not verified.
 - **Reverse.** Delete the script; set `HERMES_SMS_TO` to change the target.
+
+## 2026-10-04 — New cloud project `algorik-platform-dev`, billing enabled
+- **Decision.** On David's instruction ("Create new project rather than enabling then enable billing"), created `algorik-platform-dev` under org `droderiques-it-org`, linked billing account `012F9F-AC0200-6FDF18` (the open one), set it as the gcloud default, enabled `billingbudgets.googleapis.com`, and created a 750 USD/month budget alerting at 50/70/90/100%.
+- **Why.** `algorik-dev` had billing disabled. GCP budgets are monthly at the smallest, so the 25 USD/day ceiling is 750/month by arithmetic, and a budget only alerts, it does not stop spend.
+- **Not done.** `infrastructure/environments/dev/terraform.tfvars` and the files citing `algorik-dev` (WIF audience, identity store, gitops overlays) still name the old project; repointing them is a separate change. No Terraform has been applied. Labels env/service/owner/cost-center are on the project.
+- **Reverse.** `gcloud billing projects unlink algorik-platform-dev`; delete the budget `0ed82b93-a9ef-4572-843f-5f6646825ae0`; `gcloud projects delete` only on David's say-so.
