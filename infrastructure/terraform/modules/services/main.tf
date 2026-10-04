@@ -67,6 +67,10 @@ locals {
     "binaryauthorization.googleapis.com" = "modules/binaryauthorization, evaluated by every service in catalogue.tf"
     # The note an attestation is attached to. The other half of the same pair.
     "containeranalysis.googleapis.com" = "the Container Analysis note in modules/binaryauthorization"
+    # Continuous vulnerability scanning of every image pushed to the registry
+    # (SEC-056). Without it a vulnerability disclosed after the push is never
+    # recorded against the digest; only the one-time pre-push CI scan exists.
+    "containerscanning.googleapis.com" = "Artifact Analysis scanning of the images in modules/registry"
   }
 
   # Conditional, keyed the same way and merged in only when the flag that

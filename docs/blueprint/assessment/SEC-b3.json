@@ -134,13 +134,11 @@
     "status": "PARTIAL",
     "current": "deploy.yml's 'scan image' step runs `trivy image --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed` against every built binary's image before push/sign/attest (deploy.yml:474-487), and CI's separate `trivy fs` job scans the source tree on every PR. Neither is Artifact Analysis: modules/services enables containeranalysis.googleapis.com (for the Binary Authorization note) but not containerscanning.googleapis.com, so the registry itself performs no continuous scanning of pushed digests.",
     "evidence": [
-      "infrastructure/terraform/modules/services/main.tf:58,69 (artifactregistry.googleapis.com and containeranalysis.googleapis.com enabled; containerscanning.googleapis.com absent from both the always and optional maps)",
-      ".github/workflows/deploy.yml:474-487 (trivy image, CRITICAL+HIGH, exit-code 1, before push)",
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs:3503 the_pipeline_no_longer_moves_a_service_and_still_signs_attests_and_refuses_prod (asserts 'trivy image' is still in deploy.yml)",
-      "docs/reports/security-baseline.md:15 ('Container vulnerability scan | CI vulnerability scan (run 36168396965) | pass')",
-      "docs/reports/security-baseline.md:25 (45 GitHub Actions references by movable tag -- v2.1 SS28's anti-pattern, related but separate finding)"
+      "infrastructure/terraform/modules/services/main.tf (containerscanning.googleapis.com in the always map)",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs the_container_scanning_api_is_enabled_for_the_registry (mutation: key renamed, test failed; restored, passed)",
+      ".github/workflows/deploy.yml:474-487 (trivy image, pre-push)"
     ],
-    "gap": "Artifact Analysis (containerscanning.googleapis.com) is never enabled, so a vulnerability disclosed after an image is pushed is never caught; only the one-time pre-push CI Trivy scan exists, which is a real and tested gate but not the requirement's continuous-scanning capability.",
+    "gap": "containerscanning.googleapis.com is now enabled in modules/services (test-pinned), but nothing has applied it and no pushed digest has been observed to carry vulnerability occurrences in Artifact Analysis (the registry was destroyed in the 2026-09-13 teardown and billing is disabled on dev). Left PARTIAL: the observation half of the check cannot be demonstrated.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -204,16 +202,16 @@
   },
   {
     "id": "SEC-059",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "nothing. No google_project_iam_audit_config (or organization-level equivalent) and no google_logging_project_sink exist anywhere in infrastructure/terraform; Cloud Audit Logs' default admin-activity logging is whatever the project's own default is, unconfigured and unaggregated by this repository.",
     "evidence": [
       "grep -rln 'audit_config|audit_log_config' infrastructure/terraform -> no hits",
       "grep -rln 'google_logging_project_sink|google_logging_organization_sink' infrastructure/terraform -> no hits",
       "docs/reports/security-baseline.md:26 (gcp-cloud-storage-logging: 9 buckets in modules/{ai,cloudrun,data,egress-proxy,evidence,image-bake,public-edge} declare no access-log sink; v2.1 SS15 asks for Cloud Audit Logs data-access evidence)"
     ],
-    "gap": "DATA_READ/DATA_WRITE audit logging is not explicitly enabled for any service holding platform data, keys or secrets, and no aggregated sink routes audit logs to retained storage; 9 buckets identified by the 2026-09-25 baseline carry no access-log sink at all.",
-    "implemented": false,
-    "tested": false,
+    "gap": "DATA_READ/DATA_WRITE/ADMIN_READ audit logging is enabled for secretmanager and cloudkms only (modules/secrets, test-pinned). Still missing: the same for storage and the other services holding platform data, an aggregated sink routing audit logs to retained storage, and access logs on the 9 buckets the 2026-09-25 baseline names. The sink is meant to live in org/platform-foundation (SEC-006), which needs an organization.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
