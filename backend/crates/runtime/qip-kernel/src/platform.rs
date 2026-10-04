@@ -134,8 +134,10 @@ use qip_events::{EventBody, EventFilter, Topic};
 use qip_execution_engine::broker::{Broker, SimulatedBroker, SimulationSettings};
 use qip_execution_engine::oms::{OrderManager, RefusalReason, SubmissionResult};
 use qip_execution_engine::order::{Order, OrderType, Side};
-use qip_financial::asset_class::AssetClass;
+use qip_financial::asset_class::{AssetClass, InstrumentType};
+use qip_financial::constraints::Jurisdiction;
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
+use qip_financial::derivative_permissions::DerivativePermissions;
 use qip_financial::intelligence::MacroObservation;
 use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
@@ -737,6 +739,17 @@ pub struct Platform {
     /// drift from it the way absorbed state would — and absorbed state is
     /// now shared rather than projected, see the `world` field.
     asset_classes: BTreeMap<String, AssetClass>,
+    /// The instrument type of every derivative in the universe, taken at
+    /// assembly like `asset_classes`; the release loop asks it which
+    /// permission an order needs.
+    derivative_types: BTreeMap<String, InstrumentType>,
+    /// COVERAGE-013: who may trade which derivative type. Empty at assembly,
+    /// so every derivative order is refused until a composition root grants.
+    derivative_permissions: DerivativePermissions,
+    /// The trading entity and jurisdiction the permissions are read against.
+    /// `None` refuses every derivative, because a grant with nobody to read
+    /// it against must not admit anything.
+    derivative_desk: Option<(String, Jurisdiction)>,
     /// The classes this platform is registered to trade (blueprint §17.7),
     /// and the gate `Self::new` admits the universe through. Built at
     /// assembly from the shipped table and never from the universe: a
@@ -4075,6 +4088,16 @@ impl Platform {
             .iter()
             .map(|object| (object.object_id.as_str().to_string(), object.asset_class))
             .collect();
+        let derivative_types: BTreeMap<String, InstrumentType> = universe
+            .iter()
+            .filter(|object| object.instrument_type.is_derivative())
+            .map(|object| {
+                (
+                    object.object_id.as_str().to_string(),
+                    object.instrument_type,
+                )
+            })
+            .collect();
         // §17.7's gate between architecturally reachable and actually
         // supported, asked here — before the universe moves into the desk
         // and before a cycle can run — because an instrument in a class this
@@ -4503,6 +4526,9 @@ impl Platform {
             universe_assembled,
             inherited_through,
             asset_classes,
+            derivative_types,
+            derivative_permissions: DerivativePermissions::none(),
+            derivative_desk: None,
             asset_class_registry,
             exposure_axes,
             liquidity_reference,
@@ -13646,6 +13672,15 @@ impl Platform {
                 // before a control decision is spent on it, and one that
                 // does not is submitted at a size the gate will admit rather
                 // than refused on every cycle for a grid the sizer never saw.
+                if let Err(error) = self.derivative_gate(leg.object_id.as_str()) {
+                    refused += 1;
+                    problems.push(format!(
+                        "{} leg {index} was refused before an order existed: {}",
+                        proposal.proposal_id.as_str(),
+                        error.message()
+                    ));
+                    continue;
+                }
                 let quantity = self.whole_lots(leg.object_id.as_str(), leg.quantity);
                 if !quantity.is_positive() {
                     refused += 1;
@@ -15854,6 +15889,60 @@ impl Platform {
                 None
             }
         }
+    }
+
+    /// Grant the derivative permissions this platform trades under, for
+    /// `entity` in `jurisdiction`. Replaces any earlier grant whole.
+    pub fn authorise_derivatives(
+        &mut self,
+        entity: &str,
+        jurisdiction: Jurisdiction,
+        permissions: DerivativePermissions,
+    ) {
+        self.derivative_desk = Some((entity.to_string(), jurisdiction));
+        self.derivative_permissions = permissions;
+    }
+
+    /// Refuse, before an order object exists, a derivative this desk holds no
+    /// permission for. Not a derivative, or not in the universe: no claim.
+    fn derivative_gate(&self, object_id: &str) -> qip_core::error::Result<()> {
+        let Some(instrument_type) = self.derivative_types.get(object_id) else {
+            return Ok(());
+        };
+        match &self.derivative_desk {
+            Some((entity, jurisdiction)) => {
+                self.derivative_permissions
+                    .authorize_order(entity, *jurisdiction, *instrument_type)
+            }
+            None => Err(qip_core::error::Error::denied(format!(
+                "{object_id} is a derivative and no trading entity holds permissions; call \
+                 authorise_derivatives. It remains available to research and simulation"
+            ))),
+        }
+    }
+
+    /// [`Self::order_from`], refusing first a derivative this desk holds no
+    /// permission for, so no order object exists for it (COVERAGE-013).
+    pub fn order_for(
+        &mut self,
+        object_id: qip_core::ObjectId,
+        side: Side,
+        quantity: Decimal,
+        price: Decimal,
+        proposal_id: &str,
+        hypotheses: Vec<String>,
+        now: Timestamp,
+    ) -> qip_core::error::Result<Order> {
+        self.derivative_gate(object_id.as_str())?;
+        Ok(self.order_from(
+            object_id,
+            side,
+            quantity,
+            price,
+            proposal_id,
+            hypotheses,
+            now,
+        ))
     }
 
     /// Build an order from a proposal leg, for the ACT stage.
