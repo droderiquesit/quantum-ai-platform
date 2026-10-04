@@ -37,6 +37,7 @@ pub mod governance;
 pub mod intent;
 pub mod ledger;
 pub mod market_event;
+pub mod market_state;
 pub mod message;
 pub mod policy;
 pub mod reflex;

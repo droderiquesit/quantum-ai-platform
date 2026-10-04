@@ -3,6 +3,7 @@
 // Exact float comparison is deliberate: these assert that a missing or
 // conflicting value yields exactly zero, not merely something close to it.
 #![allow(clippy::float_cmp)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::testing::approx_eq;
 use qip_core::{Context, Currency, Decimal, ObjectId, Timestamp, dec};

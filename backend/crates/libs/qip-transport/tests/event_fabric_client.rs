@@ -5,6 +5,7 @@
 //! generative [`FabricTransport`] that never opens a socket, with one
 //! exception (the read-timeout test), which is the one property that needs a
 //! real one to prove at all.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};

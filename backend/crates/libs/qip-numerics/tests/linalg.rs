@@ -4,6 +4,7 @@
 // cases and identities where the function must return an exact sentinel value,
 // not merely something close to it.
 #![allow(clippy::float_cmp)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::testing::{Property, approx_eq};
 use qip_numerics::matrix::Matrix;

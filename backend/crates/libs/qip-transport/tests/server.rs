@@ -8,6 +8,7 @@
 //! make this process buffer an unbounded request, still fires from
 //! `qip_transport::server` rather than having been left behind in the crate
 //! the code moved out of.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_transport::server::{Handler, Request, Response, Server, ServerLimits};
 use std::io::{Read, Write};

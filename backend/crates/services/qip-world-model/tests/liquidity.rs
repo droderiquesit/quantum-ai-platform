@@ -1,5 +1,6 @@
 //! Liquidity topology: the map, its honesty about staleness and basis, and
 //! the drift the opportunity engine would consume.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::venue::{VenueId, VenueStatus};
 use qip_core::testing::approx_eq;

@@ -1,4 +1,5 @@
 //! Signals, factors and the strategy SDK.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::testing::approx_eq;
 use qip_core::{Currency, Decimal, ObjectId, PortfolioId, Timestamp, dec};
