@@ -289,6 +289,47 @@ fn the_public_edge_attaches_every_backend_to_the_cloud_armor_policy() {
 }
 
 #[test]
+fn every_public_edge_backend_block_carries_its_own_cloud_armor_attachment() {
+    // The sibling test above matches `security_policy = ...` anywhere in the
+    // file, so it passed while the static shell's backend bucket carried none:
+    // the one backend a browser reaches first was unprotected and the file
+    // still contained the string. Here each backend resource is cut out on its
+    // own and must hold its own attachment.
+    let module = without_comments(&read(PUBLIC_EDGE));
+    let block = |header: &str| -> String {
+        let start = module
+            .find(header)
+            .unwrap_or_else(|| panic!("the public edge declares no `{header}`"));
+        let rest = &module[start + header.len()..];
+        let end = rest.find("\nresource ").unwrap_or(rest.len());
+        rest[..end].to_string()
+    };
+
+    let service = block("resource \"google_compute_backend_service\" \"application\"");
+    let bucket = block("resource \"google_compute_backend_bucket\" \"static_shell\"");
+    // Premise: the two cut-outs are different blocks, not the same text twice.
+    assert_ne!(
+        service, bucket,
+        "the block extraction returned one block for two resources"
+    );
+
+    assert!(
+        service.contains("security_policy = google_compute_security_policy.edge[0].id"),
+        "the application backend service is not attached to the Cloud Armor policy"
+    );
+    assert!(
+        bucket.contains("edge_security_policy = google_compute_security_policy.edge_static[0].id"),
+        "the static shell's backend bucket carries no Cloud Armor edge policy; it is the first \
+         backend a browser reaches"
+    );
+    let edge_static = block("resource \"google_compute_security_policy\" \"edge_static\"");
+    assert!(
+        edge_static.contains("type        = \"CLOUD_ARMOR_EDGE\""),
+        "a backend bucket accepts only an edge-type policy"
+    );
+}
+
+#[test]
 fn the_public_edge_can_front_only_a_zone_a_client_may_reach() {
     // §40.5's load-bearing sentence: customer traffic and trading traffic never
     // share a load balancer, an identity, a credential or a route. The plan

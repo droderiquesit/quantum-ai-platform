@@ -807,6 +807,57 @@ fn route_table() -> Vec<(String, String)> {
 }
 
 #[test]
+fn no_public_route_resolves_to_a_ledger_table_a_broker_a_node_or_key_material() {
+    // The API-015 check, on the route table itself. Whole path segments are
+    // compared, never substrings: `/ledger/private-positions` is a derived view
+    // and contains "position", and a substring match on a word like "key" would
+    // either refuse it or, loosened to admit it, pass `/keys` as well.
+    const FORBIDDEN_SEGMENTS: &[&str] = &[
+        "tables",
+        "table",
+        "spanner",
+        "broker",
+        "brokers",
+        "topics",
+        "partitions",
+        "reflex",
+        "node",
+        "nodes",
+        "custody",
+        "key",
+        "keys",
+        "secret",
+        "secrets",
+        "private-keys",
+    ];
+    let routes = route_table();
+    // Premise: the table was actually read. An empty parse would pass vacuously.
+    assert!(
+        routes.len() > 40,
+        "the route table parsed to {} rows; the parser, not the API, is wrong",
+        routes.len()
+    );
+    assert!(
+        routes.iter().any(|(_, p)| p == "/mesh"),
+        "the premise route /mesh is missing"
+    );
+
+    let offenders: Vec<String> = routes
+        .iter()
+        .filter(|(_, pattern)| {
+            pattern
+                .split('/')
+                .any(|segment| FORBIDDEN_SEGMENTS.contains(&segment))
+        })
+        .map(|(method, pattern)| format!("{method} {pattern}"))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "these public routes name a ledger table, a broker, a node or key material: {offenders:?}"
+    );
+}
+
+#[test]
 // Named without a count on purpose. This test was
 // `every_mutating_route_is_one_of_five_...` and the set below has been four,
 // then five, then six; a number in a test's own name goes stale silently while

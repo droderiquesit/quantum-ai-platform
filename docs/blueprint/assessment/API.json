@@ -22,7 +22,7 @@
     "work_item": "E14-public-edge-activation",
     "tier": "T2",
     "size": "M",
-    "notes": "Certificate Manager vs google_compute_managed_ssl_certificate and the missing DNS record are both scoring divergences per the requirement's own notes, not just gaps to close by flipping a variable."
+    "notes": "Certificate Manager vs google_compute_managed_ssl_certificate and the missing DNS record are both scoring divergences per the requirement's own notes, not just gaps to close by flipping a variable. Left open 2026-10-04: needs a registered domain, DNS delegation and a Certificate Manager migration (external action, ADR 0095 superseding)."
   },
   {
     "id": "API-002",
@@ -40,35 +40,40 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["API-001"],
+    "depends_on": [
+      "API-001"
+    ],
     "blocked_by": "",
     "verification": "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl::the_application_identity_zone_may_be_fronted (plan-only, mocked provider).",
     "work_item": "E14-public-edge-activation",
     "tier": "T2",
     "size": "S",
-    "notes": "The GKE Gateway half is C3 (blocked); the Cloud Run half is built and tested but unused by committed config."
+    "notes": "The GKE Gateway half is C3 (blocked); the Cloud Run half is built and tested but unused by committed config. Left open 2026-10-04: needs a hostname and an applied Cloud Run backend (external action); GKE Gateway arm contradicts ADR 0024."
   },
   {
     "id": "API-003",
-    "status": "PARTIAL",
-    "current": "google_compute_security_policy.edge (infrastructure/terraform/modules/public-edge/main.tf:59-136) carries a geographic-refusal rule and a rate-limit rule (rate_limit_options, checked by name in the test below) ahead of the default allow. google_compute_backend_service.application sets security_policy = google_compute_security_policy.edge[0].id (main.tf:229), attaching the policy to the API backend. google_compute_backend_bucket.static_shell (main.tf:168-196), the CDN-served static-shell backend, sets no edge_security_policy field at all -- the attribute this requirement's own verification names does not appear anywhere in the module.",
+    "status": "COMPLETE",
+    "current": "google_compute_security_policy.edge (main.tf) is attached to google_compute_backend_service.application via security_policy; google_compute_security_policy.edge_static (type CLOUD_ARMOR_EDGE, geographic refusal then allow) is attached to google_compute_backend_bucket.static_shell via edge_security_policy. Every backend block in the module carries its own attachment.",
     "evidence": [
-      "infrastructure/terraform/modules/public-edge/main.tf:59-136,168-196,229",
-      "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs:254 the_public_edge_attaches_every_backend_to_the_cloud_armor_policy (asserts security_policy is set and that rate_limit_options/origin.region_code exist, but not on the bucket)"
+      "infrastructure/terraform/modules/public-edge/main.tf (edge_static policy; edge_security_policy on static_shell)",
+      "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs::every_public_edge_backend_block_carries_its_own_cloud_armor_attachment (mutation: deleting edge_security_policy made it fail with 'carries no Cloud Armor edge policy'; restored, 7 passed)",
+      "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl::the_static_shell_has_an_edge_type_cloud_armor_policy (terraform test: 13 passed)"
     ],
-    "gap": "google_compute_backend_bucket.static_shell has no edge_security_policy, so the one backend that would actually be reachable first by a browser (the static shell) carries no Cloud Armor policy at all if the edge were ever turned on; no test catches this because the existing assertion matches the string 'security_policy' anywhere in the file rather than on each backend.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["API-001"],
+    "depends_on": [
+      "API-001"
+    ],
     "blocked_by": "",
-    "verification": "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs::the_public_edge_attaches_every_backend_to_the_cloud_armor_policy; a new assertion is needed for google_compute_backend_bucket.static_shell.edge_security_policy specifically.",
+    "verification": "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs::every_public_edge_backend_block_carries_its_own_cloud_armor_attachment; terraform test in modules/public-edge.",
     "work_item": "E14-public-edge-activation",
     "tier": "T1",
     "size": "S",
-    "notes": "Concrete, fixable defect independent of activation: add edge_security_policy to the backend bucket and a test that would have caught its absence."
+    "notes": "Closed 2026-10-04. The bucket's edge policy is geographic-refusal only: Cloud Armor edge policies support no rate limit or adaptive protection, so those controls remain on the application backend service. Not applied anywhere: the edge plans 0 resources until API-001 activation."
   },
   {
     "id": "API-004",
@@ -85,13 +90,15 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["API-001"],
+    "depends_on": [
+      "API-001"
+    ],
     "blocked_by": "",
     "verification": "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl::a_declared_hostname_creates_the_whole_edge_and_nothing_on_port_80.",
     "work_item": "E14-public-edge-activation",
     "tier": "T2",
     "size": "S",
-    "notes": ""
+    "notes": "Left open 2026-10-04: needs the edge applied with a hostname (external action)."
   },
   {
     "id": "API-005",
@@ -108,13 +115,15 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["API-001"],
+    "depends_on": [
+      "API-001"
+    ],
     "blocked_by": "",
     "verification": "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl (both runs above).",
     "work_item": "E14-public-edge-activation",
     "tier": "T1",
     "size": "S",
-    "notes": ""
+    "notes": "Left open 2026-10-04: needs the edge applied with a hostname (external action)."
   },
   {
     "id": "API-006",
@@ -166,7 +175,7 @@
     "work_item": "E14-internal-alb",
     "tier": "T2",
     "size": "M",
-    "notes": "The GKE Gateway arm is C3 (Kubernetes retired for Cloud Run); the internal-ALB arm is not blocked by any conflict, it is simply unbuilt."
+    "notes": "The GKE Gateway arm is C3 (Kubernetes retired for Cloud Run); the internal-ALB arm is not blocked by any conflict, it is simply unbuilt. Left open 2026-10-04: GKE Gateway / internal ALB contradicts ADR 0024; needs a superseding ADR."
   },
   {
     "id": "API-008",
@@ -183,7 +192,9 @@
     "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["API-007"],
+    "depends_on": [
+      "API-007"
+    ],
     "blocked_by": "C3",
     "verification": "backend/crates/tests/qip-acceptance/tests/console_route.rs (IAM invoker binding assertions) proves the permitted substitute; no integration test makes three real HTTP calls (no cert / wrong workload / correct workload) because no live process exists to call.",
     "work_item": "E99-internal-mtls-owner-decision",
@@ -212,7 +223,7 @@
     "work_item": "E14-service-inventory",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status PARTIAL kept. deployable true -> false: Cloud Run services exist only as RunService manifests reconciled by Config Connector, and ADR 0093 suspends that path (no Cloud Run service runs in any environment). Also note qip-api is not a stateless endpoint: it holds the kernel Platform in-process (Mutex<Platform>, POST /cycle runs full cycles), so it is not an instance of the 'burst stateless' category either. Assessor note: Scored per the requirement's own note: 'This statement is met for burst endpoints; the divergence in the warm services is scored under C3' (GCP domain)."
+    "notes": "verify: status PARTIAL kept. deployable true -> false: Cloud Run services exist only as RunService manifests reconciled by Config Connector, and ADR 0093 suspends that path (no Cloud Run service runs in any environment). Also note qip-api is not a stateless endpoint: it holds the kernel Platform in-process (Mutex<Platform>, POST /cycle runs full cycles), so it is not an instance of the 'burst stateless' category either. Assessor note: Scored per the requirement's own note: 'This statement is met for burst endpoints; the divergence in the warm services is scored under C3' (GCP domain). Left open 2026-10-04: a service inventory is a documentation decision under ADR 0024 uniform Cloud Run placement; not attempted this pass."
   },
   {
     "id": "API-010",
@@ -264,7 +275,7 @@
     "work_item": "E15-identity-platform-wiring",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status PARTIAL kept. tested true -> false: identity-provider.spec.ts:37,74,93 exercises only the half-configured refusal (project set, no key); no test shows a token from the project's Identity Platform tenant admitted or a foreign issuer/audience refused, which is the behaviour the requirement states. Citations checked (portal.yaml comment is at lines 96-106, not 94-98). Assessor note: CLAUDE.md names the research and risk desk as intended users, 'not external customers,' and lists retail distribution as a non-goal; this requirement's premise (a customer identity pool) is itself a scope question ADR 0099's conflict register does not cover."
+    "notes": "verify: status PARTIAL kept. tested true -> false: identity-provider.spec.ts:37,74,93 exercises only the half-configured refusal (project set, no key); no test shows a token from the project's Identity Platform tenant admitted or a foreign issuer/audience refused, which is the behaviour the requirement states. Citations checked (portal.yaml comment is at lines 96-106, not 94-98). Assessor note: CLAUDE.md names the research and risk desk as intended users, 'not external customers,' and lists retail distribution as a non-goal; this requirement's premise (a customer identity pool) is itself a scope question ADR 0099's conflict register does not cover. Left open 2026-10-04: wiring Identity Platform into the portal manifest needs a deployed portal and live tenant (external action)."
   },
   {
     "id": "API-012",
@@ -282,13 +293,15 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["API-011"],
+    "depends_on": [
+      "API-011"
+    ],
     "blocked_by": "",
     "verification": "None exists; rg -i 'mfa|passkey|webauthn' across frontend/portal/tests and backend finds no test.",
     "work_item": "E15-customer-mfa-passkeys",
     "tier": "T2",
     "size": "L",
-    "notes": "ADR 0038 (passkeys as the recorded destination) is proposed, not applied -- this requirement cannot be closed without that ADR landing first."
+    "notes": "ADR 0038 (passkeys as the recorded destination) is proposed, not applied -- this requirement cannot be closed without that ADR landing first. Left open 2026-10-04: MFA/passkeys need Identity Platform live and a proposed ADR for passkeys (external action, ADR needed)."
   },
   {
     "id": "API-013",
@@ -314,7 +327,7 @@
     "work_item": "E15-api-view-replay-proof",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: downgraded COMPLETE -> PARTIAL. The cited test proves the API keeps no money-typed field, not that every view is log-derived; the API serves views from its own CellRegistry/StageRow/HealthReading stores, and no test performs the requirement's replay comparison. tested -> false (no test demonstrates the stated behaviour); deployable -> false (ADR 0093: no Cloud Run service runs). Assessor note: e2e=false because no currently-running deployed process serves a live view to replay against; the property is proven in-process."
+    "notes": "verify: downgraded COMPLETE -> PARTIAL. The cited test proves the API keeps no money-typed field, not that every view is log-derived; the API serves views from its own CellRegistry/StageRow/HealthReading stores, and no test performs the requirement's replay comparison. tested -> false (no test demonstrates the stated behaviour); deployable -> false (ADR 0093: no Cloud Run service runs). Assessor note: e2e=false because no currently-running deployed process serves a live view to replay against; the property is proven in-process. Left open 2026-10-04: replay-from-log recomputation of every view is multi-slice work not attempted this pass."
   },
   {
     "id": "API-014",
@@ -348,17 +361,15 @@
   },
   {
     "id": "API-015",
-    "status": "PARTIAL",
-    "current": "What holds: qip-api and qip-web have no direct shipped Cargo edge to the ten FORBIDDEN_CRATES (api_boundary.rs:275, ran: passes); qip-api itself is INGRESS_TRAFFIC_INTERNAL_ONLY and reached publicly only through the portal gateway; the gateway redacts cells[].address on /mesh and /system/status (frontend/portal/src/lib/api/redaction.ts:70-90, proven on the wire by tests/wire.spec.ts:61,96,150). What does not: qip-api serves Reflex (edge cell) node addresses to any viewer-role caller -- GET /mesh (routes.rs:136, Role::Viewer) serialises MeshCellStatus{address} (mesh.rs:587-589) and /system/status embeds it -- so the API exposes them and only a two-entry denylist at the BFF keeps them from a browser; the 'structural' claim is overstated because dependency_graph() reads direct edges only and `cargo tree -p qip-api -e normal` shows qip-execution-engine, qip-capital, qip-chain, qip-capital-fabric, qip-orderbook and qip-sequencing linked transitively via qip-kernel; and no acceptance test enumerates every public route asserting none resolves to a ledger-store table, a Fabric broker endpoint, a Reflex node address or custody key material (the requirement's check). qip-api also hosts the mesh delta/capital inbox listeners (mesh.rs:317-380) in the same process.",
+    "status": "COMPLETE",
+    "current": "qip-api no longer serialises a cell's mesh address: MeshCellStatus (mesh.rs) has no address field, so /mesh and /system/status carry none at any role; the portal's redaction entries remain as a second layer and no-op on an absent field. The api_boundary suite enumerates every row of the route table and refuses any path segment naming a ledger table, broker, node, or key material. The direct-edge crate guard (api_boundary.rs:275) is unchanged.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/api_boundary.rs:47-58 FORBIDDEN_CRATES; :98-130 dependency_graph (cargo metadata --no-deps, direct non-dev edges only)",
-      "backend/crates/tests/qip-acceptance/tests/api_boundary.rs:275 the_application_layer_depends_on_no_execution_venue_capital_or_edge_crate (ran: passes)",
-      "backend/crates/apps/qip-api/src/routes.rs:134-139 (GET /mesh at Role::Viewer), :1236 (serves mesh_status_json)",
-      "backend/crates/apps/qip-api/src/mesh.rs:587-589 (MeshCellStatus.address -- the cell's mesh base URL)",
-      "frontend/portal/src/lib/api/redaction.ts:1-90 (BFF denylist redacting cells[].address on /mesh and /system/status)",
-      "frontend/portal/tests/wire.spec.ts:61,96,150 (redaction asserted on the response body)"
+      "backend/crates/tests/qip-acceptance/tests/api_boundary.rs::no_public_route_resolves_to_a_ledger_table_a_broker_a_node_or_key_material (mutation: renaming /models to /models/keys failed it naming 'Get /models/keys'; restored, 10 passed)",
+      "backend/crates/apps/qip-api/tests/api.rs::the_mesh_status_the_api_serves_never_names_a_cells_endpoint (mutation: restoring the address field failed it showing \"address\":\"127.0.0.1:...\"; restored, passed)",
+      "backend/crates/apps/qip-api/src/mesh.rs MeshCellStatus",
+      "backend/crates/tests/qip-acceptance/tests/api_boundary.rs:275 the_application_layer_depends_on_no_execution_venue_capital_or_edge_crate"
     ],
-    "gap": "The API serves Reflex node addresses at viewer role and relies on a BFF denylist; no route-enumeration acceptance test exists; the crate-graph guard misses transitive links to execution/capital/chain/fabric crates through qip-kernel.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -366,11 +377,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "api_boundary.rs:275 (direct edges) and portal wire.spec.ts (two redacted fields) cover parts; the requirement's route enumeration over every public route does not exist.",
+    "verification": "cargo test -p qip-acceptance --test api_boundary no_public_route; cargo test -p qip-api --test api the_mesh_status",
     "work_item": "E15-api-boundary-route-enumeration",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: downgraded COMPLETE -> PARTIAL. qip-api's GET /mesh and /system/status return edge-cell mesh addresses at Role::Viewer (the portal redacts them with a two-entry denylist, per its own redaction.ts); the cited graph test checks direct edges only while cargo tree shows six forbidden crates linked transitively; and the requirement's route-enumeration test does not exist. deployable -> false (ADR 0093). Assessor note: Stronger than a route-enumeration check: a Cargo-graph-level structural guarantee (compile-time), matching the repository's own 'make it structural' principle. Ledger-store-table exposure specifically cannot be tested against Spanner because Spanner is not built (C4)."
+    "notes": "Closed 2026-10-04. Residual, stated rather than hidden: qip-api still links execution/capital/chain crates transitively through qip-kernel (cargo tree), which the direct-edge guard does not see; that is composition, not exposure, and no route reaches them. Ledger-store tables cannot be tested against Spanner, which is not built (C4); the route check is on path names."
   },
   {
     "id": "API-016",
@@ -386,13 +397,15 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["API-002"],
+    "depends_on": [
+      "API-002"
+    ],
     "blocked_by": "",
     "verification": "No test asserts protocol = \"HTTPS\": public-edge.tftest.hcl::the_application_identity_zone_may_be_fronted asserts only the backend count and enable_cdn == false, and no terraform_plan.rs assertion reads the protocol.",
     "work_item": "E14-public-edge-activation",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status PARTIAL kept. tested true -> false: the cited tftest run (public-edge.tftest.hcl:82-115) never reads google_compute_backend_service.application.protocol; nothing else asserts it. The attribute itself is at main.tf:230 (assessor cited :227)."
+    "notes": "verify: status PARTIAL kept. tested true -> false: the cited tftest run (public-edge.tftest.hcl:82-115) never reads google_compute_backend_service.application.protocol; nothing else asserts it. The attribute itself is at main.tf:230 (assessor cited :227). Left open 2026-10-04: needs the edge applied with a backend attached (external action)."
   },
   {
     "id": "API-017",
@@ -410,12 +423,15 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["API-011", "API-012"],
+    "depends_on": [
+      "API-011",
+      "API-012"
+    ],
     "blocked_by": "",
     "verification": "None exists; no Playwright test signs in as an investor, an admin and a general user and asserts three distinct surfaces.",
     "work_item": "E99-portal-surface-scope-owner-decision",
     "tier": "T3",
     "size": "L",
-    "notes": "This diagram-only requirement (H L99) has no supporting PDF paragraph and needs an owner decision on whether an external-investor surface is in scope at all before it is designed, per the requirement's own sourcing note."
+    "notes": "This diagram-only requirement (H L99) has no supporting PDF paragraph and needs an owner decision on whether an external-investor surface is in scope at all before it is designed, per the requirement's own sourcing note. Left open 2026-10-04: investor surface conflicts with CLAUDE.md audience and retail non-goal; needs a superseding ADR."
   }
 ]
