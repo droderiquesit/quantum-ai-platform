@@ -35,7 +35,8 @@
       "Bash(claude plugin list*)",
       "Bash(podman images*)",
       "Bash(terraform version)",
-      "Bash(graphify --help)"
+      "Bash(graphify --help)",
+      "Bash(skopeo inspect*)"
     ],
     "ask": [
       "Bash(git push:*)",
