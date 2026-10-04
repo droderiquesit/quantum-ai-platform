@@ -1,5 +1,6 @@
 //! Clock discipline: what the estimate is worth, and what it is never allowed
 //! to do.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::testing::{Property, approx_eq};

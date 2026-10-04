@@ -1,0 +1,90 @@
+[
+  {
+    "id": "WORLD-067",
+    "status": "MISSING",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "Nothing estimates hidden state. v12.0 gives no durable home for the state (open question 7) and GCP v3.0 specifies GKE persistent services with Bigtable and Spanner Graph, which ADR 0024 and C3/C4 refuse. Buildable as a library inside an existing Cloud Run binary on in-tree storage.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3, C4",
+    "verification": "A state vector at each scope is derived from the event log alone and replays identically; no raw payload is stored.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "WORLD-068",
+    "status": "MISSING",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "No surprise measure and no wake path exist; the threshold is an open question.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A synthetic jump in a state vector wakes exactly the dependent specialists and a sub-threshold change wakes none.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "WORLD-069",
+    "status": "MISSING",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "No multi-horizon structure exists. GCP v3.0 places tactical on GPU and strategic on TPU through GKE/Vertex, which no ADR admits; horizons beyond hours have no placement in section 26.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3, C4, C5, C8",
+    "verification": "A forecast is stored against a named horizon and a lower horizon's output is checked against its parent's constraint.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "WORLD-070",
+    "status": "MISSING",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "Only synthetic rare-regime generation exists (see TICK-023). The branch tree and its pruning do not. GCP v3.0 puts the farm on GKE, Batch and GPU/TPU; a bounded CPU replay inside an existing binary is the only form that fits ADR 0093.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3, C5, C8",
+    "verification": "A branch inconsistent with an observation is down-weighted or split in a replay, deterministically.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  }
+]

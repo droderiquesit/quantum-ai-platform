@@ -5,6 +5,7 @@
 //! including before anyone has assessed it. COMPLETE counts toward
 //! completion only when the row says COMPLETE. A view edited by hand is
 //! caught, not silently kept. A malformed source is refused, not skipped.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_cli::blueprint::{load, render_views, stale, write};
 use std::path::{Path, PathBuf};

@@ -16,6 +16,7 @@
 // confidence with a precedent is the same number as the confidence without
 // one, bit for bit. A tolerance would let a small leak through.
 #![allow(clippy::float_cmp)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
