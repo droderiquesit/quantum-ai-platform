@@ -56,6 +56,7 @@ pub mod config;
 pub mod connectors;
 pub mod discovery;
 pub mod evolution;
+pub mod features;
 pub mod health;
 pub mod language;
 pub mod learning;

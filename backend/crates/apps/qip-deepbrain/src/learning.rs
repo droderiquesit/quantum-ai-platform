@@ -120,6 +120,7 @@
 //! for the next only because the regime key is the platform's, not the
 //! instrument's, and that is the whole of what this module claims.
 
+use crate::features::{FEATURES, FeatureLineage, LOOKBACK, feature_columns, next_bar_returns};
 use qip_ai::evaluation::DriftReport;
 use qip_ai::registry::{ModelCard, ModelRegistry, ModelStage, PublishedArtifact};
 use qip_ai::serving::ModelArtifact;
@@ -137,27 +138,6 @@ use qip_training::job::TrainingSpec;
 use qip_training::local::{LocalTrainer, ModelFamily, SkillPolicy, TrainedTeacher};
 use qip_training::serve::InTreeProvider;
 use std::collections::{BTreeMap, BTreeSet};
-
-/// The features a bar-derived model reads, in the order the dataset carries
-/// them.
-///
-/// Deliberately the vocabulary the strategy harness already computes rather
-/// than a second one: two definitions of "momentum over five bars" that drift
-/// apart is a defect nobody finds, because both look right in isolation.
-const FEATURES: [&str; 5] = [
-    "return_1",
-    "momentum_5",
-    "volatility_10",
-    "range_frac",
-    "volume_share",
-];
-
-/// Bars of history a feature row needs behind it.
-///
-/// The longest window any feature above reads. A row assembled with less is not
-/// a row with a smaller window; it is a row whose features are computed from
-/// data that is not there.
-const LOOKBACK: usize = 10;
 
 /// The prefix every dataset this desk fits under carries, ahead of the
 /// subject's own identifier.
@@ -1316,6 +1296,7 @@ impl LearningDesk {
         ClassChoice,
     )> {
         let targets = next_bar_returns(bars);
+        audit_features_as_of(bars, columns)?;
         let times: Vec<Timestamp> = bars
             .iter()
             .skip(LOOKBACK)
@@ -1406,6 +1387,12 @@ impl LearningDesk {
             now,
         )?;
         require_calibrated_baseline(&self.registry, &baseline_registration.reference)?;
+        // Every card this round registers names the source window and the
+        // code its features came from (MODEL-029).
+        let lineage = FeatureLineage::of(bars, now);
+        if let Some(card) = self.registry.get_mut(&baseline_registration.reference) {
+            lineage.record_on(card);
+        }
         let challenger = trainer.fit(&spec_for(CHALLENGER_CLASS), &dataset, now);
         let baseline_skilled = baseline
             .fit()
@@ -1443,13 +1430,19 @@ impl LearningDesk {
         // registering.
         let registration = match chosen {
             ModelFamily::Linear { .. } => baseline_registration,
-            ModelFamily::BoostedStumps { .. } => register_fit(
-                &mut self.registry,
-                &teacher,
-                &self.policy,
-                "central-research",
-                now,
-            )?,
+            ModelFamily::BoostedStumps { .. } => {
+                let registration = register_fit(
+                    &mut self.registry,
+                    &teacher,
+                    &self.policy,
+                    "central-research",
+                    now,
+                )?;
+                if let Some(card) = self.registry.get_mut(&registration.reference) {
+                    lineage.record_on(card);
+                }
+                registration
+            }
         };
 
         // Distil the teacher into the linear form the execution path is
@@ -1523,95 +1516,70 @@ fn worst_drift(
         .max_by(|left, right| left.1.total_cmp(&right.1))
 }
 
-/// Feature columns over `bars`, one row per bar that has both a full lookback
-/// behind it and a next bar ahead of it.
-///
-/// Row *i* reads bars up to and including `bars[LOOKBACK + i]`, and the target
-/// for that row spans that bar to the next. The label is therefore always on
-/// the far side of every value used to predict it, which is the property a
-/// backtest cannot recover if the dataset does not have it.
-fn feature_columns(bars: &[Bar]) -> BTreeMap<String, Vec<f64>> {
-    let mut columns: BTreeMap<String, Vec<f64>> = FEATURES
-        .iter()
-        .map(|name| ((*name).to_string(), Vec::new()))
-        .collect();
-    if bars.len() <= LOOKBACK + 1 {
-        return columns;
-    }
-    let closes: Vec<f64> = bars.iter().map(|bar| bar.close.to_f64()).collect();
-    let volumes: Vec<f64> = bars.iter().map(|bar| bar.volume.to_f64()).collect();
+/// Rows the as-of audit recomputes. Each recomputation is linear in the
+/// window, so the audit samples evenly (always including the first and last
+/// row) rather than turning a fit quadratic.
+const AUDIT_ROWS: usize = 48;
 
-    let mut push = |name: &str, value: f64| {
-        if let Some(column) = columns.get_mut(name) {
-            column.push(if value.is_finite() { value } else { 0.0 });
+/// Recompute sampled feature rows as of their own decision instant and refuse
+/// a stored value that differs (MODEL-030).
+///
+/// Row `i` is decided at `bars[LOOKBACK + i]`, so it may read nothing later.
+/// Two recomputations hold it to that: with every bar after the decision bar
+/// removed, and with the bar after it (the one the target spans) overwritten
+/// by a copy of the decision bar. A feature that reads past the decision
+/// instant, or the very bar its own target is made of, comes out different
+/// in one of the two, and the fit is refused rather than the leak being
+/// carried into a model that backtests beautifully and cannot trade.
+/// (A target bar identical to its decision bar would hide a read of it; the
+/// truncation recomputation still catches anything further out.)
+///
+/// Returns the number of rows audited, so a caller can tell "examined and
+/// clean" from "examined nothing".
+fn audit_features_as_of(bars: &[Bar], columns: &BTreeMap<String, Vec<f64>>) -> Result<usize> {
+    let rows = columns.values().next().map_or(0, Vec::len);
+    if rows == 0 {
+        return Err(Error::invalid(
+            "no feature rows to audit; an audit that examined nothing is not a clean audit",
+        ));
+    }
+    let step = rows.div_ceil(AUDIT_ROWS).max(1);
+    let mut sampled: Vec<usize> = (0..rows).step_by(step).collect();
+    if sampled.last() != Some(&(rows - 1)) {
+        sampled.push(rows - 1);
+    }
+    for &row in &sampled {
+        let at = LOOKBACK + row;
+        let truncated = feature_columns(&bars[..=at + 1]);
+        let mut perturbed_bars = bars[..=at + 1].to_vec();
+        perturbed_bars[at + 1] = bars[at].clone();
+        let perturbed = feature_columns(&perturbed_bars);
+        for (name, stored) in columns {
+            let held = stored.get(row).map(|value| value.to_bits());
+            for (how, recomputed) in [("truncated", &truncated), ("perturbed", &perturbed)] {
+                let again = recomputed
+                    .get(name)
+                    .and_then(|column| column.get(row))
+                    .map(|value| value.to_bits());
+                if held != again {
+                    return Err(Error::invalid(format!(
+                        "feature {name} at row {row} is not the value computable as of its \
+                         decision bar ({how} recomputation differs); a value that depends on \
+                         bars after the decision instant is look-ahead, and a model fitted on it \
+                         would be fitted on the future"
+                    )));
+                }
+            }
         }
-    };
-
-    for at in LOOKBACK..bars.len() - 1 {
-        let close = closes[at];
-        push("return_1", ratio(close, closes[at - 1]));
-        push("momentum_5", ratio(close, closes[at - 5]));
-
-        let window: Vec<f64> = (at - 9..=at)
-            .map(|i| ratio(closes[i], closes[i - 1]))
-            .collect();
-        push("volatility_10", qip_numerics::stats::stddev(&window));
-
-        let bar = &bars[at];
-        let high = bar.high.to_f64();
-        let low = bar.low.to_f64();
-        push(
-            "range_frac",
-            if close.abs() > f64::EPSILON {
-                (high - low) / close
-            } else {
-                0.0
-            },
-        );
-
-        // Volume relative to its own trailing mean, not raw volume. A raw
-        // level is an instrument-specific magnitude, and a model fitted on one
-        // instrument's volume learns that instrument's size rather than
-        // anything about markets.
-        let trailing: f64 = volumes[at - LOOKBACK..at].iter().sum::<f64>() / LOOKBACK as f64;
-        push(
-            "volume_share",
-            if trailing > f64::EPSILON {
-                volumes[at] / trailing
-            } else {
-                0.0
-            },
-        );
     }
-    columns
-}
-
-/// The return from each feature row's bar to the next.
-fn next_bar_returns(bars: &[Bar]) -> Vec<f64> {
-    if bars.len() <= LOOKBACK + 1 {
-        return Vec::new();
-    }
-    (LOOKBACK..bars.len() - 1)
-        .map(|at| ratio(bars[at + 1].close.to_f64(), bars[at].close.to_f64()))
-        .collect()
-}
-
-/// A simple return, guarded against a zero denominator.
-///
-/// The crossing point from money to statistics: the closes are `Decimal`
-/// because they are prices, and everything from here is `f64` because a return
-/// is a ratio and a ratio is not money.
-fn ratio(current: f64, previous: f64) -> f64 {
-    if previous.abs() < 1e-12 {
-        return 0.0;
-    }
-    current / previous - 1.0
+    Ok(sampled.len())
 }
 
 #[cfg(test)]
 #[allow(clippy::panic_in_result_fn)]
 mod tests {
     use super::*;
+    use crate::features::ratio;
 
     fn subject() -> ObjectId {
         ObjectId::from_string("OBJ0000000000000000000AAA")
@@ -3072,6 +3040,104 @@ mod tests {
             "the round on the model's own instrument degraded nothing: a round on another \
              instrument moved this one's stream reference; degraded is {:?}",
             third.degraded.keys().collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_registered_model_names_the_source_window_and_the_code_its_features_came_from() -> Result<()>
+    {
+        let mut desk = learning_desk();
+        let bars = super::tests_support::learnable(300);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("a round"))?;
+        let reference = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        let card = desk
+            .registry()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the card"))?;
+
+        // The code digest is the SHA-256 of the feature source as it is on
+        // disk, not a label.
+        let on_disk = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/src/features.rs"))
+            .map_err(|error| Error::invalid(error.to_string()))?;
+        assert_eq!(
+            card.parameters.get("feature_code_digest"),
+            Some(&qip_core::hash::sha256_hex(&on_disk))
+        );
+        // The source digest resolves to the window the fit was given...
+        let source = card
+            .parameters
+            .get("feature_source_digest")
+            .ok_or_else(|| Error::not_found("a source digest"))?;
+        assert_eq!(source, &crate::features::source_digest(&bars));
+        // ...and a window with one bar changed is a different source.
+        let mut edited = bars.clone();
+        edited[100].close += qip_core::Decimal::ONE;
+        assert_ne!(source, &crate::features::source_digest(&edited));
+        assert!(card.parameters.contains_key("feature_computed_at"));
+
+        // Recomputing the features from the recorded lineage reproduces what
+        // the fit stored, bit for bit.
+        let stored = &desk
+            .reference
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the stored sample"))?
+            .columns;
+        let recomputed = feature_columns(&bars);
+        assert!(!stored.is_empty(), "premise: the fit stored columns");
+        for (name, column) in stored {
+            let again = recomputed
+                .get(name)
+                .ok_or_else(|| Error::not_found("a recomputed column"))?;
+            assert_eq!(
+                column.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                again.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "{name} does not reproduce from its lineage"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn features_recomputed_as_of_each_decision_instant_match_what_the_fit_stored() -> Result<()> {
+        // Generated series of several lengths and both shapes: the stored
+        // value of every sampled row is what the bars up to its decision
+        // instant give, bit for bit.
+        for count in [70, 130, 400] {
+            for bars in [
+                super::tests_support::learnable(count),
+                super::tests_support::unlearnable(count),
+            ] {
+                let columns = feature_columns(&bars);
+                let audited = audit_features_as_of(&bars, &columns)?;
+                // Premise: the audit examined rows, so a pass is not an empty one.
+                assert!(audited >= 2, "{count} bars audited {audited} row(s)");
+            }
+        }
+        assert!(audit_features_as_of(&[], &BTreeMap::new()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_feature_that_carries_the_next_bars_return_is_refused_as_look_ahead() -> Result<()> {
+        let bars = super::tests_support::learnable(200);
+        let mut columns = feature_columns(&bars);
+        // Premise: the undoctored columns pass, so the refusal is the doctoring.
+        audit_features_as_of(&bars, &columns)?;
+        // `return_1` replaced by the return the row's own target spans: the
+        // future, labelled as the present.
+        columns.insert("return_1".to_string(), next_bar_returns(&bars));
+        let refused = audit_features_as_of(&bars, &columns).unwrap_err();
+        assert!(
+            refused.message().contains("return_1") && refused.message().contains("look-ahead"),
+            "{refused}"
         );
         Ok(())
     }

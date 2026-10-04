@@ -96,14 +96,13 @@
   },
   {
     "id": "MODEL-029",
-    "status": "PARTIAL",
-    "current": "qip-training::dataset::TrainingDataset (backend/crates/services/qip-training/src/dataset.rs:25,33) names its dataset and carries a per-row Timestamp; qip-deepbrain::learning::fit (backend/crates/apps/qip-deepbrain/src/learning.rs:1229) builds rows from bar-derived columns with each row's timestamp taken from the bar's close_time; qip-deepbrain::campaign's manifest records content-hash references for the source data (MODEL-028)",
+    "status": "COMPLETE",
+    "current": "qip-deepbrain::features (backend/crates/apps/qip-deepbrain/src/features.rs) holds the bar-derived feature definitions in a file of their own; features::code_digest is the SHA-256 of that file's source and features::source_digest the SHA-256 over the canonical text of every bar in the window the fit was given. LearningDesk::fit writes both, with the computation instant, onto every card it registers (parameters feature_code_digest, feature_source_digest, feature_computed_at), for the baseline and for a challenger alike. Each row's timestamp is its bar's close_time (learning.rs fit) and the as-of audit of MODEL-030 refuses a feature that is not computable as of that instant.",
     "evidence": [
-      "backend/crates/services/qip-training/src/dataset.rs:25-30 (name + times, no per-feature source/code lineage)",
-      "backend/crates/apps/qip-deepbrain/src/campaign.rs:308 (hash-verified source reference, but at campaign not per-feature grain)",
-      "rg 'code.digest|code_digest|transformation.*version' backend --type rust -> no hits"
+      "backend/crates/apps/qip-deepbrain/src/features.rs (code_digest, source_digest, FeatureLineage::of / record_on); backend/crates/apps/qip-deepbrain/src/learning.rs (fit records the lineage on each registered card)",
+      "test: a_registered_model_names_the_source_window_and_the_code_its_features_came_from (backend/crates/apps/qip-deepbrain/src/learning.rs) -- asserts the code digest equals the SHA-256 of features.rs read from disk, the source digest equals the window's and changes when one bar's close changes, and that recomputing feature_columns from the window reproduces the stored columns bit for bit; mutations: code_digest made a constant -> failed; close dropped from the source digest -> failed; restored, 'test result: ok. 168 passed; 0 failed' (qip-deepbrain lib)"
     ],
-    "gap": "No feature or representation carries a recorded transformation-code version (digest of the computing code). Source-data versioning exists at campaign grain (content hash) and computation instant exists per row, but there is no lineage record resolving a feature to a code digest, so recomputing a feature from its recorded lineage cannot be verified structurally.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -113,25 +112,23 @@
       "MODEL-028"
     ],
     "blocked_by": "",
-    "verification": "No test proves code-digest lineage; TrainingDataset::new's invariants are tested in crates/services/qip-training/tests/training.rs but do not cover code-version lineage.",
+    "verification": "backend/crates/apps/qip-deepbrain/src/learning.rs::tests::a_registered_model_names_the_source_window_and_the_code_its_features_came_from",
     "work_item": "E10-feature-lineage-digest",
     "tier": "T2",
     "size": "M",
-    "notes": "qip_core::hash (SHA-256, in-tree per ADR 0002/ADR 0043) is available to compute a code digest without a new dependency."
+    "notes": "qip_core::hash (SHA-256, in-tree per ADR 0002/ADR 0043) is available to compute a code digest without a new dependency. | Closed 2026-10-04. 'Dataset snapshot id' is an in-tree content hash of the bar window, not a store-level snapshot (C4); no learned representation exists to carry lineage (MODEL-010), so the requirement is met for features only."
   },
   {
     "id": "MODEL-030",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip-world-model::features::FeatureStore::{value_as_of, lookup_as_of} (backend/crates/services/qip-world-model/src/features.rs:640,659) structurally refuses a read of data not yet knowable, keyed on (valid_at, known_at); reached from production via WorldModel (qip-kernel/src/platform.rs) and qip-investment-agents::support.rs. The STRATEGY evaluation path (qip-deepbrain evolution.rs:1270-1350) builds purged k-fold splits with PurgedSplit and a LeakageAudit of FeatureTiming{known_at, used_at} from the harness trace, which the lifecycle holdout gate refuses when a feature was used before it was known (qip-lifecycle/src/evidence.rs:38,65). The MODEL training path (qip-deepbrain::learning::fit, learning.rs:1229) uses neither: it computes columns from raw bars (look-ahead avoided by construction per the module doc, learning.rs:19-22) and holds out with a single chronological TrainingDataset::split_at_fraction, with no structural as-of check and no purge/embargo.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/features.rs:640-703 (module doc: 'A backtest that reads a feature by valid time alone will read values assembled from data that had not arrived yet')",
-      "backend/crates/agents/qip-investment-agents/src/support.rs:216,238,317",
-      "rg 'FeatureStore' backend --type rust -> zero references from qip-training or qip-deepbrain/src/learning.rs",
-      "backend/crates/apps/qip-deepbrain/src/evolution.rs:1270-1350 (PurgedSplit + LeakageAudit on the strategy holdout, not on the model fit)",
-      "backend/crates/services/qip-lifecycle/src/evidence.rs:38,65 (FeatureTiming::leaks, the refusal the holdout gate applies)",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:1363 and backend/crates/services/qip-training/src/local.rs:585 (model holdout is split_at_fraction only)"
+      "backend/crates/apps/qip-deepbrain/src/learning.rs (audit_features_as_of, called by fit before the dataset is built: each sampled row is recomputed with every later bar removed and with the target bar overwritten, and a stored value that differs refuses the round)",
+      "test: features_recomputed_as_of_each_decision_instant_match_what_the_fit_stored (same file) -- generated series of three lengths in both shapes, asserts the audit examined rows; an empty audit is an error",
+      "test: a_feature_that_carries_the_next_bars_return_is_refused_as_look_ahead (same file) -- mutations: comparison disabled -> failed; return_1 made to read the next bar in feature_columns -> the audit refused every round (20 learning tests failed); both restored, 'test result: ok. 22 passed; 0 failed'",
+      "pre-existing: qip-world-model FeatureStore::value_as_of (REASON reads) and qip-lifecycle LeakageAudit (strategy holdout evidence)"
     ],
-    "gap": "The structural bitemporal refusal (FeatureStore) and the used-before-known leakage audit exist and are reached, but only for REASON-stage feature reads and for strategy holdout evidence. The model-training lifecycle in qip-deepbrain::learning computes feature columns from raw bars with no as-of check and no leakage audit, so a feature whose input became knowable after the decision instant would not be refused there; no property test recomputes stored features as of each example's instant.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -141,11 +138,11 @@
       "MODEL-029"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-world-model (as-of tests, e.g. tests/exposure.rs an_exposure_is_invisible_before_the_instant_the_link_became_knowable) and cargo test -p qip-lifecycle --test lifecycle a_leakage_audit_that_examined_nothing_is_not_a_clean_audit; no equivalent structural test exists for qip-deepbrain::learning's feature computation.",
+    "verification": "backend/crates/apps/qip-deepbrain/src/learning.rs::tests::features_recomputed_as_of_each_decision_instant_match_what_the_fit_stored; ::a_feature_that_carries_the_next_bars_return_is_refused_as_look_ahead",
     "work_item": "E10-training-leak-guard",
     "tier": "T2",
     "size": "M",
-    "notes": "Data-and-streaming domain rule prohibits point-in-time leakage generally; this row is specifically about the training path, which bypasses the one structural mechanism the repo already built for it. verify: status PARTIAL kept; corrected 'current' -- it said the model fit relies on qip-simulation-engine's purged k-fold + embargo, but PurgedSplit/LeakageAudit are used only in the strategy evaluation path (evolution.rs:1270-1350); the model fit uses a single chronological split_at_fraction."
+    "notes": "Data-and-streaming domain rule prohibits point-in-time leakage generally; this row is specifically about the training path, which bypasses the one structural mechanism the repo already built for it. verify: status PARTIAL kept; corrected 'current' -- it said the model fit relies on qip-simulation-engine's purged k-fold + embargo, but PurgedSplit/LeakageAudit are used only in the strategy evaluation path (evolution.rs:1270-1350); the model fit uses a single chronological split_at_fraction. | Closed 2026-10-04: the model-training path now has its own as-of recomputation and refusal. Limit stated in the code: a target bar identical to its decision bar would hide a read of it from the perturbation check (the truncation check still catches anything further out); the audit samples at most 48 rows per fit."
   },
   {
     "id": "MODEL-031",
