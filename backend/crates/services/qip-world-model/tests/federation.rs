@@ -100,7 +100,8 @@ fn a_declaration_missing_any_of_the_five_fields_is_refused_naming_it() -> Result
         WorldModelSpec::declare(plain("ok", 100)).is_ok(),
         "premise: the complete one is admitted"
     );
-    let cases: [(&str, fn(&mut Declaration)); 5] = [
+    type Strip = fn(&mut Declaration);
+    let cases: [(&str, Strip); 5] = [
         ("scope", |d| d.scope = None),
         ("evidence lineage", |d| d.evidence_lineage.clear()),
         ("calibration", |d| d.calibration = None),
