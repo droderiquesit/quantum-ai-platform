@@ -13,6 +13,7 @@
 //! leans on them, and needs none of the five binaries built to do it: every
 //! refusal is exercised against a directory or a workspace the test controls,
 //! and every fault against a loopback server it starts itself.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 mod support;
 

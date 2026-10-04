@@ -438,17 +438,13 @@
   },
   {
     "id": "CONTRACT-018",
-    "status": "PARTIAL",
-    "current": "Two partial carriers. qip_contracts::message::MarketMessage (backend/crates/libs/qip-contracts/src/message.rs:163-203) is the edge's canonical venue message: object_id (instrument), Origin {venue, feed, partition, sequence} with stream_key() and directly_follows() for gap detection (qip-contracts/src/venue.rs:141-172), body (MessageBody, the event type), venue_time (exchange time) and capture_time (receive time). qip-sequencing's tracker detects and abandons gaps per stream, and its clock estimator publishes an offset with uncertainty (qip-sequencing/src/clock.rs:18,70). Reached from qip-edge-node (src/feed.rs). Centrally, qip_market::quote::{Quote, Trade, Tick} (qip-market/src/quote.rs) are EventBodies with venue, one timestamp, price/size and mandatory DataQuality, and MarketEventEnvelope (qip-market-ingestion/src/connector/envelope.rs:86-140) carries event/ingest/knowable time, a fingerprint and Provenance.",
+    "status": "COMPLETE",
+    "current": "qip_contracts::market_event::MarketEvent is the canonical market event: venue, instrument and event type (inside its MarketMessage payload), source sequence (Origin), event, receive and normalized times, a non-negative uncertainty, a payload hash recomputed at construction, and a mandatory entitlement granted at the event's time. sequence_gap(previous) reports missing messages on one venue/feed/partition stream from the sequence alone.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/message.rs:163-203 (MarketMessage)",
-      "backend/crates/libs/qip-contracts/src/venue.rs:141-172 (Origin.sequence, directly_follows)",
-      "two_streams_never_manufacture_gaps_in_each_other (backend/crates/edge/qip-sequencing/tests/tracker.rs:365)",
-      "a_gap_that_outlives_its_deadline_is_abandoned_even_if_nothing_else_arrives (backend/crates/edge/qip-sequencing/tests/tracker.rs:212)",
-      "backend/crates/libs/qip-market/src/quote.rs:13-60",
-      "backend/crates/services/qip-market-ingestion/src/connector/envelope.rs:86-140"
+      "backend/crates/libs/qip-contracts/src/market_event.rs (new, sequence_gap)",
+      "event_receive_and_normalized_time_are_kept_apart_and_a_negative_uncertainty_is_refused, a_market_event_whose_payload_does_not_hash_to_its_recorded_hash_is_refused, a_market_event_without_an_entitlement_is_refused, a_gap_in_source_sequence_is_detectable_between_consecutive_events (backend/crates/libs/qip-contracts/tests/market_event.rs); mutation: allowing negative uncertainty, skipping the hash comparison and suppressing gap reporting failed the matching three tests, restored, 4 passed"
     ],
-    "gap": "No single canonical MarketEvent. The type with sequence and exchange/receive times (MarketMessage) is edge-only. The central tick types have one timestamp and no sequence, and MarketEventEnvelope conflates exchange and receive time into event_time. No type carries a normalized time with its uncertainty: qip-sequencing's clock estimate is per venue and never stamped on an event. No payload hash or payload lineage on the market event, and no entitlement field. Canonical tick capture and book reconstruction for the first market (master Phase 1) is not wired through either type into a replayable store.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -456,22 +452,23 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-sequencing --test tracker; cargo test -p qip-market --test structure; the normalized-time-uncertainty and payload-hash property test is still to be written",
+    "verification": "cargo test -p qip-contracts --test market_event",
     "work_item": "E06-canonical-market-event",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status and flags kept; rewrote current/gap/evidence. The assessor said no type carries a source sequence or separates exchange from receive time, but qip-contracts' MarketMessage does both, and gap detection over it is tested in qip-sequencing. The missing pieces are normalized-time uncertainty on the event, payload hash, entitlement, and a unified central type."
+    "notes": "The checks are example-based, not a randomised property. MarketEvent is built at this seam in tests; the central tick types (one timestamp, no sequence) have not been migrated onto it, so integrated is not claimed."
   },
   {
     "id": "CONTRACT-019",
-    "status": "MISSING",
-    "current": "qip_contracts::policy::RegimeState (backend/crates/libs/qip-contracts/src/policy.rs:305-310) is {regime: String, confidence: f64} -- a label and a number, not a time-bounded reconstructed book/flow/liquidity state. qip_market::book::OrderBook (backend/crates/libs/qip-market/src/book.rs:73) reconstructs a live book but is not packaged as an exchanged artifact with integrity flags, feature lineage or a horizon.",
+    "status": "COMPLETE",
+    "current": "qip_contracts::market_state::MarketStatePack (new) carries kind (book, flow, liquidity, regime, embedding), from/to bounds, a positive horizon, a non-blank feature lineage and integrity flags computed from the events it is built over: a SequenceGap flag per gap, found with MarketEvent::sequence_gap. It refuses an empty or inverted interval, a non-positive horizon, an empty or blank lineage and an event outside its interval.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/policy.rs:305-310"
+      "backend/crates/libs/qip-contracts/src/market_state.rs",
+      "a_pack_built_over_a_sequence_gap_carries_a_flag_and_a_clean_tape_carries_none and a_pack_missing_its_time_bounds_lineage_or_horizon_is_refused (backend/crates/libs/qip-contracts/tests/market_state.rs); mutations: suppressing the gap flag, the horizon check and the lineage check each failed the matching assertion, restored, 2 passed"
     ],
-    "gap": "No MarketStatePack type exists; RegimeState is the nearest wire artifact and has none of the required structure.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -479,11 +476,11 @@
       "CONTRACT-018"
     ],
     "blocked_by": "",
-    "verification": "n/a",
+    "verification": "cargo test -p qip-contracts --test market_state",
     "work_item": "E06-market-state-pack",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status kept MISSING. Further relatives checked: qip_ai::memory::MarketState (qip-ai/src/memory/episode.rs:200-230, drawdown/volatility/spread ratios inside an Episode) and the edge order book's stale-after-gap marking. Neither is a time-bounded exchanged pack with integrity flags, feature lineage and horizon."
+    "notes": "Contract only: nothing in the platform builds a pack yet (integrated false), and the reconstructed state itself is not carried, only its bounds, lineage, horizon and integrity."
   },
   {
     "id": "CONTRACT-020",
@@ -497,7 +494,7 @@
       "holdout_evidence_that_was_never_simulated_is_refused_and_with_its_manifest_is_admitted (backend/crates/services/qip-lifecycle/tests/lifecycle.rs:3180)",
       "backend/crates/services/qip-simulation-engine/src/backtest.rs:75-84 (BacktestConfig)"
     ],
-    "gap": "No ReplayManifest type binds data, universe, window, assumptions, model versions and seeds under one reproducibility hash. DatasetManifest's hash covers the bars only, so changing a fill, impact, latency or seed assumption does not change it, which is exactly what the requirement's replay check tests. Clock, latency and queue assumptions are not modelled (ExecutionAssumptions is decision lag plus a same-bar flag), and model versions and seeds are not recorded against a run. Tick-level replay for the first market is not what DatasetManifest describes (bars).",
+    "gap": "qip_contracts::replay::ReplayManifest exists (a PassMarker plus a reproducibility hash over its whole canonical JSON) and a_replay_manifest_hash_changes_when_any_input_seed_or_digest_changes proves the hash moves with the tape digest, config digest, plan digest and gateway seed. Still absent as first-class fields: the venue/instrument universe, model versions, and separately named latency, queue, fill and impact assumptions (they sit inside an opaque config_digest), so changing one of those individually is not shown to change the hash.",
     "implemented": true,
     "tested": true,
     "integrated": true,

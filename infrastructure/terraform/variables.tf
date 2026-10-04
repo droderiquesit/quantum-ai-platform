@@ -1133,6 +1133,24 @@ variable "snapshot_retain_days" {
   default     = 90
 }
 
+variable "billing_budget_enabled" {
+  description = "Create the monthly spend budget (observability module). False by default; needs billing_account_id, passed outside committed tfvars. A budget alerts; it does not cap spend."
+  type        = bool
+  default     = false
+}
+
+variable "billing_account_id" {
+  description = "Billing account for the budget. Required only when billing_budget_enabled."
+  type        = string
+  default     = null
+}
+
+variable "billing_budget_monthly_usd" {
+  description = "Monthly budget in whole USD; 750 is 25 USD/day."
+  type        = number
+  default     = 750
+}
+
 variable "workload_metrics_exist" {
   description = <<-EOT
     Whether this project has ever ingested the platform's own Prometheus

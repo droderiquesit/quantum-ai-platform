@@ -1510,5 +1510,37 @@
       "WORLD"
     ],
     "notes": "Split from the H L292-293 item because the two links can be checked independently. The requirement belongs mainly to AMBIENT. AMBIENT-011's notes observe the amb -> meta link, but no AMBIENT requirement states it, so it is kept here. AGENCY-058 covers the next hop (meta -> agency). P2 because the ambient mesh is master Phase 8."
+  },
+  {
+    "id": "REASON-041",
+    "domain": "REASON",
+    "title": "The Cognitive Compiler distils verified slow-lane discoveries into bounded warm or reflex packages and calls no frontier model from the order path",
+    "statement": "Validated discoveries become symbolic constraints and specialist patterns, then bounded warm or reflex packages. Executable Reflex packages are built in shadow only, because they move a model into a live-capable path.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "20",
+        "section": "\u00a79.13 Recursive Model Evolution & Cognitive Compiler"
+      },
+      {
+        "doc": "G3",
+        "page": "24",
+        "section": "\u00a720.1 connection matrix (signed OCI package)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A distilled package runs in shadow and `Determinism::Required` still cannot name a model rung."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "MODEL"
+    ]
   }
 ]

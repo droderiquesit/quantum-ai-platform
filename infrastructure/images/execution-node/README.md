@@ -9,7 +9,7 @@ route to the internet cannot fetch a binary.
 Until this directory existed, nothing in this repository produced such an
 image. `modules/execution-node/README.md` said so under "No image bake exists",
 `environments/dev/terraform.tfvars` carried
-`boot_image = "projects/algorik-dev/global/images/<the baked image>"` in a
+`boot_image = "projects/algorik-platform-dev/global/images/<the baked image>"` in a
 comment because no real value could be written, and ADR 0035 — which decides
 one node, `newyork-1`, `us-east4`, shadow mode, dev — records the missing image
 as one of the two things blocking it.

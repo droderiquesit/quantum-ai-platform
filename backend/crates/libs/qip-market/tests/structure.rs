@@ -1,4 +1,5 @@
 //! Quotes, books, bars, corporate actions, curves and microstructure.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::testing::approx_eq;
 use qip_core::{Currency, Decimal, Duration, ObjectId, Timestamp, dec};
