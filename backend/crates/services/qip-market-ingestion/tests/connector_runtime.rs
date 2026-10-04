@@ -1237,3 +1237,108 @@ fn a_poll_that_decodes_no_events_still_delivers_and_carries_no_digest() -> Resul
     );
     Ok(())
 }
+
+// --- the raw payload is discarded (DATA-004) ---------------------------------
+
+/// Everything a poll hands back and everything the runtime keeps afterwards,
+/// rendered as text, so a field added under any name is still searched.
+fn everything_retained(report: &impl std::fmt::Debug, runtime: &ConnectorRuntime) -> String {
+    format!("{report:?}\n{runtime:?}")
+}
+
+/// The vendor serves free text next to the fields the platform maps. None of
+/// it may be reachable from the poll report or the runtime afterwards: the
+/// digest keeps a hash and a length, and that is the whole of the body that
+/// survives. Without this, "the body is a local that goes out of scope" is an
+/// intention nobody checks, and the first diagnostic someone adds that keeps
+/// the last body "to help debugging" would turn the runtime into a raw
+/// archive.
+#[test]
+fn a_marker_in_the_served_body_is_reachable_from_nothing_the_runtime_returns_or_keeps() -> Result<()>
+{
+    const MARKER: &str = "UNIQUE-MARKER-4f1c9e-vendor-commentary";
+    let manifest = manifest();
+    let (mut runtime, _sleeper) = runtime_with(manifest.clone())?;
+    let served = format!(
+        r#"{{"events":[{{"key":"EURUSD","at":"2026-08-24T14:00:00Z","price":"1.0812","commentary":"{MARKER}"}}]}}"#
+    );
+    let mut transport = emulator_serving(&served);
+    let mut connector = TestConnector::new(manifest);
+    runtime.connect(&mut connector, &mut transport, now())?;
+
+    let report = runtime.poll(&mut connector, &mut transport, now())?;
+    assert_eq!(
+        report.admitted.len(),
+        1,
+        "premise: the body was parsed and admitted"
+    );
+    assert!(report.digest.is_some(), "premise: the digest was taken");
+    assert!(
+        served.contains(MARKER),
+        "premise: the fixture really carries the marker"
+    );
+
+    let retained = everything_retained(&report, &runtime);
+    assert!(
+        !retained.contains("UNIQUE-MARKER") && !retained.contains("vendor-commentary"),
+        "the served body's free text is reachable after the poll: {retained}"
+    );
+    Ok(())
+}
+
+/// A body that fails to parse is the one path that deliberately keeps text:
+/// the quarantine holds a bounded excerpt of a rejected payload so an operator
+/// can see why it was rejected. That is a recorded exception to DATA-004, not
+/// a silent one, so this test pins its bound: the report carries none of the
+/// body, and nothing past the excerpt limit is held anywhere. A change that
+/// widened the excerpt into a copy of the body would fail here.
+#[test]
+fn a_body_that_fails_to_parse_is_held_only_as_a_bounded_excerpt_in_the_quarantine() -> Result<()> {
+    let padding = "p".repeat(400);
+    // Two refusal paths, two bounds: no readable `at` is refused from the whole
+    // body (`body_excerpt`); an unreadable price is refused from one event's
+    // JSON (the quarantine's own limit).
+    let fixtures = [
+        format!(
+            r#"{{"events":[{{"key":"EURUSD","price":"1.0","note":"HEAD-MARKER{padding}TAIL-MARKER"}}]}}"#
+        ),
+        format!(
+            r#"{{"events":[{{"key":"EURUSD","at":"2026-08-24T14:00:00Z","price":"x","note":"HEAD-MARKER{padding}TAIL-MARKER"}}]}}"#
+        ),
+    ];
+    for served in fixtures {
+        let manifest = manifest();
+        let (mut runtime, _sleeper) = runtime_with(manifest.clone())?;
+        let mut transport = emulator_serving(&served);
+        let mut connector = TestConnector::new(manifest);
+        runtime.connect(&mut connector, &mut transport, now())?;
+
+        let report = runtime.poll(&mut connector, &mut transport, now())?;
+        assert_eq!(
+            report.quarantined, 1,
+            "premise: the body was refused: {served}"
+        );
+        let in_report = format!("{report:?}");
+        assert!(
+            !in_report.contains("MARKER"),
+            "the report carries the body: {in_report}"
+        );
+        let held: Vec<_> = runtime.quarantine().entries().collect();
+        assert_eq!(held.len(), 1, "premise: one entry was held");
+        let excerpt = &held[0].payload_excerpt;
+        assert!(
+            excerpt.contains("HEAD-MARKER"),
+            "premise: the excerpt keeps the start of the body, which is the exception being pinned"
+        );
+        assert!(
+            excerpt.chars().count() <= 321,
+            "the excerpt is no longer bounded: {} chars",
+            excerpt.chars().count()
+        );
+        assert!(
+            !excerpt.contains("TAIL-MARKER"),
+            "the quarantine holds the end of the body, so it holds all of it"
+        );
+    }
+    Ok(())
+}

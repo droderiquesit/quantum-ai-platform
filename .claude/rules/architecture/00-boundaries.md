@@ -26,9 +26,10 @@ service may not depend on the runtime; nothing may depend on an app.
 
   Every other library still may not perform I/O. The guard that pins the
   allowed set is
-  `qip-acceptance`'s `event_fabric_architecture::only_the_named_libraries_open_sockets`,
-  which SLICE-45 writes. Until it lands, this sentence is prose, not an
-  enforced check. Locate it with
+  `qip-acceptance`'s `event_fabric_architecture::only_the_named_libraries_open_sockets`.
+  It has landed, so this sentence is an enforced check and no longer prose: it
+  walks `backend/crates/libs/*/src` and fails if any file outside those two
+  names `TcpStream`, `TcpListener`, `UdpSocket` or `ToSocketAddrs`. Locate it with
   `grep -rn 'fn only_the_named_libraries_open_sockets' backend/crates/tests`.
 - `backend/crates/services/` — one domain engine each. A service owns its domain and
   exposes it through types, not through reaching into another service.

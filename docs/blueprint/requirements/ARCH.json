@@ -2079,5 +2079,79 @@
       "DEVFACTORY"
     ],
     "notes": "The raw item's claim that nothing is split across repositories overstates the diagram. The same CI/CD view also draws a separate 'Environment / GitOps Repo' node, for versioned environment manifests and package pins. v2.1 names seven repositories. ADR 0099 C6 declines that split and keeps ADR 0016's single repository, mapping each named repository to a directory; environment desired state therefore also lives here, under infrastructure/environments/."
+  },
+  {
+    "id": "ARCH-073",
+    "domain": "ARCH",
+    "title": "The platform is described as a Financial Superintelligence Platform whose v12.0 status paragraph disclaims a claim that AGI has been achieved",
+    "statement": "Where the platform names itself, the v12.0 title and the retained status paragraph both hold: it is a target architecture, not a claim that present-day AGI has been achieved.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "invariant",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "1",
+        "section": "Title and status"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Grep of user-facing and doc text finds no claim that AGI or superintelligence has been achieved."
+    },
+    "policy_flags": []
+  },
+  {
+    "id": "ARCH-074",
+    "domain": "ARCH",
+    "title": "The ten v12.0 completeness targets carry a status each and none is scored COMPLETE on text alone",
+    "statement": "Section 31.1 lists ten COMPLETE TARGET items. Each is scored by evidence in the matrix. Capital, hedge, model-risk and survival systems are independent of alpha generation and can veto or reduce exposure only as a limit the Risk Gate evaluates.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "50",
+        "section": "§31.1 v12 Superintelligence Completeness Additions"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each of the ten items cites a requirement ID and the status of that ID."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK"
+    ]
+  },
+  {
+    "id": "ARCH-075",
+    "domain": "ARCH",
+    "title": "No TPU, GPU, QPU, agent or twin job is a synchronous dependency between tick and order",
+    "statement": "A forecast, twin, agent or accelerator job is asynchronous to the tick-to-order path. Forecasts flow to capital only through a bounded CapitalGrant, RiskEnvelope or HedgePlan, and live execution stays local and deterministic.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G3",
+        "page": "29",
+        "section": "§27.1 acceptance criteria"
+      },
+      {
+        "doc": "G3",
+        "page": "25-26",
+        "section": "§21.5 Forecast-to-capital flow"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An order-path call graph contains no model, accelerator or twin call."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK"
+    ]
   }
 ]
