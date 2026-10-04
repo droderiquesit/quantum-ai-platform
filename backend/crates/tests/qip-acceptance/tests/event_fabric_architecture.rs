@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! The library layer's socket boundary (`.claude/rules/architecture/00-boundaries.md`).
 //!
 //! Only `qip-transport` and `qip-storage/src/redis.rs` may name a std::net

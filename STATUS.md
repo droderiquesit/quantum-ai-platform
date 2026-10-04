@@ -2,15 +2,15 @@
 
 Last updated: 2026-10-04 (checkpoint 1). Project: Algorik (blueprint v12.0 title).
 
-Phase: 0 nearly complete (needs Review Board sign-off on 0101).
+Phase 0 complete bar Review Board re-check of the revised ADR 0101; Phase 1 foundation started.
 Branch: `docs/hermes-phase-0`, worktree `.claude/worktrees/hermes-phase-0`.
 
 ## Measured so far
 - Blueprint newest: v12.0 (51 pp) plus GCP v3.0 (30 pp), already held in `docs/blueprint/source/`.
 - Register: 31 requirement domains from v11.6, traceability matrix exists.
 - ADR 0101 body written and linked (`24af6bae`); `docs/SYSTEM_MAP.md` and `docs/MASTER_ROADMAP.md` (93 items, 10 streams) committed. Branch pushed.
-- `cargo test --workspace --no-fail-fast`, 2026-10-04 after the fixes below: exit 0, 492 `test result:` lines, 6501 passed, 0 failed, 0 ignored.
-- Fixes: `scripts/send-sms.py` added to the pinned tooling set; the retired `infrastructure/kubernetes/` tree (reintroduced by merge 10e3a1b9, ADR 0024) removed, which cleared the 3 pre-existing failures.
+- Integrated tree, 2026-10-04: `cargo test --workspace --no-fail-fast` exit 0, 493 `test result:` lines, 6502 passed, 0 failed, 0 ignored; fmt clean; clippy 0 warnings or errors (now with `unwrap_used`/`expect_used` denied); dependency policy and secret scan pass.
+- Batch 1 merged: repoint to `algorik-platform-dev`, unwrap/expect lint, lib socket guard test, opt-in Terraform billing budget, v12 requirement entries (1601 requirements rendered), two ARB reviews of ADR 0101 and its revision (19 of 20 items applied, 1 rejected).
 - clippy 0 warnings, fmt clean, dependency policy and secret scan pass (docs/ops/hermes-baseline-2026-10-04.md).
 - Cost: billing is disabled on `algorik-dev`; spend is 0 by construction.
 
@@ -20,6 +20,6 @@ Branch: `docs/hermes-phase-0`, worktree `.claude/worktrees/hermes-phase-0`.
 - SMS: `scripts/send-sms.py` built; needs HERMES_SMTP_USER and a password file.
 
 ## Next three actions
-1. Review Board pass on ADR 0101 (independent reviewers).
-2. Add v12 requirement entries (M12/G3 codes) to docs/blueprint/requirements.
-3. Start the ready roadmap items (streams A and I first).
+1. Re-review revised ADR 0101.
+2. Plan the dev Terraform against `algorik-platform-dev` (show the plan, then apply).
+3. Open the ready roadmap items by stream (see docs/MASTER_ROADMAP.md).
