@@ -1,5 +1,8 @@
 //! The ambient contracts: records, the attention router, the promotion gate.
 
+// Fixture helpers outside a #[test] fn are test code too; expect is the assertion.
+#![allow(clippy::expect_used)]
+
 use qip_contracts::ambient::{
     Advisory, AmbientSignal, AttentionRouter, Disposition, Pathway, PromotionCase, RoutingPolicy,
     SignalClass, Trigger, promote,
@@ -26,13 +29,8 @@ fn signal(id: usize, class: SignalClass, severity: u32, secs: i64) -> AmbientSig
 }
 
 fn policy(budget: u32, defer: usize) -> RoutingPolicy {
-    RoutingPolicy::standard(
-        4_000,
-        budget,
-        Duration::from_secs(WINDOW_SECS),
-        defer,
-    )
-    .expect("a valid policy")
+    RoutingPolicy::standard(4_000, budget, Duration::from_secs(WINDOW_SECS), defer)
+        .expect("a valid policy")
 }
 
 /// A small deterministic generator; the repository has no property-test crate
@@ -110,7 +108,10 @@ fn a_deviation_below_materiality_wakes_nothing_and_a_material_one_takes_its_clas
         }
     }
     // Premise: the generator exercised both sides of the bar.
-    assert!(quiet > 50 && material > 50, "{quiet} quiet, {material} material");
+    assert!(
+        quiet > 50 && material > 50,
+        "{quiet} quiet, {material} material"
+    );
 }
 
 #[test]
@@ -134,13 +135,20 @@ fn a_storm_never_exceeds_the_attention_budget_and_every_excess_signal_is_deferre
         }
     }
     let mut per_window = vec![0u32; windows as usize];
-    for e in events.iter().filter(|e| e.disposition == Disposition::Activated) {
+    for e in events
+        .iter()
+        .filter(|e| e.disposition == Disposition::Activated)
+    {
         per_window[(e.at.as_secs() / WINDOW_SECS) as usize] += 1;
     }
     // Premise: the storm was a storm — some window demanded more than it was given.
     assert!(events.iter().any(|e| e.disposition == Disposition::Shed));
-    assert!(events.iter().any(|e| e.disposition == Disposition::Deferred));
-    assert!(per_window.iter().any(|&a| a == budget));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.disposition == Disposition::Deferred)
+    );
+    assert!(per_window.contains(&budget));
     for (w, a) in per_window.iter().enumerate() {
         assert!(*a <= budget, "window {w} activated {a} > budget {budget}");
     }
@@ -193,10 +201,22 @@ fn an_ambient_output_without_evidence_a_pass_an_approver_and_held_controls_is_re
     let promoted = promote(advisory(), &good()).expect("a complete case promotes");
     assert_eq!(promoted.into_inner(), "pre-position 2m cash");
     let cases = [
-        PromotionCase { evidence: vec![], ..good() },
-        PromotionCase { evaluation_passed: false, ..good() },
-        PromotionCase { approver: String::new(), ..good() },
-        PromotionCase { deterministic_controls_held: false, ..good() },
+        PromotionCase {
+            evidence: vec![],
+            ..good()
+        },
+        PromotionCase {
+            evaluation_passed: false,
+            ..good()
+        },
+        PromotionCase {
+            approver: String::new(),
+            ..good()
+        },
+        PromotionCase {
+            deterministic_controls_held: false,
+            ..good()
+        },
     ];
     for case in cases {
         let refused = promote(advisory(), &case).expect_err("must refuse");

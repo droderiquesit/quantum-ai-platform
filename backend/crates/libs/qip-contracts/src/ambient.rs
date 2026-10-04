@@ -280,8 +280,7 @@ impl AttentionRouter {
         if signal.severity_bp < self.policy.materiality_bp {
             return Ok(out);
         }
-        let disposition = if self.used < self.policy.budget_per_window && self.deferred.is_empty()
-        {
+        let disposition = if self.used < self.policy.budget_per_window && self.deferred.is_empty() {
             self.used += 1;
             Disposition::Activated
         } else if self.deferred.len() < self.policy.defer_capacity {

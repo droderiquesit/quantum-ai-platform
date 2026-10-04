@@ -57,7 +57,11 @@ fn an_ambient_signal_and_the_attention_event_it_caused_round_trip_through_the_ev
         .into_iter()
         .next()
         .expect("premise: a material signal produced an attention event");
-    assert_eq!(attention.signal_id, signal.id(), "the event references its signal");
+    assert_eq!(
+        attention.signal_id,
+        signal.id(),
+        "the event references its signal"
+    );
 
     let lineage = Lineage::root(CorrelationId::from_string("cor-ambient-1"), "ambient-mesh");
     let signal_event_id = EventId::from_string("evt-signal-1");
