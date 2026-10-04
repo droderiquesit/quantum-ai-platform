@@ -17,6 +17,13 @@
 terraform {
   required_version = ">= 1.9.0"
 
+  # State shares the platform's bucket under its own prefix, so a plan here
+  # cannot see, and so cannot propose to change, the platform's resources.
+  # The bucket is passed at init (`-backend-config`), as infra.yml does.
+  backend "gcs" {
+    prefix = "fleet"
+  }
+
   required_providers {
     google = {
       source  = "hashicorp/google"

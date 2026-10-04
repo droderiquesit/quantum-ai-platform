@@ -4245,6 +4245,9 @@ fn no_workflow_depends_on_a_repository_variable() {
         ".github/workflows/deploy.yml",
         ".github/workflows/vendor.yml",
         ".github/workflows/image.yml",
+        // Authenticates by workload identity as infra.yml does, so the same
+        // failure mode is available to it; it was outside the list when added.
+        ".github/workflows/fleet.yml",
     ] {
         let workflow = read(workflow_file);
         assert!(
@@ -5142,12 +5145,13 @@ fn step_output_references(text: &str) -> std::collections::BTreeSet<(String, Str
 
 #[test]
 fn every_step_output_a_workflow_reads_is_one_that_job_writes() {
-    const WORKFLOWS: [&str; 5] = [
+    const WORKFLOWS: [&str; 6] = [
         ".github/workflows/ci.yml",
         ".github/workflows/deploy.yml",
         ".github/workflows/image.yml",
         ".github/workflows/infra.yml",
         ".github/workflows/vendor.yml",
+        ".github/workflows/fleet.yml",
     ];
 
     /// The outputs each `id`-bearing step of one job writes.
