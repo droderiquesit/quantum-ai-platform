@@ -30,6 +30,7 @@ pub mod manifest;
 pub mod object;
 pub mod physical;
 pub mod pool;
+pub mod position_record;
 pub mod quality;
 pub mod risk_profile;
 pub mod universe;
@@ -63,6 +64,7 @@ pub use physical::{
 pub use pool::{
     BlockExecution, ContractRisk, DexModel, DexQuote, MevEstimate, PoolCurve, PoolQuote, PoolState,
 };
+pub use position_record::{Declared, ExitPlan, ExitRoute, PositionRecord, PositionRecordBuilder};
 pub use quality::{DataQuality, LicensingClass, Provenance};
 pub use risk_profile::{FactorExposures, Greeks, RiskCharacteristics};
 pub use universe::{CatalogueOrigin, Universe};
