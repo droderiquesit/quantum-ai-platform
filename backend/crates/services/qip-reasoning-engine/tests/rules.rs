@@ -1,6 +1,8 @@
 //! Rule packs: versioned verdicts, declared invariants, determinism, and an
 //! independent checker (REASON-001, -013, -014, -027, -035).
 
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::process::Command;
