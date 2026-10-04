@@ -1,6 +1,7 @@
 //! The platform's own belief about an event: a distribution, a tree of
 //! developments that implies one, a dated update, and the fair values a cited
 //! belief gives a contract.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::{VenueClass, VenueId};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
