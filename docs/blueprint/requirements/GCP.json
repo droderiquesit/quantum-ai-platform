@@ -1169,5 +1169,164 @@
     "policy_flags": [],
     "secondary_domains": ["SEC", "SUPPLY_CHAIN", "REFLEX", "FABRIC"],
     "notes": "The Shielded VM half of the raw G p17 dedicated-compute item. The H citation was added during consolidation. H also names Confidential VM 'where compatible', which is not made an obligation here. MANAGED_SERVICE and COST were dropped because this is a VM setting at no extra cost. modules/execution-node already sets enable_secure_boot, enable_vtpm and enable_integrity_monitoring to true, and no Fabric VM exists yet. Priority P0 because it is a security control on the GCP Phase 2 and Phase 3 compute."
+  },
+  {
+    "id": "GCP-060",
+    "domain": "GCP",
+    "title": "The Superintelligence Plane's about twenty-seven new services are held as unauthorised and are built only in an existing binary or not at all",
+    "statement": "GCP v3.0 names about 27 services (3 NOW, 5 forecast, 6 society, 5 twin, 5 capital, 3 cross-cutting). ADR 0101 authorises none. A service is built only as a library inside an existing Cloud Run binary, with a new ADR for any runtime, store or dependency it needs.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G3",
+        "page": "2",
+        "section": "§1 Superintelligence Plane"
+      },
+      {
+        "doc": "G3",
+        "page": "12-14",
+        "section": "§11.2-11.7"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "No resource for any of the 27 is added without an ADR; infrastructure acceptance suite passes."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE",
+      "COST",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "ARCH"
+    ]
+  },
+  {
+    "id": "GCP-061",
+    "domain": "GCP",
+    "title": "TPU7x, GPU pools, Spot GPU or TPU and reserved slices are not provisioned",
+    "statement": "No accelerator resource is provisioned. Reserved slices are the opposite of a bounded daily spend; TPU7x's name, GA status and region availability are the blueprint's claim and are unverified.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G3",
+        "page": "13",
+        "section": "§11.6 Hybrid compute fabric"
+      },
+      {
+        "doc": "G3",
+        "page": "30",
+        "section": "§29.1 Validation"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "`grep -rEi 'tpu|gpu|accelerator' infrastructure/terraform` finds no resource."
+    },
+    "policy_flags": [
+      "COST",
+      "NON_RUST",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "QUANT"
+    ]
+  },
+  {
+    "id": "GCP-062",
+    "domain": "GCP",
+    "title": "Vertex AI Agent Engine, Sessions and Memory Bank are not adopted as the memory or runtime of the model society",
+    "statement": "The model and agent society does not run on Agent Engine, and Memory Bank or any managed store is not a second source of truth for what the event log already holds. Keep Vertex APIs behind adapters because the branding is evolving.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G3",
+        "page": "12-14",
+        "section": "§11.4, §11.8"
+      },
+      {
+        "doc": "G3",
+        "page": "30",
+        "section": "§29.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "No Agent Engine resource exists and forecast outcomes live only in the event log."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "MODEL"
+    ]
+  },
+  {
+    "id": "GCP-063",
+    "domain": "GCP",
+    "title": "Cloud Batch, Cloud Run Jobs for agent fleets, Cloud Scheduler, Workflows and Cross-Cloud Interconnect are not adopted without an ADR",
+    "statement": "Each of these new services needs its own ADR under ADR 0069 and ADR 0099 before use. Scheduler and Workflows are peripheral only, never the backbone. Interconnect to IBM is a third-party network contract never applied.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G3",
+        "page": "13",
+        "section": "§11.5-11.6"
+      },
+      {
+        "doc": "G3",
+        "page": "20-23",
+        "section": "§19 and §19.0A-B"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "No such resource is declared and the infrastructure acceptance suite passes."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "FINOPS"
+    ]
+  },
+  {
+    "id": "GCP-064",
+    "domain": "GCP",
+    "title": "The v3.0 Superintelligence connection matrix is carried over the in-tree Fabric and controlled egress, and the Cognitive Compiler's output stays shadow",
+    "statement": "The ten new edges (Scout to NOW Brain, Forecast Router to model society, Meta-Intelligence to Compute Router, Compute Router to accelerators and QPU, Cognitive Compiler to Artifact Registry) assume QUIC, mTLS and prost; ADR 0100 ships a single-node std-TCP stack. The Compiler's executable packages stay shadow.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G3",
+        "page": "24",
+        "section": "§20.1 Superintelligence connection matrix"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "No edge in the matrix is implemented with a crate beyond serde and serde_json."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY",
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "FABRIC"
+    ]
   }
 ]
