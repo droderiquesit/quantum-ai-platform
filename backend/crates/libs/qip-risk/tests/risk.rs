@@ -3,6 +3,7 @@
 // Exact comparison is deliberate where a degenerate input must yield exactly
 // zero rather than something close to it.
 #![allow(clippy::float_cmp)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::Decimal;
 use qip_core::rng::{Rng, Xoshiro256};

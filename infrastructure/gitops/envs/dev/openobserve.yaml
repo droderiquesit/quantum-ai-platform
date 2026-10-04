@@ -10,7 +10,7 @@ metadata:
   name: qip-dev-openobserve
   annotations:
     cnrm.cloud.google.com/deletion-policy: abandon
-    cnrm.cloud.google.com/project-id: algorik-dev
+    cnrm.cloud.google.com/project-id: algorik-platform-dev
   labels:
     platform: qip
     environment: dev
@@ -22,7 +22,7 @@ metadata:
     qip-workload: openobserve
 spec:
   projectRef:
-    external: projects/algorik-dev
+    external: projects/algorik-platform-dev
   location: us-east4
   # ADR 0033's authenticated posture, as modules/openobserve derives it
   # (`run_service_ingress`, instantiated from catalogue.tf as
@@ -40,14 +40,14 @@ spec:
     useDefault: true
   template:
     serviceAccountRef:
-      external: qip-openobserve-dev@algorik-dev.iam.gserviceaccount.com
+      external: qip-openobserve-dev@algorik-platform-dev.iam.gserviceaccount.com
     vpcAccess:
       egress: ALL_TRAFFIC
       networkInterfaces:
       - networkRef:
-          external: projects/algorik-dev/global/networks/qip-dev
+          external: projects/algorik-platform-dev/global/networks/qip-dev
         subnetworkRef:
-          external: projects/algorik-dev/regions/us-east4/subnetworks/qip-dev-tz-management
+          external: projects/algorik-platform-dev/regions/us-east4/subnetworks/qip-dev-tz-management
         tags:
         - qip-dev-tz-management
     scaling:

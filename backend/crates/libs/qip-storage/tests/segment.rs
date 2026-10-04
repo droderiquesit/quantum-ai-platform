@@ -6,6 +6,7 @@
 //! than imported from the crate under test, matching this suite's existing
 //! convention in `tests/engine.rs`'s `frame_extents`: a test that shares the
 //! reader with the code it checks proves less.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Clock, ManualClock, Timestamp};

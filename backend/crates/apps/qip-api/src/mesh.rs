@@ -586,7 +586,10 @@ pub struct MeshStatus {
 #[derive(Clone, Debug, Serialize)]
 pub struct MeshCellStatus {
     pub cell: String,
-    pub address: String,
+    // No `address`: it is the cell's base URL on the mesh transport and its
+    // identity there. `/mesh` and `/system/status` serve this struct at
+    // viewer role, and the field was serialised until the BFF's redaction
+    // list was the only thing keeping a cell's endpoint from a browser.
     pub capital_inbox: InboxHealth,
     /// Envelopes persisted and not yet acknowledged by the cell.
     pub spool_pending: usize,
@@ -1439,7 +1442,6 @@ impl MeshBackbone {
                 .iter()
                 .map(|(cell, lane)| MeshCellStatus {
                     cell: cell.clone(),
-                    address: lane.address.clone(),
                     capital_inbox: lane.capital.inbox().health(),
                     spool_pending: lane.dispatcher.pending().unwrap_or(0),
                     circuit: lane.dispatcher.circuit().as_str().to_string(),

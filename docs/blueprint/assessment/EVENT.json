@@ -27,15 +27,15 @@
   },
   {
     "id": "EVENT-002",
-    "status": "MISSING",
-    "current": "nothing. qip_prediction::pricing (backend/crates/services/qip-prediction/src/pricing.rs) only runs the opposite direction the requirement needs: implied_from_ask/implied_from_bid/implied_band (pricing.rs:121,140,159) back a probability *out of* a market price. No function anywhere takes an estimated outcome distribution and a contract's payoff terms and returns a fair value, and no valuation record type cites the distribution a price used.",
+    "status": "COMPLETE",
+    "current": "qip_prediction::belief::fair_values (backend/crates/services/qip-prediction/src/belief.rs) prices each outcome's contract as probability times the market's settlement payoff from a cited OutcomeDistribution, and the Valuation record carries that distribution's digest; refuses a belief over different outcomes.",
     "evidence": [
-      "backend/crates/services/qip-prediction/src/pricing.rs:110-174 (naive_probability, implied_from_ask, implied_from_bid, implied_band -- all price-to-probability, none probability-to-price)",
-      "grep -n 'fair_value_from_distribution|price_from_probability|OutcomeDistribution' backend/crates --include=*.rs returns nothing"
+      "backend/crates/services/qip-prediction/src/belief.rs",
+      "backend/crates/services/qip-prediction/tests/belief.rs : fair_values_scale_with_probability_sum_to_the_payoff_and_cite_their_belief; a_belief_about_a_different_event_cannot_price_this_market"
     ],
-    "gap": "No fair-value-from-belief function, and its prerequisite (an estimated outcome distribution, EVENT-010) does not exist either.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -43,7 +43,7 @@
       "EVENT-010"
     ],
     "blocked_by": "",
-    "verification": "Test to write: for a mutually exclusive/exhaustive outcome set priced from one distribution, assert each fair value lies in the payoff range, values sum to the payoff before fees, each moves monotonically with its outcome's probability, and the valuation record cites the distribution.",
+    "verification": "cargo test -p qip-prediction --test belief (mutation-verified: 5 mutations each failed the named tests). Not yet called from qip-kernel, so integrated stays false.",
     "work_item": "E17-event-fair-value",
     "tier": "T3",
     "size": "M",
@@ -226,22 +226,21 @@
   },
   {
     "id": "EVENT-010",
-    "status": "MISSING",
-    "current": "nothing. qip_prediction::resolution::Observations (backend/crates/services/qip-prediction/src/resolution.rs:63-88) holds one realised value per metric with one observed_at instant -- a fact, not a probability distribution over an outcome set. No OutcomeDistribution or equivalent type exists anywhere (`grep -rn 'OutcomeDistribution|outcome_distribution' backend/crates --include=*.rs` returns nothing). Two near misses the assessor did not list: qip_reasoning_engine::bayes::update (backend/crates/services/qip-reasoning-engine/src/bayes.rs:119) produces a single binary hypothesis confidence and EvidenceSet::latest_known_at (evidence.rs:453) gives its latest evidence instant -- a probability of one claim, not a distribution over an event's defined outcome set; and SyntheticPredictionVenue::fair_prices (backend/crates/services/qip-prediction/src/adapter.rs:241) normalises random weights to sum to one, but that is a simulated venue's generated book, test-only, not the platform's estimate.",
+    "status": "COMPLETE",
+    "current": "qip_prediction::belief::OutcomeDistribution (backend/crates/services/qip-prediction/src/belief.rs) holds a Probability per OutcomeId in a BTreeMap, refuses fewer than two outcomes and any total other than exactly one, carries its as_of instant and basis, and has a content digest.",
     "evidence": [
-      "backend/crates/services/qip-prediction/src/resolution.rs:63-88 (Observations: single realised values, not a distribution)",
-      "grep -rn 'probability_distribution|OutcomeDistribution' backend/crates --include=*.rs -- zero hits in production or test code",
-      "backend/crates/services/qip-reasoning-engine/src/bayes.rs:119 update (binary hypothesis confidence, not an outcome-set distribution)"
+      "backend/crates/services/qip-prediction/src/belief.rs",
+      "backend/crates/services/qip-prediction/tests/belief.rs : a_distribution_that_does_not_sum_to_one_is_refused_rather_than_rescaled; a_tree_of_conditional_developments_implies_the_outcome_distribution; an_arrival_moves_belief_toward_the_outcome_it_favours_and_names_itself"
     ],
-    "gap": "No estimator, type or storage for a probability distribution over an event's outcome set exists at any layer.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Test to write: for generated multi-outcome events, assert each estimated distribution is non-negative, sums to one, covers exactly the defined outcomes, and carries the instant of its latest evidence.",
+    "verification": "cargo test -p qip-prediction --test belief (mutation-verified: 5 mutations each failed the named tests). Not yet called from qip-kernel, so integrated stays false.",
     "work_item": "E09-event-outcome-distribution",
     "tier": "T3",
     "size": "M",
@@ -249,15 +248,15 @@
   },
   {
     "id": "EVENT-011",
-    "status": "MISSING",
-    "current": "nothing. No scenario-tree, event-tree or conditional-probability-branching type exists anywhere in backend/crates (`grep -in 'scenario.?tree|event.?tree|conditional.?probabilit'` matches only an unrelated comment in qip-capital's allocation.rs about position-sizing conditional probability, not event branching).",
+    "status": "COMPLETE",
+    "current": "qip_prediction::belief::Development/Branch (backend/crates/services/qip-prediction/src/belief.rs) represent an event as branching developments with conditional probabilities; paths() multiplies to joint path probabilities, refuses branch sets not summing to one, and outcome_distribution() sums paths per market outcome, refusing foreign outcomes.",
     "evidence": [
-      "grep -rn 'scenario.?tree|event.?tree' backend/crates --include=*.rs -i -- zero relevant hits",
-      "backend/crates/services/qip-capital/src/allocation.rs:162 (the one 'conditional probability' hit, unrelated to events)"
+      "backend/crates/services/qip-prediction/src/belief.rs",
+      "backend/crates/services/qip-prediction/tests/belief.rs : a_tree_of_conditional_developments_implies_the_outcome_distribution; a_tree_whose_conditionals_do_not_sum_to_one_or_that_names_a_foreign_outcome_is_refused"
     ],
-    "gap": "No representation of an event as branching intermediate developments with conditional probabilities exists.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -265,7 +264,7 @@
       "EVENT-010"
     ],
     "blocked_by": "",
-    "verification": "Test to write: for generated trees, assert conditional probabilities leaving each node sum to one, every leaf maps to exactly one defined outcome, and path-probability products reproduce EVENT-010's outcome distribution.",
+    "verification": "cargo test -p qip-prediction --test belief (mutation-verified: 5 mutations each failed the named tests). Not yet called from qip-kernel, so integrated stays false.",
     "work_item": "E09-event-scenario-tree",
     "tier": "T3",
     "size": "M",
@@ -273,17 +272,15 @@
   },
   {
     "id": "EVENT-012",
-    "status": "MISSING",
-    "current": "No event-specific information-arrival model exists. Adjacent bitemporal primitives exist elsewhere -- qip_prediction::resolution::Observations::at (resolution.rs:69, one observed_at per snapshot) and qip_world_model::resolution_source::ResolutionSourceClaim (backend/crates/services/qip-world-model/src/resolution_source.rs, carries both the instant an authority began to hold and the instant it became knowable, reached from production at backend/crates/runtime/qip-kernel/src/platform.rs:14499-14516) -- but neither models an arrival updating an event's outcome distribution, and no update anywhere names which arrival caused it. The closest mechanism, which the assessor missed, is generic: qip-reasoning-engine reads evidence point-in-time (EvidenceSet::as_of, backend/crates/services/qip-reasoning-engine/src/evidence.rs:330, applied in engine.rs:173) and bayes::update records a per-evidence BeliefContribution with the running probability after each item (bayes.rs:40,119), which is 'which arrival moved the belief' for a binary hypothesis confidence. It is reached from the REASON stage, but it updates a thesis's confidence, not an event's outcome distribution, and nothing feeds it event-contract information arrivals.",
+    "status": "COMPLETE",
+    "current": "qip_prediction::belief::OutcomeDistribution::update (backend/crates/services/qip-prediction/src/belief.rs) applies Bayes' rule on a dated Arrival, refusing an arrival not knowable at the update instant and an update dated before its prior; the posterior's basis names the arrival.",
     "evidence": [
-      "backend/crates/services/qip-prediction/src/resolution.rs:63-88 (Observations: single snapshot, not an update log)",
-      "backend/crates/services/qip-world-model/src/resolution_source.rs (bitemporal claim provenance for a different fact -- who resolves a thesis -- not event-belief updates)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14499-14516 (ResolutionSourceClaim production use, unrelated to information arrival)",
-      "backend/crates/services/qip-reasoning-engine/src/bayes.rs:40 BeliefContribution (per-evidence attribution, generic hypotheses only)"
+      "backend/crates/services/qip-prediction/src/belief.rs",
+      "backend/crates/services/qip-prediction/tests/belief.rs : an_arrival_moves_belief_toward_the_outcome_it_favours_and_names_itself; an_arrival_not_yet_knowable_is_refused_as_leakage; updating_twice_from_the_same_inputs_gives_the_identical_belief; an_arrival_ruling_out_every_outcome_forms_no_belief"
     ],
-    "gap": "No mechanism updates an event's outcome distribution on a dated information arrival, point-in-time, with the arrival named in the update.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -291,7 +288,7 @@
       "EVENT-010"
     ],
     "blocked_by": "",
-    "verification": "Test to write: replay a dated arrival sequence for one event twice and assert an identical probability path, no update before its arrival's knowable instant, and every update names its arrival.",
+    "verification": "cargo test -p qip-prediction --test belief (mutation-verified: 5 mutations each failed the named tests). Not yet called from qip-kernel, so integrated stays false.",
     "work_item": "E09-event-information-arrival",
     "tier": "T3",
     "size": "M",

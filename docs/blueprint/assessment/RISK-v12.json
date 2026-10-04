@@ -1,0 +1,68 @@
+[
+  {
+    "id": "RISK-035",
+    "status": "BLOCKED",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "Executing hedges and cash or collateral actions needs live capital. A simulated hedge search through the Risk Gate is the only permitted form.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C1, ADR 0021",
+    "verification": "A simulated hedge is produced and refused by the Gate when it breaches a limit; no hedge reaches a venue.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "RISK-036",
+    "status": "MISSING",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "RISK-012 and RISK-020 cover model risk and the Gate. The automatic contraction, and who holds the authority to shrink a grant, are open (unknown 5); no contraction trigger exists.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Decayed calibration shrinks a size through the Gate; no input can enlarge one.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "RISK-037",
+    "status": "PARTIAL",
+    "current": "See gap: partial or unverified overlap with an existing requirement; not re-derived in this entry.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "RISK-017 and stress_the_book cover stress scenarios; the eight named scenarios are not all enumerated, and survivability is not asserted per scenario.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A suite runs each of the eight scenarios on a paper book and asserts capital invariants hold.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  }
+]

@@ -1,5 +1,6 @@
 # Operations, security and policy
 
+* [Operator runbook](RUNBOOK.md) — what runs where (and what does not), a local start, the halt procedures, CI/CD, Terraform, secrets, cost, backup, known gaps; with [per-binary pages](runbooks/binaries.md) and [incident playbooks](runbooks/incidents.md)
 * [Security](security/README.md) — threat model, controls, what is not covered
 * [Policies](policies/README.md) — model, agent and data governance; change management
 * [Observability](observability/README.md) — what is instrumented and what to watch
