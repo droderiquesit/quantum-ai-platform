@@ -75,11 +75,11 @@ honest one rather than a hopeful one.
 | Project id is `algorik-platform-dev` | **Observed** in `terraform.tfvars:36` |
 | `enable_vertex_ai` is false in dev, test, stage, prod | **Observed** in the four tfvars |
 | Billing on `algorik-platform-dev` | **Observed** 2026-10-04: `billingEnabled: True`, account `012F9F-AC0200-6FDF18` |
-| `aiplatform.googleapis.com` is enabled in the project | **Observed not enabled** 2026-10-04 (`gcloud services list --enabled` showed no aiplatform, run, artifactregistry or secretmanager) |
-| Which models the project can call, their names, regions, quotas | **UNPROVEN** |
-| Any model's price, free tier, or data-use and retention terms | **UNPROVEN** |
+| `aiplatform.googleapis.com` is enabled in the project | **Observed enabled** 2026-10-04, by this record's step 2 (see the appendix); `run`, `artifactregistry` and `secretmanager` are not |
+| Which models the project can call, their names, regions, quotas | **Observed for one**: `google/gemini-2.5-flash-lite` answered in `global` on 2026-10-04 (appendix). Quotas and every other model remain UNPROVEN |
+| Any model's price, free tier, or data-use and retention terms | **Observed** 2026-10-04 for Google's models from Google's own pricing and data-governance pages (appendix): priced per token, no free tier, no training without permission, 24-hour in-memory cache. Per-publisher terms for partner and open models remain UNPROVEN |
 | Any public "rating" of any model | **UNPROVEN**, and not wanted — see decision 4 |
-| Vertex AI exposes an OpenAI-shaped chat endpoint the gateway can use unchanged | **UNPROVEN** |
+| Vertex AI exposes an OpenAI-shaped chat endpoint the gateway can use unchanged | **Observed** 2026-10-04: one chat-completions call returned `ready` (appendix). The gateway itself has not made the call yet; its `vertex` preset is step 3 |
 | A budget alert can stop spend | **UNPROVEN**, and assumed false — see decision 5 |
 | `make check` or the documentation suite passes on this record | **Not run here**; see the handback |
 
@@ -552,12 +552,31 @@ preset can stay, because a preset nobody configures sends nothing.
 
 ## Appendix: observations to be filled in by slice step 2
 
-Empty on purpose. Each row is a command, its date and its quoted output; a
-row without output stays UNPROVEN.
+Each row is a command, its date and its quoted output; a row without output
+stays UNPROVEN. Filled in on 2026-10-04 from the owner's desktop, after the
+owner's instruction "Get the fleet up".
 
 | Date | Command | Output | Conclusion |
 |---|---|---|---|
-| | | | |
+| 2026-10-04 | `gcloud services list --enabled --project=algorik-platform-dev`, filtered for aiplatform, run, artifactregistry, secretmanager | no line printed | Vertex AI was absent, so enabling it was this step's to do |
+| 2026-10-04 | `gcloud services enable aiplatform.googleapis.com --project=algorik-platform-dev` | `Operation "operations/acat.p2-523718313246-4aa7b8b5-..." finished successfully.` | Vertex AI is enabled on the project. `run`, `artifactregistry` and `secretmanager` are still not enabled |
+| 2026-10-04 | `gcloud ai model-garden models list --project=algorik-platform-dev --billing-project=algorik-platform-dev` | 297 distinct names, among them `publishers/google/models/gemini-2.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `publishers/openai/models/gpt-oss-120b-maas`, `publishers/meta/models/llama-3.3-70b-instruct-maas` | A listing is what the catalogue shows, not what the project may call; only the row below proves a call. Without `--billing-project` the command fails on a missing quota project |
+| 2026-10-04 | one `POST .../v1/projects/algorik-platform-dev/locations/global/endpoints/openapi/chat/completions`, model `google/gemini-2.5-flash-lite`, `max_tokens` 16, with the owner's own short-lived token | `"model": "google/gemini-2.5-flash-lite"`, `"prompt_tokens": 7`, `"completion_tokens": 1`, `"traffic_type": "ON_DEMAND"`, content `ready` | Vertex AI accepts the gateway's OpenAI-shaped chat request, and this model is callable from this project in `global`. Eight tokens were billed |
+| 2026-10-04 | `curl https://cloud.google.com/vertex-ai/generative-ai/pricing` ("Agent Platform Pricing"), read as text | per 1M tokens: Gemini 2.5 Flash Lite input `$0.10`, text output `$0.40`; Gemini 3.1 Flash-Lite input `$0.25` (global); Gemini 3.5 Flash-Lite input `$0.30` (global); gpt-oss-20b `$0.07` / `$0.25`; gpt-oss-120b `$0.09` / `$0.36`; Gemma 4 26B `$0.15` / `$0.60`; Llama 4 Maverick `$0.35` / `$1.15` | **No free tier for token usage is on the page.** "No charge" appears only for grounding-query allowances and embedding outputs. The free-tier hypothesis is refuted for Vertex AI: the fleet is low-cost, not free |
+| 2026-10-04 | `curl https://docs.cloud.google.com/vertex-ai/generative-ai/docs/data-governance`, read as text | "Google won't use your data to train or fine-tune any AI/ML models without your prior permission or instruction. This applies to all managed models on Gemini Enterprise Agent Platform, including GA and pre-GA models."; Gemini models cache inputs and outputs "in-memory ... isolated at the project level, and has a 24-hour TTL"; "Google may log prompts to detect potential abuse" | Gate 4 has an observed no-training statement for Google's own models. Retention is not zero by default: a 24-hour in-memory cache and abuse-monitoring logging exist, so packets stay on non-reserved paths |
+
+**What step 2 admits.** One model passes every test this record sets (listed,
+called, priced, and covered by an observed no-training statement):
+`google/gemini-2.5-flash-lite`, as the T1 tier. The partner and open
+model-as-a-service entries (gpt-oss, Llama, DeepSeek, Qwen, Kimi) have an
+observed price and **no terms read per publisher**, so they stay UNPROVEN and
+are not admitted. No public rating was consulted, and none is needed to admit
+the cheapest Google-published model that works; a rating may nominate a
+second tier later and the fleet's own acceptance ratio decides.
+
+At the observed price, the 20 USD/day model allowance is 200 million input
+tokens or 50 million output tokens of this model, by arithmetic on the two
+figures above and nothing else.
 
 ## Paper trading
 
