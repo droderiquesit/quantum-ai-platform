@@ -295,3 +295,70 @@ pub fn assess_liquidity(
         unquantifiable_gross,
     })
 }
+
+/// Why an exit cannot be costed at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExitUnavailable {
+    /// No quote can be had, so any price here would be invented.
+    NoQuote,
+    /// A short cannot be carried because nothing can be borrowed against it.
+    NoBorrow,
+    /// The instrument trades by negotiation or has no volume to size against.
+    NoVolumeEstimate,
+}
+
+/// What leaving one position costs, or the reason nobody can say.
+///
+/// `Unavailable` is a variant rather than a zero or an infinity because an
+/// exit with no quote is not free and not infinitely expensive: it is
+/// unpriced, and a caller that sums it as `0.0` makes the hardest-to-sell
+/// position look like the cheapest.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ExitCost {
+    Estimated {
+        /// Sessions to exit at the stated participation rate.
+        days: f64,
+        /// Square-root-law impact at that rate, in basis points.
+        impact_bps: f64,
+        /// Annual borrow charge on a short, in basis points; zero on a long.
+        borrow_bps_annual: f64,
+    },
+    Unavailable(ExitUnavailable),
+}
+
+/// Time-to-exit and impact for one net position, given what the market offers.
+pub fn estimate_exit(
+    net_quantity: Decimal,
+    profile: &LiquidityProfile,
+    costs: &qip_financial::costs::TransactionCostModel,
+    participation_rate: f64,
+    quote_available: bool,
+    borrow_available: bool,
+) -> Result<ExitCost> {
+    if !(participation_rate > 0.0 && participation_rate <= 1.0) {
+        return Err(Error::invalid(
+            "a participation rate must be a positive fraction of daily volume",
+        ));
+    }
+    if !quote_available {
+        return Ok(ExitCost::Unavailable(ExitUnavailable::NoQuote));
+    }
+    let short = net_quantity.is_negative();
+    if short && !borrow_available {
+        return Ok(ExitCost::Unavailable(ExitUnavailable::NoBorrow));
+    }
+    let mut at_rate = profile.clone();
+    at_rate.max_participation_rate = participation_rate;
+    Ok(match at_rate.days_to_exit(net_quantity) {
+        None => ExitCost::Unavailable(ExitUnavailable::NoVolumeEstimate),
+        Some(days) => ExitCost::Estimated {
+            days,
+            impact_bps: costs.impact_bps(participation_rate),
+            borrow_bps_annual: if short {
+                costs.short_borrow_bps_annual
+            } else {
+                0.0
+            },
+        },
+    })
+}
