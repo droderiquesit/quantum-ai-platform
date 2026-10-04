@@ -10,6 +10,7 @@
 //! ([`FabricTransport`]) depends on: a future QUIC-with-mTLS implementation
 //! is only a safe swap if nothing downstream can tell it apart from this one
 //! by the *shape* of what comes back.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

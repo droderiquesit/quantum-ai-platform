@@ -35,6 +35,7 @@
 //! every service in one parity test; the two tests here hold the console's
 //! route specifically, and name what `gitops.rs` already pins rather than
 //! asserting it twice.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 // The workspace denies `panic_in_result_fn`. These tests return `()` and
 // assert; the lint does not apply, and neither does the reason for it.

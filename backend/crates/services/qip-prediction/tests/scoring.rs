@@ -7,6 +7,7 @@
 //! rather than scored, that nothing is scored over nothing, and that the error
 //! bar on "better" narrows as evidence accumulates rather than being a fixed
 //! decoration.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::{Stamped, VenueClass, VenueId};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};

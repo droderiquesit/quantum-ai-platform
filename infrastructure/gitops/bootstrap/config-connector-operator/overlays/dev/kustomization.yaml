@@ -10,5 +10,5 @@ resources:
 - ../../base
 images:
 - name: gcr.io/gke-release/cnrm/operator
-  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/config-connector-operator
+  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/vendor/config-connector-operator
   digest: sha256:ed4bd32055c435af80a33131ff8a92c9d75b22c29bf9de5e9c8c3a677db2156c

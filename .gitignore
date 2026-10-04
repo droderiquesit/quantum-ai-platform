@@ -69,3 +69,4 @@ __pycache__/
 # the host to 100% and `$CLAUDE_CODE_TMPDIR` had to move onto a filesystem
 # with room — which happened to be this one.
 /.claude/tmp/
+graphify-out/
