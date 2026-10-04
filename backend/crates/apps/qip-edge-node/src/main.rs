@@ -805,6 +805,11 @@ fn serve(
     // after the exchange, per the order below.
     let mut last_report = WorkReport::default();
     let mut stats = PassStats::default();
+    // Requote and break lines are per event on a path that runs at message
+    // rate; at most five per ten seconds reach stderr, and the journal and the
+    // metrics hold the rest (OBS-021).
+    let mut line_sampler =
+        qip_observability::sampling::LineSampler::new(5, Duration::from_secs(10))?;
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
@@ -903,10 +908,20 @@ fn serve(
                             // an order that is no longer where the cell
                             // sent it is a line the log has to carry.
                             for requote in &requotes {
-                                eprintln!("qip-edge-node: requote: {}", requote.describe());
+                                if let Some(line) = line_sampler.offer(
+                                    now,
+                                    &format!("qip-edge-node: requote: {}", requote.describe()),
+                                ) {
+                                    eprintln!("{line}");
+                                }
                             }
                             for detail in &breaks {
-                                eprintln!("qip-edge-node: reconciliation break: {detail}");
+                                if let Some(line) = line_sampler.offer(
+                                    now,
+                                    &format!("qip-edge-node: reconciliation break: {detail}"),
+                                ) {
+                                    eprintln!("{line}");
+                                }
                             }
                             last_report = *report;
                         }

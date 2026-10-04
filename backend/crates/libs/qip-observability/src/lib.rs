@@ -6,8 +6,11 @@
 //! deployment concern, and a platform that cannot report on itself when the
 //! collector is unreachable is not observable.
 
+pub mod aiops;
+pub mod critical_paths;
 pub mod logs;
 pub mod metrics;
+pub mod sampling;
 pub mod slo;
 pub mod trace;
 
