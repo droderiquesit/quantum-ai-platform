@@ -8,6 +8,7 @@
 //! budget; this suite makes the register bite.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,11 +20,15 @@ fn register() -> BTreeMap<String, (u8, String)> {
         if cells.len() < 5 || !cells[1].starts_with("qip-") {
             continue;
         }
-        let lane: u8 = cells[2]
-            .parse()
-            .unwrap_or_else(|_| panic!("{} has a lane that is not a number: {}", cells[1], cells[2]));
+        let lane: u8 = cells[2].parse().unwrap_or_else(|_| {
+            panic!("{} has a lane that is not a number: {}", cells[1], cells[2])
+        });
         let previous = rows.insert(cells[1].to_string(), (lane, cells[3].to_string()));
-        assert!(previous.is_none(), "{} has two rows in the register", cells[1]);
+        assert!(
+            previous.is_none(),
+            "{} has two rows in the register",
+            cells[1]
+        );
     }
     rows
 }
@@ -33,7 +38,10 @@ fn register() -> BTreeMap<String, (u8, String)> {
 fn workspace() -> BTreeMap<String, BTreeSet<String>> {
     let crates = qip_acceptance::repository_root().join("backend/crates");
     let mut found = BTreeMap::new();
-    for group in std::fs::read_dir(&crates).expect("backend/crates is readable").flatten() {
+    for group in std::fs::read_dir(&crates)
+        .expect("backend/crates is readable")
+        .flatten()
+    {
         let Ok(members) = std::fs::read_dir(group.path()) else {
             continue;
         };
@@ -84,18 +92,34 @@ fn every_workspace_crate_has_exactly_one_lane_and_a_stated_requirement() {
     let register = register();
     let graph = workspace();
     // Premise: both sides were actually read.
-    assert!(register.len() > 50, "register parsed {} rows", register.len());
+    assert!(
+        register.len() > 50,
+        "register parsed {} rows",
+        register.len()
+    );
     assert!(graph.len() > 50, "walk found {} crates", graph.len());
 
     let crates: BTreeSet<&String> = graph.keys().collect();
     let rows: BTreeSet<&String> = register.keys().collect();
     let unplaced: Vec<_> = crates.difference(&rows).collect();
     let phantom: Vec<_> = rows.difference(&crates).collect();
-    assert!(unplaced.is_empty(), "crates with no lane in docs/architecture/lane-placement.md: {unplaced:?}");
-    assert!(phantom.is_empty(), "register rows naming no crate: {phantom:?}");
+    assert!(
+        unplaced.is_empty(),
+        "crates with no lane in docs/architecture/lane-placement.md: {unplaced:?}"
+    );
+    assert!(
+        phantom.is_empty(),
+        "register rows naming no crate: {phantom:?}"
+    );
     for (name, (lane, requirement)) in &register {
-        assert!(*lane <= 4, "{name} is placed in lane {lane}; the lanes are 0 to 4");
-        assert!(requirement.len() > 10, "{name} states no correctness requirement");
+        assert!(
+            *lane <= 4,
+            "{name} is placed in lane {lane}; the lanes are 0 to 4"
+        );
+        assert!(
+            requirement.len() > 10,
+            "{name} states no correctness requirement"
+        );
     }
 }
 
@@ -105,7 +129,10 @@ fn the_lane_zero_set_is_exactly_what_the_reflex_node_compiles() {
     let graph = workspace();
     let compiled = closure("qip-edge-node", &graph);
     // Premise: the closure is not trivially small.
-    assert!(compiled.len() > 15, "closure of qip-edge-node is {compiled:?}");
+    assert!(
+        compiled.len() > 15,
+        "closure of qip-edge-node is {compiled:?}"
+    );
     let lane_zero: BTreeSet<String> = register
         .iter()
         .filter(|(_, (lane, _))| *lane == 0)
@@ -130,10 +157,15 @@ fn no_fast_lane_crate_depends_on_a_slower_lane_crate() {
             checked += 1;
             let (dependency_lane, _) = &register[dependency];
             if dependency_lane > lane {
-                offences.push(format!("{name} (lane {lane}) -> {dependency} (lane {dependency_lane})"));
+                offences.push(format!(
+                    "{name} (lane {lane}) -> {dependency} (lane {dependency_lane})"
+                ));
             }
         }
     }
     assert!(checked > 20, "only {checked} fast-lane edges were examined");
-    assert!(offences.is_empty(), "a faster lane depends on a slower one: {offences:?}");
+    assert!(
+        offences.is_empty(),
+        "a faster lane depends on a slower one: {offences:?}"
+    );
 }

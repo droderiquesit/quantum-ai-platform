@@ -7,6 +7,7 @@
 //! does not.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use std::collections::BTreeSet;
 
@@ -99,7 +100,8 @@ fn terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_no
 fn the_control_fabric_has_no_pubsub_topic_and_no_partner_bridge_exists() {
     let main = qip_acceptance::read("infrastructure/terraform/main.tf");
     assert!(
-        main.lines().any(|l| l.trim() == "control_fabric_topic = null"),
+        main.lines()
+            .any(|l| l.trim() == "control_fabric_topic = null"),
         "the trust-zones control fabric topic must stay null: a topic here is an internal \
          consumer of Pub/Sub"
     );
@@ -120,7 +122,10 @@ fn the_control_fabric_has_no_pubsub_topic_and_no_partner_bridge_exists() {
         let directory = qip_acceptance::repository_root().join(relative);
         let mut stack = vec![(directory, 0)];
         while let Some((next, level)) = stack.pop() {
-            for entry in std::fs::read_dir(&next).expect("directory is readable").flatten() {
+            for entry in std::fs::read_dir(&next)
+                .expect("directory is readable")
+                .flatten()
+            {
                 names += 1;
                 let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
                 assert!(
@@ -145,7 +150,8 @@ fn the_control_fabric_has_no_pubsub_topic_and_no_partner_bridge_exists() {
         for line in text.lines() {
             let line = line.trim_start().to_ascii_lowercase();
             assert!(
-                !(line.starts_with("rdkafka") || line.starts_with("google-cloud-pubsub")
+                !(line.starts_with("rdkafka")
+                    || line.starts_with("google-cloud-pubsub")
                     || line.starts_with("kafka")),
                 "{} declares a messaging client: {line}",
                 manifest.display()
