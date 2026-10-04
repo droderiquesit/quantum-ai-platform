@@ -23,6 +23,7 @@ pub mod constraints;
 pub mod costs;
 pub mod credit;
 pub mod extensions;
+pub mod history;
 pub mod identifiers;
 pub mod intelligence;
 pub mod ladder;

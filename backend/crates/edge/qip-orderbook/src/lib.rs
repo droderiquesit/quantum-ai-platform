@@ -33,20 +33,22 @@
 //! [`view::BookView`] is implemented by all three so a consumer never branches
 //! on the feed's depth.
 
+pub mod admission;
 pub mod auction;
 pub mod book;
 pub mod l2;
 pub mod l3;
 mod ladder;
+pub mod replay;
 pub mod snapshot;
 pub mod venue;
 pub mod view;
 
 pub use auction::AuctionState;
-pub use book::Book;
+pub use book::{Book, BookCheckpoint};
 pub use l2::L2Book;
-pub use l3::{L3Book, QueuePosition, RestingOrder};
+pub use l3::{L3Book, L3Checkpoint, QueuePosition, RestingOrder};
 pub use ladder::LevelWalk;
 pub use snapshot::{BookKind, BookSnapshot, VenueSnapshot};
-pub use venue::{LastTrade, VenueState};
+pub use venue::{LastTrade, VenueCheckpoint, VenueState};
 pub use view::{BookCondition, BookView, Level, Sweep};
