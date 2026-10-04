@@ -212,7 +212,7 @@ worktree). Nothing was re-queried by me.
 | Supply chain | Cloud Build private pools, Artifact Registry, Binary Authorization, KMS-signed manifests (`GCP3 p16`) | GitHub Actions + WIF, Artifact Registry (`modules/registry`; destroyed by the 2026-09-13 teardown), Binary Authorization (`modules/binaryauthorization`), KMS; **no Cloud Build private pool** | |
 | Environments | dev, integration, replay, paper, staging, prod (`GCP3 p27 s24`) | `dev`, `test`, `stage`, `prod` only; no integration, replay or paper environment. `prod` is refused by `infra.yml` and by the deploy gate | C1, C8 |
 | Org and projects | Org policy, folders, ten-odd projects (`GCP3 p4 s4`) | One project per environment, named in tfvars; no folder or org-policy module found in `modules/` | |
-| Cost control | Budgets, billing export (`GCP3 p26 s23`) | **No `google_billing_budget` anywhere in `infrastructure/`** (search found none). Mission ceiling is 25 USD/day (HERMES_MISSION.md s9), enforced by nothing | HM-03 |
+| Cost control | Budgets, billing export (`GCP3 p26 s23`) | `infrastructure/terraform/modules/observability/budget.tf` declares an opt-in `google_billing_budget` (off by default, not applied); a hand-made 750 USD/month budget also exists on the project (DECISIONS.md), so only one of the two may be enabled. Mission ceiling is 25 USD/day (HERMES_MISSION.md s9); budgets only alert | HM-03 |
 | Serving state | n/a | `qip-dev-*` Cloud Run services were observed 2026-09-04, torn down 2026-09-13, infrastructure re-applied 2026-09-20 with **no Cloud Run service existing** (`infrastructure/CLAUDE.md`); billing now disabled | ADR 0040, 0093 |
 
 ## 4. Tech stack, existence-verified
