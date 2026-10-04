@@ -4072,6 +4072,76 @@ fn no_workload_identity_can_delete_from_the_evidence_bucket() {
     );
 }
 
+// --- capacity (FINOPS-002) ---------------------------------------------------
+
+/// The first resource type among `types` that a Terraform file declares.
+fn declares_resource_of(content: &str, types: &[&str]) -> Option<String> {
+    without_comments(content).lines().find_map(|line| {
+        let line = collapsed(line);
+        types
+            .iter()
+            .find(|t| line.starts_with(&format!("resource \"{t}\"")))
+            .map(|t| (*t).to_string())
+    })
+}
+
+const AUTOSCALER_TYPES: [&str; 3] = [
+    "google_compute_autoscaler",
+    "google_compute_region_autoscaler",
+    "google_compute_resource_policy_autoscaler",
+];
+
+#[test]
+fn reflex_capacity_is_never_scaled_by_a_reactive_autoscaler() {
+    // Reflex capacity changes by an operator provisioning shards ahead of
+    // demand. An autoscaler reacts to load that has already arrived, adds a
+    // machine that takes minutes to boot, fetch secrets and open venue
+    // sessions, and a second machine holding sessions for one cell is a
+    // duplicate-order hazard (execution-node `node_count` doc). The group's
+    // `target_size` must also be the literal operator input.
+    let mut scanned = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        scanned += 1;
+        let content = std::fs::read_to_string(&path).expect("readable");
+        assert_eq!(
+            declares_resource_of(&content, &AUTOSCALER_TYPES),
+            None,
+            "{} declares an autoscaler; Reflex capacity changes only by \
+             pre-provisioned shards",
+            path.display()
+        );
+    }
+    assert!(
+        scanned > 10,
+        "the scan read {scanned} files, so it proved nothing"
+    );
+
+    // The premise: the detector sees a declaration when one is present, and
+    // not when it is only discussed in a comment.
+    assert_eq!(
+        declares_resource_of(
+            "resource \"google_compute_autoscaler\" \"x\" {\n}\n",
+            &AUTOSCALER_TYPES
+        )
+        .as_deref(),
+        Some("google_compute_autoscaler")
+    );
+    assert_eq!(
+        declares_resource_of(
+            "# resource \"google_compute_autoscaler\" \"x\"\n",
+            &AUTOSCALER_TYPES
+        ),
+        None
+    );
+
+    let node = read("infrastructure/terraform/modules/execution-node/main.tf");
+    assert!(
+        node.lines()
+            .any(|l| collapsed(l) == "target_size = var.node_count"),
+        "the group's size is no longer the operator's literal node_count"
+    );
+}
+
 // --- the registry -----------------------------------------------------------
 
 #[test]

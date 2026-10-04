@@ -302,6 +302,37 @@ resource "google_compute_health_check" "node" {
   }
 }
 
+# FINOPS-001: the Reflex VM's capacity is held, not hoped for. A zonal
+# on-demand request for a dedicated C-series shape can fail with a stockout at
+# the moment a blue-green replacement needs it, and a replacement that cannot
+# start leaves the old node as the only one, exactly when it was being
+# replaced for cause. A specific reservation sized to the group's target makes
+# the capacity exist before the instance is asked for. It is declared only when
+# the group holds an instance: Compute refuses a reservation of zero, and a
+# node "provisioned, not running" has nothing to hold capacity for, so a
+# reviewable zero-node plan costs nothing. The surge instance of the update
+# policy is deliberately not reserved here; that is a cost decision for the
+# owner (ADR 0099 C8), and sizing to target_size is what the requirement names.
+resource "google_compute_reservation" "node" {
+  count = var.node_count > 0 ? 1 : 0
+
+  project = var.project_id
+  name    = "${local.name}-capacity"
+  zone    = var.zone
+
+  # Only an instance that names this reservation may consume it, so no other
+  # workload in the project quietly spends the capacity this node is meant to own.
+  specific_reservation_required = true
+
+  specific_reservation {
+    count = var.node_count
+
+    instance_properties {
+      machine_type = var.machine_type
+    }
+  }
+}
+
 resource "google_compute_instance_template" "node" {
   project = var.project_id
 
@@ -314,6 +345,19 @@ resource "google_compute_instance_template" "node" {
   machine_type = var.machine_type
   labels       = var.labels
   tags         = [local.node_tag]
+
+  # Consume the reservation above, by name. Without this block a specific
+  # reservation is never used and is billed for nothing.
+  dynamic "reservation_affinity" {
+    for_each = google_compute_reservation.node
+    content {
+      type = "SPECIFIC_RESERVATION"
+      specific_reservation {
+        key    = "compute.googleapis.com/reservation-name"
+        values = [reservation_affinity.value.name]
+      }
+    }
+  }
 
   lifecycle {
     create_before_destroy = true
