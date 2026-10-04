@@ -7,6 +7,7 @@
 //! shipped before, in `MaxExpectedShortfall`: a selection that reads as a tax
 //! policy and orders the lots exactly as first-in-first-out, because the rule
 //! it consults could never apply to the lots in front of it.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::{Context, Currency, Decimal, Duration, ObjectId, PortfolioId, Timestamp, dec};
 use qip_financial::asset_class::{InstrumentType, Sector};

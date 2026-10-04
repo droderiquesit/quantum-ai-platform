@@ -21,13 +21,13 @@ resources:
 - prove-serving.yaml
 images:
 - name: qip-api
-  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-api
+  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-api
   digest: sha256:14fd83be4ed0357212723e9248edec0a4e7d105623ccece040014e454ae39175
 - name: qip-fastbrain
-  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-fastbrain
+  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-fastbrain
   digest: sha256:c9f2cb45c72165beb6ada19f88ac7fefcdb9dfe4c50420557e3328142e2dd25c
 - name: qip-deepbrain
-  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-deepbrain
+  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-deepbrain
   digest: sha256:ab01314a2b2ff156df2663622beab6984cfeb7fd4eb4cc24b46710f3af6edd19
 # The console (ADR 0094). `TO-PIN` rather than a digest, and it is the honest
 # value rather than a placeholder somebody forgot: `deploy.yml` gained the
@@ -41,14 +41,14 @@ images:
 # promotion keeps it pinned the way it keeps the three binaries pinned, is
 # named in ADR 0094 as the follow-on and is deliberately not done here.
 - name: qip-portal
-  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/qip-portal
+  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-portal
   digest: TO-PIN
 - name: openobserve
-  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/openobserve
+  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/vendor/openobserve
   digest: sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b
 - name: envoy
-  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/envoy
+  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/vendor/envoy
   digest: sha256:574348fada8eb1130b448132287d76626dfb07525b16668075382f8e154a45a8
 - name: google-cloud-cli
-  newName: us-east4-docker.pkg.dev/algorik-dev/qip-dev/vendor/google-cloud-cli
+  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/vendor/google-cloud-cli
   digest: sha256:0673a69a1e178abb079941b326e718aedf3f57bdf5343465e365d826472edd83

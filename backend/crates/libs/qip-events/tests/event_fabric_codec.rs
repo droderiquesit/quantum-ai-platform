@@ -1,6 +1,7 @@
 //! The event fabric's record and batch codec (ADR 0100 §1): CRC32C, the
 //! by-stage header split CONTRACT-048 names, and the three-outcome decode
 //! copied from `qip-storage`'s WAL frame.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::{CorrelationId, EventId, Lineage, Timestamp, TraceId};
 use qip_events::event_fabric::codec::{

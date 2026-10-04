@@ -45,6 +45,7 @@
 //! a v1 entry's narrower shape is intentionally not covered: it is a
 //! historical wire form nothing produces any more, not a retype this lock
 //! failed to notice.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;

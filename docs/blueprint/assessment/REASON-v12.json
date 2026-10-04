@@ -1,0 +1,24 @@
+[
+  {
+    "id": "REASON-041",
+    "status": "BLOCKED",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "Shadow form only. A package reaching the live-capable order path needs the owner's C1 decision; REASON-022/023/025 and MODEL-023 are the existing exact matches.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C1, ADR 0021",
+    "verification": "A distilled package runs in shadow and `Determinism::Required` still cannot name a model rung.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  }
+]

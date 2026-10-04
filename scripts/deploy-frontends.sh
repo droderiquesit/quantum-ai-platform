@@ -23,7 +23,7 @@ unset CLOUDSDK_AUTH_ACCESS_TOKEN
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
-readonly PROJECT="algorik-dev"
+readonly PROJECT="algorik-platform-dev"
 readonly REGION="us-east4"
 readonly AR="${REGION}-docker.pkg.dev/${PROJECT}/qip-dev"
 SHA="$(git -C "${REPO_ROOT}" rev-parse --short HEAD)"

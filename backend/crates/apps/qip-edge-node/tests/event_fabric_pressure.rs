@@ -9,6 +9,7 @@
 //! `Narrow` turns every broker restart into a trading change. Every test
 //! here drives the two publishers the way the spool writer and the drain
 //! will, and asserts the reading the decision thread would hand the cell.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::{Clock, Decimal, Duration, ManualClock, Timestamp};
 use qip_edge::pressure::{Exhaustion, JournalPressure, Narrowing};
