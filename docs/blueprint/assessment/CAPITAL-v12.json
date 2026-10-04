@@ -1,0 +1,68 @@
+[
+  {
+    "id": "CAPITAL-034",
+    "status": "MISSING",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "CAPITAL-006 covers grants; no multi-agent plan competition exists. GCP v3.0 places it on regional GKE with Spanner, refused by ADR 0024 and C3/C4. Simulated logic in an existing binary only.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C3, C4",
+    "verification": "Two conflicting plans are submitted and the kernel admits only the combination within hard limits.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "CAPITAL-035",
+    "status": "BLOCKED",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "The simulated accounting form is buildable; reserving or moving real cash, margin or collateral needs live capital. ADR 0021.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C1, ADR 0021",
+    "verification": "A paper book withholds the stressed-liquidity reserve before releasing any opportunity capital, and no transfer leaves the simulator.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "CAPITAL-036",
+    "status": "PARTIAL",
+    "current": "See gap: partial or unverified overlap with an existing requirement; not re-derived in this entry.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "qip-kernel LEARN already scores declined and filled counterfactuals (score_declined, score_filled). Alternate sizes, hedges and venues are not generated.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C8",
+    "verification": "One allocation yields at least one alternate-size and one rejected-opportunity shadow, scored after resolution.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  }
+]

@@ -19,6 +19,7 @@
 //! difference in size and prove nothing about the rung.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_brokers::adapter::VenueAdapter;
 use qip_brokers::credential::{RequirementKind, requirements_of_kind, standard_requirements};

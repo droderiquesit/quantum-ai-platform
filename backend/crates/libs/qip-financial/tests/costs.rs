@@ -18,6 +18,7 @@
 // assertion is the deliverable, and `?` on `checked_estimate` is what keeps a
 // refusal a test failure rather than a panic in the setup.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::testing::approx_eq;
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};

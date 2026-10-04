@@ -132,6 +132,52 @@ resource "google_compute_security_policy" "edge" {
   }
 }
 
+# The policy for the one backend a backend *service* policy cannot cover.
+#
+# A backend bucket accepts only an edge-type policy (`CLOUD_ARMOR_EDGE`), which
+# supports the geographic refusal but neither rate limiting nor adaptive
+# protection. The static shell is the first thing a browser touches, so leaving
+# it with no policy while the application backend carried one made "every
+# public backend" read as satisfied by the one backend hardest to reach. It
+# repeats the geographic rule from the same variable, so the two policies
+# cannot drift into admitting different countries.
+resource "google_compute_security_policy" "edge_static" {
+  count = local.enabled
+
+  project     = var.project_id
+  name        = "${local.name}-armor-static"
+  type        = "CLOUD_ARMOR_EDGE"
+  description = "The static shell's edge policy: geographic refusal, then allow. Blueprint §40.14."
+
+  dynamic "rule" {
+    for_each = length(var.permitted_regions) > 0 ? [1] : []
+    content {
+      action   = "deny(403)"
+      priority = 1000
+      match {
+        expr {
+          expression = "!(origin.region_code in [${join(", ", [for code in var.permitted_regions : "'${code}'"])}])"
+        }
+      }
+      description = "Refuse a client arriving from outside the countries the desk operates from."
+    }
+  }
+
+  rule {
+    action   = "allow"
+    priority = 2147483647
+
+    match {
+      versioned_expr = "SRC_IPS_V1"
+      config {
+        src_ip_ranges = ["*"]
+      }
+    }
+
+    description = "The default rule Google requires. Everything not refused above is served."
+  }
+}
+
 # --- the static shell, behind Cloud CDN --------------------------------------
 
 resource "google_storage_bucket" "static_shell" {
@@ -174,6 +220,8 @@ resource "google_compute_backend_bucket" "static_shell" {
   description = "The installable shell §40.5 puts behind Cloud CDN. Static bytes from the commit; no origin to compromise."
 
   enable_cdn = true
+
+  edge_security_policy = google_compute_security_policy.edge_static[0].id
 
   cdn_policy {
     cache_mode = "CACHE_ALL_STATIC"

@@ -12,6 +12,7 @@
 //! the pass cadence and the test sees it stop.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::policy::{GrantManifest, PlanDigest, PolicyPayload, Slot};

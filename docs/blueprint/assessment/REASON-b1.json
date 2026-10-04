@@ -1,25 +1,25 @@
 [
   {
     "id": "REASON-001",
-    "status": "MISSING",
-    "current": "nothing. No type anywhere in the workspace names a declared, versioned invariant set that symbolic conclusions are checked against. qip_reasoning_engine::redteam::RedTeam (backend/crates/services/qip-reasoning-engine/src/redteam.rs) performs a twelve-challenge adversarial review, but its Challenge/Severity model is heuristic evidence-quality critique (correlation-vs-causation, single-origin support, priced-in checks), not evaluation against a declared, versioned invariant list, and its rejection message names a challenge, never an invariant.",
+    "status": "COMPLETE",
+    "current": "qip_reasoning_engine::rules::RulePack declares versioned Invariants and checks every forward-chaining step against them before committing it; a step that would violate one is refused naming the rule and the invariant.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/redteam.rs:1-60 (module doc: 'deterministic checks against the hypothesis's own structure and evidence', not an invariant set)",
-      "grep -rn \"InvariantSet|declared_invariant|struct Invariant\\b|enum Invariant\\b\" backend/crates returns nothing"
+      "backend/crates/services/qip-reasoning-engine/src/rules.rs",
+      "backend/crates/services/qip-reasoning-engine/tests/rules.rs :: no_emitted_conclusion_violates_a_declared_invariant_and_every_refusal_names_one (500 random fact sets, both outcomes asserted to occur, then the invariant is removed and the violation appears); a_refused_step_names_the_rule_and_the_invariant_it_would_have_broken. Mutation: skipping the per-step check failed 3 tests."
     ],
-    "gap": "No declared/versioned invariant registry exists anywhere in the fabric, and no reasoning path checks a conclusion against one or refuses naming the invariant broken. The red team's challenge list is the nearest structure and is not that: challenges are heuristics about evidence quality, not invariants the conclusion must preserve.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need a fixture invariant registry, a checker run over every conclusion path (REASON, DECIDE), and a property test removing one invariant to prove the check can fire, per the requirement's own verification method.",
-    "work_item": "E09",
+    "verification": "cargo test -p qip-reasoning-engine --test rules -- no_emitted_conclusion_violates_a_declared_invariant_and_every_refusal_names_one a_refused_step_names_the_rule_and_the_invariant_it_would_have_broken",
+    "work_item": "",
     "tier": "T3",
     "size": "L",
-    "notes": "This is the foundational invariant the rest of the 'symbolic reasoning fabric' (REASON-005..020) would be checked against once built; today the fabric that would hold it barely exists (see REASON-005, 013, 015, 016, 018), so there is no natural home for an invariant registry yet."
+    "notes": "Closed by the rules.rs rule-pack engine. integrated=false: no composition root or stage calls RulePack yet. | prior note: This is the foundational invariant the rest of the 'symbolic reasoning fabric' (REASON-005..020) would be checked against once built; today the fabric that would hold it barely exists (see REASON-005, 013, 015, 016, 018), so there is no natural home for an invariant registry yet."
   },
   {
     "id": "REASON-002",
@@ -36,7 +36,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["REASON-001"],
+    "depends_on": [
+      "REASON-001"
+    ],
     "blocked_by": "",
     "verification": "No test exists that replays a recorded reasoning run and asserts every consequential conclusion carries a 4-part derivation. The nearest test, backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::confidence_is_computed_from_evidence_not_asserted (line 464), proves only the uncertainty part.",
     "work_item": "E09",
@@ -61,7 +63,9 @@
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": ["REASON-001"],
+    "depends_on": [
+      "REASON-001"
+    ],
     "blocked_by": "",
     "verification": "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::a_broken_chain_is_rejected (line 360) and ::a_thesis_whose_mechanism_is_slower_than_its_horizon_is_rejected (line 1130) exercise rejection, but on heuristic grounds, not declared-rule verification.",
     "work_item": "E09",
@@ -166,7 +170,9 @@
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": ["REASON-006"],
+    "depends_on": [
+      "REASON-006"
+    ],
     "blocked_by": "",
     "verification": "cd backend && cargo test -p qip-world-model --test confounders — 'test result: ok. 5 passed; 0 failed' (run 2026-09-25).",
     "work_item": "E09",
@@ -190,7 +196,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["REASON-006"],
+    "depends_on": [
+      "REASON-006"
+    ],
     "blocked_by": "",
     "verification": "No test exists for this specific framing. propagate()'s own tests (understanding.rs) prove the underlying mechanism but not a counterfactual-explanation API built on it.",
     "work_item": "E09",
@@ -267,7 +275,9 @@
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": ["REASON-005"],
+    "depends_on": [
+      "REASON-005"
+    ],
     "blocked_by": "",
     "verification": "cd backend && cargo test -p qip-execution-engine --test execution an_order_cannot_start_working_without_a_risk_approval a_cancelled_order_cannot_be_filled_by_a_late_report",
     "work_item": "E09",
@@ -302,49 +312,47 @@
   },
   {
     "id": "REASON-013",
-    "status": "MISSING",
-    "current": "nothing. No RulePack, RuleEngine, PolicyEngine or equivalent versioned-rule-evaluation type exists anywhere in the workspace (grep for RulePack/rule_pack returns zero hits). What exists instead is scattered, hand-written deterministic Rust per domain: qip_risk_engine::pretrade::PreTradeChecker::check (backend/crates/services/qip-risk-engine/src/pretrade.rs:141-186+) for pre-trade limits, and qip_compliance's per-file checks (model_risk.rs, approval.rs, licensing.rs) for compliance rules — each a fixed function, not a versioned rule pack a caller can supply and get a cited verdict + fired-rules trace back from.",
+    "status": "COMPLETE",
+    "current": "qip_reasoning_engine::rules::RulePack::evaluate evaluates a versioned pack over facts and returns a Verdict citing pack name, version and the rules that fired in order. Fixture packs cover eligibility, an accounting invariant, a market-structure rule and a contract term.",
     "evidence": [
-      "grep -rn \"RulePack\" backend/crates returns nothing",
-      "backend/crates/services/qip-risk-engine/src/pretrade.rs:141,186 (PreTradeChecker, a fixed deterministic check, not a rule-pack engine)",
-      "backend/crates/libs/qip-compliance/src/model_risk.rs,approval.rs,licensing.rs (fixed per-domain checks, not a general engine)"
+      "backend/crates/services/qip-reasoning-engine/src/rules.rs",
+      "backend/crates/services/qip-reasoning-engine/tests/rules.rs :: each_named_use_yields_a_verdict_citing_the_pack_version_and_the_rules_that_fired. Mutation: Lt weakened to Le and the per-step invariant check disabled each failed tests."
     ],
-    "gap": "No general rule/policy engine exists that takes a versioned rule pack and facts and returns a verdict citing the pack version and the rules that fired; the existing deterministic logic (risk limits, compliance checks) is domain-specific hard-coded Rust, exactly what this requirement's own notes say it is not meant to replace but is meant to generalise beyond.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists for a versioned-rule-pack engine. Would need fixture rule packs for eligibility/accounting/market-structure/contract use cases and a verdict-citation test per the requirement's own method.",
-    "work_item": "E09",
+    "verification": "cargo test -p qip-reasoning-engine --test rules -- each_named_use_yields_a_verdict_citing_the_pack_version_and_the_rules_that_fired",
+    "work_item": "",
     "tier": "T2",
     "size": "L",
-    "notes": "verify: MISSING confirmed after a search for rule/policy/pack/version/fired-rule types across backend/. Two nearest structures were checked and neither is the general engine: qip_strategy (backend/crates/edge/qip-strategy, ir.rs:515 Rule, runtime.rs:83-161) is a typed, deterministic ordered-rule evaluator, but for strategy signals over features, with no pack version and no eligibility/accounting/market-structure/contract use; qip_risk_engine::pretrade::PreTradeChecker returns the names of limits breached (oms.rs rule_names, qip_rule_fired_total) over an unversioned LimitSet, which the requirement's own notes exclude. qip_strategy's IR is a plausible substrate for the engine. | prior note: No ADR-0099 dependency conflict blocks this — a versioned rule-pack evaluator is plain in-tree Rust and serde data, no new crate required. It is simply unbuilt."
+    "notes": "Closed by the rules.rs rule-pack engine. integrated=false: no composition root or stage calls RulePack yet. | prior note: verify: MISSING confirmed after a search for rule/policy/pack/version/fired-rule types across backend/. Two nearest structures were checked and neither is the general engine: qip_strategy (backend/crates/edge/qip-strategy, ir.rs:515 Rule, runtime.rs:83-161) is a typed, deterministic ordered-rule evaluator, but for strategy signals over features, with no pack version and no eligibility/accounting/market-structure/contract use; qip_risk_engine::pretrade::PreTradeChecker returns the names of limits breached (oms.rs rule_names, qip_rule_fired_total) over an unversioned LimitSet, which the requirement's own notes exclude. qip_strategy's IR is a plausible substrate for the engine. | prior note: No ADR-0099 dependency conflict blocks this — a versioned rule-pack evaluator is plain in-tree Rust and serde data, no new crate required. It is simply unbuilt."
   },
   {
     "id": "REASON-014",
-    "status": "MISSING",
-    "current": "No rule-pack engine exists for this determinism invariant to apply to (see REASON-013). The closest existing determinism guarantee is structurally unrelated: qip_cost_router::tier::IntelligenceTier's Determinism::Required arm (backend/crates/services/qip-cost-router/src/router.rs) is structurally the only rung Router::select can return for a risk-classified decision, which keeps a *routing* decision off a model — it says nothing about rule-pack evaluation because no rule pack exists to route around.",
+    "status": "COMPLETE",
+    "current": "Evaluation folds facts into a BTreeMap, visits rules in id order and names no model, clock, random source or I/O; a contradicting conclusion is refused rather than overwritten.",
     "evidence": [
-      "backend/crates/services/qip-cost-router/src/router.rs:268,384,441 (Determinism::Required, unrelated capability)",
-      "test: backend/crates/services/qip-cost-router (24 tests, notably exactly_one_rung_is_deterministic_and_it_is_the_bottom_one) — proves routing determinism, not rule-pack determinism",
-      "grep -rn \"RulePack\" backend/crates returns nothing"
+      "backend/crates/services/qip-reasoning-engine/src/rules.rs",
+      "backend/crates/services/qip-reasoning-engine/tests/rules.rs :: the_same_pack_and_facts_give_byte_identical_verdicts_across_processes_and_fact_orders (re-executes the test binary as a child process with facts in forward and reverse order, compares bytes); the_evaluation_path_makes_no_model_call (source-level structural check). Mutation: removing the rule-id sort failed the first."
     ],
-    "gap": "There is no rule-pack evaluator (REASON-013) for a determinism guarantee to be proven over, so this invariant has no subject in the current tree. The nearby cost-router determinism guarantee is a different invariant about a different mechanism (tier routing, not rule-pack verdicts).",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["REASON-013"],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would require REASON-013's engine first, then a two-process byte-identical replay test with facts supplied in different orders, per the requirement's own method.",
-    "work_item": "E09",
+    "verification": "cargo test -p qip-reasoning-engine --test rules -- the_same_pack_and_facts_give_byte_identical_verdicts_across_processes_and_fact_orders the_evaluation_path_makes_no_model_call",
+    "work_item": "",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: MISSING confirmed; the subject (REASON-013's engine) does not exist. qip_strategy's runtime is structurally model-free (no IR node reaches out of process) and is the nearest deterministic rule evaluator, but it is not a rule-pack engine and has no facts-in-any-order replay test. | prior note: Cheap once REASON-013 exists, since the workspace already uses BTreeMap/BTreeSet by house rule wherever iteration order reaches output, which is the main structural precondition for order-independent determinism."
+    "notes": "Closed by the rules.rs rule-pack engine. integrated=false: no composition root or stage calls RulePack yet. | prior note: verify: MISSING confirmed; the subject (REASON-013's engine) does not exist. qip_strategy's runtime is structurally model-free (no IR node reaches out of process) and is the nearest deterministic rule evaluator, but it is not a rule-pack engine and has no facts-in-any-order replay test. | prior note: Cheap once REASON-013 exists, since the workspace already uses BTreeMap/BTreeSet by house rule wherever iteration order reaches output, which is the main structural precondition for order-independent determinism."
   },
   {
     "id": "REASON-015",
@@ -422,7 +430,10 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["REASON-015", "REASON-016"],
+    "depends_on": [
+      "REASON-015",
+      "REASON-016"
+    ],
     "blocked_by": "",
     "verification": "cd backend && cargo test -p qip-numerics --test optimisation — 'test result: ok. 32 passed' and cargo test -p qip-optimization-engine --test optimization — 'test result: ok. 24 passed' (run 2026-09-25). These cover the QUBO primitives and the portfolio encoding on fixtures, not generated constraint problems.",
     "work_item": "E10",
@@ -444,7 +455,10 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["REASON-001", "REASON-013"],
+    "depends_on": [
+      "REASON-001",
+      "REASON-013"
+    ],
     "blocked_by": "",
     "verification": "No test exists.",
     "work_item": "E09",
@@ -467,7 +481,9 @@
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": ["REASON-006"],
+    "depends_on": [
+      "REASON-006"
+    ],
     "blocked_by": "",
     "verification": "cd backend && cargo test -p qip-world-model --test understanding explanations_rank_the_most_likely_cause_first",
     "work_item": "E09",
@@ -492,7 +508,9 @@
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": ["REASON-019"],
+    "depends_on": [
+      "REASON-019"
+    ],
     "blocked_by": "",
     "verification": "No test demonstrates retention of more than one candidate or promotion from the retained record. The nearest, qip-kernel/tests/episodic.rs (line 626), proves one recorded edge matches the graph.",
     "work_item": "E09",

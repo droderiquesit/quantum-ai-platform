@@ -33,7 +33,7 @@
 # Each environment names a project of its own, or says it has none. Two
 # environments in one project share one IAM boundary, one KMS key ring and one
 # Binary Authorization attestor, whatever their name prefixes say.
-project_id = "algorik-dev"
+project_id = "algorik-platform-dev"
 
 # The project's numeric id, recorded so nothing has to ask for it. It is an
 # identifier like the id above, Google's service agents are named by it, and
@@ -41,7 +41,7 @@ project_id = "algorik-dev"
 # file can construct its own authentication with no repository variable
 # involved, which matters because a variable set from a broken shell once
 # carried an install advisory where this number should have been.
-project_number = 95200532413
+project_number = 523718313246
 
 environment      = "dev"
 region           = "us-east4"
@@ -203,7 +203,7 @@ gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 #     zone         = "us-east4-a"
 #     subnet_cidr  = "10.67.0.0/20"
 #     machine_type = "c3-highcpu-8"
-#     boot_image   = "projects/algorik-dev/global/images/<the baked image>"
+#     boot_image   = "projects/algorik-platform-dev/global/images/<the baked image>"
 #     venues = {
 #       "simulated-1" = { cidr = "192.0.2.0/24", port = 443 }
 #     }
@@ -542,7 +542,7 @@ gitops_kargo_hostname  = ""
 # gateway, then a port-forward:
 #
 #   gcloud container fleet memberships get-credentials qip-dev-gitops \
-#     --project algorik-dev
+#     --project algorik-platform-dev
 #   kubectl -n argocd port-forward svc/argocd-server 8080:443
 #   kubectl -n kargo  port-forward svc/kargo-api     8081:443
 #
@@ -568,7 +568,7 @@ gitops_kargo_hostname  = ""
 # with a single click from all ingress paths, including default run.app URLs
 # and load balancers." So the console is reachable at
 #
-#   https://qip-dev-portal-95200532413.us-east4.run.app
+#   https://qip-dev-portal-523718313246.us-east4.run.app
 #
 # on a Google-managed certificate, behind IAP, with no address reserved, no
 # certificate ordered, no Cloud Armor policy, no zone, no registrar and no
@@ -633,7 +633,7 @@ gitops_portal_hostname = ""
 # portal names the portal:
 #
 #   gcloud iap web add-iam-policy-binding \
-#     --project=algorik-dev --resource-type=cloud-run \
+#     --project=algorik-platform-dev --resource-type=cloud-run \
 #     --region=us-east4 --service=qip-dev-portal \
 #     --role=roles/iap.httpsResourceAccessor \
 #     --member='user:YOU@example.com'

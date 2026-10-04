@@ -1,3 +1,5 @@
+#![allow(clippy::panic_in_result_fn)]
+
 use qip_core::error::Result;
 use qip_quantum::foundry::{FamilyDeclaration, FamilyKind, FamilyStatus, Foundry};
 

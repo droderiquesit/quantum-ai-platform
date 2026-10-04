@@ -780,5 +780,34 @@
       "GCP"
     ],
     "notes": "Split from the same G p23 criterion as GOV-026. CICD-046 (CI authenticates to GCP only through short-lived WIF credentials) and CICD-013 (agent workers hold no production secrets) are the mechanisms. .claude/rules/01-security-and-safety.md already forbids downloaded service-account keys in any file, including examples."
+  },
+  {
+    "id": "GOV-029",
+    "domain": "GOV",
+    "title": "The controls list survives the v12.0 rewrite of the Final Definition",
+    "statement": "The v11.6 requirement that every action moving money, altering an external system or communicating publicly is bounded by identity, authority, truthfulness, conduct, feasibility, audit and rollback controls stays in force, though v12.0 section 33 no longer states it; section 1.3 (p4) and section 24.5 (p38) still do.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "51",
+        "section": "§33 Final Definition (controls list dropped from v11.6 p45)"
+      },
+      {
+        "doc": "M12",
+        "page": "4",
+        "section": "§1.3"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each control named is still traced to an existing GOV or AGENCY requirement citing §1.3 or §24.5."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ]
   }
 ]
