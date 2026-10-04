@@ -5,6 +5,7 @@
 //! by a program, that the outcomes cover the world exactly once, that the
 //! probability read off a price accounts for what it costs to act on, and that
 //! a resolution nobody has agreed to cannot be settled.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::{VenueClass, VenueId};
 use qip_core::rng::{Rng, Xoshiro256};

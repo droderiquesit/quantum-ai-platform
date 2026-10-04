@@ -4,6 +4,7 @@
 //! The failure mode these tests exist to prevent is the profitable-looking
 //! opportunity that is profitable only for the two contracts resting at the
 //! touch.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::{VenueClass, VenueId};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};

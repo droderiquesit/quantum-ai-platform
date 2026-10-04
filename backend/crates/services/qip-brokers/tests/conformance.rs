@@ -5,6 +5,7 @@
 //! before it is sent, and orders and fills round-trip through the common types.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 #[allow(dead_code)] // the harness is shared with tests that use more of it
 mod server;

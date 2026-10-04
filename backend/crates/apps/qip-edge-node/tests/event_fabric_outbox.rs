@@ -7,6 +7,7 @@
 //! test wraps it to inject the failure) and reads the records back through
 //! `writer::records`, the same reader the drain and replay use — so what is
 //! asserted is what reached disk, not what the writer meant to write.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::market_event::MarketEvent;
 use qip_contracts::reflex::{Decision, JournalEntry, OutcomeRecord};

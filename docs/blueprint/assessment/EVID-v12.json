@@ -1,0 +1,46 @@
+[
+  {
+    "id": "EVID-032",
+    "status": "NEEDS-VALIDATION",
+    "current": "See gap: partial or unverified overlap with an existing requirement; not re-derived in this entry.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "EVID-015/016 and MODEL-033 cover the nearest ground; whether they cover all eight roles has not been checked.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Each named role runs against a sample forecast and its challenge is recorded in the log.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  },
+  {
+    "id": "EVID-033",
+    "status": "NEEDS-VALIDATION",
+    "current": "See gap: partial or unverified overlap with an existing requirement; not re-derived in this entry.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "EXPAND-013, EVID-018 and qip-prediction scoring partially cover it; downstream capital impact and incremental information value are unchecked.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A resolved forecast produces every listed score and the scores replay from the log.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  }
+]

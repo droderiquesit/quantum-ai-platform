@@ -102,7 +102,7 @@ pub struct FastBrainConfig {
 /// says the feed is live.
 ///
 /// **No vendor is configured anywhere in this repository, deliberately.**
-/// `infrastructure/kubernetes/base/egress.yaml` declines to allowlist a
+/// `infrastructure/egress/envoy.yaml` declines to allowlist a
 /// market-data host for the same reason this struct has no default: there is
 /// no vendor in the workspace to derive one from, and inventing a hostname
 /// nobody holds a licence for would put it into a security control. Choosing
