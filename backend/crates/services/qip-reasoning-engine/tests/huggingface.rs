@@ -10,6 +10,7 @@
 //! by checking the listener served nothing. A refusal that still dialled the
 //! peer would mean an unconfigured deployment was reaching a proxy, and "it
 //! errored" alone does not catch that.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 mod server {
     //! A loopback HTTP server that answers from a script.

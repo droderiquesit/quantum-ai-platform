@@ -77,6 +77,27 @@ run "a_declared_hostname_creates_the_whole_edge_and_nothing_on_port_80" {
   }
 }
 
+# A backend bucket takes only an edge-type policy. The attachment itself is an
+# unknown id at plan time, so the Rust suite asserts it on the configuration;
+# this run asserts the policy exists and is the kind a bucket accepts.
+run "the_static_shell_has_an_edge_type_cloud_armor_policy" {
+  command = plan
+
+  variables {
+    hostnames = ["console.example.com"]
+  }
+
+  assert {
+    condition     = length(google_compute_security_policy.edge_static) == 1
+    error_message = "the static shell has no Cloud Armor policy of its own"
+  }
+
+  assert {
+    condition     = google_compute_security_policy.edge_static[0].type == "CLOUD_ARMOR_EDGE"
+    error_message = "a backend bucket accepts only CLOUD_ARMOR_EDGE policies; any other type is refused at apply"
+  }
+}
+
 # --- what a client may be put in front of ------------------------------------
 
 run "the_application_identity_zone_may_be_fronted" {

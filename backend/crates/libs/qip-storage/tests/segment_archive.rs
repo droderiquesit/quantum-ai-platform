@@ -5,6 +5,7 @@
 //! independently here rather than imported from the crate under test,
 //! matching `tests/segment.rs`'s own convention: a test that shares the
 //! reader with the code it checks proves less.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::error::Result;
 use qip_core::{Clock, ManualClock, Timestamp};

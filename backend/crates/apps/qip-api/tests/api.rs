@@ -9,6 +9,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_api::auth::{Authenticator, Credential, Principal, RateLimiter, Role};
 use qip_api::cells::CellRegistry;
@@ -1901,6 +1902,42 @@ fn the_execution_page_renders_the_settlement_the_platform_counted_and_not_a_zero
         "{after}"
     );
     assert!(after.contains(">PAPER TRADING<"), "{after}");
+    Ok(())
+}
+
+#[test]
+fn the_mesh_status_the_api_serves_never_names_a_cells_endpoint() -> Result<()> {
+    use qip_api::mesh::{CellAddress, MeshBackbone, MeshSettings};
+
+    let assembled = assemble()?;
+    let settings = MeshSettings {
+        cells: vec![CellAddress {
+            cell: "eu-west".to_string(),
+            address: "127.0.0.1:0".to_string(),
+        }],
+        inbox_capacity: 8,
+        spool_capacity: 8,
+        regions: None,
+    };
+    let mesh = MeshBackbone::open(
+        &settings,
+        Arc::new(qip_storage::kv::MemoryKeyValueStore::new()),
+        assembled.clock.clone() as Arc<dyn qip_core::Clock>,
+        None,
+    )?;
+    let status = mesh.status();
+    // Premise: the cell is served, so an absent address is not an absent cell.
+    assert_eq!(status.cells.len(), 1);
+    let body = serde_json::to_string(&status).unwrap();
+    assert!(body.contains(r#""cell":"eu-west""#), "{body}");
+    assert!(
+        !body.contains("\"address\""),
+        "a cell's address is served: {body}"
+    );
+    assert!(
+        !body.contains("127.0.0.1"),
+        "a cell's host is served: {body}"
+    );
     Ok(())
 }
 

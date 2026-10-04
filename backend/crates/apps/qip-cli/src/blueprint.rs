@@ -359,6 +359,11 @@ fn cite(sources: &Value) -> String {
         let doc = match source["doc"].as_str() {
             Some("M") => "v11.6".to_string(),
             Some("G") => "GCP v2.1".to_string(),
+            // ADR 0101: v12.0 and GCP v3.0 get their own codes rather than
+            // reusing M and G, because a requirement cited at "p31" must say
+            // which document's page 31 — the two editions paginate differently.
+            Some("M12") => "v12.0".to_string(),
+            Some("G3") => "GCP v3.0".to_string(),
             Some("H") => "diagram".to_string(),
             _ => text(&source["doc"]),
         };
@@ -721,5 +726,18 @@ mod tests {
         assert_eq!(text(&json!(0)), "");
         assert_eq!(text(&Value::Null), "");
         assert_eq!(text(&json!(35)), "35");
+    }
+
+    #[test]
+    fn a_v12_citation_names_its_edition_and_never_reads_as_v11_6() {
+        let sources = json!([
+            {"doc": "M12", "page": "31", "section": "§24"},
+            {"doc": "G3", "page": "4", "section": "§2"},
+            {"doc": "M", "page": "31", "section": "§24"}
+        ]);
+        assert_eq!(
+            cite(&sources),
+            "v12.0 p31 §24; GCP v3.0 p4 §2; v11.6 p31 §24"
+        );
     }
 }

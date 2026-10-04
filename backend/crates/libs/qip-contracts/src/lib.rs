@@ -38,6 +38,7 @@ pub mod intent;
 pub mod knowledge_pack;
 pub mod ledger;
 pub mod market_event;
+pub mod market_state;
 pub mod message;
 pub mod policy;
 pub mod reflex;

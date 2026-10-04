@@ -49,7 +49,7 @@ metadata:
   name: qip-dev-portal
   annotations:
     cnrm.cloud.google.com/deletion-policy: abandon
-    cnrm.cloud.google.com/project-id: algorik-dev
+    cnrm.cloud.google.com/project-id: algorik-platform-dev
   labels:
     platform: qip
     environment: dev
@@ -61,7 +61,7 @@ metadata:
     qip-workload: portal
 spec:
   projectRef:
-    external: projects/algorik-dev
+    external: projects/algorik-platform-dev
   location: us-east4
   ingress: INGRESS_TRAFFIC_ALL
   binaryAuthorization:
@@ -72,7 +72,7 @@ spec:
     # claim, and is already the API's named invoker in invokers.yaml. A
     # second identity for one workload would have needed all three again.
     serviceAccountRef:
-      external: qip-dev-console@algorik-dev.iam.gserviceaccount.com
+      external: qip-dev-console@algorik-platform-dev.iam.gserviceaccount.com
     vpcAccess:
       # PRIVATE_RANGES_ONLY, not ALL_TRAFFIC: the console's route into the VPC
       # is to the API and nothing else, and `modules/network`'s deny-egress
@@ -83,9 +83,9 @@ spec:
       egress: PRIVATE_RANGES_ONLY
       networkInterfaces:
       - networkRef:
-          external: projects/algorik-dev/global/networks/qip-dev
+          external: projects/algorik-platform-dev/global/networks/qip-dev
         subnetworkRef:
-          external: projects/algorik-dev/regions/us-east4/subnetworks/qip-dev-console-egress
+          external: projects/algorik-platform-dev/regions/us-east4/subnetworks/qip-dev-console-egress
         # The tag `modules/network`'s console-egress rules target. Without it
         # both rules bind nothing, the implied allow-all at 65535 is what
         # applies, and every tool reports the subnet as denied.
@@ -143,7 +143,7 @@ spec:
       # computes: the service name, the project number, the region. Internal
       # ingress, so this address answers nobody from the internet.
       - name: QIP_API_BASE_URL
-        value: https://qip-dev-api-95200532413.us-east4.run.app
+        value: https://qip-dev-api-523718313246.us-east4.run.app
       # The `viewer` credential the gateway proxies with, as a path. Viewer is
       # the whole entitlement: POST /api/v1/cycle is analyst and both
       # directions of the kill switch are operator, so a console compromise
