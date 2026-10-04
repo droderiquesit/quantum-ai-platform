@@ -33,7 +33,7 @@ fn a_forecast_error_spike_on_an_entity_no_source_covers_yields_a_target_naming_i
     assert_eq!(targets.len(), 1, "{targets:?}");
     assert_eq!(targets[0].entity, "ent-northwind");
     assert!(
-        matches!(targets[0].reason, TargetReason::ForecastErrorSpike { ratio } if ratio == 9.0)
+        matches!(targets[0].reason, TargetReason::ForecastErrorSpike { ratio } if (ratio - 9.0).abs() < 1e-9)
     );
 }
 
