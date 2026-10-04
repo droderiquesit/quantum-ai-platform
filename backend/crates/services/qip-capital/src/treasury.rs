@@ -315,7 +315,7 @@ impl InternalFunding {
                 obligation.outstanding()
             )));
         }
-        obligation.repaid = obligation.repaid + amount;
+        obligation.repaid += amount;
         Ok(obligation.outstanding())
     }
 

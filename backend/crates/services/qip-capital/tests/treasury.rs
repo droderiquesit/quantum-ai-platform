@@ -17,7 +17,7 @@ fn across_random_commitments_the_floor_holds_every_step_and_the_breaching_one_is
 -> Result<()> {
     let floor = dec!("1000");
     let mut book = CapitalBook::new(dec!("10000"), floor)?;
-    let mut rng = Xoshiro256::seeded(0xF100_4);
+    let mut rng = Xoshiro256::seeded(0x000F_1004);
     let (mut accepted, mut refused) = (0, 0);
     for step in 0..400u64 {
         let id = format!("c{step}");
@@ -152,7 +152,7 @@ fn every_internal_funding_is_balanced_and_only_a_repayment_extinguishes_it() -> 
 
 #[test]
 fn with_an_empty_registry_every_financing_function_refuses_and_only_the_recorded_combination_passes()
-{
+ {
     let mut reg = FinancingPermissions::new();
     for f in FinancingFunction::ALL {
         assert!(reg.require(f, "entity-a", "cp-1", "GB").is_err());
