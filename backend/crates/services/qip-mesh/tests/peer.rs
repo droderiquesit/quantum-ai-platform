@@ -3,13 +3,13 @@
 //! Each test asserts its own premise first, so a fixture that quietly became
 //! empty or already-refused cannot make a refusal test pass.
 
-#![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::panic_in_result_fn, clippy::unwrap_used)]
 
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_mesh::peer::{
-    EpochDraft, EpochLeg, OpportunityEpoch, PeerEndpoint, PeerLimits, PeerMessage,
-    ReservationBook, decode, encode,
+    EpochDraft, EpochLeg, OpportunityEpoch, PeerEndpoint, PeerLimits, PeerMessage, ReservationBook,
+    decode, encode,
 };
 
 const OPENED: i64 = 1_760_000_000_000_000_000;
@@ -83,15 +83,60 @@ fn open_gate(_: &EpochLeg) -> Result<()> {
 
 #[test]
 fn an_epoch_missing_any_one_of_its_seven_fields_is_refused_naming_that_field() {
-    assert!(draft().build(ceiling()).is_ok(), "premise: the full draft builds");
+    assert!(
+        draft().build(ceiling()).is_ok(),
+        "premise: the full draft builds"
+    );
     let cases: Vec<(&str, EpochDraft)> = vec![
-        ("cycle", EpochDraft { cycle: None, ..draft() }),
-        ("legs", EpochDraft { legs: None, ..draft() }),
-        ("size", EpochDraft { size: None, ..draft() }),
-        ("min_edge_bps", EpochDraft { min_edge_bps: None, ..draft() }),
-        ("model_versions", EpochDraft { model_versions: None, ..draft() }),
-        ("ttl", EpochDraft { ttl: None, ..draft() }),
-        ("unwind_policy", EpochDraft { max_recovery_loss: None, ..draft() }),
+        (
+            "cycle",
+            EpochDraft {
+                cycle: None,
+                ..draft()
+            },
+        ),
+        (
+            "legs",
+            EpochDraft {
+                legs: None,
+                ..draft()
+            },
+        ),
+        (
+            "size",
+            EpochDraft {
+                size: None,
+                ..draft()
+            },
+        ),
+        (
+            "min_edge_bps",
+            EpochDraft {
+                min_edge_bps: None,
+                ..draft()
+            },
+        ),
+        (
+            "model_versions",
+            EpochDraft {
+                model_versions: None,
+                ..draft()
+            },
+        ),
+        (
+            "ttl",
+            EpochDraft {
+                ttl: None,
+                ..draft()
+            },
+        ),
+        (
+            "unwind_policy",
+            EpochDraft {
+                max_recovery_loss: None,
+                ..draft()
+            },
+        ),
     ];
     for (field, dr) in cases {
         let err = dr.build(ceiling()).unwrap_err().to_string();
@@ -106,16 +151,46 @@ fn a_token_survives_a_round_trip_and_epochs_differing_in_any_field_have_differen
     assert_eq!(back, PeerMessage::Token { epoch: e.clone() });
 
     let variants = vec![
-        EpochDraft { opportunity: Some("opp-2".into()), ..draft() },
-        EpochDraft { sequence: Some(2), ..draft() },
-        EpochDraft { cycle: Some("other".into()), ..draft() },
-        EpochDraft { legs: Some(vec![leg("a", "americas", 2), leg("b", "apac", 3)]), ..draft() },
-        EpochDraft { size: Some(d(101)), ..draft() },
-        EpochDraft { min_edge_bps: Some(d(6)), ..draft() },
-        EpochDraft { model_versions: Some(vec!["m-8".into()]), ..draft() },
-        EpochDraft { opened_at_nanos: Some(OPENED + 1), ..draft() },
-        EpochDraft { ttl: Some(Duration::from_millis(201)), ..draft() },
-        EpochDraft { max_recovery_loss: Some(d(11)), ..draft() },
+        EpochDraft {
+            opportunity: Some("opp-2".into()),
+            ..draft()
+        },
+        EpochDraft {
+            sequence: Some(2),
+            ..draft()
+        },
+        EpochDraft {
+            cycle: Some("other".into()),
+            ..draft()
+        },
+        EpochDraft {
+            legs: Some(vec![leg("a", "americas", 2), leg("b", "apac", 3)]),
+            ..draft()
+        },
+        EpochDraft {
+            size: Some(d(101)),
+            ..draft()
+        },
+        EpochDraft {
+            min_edge_bps: Some(d(6)),
+            ..draft()
+        },
+        EpochDraft {
+            model_versions: Some(vec!["m-8".into()]),
+            ..draft()
+        },
+        EpochDraft {
+            opened_at_nanos: Some(OPENED + 1),
+            ..draft()
+        },
+        EpochDraft {
+            ttl: Some(Duration::from_millis(201)),
+            ..draft()
+        },
+        EpochDraft {
+            max_recovery_loss: Some(d(11)),
+            ..draft()
+        },
     ];
     let mut ids = std::collections::BTreeSet::new();
     ids.insert(e.identity());
@@ -129,14 +204,39 @@ fn a_token_survives_a_round_trip_and_epochs_differing_in_any_field_have_differen
 
 #[test]
 fn an_epoch_with_no_ttl_or_a_ttl_above_the_ceiling_is_refused_and_one_at_the_ceiling_is_admitted() {
-    let at_ceiling = EpochDraft { ttl: Some(ceiling()), ..draft() };
-    assert!(at_ceiling.build(ceiling()).is_ok(), "premise: the ceiling itself is admitted");
-    let over = EpochDraft { ttl: Some(Duration::from_millis(501)), ..draft() };
-    assert!(over.build(ceiling()).unwrap_err().to_string().contains("ceiling"));
-    let zero = EpochDraft { ttl: Some(Duration::from_millis(0)), ..draft() };
+    let at_ceiling = EpochDraft {
+        ttl: Some(ceiling()),
+        ..draft()
+    };
+    assert!(
+        at_ceiling.build(ceiling()).is_ok(),
+        "premise: the ceiling itself is admitted"
+    );
+    let over = EpochDraft {
+        ttl: Some(Duration::from_millis(501)),
+        ..draft()
+    };
+    assert!(
+        over.build(ceiling())
+            .unwrap_err()
+            .to_string()
+            .contains("ceiling")
+    );
+    let zero = EpochDraft {
+        ttl: Some(Duration::from_millis(0)),
+        ..draft()
+    };
     assert!(zero.build(ceiling()).is_err());
-    let none = EpochDraft { ttl: None, ..draft() };
-    assert!(none.build(ceiling()).unwrap_err().to_string().contains("`ttl`"));
+    let none = EpochDraft {
+        ttl: None,
+        ..draft()
+    };
+    assert!(
+        none.build(ceiling())
+            .unwrap_err()
+            .to_string()
+            .contains("`ttl`")
+    );
 }
 
 #[test]
@@ -166,16 +266,33 @@ fn no_leg_is_sent_and_no_message_is_applied_at_or_after_the_epoch_expiry() {
 #[test]
 fn a_message_from_a_superseded_epoch_changes_nothing_and_is_journaled_as_refused() {
     let old = epoch();
-    let newer = EpochDraft { sequence: Some(2), ..draft() }.build(ceiling()).unwrap();
+    let newer = EpochDraft {
+        sequence: Some(2),
+        ..draft()
+    }
+    .build(ceiling())
+    .unwrap();
     let mut ep = endpoint_with(&old);
     ep.receive(&token(&newer), at(5)).unwrap();
-    assert_eq!(ep.current_sequence("opp-1"), Some(2), "premise: epoch 2 is current");
+    assert_eq!(
+        ep.current_sequence("opp-1"),
+        Some(2),
+        "premise: epoch 2 is current"
+    );
 
     // A node that restarted holding epoch 1 reserves, then replays its token.
     assert!(ep.receive(&reserved(&old, "a", 1), at(6)).is_err());
     assert!(ep.receive(&token(&old), at(7)).is_err());
-    assert_eq!(ep.reserved("opp-1", "a"), None, "stale reservation must not apply");
-    assert_eq!(ep.current_sequence("opp-1"), Some(2), "stale token must not roll back");
+    assert_eq!(
+        ep.reserved("opp-1", "a"),
+        None,
+        "stale reservation must not apply"
+    );
+    assert_eq!(
+        ep.current_sequence("opp-1"),
+        Some(2),
+        "stale token must not roll back"
+    );
     let kinds: Vec<_> = ep.refusals().iter().map(|r| r.kind).collect();
     assert_eq!(kinds, vec!["stale_epoch", "stale_epoch"]);
 
@@ -223,7 +340,11 @@ fn a_leg_reserved_for_less_than_its_requirement_does_not_meet_the_fire_condition
     )
     .unwrap();
     ep.receive(&partial, at(1)).unwrap();
-    assert_eq!(ep.reserved("opp-1", "b"), Some(d(40)), "premise: partial hold recorded");
+    assert_eq!(
+        ep.reserved("opp-1", "b"),
+        Some(d(40)),
+        "premise: partial hold recorded"
+    );
     assert!(ep.declare_fire("opp-1", at(2)).is_err());
 }
 
@@ -234,9 +355,18 @@ fn a_message_at_the_size_bound_is_sent_and_one_byte_over_is_refused_by_sender_an
     let msg = PeerMessage::Token { epoch: epoch() };
     let exact = serde_json::to_vec(&msg).unwrap().len();
     let frame = encode(&msg, exact).expect("exactly at the bound encodes");
-    assert!(decode(&frame, exact).is_ok(), "exactly at the bound is accepted");
-    assert!(encode(&msg, exact - 1).is_err(), "sender refuses one byte over");
-    assert!(decode(&frame, exact - 1).is_err(), "receiver refuses one byte over");
+    assert!(
+        decode(&frame, exact).is_ok(),
+        "exactly at the bound is accepted"
+    );
+    assert!(
+        encode(&msg, exact - 1).is_err(),
+        "sender refuses one byte over"
+    );
+    assert!(
+        decode(&frame, exact - 1).is_err(),
+        "receiver refuses one byte over"
+    );
 
     // A hostile frame declaring 4 GiB with no body is refused on its prefix.
     let hostile = u32::MAX.to_be_bytes().to_vec();
@@ -278,7 +408,11 @@ fn a_reservation_is_released_at_its_epoch_expiry_and_not_a_moment_before() {
     let mut book = ReservationBook::new(d(250));
     book.reserve(&e, "a", d(100)).unwrap();
     book.expire(at(199));
-    assert_eq!(book.available(), d(150), "premise: still held before expiry");
+    assert_eq!(
+        book.available(),
+        d(150),
+        "premise: still held before expiry"
+    );
     book.expire(at(200));
     assert_eq!(book.available(), d(250));
 }
@@ -287,9 +421,12 @@ fn a_reservation_is_released_at_its_epoch_expiry_and_not_a_moment_before() {
 
 #[test]
 fn fire_is_refused_when_the_worst_recovery_loss_exceeds_the_bound_declared_before_it() {
-    let tight = EpochDraft { max_recovery_loss: Some(d(4)), ..draft() }
-        .build(ceiling())
-        .unwrap();
+    let tight = EpochDraft {
+        max_recovery_loss: Some(d(4)),
+        ..draft()
+    }
+    .build(ceiling())
+    .unwrap();
     let mut ep = endpoint_with(&tight);
     ep.receive(&reserved(&tight, "a", 1), at(1)).unwrap();
     ep.receive(&reserved(&tight, "b", 1), at(1)).unwrap();
@@ -321,7 +458,11 @@ fn realized_recovery_loss_never_passes_the_bound_over_every_order_of_unwinds() {
             ep.receive(&encode(&msg, 4096).unwrap(), at(3)).unwrap();
             assert!(ep.realized_recovery_loss("opp-1") <= bound);
         }
-        assert_eq!(ep.realized_recovery_loss("opp-1"), d(5), "premise: both unwound");
+        assert_eq!(
+            ep.realized_recovery_loss("opp-1"),
+            d(5),
+            "premise: both unwound"
+        );
     }
 }
 
@@ -346,10 +487,19 @@ fn an_unwind_costing_more_than_the_leg_declared_is_refused_and_not_booked() {
 // ---- MESH-003 -------------------------------------------------------------
 
 #[test]
-fn a_well_formed_pack_policy_or_grant_delivered_by_a_peer_is_refused_journaled_and_changes_nothing() {
+fn a_well_formed_pack_policy_or_grant_delivered_by_a_peer_is_refused_journaled_and_changes_nothing()
+{
     let e = epoch();
     let mut ep = endpoint_with(&e);
-    let kinds = ["policy", "policy_pack", "capital_grant", "risk_pack", "model_pack", "strategy_pack", "belief_pack"];
+    let kinds = [
+        "policy",
+        "policy_pack",
+        "capital_grant",
+        "risk_pack",
+        "model_pack",
+        "strategy_pack",
+        "belief_pack",
+    ];
     for k in kinds {
         let body = format!(r#"{{"kind":"{k}","payload":"signed-bytes","signature":"ok"}}"#);
         let mut frame = (body.len() as u32).to_be_bytes().to_vec();
@@ -357,7 +507,11 @@ fn a_well_formed_pack_policy_or_grant_delivered_by_a_peer_is_refused_journaled_a
         let err = ep.receive(&frame, at(1)).unwrap_err().to_string();
         assert!(err.contains("never from a peer"), "{k}: {err}");
     }
-    assert_eq!(ep.refusals().len(), kinds.len(), "every refusal is journaled");
+    assert_eq!(
+        ep.refusals().len(),
+        kinds.len(),
+        "every refusal is journaled"
+    );
     assert_eq!(ep.current_sequence("opp-1"), Some(1), "state unchanged");
     assert_eq!(ep.reserved("opp-1", "a"), None);
 }
@@ -373,10 +527,16 @@ fn a_fired_leg_the_local_risk_gate_vetoes_is_never_sent() {
     ep.declare_fire("opp-1", at(2)).unwrap();
     assert!(ep.is_fired("opp-1"), "premise: FIRE was declared");
     let veto = |l: &EpochLeg| -> Result<()> {
-        Err(qip_core::error::Error::denied(format!("limit breached on {}", l.leg)))
+        Err(qip_core::error::Error::denied(format!(
+            "limit breached on {}",
+            l.leg
+        )))
     };
     assert!(ep.send_leg("opp-1", "a", at(3), &veto).is_err());
     assert!(!ep.leg_sent("opp-1", "a"));
     ep.send_leg("opp-1", "a", at(3), &open_gate).unwrap();
-    assert!(ep.leg_sent("opp-1", "a"), "the same leg goes when the gate admits it");
+    assert!(
+        ep.leg_sent("opp-1", "a"),
+        "the same leg goes when the gate admits it"
+    );
 }

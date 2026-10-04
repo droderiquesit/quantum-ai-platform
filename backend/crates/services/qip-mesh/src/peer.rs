@@ -265,9 +265,7 @@ pub fn decode(frame: &[u8], max_frame: usize) -> Result<PeerMessage> {
         )));
     }
     if frame.len() - 4 != declared {
-        return Err(Error::denied(
-            "peer frame length disagrees with its prefix",
-        ));
+        return Err(Error::denied("peer frame length disagrees with its prefix"));
     }
     let value: serde_json::Value = serde_json::from_slice(&frame[4..])
         .map_err(|e| Error::denied(format!("peer frame is not valid JSON: {e}")))?;
@@ -385,11 +383,7 @@ impl PeerEndpoint {
     pub fn realized_recovery_loss(&self, opportunity: &str) -> Decimal {
         self.opportunities
             .get(opportunity)
-            .map(|s| {
-                s.unwound
-                    .values()
-                    .fold(Decimal::from_int(0), |a, v| a + *v)
-            })
+            .map(|s| s.unwound.values().fold(Decimal::from_int(0), |a, v| a + *v))
             .unwrap_or_default()
     }
 
@@ -437,10 +431,10 @@ impl PeerEndpoint {
                 ..
             } => (opportunity.clone(), *sequence),
         };
-        let st = self.opportunities.get_mut(&opp).ok_or((
-            "unknown_opportunity",
-            format!("no epoch held for `{opp}`"),
-        ))?;
+        let st = self
+            .opportunities
+            .get_mut(&opp)
+            .ok_or(("unknown_opportunity", format!("no epoch held for `{opp}`")))?;
         if st.epoch.sequence != seq {
             return Err((
                 "stale_epoch",
@@ -451,7 +445,10 @@ impl PeerEndpoint {
             ));
         }
         if now >= st.epoch.expires_at() {
-            return Err(("expired", format!("epoch of `{opp}` has expired; discarded")));
+            return Err((
+                "expired",
+                format!("epoch of `{opp}` has expired; discarded"),
+            ));
         }
         match msg {
             PeerMessage::Reserved { leg, amount, .. } => {
@@ -513,7 +510,11 @@ impl PeerEndpoint {
         Ok(())
     }
 
-    fn install(&mut self, epoch: OpportunityEpoch, now: Timestamp) -> std::result::Result<(), Rejected> {
+    fn install(
+        &mut self,
+        epoch: OpportunityEpoch,
+        now: Timestamp,
+    ) -> std::result::Result<(), Rejected> {
         epoch
             .validate(self.limits.ttl_ceiling)
             .map_err(|e| ("invalid_epoch", e.to_string()))?;
@@ -637,17 +638,13 @@ impl ReservationBook {
 
     /// Grant not yet reserved.
     pub fn available(&self) -> Decimal {
-        self.held
-            .values()
-            .fold(self.grant, |a, (amt, _)| a - *amt)
+        self.held.values().fold(self.grant, |a, (amt, _)| a - *amt)
     }
 
     pub fn reserve(&mut self, epoch: &OpportunityEpoch, leg: &str, amount: Decimal) -> Result<()> {
-        let l = epoch
-            .legs
-            .iter()
-            .find(|l| l.leg == leg)
-            .ok_or_else(|| Error::denied(format!("`{leg}` is not a leg of `{}`", epoch.opportunity)))?;
+        let l = epoch.legs.iter().find(|l| l.leg == leg).ok_or_else(|| {
+            Error::denied(format!("`{leg}` is not a leg of `{}`", epoch.opportunity))
+        })?;
         if !amount.is_positive() || amount > l.size {
             return Err(Error::denied(format!(
                 "reservation of {amount} is not within leg `{leg}`'s requirement of {}",
