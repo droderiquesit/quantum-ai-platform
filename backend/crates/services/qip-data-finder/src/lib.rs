@@ -74,6 +74,7 @@ pub mod catalogue;
 pub mod category;
 pub mod coverage;
 pub mod decision;
+pub mod discovery_targets;
 pub mod endpoint;
 pub mod finder;
 pub mod freshness;

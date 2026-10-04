@@ -17,6 +17,7 @@
 
 // Each test binary compiles this module and uses a different part of it.
 #![allow(dead_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};

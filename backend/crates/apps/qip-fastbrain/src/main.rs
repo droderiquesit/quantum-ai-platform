@@ -335,6 +335,7 @@ fn run() -> Result<()> {
             .map_err(|error| Error::io(format!("cannot start the health thread: {error}")))?;
     }
 
+    let mut cycle_log = qip_fastbrain::cycle_log::CycleLog::new(qip_core::Duration::from_secs(10));
     let summary = node::run(
         &mut platform,
         &mut feed,
@@ -344,18 +345,16 @@ fn run() -> Result<()> {
         &stop,
         &clock,
         |outcome| {
-            println!();
-            println!("{}", outcome.report.summarise());
-            println!(
-                "  {:>10} {:>4}  {}us against a {}ms ceiling{}",
-                "elapsed",
-                "",
-                outcome.elapsed.as_nanos() / 1_000,
-                config.cycle_budget.as_millis(),
-                if outcome.over_budget { "  BREACH" } else { "" }
-            );
-            for rejection in &outcome.rejections {
-                println!("             !  {rejection}");
+            // A bounded line, not the cycle's report: stdout is Cloud Logging on
+            // Cloud Run, and the event log and metrics already hold every cycle.
+            if let Some(line) = cycle_log.observe(
+                clock.now(),
+                outcome.report.cycle,
+                outcome.rejections.len(),
+                outcome.over_budget,
+                outcome.elapsed,
+            ) {
+                println!("{line}");
             }
         },
     )?;

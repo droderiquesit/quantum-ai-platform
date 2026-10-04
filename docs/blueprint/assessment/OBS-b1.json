@@ -1,21 +1,22 @@
 [
   {
     "id": "OBS-001",
-    "status": "MISSING",
-    "current": "nothing. qip_observability::Telemetry bundles a Metrics registry, a Tracer and a Logger into one value (backend/crates/libs/qip-observability/src/lib.rs:23-47), but that is three signal kinds held together, not five signal classes (infrastructure, application, data quality, model health, trading behaviour) attached to shared entity nodes.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-observability/src/aiops.rs EntityGraph: signals of five SignalClass values attach to EntityKey nodes; an entity shared by several classes is one node; a signal about no entity is refused. Library logic only: no production seam calls it yet, so integrated and deployable stay false.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/lib.rs:23-47",
-      "grep -rln 'ObservationGraph|SignalGraph|EntityGraph|UnifiedGraph' backend/crates --include=*.rs -> no matches"
+      "backend/crates/libs/qip-observability/src/aiops.rs",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::five_signal_classes_about_one_instrument_are_reachable_from_its_single_node",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::a_signal_about_no_entity_is_refused"
     ],
-    "gap": "No entity-keyed graph exists anywhere in the workspace. Metrics, traces and logs are three separate per-process collections keyed by metric/span/log name, not by the instrument or deployment entity they concern, and nothing joins a data-quality signal to a model-health signal about the same instrument.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need a fixture emitting one signal per class about one instrument/deployment and an assertion that all five are reachable from that entity's single node.",
+    "verification": "cargo test -p qip-observability --test aiops five_signal_classes_about_one_instrument_are_reachable_from_its_single_node (mutation-verified: attaching only the first entity fails it)",
     "work_item": "E12",
     "tier": "T3",
     "size": "L",
@@ -23,25 +24,21 @@
   },
   {
     "id": "OBS-002",
-    "status": "PARTIAL",
-    "current": "qip_observability::slo::{default_slos, blueprint_slos} (backend/crates/libs/qip-observability/src/slo.rs:200,290) declare 8 + 15 objectives. qip-kernel's blueprint_objectives module evaluates the 15 against what the process actually observed (backend/crates/runtime/qip-kernel/src/blueprint_objectives.rs) and is folded into every cycle's LEARN stage (backend/crates/runtime/qip-kernel/src/platform.rs:14259, via crate::blueprint_objectives::fold). Only 2 of 15 objectives are fed from a production seam: reconciliation-breaks-zero-unexplained and netting-ratio, from Platform::ingest_cell_report (platform.rs:5539,5561-5567).",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-observability/src/critical_paths.rs critical_path_slos(): one Slo per critical path (market-data freshness, decision latency, order/fill integrity, ledger commit, reconciliation, model serving, data provenance, quantum job success), each with target, window and source series; zero observations read as unmeasured via SloStatus::is_observed. Source series for model package age, lineage completeness and quantum jobs are named but not yet emitted by any process.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:200-244,290-390",
-      "backend/crates/runtime/qip-kernel/src/blueprint_objectives.rs:1-120",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14250-14259",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs::every_row_of_section_49_1_is_declared_as_an_objective_with_its_own_target",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs::an_objective_nothing_measured_is_never_reported_as_achieved",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs::a_missed_blueprint_target_is_actually_reported_as_missed"
+      "backend/crates/libs/qip-observability/src/critical_paths.rs",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::the_catalogue_holds_one_objective_per_critical_path_and_an_unfed_one_reads_unmeasured"
     ],
-    "gap": "None of the declared 8+15 objectives is named for OBS-002's eight specific paths (order/fill integrity, ledger commit, model serving package freshness, data provenance lineage completeness and quantum job success have no objective at all under any name; market-data freshness and decision latency have no objective using those denominators — the closest rows, wire-to-first-order-p99 and reconciliation-breaks-zero-unexplained, are a different measurement and only the latter is fed).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/tests/qip-acceptance/tests/slo.rs (7 tests); backend/crates/runtime/qip-kernel/tests/blueprint_objectives.rs. Would additionally need: an SLO catalogue whose row names match the eight named paths, each with a target+window+source series, and a fed test per path.",
+    "verification": "cargo test -p qip-observability --test aiops the_catalogue_holds_one_objective_per_critical_path_and_an_unfed_one_reads_unmeasured (mutation-verified: a duplicated objective name fails it)",
     "work_item": "E12",
     "tier": "T2",
     "size": "M",
@@ -49,15 +46,15 @@
   },
   {
     "id": "OBS-003",
-    "status": "MISSING",
-    "current": "nothing observes qip-observability's own metric series for anomalies. qip-opportunity-engine::detector::{AnomalyKind, Anomaly} (backend/crates/services/qip-opportunity-engine/src/detector.rs:14-142) is a trading/market-data anomaly detector (price moves, volatility shifts, volume spikes) consumed by the DISCOVER stage — a different subject (market data, not operational telemetry).",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-observability/src/aiops.rs detect_level_shift: robust median/MAD level-shift detector over a metric series with no configured threshold; returns an Anomaly naming the series and window; a too-short series is refused rather than called quiet. Library logic only: no production seam calls it yet, so integrated and deployable stay false.",
     "evidence": [
-      "backend/crates/services/qip-opportunity-engine/src/detector.rs:14-142",
-      "grep -rn 'anomaly' backend/crates --include=*.rs -i -> only trading-signal and dispersion-history hits, none reading qip_observability::Metrics"
+      "backend/crates/libs/qip-observability/src/aiops.rs",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::a_step_change_crossing_no_threshold_is_named_by_series_and_window_and_the_same_series_without_it_is_silent"
     ],
-    "gap": "No component runs statistical or threshold-free detection over the platform's own operational telemetry (qip_observability::Metrics series), and no signal type exists for raising a detected telemetry anomaly to triage.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -65,7 +62,7 @@
       "OBS-001"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Would need a synthetic metric series with an injected step change producing a signal naming the series and window, and the unmodified series producing none.",
+    "verification": "cargo test -p qip-observability --test aiops a_step_change_crossing_no_threshold_is_named_by_series_and_window_and_the_same_series_without_it_is_silent (mutation-verified at both a huge and a zero score threshold)",
     "work_item": "E12",
     "tier": "T3",
     "size": "L",
@@ -73,15 +70,15 @@
   },
   {
     "id": "OBS-004",
-    "status": "MISSING",
-    "current": "nothing. qip_compliance::incident (backend/crates/libs/qip-compliance/src/incident.rs:1-60) is a kill-switch/halt-scope record for risk incidents (Control 6), not a five-source correlation timeline. No 'SRE agent' or 'incident agent' symbol exists anywhere in the workspace.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-observability/src/aiops.rs build_timeline: events from the five TimelineSource values inside an incident window, timestamp-ordered, each keeping its source; an inverted window is refused. An Anomaly converts into a Telemetry event. No agent process calls it yet. Library logic only: no production seam calls it yet, so integrated and deployable stay false.",
     "evidence": [
-      "backend/crates/libs/qip-compliance/src/incident.rs:1-60",
-      "grep -in 'sre.?agent|incident.?agent|aiops' backend/crates --include=*.rs -> only 'AIOps' as a blueprint-domain label string in backend/crates/apps/qip-cli/src/blueprint.rs:86"
+      "backend/crates/libs/qip-observability/src/aiops.rs",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::the_timeline_holds_exactly_the_five_in_window_events_in_order_each_attributed"
     ],
-    "gap": "No component correlates telemetry, deployment diffs, data anomalies, venue behaviour and model drift into one timeline; qip-compliance's incident record has one source (a risk/kill-switch event) and no timeline concept.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -89,7 +86,7 @@
       "OBS-003"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Would need a fixture incident with one event from each of the five sources inside its window and one outside, and an assertion the agent's timeline holds exactly the five in order.",
+    "verification": "cargo test -p qip-observability --test aiops the_timeline_holds_exactly_the_five_in_window_events_in_order_each_attributed (mutation-verified: dropping the window end bound fails it)",
     "work_item": "E12",
     "tier": "T3",
     "size": "XL",
@@ -97,16 +94,16 @@
   },
   {
     "id": "OBS-005",
-    "status": "MISSING",
-    "current": "nothing executes an approved runbook automatically. 'runbook' appears in ~20 files (e.g. backend/crates/apps/qip-api/src/venue_views.rs:43, backend/crates/services/qip-market-ingestion/src/connector/backoff.rs:18) but always as prose pointing a human operator at an operational document, never as an executable, named, pre-approved action. The platform's only automatic remediation is qip_compliance::incident::HaltScope / qip_risk_engine::autonomy::KillSwitch, which only ever narrows (halts trading); neither restarts, rolls back, scales, drains, fails over, quarantines or disables a capability by name.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-observability/src/aiops.rs Remediator: an action executes only if a registered Runbook names that action on that target; anything else is refused and the refusal names the missing runbook; a runbook naming an action outside PERMITTED_ACTIONS cannot be registered. The effect sits behind the Effector trait, which no composition root implements yet. Library logic only: no production seam calls it yet, so integrated and deployable stay false.",
     "evidence": [
-      "backend/crates/libs/qip-compliance/src/incident.rs:26-56 (HaltScope)",
-      "grep -rn 'runbook' backend/crates --include=*.rs -> all human-facing prose, no executable registry",
-      "grep -rn 'runbook' backend/crates --include=*.rs | wc -l -> ~20, none an action executor"
+      "backend/crates/libs/qip-observability/src/aiops.rs",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::an_action_in_no_runbook_is_refused_and_recorded_while_a_named_one_executes",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::a_runbook_naming_an_action_outside_the_permitted_set_cannot_be_registered"
     ],
-    "gap": "No runbook registry (named action -> permitted effect), no executor that selects and runs one, and no refusal path for an action outside every runbook — the entire OBS-005 mechanism is absent, though the kill-switch shows the platform already has an unconditional-trip pattern a runbook executor could sit beside.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -114,7 +111,7 @@
       "OBS-004"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Would need an incident whose best action names no runbook (e.g. deleting a topic) producing a recorded refusal, and a runbook-named action executing.",
+    "verification": "cargo test -p qip-observability --test aiops an_action_in_no_runbook_is_refused_and_recorded_while_a_named_one_executes (mutation-verified: ignoring the runbook target fails it)",
     "work_item": "E12",
     "tier": "T3",
     "size": "L",
@@ -143,7 +140,7 @@
     "work_item": "E01",
     "tier": "T2",
     "size": "M",
-    "notes": "Score together with CICD-062 (gating half of the same G p13 step 10 sentence) per the requirement's own note. ADR 0028's divergence to OpenObserve over Managed Prometheus/Cloud Trace means any comparator built here would query OpenObserve, not the components G p13 names."
+    "notes": "Score together with CICD-062 (gating half of the same G p13 step 10 sentence) per the requirement's own note. ADR 0028's divergence to OpenObserve over Managed Prometheus/Cloud Trace means any comparator built here would query OpenObserve, not the components G p13 names.\n\nNot closed: the SLO comparator and rollback decision need a deployed non-production rollout (game-day verification) and a promotion path that can call it; the error-budget gate in qip_observability::aiops::release_gate is the building block."
   },
   {
     "id": "OBS-007",
@@ -167,7 +164,7 @@
     "work_item": "E01",
     "tier": "T2",
     "size": "M",
-    "notes": "Score together with CICD-064 (same G p13 step-10 sentence) and CICD-026 (Learning Agent's incident-to-task conversion) per the requirement's own note."
+    "notes": "Score together with CICD-064 (same G p13 step-10 sentence) and CICD-026 (Learning Agent's incident-to-task conversion) per the requirement's own note.\n\nNot closed: needs an external action (opening an issue/PR in the development loop) and an intake that does not exist; refused as an external action."
   },
   {
     "id": "OBS-008",
@@ -507,7 +504,7 @@
   },
   {
     "id": "OBS-021",
-    "status": "INCORRECT",
+    "status": "PARTIAL",
     "current": "No sampling mechanism exists: Logger/logs.rs has no sample rate, and nothing else configures one. qip-edge's Cell::work makes no log call (cell.rs has 0 'logger.' hits and no eprintln). But the Reflex composition root logs per event on the decision thread. qip-edge-node's serve loop writes one eprintln! line for every requote outcome and every reconciliation break of each pass (main.rs:906,909; 'Every requote outcome, not only the failures'). A requote is minted once per book update when the touch moves past the threshold (qip-edge-node/src/reprice.rs:1-13), and each requote sends a cancel and a replacement. So stderr volume grows with message count instead of being bounded by a sample rate.",
     "evidence": [
       "grep -c 'logger\\.' backend/crates/edge/qip-edge/src/cell.rs -> 0",
@@ -515,9 +512,9 @@
       "backend/crates/apps/qip-edge-node/src/main.rs:900-910 (for requote in &requotes { eprintln!(...) }; for detail in &breaks { eprintln!(...) })",
       "backend/crates/apps/qip-edge-node/src/reprice.rs:1-13 (repricing once per book update; cancel then re-send)"
     ],
-    "gap": "The Reflex node's requote logging is per event, and no sampling policy exists to bound it. Needs: a sampled or aggregated requote line, or a counter series with periodic summaries, and a configured sample rate. Emitting off the decision thread belongs to OBS-016. No benchmark measures log volume against message rate.",
-    "implemented": false,
-    "tested": false,
+    "gap": "The per-event requote and reconciliation-break stderr lines in qip-edge-node now go through qip_observability::sampling::LineSampler (5 per 10 s, with the dropped count carried on the next line), and the sampler is proven to bound volume independent of message count (tests/sampling.rs, mutation-verified). Still missing: a benchmark driving a real Reflex cell at its rated rate and counting its stderr, and the wiring itself has no test. The node is not deployed.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,

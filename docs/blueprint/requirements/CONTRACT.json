@@ -1351,5 +1351,68 @@
       "SUPPLY_CHAIN"
     ],
     "notes": "This requirement comes from the diagram alone: view 05, node 'Reflex Package Builder', subtitle 'signed package'. The raw extraction said 'exactly' five, which the diagram does not. The set disagrees with M §5's 'model + strategy + belief + capital + risk packs' (CONTRACT-001): the diagram has feature graph and config where the master has belief and capital. Signing is CONTRACT-004. The target node's subtitle, 'Atomic package activation' (H L289), and the Regional Cell view's Reflex Package Agent ('atomic swaps', H L160) imply that all five activate together. P1 because packages are built by the master Phase 2 foundry; G places the signed package lifecycle in phase 8."
+  },
+  {
+    "id": "CONTRACT-052",
+    "domain": "CONTRACT",
+    "title": "Every material forecast uses a typed Forecast contract carrying distribution, horizon, uncertainty decomposition, lineage and expiry",
+    "statement": "A Forecast contract holds the outcome distribution, horizon, target, epistemic and aleatoric uncertainty, tail mass, disagreement, regime confidence, expected impact, lineage and expiration. Calibration is a production SLO. v12.0 says 'should', and names it Forecast in section 9.14 and ForecastState in section 24.9.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "20",
+        "section": "§9.14 Forecast Contract, Calibration & Uncertainty Decomposition"
+      },
+      {
+        "doc": "M12",
+        "page": "38-39",
+        "section": "§24.9 ForecastState"
+      },
+      {
+        "doc": "G3",
+        "page": "29",
+        "section": "§27.1 acceptance criteria"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A Forecast value serialises every listed field and a forecast missing lineage or expiry is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ]
+  },
+  {
+    "id": "CONTRACT-053",
+    "domain": "CONTRACT",
+    "title": "The seven v12.0 control contracts exist as typed values: ForecastState, WorldBranch, InformationRequest, ModelVote, ComputePlan, HedgePlan, CapitalGrant",
+    "statement": "Each of the seven contracts has a typed definition with the key fields v12.0 lists. CapitalGrant is defined twice with different fields (section 24.9 and section 27); one reconciled definition is required before it is built.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "38-39",
+        "section": "§24.9 Superintelligence Control Contracts"
+      },
+      {
+        "doc": "M12",
+        "page": "42",
+        "section": "§27 CapitalGrant"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each contract round-trips through serde with every listed field and the reconciled CapitalGrant is the only one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ]
   }
 ]

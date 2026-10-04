@@ -127,7 +127,7 @@ fn every_source_file_in_the_backend_workspace_is_written_in_rust() {
 /// Sorted, repository-relative, and exactly what the walk reports, so that a
 /// diff to this array is a diff a reviewer can read against the failure
 /// message.
-const ACCEPTED_NON_RUST_TOOLING: [&str; 12] = [
+const ACCEPTED_NON_RUST_TOOLING: [&str; 13] = [
     ".claude/hooks/format-rust-after-edit.py",
     ".claude/hooks/guard-dangerous-command.py",
     ".claude/hooks/test_hooks.py",
@@ -136,6 +136,10 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 12] = [
     "scripts/check-manifests.py",
     "scripts/model-gateway.mjs",
     "scripts/model-gateway.test.mjs",
+    // Sends the owner a text through a carrier email gateway over SMTP with
+    // STARTTLS. Rust cannot do the job here: TLS in-tree is what ADR 0009
+    // forbids, and a dependency needs an ADR. Not on a workflow path.
+    "scripts/send-sms.py",
     "scripts/terraform-undeletable.py",
     "scripts/venue-signup/browser.mjs",
     "scripts/venue-signup/signup.mjs",

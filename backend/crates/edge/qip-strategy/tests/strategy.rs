@@ -1,4 +1,5 @@
 //! Properties the strategy compiler and runtime have to hold.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::{
     Conviction, FeatureKey, FeatureValue, FeatureVector, Revision, SignalKind, StrategyId,

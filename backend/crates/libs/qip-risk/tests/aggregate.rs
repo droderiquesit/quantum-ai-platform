@@ -11,6 +11,7 @@
 //! `Platform::risk_state_from` performs. It used to be asserted against a
 //! `LimitSet::check_aggregates` wrapper that no production caller ever used,
 //! so the O(1) proof held for a convenience nothing ran.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::{Decimal, dec};
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};

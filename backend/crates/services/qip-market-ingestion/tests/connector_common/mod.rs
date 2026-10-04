@@ -5,6 +5,7 @@
 //! module on its own, so a helper only one binary needs is genuinely unused in
 //! the others. The attribute sits on the items rather than the module so that
 //! a helper no binary uses is still reported.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, ObjectId, Timestamp};

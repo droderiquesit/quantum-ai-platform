@@ -510,6 +510,10 @@ module "observability" {
   # Alerting thresholds. The kill-switch alert has no threshold: any trip is
   # worth waking someone for.
   notification_channels = var.notification_channels
+
+  billing_budget_enabled     = var.billing_budget_enabled
+  billing_account_id         = var.billing_account_id
+  billing_budget_monthly_usd = var.billing_budget_monthly_usd
 }
 
 module "cicd" {
