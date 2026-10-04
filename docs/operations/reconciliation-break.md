@@ -9,8 +9,9 @@ platform's positions may not be the venue's positions.
 1. **Halt.** Not because the platform is about to do something wrong, but
    because everything it decides next is sized off a book that may be wrong.
    ```sh
-   curl -X POST -H "Authorization: Bearer $QIP_TOKEN_OPERATOR" \
-     ".../api/v1/kill-switch?reason=reconciliation%20break%20under%20investigation"
+   curl -X POST -G -H "Authorization: Bearer $QIP_TOKEN_OPERATOR" \
+     --data-urlencode "reason=reconciliation break under investigation" \
+     .../api/v1/kill-switch
    ```
 2. Read the breaks. Each one names the venue, the order, the quantity and what
    the order said when it refused.
