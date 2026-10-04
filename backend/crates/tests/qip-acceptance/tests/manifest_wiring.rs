@@ -55,6 +55,7 @@
 //! never a deployment it wrongly rejects. Each rule therefore asserts it
 //! contributed something, so a rule that silently stops resolving anything
 //! fails here instead of quietly widening the test.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 // The workspace denies `panic_in_result_fn` because an assertion that aborts a
 // `Result`-returning function is a bug in production code. These tests return

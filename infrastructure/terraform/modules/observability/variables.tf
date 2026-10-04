@@ -14,6 +14,34 @@ variable "notification_channels" {
   type = list(string)
 }
 
+variable "billing_budget_enabled" {
+  description = "Create the monthly spend budget. False by default so no environment changes unless it opts in. A budget alerts; it does not cap spend."
+  type        = bool
+  default     = false
+}
+
+variable "billing_account_id" {
+  description = "Billing account the budget attaches to. Required when billing_budget_enabled; supplied outside the committed tfvars."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.billing_account_id == null || can(regex("^[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}$", var.billing_account_id))
+    error_message = "billing_account_id must look like 012345-6789AB-CDEF01; refusing rather than guessing."
+  }
+}
+
+variable "billing_budget_monthly_usd" {
+  description = "Monthly budget in whole USD. 750 is 25 USD/day over 30 days."
+  type        = number
+  default     = 750
+
+  validation {
+    condition     = var.billing_budget_monthly_usd > 0 && var.billing_budget_monthly_usd == floor(var.billing_budget_monthly_usd)
+    error_message = "billing_budget_monthly_usd must be a positive whole number of USD."
+  }
+}
+
 variable "workload_metrics_exist" {
   description = <<-EOT
     Whether the platform's own Prometheus metrics have ever been scraped in

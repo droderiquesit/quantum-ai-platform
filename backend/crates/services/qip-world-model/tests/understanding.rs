@@ -1,4 +1,5 @@
 //! The world model: bitemporality, causal propagation, point-in-time features.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::testing::approx_eq;
 use qip_core::{Context, Decimal, Duration, ObjectId, Timestamp};

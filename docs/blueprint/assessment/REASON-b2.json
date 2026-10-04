@@ -171,26 +171,25 @@
   },
   {
     "id": "REASON-027",
-    "status": "MISSING",
-    "current": "No component of the reasoning fabric emits a constraint, and no CONTRACT-024 SymbolicDerivation type exists (rg for 'SymbolicDerivation' across backend/crates returns no hits). Machine-checkable constraints do cross a process boundary elsewhere, which sets the pattern. The centre issues CapitalEnvelopes and a signed policy payload (share bounds, capability grants) that qip_edge::Cell checks deterministically without the issuer. rule_review's two-signature path emits a LimitSet artefact that LimitSet::check evaluates. None of these comes from a reasoner, and none is compared against a reasoner's own verdict.",
+    "status": "COMPLETE",
+    "current": "Rule conditions and Invariants are a declared serde form (Cond/Invariant); the test evaluates them with a standalone JSON evaluator in tests/rules.rs that imports nothing from the reasoner.",
     "evidence": [
-      "rg -n \"SymbolicDerivation\" backend/crates --iglob '*.rs' -> no matches"
+      "backend/crates/services/qip-reasoning-engine/src/rules.rs",
+      "backend/crates/services/qip-reasoning-engine/tests/rules.rs :: an_independent_checker_agrees_with_every_constraint_verdict (500 generated states, both verdicts asserted to occur). Mutation: Lt weakened to Le made the fabric disagree with the checker and the test failed. Scope: the constraints are the rule-pack invariants; other emitters (capital, risk limits) are outside this register entry."
     ],
-    "gap": "The reasoning fabric emits no constraint, and there is no declared formal form for one. The platform's existing emitted constraints (capital envelopes, policy bounds, limit-set artefacts) come from the capital and risk planes, not from reasoning.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "REASON-026"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need a standalone evaluator sharing no code with the reasoner, checking generated constraints against generated states and agreeing with the reasoner's own verdict on every one.",
-    "work_item": "E09-symbolic-reasoning-brain",
+    "verification": "cargo test -p qip-reasoning-engine --test rules -- an_independent_checker_agrees_with_every_constraint_verdict",
+    "work_item": "",
     "tier": "T3",
     "size": "M",
-    "notes": "Depends on REASON-026 existing to emit anything; the contract shape (CONTRACT-024's SymbolicDerivation) should be defined once, alongside REASON-035's proof-checking contract. verify: status MISSING kept; corrected 'No component emits a constraint at all, symbolic or otherwise'. The centre emits signed capital envelopes and policy bounds that the cell evaluates deterministically, and the risk path emits LimitSet artefacts. The row stays MISSING because none of them is emitted by the reasoning fabric that this requirement governs."
+    "notes": "Closed by the rules.rs rule-pack engine. integrated=false: no composition root or stage calls RulePack yet. | prior note: Depends on REASON-026 existing to emit anything; the contract shape (CONTRACT-024's SymbolicDerivation) should be defined once, alongside REASON-035's proof-checking contract. verify: status MISSING kept; corrected 'No component emits a constraint at all, symbolic or otherwise'. The centre emits signed capital envelopes and policy bounds that the cell evaluates deterministically, and the risk path emits LimitSet artefacts. The row stays MISSING because none of them is emitted by the reasoning fabric that this requirement governs."
   },
   {
     "id": "REASON-028",
@@ -382,26 +381,25 @@
   },
   {
     "id": "REASON-035",
-    "status": "MISSING",
-    "current": "nothing. No proof-producing reasoner exists (see REASON-026), so there is no independent checker to build. No 'proof' or 'checker' construct related to symbolic reasoning exists in the workspace.",
+    "status": "COMPLETE",
+    "current": "Verdict.trace is a machine-readable proof; the test checker re-verifies each step from serialised JSON sharing no code with the solver, and RulePack::verify refuses a verdict that differs from re-evaluation.",
     "evidence": [
-      "rg -n \"SymbolicDerivation\" backend/crates --iglob '*.rs' -> no matches"
+      "backend/crates/services/qip-reasoning-engine/src/rules.rs",
+      "backend/crates/services/qip-reasoning-engine/tests/rules.rs :: the_checker_accepts_untampered_traces_and_rejects_and_the_pack_refuses_any_one_step_mutated (every step mutated in turn, plus a dropped step). Mutation: verify() made always-accept failed the test. Scope: proofs of the rule-pack engine; no other solver in the tree produces proofs."
     ],
-    "gap": "No reasoner produces a proof, and no independent checker exists to verify one.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "REASON-026"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need an independent checker (sharing no code with the solver) that accepts every untampered derivation trace and rejects every trace with one step mutated.",
-    "work_item": "E09-symbolic-reasoning-brain",
+    "verification": "cargo test -p qip-reasoning-engine --test rules -- the_checker_accepts_untampered_traces_and_rejects_and_the_pack_refuses_any_one_step_mutated",
+    "work_item": "",
     "tier": "T3",
     "size": "M",
-    "notes": "Follows naturally once REASON-026/027 exist; the mutation-verification discipline this repository already requires of every test (architecture/01-testing-strategy.md) is a close cousin of what this requirement asks the checker itself to do to a derivation."
+    "notes": "Closed by the rules.rs rule-pack engine. integrated=false: no composition root or stage calls RulePack yet. | prior note: Follows naturally once REASON-026/027 exist; the mutation-verification discipline this repository already requires of every test (architecture/01-testing-strategy.md) is a close cousin of what this requirement asks the checker itself to do to a derivation."
   },
   {
     "id": "REASON-036",

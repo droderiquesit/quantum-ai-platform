@@ -1,0 +1,24 @@
+[
+  {
+    "id": "GOV-029",
+    "status": "NEEDS-VALIDATION",
+    "current": "See gap: partial or unverified overlap with an existing requirement; not re-derived in this entry.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "Existing GOV/AGENCY requirements cover the controls; none has been re-scored against v12.0 to confirm the cited pages.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "Each control named is still traced to an existing GOV or AGENCY requirement citing \u00a71.3 or \u00a724.5.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  }
+]

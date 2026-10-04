@@ -31,6 +31,7 @@
 //! app overrides — so a construction reached here is a construction a
 //! deployment reaches, and the budget it is handed is the budget a deployment
 //! would size against.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_agents::finding::{AgentFinding, Direction, FindingStatus};
 use qip_core::{Clock, Decimal, Duration, Timestamp};

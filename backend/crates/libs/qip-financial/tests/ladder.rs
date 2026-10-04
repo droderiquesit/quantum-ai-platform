@@ -5,6 +5,7 @@
 //! from the cheapest downward. Most of what follows tests the refusals that
 //! keep that true, because a ladder whose rungs are assigned wrongly is worse
 //! than no ladder: it reports a cheap plan while naming the expensive source.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::{Decimal, dec};
 use qip_financial::asset_class::AssetClass;

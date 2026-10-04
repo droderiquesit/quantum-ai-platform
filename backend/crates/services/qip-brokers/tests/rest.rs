@@ -20,6 +20,7 @@
 //! test searching for something absent proves nothing if it was never present.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 mod server;
 
