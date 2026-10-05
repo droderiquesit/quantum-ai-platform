@@ -9,7 +9,7 @@
       "backend/crates/libs/qip-financial/src/physical.rs:882 a_gross_spread_that_looks_profitable_is_negative_once_the_goods_are_landed (embedded test)",
       "rg -il 'scout|sku|purchase_executor|inventory_ledger|resale_router' backend/crates --type rust -- no matches for any of these five names"
     ],
-    "gap": "Product Scout, Resolver, feasibility, PurchaseExecutor (simulated), LogisticsPlan, Ledger and settlement now exist in qip-financial::commerce, but nothing chains them in one acceptance test, no Resale Router (COMMERCE-019/020) or coverage class (COMMERCE-021) exists, and nothing calls any of it in production.",
+    "gap": "A simulated chain test now drives scout, resolver, feasibility, purchase, ledger, resale router, listing, sale and settlement (commerce_resale.rs one_simulated_product_runs_from_discovery_to_a_settled_resale_with_every_stage_present), but it does not run the logistics plan or a return, the ledger entry is built beside the purchase rather than fed by it, nothing in the kernel or an app calls the plane, and no Physical products coverage class exists (COMMERCE-021).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -75,7 +75,7 @@
     "work_item": "E17-tax-duty-wiring",
     "tier": "T2",
     "size": "S",
-    "notes": "Paying or filing the duty is an external action and stays BLOCKED under ADR 0021/C1; determining the amount -- what this requirement actually asks for -- is already computed correctly, just unintegrated. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget)."
+    "notes": "Paying or filing the duty is an external action and stays BLOCKED under ADR 0021/C1; determining the amount -- what this requirement actually asks for -- is already computed correctly, just unintegrated. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget). | Sale-side tax is not modelled anywhere; purchase tax and customs duty are in FeasibilityInput::assess."
   },
   {
     "id": "COMMERCE-004",
@@ -103,15 +103,15 @@
   },
   {
     "id": "COMMERCE-005",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_financial::commerce_resale::replay_economics folds CycleEvent logs into per-SKU SkuEconomics (cost, resale, days, returns) and FeasibilityInput::with_learned draws expected resale, days on market and return rate from it. Simulated; no production caller.",
     "evidence": [
-      "rg -il 'sku' backend/crates --type rust -- no matches anywhere in the workspace",
-      "rg -il 'commerce' backend/crates --type rust -i -- only backend/crates/apps/qip-cli/src/blueprint.rs, the blueprint-register renderer, which names the COMMERCE domain in a label string and implements no commerce logic"
+      "backend/crates/libs/qip-financial/src/commerce_resale.rs",
+      "backend/crates/libs/qip-financial/tests/commerce_resale.rs replayed_cycles_reproduce_the_sku_record_and_the_next_assessment_moves_by_exactly_what_was_learned"
     ],
-    "gap": "No SKU concept, no completed-cycle record, and no learning loop exists; there is nothing for a feasibility assessment to draw realised figures from.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -120,11 +120,11 @@
       "COMMERCE-019"
     ],
     "blocked_by": "",
-    "verification": "No test exists; nothing implements this requirement.",
+    "verification": "cargo test -p qip-financial --test commerce_resale -- replayed_cycles_reproduce_the_sku_record_and_the_next_assessment_moves_by_exactly_what_was_learned. Mutation-verified: breaking the guard failed the named test and the file was restored byte-for-byte.",
     "work_item": "E17-sku-economics-learning",
     "tier": "T3",
     "size": "M",
-    "notes": "The shadow form (learning from observed sold-listing prices without owning a unit) is not blocked by ADR 0021; only learning from a real, owned position's realised economics is. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget)."
+    "notes": "The shadow form (learning from observed sold-listing prices without owning a unit) is not blocked by ADR 0021; only learning from a real, owned position's realised economics is. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget). | simulation only: no production caller (integrated false), ADR 0021/0099 keep live purchase and sale BLOCKED."
   },
   {
     "id": "COMMERCE-006",
@@ -147,29 +147,29 @@
     "work_item": "E17-commerce-source-universe",
     "tier": "T2",
     "size": "M",
-    "notes": "No LIVE_CAPITAL/EXTERNAL_ACTION flag on the raw requirement -- cataloguing sources is pure data work, not blocked by anything in ADR 0099's conflict register. verify: status unchanged (MISSING confirmed). Added evidence so the existing \"marketplace\" category on three connector manifests is not mistaken for commerce coverage: it labels exchanges, and the candidate dataset holds no commerce source kind. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget)."
+    "notes": "No LIVE_CAPITAL/EXTERNAL_ACTION flag on the raw requirement -- cataloguing sources is pure data work, not blocked by anything in ADR 0099's conflict register. verify: status unchanged (MISSING confirmed). Added evidence so the existing \"marketplace\" category on three connector manifests is not mistaken for commerce coverage: it labels exchanges, and the candidate dataset holds no commerce source kind. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget). | Needs qip-data-finder catalogue entries with evaluated licensing posture; not attempted this round."
   },
   {
     "id": "COMMERCE-007",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_financial::commerce_resale::UnitAttributes refuses construction unless all twelve named attributes are each stated or explicitly Absent with a reason; an unknown name or blank value is refused. The ledger's Received path does not yet require one.",
     "evidence": [
-      "rg -il 'inventoryledger|inventory_ledger' backend/crates --type rust -- no matches",
-      "backend/crates/libs/qip-financial/src/physical.rs:260-288 (LandedCost) tracks duty/clearance/storage/marketplace/returns as consignment-level cost components, not as a per-unit record naming SKU identity, condition, location, inventory state, insurance, payment/chargeback risk"
+      "backend/crates/libs/qip-financial/src/commerce_resale.rs",
+      "backend/crates/libs/qip-financial/tests/commerce_resale.rs a_unit_record_missing_any_of_the_twelve_attributes_is_refused_naming_it_and_a_full_one_is_kept"
     ],
-    "gap": "No record type tracks the twelve named attributes (SKU identity, condition, location, inventory state, shipping, insurance, customs/duties, tax, marketplace fees, payment/chargeback risk, storage, returns) per unit, with absence explicit and construction refusing an incomplete record; the closest analogue, LandedCost, is a consignment-level cost breakdown with no insurance or chargeback-risk field at all.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No property test exists; nothing implements the record type it would exercise.",
+    "verification": "cargo test -p qip-financial --test commerce_resale -- a_unit_record_missing_any_of_the_twelve_attributes_is_refused_naming_it_and_a_full_one_is_kept. Mutation-verified: breaking the guard failed the named test and the file was restored byte-for-byte.",
     "work_item": "E17-physical-unit-record-contract",
     "tier": "T2",
     "size": "M",
-    "notes": "Overlaps but is wider than the Inventory Ledger's own per-unit fields (COMMERCE-017, condition/location/cost-basis/ownership); this requirement additionally needs shipping, insurance, fees and chargeback risk, none of which exist in any form today, including insurance, which is not modelled anywhere in the codebase for physical goods. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget)."
+    "notes": "Overlaps but is wider than the Inventory Ledger's own per-unit fields (COMMERCE-017, condition/location/cost-basis/ownership); this requirement additionally needs shipping, insurance, fees and chargeback risk, none of which exist in any form today, including insurance, which is not modelled anywhere in the codebase for physical goods. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget). | simulation only: no production caller (integrated false), ADR 0021/0099 keep live purchase and sale BLOCKED."
   },
   {
     "id": "COMMERCE-008",
@@ -439,14 +439,15 @@
   },
   {
     "id": "COMMERCE-019",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_financial::commerce_resale::route_resale chooses among marketplace, auction and direct quotes by net proceeds less carry, returns every compared figure as the rationale, and is order-independent so replay repeats it. Simulated; no production caller.",
     "evidence": [
-      "rg -il 'resalerouter|resale_router' backend/crates --type rust -- no matches; rg -n 'resale' backend/crates --type rust matches only two comments in physical.rs's Returns doc, not a router"
+      "backend/crates/libs/qip-financial/src/commerce_resale.rs",
+      "backend/crates/libs/qip-financial/tests/commerce_resale.rs the_router_picks_the_best_net_venue_not_the_best_price_records_its_figures_and_repeats_on_replay"
     ],
-    "gap": "No Resale Router exists; nothing chooses a resale venue for a unit.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -454,22 +455,23 @@
       "COMMERCE-017"
     ],
     "blocked_by": "",
-    "verification": "No test exists; nothing implements this requirement.",
+    "verification": "cargo test -p qip-financial --test commerce_resale -- the_router_picks_the_best_net_venue_not_the_best_price_records_its_figures_and_repeats_on_replay. Mutation-verified: breaking the guard failed the named test and the file was restored byte-for-byte.",
     "work_item": "E17-resale-router-venue-choice",
     "tier": "T2",
     "size": "M",
-    "notes": "Listing on a real venue stays BLOCKED under ADR 0021/C1 beyond its simulated form; the simulated form has not been built. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget)."
+    "notes": "Listing on a real venue stays BLOCKED under ADR 0021/C1 beyond its simulated form; the simulated form has not been built. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget). | simulation only: no production caller (integrated false), ADR 0021/0099 keep live purchase and sale BLOCKED."
   },
   {
     "id": "COMMERCE-020",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_financial::commerce_resale::ResaleDesk lists a held unit at the market price, reprices on a market move or after the markdown interval, records each publication, refuses a price under the floor and refuses any repricing of a sold or reserved unit. Simulated; no production caller.",
     "evidence": [
-      "rg -il 'resale_router' backend/crates --type rust -- no matches; there is no listed-inventory concept for a repricing loop to act on"
+      "backend/crates/libs/qip-financial/src/commerce_resale.rs",
+      "backend/crates/libs/qip-financial/tests/commerce_resale.rs a_listed_unit_is_repriced_on_a_market_move_or_a_stale_interval_and_a_sold_unit_never_is"
     ],
-    "gap": "No pricing or repricing of listed inventory exists.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -477,11 +479,11 @@
       "COMMERCE-019"
     ],
     "blocked_by": "",
-    "verification": "No test exists; nothing implements this requirement.",
+    "verification": "cargo test -p qip-financial --test commerce_resale -- a_listed_unit_is_repriced_on_a_market_move_or_a_stale_interval_and_a_sold_unit_never_is. Mutation-verified: breaking the guard failed the named test and the file was restored byte-for-byte.",
     "work_item": "E17-resale-router-repricing",
     "tier": "T2",
     "size": "M",
-    "notes": "Publishing a price on a real venue stays BLOCKED under ADR 0021/C1 beyond its simulated form. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget)."
+    "notes": "Publishing a price on a real venue stays BLOCKED under ADR 0021/C1 beyond its simulated form. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget). | simulation only: no production caller (integrated false), ADR 0021/0099 keep live purchase and sale BLOCKED."
   },
   {
     "id": "COMMERCE-021",
@@ -508,6 +510,6 @@
     "work_item": "E17-physical-coverage-class",
     "tier": "T2",
     "size": "S",
-    "notes": "Registering the class is buildable in paper form once its five sub-forms have something to point at (COMMERCE-008 to -020); trading in it stays BLOCKED under ADR 0021/C1, which is why the requirement keeps both LIVE_CAPITAL and EXTERNAL_ACTION flags even though registration itself is not blocked. verify: status unchanged (MISSING confirmed). Added the registry's RealAsset/IlliquidValuation record, the only place collectibles appear, as evidence that the one sub-form the tree mentions maps to a valuation model and no commerce component. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget)."
+    "notes": "Registering the class is buildable in paper form once its five sub-forms have something to point at (COMMERCE-008 to -020); trading in it stays BLOCKED under ADR 0021/C1, which is why the requirement keeps both LIVE_CAPITAL and EXTERNAL_ACTION flags even though registration itself is not blocked. verify: status unchanged (MISSING confirmed). Added the registry's RealAsset/IlliquidValuation record, the only place collectibles appear, as evidence that the one sub-form the tree mentions maps to a valuation model and no commerce component. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget). | Adding a class to qip-kernel asset_class_registry touches every valuation-engine match; left for a lane that owns that registry."
   }
 ]
