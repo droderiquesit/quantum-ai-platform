@@ -214,14 +214,14 @@
   },
   {
     "id": "MESH-033",
-    "status": "MISSING",
-    "current": "nothing. `grep -rln rebalanc backend/crates/services/qip-capital-fabric/src backend/crates/edge/qip-edge/src backend/crates/runtime/qip-kernel/src` finds only an unrelated cadence-rebalancing hit; qip_capital_fabric::plan::PrePositioningPlanner forecasts and plans region capital moves independently of any specific cycle's outcome, not triggered by one.",
+    "status": "COMPLETE",
+    "current": "qip_mesh::rebalance::rebalancing_tasks turns per-place drift beyond a tolerance into ordered RebalanceTask values citing the epoch's opportunity and sequence (backend/crates/services/qip-mesh/src/rebalance.rs).",
     "evidence": [
-      "grep -rln rebalanc backend/crates/services/qip-capital-fabric/src backend/crates/edge/qip-edge/src backend/crates/runtime/qip-kernel/src (only backend/crates/runtime/qip-kernel/src/adaptive_cadence.rs, unrelated)"
+      "backend/crates/services/qip-mesh/tests/rebalance.rs -- drift_beyond_tolerance_becomes_one_task_per_place_citing_the_epoch"
     ],
-    "gap": "No code path turns a cycle's leftover inventory drift into a rebalancing task; nothing observes 'drift left by a cycle' as a fact at all.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -229,11 +229,11 @@
       "MESH-020"
     ],
     "blocked_by": "",
-    "verification": "none exists",
+    "verification": "cargo test -p qip-mesh --test rebalance (mutation-verified: flipping the drift sign and doubling the tolerance each failed it; restored byte-for-byte and the suite passes).",
     "work_item": "E07-cycle-drift-rebalancing",
     "tier": "T2",
     "size": "M",
-    "notes": "Fully demonstrable in paper per the requirement's own notes (LIVE_CAPITAL removed); carrying the task out (CAPITAL-020) is a separate, later piece."
+    "notes": "Fully demonstrable in paper per the requirement's own notes (LIVE_CAPITAL removed); carrying the task out (CAPITAL-020) is a separate, later piece. | Library-level rule in qip_mesh with no transport: no cell composition root calls it yet (integrated=false); the peer transport is MESH-038, blocked on a dependency record (ADR 0002/0009)."
   },
   {
     "id": "MESH-034",
@@ -414,14 +414,14 @@
   },
   {
     "id": "MESH-041",
-    "status": "MISSING",
-    "current": "nothing. The only wire is qip_edge::mesh::CellUplink, a single hub-and-spoke link per cell to the central plane (mesh.rs) — there is no peer-connection or 'opportunity domain' concept for a fan-out bound to apply to.",
+    "status": "COMPLETE",
+    "current": "qip_mesh::peer::PeerEndpoint::recipients names only the other nodes holding a leg of the epoch (never every node) and refuses, rather than truncates, when that set exceeds PeerLimits::max_fan_out (backend/crates/services/qip-mesh/src/peer.rs).",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/mesh.rs:420-451 (single uplink destination, no peer set)"
+      "backend/crates/services/qip-mesh/tests/peer_rules.rs -- an_update_goes_only_to_the_peers_holding_a_leg_and_never_past_the_fan_out_bound"
     ],
-    "gap": "No fan-out or opportunity-domain grouping exists at all; the topology today is star (cells to centre), not mesh.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -429,11 +429,11 @@
       "MESH-038"
     ],
     "blocked_by": "",
-    "verification": "none exists",
+    "verification": "cargo test -p qip-mesh --test peer_rules (mutation-verified: removing the self-exclusion filter and loosening the bound by one each failed it; restored byte-for-byte and the suite passes).",
     "work_item": "E11-mesh-fanout-bound",
     "tier": "T3",
     "size": "L",
-    "notes": "Bounding logic itself does not need C2; it only becomes meaningful once a real peer set (MESH-038/047/048) exists to bound."
+    "notes": "Bounding logic itself does not need C2; it only becomes meaningful once a real peer set (MESH-038/047/048) exists to bound. | Library-level rule in qip_mesh with no transport: no cell composition root calls it yet (integrated=false); the peer transport is MESH-038, blocked on a dependency record (ADR 0002/0009)."
   },
   {
     "id": "MESH-042",
