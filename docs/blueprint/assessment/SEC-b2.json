@@ -462,24 +462,26 @@
   },
   {
     "id": "SEC-045",
-    "status": "MISSING",
-    "current": "nothing — no google_project_iam_audit_config resource exists anywhere in the tree.",
+    "status": "COMPLETE",
+    "current": "infrastructure/terraform/modules/secrets/main.tf google_project_iam_audit_config.secrets_and_keys enables ADMIN_READ, DATA_READ and DATA_WRITE audit logs for secretmanager.googleapis.com and cloudkms.googleapis.com.",
     "evidence": [
-      "grep -rn 'iam_audit_config|DATA_READ|audit_log_config' infrastructure/terraform/ — no match"
+      "infrastructure/terraform/modules/secrets/main.tf google_project_iam_audit_config.secrets_and_keys",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs secret_manager_and_kms_data_reads_are_audit_logged (mutation: DATA_READ removed from the log list, test failed on DATA_READ; restored, passed)",
+      "terraform validate on infrastructure/terraform: Success! The configuration is valid."
     ],
-    "gap": "Admin-activity logs (changes to secrets/IAM) are on by Google default, but data-access logs (DATA_READ, which record a read of a secret's value) are not enabled by anything in this repository, so a secret read leaves no queryable record today.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. A google_project_iam_audit_config for secretmanager.googleapis.com enabling DATA_READ and DATA_WRITE, plus a plan-time test asserting its presence, would close the gap.",
+    "verification": "cargo test -p qip-acceptance --test security_controls secret_manager_and_kms_data_reads_are_audit_logged",
     "work_item": "E13",
     "tier": "T2",
     "size": "S",
-    "notes": "SEC-059 holds the broader audit-logging requirement this is one instance of."
+    "notes": "The configuration is declared and test-pinned; nothing is applied, so the requirement's 'a test access shows up in the log' has not been observed. SEC-059 holds the broader audit requirement."
   },
   {
     "id": "SEC-046",
@@ -555,25 +557,25 @@
   },
   {
     "id": "SEC-049",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Both modules declare adaptive_protection_config { layer_7_ddos_defense_config { enable = true } } on their Cloud Armor policy.",
     "evidence": [
-      "infrastructure/terraform/modules/public-edge/main.tf:68-69 adaptive_protection_config / layer_7_ddos_defense_config",
-      "infrastructure/terraform/modules/iap-edge/main.tf:135-136 adaptive_protection_config / layer_7_ddos_defense_config"
+      "infrastructure/terraform/modules/public-edge/main.tf:68-69 and infrastructure/terraform/modules/iap-edge/main.tf:135-136 (adaptive_protection_config / layer_7_ddos_defense_config enable = true)",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs every_internet_facing_cloud_armor_policy_enables_layer_7_adaptive_protection (mutation: iap-edge enable = false, test failed naming iap-edge; restored, passed)"
     ],
-    "gap": "No named test asserts adaptive_protection_config's presence (the_public_edge_attaches_every_backend_to_the_cloud_armor_policy checks rate_limit_options and origin.region_code, not this). Both modules are instantiated with 0 resources in every environment today — public_edge.hostnames defaults to [] and no environment sets it; gitops_portal_hostname is \"\" in dev — so the control has never been reached by a real plan or apply. It cannot be provisioned in dev either: infra.yml run 71 failed applying iap-edge's Cloud Armor policy with \"Quota 'SECURITY_POLICY_RULES' exceeded. Limit: 0.0 globally\" (ADR 0095; modules/iap-edge/README.md:25-29).",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. A test asserting module.contains(\"adaptive_protection_config\") and layer_7_ddos_defense_config { enable = true } for both modules would close the gap.",
+    "verification": "cargo test -p qip-acceptance --test security_controls every_internet_facing_cloud_armor_policy_enables_layer_7_adaptive_protection",
     "work_item": "E01",
     "tier": "T1",
     "size": "S",
-    "notes": "Same 'built and gated to zero effect' status the current-state map records for both modules ([\"exists\",\"unused\",\"hardened\"]). verify: status PARTIAL kept; deployable true -> false, because the project has zero Cloud Armor security-policy-rule quota and run 71 proved it. grep for adaptive_protection/layer_7_ddos across backend/crates/tests and every *.tftest.hcl finds nothing, which confirms tested=false."
+    "notes": "Declared and test-pinned at configuration level. Neither module is instantiated in any environment and the dev project has zero Cloud Armor rule quota (ADR 0095), so deployable stays false."
   },
   {
     "id": "SEC-050",
