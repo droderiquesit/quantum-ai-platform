@@ -541,8 +541,8 @@
     "key_contracts": [
       "struct WorldModel::new (world.rs:93)",
       "fn graph/graph_mut/causal/features/features_mut/resolver (accessors, world.rs:181-205)",
-      "fn add_entity (world.rs:214)",
-      "fn absorb_news(&mut self, item, context) -> Vec<String> (world.rs:525)",
+      "fn add_entity -> Result<()> (world.rs; refuses an entity the graph refuses)",
+      "fn absorb_news(&mut self, item, context) -> Result<Vec<String>> (world.rs; refuses an item whose headline or mention exceeds graph::EXCERPT_LIMIT)",
       "fn causal_support/retain_causal_support (world.rs:511-522, bounded at CAUSAL_SUPPORT_RETAINED=512)"
     ],
     "workspace_deps": ["qip-core", "qip-contracts", "qip-entity-resolution", "qip-financial", "qip-market"],

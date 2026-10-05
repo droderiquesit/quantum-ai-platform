@@ -22,11 +22,37 @@ pub enum EntityKind {
     CentralBank,
     Regulator,
     Fund,
+    // The six below complete the entity span blueprint §9 names for the
+    // world graph (WORLD-003). Until they existed a supply chain, a product,
+    // a contract, a storm, a shipping lane and a market each had to be
+    // registered as a `Company` or not at all, so the graph could hold them
+    // only by mislabelling them, and a query by kind returned the mislabel.
+    /// A chain of supply as a thing in itself: the path a good takes, which
+    /// can be disrupted without any one company on it failing.
+    SupplyChain,
+    /// A good or service somebody sells.
+    Product,
+    /// A commercial agreement (supply, offtake, licence). Not a tradable
+    /// instrument: those are financial objects, not entities.
+    Contract,
+    /// A weather system or climate condition over a place and period.
+    Weather,
+    /// A route, port, chokepoint or carrier lane.
+    Logistics,
+    /// A market for something, as distinct from a [`Self::Venue`] that hosts
+    /// trading in it.
+    Market,
 }
 
 impl EntityKind {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::SupplyChain => "supply_chain",
+            Self::Product => "product",
+            Self::Contract => "contract",
+            Self::Weather => "weather",
+            Self::Logistics => "logistics",
+            Self::Market => "market",
             Self::Company => "company",
             Self::Person => "person",
             Self::Country => "country",

@@ -10,7 +10,8 @@ use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_world_model::federation::{
     Abstraction, Assessment, Calibration, CalibrationClaim, Decision, Declaration, Event,
-    Federation, ModelKind, Scope, Status, WorldModelSpec, lineage_from_journal,
+    Federation, MATERIAL_DISAGREEMENT_SPREAD, ModelKind, Scope, Status, WorldModelSpec,
+    lineage_from_journal,
 };
 
 fn at(secs: i64) -> Timestamp {
@@ -500,5 +501,90 @@ fn competing_branches_stay_live_until_the_outcome_and_the_refuted_one_is_closed_
         f.calibration("down")?,
         Calibration::Brier { resolved: 1, .. }
     ));
+    Ok(())
+}
+
+#[test]
+fn a_material_disagreement_raises_exactly_one_research_task_citing_its_record_and_a_small_one_raises_none()
+-> Result<()> {
+    // WORLD-061. The failure this prevents: a disagreement was recorded and
+    // nobody was asked to resolve it, so "the models are far apart on this"
+    // stayed a journal line. And the opposite failure: a task per arbitration
+    // of a disagreement that persists, burying the question under copies.
+    let mut f = Federation::new();
+    register(&mut f, plain("a", 1_000))?;
+    register(&mut f, plain("b", 1_000))?;
+    warm_up(&mut f, &["a", "b"])?;
+    // Premise: nothing has been raised, and the threshold sits where the two
+    // fixtures below are on opposite sides of it.
+    assert!(f.research_tasks().is_empty());
+    let (material, small) = (0.3, 0.1);
+    assert!(small < MATERIAL_DISAGREEMENT_SPREAD && MATERIAL_DISAGREEMENT_SPREAD <= material);
+
+    // One disagreement above the threshold, on `rates`.
+    f.assess("a", view("rates", 0.75, 0.5, 0.4, 10))?;
+    f.assess("b", view("rates", 0.75 - material, 0.5, 0.4, 10))?;
+    let above = f.arbitrate("rates", at(11))?;
+    assert!(
+        (above.disagreement.spread - material).abs() < 1e-12,
+        "premise"
+    );
+
+    // One below it, on `growth`.
+    f.assess("a", view("growth", 0.6, 0.5, 0.4, 10))?;
+    f.assess("b", view("growth", 0.6 - small, 0.5, 0.4, 10))?;
+    let below = f.arbitrate("growth", at(12))?;
+    assert!((below.disagreement.spread - small).abs() < 1e-12, "premise");
+
+    // Exactly one task, raised by the first and not by the second.
+    assert!(
+        below.research.is_none(),
+        "a small disagreement raised a task"
+    );
+    let task = above
+        .research
+        .expect("a material disagreement raises a task");
+    assert_eq!(f.research_tasks(), vec![&task]);
+    assert_eq!(task.proposition, "rates");
+    assert_eq!(task.models, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(task.raised_at, at(11));
+
+    // The citation resolves, in the journal, to the disagreement record of
+    // that arbitration: the same views, not a restatement of them.
+    match &f.journal()[task.cites] {
+        Event::Decided {
+            proposition,
+            at: decided_at,
+            disagreement,
+            ..
+        } => {
+            assert_eq!(proposition, "rates");
+            assert_eq!(*decided_at, at(11));
+            assert_eq!(disagreement, &above.disagreement);
+            assert_eq!(disagreement.views.len(), 2, "every view is in the record");
+        }
+        other => panic!("the task cites {other:?}, which is not a disagreement record"),
+    }
+
+    // The disagreement persists and is arbitrated again: the question is
+    // already open, so no second task.
+    let again = f.arbitrate("rates", at(13))?;
+    assert!(
+        (again.disagreement.spread - material).abs() < 1e-12,
+        "premise"
+    );
+    assert!(
+        again.research.is_none(),
+        "an open question was raised twice"
+    );
+    assert_eq!(f.research_tasks().len(), 1);
+
+    // Reality answers it; a later material disagreement under the same name
+    // is a new question and is raised.
+    f.resolve("rates", true, at(14));
+    f.assess("a", view("rates", 0.75, 0.5, 0.4, 15))?;
+    f.assess("b", view("rates", 0.75 - material, 0.5, 0.4, 15))?;
+    assert!(f.arbitrate("rates", at(16))?.research.is_some());
+    assert_eq!(f.research_tasks().len(), 2);
     Ok(())
 }

@@ -46,7 +46,9 @@ pub use falsification::{
     SourceCensus, SourceStanding, TrialLedger, Verdict, rolling_statistic,
 };
 pub use features::{FEATURE_HISTORY, Feature, FeatureLookup, FeatureStore, FeatureValue};
-pub use graph::{Fact, KnowledgeGraph, Node, NodeKind};
+pub use graph::{
+    Belief, CONTRADICTION_GAP, Contradiction, EXCERPT_LIMIT, Fact, KnowledgeGraph, Node, NodeKind,
+};
 pub use liquidity::{
     Concentration, DepthObservation, LiquidityDrift, LiquidityMap, LiquidityTopology, VenueDepth,
     VenueShift,

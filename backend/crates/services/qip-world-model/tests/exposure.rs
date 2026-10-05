@@ -9,7 +9,7 @@
 
 use qip_core::{Result, Timestamp};
 use qip_world_model::exposure::{MAX_EXPOSURE_HOPS, instruments_exposed_to};
-use qip_world_model::graph::{Fact, KnowledgeGraph, Node, NodeKind};
+use qip_world_model::graph::{EntityKind, Fact, KnowledgeGraph, Node, NodeKind};
 use qip_world_model::relationship::{Relationship, RelationshipKind};
 
 fn at(secs: i64) -> Timestamp {
@@ -23,9 +23,19 @@ fn at(secs: i64) -> Timestamp {
 /// below can ask the graph a question from before it knew the second hop.
 fn supply_chain(known_from: i64) -> Result<KnowledgeGraph> {
     let mut graph = KnowledgeGraph::new();
-    graph.add_node(Node::new("KESTREL", NodeKind::Entity, "Kestrel", at(0)));
-    graph.add_node(Node::new("NORTHWIND", NodeKind::Entity, "Northwind", at(0)));
-    graph.add_node(Node::new("NWD", NodeKind::FinancialObject, "NWD", at(0)));
+    graph.add_node(Node::entity(
+        "KESTREL",
+        EntityKind::Company,
+        "Kestrel",
+        at(0),
+    ))?;
+    graph.add_node(Node::entity(
+        "NORTHWIND",
+        EntityKind::Company,
+        "Northwind",
+        at(0),
+    ))?;
+    graph.add_node(Node::new("NWD", NodeKind::FinancialObject, "NWD", at(0)))?;
 
     graph.assert_fact(Fact::new(
         Relationship::new(
@@ -120,9 +130,13 @@ fn an_exposure_is_invisible_before_the_instant_the_link_became_knowable() {
 fn a_cycle_in_the_relationship_graph_terminates_rather_than_walking_for_ever() {
     let mut graph = KnowledgeGraph::new();
     for id in ["A", "B"] {
-        graph.add_node(Node::new(id, NodeKind::Entity, id, at(0)));
+        graph
+            .add_node(Node::entity(id, EntityKind::Company, id, at(0)))
+            .unwrap();
     }
-    graph.add_node(Node::new("SEC", NodeKind::FinancialObject, "SEC", at(0)));
+    graph
+        .add_node(Node::new("SEC", NodeKind::FinancialObject, "SEC", at(0)))
+        .unwrap();
     // A -> B -> A, and B -> SEC.
     graph.assert_fact(
         Fact::new(
@@ -167,7 +181,9 @@ fn a_cycle_in_the_relationship_graph_terminates_rather_than_walking_for_ever() {
 #[test]
 fn an_entity_with_no_outgoing_facts_answers_empty_rather_than_failing() {
     let mut graph = KnowledgeGraph::new();
-    graph.add_node(Node::new("LONELY", NodeKind::Entity, "Lonely", at(0)));
+    graph
+        .add_node(Node::entity("LONELY", EntityKind::Company, "Lonely", at(0)))
+        .unwrap();
     let found = instruments_exposed_to(&graph, "LONELY", 2, at(10), at(10)).unwrap();
     assert!(
         found.is_empty(),

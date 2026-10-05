@@ -414,13 +414,13 @@ fn walk() -> Result<Journey> {
 
     // --- 7. UPDATE STATE AND GRAPH --------------------------------------
     let mut world = WorldModel::new();
-    world.add_entity(northwind());
+    world.add_entity(northwind())?;
     world.graph_mut().add_node(Node::new(
         OBJECT,
         NodeKind::FinancialObject,
         &mapping.canonical_symbol,
         known_at,
-    ));
+    ))?;
     world
         .relate(
             Relationship::new(

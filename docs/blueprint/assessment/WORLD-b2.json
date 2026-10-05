@@ -78,7 +78,7 @@
     "work_item": "E09",
     "tier": "T2",
     "size": "L",
-    "notes": "SelfModel's CAPABILITY_WINDOW/MINIMUM_SAMPLE machinery (self_model.rs:38-60) is the right shape to extend with a regime key; RegimeExperience already reads the episode store the same way and could supply the regime label. verify: upgraded MISSING -> PARTIAL; flags set for what exists. The assessor found SelfModel and RegimeExperience but missed ReputationBook (per-model per-regime competence, tested, unwired) and Platform::score_claims_by_regime (per-claim-class per-regime hit rates, reached every LEARN). The production scoreboard keys on the regime at resolution, which reputation.rs's module doc names as the error that makes a reputation book say the opposite of what it means; whoever closes this should pick one rule."
+    "notes": "2026-10-04 closure lane: not closed. A per-analyst, per-regime score could be written from remember_resolved, which holds each stance, the regime at formation and the outcome; the per-model half (ReputationBook) still has no caller because the platform implements one reasoning rung, so the row would stay PARTIAL. | SelfModel's CAPABILITY_WINDOW/MINIMUM_SAMPLE machinery (self_model.rs:38-60) is the right shape to extend with a regime key; RegimeExperience already reads the episode store the same way and could supply the regime label. verify: upgraded MISSING -> PARTIAL; flags set for what exists. The assessor found SelfModel and RegimeExperience but missed ReputationBook (per-model per-regime competence, tested, unwired) and Platform::score_claims_by_regime (per-claim-class per-regime hit rates, reached every LEARN). The production scoreboard keys on the regime at resolution, which reputation.rs's module doc names as the error that makes a reputation book say the opposite of what it means; whoever closes this should pick one rule."
   },
   {
     "id": "WORLD-037",
@@ -131,17 +131,15 @@
   },
   {
     "id": "WORLD-039",
-    "status": "PARTIAL",
-    "current": "qip_twin::counterfactual::CounterfactualEngine::plan/settle/evaluate (backend/crates/services/qip-twin/src/counterfactual.rs:544,639,818) prices alternatives for both placed and declined/rejected actions. qip_twin::value::Simulated<T> (value.rs:43-69) structurally taints every counterfactual figure -- no Add against a real Decimal, no unwrapping accessor -- so a simulated result can never be reported as an observed one, which is the 'marked as an estimate' half of the requirement. qip-kernel's Platform::score_declined (platform.rs:16326) and Platform::evaluate_alternatives (platform.rs:16218) run this every LEARN stage over self.declined, and CounterfactualSet is a type distinct from the observed-outcome ledger (self.outcomes), so an estimate is never counted as observed.",
+    "status": "COMPLETE",
+    "current": "qip_twin::counterfactual::SimulatedOutcome carries an EstimationMethod, stamped once in CounterfactualEngine::settle (BarOpenReplay: entry and exit at the simulator's fill price, the open of the bar covering each instant, net of the plan's cost model, after a seeded availability draw). qip-kernel's DeclinedScore.method is read off the priced `trade` alternative's own record in Platform::score_declined, every LEARN stage, and serialises as `method`. A record written before the field existed reads back as `unrecorded`, never as a method it did not name. The estimate marking (qip_twin::value::Simulated) and the separation from the observed-outcome ledger are as before.",
     "evidence": [
-      "backend/crates/services/qip-twin/src/counterfactual.rs:48-117,370-378,494 (CounterfactualEngine),544 (plan),639 (settle),818 (evaluate)",
-      "backend/crates/services/qip-twin/src/value.rs:43-69",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:16218,16326-16346",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:1318 a_persistent_pattern_of_unfavourable_declines_on_one_instrument_narrows_only_that_instruments_sizing",
-      "backend/crates/runtime/qip-kernel/tests/episodic.rs:709 a_precedent_says_what_the_platform_declined_on_the_episodes_it_recalled_and_whether_it_should_have",
-      "backend/crates/tests/qip-acceptance/tests/e2e.rs:793-890 (Layer 6 builds OutcomeCapture and CounterfactualEngine by hand; it does not exercise Platform::score_declined)"
+      "backend/crates/services/qip-twin/src/counterfactual.rs (EstimationMethod, SimulatedOutcome::method, settle)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (DeclinedScore.method, score_declined)",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs -- a_declined_actions_counterfactual_record_names_the_method_that_estimated_it_and_never_joins_the_observed_outcomes",
+      "backend/crates/services/qip-twin/src/value.rs:43-69 (Simulated<T>: the estimate marking)"
     ],
-    "gap": "SimulatedOutcome (counterfactual.rs:370-378) has no field naming the pricing method that produced it -- it is always qip_simulation_engine::clock::SimulationClock::fill_price, but that is implicit in the code path rather than a recorded value, so the requirement's 'names the method' clause is not literally satisfied.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -149,11 +147,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning -- a_persistent_pattern_of_unfavourable_declines_on_one_instrument_narrows_only_that_instruments_sizing (run 2026-09-25: 1 passed). The previous filter 'a_persistent_pattern_of_unfavourable_declines_on_one_instruments_sizing' matches no test name and ran 0 tests.",
+    "verification": "cargo test -p qip-kernel --test learning -- a_declined_actions_counterfactual_record_names_the_method_that_estimated_it_and_never_joins_the_observed_outcomes (1 passed). Mutation-verified, each restored byte-for-byte: settle stamping Unrecorded, and score_declined dropping the method the twin stamped, each failed with left \"unrecorded\" right \"bar_open_replay\".",
     "work_item": "E09",
     "tier": "T0",
     "size": "S",
-    "notes": "Adding an explicit `method: &'static str` field to SimulatedOutcome would close the remaining gap cheaply; the estimate-marking and never-counted-as-observed guarantees are already structural. verify: e2e true -> false. The cited e2e.rs Layer 6 constructs OutcomeCapture and CounterfactualEngine directly and never goes through Platform::score_declined, so no acceptance or cross-process test drives a declined action through the platform's own counterfactual path (the kernel learning test does, via submit_order then run_cycle). Evidence lines corrected (:494 is the struct, evaluate is :818). The row's verification filter ran 0 tests and is replaced. Status PARTIAL confirmed: DeclinedScore and SimulatedOutcome carry no field naming the method."
+    "notes": "2026-10-04: PARTIAL -> COMPLETE. One method exists today, so the field distinguishes nothing yet; it is what makes a second pricer's records distinguishable the day one is added. FillScore carries bits and not a figure, so it carries no method; the CounterfactualSet it is read from does. | Adding an explicit `method: &'static str` field to SimulatedOutcome would close the remaining gap cheaply; the estimate-marking and never-counted-as-observed guarantees are already structural. verify: e2e true -> false. The cited e2e.rs Layer 6 constructs OutcomeCapture and CounterfactualEngine directly and never goes through Platform::score_declined, so no acceptance or cross-process test drives a declined action through the platform's own counterfactual path (the kernel learning test does, via submit_order then run_cycle). Evidence lines corrected (:494 is the struct, evaluate is :818). The row's verification filter ran 0 tests and is replaced. Status PARTIAL confirmed: DeclinedScore and SimulatedOutcome carry no field naming the method."
   },
   {
     "id": "WORLD-040",
@@ -460,26 +458,28 @@
   },
   {
     "id": "WORLD-053",
-    "status": "NEEDS-VALIDATION",
-    "current": "Structurally satisfied: qip-edge (backend/crates/edge/qip-edge/Cargo.toml) declares no dependency on qip-world-model at all -- confirmed directly (grep across crates/edge/*/Cargo.toml for qip-world-model returns nothing) -- so no edge cell can reach a world-model query even transitively. qip-edge-node runs Cell::work only under QIP_VENUE_FEED=simulated (qip-edge-node/src/pass.rs:117 run_pass, called at main.rs:888), reached in production code but with execution_nodes={} in every environment, so nothing is actually deployed.",
+    "status": "COMPLETE",
+    "current": "Structural, and now asserted. The federation and the knowledge graph both live in qip-world-model. qip-acceptance's architecture::no_edge_cell_can_reach_a_reasoning_crate asserts that no edge crate, qip-edge-node included, can reach qip-world-model through its shipped dependencies, anchored on the kernel reaching it so the absence is not vacuous; lane_placement asserts the Lane 0 set is exactly what qip-edge-node links and that qip-world-model is Lane 3 and absent from it. A cell's process therefore contains no world-model code to query, with the model up or down.",
     "evidence": [
-      "backend/crates/edge/qip-edge/Cargo.toml (no qip-world-model dependency)",
-      "backend/crates/apps/qip-edge-node/src/pass.rs:117 (run_pass, gated by QIP_VENUE_FEED=simulated; called at main.rs:888)",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:715 no_edge_cell_can_reach_a_language_model (the shape of the missing test; it names qip-ai, not qip-world-model)"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs -- no_edge_cell_can_reach_a_reasoning_crate (names qip-world-model)",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs -- the_lane_zero_set_is_exactly_what_the_reflex_node_compiles",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs -- replay_training_and_world_model_crates_are_lane_three_and_absent_from_the_reflex_node",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs -- every_world_model_arbitration_reasoner_planner_and_specialist_agent_crate_runs_in_the_cognitive_slow_lane",
+      "backend/crates/edge/qip-edge/Cargo.toml (no qip-world-model dependency)"
     ],
-    "gap": "No dedicated test (chaos or architecture) asserts 'no edge crate depends on qip-world-model' or 'stopping every world-model service leaves reflex latency/decisions unchanged' -- the property holds by the absence of a Cargo dependency, not by an assertion a change could break loudly.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A test that would prove it does not exist yet; write an architecture.rs assertion mirroring no_edge_cell_can_reach_a_language_model but naming qip-world-model.",
+    "verification": "cargo test -p qip-acceptance --test architecture -- no_edge_cell_can_reach_a_reasoning_crate (1 passed) and --test lane_placement (5 passed). Mutation-verified against the built binaries, restored byte-for-byte: adding qip-world-model to qip-routing's [dependencies] failed the architecture test with 'the edge crate qip-edge can reach the reasoner qip-world-model' and four of the five lane tests.",
     "work_item": "E01",
     "tier": "T0",
     "size": "S",
-    "notes": "execution_nodes = {} in every environment (infrastructure/environments/*/terraform.tfvars), so this is also not deployable today regardless of the code-level guarantee. verify: status NEEDS-VALIDATION confirmed. `cargo tree -p <crate> -e normal` for all nine edge crates (qip-edge, qip-edge-node, qip-routing, qip-sequencing, qip-orderbook, qip-strategy, qip-arbitrage, qip-feature-dag, qip-protocols) shows no transitive qip-world-model, and no architecture/chaos test asserts it. Corrected the run_pass citation (main.rs:779 is stale; the call is at :888). Caveat for whoever closes this: the central fast brain (qip-fastbrain) runs the full Platform cycle, world model included, in the same synchronous loop as its paper ACT stage; it is not the reflex cell ADR 0099 maps to execution nodes, but it is the only order-producing path that is deployable today."
+    "notes": "2026-10-04: NEEDS-VALIDATION -> COMPLETE on the structural form. The requirement's chaos check (stop every world-model service, replay, compare decisions and latency) has nothing to stop: the world model is a library inside the central brains, not a service a cell calls, so the comparison would be of a cell with itself. No latency bound is measured here. Still true and not closed by this: qip-fastbrain runs the full cycle, world model included, in the same loop as its paper ACT stage, and it is registered Lane 3 for that reason (ARCH-019); and no node is deployed (execution_nodes = {}). | execution_nodes = {} in every environment (infrastructure/environments/*/terraform.tfvars), so this is also not deployable today regardless of the code-level guarantee. verify: status NEEDS-VALIDATION confirmed. `cargo tree -p <crate> -e normal` for all nine edge crates (qip-edge, qip-edge-node, qip-routing, qip-sequencing, qip-orderbook, qip-strategy, qip-arbitrage, qip-feature-dag, qip-protocols) shows no transitive qip-world-model, and no architecture/chaos test asserts it. Corrected the run_pass citation (main.rs:779 is stale; the call is at :888). Caveat for whoever closes this: the central fast brain (qip-fastbrain) runs the full Platform cycle, world model included, in the same synchronous loop as its paper ACT stage; it is not the reflex cell ADR 0099 maps to execution nodes, but it is the only order-producing path that is deployable today."
   },
   {
     "id": "WORLD-054",
@@ -534,7 +534,7 @@
     "work_item": "E09",
     "tier": "T1",
     "size": "M",
-    "notes": "A dedicated integration test (inject a maximal-confidence world-model claim, assert no OrderIntent exists until RiskControl/ComplianceControl have run) would close the strict-COMPLETE gap cheaply given the structural pieces already hold. verify: status PARTIAL confirmed; cited tests run and pass (architecture: 1, organisation: 2). `cargo tree -p qip-world-model -e normal` reaches qip-ai, qip-contracts, qip-core, qip-entity-resolution, qip-events, qip-financial, qip-market and qip-numerics only, and the only order types (qip-execution-engine Order, qip-routing ChildOrder) are in neither, so the structural half holds -- but no architecture test names qip-world-model as a root, which the requirement's check asks for. Evidence made precise (test file and lines)."
+    "notes": "2026-10-04 closure lane: not closed. A kernel test asserting that a maximum-confidence causal claim produces no order passes today for a reason no mutation can break: nothing reads a world-model output on the order path at all, so there is no implementation to break and the test would guard nothing. It needs a path from a world-model claim towards a proposal to exist before a test can show the gates stopping it. | A dedicated integration test (inject a maximal-confidence world-model claim, assert no OrderIntent exists until RiskControl/ComplianceControl have run) would close the strict-COMPLETE gap cheaply given the structural pieces already hold. verify: status PARTIAL confirmed; cited tests run and pass (architecture: 1, organisation: 2). `cargo tree -p qip-world-model -e normal` reaches qip-ai, qip-contracts, qip-core, qip-entity-resolution, qip-events, qip-financial, qip-market and qip-numerics only, and the only order types (qip-execution-engine Order, qip-routing ChildOrder) are in neither, so the structural half holds -- but no architecture test names qip-world-model as a root, which the requirement's check asks for. Evidence made precise (test file and lines)."
   },
   {
     "id": "WORLD-056",
@@ -560,17 +560,21 @@
   },
   {
     "id": "WORLD-057",
-    "status": "PARTIAL",
-    "current": "Two structural guards, neither tested at the knowledge-graph boundary. (1) Discovery: qip_data_finder::probe::SampleManifest (backend/crates/services/qip-data-finder/src/probe.rs:109-140) replaced the PayloadSample-holding ProbeEvidence; it has no field a body can be put in, so a registered source keeps a hash, length and media type, never the text -- and registration_is_not_ingestion.rs:101 proves a registered source's JSON carries neither the sampled prose nor a quoted value. (2) The graph's own news path: qip_financial::intelligence::NewsItem (intelligence.rs:121-139) carries a SourceManifest (locator and content hash) and no article text, so WorldModel::absorb_news (world.rs:525-605) can write only the headline as an Event node label and the locator as an index attribute. The headline is a verbatim span with no declared excerpt limit, and no guard or test exists on the graph write API itself (graph.rs/world.rs accept any string in a node label or attribute).",
+    "status": "COMPLETE",
+    "current": "qip_world_model::graph declares EXCERPT_LIMIT (280 characters) and refuse_a_body. KnowledgeGraph::add_node returns a refusal for a node whose id, label or any attribute exceeds it, and Fact::new for a fact whose source or either end does; a refused write leaves the graph as it was. WorldModel::absorb_news holds the headline, the item id as the graph will hold it, the provenance source and every mention to the limit before the resolver, the graph, the index or the journal sees the item, so an item carrying a body where a headline goes is refused whole. Platform::observe reports the refusal at LEARN, does not count the item absorbed and raises no event from it. The upstream guards (SampleManifest and NewsItem have no body field) are unchanged.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/probe.rs:80-140 (PayloadSample vs SampleManifest)",
-      "backend/crates/services/qip-data-finder/tests/registration_is_not_ingestion.rs:101 a_registered_source_carries_no_copy_of_the_text_the_probe_sampled (discovery boundary, not the graph)",
-      "backend/crates/libs/qip-financial/src/intelligence.rs:121-139 (NewsItem carries a manifest, not the text)",
-      "backend/crates/services/qip-world-model/src/world.rs:549-605 (headline as node label; locator, not text, indexed)"
+      "backend/crates/services/qip-world-model/src/graph.rs (EXCERPT_LIMIT, refuse_a_body, add_node, Fact::new)",
+      "backend/crates/services/qip-world-model/src/world.rs (absorb_news, add_entity, record_resolution_source return the refusal)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (observe: news arm; ensure_world_object)",
+      "backend/crates/services/qip-world-model/tests/no_copied_documents.rs -- no_graph_record_holds_a_verbatim_span_of_an_ingested_payload_longer_than_the_excerpt_limit",
+      "backend/crates/services/qip-world-model/tests/no_copied_documents.rs -- a_graph_write_carrying_a_payload_body_is_refused_and_leaves_the_graph_as_it_was",
+      "backend/crates/services/qip-world-model/tests/no_copied_documents.rs -- a_body_in_a_news_items_id_or_source_refuses_the_item_whole_rather_than_keeping_it_without_its_facts",
+      "backend/crates/runtime/qip-kernel/tests/absorption.rs -- a_news_item_carrying_a_body_where_a_headline_goes_is_refused_whole_and_reported_at_learn",
+      "backend/crates/services/qip-data-finder/tests/registration_is_not_ingestion.rs:101 (the discovery boundary, unchanged)"
     ],
-    "gap": "No excerpt limit is declared and nothing refuses a graph write carrying a payload body: the guarantee rests on upstream types (SampleManifest, NewsItem) having no body field, and on headlines being short. No property test runs generated payloads through ingestion and asserts no graph record contains a verbatim span over a limit; the one test that asserts no retained copy is at the data-finder registration boundary, which is not the knowledge graph.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
@@ -578,11 +582,11 @@
       "WORLD-056"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder --test registration_is_not_ingestion (run: 2 passed) covers the discovery boundary only; no test covers the graph boundary.",
+    "verification": "cargo test -p qip-world-model --test no_copied_documents (3 passed); cargo test -p qip-kernel --test absorption -- a_news_item_carrying_a_body_where_a_headline_goes_is_refused_whole_and_reported_at_learn (1 passed). Mutation-verified, each restored byte-for-byte: removing absorb_news's headline check failed '281: a node was written' (the item was half-absorbed); checking the item id as stated rather than as the graph holds it, and removing the provenance-source check, each failed 'an item carrying a body in its id or source reported success'; removing add_node's label check failed 'a node carrying a payload body was written'; removing Fact::new's check failed 'a fact whose source is a payload body was admitted'; the kernel swallowing the refusal failed 'the refusal was not reported at LEARN'.",
     "work_item": "E09",
     "tier": "T1",
     "size": "S",
-    "notes": "DATA-005/DATA-042 are named by the catalogue as carrying the platform-wide form of this rule; not assessed in this batch. verify: status PARTIAL confirmed, text corrected both ways. The assessor said no dedicated test exercises SampleManifest's exclusion of a body (registration_is_not_ingestion.rs:101 does, and passes) and that no equivalent guard exists on the graph's own write path (NewsItem structurally carries no article text, so absorb_news cannot write one). tested kept false because both the test and the guards sit upstream of the knowledge graph the requirement names."
+    "notes": "2026-10-04: PARTIAL -> COMPLETE. The limit is a length, so it cannot tell a long list from a short quotation: a resolution authority publishing more than 280 characters of metric names is refused by record_resolution_source and must be split, and a verbatim excerpt of up to 280 characters is admitted by design. The evidence index beside the graph holds the same headline and is covered only through absorb_news's refusal, not by a limit of its own. The feature store and the causal graph hold numbers and ids and were not given the check. | DATA-005/DATA-042 are named by the catalogue as carrying the platform-wide form of this rule; not assessed in this batch. verify: status PARTIAL confirmed, text corrected both ways. The assessor said no dedicated test exercises SampleManifest's exclusion of a body (registration_is_not_ingestion.rs:101 does, and passes) and that no equivalent guard exists on the graph's own write path (NewsItem structurally carries no article text, so absorb_news cannot write one). tested kept false because both the test and the guards sit upstream of the knowledge graph the requirement names."
   },
   {
     "id": "WORLD-058",
@@ -660,14 +664,15 @@
   },
   {
     "id": "WORLD-061",
-    "status": "MISSING",
-    "current": "nothing. No world-model plurality exists to disagree (WORLD-041/WORLD-050 are both MISSING), so no disagreement record exists to become a research signal; qip_events::topic::Topic::ResearchCampaignFlagged/ResearchCampaignClosed (backend/crates/libs/qip-events/src/topic.rs:191-199) are about qip-data-finder's fetch-campaign concentration checks, an unrelated use of 'research'.",
+    "status": "COMPLETE",
+    "current": "qip_world_model::federation::Federation::arbitrate journals each arbitration as Event::Decided carrying the Disagreement it found, and where the spread is at least MATERIAL_DISAGREEMENT_SPREAD (0.2) raises a ResearchTask {cites, proposition, spread, models, raised_at} whose `cites` is the journal position of that record. One task per open proposition: a disagreement that persists is not raised again until Federation::resolve answers it. The task is returned on the Arbitration, journalled as Event::ResearchRaised and read back by Federation::research_tasks.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/topic.rs:191-199 (unrelated: data-finder campaign events, not world-model disagreement)"
+      "backend/crates/services/qip-world-model/src/federation.rs (MATERIAL_DISAGREEMENT_SPREAD, ResearchTask, Event::Decided, Event::ResearchRaised, arbitrate, research_tasks)",
+      "backend/crates/services/qip-world-model/tests/federation.rs -- a_material_disagreement_raises_exactly_one_research_task_citing_its_record_and_a_small_one_raises_none"
     ],
-    "gap": "No world-model disagreement exists to detect, no materiality threshold is declared, and no research-task generation exists.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -676,11 +681,11 @@
       "WORLD-041"
     ],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-world-model --test federation -- a_material_disagreement_raises_exactly_one_research_task_citing_its_record_and_a_small_one_raises_none (1 passed; the suite, 11 passed). Mutation-verified, each restored byte-for-byte: ignoring the threshold failed 'a small disagreement raised a task'; citing journal position 0 failed 'the task cites Declared ..., which is not a disagreement record'; removing the one-per-open-proposition rule failed 'an open question was raised twice'.",
     "work_item": "E09",
     "tier": "T2",
     "size": "M",
-    "notes": "Blocked in practice on WORLD-041 (competing branches) existing first, since there is otherwise nothing to compare."
+    "notes": "2026-10-04: MISSING -> COMPLETE at library level, as WORLD-001 and WORLD-010 are. No composition root builds a Federation, so no task is raised in a running process and nothing consumes one: the kernel's research prompts (Platform::research, MODEL-046) are a separate queue this is not joined to. Wiring needs at least two real member world models (see WORLD-011). | Blocked in practice on WORLD-041 (competing branches) existing first, since there is otherwise nothing to compare."
   },
   {
     "id": "WORLD-062",

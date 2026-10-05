@@ -24,7 +24,7 @@ use qip_world_model::causal::{CausalEdge, CausalGraph, Mechanism};
 use qip_world_model::exposure::{
     MAX_EXPOSURE_HOPS, MAX_SECOND_ORDER_DEPENDENCIES, second_order_exposure,
 };
-use qip_world_model::graph::{Fact, KnowledgeGraph, Node, NodeKind};
+use qip_world_model::graph::{EntityKind, Fact, KnowledgeGraph, Node, NodeKind};
 use qip_world_model::relationship::{Relationship, RelationshipKind};
 
 fn at(secs: i64) -> Timestamp {
@@ -53,15 +53,19 @@ fn drives(causal: &mut CausalGraph, cause: &str, effect: &str, recorded: i64) ->
 fn supply_chain() -> KnowledgeGraph {
     let mut graph = KnowledgeGraph::new();
     for entity in ["KESTREL", "NORTHWIND", "HOLLOWAY"] {
-        graph.add_node(Node::new(entity, NodeKind::Entity, entity, at(0)));
+        graph
+            .add_node(Node::entity(entity, EntityKind::Company, entity, at(0)))
+            .unwrap();
     }
     for instrument in ["NWD", "HWY"] {
-        graph.add_node(Node::new(
-            instrument,
-            NodeKind::FinancialObject,
-            instrument,
-            at(0),
-        ));
+        graph
+            .add_node(Node::new(
+                instrument,
+                NodeKind::FinancialObject,
+                instrument,
+                at(0),
+            ))
+            .unwrap();
     }
     for (from, to, kind) in [
         ("KESTREL", "NORTHWIND", RelationshipKind::Supplies),
