@@ -26,7 +26,9 @@ use qip_capital_fabric::plan::{
     LocationBalance, PrePositioningPlan, PrePositioningPlanner, PrePositioningRequest,
     RefusalReason,
 };
-use qip_capital_fabric::settlement::{SettlementBook, SettlementCalendar, SettlementConvention};
+use qip_capital_fabric::settlement::{
+    DeadlineVerdict, SettlementBook, SettlementCalendar, SettlementConvention, UndecidableReason,
+};
 use qip_capital_fabric::transfer::{FundingCurve, FxRates, ShortfallAsymmetry, TransferCostModel};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
@@ -1818,5 +1820,79 @@ fn a_transfer_model_built_on_an_fx_model_with_a_non_finite_spread_is_refused_at_
             "the refusal must name the field to correct: {refusal}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn a_deadline_is_judged_met_missed_or_undecidable_under_the_calendar_the_venue_settles_on()
+-> Result<()> {
+    let mut book = SettlementBook::new();
+    book.declare_jurisdiction(
+        emea(),
+        SettlementCalendar::weekday(SettlementConvention::T2)?,
+    )?;
+    book.assign_venue(VenueId::new("XLON"), emea())?;
+    let venue = VenueId::new("XLON");
+    let tuesday_noon = Timestamp::from_civil(2024, 3, 12).saturating_add(Duration::from_hours(12));
+    let friday_next = Timestamp::from_civil(2024, 3, 15);
+
+    // Hand-computed: Thursday 09:00 on T+2 over a weekend is due Monday 11 March.
+    let verdict = book.judge_deadline(&venue, &emea(), thursday(), tuesday_noon, friday_next);
+    let DeadlineVerdict::Met { calendar, due } = verdict else {
+        panic!("expected Met, got {verdict:?}");
+    };
+    assert_eq!(due.to_date_string(), "2024-03-11");
+    assert!(
+        calendar.contains("T+2") && calendar.contains("emea"),
+        "{calendar}"
+    );
+
+    // The same obligation against a deadline the weekend overruns is Missed,
+    // and it is known before the deadline arrives.
+    let wednesday = Timestamp::from_civil(2024, 3, 6);
+    let before = Timestamp::from_civil(2024, 3, 8);
+    let verdict = book.judge_deadline(&venue, &emea(), thursday(), before, wednesday);
+    assert!(
+        matches!(&verdict, DeadlineVerdict::Missed { lateness, .. } if *lateness > Duration::ZERO),
+        "{verdict:?}"
+    );
+
+    // On time but not yet due: "met" would be premature.
+    let verdict = book.judge_deadline(
+        &venue,
+        &emea(),
+        thursday(),
+        tuesday_noon,
+        friday_afternoon(),
+    );
+    assert!(
+        matches!(
+            verdict,
+            DeadlineVerdict::Undecidable(UndecidableReason::NotYetDue { .. })
+        ),
+        "{verdict:?}"
+    );
+
+    // A holiday on the Monday moves the due date a day; a Monday-evening deadline is missed.
+    let mut holiday = SettlementBook::new();
+    holiday.declare_jurisdiction(
+        emea(),
+        SettlementCalendar::weekday(SettlementConvention::T2)?.with_holiday(monday_morning()),
+    )?;
+    holiday.assign_venue(venue.clone(), emea())?;
+    let monday_end = Timestamp::from_civil(2024, 3, 11).saturating_add(Duration::from_hours(23));
+    let verdict = holiday.judge_deadline(&venue, &emea(), thursday(), monday_end, friday_next);
+    let DeadlineVerdict::Missed { due, .. } = verdict else {
+        panic!("expected Missed over the holiday, got {verdict:?}");
+    };
+    assert_eq!(due.to_date_string(), "2024-03-12");
+
+    // No calendar for the venue: undecidable, never a default date.
+    let stranger = VenueId::new("XNYS");
+    let verdict = book.judge_deadline(&stranger, &emea(), thursday(), tuesday_noon, friday_next);
+    assert!(
+        matches!(&verdict, DeadlineVerdict::Undecidable(UndecidableReason::NoCalendar(m)) if m.contains("assign_venue")),
+        "{verdict:?}"
+    );
     Ok(())
 }

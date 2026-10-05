@@ -233,30 +233,25 @@
   },
   {
     "id": "REASON-010",
-    "status": "PARTIAL",
-    "current": "qip_capital_fabric::settlement::SettlementCalendar (backend/crates/services/qip-capital-fabric/src/settlement.rs:129-280) and qip_edge::settlement::SettlementTerms (backend/crates/edge/qip-edge/src/settlement.rs) both compute due dates by walking settlement (not calendar) days under a named convention (T+0/T+1/T+2), skipping weekends/holidays, and refuse (Result::Err) rather than default when a calendar has no settlement days or a venue's jurisdiction is undeclared. qip_capital_fabric::settlement::SettlementBook is constructed in production at qip-kernel/src/platform.rs:4383-4386.",
+    "status": "COMPLETE",
+    "current": "qip_capital_fabric::settlement::SettlementBook::judge_deadline returns DeadlineVerdict::{Met, Missed, Undecidable} for an obligation instructed at an instant against a deadline as seen at now, naming the calendar (jurisdiction and convention) the due instant was computed under. A venue with no calendar, or a lane keyed on the wrong jurisdiction, is Undecidable(NoCalendar) carrying the refusal text, never a default date; on-time-but-not-yet-due is Undecidable(NotYetDue).",
     "evidence": [
-      "backend/crates/services/qip-capital-fabric/src/settlement.rs:21-33,129-280",
-      "backend/crates/edge/qip-edge/src/settlement.rs:105-280",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4383-4386,17984",
-      "test: backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs::settlement_counts_settlement_days_and_skips_the_ones_that_do_not_settle (line 827)",
-      "test: backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs::each_lane_is_quoted_on_its_own_venues_jurisdiction_calendar_not_one_shared_calendar (line 536)",
-      "test: backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs::a_lane_keyed_on_a_jurisdiction_its_venue_does_not_settle_in_is_refused (line 665)",
-      "test: backend/crates/edge/qip-edge/src/settlement.rs::a_holiday_is_skipped_not_counted (inline test module)"
+      "backend/crates/services/qip-capital-fabric/src/settlement.rs (DeadlineVerdict, UndecidableReason, SettlementBook::judge_deadline)",
+      "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs :: a_deadline_is_judged_met_missed_or_undecidable_under_the_calendar_the_venue_settles_on (hand-computed Monday 11 March due date, holiday shift to 12 March, weekend overrun Missed, NotYetDue, missing calendar). Mutation: replacing the not-yet-due test with false failed it; inverting the arrives_by test failed it."
     ],
-    "gap": "The met/missed/cannot-yet-decide three-way verdict the requirement asks for does not exist as such; what exists is SettlementQuote::arrives_by(needed_by) -> bool and ::lateness(needed_by) -> Duration, a boolean-plus-duration pair rather than a named Met/Missed/Undecidable state. A missing calendar is refused with an Err (a hard stop), which is close to but not the same as an explicit 'undecidable' verdict for a specific obligation query.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-capital-fabric --test capital_fabric settlement_counts_settlement_days_and_skips_the_ones_that_do_not_settle",
+    "verification": "cd backend && cargo test -p qip-capital-fabric --test capital_fabric a_deadline_is_judged_met_missed_or_undecidable_under_the_calendar_the_venue_settles_on",
     "work_item": "E05",
     "tier": "T1",
     "size": "S",
-    "notes": "Closest of the settlement gaps to complete; adding a three-state DeadlineVerdict enum over the existing arrives_by/lateness pair would likely close this without new calendar machinery."
+    "notes": "Closed by judge_deadline. integrated=false: no production caller yet; SettlementBook is constructed in qip-kernel Platform but nothing there asks a deadline question."
   },
   {
     "id": "REASON-011",

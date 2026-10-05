@@ -925,6 +925,9 @@ const NO_SOLVER_AUTHORITY: &[&str] = &[
 /// A new service crate belongs in one of them, and the test below is what
 /// makes that a decision somebody takes rather than an omission nobody sees.
 const NO_MONEY_AUTHORITY: &[&str] = &[
+    // Contracts only (goal spec, tool registry, bounded intervention plans):
+    // depends on serde and qip-core and on no capital, risk or execution crate.
+    "qip-agency",
     "qip-chain",
     "qip-cost-router",
     "qip-data-finder",
@@ -2423,5 +2426,42 @@ fn the_risk_gate_and_everything_that_holds_it_cannot_reach_the_redis_client() {
             !reachable.contains("qip-storage"),
             "{gate_holder} can reach the Redis client crate qip-storage: {reachable:?}"
         );
+    }
+}
+
+#[test]
+fn no_edge_cell_can_reach_a_reasoning_crate() {
+    // REASON-034 names the reasoner directly. `no_edge_cell_can_reach_a_language_model`
+    // reaches the reasoning engine only through the `qip-ai` anchor, so a
+    // reasoner that stopped depending on `qip-ai` would leave that test green
+    // while sitting on the hot path. This test names the crates themselves.
+    let graph = dependency_graph();
+    let cells = edge_crates();
+    let reasoners = [
+        "qip-reasoning-engine",
+        "qip-world-model",
+        "qip-optimization-engine",
+    ];
+    assert_named_crates_exist(&graph, reasoners);
+    assert_named_crates_exist(&graph, cells.iter().map(String::as_str));
+
+    // The anchor: the kernel composes the reasoners, so the walk can see them.
+    let from_kernel = reachable_from(&graph, "qip-kernel");
+    for reasoner in reasoners {
+        assert!(
+            from_kernel.contains(reasoner),
+            "the kernel no longer reaches {reasoner}, so the absences asserted below prove nothing"
+        );
+    }
+
+    for crate_name in cells {
+        let reachable = reachable_from(&graph, &crate_name);
+        for reasoner in reasoners {
+            assert!(
+                !reachable.contains(reasoner),
+                "the edge crate {crate_name} can reach the reasoner {reasoner}; a cell must keep \
+                 deciding with every reasoning service stopped: {reachable:?}"
+            );
+        }
     }
 }
