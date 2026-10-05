@@ -15,10 +15,15 @@ ARCH-019 inspect it.
   slower lane. That is a remote read or a slow computation placed in a fast lane
   by construction, which is exactly what this register exists to refuse.
 
-Lane 1 here means the cell and centre link and the fabric daemon only: the
-peer-to-peer reflex mesh (ARCH-011) does not exist, so no crate is placed in Lane 1
-for peer coordination. A crate that composes slower crates is placed in the slowest
-lane it hosts.
+Lane 1 here means the cell and centre link, the fabric daemon and the peer
+coordination protocol. The peer-to-peer reflex mesh (ARCH-011) has no transport and
+no process that runs it, but its protocol exists as `qip_mesh::peer`, and the five
+functions blueprint section 4 places in Lane 1 (peer reflex messages, opportunity
+tokens, distributed reservations, multi-leg coordination, hedge and unwind commands)
+are registered there as `MeshFunction`. `qip-acceptance`'s `mesh_lane` suite compares
+that registry with the `qip-mesh` row below and fails when a Lane 0 crate depends on
+`qip-mesh` or names a coordination type (MESH-013). A crate that composes slower
+crates is placed in the slowest lane it hosts.
 
 | Crate | Lane | Correctness requirement the placement meets |
 |---|---|---|
@@ -46,7 +51,7 @@ lane it hosts.
 | qip-brokers | 0 | simulated broker and provider sandboxes only |
 | qip-edge | 0 | the reflex cell; decides from its last signed packages with the centre unreachable |
 | qip-edge-node | 0 | the cell's composition root; paper passes without any cognitive process present |
-| qip-mesh | 1 | cell and centre exchange of signed deltas and grants; latency accepted, never awaited by a pass |
+| qip-mesh | 1 | cell and centre exchange of signed deltas and grants, and the peer coordination protocol's five functions; latency accepted, never awaited by a pass |
 | qip-streaming | 1 | stream transports with explicit bounds; a refusing port rather than a silent fallback |
 | qip-chain | 1 | signed chain records over qip-transport; bounded round trips |
 | qip-fabricd | 1 | the in-tree fabric daemon; journal appends acknowledged locally |

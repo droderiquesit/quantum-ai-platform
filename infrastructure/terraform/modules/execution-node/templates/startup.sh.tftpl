@@ -186,6 +186,7 @@ QIP_STORAGE_ROOT=/var/lib/qip/journal
 QIP_CAPITAL_ENVELOPE_KEY_FILE=$RUN_DIR/capital-envelope-key
 QIP_HALT_FLAG_PATH=$HALT_DIR/engaged
 QIP_ARBITRAGE_STRATEGY=arbitrage-desk
+QIP_ARBITRAGE_MAX_LEGS=4
 QIP_VENUE_FEED=simulated
 QIP_EXECUTION_NODE_SHADOW=${shadow_mode ? "1" : "0"}
 # Required by the binary, which refuses to start without it (ADR 0008): the
@@ -269,6 +270,15 @@ chmod 0644 "$OPS_AGENT_CONF"
 # (ADR 0024). Until both exist the node says at start-up that it awaits
 # them. The centre's grant must name the same id, which is why it is written
 # here beside the cell's own identity rather than left to a default.
+#
+# `QIP_ARBITRAGE_MAX_LEGS` is the most legs a cycle of that desk may have
+# (MESH-010). Four is the figure every node ran before the maximum was
+# configuration, and it is written here rather than left to the binary's
+# default for the reason the feed is: a limit no deployment writes is one
+# no environment can be seen to have chosen. The binary refuses a value
+# outside 2 to 20 at start-up rather than lowering it to the ceiling, and
+# refuses the variable without `QIP_ARBITRAGE_STRATEGY`, because a leg
+# limit with no desk to hold to it would read as a control.
 #
 # Two things are deliberately absent from the node's configuration.
 #

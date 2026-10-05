@@ -11,9 +11,11 @@
       "backend/crates/apps/qip-edge-node/src/arbitrage.rs:291-325 (ArbitrageInstaller::install, gated on QIP_ARBITRAGE_STRATEGY and a fresh CycleWhitelist)",
       "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs:541 a_path_that_pays_on_mid_prices_is_refused_once_the_book_is_walked (quoted-profitable, book-unprofitable refused at Book)",
       "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs:600 a_net_edge_that_skipped_a_deduction_is_refused (constructs a NetEdge directly; not a scanner acceptance test)",
-      "backend/crates/tests/qip-acceptance/tests/e2e.rs:622-628 (search_candidates/price_path/LegPlanner only; no net-edge evaluation)"
+      "backend/crates/tests/qip-acceptance/tests/e2e.rs:622-628 (search_candidates/price_path/LegPlanner only; no net-edge evaluation)",
+      "backend/crates/edge/qip-arbitrage/tests/ranking.rs -- when_spread_and_executable_value_disagree_the_cycle_worth_more_after_costs_ranks_first_and_one_that_loses_is_never_accepted (400 generated pairs; mutation-verified: sorting by the search's log gain, and removing the net-edge veto, each failed it)",
+      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs -- a_cycle_that_pays_on_the_walked_book_is_refused_when_the_nine_deductions_consume_it (the NetEdge-stage refusal, added under REFLEX-027)"
     ],
-    "gap": "The requirement defines executable expected value as value after every cost 'weighted by each leg's probability of fill'; no fill-probability term exists anywhere in the tree (rg for probability/fill_prob across qip-arbitrage, qip-edge and the workspace finds nothing), so NetEdge is an unweighted after-cost figure. No test drives a cycle that is profitable on the book but negative after the nine deductions through RejectionStage::NetEdge (rg finds that variant only in scan.rs and the cell's gate-name map), and no test asserts the spread-vs-net-edge ranking property. The cited e2e test never calls OpportunityScanner or NetEdgeCalculator: it runs search_candidates, price_path and LegPlanner on a standalone fixture and asserts three planned legs, with no Cell and no net-edge acceptance or refusal.",
+    "gap": "The requirement defines executable expected value as value after every cost 'weighted by each leg's probability of fill'; no fill-probability term exists anywhere in the tree, so the value cycles are ranked and accepted on is the unweighted after-cost value at the cycle's size. The two test gaps this row named are closed: a cycle that pays on the book and loses after the nine deductions is refused at RejectionStage::NetEdge, and the ranking property over generated pairs is held.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -21,11 +23,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-arbitrage --test arbitrage a_path_that_pays_on_mid_prices_is_refused_once_the_book_is_walked (covers the book half only); missing: a property test ranking two cycles that order differently by spread and by net edge, a scanner test reaching RejectionStage::NetEdge, and fill-probability weighting with its test",
+    "verification": "cargo test -p qip-arbitrage --test ranking; cargo test -p qip-arbitrage --test arbitrage a_cycle_that_pays_on_the_walked_book_is_refused_when_the_nine_deductions_consume_it a_path_that_pays_on_mid_prices_is_refused_once_the_book_is_walked. Remaining: fill-probability weighting and its test.",
     "work_item": "E11-executable-ev-fill-probability",
     "tier": "T1",
     "size": "M",
-    "notes": "MULTI_REGION/LIVE_CAPITAL correctly removed by the requirement's own notes: demonstrable in single-region paper trading, which is what exists. No named test exercises two candidates that rank differently by spread vs. net edge specifically (only the refuse-below-net-edge half is directly tested); the sort itself is a two-line, low-risk implementation so this is not scored as a gap. verify: downgraded COMPLETE->PARTIAL and e2e true->false. The statement's own definition requires fill-probability weighting, which does not exist in any crate; the NetEdge refusal and the ranking have no test; and e2e.rs:471 exercises neither the scanner nor the net-edge calculator, so it is not end-to-end evidence for this requirement."
+    "notes": "MULTI_REGION/LIVE_CAPITAL correctly removed by the requirement's own notes: demonstrable in single-region paper trading, which is what exists. No named test exercises two candidates that rank differently by spread vs. net edge specifically (only the refuse-below-net-edge half is directly tested); the sort itself is a two-line, low-risk implementation so this is not scored as a gap. verify: downgraded COMPLETE->PARTIAL and e2e true->false. The statement's own definition requires fill-probability weighting, which does not exist in any crate; the NetEdge refusal and the ranking have no test; and e2e.rs:471 exercises neither the scanner nor the net-edge calculator, so it is not end-to-end evidence for this requirement. | round 3: blocked on a fill-probability model: none exists in the tree, and choosing one (a measured per-venue fill ratio or a book-survival model) changes which cycles the desk accepts, which is a valuation decision for an ADR and not for one lane."
   },
   {
     "id": "MESH-026",
@@ -52,7 +54,7 @@
     "work_item": "E11-warm-arbitrage-brain",
     "tier": "T3",
     "size": "L",
-    "notes": "Not BLOCKED by ADR 0099's register: a warm-tier discovery loop and a signed-pack distribution mechanism (reusing qip_edge::policy's verified-payload pattern) do not require a new dependency. verify: status unchanged (MISSING). Corrected 'current'/'gap': the assessor said there is no signed-pack distribution of cycles to nodes, but the centre already signs and ships an operator-authored CycleWhitelist (slot 8) that qip-edge-node installs a desk from. Nothing discovers cycles, so MISSING stands."
+    "notes": "Not BLOCKED by ADR 0099's register: a warm-tier discovery loop and a signed-pack distribution mechanism (reusing qip_edge::policy's verified-payload pattern) do not require a new dependency. verify: status unchanged (MISSING). Corrected 'current'/'gap': the assessor said there is no signed-pack distribution of cycles to nodes, but the centre already signs and ships an operator-authored CycleWhitelist (slot 8) that qip-edge-node installs a desk from. Nothing discovers cycles, so MISSING stands. | round 3: needs a discovery loop in the central plane (kernel work outside this lane's crates); the signed slot it would ship through exists."
   },
   {
     "id": "MESH-027",
@@ -78,33 +80,32 @@
     "work_item": "E11-edge-state-message",
     "tier": "T2",
     "size": "M",
-    "notes": "The type-level absence of a raw-book/tick message is a structural guarantee, not a runtime refusal — arguably stronger than the requirement's 'refused at the sender' wording asks for, for the traffic that does exist. verify: tested true->false. The cited mesh tests cover delivery, and the row itself says none asserts the no-raw-book/no-tick property; a type-level absence nobody tests is implemented, not tested. Status PARTIAL unchanged: the negative half holds structurally (checked CellStateDelta and the shipped journal's Ingested entry), while the edge-state message and peer publishing are absent."
+    "notes": "The type-level absence of a raw-book/tick message is a structural guarantee, not a runtime refusal — arguably stronger than the requirement's 'refused at the sender' wording asks for, for the traffic that does exist. verify: tested true->false. The cited mesh tests cover delivery, and the row itself says none asserts the no-raw-book/no-tick property; a type-level absence nobody tests is implemented, not tested. Status PARTIAL unchanged: the negative half holds structurally (checked CellStateDelta and the shipped journal's Ingested entry), while the edge-state message and peer publishing are absent. | round 3: an executable edge-state message needs a fill probability (MESH-025) and a peer link to publish on (MESH-047)."
   },
   {
     "id": "MESH-028",
-    "status": "PARTIAL",
-    "current": "qip_edge::feasibility::assess plus Cell::admit_feasible/admit_leg (backend/crates/edge/qip-edge/src/cell.rs, inside admit_cycle at 5559-5620) run the cell's local feasibility/capital gate on every leg before any region capital is held for a cycle (hold_region_capital is called only after every leg is admitted, cell.rs:5697). This is single-cell, single-region: there is no multi-node 'epoch' a coordinator asks several nodes to reserve into.",
+    "status": "COMPLETE",
+    "current": "qip_mesh::peer::PeerEndpoint::reserve_own_legs is the participant's step: every one of the node's own legs is put to its local gate before any of them touches the ReservationBook; if the gate refuses, the node reserves nothing, journals gate_refused and returns the Declined frame for the coordinator; if the book refuses any leg, the legs it took in that call are released again (whole or not at all). The coordinator's PeerEndpoint::receive admits the Declined frame, journals it as peer_declined with the reason, treats the decline as final for the epoch (a later Reserved for that leg is refused), and declare_fire refuses naming the declined leg. In single-cell form the gate-before-reservation ordering is Cell::admit_cycle's, as before.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:5556-5720 (admit_cycle: dispersion, admit_feasible/admit_leg, settlement, then hold_region_capital at :5696)",
-      "backend/crates/edge/qip-edge/tests/arbitrage.rs:473 an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out (the gate refuses one leg; the cycle is vetoed whole, journaled, nothing sent)",
-      "backend/crates/edge/qip-edge/tests/arbitrage.rs:770 a_cycle_the_region_allocation_cannot_hold_is_refused_whole (a refused cycle holds nothing)",
-      "backend/crates/edge/qip-edge/tests/feasibility.rs (5 tests)"
+      "backend/crates/services/qip-mesh/src/peer.rs (PeerEndpoint::reserve_own_legs, ReservationOutcome, PeerMessage::Declined, the Declined arm of PeerEndpoint::admit, ReservationBook::release_leg)",
+      "backend/crates/services/qip-mesh/tests/peer_guarantees.rs -- a_node_whose_gate_refuses_a_leg_reserves_nothing_and_its_refusal_reaches_the_coordinator_and_blocks_fire",
+      "backend/crates/services/qip-mesh/tests/peer_guarantees.rs -- a_node_whose_book_cannot_hold_every_one_of_its_legs_holds_none_of_them_and_declines"
     ],
-    "gap": "No cross-region epoch or participating-node concept exists for the gate to run 'before reserving' on behalf of; only a single cell's own gate-before-its-own-reservation ordering is proven.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "MESH-044"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test arbitrage an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out a_cycle_the_region_allocation_cannot_hold_is_refused_whole",
+    "verification": "cargo test -p qip-mesh --test peer_guarantees. Mutation-verified, each restored byte-for-byte: never consulting the gate, the coordinator not recording the decline, and keeping the first leg's hold when the second is refused each failed the named test.",
     "work_item": "E11-cross-region-epoch",
     "tier": "T2",
     "size": "M",
-    "notes": "Candidate home confirmed: qip_edge::feasibility already implements the exact gate the requirement describes; what is missing is the multi-node epoch it would need to run 'before'. verify: status unchanged (PARTIAL). Added an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out, which is the single-cell form of the requirement's check (the gate refuses, the cycle is refused whole and journaled, no leg is sent). There is still no epoch, no coordinator, and no FIRE for the refusal to withhold."
+    "notes": "Candidate home confirmed: qip_edge::feasibility already implements the exact gate the requirement describes; what is missing is the multi-node epoch it would need to run 'before'. verify: status unchanged (PARTIAL). Added an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out, which is the single-cell form of the requirement's check (the gate refuses, the cycle is refused whole and journaled, no leg is sent). There is still no epoch, no coordinator, and no FIRE for the refusal to withhold. | round 3: Library-level protocol rule, like MESH-029 and MESH-045: the frames cross between two real endpoints through encode and receive, and no process runs them yet, so integrated is false for the epoch form (it was true only for the single-cell form). blocked on a process to host qip_mesh::peer: qip-edge-node is Lane 0 and qip-acceptance's lane_placement and mesh_lane suites refuse it a dependency on qip-mesh, and a regional Mesh-agent binary (MESH-047) is an ADR 0010 deployment decision with gitops and infrastructure binary-list entries."
   },
   {
     "id": "MESH-029",
@@ -156,7 +157,7 @@
     "work_item": "E11-cross-region-dispatch",
     "tier": "T2",
     "size": "M",
-    "notes": "The strongest single-cell precedent of the whole MESH-028..036 cluster; extending it to a cross-region policy field is comparatively small once MESH-029 exists."
+    "notes": "The strongest single-cell precedent of the whole MESH-028..036 cluster; extending it to a cross-region policy field is comparatively small once MESH-029 exists. | round 3: a per-cycle dispatch policy belongs on the epoch and needs the cell to execute an epoch (MESH-047)."
   },
   {
     "id": "MESH-031",
@@ -181,7 +182,7 @@
     "work_item": "E11-fire-protocol",
     "tier": "T3",
     "size": "L",
-    "notes": "Split from MESH-008 per the requirement's own notes; needs a peer link of some form before it can be built at all, even a non-QUIC one."
+    "notes": "Split from MESH-008 per the requirement's own notes; needs a peer link of some form before it can be built at all, even a non-QUIC one. | round 3: blocked on a process to host qip_mesh::peer: qip-edge-node is Lane 0 and qip-acceptance's lane_placement and mesh_lane suites refuse it a dependency on qip-mesh, and a regional Mesh-agent binary (MESH-047) is an ADR 0010 deployment decision with gitops and infrastructure binary-list entries."
   },
   {
     "id": "MESH-032",
@@ -210,7 +211,7 @@
     "work_item": "E05-cycle-ledger-attribution",
     "tier": "T2",
     "size": "M",
-    "notes": "NEW_DEPENDENCY (Spanner, C4) is about the eventual store, not this gap: the in-tree kernel ledger already exists and just needs the wire types extended with cycle_id. verify: status unchanged (PARTIAL). Flags made consistent with PARTIAL: implemented and integrated set to true because a cycle leg's fills reach the central ledger (cell delta -> qip-api mesh -> ingest_cell_report -> settle), attributed to strategy and order and not to a cycle. tested stays false because no test drives a cycle's fills into the central ledger. Cycle completion, hedge/unwind events and cycle attribution remain absent."
+    "notes": "NEW_DEPENDENCY (Spanner, C4) is about the eventual store, not this gap: the in-tree kernel ledger already exists and just needs the wire types extended with cycle_id. verify: status unchanged (PARTIAL). Flags made consistent with PARTIAL: implemented and integrated set to true because a cycle leg's fills reach the central ledger (cell delta -> qip-api mesh -> ingest_cell_report -> settle), attributed to strategy and order and not to a cycle. tested stays false because no test drives a cycle's fills into the central ledger. Cycle completion, hedge/unwind events and cycle attribution remain absent. | round 3: needs cycle identity on the cell-to-centre delta wire types (qip-contracts wire and the kernel's ingest), a signed-contract change outside this lane's crates."
   },
   {
     "id": "MESH-033",
@@ -259,7 +260,7 @@
     "work_item": "E11-cycle-counterfactual-scoring",
     "tier": "T2",
     "size": "M",
-    "notes": "implemented/tested/integrated describe the order-level precedent the requirement's own notes name, not the cycle-specific behaviour, which does not exist. verify: downgraded PARTIAL->MISSING and implemented/tested/integrated true->false. By the row's own note, the flags described the order-level precedent, not this requirement. No failed, declined, missed or partial cycle is scored anywhere, and a precedent in a different subject is a candidate home, not partial behaviour."
+    "notes": "implemented/tested/integrated describe the order-level precedent the requirement's own notes name, not the cycle-specific behaviour, which does not exist. verify: downgraded PARTIAL->MISSING and implemented/tested/integrated true->false. By the row's own note, the flags described the order-level precedent, not this requirement. No failed, declined, missed or partial cycle is scored anywhere, and a precedent in a different subject is a candidate home, not partial behaviour. | round 3: needs the kernel's LEARN stage to see cell-journal cycles, which depends on MESH-032's cycle identity on the wire."
   },
   {
     "id": "MESH-035",
@@ -289,35 +290,33 @@
     "work_item": "E11-cross-region-cost-pricing",
     "tier": "T2",
     "size": "M",
-    "notes": "Strong single-region precedent named correctly by the requirement's own notes as the candidate home for extension. verify: status and flags unchanged (PARTIAL). Corrected the gap: cross-region mirror cycles do exist in single-cell form, and their measured round trip gates routing without being priced. Leg risk and unwind are bounds, not deductions, and no monotonicity test exists."
+    "notes": "Strong single-region precedent named correctly by the requirement's own notes as the candidate home for extension. verify: status and flags unchanged (PARTIAL). Corrected the gap: cross-region mirror cycles do exist in single-cell form, and their measured round trip gates routing without being priced. Leg risk and unwind are bounds, not deductions, and no monotonicity test exists. | round 3: pricing coordination latency, leg risk and unwind cost as deductions changes qip_contracts::edge::DeductionKind's nine and NetEdge::require_complete: a valuation-contract change needing an ADR."
   },
   {
     "id": "MESH-036",
-    "status": "PARTIAL",
-    "current": "qip_edge::Cell::admit_cycle (backend/crates/edge/qip-edge/src/cell.rs:5559) refuses a cycle whole, never partially, whenever a guarantee cannot be established: GATE_FILL_DISPERSION (exposure-window bound), feasibility/capital-envelope infeasibility, GATE_SETTLEMENT unfunded settlement projection, region-allocation-cannot-hold, and GATE_QUOTE_BUDGET. Every refusal is journaled naming the cycle and the reason.",
+    "status": "COMPLETE",
+    "current": "A cycle whose guarantees cannot be had is rejected by name and sends nothing. PeerEndpoint::declare_fire journals every refusal: fire_condition names the reservation condition and the legs that are unreserved or declined, fire_loss_bound says the loss bound cannot be established and gives the worst recovery loss against the declared bound. PeerEndpoint::forget_expired journals guarantee_unmet for an epoch that reaches the end of its TTL unfired, naming the cycle and what was missing, before dropping it; an epoch that fired is not journaled as rejected. PeerEndpoint::send_leg refuses before FIRE and journals that too. The single-cell guarantees (dispersion, feasibility, settlement, region hold, quote budget) are refused whole in Cell::admit_cycle, as before.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:5583-5722 (admit_cycle's whole-cycle refusal points)",
-      "backend/crates/edge/qip-edge/tests/arbitrage.rs:770 a_cycle_the_region_allocation_cannot_hold_is_refused_whole",
-      "backend/crates/edge/qip-edge/tests/arbitrage.rs:473 an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out",
-      "backend/crates/edge/qip-edge/tests/cross_region.rs:645 a_cross_region_cycle_at_a_cell_with_no_mirror_arrangement_is_refused_whole_by_the_router (a missing guarantee is named, nothing sent)",
-      "backend/crates/edge/qip-edge/tests/cross_region.rs:964 a_cross_region_cycle_whose_remote_region_nobody_measured_a_round_trip_to_is_refused",
-      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs:817 a_plan_whose_residual_exceeds_its_budget_is_refused (loss-bound analogue)"
+      "backend/crates/services/qip-mesh/src/peer.rs (PeerEndpoint::declare_fire, forget_expired, send_leg; OpportunityState::reservation_shortfall)",
+      "backend/crates/services/qip-mesh/tests/peer_guarantees.rs -- a_cycle_whose_reservation_condition_is_not_met_within_its_ttl_is_rejected_by_name_and_sends_no_leg",
+      "backend/crates/services/qip-mesh/tests/peer_guarantees.rs -- a_cycle_whose_loss_bound_cannot_be_established_is_rejected_by_name_and_sends_no_leg",
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs -- a_cycle_the_region_allocation_cannot_hold_is_refused_whole; an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out (single-cell guarantees)"
     ],
-    "gap": "The guarantees the requirement names first, the reservation condition (MESH-029) and its TTL (MESH-022), do not exist, so a cycle cannot be rejected for failing them. The single-cell guarantees (dispersion, feasibility, settlement, region hold, quote budget, residual/loss bound) and the cross-region mirror preconditions (mirror arrangement, measured round trip, band) all refuse whole with a named reason and send nothing.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "MESH-029"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test arbitrage a_cycle_the_region_allocation_cannot_hold_is_refused_whole an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out; cargo test -p qip-edge --test cross_region a_cross_region_cycle_at_a_cell_with_no_mirror_arrangement_is_refused_whole_by_the_router",
+    "verification": "cargo test -p qip-mesh --test peer_guarantees. Mutation-verified, each restored byte-for-byte: returning the FIRE refusal without journaling it, dropping the unfired epoch silently at expiry, not checking the loss bound before FIRE, journaling a fired cycle as rejected, and naming a reserved leg as missing each failed the named test.",
     "work_item": "E11-fire-protocol",
     "tier": "T2",
     "size": "M",
-    "notes": "The 'refuse whole, never execute as though riskless' invariant is already structural in the single-cell case. verify: status and flags unchanged (PARTIAL). Replaced a_cycle_that_breaks_between_legs_halts_the_cell..., which covers a mid-flight halt after legs are sent rather than a rejection before any leg goes out. Added the cross-region refusal tests and corrected the gap's claim that no cross-region cycle exists."
+    "notes": "The 'refuse whole, never execute as though riskless' invariant is already structural in the single-cell case. verify: status and flags unchanged (PARTIAL). Replaced a_cycle_that_breaks_between_legs_halts_the_cell..., which covers a mid-flight halt after legs are sent rather than a rejection before any leg goes out. Added the cross-region refusal tests and corrected the gap's claim that no cross-region cycle exists. | round 3: The reservation condition (MESH-029) and the TTL (MESH-022) this row said did not exist were built in qip_mesh::peer by earlier rounds; what was missing was that a refusal for want of either left no record. Library-level protocol rule for the epoch guarantees, so integrated is false for that form (it was true only for the single-cell guarantees). blocked on a process to host qip_mesh::peer: qip-edge-node is Lane 0 and qip-acceptance's lane_placement and mesh_lane suites refuse it a dependency on qip-mesh, and a regional Mesh-agent binary (MESH-047) is an ADR 0010 deployment decision with gitops and infrastructure binary-list entries."
   },
   {
     "id": "MESH-037",
@@ -344,7 +343,7 @@
     "work_item": "E11-fire-protocol",
     "tier": "T4",
     "size": "XL",
-    "notes": "The composite acceptance test for the whole cluster; scores no better than its worst dependency (MESH-029, MISSING)."
+    "notes": "The composite acceptance test for the whole cluster; scores no better than its worst dependency (MESH-029, MISSING). | round 3: a composite of MESH-004, 008, 024, 030, 031, 032 and 047, none of which is closed for a cross-region cycle."
   },
   {
     "id": "MESH-038",
@@ -481,7 +480,7 @@
     "work_item": "E11-local-edge-state-fill-probability",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: downgraded COMPLETE->PARTIAL and e2e true->false. The requirement's edge state includes fill probability, which does not exist anywhere, and e2e.rs:471 never constructs a Cell, so it cannot show a cell computing its own edges. Replaced the determinism-only citation with the qip-edge test that compares the cell's committed cycle to a reference scan."
+    "notes": "verify: downgraded COMPLETE->PARTIAL and e2e true->false. The requirement's edge state includes fill probability, which does not exist anywhere, and e2e.rs:471 never constructs a Cell, so it cannot show a cell computing its own edges. Replaced the determinism-only citation with the qip-edge test that compares the cell's committed cycle to a reference scan. | round 3: blocked on a fill-probability model: none exists in the tree, and choosing one (a measured per-venue fill ratio or a book-survival model) changes which cycles the desk accepts, which is a valuation decision for an ADR and not for one lane; rate at size and fees are computed locally and tested."
   },
   {
     "id": "MESH-044",
@@ -556,7 +555,7 @@
     "work_item": "E06-journal-hedge-epoch",
     "tier": "T2",
     "size": "M",
-    "notes": "The requirement's own notes correctly name qip_edge::journal as the current form of 'the Fabric' for this purpose; the local-shipping (FileMirror) half needs no QUIC/mTLS, so this is not C2-blocked, only unbuilt for the epoch/hedge/cross-cell parts. verify: status and flags unchanged (PARTIAL). Corrected the shipping path (the deployed node uses StoreMirror, not FileMirror) and the cycle_id claim (fills and sends carry only order_id). Added the test that asserts a cycle's intent and outcome entries in the chain."
+    "notes": "The requirement's own notes correctly name qip_edge::journal as the current form of 'the Fabric' for this purpose; the local-shipping (FileMirror) half needs no QUIC/mTLS, so this is not C2-blocked, only unbuilt for the epoch/hedge/cross-cell parts. verify: status and flags unchanged (PARTIAL). Corrected the shipping path (the deployed node uses StoreMirror, not FileMirror) and the cycle_id claim (fills and sends carry only order_id). Added the test that asserts a cycle's intent and outcome entries in the chain. | round 3: a hedge journal kind needs a hedge transition to record (MESH-008), and an epoch on each entry needs the cell to execute an epoch (MESH-047)."
   },
   {
     "id": "MESH-047",
@@ -580,7 +579,7 @@
     "work_item": "E11-regional-mesh-agent",
     "tier": "T3",
     "size": "L",
-    "notes": "Topology decision (agent as separate process vs. module) is explicitly left open by the source diagram per the requirement's own notes."
+    "notes": "Topology decision (agent as separate process vs. module) is explicitly left open by the source diagram per the requirement's own notes. | round 3: a new binary: an ADR 0010 deployment decision with gitops and infrastructure binary-list entries, and qip-edge-node cannot host it because lane_placement and mesh_lane refuse a Lane 0 crate a dependency on qip-mesh."
   },
   {
     "id": "MESH-048",
@@ -604,6 +603,6 @@
     "work_item": "E11-regional-mesh-agent",
     "tier": "T3",
     "size": "L",
-    "notes": "COST (C8) applies to the deployed three-region footprint, not to writing the topology/logic in-tree; the requirement's own notes remove NEW_DEPENDENCY here as belonging to MESH-038."
+    "notes": "COST (C8) applies to the deployed three-region footprint, not to writing the topology/logic in-tree; the requirement's own notes remove NEW_DEPENDENCY here as belonging to MESH-038. | round 3: needs the regional Mesh agents of MESH-047 to link."
   }
 ]

@@ -45,6 +45,7 @@
 
 mod arith;
 
+pub mod coverage;
 pub mod graph;
 pub mod legs;
 pub mod liquidity;
@@ -54,6 +55,7 @@ pub mod pricing;
 pub mod scan;
 pub mod search;
 
+pub use coverage::{Coverage, Tradable, TradableRegistry};
 pub use graph::{
     ArbitrageGraph, ConversionEdge, EdgeKind, Node, PathKind, SyntheticComponent, VenueFacts,
 };
@@ -65,5 +67,6 @@ pub use scan::{
     Opportunity, OpportunityScanner, Rejection, RejectionStage, ScanReport, SizePolicy,
 };
 pub use search::{
-    ExactConfirmation, PathCandidate, SearchSettings, confirm_exact, search_candidates,
+    ExactConfirmation, MAX_CYCLE_EDGES, MIN_CYCLE_EDGES, PathCandidate, SearchOutcome,
+    SearchSettings, confirm_exact, search, search_candidates,
 };
