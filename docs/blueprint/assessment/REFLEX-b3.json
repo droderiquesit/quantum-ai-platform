@@ -356,14 +356,16 @@
   },
   {
     "id": "REFLEX-065",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "nothing — `self.policy: Option<VerifiedPolicy>` is a single field overwritten by `apply_policy`; the previous value is dropped, not retained.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs (Cell::apply_policy replaces self.policy in place; no history retained)"
+      "backend/crates/edge/qip-edge/src/cell.rs (Cell::apply_policy replaces self.policy in place; no history retained)",
+      "backend/crates/edge/qip-edge/src/cell.rs (Cell::roll_back_policy, previous_policy, highest_policy_sequence)",
+      "backend/crates/edge/qip-edge/tests/policy_rollback.rs"
     ],
-    "gap": "No mechanism keeps a previous policy (let alone a package) resident for instant local rollback; a 'rollback' today would require the centre to re-issue and re-ship a payload, exactly the 'fetch again' cost the requirement exists to avoid.",
-    "implemented": false,
-    "tested": false,
+    "gap": "The policy half is done: Cell::roll_back_policy returns to the previous verified payload from memory with no fetch, keeps the newer sequence as the replay floor, and refuses while halted, into a halt, or past the previous payload's validity (tests/policy_rollback.rs, two tests, mutation-verified on the halt refusal and the sequence floor). Not done: the strategy plan the previous payload named is not retained (StrategyInstaller withdraws the running version first, see REFLEX-063), nothing in qip-edge-node invokes the rollback, and the rollback is immediate rather than held to the next epoch boundary the requirement states.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -372,7 +374,7 @@
       "REFLEX-064"
     ],
     "blocked_by": "",
-    "verification": "Needed: an integration test activating a new package, cutting the network, then rolling back locally with no download and confirming decisions carry the previous package's id.",
+    "verification": "backend/crates/edge/qip-edge/tests/policy_rollback.rs::a_rollback_restores_the_previous_payload_without_a_fetch_and_the_rolled_away_one_cannot_return and ::a_rollback_never_releases_a_halt_returns_to_one_or_serves_an_expired_payload. Needed: retain the previous plan in the node and a node-level rollback command at an epoch boundary.",
     "work_item": "E04",
     "tier": "T2",
     "size": "M",
@@ -542,9 +544,10 @@
       "backend/crates/edge/qip-edge/src/feasibility.rs:355 (assess)",
       "backend/crates/edge/qip-edge/src/cell.rs:8473 (#[cfg(test)] unit test the_send_seam_refuses_a_live_class_venue_and_the_gateway_is_never_called)",
       "backend/crates/edge/qip-edge/tests/paper_boundary.rs::a_cell_handed_a_live_class_gateway_places_nothing_and_names_the_gate",
-      "backend/crates/edge/qip-edge/tests/arbitrage.rs::an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out"
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs::an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out",
+      "backend/crates/edge/qip-edge/tests/feasibility.rs::no_order_reaches_the_venue_adapter_that_the_feasibility_gate_would_have_refused"
     ],
-    "gap": "No single property test proves the full 8-stage order (feed decode / books / features / models / strategy / risk / netting / execution) across generated event streams and fails when the pipeline is mutated to skip the risk stage, which is REFLEX-072's own verification method; today the ordering is proven only gate-by-gate.",
+    "gap": "The approval half is now demonstrated: backend/crates/edge/qip-edge/tests/feasibility.rs::no_order_reaches_the_venue_adapter_that_the_feasibility_gate_would_have_refused drives 40 generated sizes through Cell::work into a recording adapter and fails (mutation-verified by making admit_feasible admit everything) when an order the gate forbids reaches it. Still undemonstrated: the journal showing the eight stages in fixed order for generated event streams, since the journal records decisions and not stage boundaries (no decode, book, feature or model stage entry exists to order).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -552,7 +555,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Existing: tests/paper_boundary.rs, tests/arbitrage.rs, tests/feasibility.rs (per-gate ordering). Needed: a generated-event-stream property test over the whole Cell::work pipeline, mutation-verified against a skipped risk stage.",
+    "verification": "Existing: qip-edge/tests/feasibility.rs::no_order_reaches_the_venue_adapter_that_the_feasibility_gate_would_have_refused. Needed: per-pass stage records in the journal and a generated-stream order assertion over them.",
     "work_item": "E04",
     "tier": "T1",
     "size": "M",
