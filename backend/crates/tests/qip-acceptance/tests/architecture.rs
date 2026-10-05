@@ -933,6 +933,9 @@ const NO_MONEY_AUTHORITY: &[&str] = &[
     "qip-data-finder",
     "qip-entity-resolution",
     "qip-evolution",
+    // Ranks and budgets research records; depends on contracts and the agent
+    // registries only, and a started item is a record, not an action.
+    "qip-expansion",
     "qip-learning-engine",
     "qip-market-ingestion",
     "qip-mesh",
@@ -1024,6 +1027,56 @@ fn every_service_crate_is_classified_for_money_authority() {
             "{name} appears in both authority lists"
         );
     }
+}
+
+#[test]
+fn nothing_below_a_composition_root_depends_on_the_expansion_engine() {
+    // EXPAND-005: the Intelligence Expansion Engine sits above the brains. It
+    // reads their contract types and nothing they do waits on it.
+    //
+    // The failure this prevents is the engine becoming load-bearing by
+    // accident: a world model or a reflex cell that imports the curriculum to
+    // ask "is this being researched" has made research a dependency of
+    // deciding, and a stalled queue then stalls the thing it was meant to
+    // improve. Only a composition root may hold the engine, and the edge
+    // node's root may not, because it is the reflex path.
+    let graph = dependency_graph();
+    assert_named_crates_exist(&graph, ["qip-expansion", "qip-contracts", "qip-edge-node"]);
+
+    // The anchor, and the first half of the requirement: the engine reads the
+    // brains through the contract layer. If the walk cannot show this edge,
+    // the absences below prove nothing.
+    assert!(
+        reachable_from(&graph, "qip-expansion").contains("qip-contracts"),
+        "the expansion engine no longer depends on the contract types it reads gaps through"
+    );
+
+    let roots = crates_under("backend/crates/apps");
+    let mut checked = 0;
+    let mut holders = BTreeSet::new();
+    for name in graph.keys() {
+        let is_cognition_root = roots.contains(name) && name != "qip-edge-node";
+        if name == "qip-expansion" || name == "qip-acceptance" || is_cognition_root {
+            continue;
+        }
+        checked += 1;
+        if reachable_from(&graph, name).contains("qip-expansion") {
+            holders.insert(name.as_str());
+        }
+    }
+    // Every holder is named, not the first: the crate that took the edge and
+    // the crates that inherit it through that crate are different repairs.
+    assert!(
+        holders.is_empty(),
+        "these crates depend on the expansion engine: {holders:?}. Only a composition root off \
+         the reflex path may hold it, so move the call up to the root that wires both"
+    );
+    // The premise: the loop covered the libraries, services, edge crates and
+    // the runtime rather than skipping everything.
+    assert!(
+        checked > 40,
+        "only {checked} crates were checked against the expansion engine"
+    );
 }
 
 #[test]

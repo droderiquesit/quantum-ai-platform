@@ -38,6 +38,7 @@
 
 use crate::attestation::ATTESTATION_PATH_VARIABLE;
 use crate::config::{DeepBrainConfig, HostedLanguageModel, LANGUAGE_MODEL_VARIABLE};
+use qip_agents::tools::{ToolKind, ToolPermission, ToolRegistry};
 use qip_ai::language::{DeterministicModel, FallbackChain, LanguageModel};
 use qip_core::error::{Error, Result};
 use qip_reasoning_engine::providers::huggingface::{
@@ -52,6 +53,10 @@ pub struct AssembledModel {
     pub chain: Arc<FallbackChain>,
     /// What this root did about a hosted provider, and why.
     pub hosted: HostedDecision,
+    /// The Tool Registry (EXPAND-007, EXPAND-052) as this root filled it: the
+    /// hosted endpoint where one was named, and the scope it holds. Empty
+    /// when no provider was asked for.
+    pub tools: ToolRegistry,
 }
 
 /// The three outcomes, kept apart because an operator reading the banner has
@@ -149,6 +154,14 @@ impl AssembledModel {
         self.chain.name().to_string()
     }
 
+    /// The registry's entry for the hosted endpoint, for the banner.
+    pub fn describe_tools(&self) -> String {
+        match self.tools.by_kind(ToolKind::ModelEndpoint).first() {
+            None => "none registered".to_string(),
+            Some(tool) => format!("`{}` holds {:?}", tool.name(), tool.scope()),
+        }
+    }
+
     /// One line for the start-up banner.
     pub fn describe(&self) -> String {
         match &self.hosted {
@@ -184,6 +197,7 @@ pub fn assemble(config: &DeepBrainConfig) -> Result<AssembledModel> {
         return Ok(AssembledModel {
             chain: Arc::new(FallbackChain::new(vec![deterministic])),
             hosted: HostedDecision::NotRequested,
+            tools: ToolRegistry::new(),
         });
     };
 
@@ -198,12 +212,22 @@ pub fn assemble(config: &DeepBrainConfig) -> Result<AssembledModel> {
     )
     .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
+    // The hosted endpoint is a tool, and like every tool it enters the
+    // registry read-only and inside its sandbox. A call to a provider leaves
+    // the sandbox, and the registry grants that only on a promotion citing an
+    // evaluation -- here the attestation, the record that a named operator
+    // read what the provider does with what it is sent.
+    let mut tools = ToolRegistry::new();
+    tools.register(&hosted.model, ToolKind::ModelEndpoint)?;
+
     match precondition(hosted, &adapter_config) {
         Err(withheld) => Ok(AssembledModel {
             chain: Arc::new(FallbackChain::new(vec![deterministic])),
             hosted: HostedDecision::Withheld(withheld),
+            tools,
         }),
         Ok(met) => {
+            tools.promote(&hosted.model, ToolPermission::LeaveSandbox, &met.attested)?;
             let summary = HostedSummary {
                 model: hosted.model.clone(),
                 base_url: hosted.base_url.clone(),
@@ -214,13 +238,28 @@ pub fn assemble(config: &DeepBrainConfig) -> Result<AssembledModel> {
             // `Ok` means — and is handed over as the `Option` the
             // configuration resolved, because the adapter is the one place
             // that decides what an absent credential means.
-            let adapter = HuggingFaceModel::new(adapter_config, hosted.token.clone());
+            let adapter = hosted_adapter(&tools, adapter_config, hosted)?;
             Ok(AssembledModel {
                 chain: Arc::new(FallbackChain::new(vec![Arc::new(adapter), deterministic])),
                 hosted: HostedDecision::Installed(summary),
+                tools,
             })
         }
     }
+}
+
+/// The one place the hosted adapter is built, and it asks the registry first.
+///
+/// An adapter built beside the registry instead of through it would be a tool
+/// calling out of its sandbox on a scope nobody granted, with the registry
+/// still reporting it read-only.
+fn hosted_adapter(
+    tools: &ToolRegistry,
+    adapter_config: HuggingFaceConfig,
+    hosted: &HostedLanguageModel,
+) -> Result<HuggingFaceModel> {
+    tools.authorise(&hosted.model, ToolPermission::LeaveSandbox)?;
+    Ok(HuggingFaceModel::new(adapter_config, hosted.token.clone()))
 }
 
 /// What was established when every precondition held: which provider this
@@ -532,5 +571,69 @@ mod tests {
             assembled.describe()
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_hosted_endpoint_is_a_registered_tool_that_leaves_its_sandbox_only_on_the_attestation() {
+        // EXPAND-007 and EXPAND-052 on the one production path that holds a
+        // tool calling out of the process. The failure prevented: an adapter
+        // that reaches a provider while the registry lists it read-only, or
+        // not at all, so nothing an operator can read says what this process
+        // may send where.
+        let scope = |assembled: &AssembledModel| {
+            let endpoints = assembled.tools.by_kind(ToolKind::ModelEndpoint);
+            assert_eq!(endpoints.len(), 1, "one hosted endpoint is registered");
+            assert_eq!(endpoints[0].name(), PINNED_MODEL);
+            endpoints[0].scope().clone()
+        };
+
+        // The premise: with every precondition met the adapter is installed,
+        // and it is installed holding the grant, cited to the attestation.
+        let path = attestation_file("registry-installed", &[TEST_PROVIDER]);
+        let installed = assemble(&with_attestation(&provider_vars(""), &path))
+            .expect("a fully attested provider assembles");
+        assert!(matches!(installed.hosted, HostedDecision::Installed(_)));
+        assert_eq!(installed.active_name(), PINNED_MODEL);
+        assert_eq!(
+            scope(&installed),
+            [ToolPermission::Read, ToolPermission::LeaveSandbox].into()
+        );
+        let _ = std::fs::remove_file(&path);
+
+        // No attestation: the endpoint is still catalogued, at the scope
+        // every tool starts with, and nothing was built on it.
+        let withheld = assemble(&configured(&provider_vars("")))
+            .expect("a withheld provider is a valid chain");
+        assert!(matches!(
+            withheld.hosted,
+            HostedDecision::Withheld(Withheld::NoAttestation { .. })
+        ));
+        assert_eq!(scope(&withheld), [ToolPermission::Read].into());
+        assert_eq!(withheld.active_name(), "deterministic-local-v1");
+
+        // And the builder itself refuses a registry that holds no grant, so
+        // the adapter cannot be reached around the promotion.
+        let hosted = configured(&provider_vars(""))
+            .language_model
+            .expect("a provider is configured");
+        let config = HuggingFaceConfig::new(
+            &hosted.model,
+            &hosted.base_url,
+            DEFAULT_DEADLINE,
+            DEFAULT_MAX_BODY_BYTES,
+        )
+        .expect("a valid adapter configuration");
+        let refusal = hosted_adapter(&withheld.tools, config, &hosted)
+            .expect_err("an adapter was built on a read-only tool");
+        assert_eq!(refusal.code(), "denied");
+
+        assert!(
+            assemble(&configured(&[]))
+                .expect("no provider is a valid chain")
+                .tools
+                .by_kind(ToolKind::ModelEndpoint)
+                .is_empty(),
+            "a tool was registered with no provider named"
+        );
     }
 }

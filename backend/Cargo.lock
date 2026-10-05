@@ -422,6 +422,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qip-expansion"
+version = "0.1.0"
+dependencies = [
+ "qip-agents",
+ "qip-contracts",
+ "qip-core",
+ "serde",
+]
+
+[[package]]
 name = "qip-fabricd"
 version = "0.1.0"
 dependencies = [
