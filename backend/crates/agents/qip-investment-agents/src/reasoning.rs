@@ -82,11 +82,16 @@ impl Agent for CausalAnalyst {
             ));
         }
 
+        // The floor is a fraction of the shock and `propagate` takes an
+        // absolute magnitude, so it is scaled here. Passed unscaled, a one
+        // percent reference shock was under a 0.02 floor before it crossed an
+        // edge: every effect was truncated, on every desk, and this analyst
+        // reported "no data" for any graph at all.
         let propagation = causal.propagate(
             origin,
             REFERENCE_SHOCK,
             MAX_ORDER,
-            MAGNITUDE_FLOOR,
+            MAGNITUDE_FLOOR * REFERENCE_SHOCK,
             brief.as_of,
             brief.as_of,
         );
@@ -96,32 +101,61 @@ impl Agent for CausalAnalyst {
             .iter()
             .find(|e| e.target == target.as_str())
         else {
-            return Ok(no_data(
-                ctx,
-                brief.as_of,
-                format!(
-                    "no evidenced path from {origin} to {} within {MAX_ORDER} hops ({} effects reached, {} truncated)",
+            // "Not reached" has two causes and they are different findings.
+            // Propagation drops what falls under the floor or past the hop
+            // limit; the intervention query does neither, so it can say
+            // whether the target is downstream at all. Saying "no path" for a
+            // target that is downstream by a weak or long route would send a
+            // reader to record a mechanism the graph already holds.
+            let routes = causal.intervene(origin, brief.as_of).map(|reached| {
+                reached
+                    .paths
+                    .iter()
+                    .filter(|path| path.target == target.as_str())
+                    .count()
+            });
+            let reason = match routes {
+                Ok(0) => format!(
+                    "{} is not downstream of {origin} in the causal graph as of {}",
+                    target.as_str(),
+                    brief.as_of
+                ),
+                Ok(routes) => format!(
+                    "{} is downstream of {origin} along {routes} path(s), each below {MAGNITUDE_FLOOR} of the shock or longer than {MAX_ORDER} hops",
+                    target.as_str()
+                ),
+                // Too many paths to enumerate: say only what propagation saw.
+                Err(_) => format!(
+                    "no path from {origin} to {} within {MAX_ORDER} hops above the floor ({} effects reached, {} truncated)",
                     target.as_str(),
                     propagation.effects.len(),
                     propagation.truncated
                 ),
-            ));
+            };
+            return Ok(no_data(ctx, brief.as_of, reason));
         };
 
         // Transmission as a multiple of the shock: what a one percent move at
         // the origin becomes at the target.
         let transmission = effect.magnitude / REFERENCE_SHOCK;
 
-        // Every edge on the path is checked for evidence. An unevidenced link
-        // does not invalidate the chain, but it does have to be said out loud.
-        let mut unevidenced = Vec::new();
-        for pair in effect.path.windows(2) {
-            for edge in causal.outgoing(&pair[0], brief.as_of) {
-                if edge.effect == pair[1] && !edge.is_evidenced() {
-                    unevidenced.push(format!("{} -> {}", pair[0], pair[1]));
-                }
-            }
-        }
+        // The edges the effect actually travelled, by identity. Looking them
+        // up again by node pair found every claim between the pair, so a
+        // second, unevidenced claim the number never came from was reported
+        // against the path — and the evidence of the one it did come from was
+        // never cited at all.
+        let travelled: Vec<&qip_world_model::CausalEdge> = effect
+            .edges
+            .iter()
+            .filter_map(|index| causal.edges().get(*index))
+            .collect();
+        // An unevidenced link does not invalidate the chain, but it does have
+        // to be said out loud.
+        let unevidenced: Vec<String> = travelled
+            .iter()
+            .filter(|edge| !edge.is_evidenced())
+            .map(|edge| format!("{} -> {}", edge.cause, edge.effect))
+            .collect();
 
         let mut caveats = vec![format!(
             "an order-{} effect compounds {} mechanisms, each of which can fail independently",
@@ -180,11 +214,14 @@ impl Agent for CausalAnalyst {
             "hops",
             &["causal_graph"],
         ))
+        // Each edge travelled, then the records that edge itself rests on.
         .evidence(
-            effect
-                .path
-                .windows(2)
-                .map(|pair| format!("causal:{}->{}", pair[0], pair[1]))
+            travelled
+                .iter()
+                .flat_map(|edge| {
+                    std::iter::once(format!("causal:{}->{}", edge.cause, edge.effect))
+                        .chain(edge.evidence.iter().cloned())
+                })
                 .collect(),
         )
         .falsifiers(vec![

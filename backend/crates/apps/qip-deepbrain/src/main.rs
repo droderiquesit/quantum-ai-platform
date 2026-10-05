@@ -113,7 +113,7 @@ fn run() -> Result<()> {
     // registry made for the health thread would answer every scrape with an
     // empty surface forever, while the platform recorded diligently into one
     // nothing could reach.
-    let telemetry = Telemetry::new("qip-deepbrain", clock.clone());
+    let telemetry = Telemetry::foreground("qip-deepbrain", clock.clone());
     let metrics = telemetry.metrics.clone();
     // A second handle on the same three `Arc`s, taken for the same reason the
     // registry handle above is: the drain thread must read the registry the
@@ -316,6 +316,7 @@ fn run() -> Result<()> {
     // When a provider was named and withheld, this line is where an operator
     // learns which precondition is missing and which variable supplies it.
     println!("  language model:   {}", language_model.describe());
+    println!("  tool registry:    {}", language_model.describe_tools());
     println!(
         "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \
          conservative default the first desk order into an empty book is refused by \

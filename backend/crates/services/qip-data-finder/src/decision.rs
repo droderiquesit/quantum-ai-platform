@@ -12,8 +12,10 @@
 //! lifecycle.
 
 use crate::category::SourceCategory;
-use crate::legal::{LegalAssessment, SourcePolicy};
+use crate::coverage::UpdateFrequency;
+use crate::legal::{LegalAssessment, LicensingPosture, SourcePolicy};
 use crate::lifecycle::LifecycleTransition;
+use crate::quality::SourceCost;
 use crate::schema::SchemaDrift;
 use crate::scoring::{Routing, RoutingClass, SourceScores};
 use crate::source::{Source, SourceLineage};
@@ -446,6 +448,25 @@ impl RegistrationDecision {
     }
 }
 
+/// The five things the Source Registry holds about a source (EXPAND-033),
+/// read together from the one record the finder stores.
+///
+/// A view, not a second record: every field borrows from the
+/// [`RegisteredSource`], so the registry cannot say one thing about a
+/// source's licence while its entry says another.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceRegistryEntry<'a> {
+    /// Where the source was found, and when it was found, probed and decided.
+    pub provenance: &'a SourceLineage,
+    pub cost: &'a SourceCost,
+    /// The licensing posture the registration was decided on.
+    pub licence: &'a LicensingPosture,
+    /// How often the source says it updates.
+    pub freshness: UpdateFrequency,
+    /// The class it was routed to and the composite score behind it.
+    pub utility: &'a Routing,
+}
+
 /// A source the finder is currently collecting.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RegisteredSource {
@@ -512,6 +533,18 @@ impl RegisteredSource {
 
     pub fn lineage(&self) -> &SourceLineage {
         &self.lineage
+    }
+
+    /// Provenance, cost, licence, freshness and utility, together.
+    pub fn entry(&self) -> SourceRegistryEntry<'_> {
+        let candidate = self.source.candidate();
+        SourceRegistryEntry {
+            provenance: &self.lineage,
+            cost: candidate.cost(),
+            licence: candidate.declared_licensing(),
+            freshness: candidate.declared_coverage().update_frequency(),
+            utility: &self.routing,
+        }
     }
 
     pub fn entitlements(&self) -> &[Entitlement] {

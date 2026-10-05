@@ -17,14 +17,15 @@ use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::policy::{GrantManifest, PolicyPayload, Slot};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::VenueId;
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::ids::ObjectId;
 use qip_core::time::{Duration, Timestamp};
-use qip_core::{Decimal, SystemClock, dec};
+use qip_core::{Decimal, ManualClock, SystemClock, dec};
 use qip_edge::cell::PlacedOrder;
 use qip_edge::cell::WorkReport;
 use qip_edge::cell::{CellConfig, PolledHalt, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
+use qip_edge::journal::Journal;
 use qip_edge::policy::VerifiedPolicy;
 use qip_edge::quoting::{Depletion, RateLimits};
 use qip_edge::telemetry::{
@@ -33,7 +34,10 @@ use qip_edge::telemetry::{
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SimulatedFeed};
 use qip_edge_node::gateway::SimulatedGateway;
-use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
+use qip_edge_node::mesh::{MeshLink, MeshSettings};
+use qip_edge_node::mirror::{StoreMirror, batches};
+use qip_edge_node::pass::{PassLog, PassMeter, PassOutcome, PassStats, run_pass};
+use qip_edge_node::quote_limits::{QUOTE_LIMITS_VARIABLE, VenueQuoteLimits};
 use qip_edge_node::reprice::{Requote, Requoter};
 use qip_edge_node::share::RegionShareStatus;
 use qip_edge_node::{NodeAssembly, assemble};
@@ -42,11 +46,14 @@ use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::{Labels, labels, names};
 use qip_routing::reprice::RepricePolicy;
+use qip_storage::kv::{KeyValueStore, MemoryKeyValueStore};
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::{Expr, Rule, StrategySpec};
 use qip_strategy::program::Program;
+use qip_transport::RecordingSleeper;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const CELL: &str = "london-1";
 const REGION: &str = "europe-west2";
@@ -2500,4 +2507,775 @@ fn a_cell_whose_journal_store_and_centre_are_both_unreachable_decides_exactly_as
     );
     let _ = std::fs::remove_dir_all(&root);
     Ok(())
+}
+
+// --- EXEC-004: the venue's own rate and ratio, as the deployment states them
+
+/// Three messages of burst refilling at one a second, two messages per trade
+/// refused over a minute — the declaration a deployment would write, read
+/// through the door `main.rs` reads it through.
+const STATED_LIMITS: &str = "XLON=3:1:0:0:2:64:60000";
+
+/// [`node_with_feed`], with the venue's limits read from a declaration, and
+/// a two-sided touch at the venue: a marketable buy takes the offer and
+/// fills, an order rested at the mid does not.
+fn node_under_stated_limits(
+    pricing: PricingPolicy,
+) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFeed)> {
+    let venues = [venue()];
+    let config = VenueQuoteLimits::read(Some(STATED_LIMITS), &venues)?
+        .apply(CellConfig::new(CELL, REGION).with_venue(venue()));
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let allocation = RegionCapital::read(Some("1000000000"))?;
+    let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
+    let mut gateway = SimulatedGateway::new(venue(), 7, t(0))?;
+    let feed = SimulatedFeed::new(venue());
+    feed.attach(&mut node.cell)?;
+    let (compiled, program) = firing_strategy()?;
+    node.cell
+        .deploy_with_pricing(compiled, program, grant()?, pricing)?;
+    let named = grant()?.signature().to_string();
+    node.cell
+        .apply_policy(share_policy(CELL, 1, t(5), vec![named])?, t(5))?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    assert_eq!(
+        node.cell
+            .quote_limits_at(&venue())
+            .map(RateLimits::capacity),
+        Some(3),
+        "the premise failed: the declared limits did not reach the budget the node's cell spends"
+    );
+    Ok((node, gateway, feed))
+}
+
+/// Run `instants.len()` passes and return every quote-budget refusal.
+fn refusals_over(
+    node: &mut NodeAssembly,
+    gateway: &mut SimulatedGateway,
+    feed: &mut SimulatedFeed,
+    instants: &[Timestamp],
+) -> Result<Vec<String>> {
+    let mut stats = PassStats::default();
+    let mut refused = Vec::new();
+    for now in instants {
+        let PassOutcome::Ran { report, .. } =
+            run_pass(&mut node.cell, gateway, feed, None, &mut stats, *now)?
+        else {
+            panic!("a running node reported its pass as halted");
+        };
+        refused.extend(
+            refused_under(&report, "quote_budget")
+                .into_iter()
+                .map(str::to_string),
+        );
+    }
+    Ok(refused)
+}
+
+#[test]
+fn a_node_refuses_quotes_past_the_venues_stated_rate_before_the_simulated_venue_sees_them()
+-> Result<()> {
+    // The failure this prevents: every node ran one default ceiling of 4,096
+    // messages on every venue because this binary never set a limit, so a
+    // venue's own rate was found out when the venue enforced it.
+    let (mut node, mut gateway, mut feed) = node_under_stated_limits(PricingPolicy::Marketable)?;
+    // Five passes inside one second, against a rate of one a second.
+    let instants: Vec<Timestamp> = (0..5).map(|pass| at_ms(10_000 + pass)).collect();
+    let refused = refusals_over(&mut node, &mut gateway, &mut feed, &instants)?;
+    assert_eq!(
+        gateway.submitted_count(),
+        3,
+        "the venue received more than the burst it was stated to allow: {refused:?}"
+    );
+    assert_eq!(
+        node.cell.quote_budget()[0].trades,
+        3,
+        "the premise failed: the orders did not fill, so the ratio may be what refused"
+    );
+    assert_eq!(refused.len(), 2, "the excess was not refused once each");
+    assert!(
+        refused
+            .iter()
+            .all(|reason| reason.contains("quote budget at XLON")),
+        "a refusal past the rate did not name the bucket: {refused:?}"
+    );
+    assert_eq!(
+        node.scrape_registry()
+            .snapshot()
+            .counter(names::EDGE_REFUSALS, &by("gate", "quote_budget")),
+        2,
+        "the refusals did not reach the series the scrape serves"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_node_refuses_quotes_past_the_venues_stated_message_to_trade_ratio_before_the_simulated_venue_sees_them()
+-> Result<()> {
+    // The ratio half. The monitor narrowed and never refused, so a stream of
+    // quotes that nothing fills was sent at the sustained rate for as long as
+    // it ran.
+    let (mut node, mut gateway, mut feed) =
+        node_under_stated_limits(PricingPolicy::rest_at_mid(Duration::from_secs(600))?)?;
+    // Two seconds apart: slower than the rate, so the bucket is full on
+    // every pass, and rested inside the spread, so nothing fills.
+    let instants: Vec<Timestamp> = (0..5).map(|pass| t(10 + pass * 2)).collect();
+    let refused = refusals_over(&mut node, &mut gateway, &mut feed, &instants)?;
+    assert_eq!(
+        node.cell.quote_budget()[0].trades,
+        0,
+        "the premise failed: the venue filled an order, so the stream is not short of trades"
+    );
+    assert_eq!(
+        gateway.submitted_count(),
+        2,
+        "the venue received more than two messages against no trade at two per trade: \
+         {refused:?}"
+    );
+    assert_eq!(refused.len(), 3, "the excess was not refused once each");
+    assert!(
+        refused
+            .iter()
+            .all(|reason| reason.contains("message-to-trade ratio at XLON")),
+        "a refusal past the ratio did not name the limit: {refused:?}"
+    );
+    assert_eq!(
+        node.scrape_registry()
+            .snapshot()
+            .counter(names::EDGE_REFUSALS, &by("gate", "quote_budget")),
+        3,
+        "the refusals did not reach the series the scrape serves"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_node_sends_a_stream_within_the_venues_stated_rate_and_ratio_in_full() -> Result<()> {
+    // What distinguishes the two limits above from a node that refuses
+    // everything: slower than the rate, and every message a trade.
+    let (mut node, mut gateway, mut feed) = node_under_stated_limits(PricingPolicy::Marketable)?;
+    // Two seconds apart, inside the simulated session's heartbeat allowance.
+    let instants: Vec<Timestamp> = (0..5).map(|pass| t(10 + pass * 2)).collect();
+    let refused = refusals_over(&mut node, &mut gateway, &mut feed, &instants)?;
+    assert!(
+        refused.is_empty(),
+        "a stream inside both limits was refused: {refused:?}"
+    );
+    assert_eq!(
+        gateway.submitted_count(),
+        5,
+        "a stream inside both limits did not reach the venue in full"
+    );
+    assert_eq!(node.cell.quote_budget()[0].trades, 5, "the premise failed");
+    Ok(())
+}
+
+#[test]
+fn the_binary_reads_the_quote_limits_variable_and_applies_it_to_the_cell_it_assembles() {
+    // `main.rs` is a binary no test can call, so this is the narrow claim a
+    // source check can honestly make: the variable is read by its constant
+    // and what was read is applied to the configuration. That applying it
+    // changes what the cell refuses is the three tests above.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    assert!(
+        source.contains("std::env::var(QUOTE_LIMITS_VARIABLE)"),
+        "main.rs does not read {QUOTE_LIMITS_VARIABLE}"
+    );
+    assert!(
+        source.contains("config.quote_limits.apply(cell_config)"),
+        "main.rs reads the venue limits and never applies them to the cell configuration"
+    );
+}
+
+// --- EXEC-037: the order path with the journal sink and the centre gone -----
+
+/// A journal store that can be taken away and given back.
+///
+/// Every operation fails while it is down, the way a store on the far side
+/// of a partition fails: nothing is written and nothing is read. What it
+/// held before stays held, so the record after the outage is the record
+/// before it plus whatever is shipped once it returns.
+#[derive(Debug, Default)]
+struct PartitionedStore {
+    inner: MemoryKeyValueStore,
+    down: AtomicBool,
+}
+
+impl PartitionedStore {
+    fn reachable(&self) -> Result<()> {
+        if self.down.load(Ordering::SeqCst) {
+            return Err(Error::io(
+                "the journal store is unreachable; the batch stays in the cell's journal and \
+                 ships on the next flush that finds the store",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl KeyValueStore for PartitionedStore {
+    fn get(&self, key: &str) -> Result<Option<serde_json::Value>> {
+        self.reachable()?;
+        self.inner.get(key)
+    }
+
+    fn put(&self, key: &str, value: serde_json::Value) -> Result<()> {
+        self.reachable()?;
+        self.inner.put(key, value)
+    }
+
+    fn delete(&self, key: &str) -> Result<bool> {
+        self.reachable()?;
+        self.inner.delete(key)
+    }
+
+    fn keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        self.reachable()?;
+        self.inner.keys_with_prefix(prefix)
+    }
+
+    fn len(&self) -> Result<usize> {
+        self.reachable()?;
+        self.inner.len()
+    }
+}
+
+/// A link to a central plane nobody is listening as: the port was bound to
+/// learn a free address and released before the link was built.
+fn link_to_a_dead_centre() -> Result<MeshLink> {
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").map_err(|error| Error::io(error.to_string()))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| Error::io(error.to_string()))?;
+    drop(listener);
+    MeshLink::connect_with(
+        &MeshSettings {
+            cell: CELL.to_string(),
+            region: REGION.to_string(),
+            peer: format!("http://{address}"),
+            seed: 3,
+        },
+        ENVELOPE_KEY,
+        Arc::new(ManualClock::new(t(0))),
+        Arc::new(RecordingSleeper::new()),
+    )
+}
+
+/// One probe of the node as `serve` in `main.rs` runs it, with both the
+/// journal store and the centre gone: the flush, then the exchange, then
+/// the pass, in that order and on one thread. Asserts that the two outages
+/// are real before returning what the pass did, so a caller's "the order
+/// was still sent" cannot be about a turn in which nothing was down.
+///
+/// The third value is how many decisions the flush tried and failed to
+/// ship. A flush with nothing pending never reaches the store, so it is the
+/// store itself that is asked first, and the flush is held to failing
+/// exactly when it had something to send.
+fn turn_with_everything_else_unreachable(
+    node: &mut NodeAssembly,
+    gateway: &mut SimulatedGateway,
+    feed: &mut SimulatedFeed,
+    requoter: &mut Requoter,
+    (store, mirror): (&PartitionedStore, &mut StoreMirror),
+    link: &mut MeshLink,
+    stats: &mut PassStats,
+    last_report: &WorkReport,
+    now: Timestamp,
+) -> Result<(WorkReport, Vec<Requote>, usize)> {
+    assert!(
+        store.len().is_err(),
+        "the premise failed: the journal store answered, so this turn is not cut off from it"
+    );
+    let pending = node.cell.journal().unshipped().len();
+    match node.cell.flush(mirror, now) {
+        Ok(shipped) => assert_eq!(
+            (pending, shipped),
+            (0, 0),
+            "the journal shipped although its store is unreachable"
+        ),
+        Err(refusal) => assert!(
+            pending > 0 && refusal.message().contains("unreachable"),
+            "the flush failed for some other reason than the outage: {}",
+            refusal.message()
+        ),
+    }
+    assert_eq!(
+        node.cell.journal().unshipped().len(),
+        pending,
+        "a flush the store refused dropped decisions from the cell's backlog"
+    );
+    let tick = link.exchange(&mut node.cell, last_report, now);
+    assert!(
+        tick.poll_error.is_some() && tick.policy_poll_error.is_some(),
+        "the premise failed: the centre answered, so this turn is not cut off from it: {tick:?}"
+    );
+    assert_ne!(
+        tick.delta.as_deref(),
+        Some("delivered"),
+        "the premise failed: the cell's state reached the centre: {tick:?}"
+    );
+    let outcome = run_pass(&mut node.cell, gateway, feed, Some(requoter), stats, now)?;
+    let PassOutcome::Ran {
+        report,
+        requotes,
+        breaks,
+        ..
+    } = outcome
+    else {
+        panic!("losing the journal store and the centre stopped the node's pass: {outcome:?}");
+    };
+    assert!(
+        breaks.is_empty(),
+        "the outage reconciled as a break: {breaks:?}"
+    );
+    Ok((*report, requotes, pending))
+}
+
+/// EXEC-037's own chaos check, on the pieces the binary is assembled from.
+///
+/// The failure it prevents is an order path that only works while something
+/// else does: a node that stops sending, stops cancelling or stops booking
+/// fills because its journal has nowhere to go or its centre has stopped
+/// answering has put a store and a regional service between itself and the
+/// venue, whatever the diagram says. Two earlier tests each showed half —
+/// orders with nothing else constructed at all, and a cell that stays up
+/// with the centre dead while placing nothing — and neither failed the sink,
+/// so the journal catching up was shown by nothing.
+#[test]
+fn with_the_journal_store_and_the_centre_unreachable_a_node_still_sends_cancels_and_books_fills_and_the_journal_catches_up_when_the_store_returns()
+-> Result<()> {
+    let (mut node, mut gateway, mut feed) =
+        node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
+    let mut requoter = requoter(&node)?;
+    let mut stats = PassStats::default();
+    let store = Arc::new(PartitionedStore::default());
+    let durable: Arc<dyn KeyValueStore> = Arc::clone(&store) as Arc<dyn KeyValueStore>;
+    let mut mirror = StoreMirror::open(Arc::clone(&durable), CELL, t(0))?;
+    let mut link = link_to_a_dead_centre()?;
+
+    // The premise, asserted: the store works before it is taken away, and
+    // holds the part of the session that preceded the outage. Without this a
+    // store that never accepted anything would pass every refusal below.
+    let before_outage = node.cell.flush(&mut mirror, t(6))?;
+    assert!(
+        before_outage > 0,
+        "the premise failed: the cell had journaled nothing to ship before the outage"
+    );
+    assert_eq!(batches(durable.as_ref())?.len(), 1, "the premise failed");
+
+    store.down.store(true, Ordering::SeqCst);
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+
+    // An order: sent to the venue, and resting there by the venue's record.
+    let (first, _, _) = turn_with_everything_else_unreachable(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut requoter,
+        (&store, &mut mirror),
+        &mut link,
+        &mut stats,
+        &WorkReport::default(),
+        t(10),
+    )?;
+    assert_eq!(
+        first.orders.len(),
+        1,
+        "no order was sent with the journal store and the centre unreachable: {:?}",
+        first.refusals
+    );
+    let resting = first.orders[0].clone();
+    assert!(
+        gateway.venue_holds_open(&resting.order_id),
+        "the order the cell reports sending is not at the venue"
+    );
+
+    // A cancel: the touch moves away, and the stale order is withdrawn and
+    // re-sent at it — a cancel and a replacement, both at the venue.
+    gateway.seed_touch(&object(), Side::Buy, dec!("100.5"), dec!("1"), t(15))?;
+    let (second, requotes, refused_after_the_order) = turn_with_everything_else_unreachable(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut requoter,
+        (&store, &mut mirror),
+        &mut link,
+        &mut stats,
+        &first,
+        t(20),
+    )?;
+    assert!(
+        refused_after_the_order > 0,
+        "the premise failed: the turn after the order had nothing to ship, so no flush has yet \
+         been refused by the outage"
+    );
+    let Some(Requote::Replaced { replacement, .. }) = requotes.first() else {
+        panic!("no cancel was sent with everything else unreachable: {requotes:?}");
+    };
+    assert!(
+        !gateway.venue_holds_open(&resting.order_id),
+        "the venue still holds the order the cell cancelled"
+    );
+    assert!(
+        gateway.venue_holds_open(replacement),
+        "the venue does not hold the replacement"
+    );
+
+    // A fill: somebody sells through the replacement, and the next turn
+    // books it under the cell's own id and agrees with the venue's ledger.
+    gateway.seed_aggressor(&object(), Side::Sell, dec!("100.5"), dec!("200"), t(25))?;
+    let (third, _, _) = turn_with_everything_else_unreachable(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut requoter,
+        (&store, &mut mirror),
+        &mut link,
+        &mut stats,
+        &second,
+        t(28),
+    )?;
+    assert!(
+        third
+            .fills
+            .iter()
+            .any(|fill| fill.order_id == resting.order_id),
+        "the venue's fill was not booked with everything else unreachable: {:?}",
+        third.fills
+    );
+    assert_eq!(
+        node.cell.position(&venue(), &object()),
+        venue_position(&gateway),
+        "the cell's position and the venue's disagree after the outage's fill"
+    );
+    assert!(
+        !node.cell.is_halted(),
+        "the outage halted the cell, so the journal store or the centre sits on the order path"
+    );
+
+    // Nothing reached the store while it was down, and the cell still holds
+    // everything it decided: that is the backlog the catch-up has to ship.
+    let backlog = node.cell.journal().unshipped().len();
+    assert!(
+        backlog >= 3,
+        "the premise failed: an order, a cancel and a fill left fewer than three decisions \
+         waiting to ship ({backlog})"
+    );
+    store.down.store(false, Ordering::SeqCst);
+    assert_eq!(
+        batches(durable.as_ref())?.len(),
+        1,
+        "a batch was written to a store that was unreachable"
+    );
+
+    // The store returns. One flush ships the whole backlog, and the record
+    // reads as one unbroken chain from the session's start.
+    let caught_up = node.cell.flush(&mut mirror, t(30))?;
+    assert_eq!(
+        caught_up, backlog,
+        "the flush after the store returned did not ship everything decided during the outage"
+    );
+    assert!(
+        node.cell.journal().unshipped().is_empty(),
+        "decisions are still waiting after the catch-up"
+    );
+    let shipped = batches(durable.as_ref())?;
+    assert_eq!(
+        shipped.len(),
+        2,
+        "the catch-up is not one batch after the first"
+    );
+    let mut tail = Journal::GENESIS.to_string();
+    let mut entries = 0;
+    for batch in &shipped {
+        batch.verify_against(&tail)?;
+        tail = batch.tail_digest();
+        entries += batch.entries.len();
+    }
+    assert_eq!(
+        entries,
+        node.cell.journal().len(),
+        "the store does not hold every decision the cell made across the outage"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_binary_reports_a_failed_flush_and_keeps_serving_rather_than_stopping_on_it() {
+    // `main.rs` is a binary no test can call, so this is the narrow claim a
+    // source check can honestly make: the loop that runs the pass takes the
+    // flush's failure as a value and logs it, and does not propagate it. It
+    // cannot prove the pass still runs afterwards; the test above proves that
+    // on the same three calls in the same order.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    assert!(
+        source.contains("if let Err(error) = cell.flush(mirror, now) {"),
+        "main.rs no longer takes a failed flush as a value to report; a `?` here turns a \
+         storage outage into a trading outage"
+    );
+    assert!(
+        !source.contains("cell.flush(mirror, now)?"),
+        "main.rs propagates a failed flush out of the loop that runs the pass"
+    );
+}
+
+// --- OBS-021: the pass loop's stderr is sampled, not per event --------------
+
+/// Lines the sampler lets through per window in the storm below — the figure
+/// `main.rs` passes to [`PassLog::new`].
+const LINES_PER_WINDOW: u32 = 5;
+
+/// Run `passes` passes inside one nine-second span with the touch walking
+/// away from a resting order on every one, so every pass mints at least one
+/// requote outcome, and return `(requote outcomes, lines written)`.
+///
+/// The span is fixed and the pass count is the variable, because that is the
+/// shape of the claim: a busier market in the same wall-clock window.
+fn stderr_lines_for_a_requote_storm(passes: i64) -> Result<(usize, usize)> {
+    let (mut node, mut gateway, mut feed) =
+        node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
+    let mut requoter = requoter(&node)?;
+    let mut stats = PassStats::default();
+    // A wide book, so the bid has a hundred whole units to walk through
+    // before it reaches the offer.
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("301"), dec!("400"), t(1))?;
+    let first = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        Some(&mut requoter),
+        &mut stats,
+        t(10),
+    )?;
+    let PassOutcome::Ran { report, .. } = &first else {
+        panic!("a running node reported its first pass as halted: {first:?}");
+    };
+    assert_eq!(report.orders.len(), 1, "the premise is one resting order");
+    assert_eq!(report.orders[0].price, dec!("200"), "resting at the mid");
+
+    let mut log = PassLog::new(LINES_PER_WINDOW, Duration::from_secs(10))?;
+    let mut sink: Vec<u8> = Vec::new();
+    let mut outcomes = 0usize;
+    let mut written = 0usize;
+    for pass in 0..passes {
+        let now = at_ms(20_000 + pass * 9_000 / passes);
+        // Somebody bids one whole unit above the last bid: a hundred ticks
+        // past whatever the cell has resting behind it.
+        let bid = dec!("201") + Decimal::from(pass);
+        gateway.seed_touch(&object(), Side::Buy, bid, dec!("1"), now)?;
+        let outcome = run_pass(
+            &mut node.cell,
+            &mut gateway,
+            &mut feed,
+            Some(&mut requoter),
+            &mut stats,
+            now,
+        );
+        match &outcome {
+            Ok(PassOutcome::Ran { requotes, .. }) => outcomes += requotes.len(),
+            other => panic!("pass {pass} of the storm did not run: {other:?}"),
+        }
+        written += log.write(now, &outcome, &mut sink);
+    }
+    let text = String::from_utf8(sink).expect("the log is text");
+    assert_eq!(
+        text.lines().count(),
+        written,
+        "the count returned is not the count of lines that reached the sink"
+    );
+    assert!(
+        text.lines()
+            .all(|line| line.starts_with("qip-edge-node: requote: ")),
+        "{text}"
+    );
+    Ok((outcomes, written))
+}
+
+/// OBS-021's own check: the same nine seconds, eight passes and then eighty,
+/// and the stderr volume is the sample rate both times.
+///
+/// Before `PassLog` the loop wrote one line per requote outcome, so the
+/// eighty-pass window wrote ten times the eight-pass one — log ingestion
+/// proportional to how busy the market was, on the one process whose busy
+/// moments are the ones an operator most needs a readable log for.
+#[test]
+fn the_stderr_a_node_writes_in_one_window_is_the_sample_rate_whether_it_held_eight_passes_or_eighty()
+-> Result<()> {
+    let (few_outcomes, few_lines) = stderr_lines_for_a_requote_storm(8)?;
+    let (many_outcomes, many_lines) = stderr_lines_for_a_requote_storm(80)?;
+    // The premise, first: both storms offered more lines than the sampler
+    // allows, and the larger offered several times the smaller. Without this
+    // an idle node would pass by writing nothing.
+    assert!(
+        few_outcomes > LINES_PER_WINDOW as usize,
+        "the small storm minted only {few_outcomes} requote outcome(s), so the bound was never \
+         reached and nothing below is about sampling"
+    );
+    assert!(
+        many_outcomes >= few_outcomes * 5,
+        "the large storm minted {many_outcomes} outcome(s) against {few_outcomes}: not a \
+         meaningfully busier window"
+    );
+    assert_eq!(
+        few_lines, LINES_PER_WINDOW as usize,
+        "the small storm did not fill the window's allowance"
+    );
+    assert_eq!(
+        many_lines, few_lines,
+        "ten times the passes wrote a different number of lines: stderr volume follows message \
+         count, not the sample rate"
+    );
+    Ok(())
+}
+
+/// The other half of the wiring: the binary writes its per-pass lines through
+/// [`PassLog`] and has no per-event `eprintln!` of its own beside it.
+///
+/// A source scan, because `main.rs` is a binary and no test can call its
+/// loop. It asserts its premise first — that the scan is reading the loop —
+/// and matches the two fragments that would each mint a line per event.
+#[test]
+fn the_node_binary_writes_its_per_pass_lines_only_through_the_sampled_pass_log() {
+    let main = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+        .expect("the node's main.rs is readable");
+    assert!(
+        main.contains("run_pass(") && main.contains("fn serve("),
+        "the scan is not reading the serve loop"
+    );
+    assert!(
+        main.contains("pass_log.write(now, &outcome, &mut std::io::stderr())"),
+        "the serve loop no longer hands its pass outcome to PassLog"
+    );
+    for per_event in ["requote.describe()", "reconciliation break:"] {
+        assert!(
+            !main.contains(per_event),
+            "main.rs formats `{per_event}` itself: a per-event line beside the sampled log"
+        );
+    }
+}
+
+// --- OBS-018: the node's four golden signals, the pass as the unit of work --
+
+/// A pass that runs, a pass the gateway refuses, and a pass that runs again:
+/// the meter counts three, times three, counts the refused one as this
+/// service's failure, and reports how much of the request allowance the last
+/// one consumed.
+///
+/// The refused pass is asked for at an instant earlier than the last, which
+/// `SimulatedGateway::advance_to` refuses before anything is released — a
+/// real failure of the real pass, not a closure that returns an error.
+#[test]
+fn a_run_of_passes_with_a_refused_one_moves_all_four_of_the_nodes_golden_signals() -> Result<()> {
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    let registry = Arc::clone(node.scrape_registry());
+    let meter = PassMeter::new(Arc::clone(&registry), std::time::Duration::from_secs(2))?;
+    let mut stats = PassStats::default();
+
+    // The premise: no pass has run, so none of the four exists.
+    let before = registry.snapshot();
+    assert_eq!(before.counter_total(names::SERVICE_REQUESTS), 0);
+    assert_eq!(before.counter_total(names::SERVICE_ERRORS), 0);
+    assert!(
+        before
+            .gauge(names::SERVICE_SATURATION, &Labels::new())
+            .is_none()
+    );
+
+    let mut pass_at = |now: Timestamp| {
+        meter.measure(|| {
+            run_pass(
+                &mut node.cell,
+                &mut gateway,
+                &mut feed,
+                None,
+                &mut stats,
+                now,
+            )
+        })
+    };
+    let first = pass_at(t(10))?;
+    assert!(
+        matches!(first, PassOutcome::Ran { .. }),
+        "the premise is a pass that ran: {first:?}"
+    );
+    let backwards = pass_at(t(5));
+    let refusal = backwards.expect_err("a pass asked for before the last one ran");
+    assert!(
+        refusal.message().contains("passes run forward"),
+        "the pass failed for another reason: {}",
+        refusal.message()
+    );
+    let third = pass_at(t(20))?;
+    assert!(matches!(third, PassOutcome::Ran { .. }), "{third:?}");
+
+    let after = registry.snapshot();
+    assert_eq!(after.counter_total(names::SERVICE_REQUESTS), 3, "traffic");
+    assert_eq!(
+        after.counter(names::SERVICE_ERRORS, &labels([("class", "service")])),
+        1,
+        "errors: the refused pass and nothing else"
+    );
+    let latency = after
+        .histogram(names::SERVICE_LATENCY_MS, &Labels::new())
+        .expect("the latency histogram");
+    assert_eq!(latency.count, 3, "latency");
+    let saturation = after
+        .gauge(names::SERVICE_SATURATION, &Labels::new())
+        .expect("the saturation gauge");
+    assert!(
+        saturation > 0.0 && saturation < 1.0,
+        "a pass in a test took none, or all, of a two-second allowance: {saturation}"
+    );
+    Ok(())
+}
+
+/// A meter with no allowance to measure against is refused at start-up, so
+/// the loop cannot chart a division by zero on every pass.
+#[test]
+fn a_pass_meter_with_no_request_allowance_is_refused_before_the_loop_starts() -> Result<()> {
+    let (node, _gateway, _feed) = node_with_feed(PricingPolicy::Marketable)?;
+    let refused = PassMeter::new(
+        Arc::clone(node.scrape_registry()),
+        std::time::Duration::ZERO,
+    )
+    .expect_err("a zero allowance");
+    assert!(
+        refused.message().starts_with("configuration:"),
+        "{}",
+        refused.message()
+    );
+    Ok(())
+}
+
+/// The binary runs its pass inside the meter. A source scan for the same
+/// reason as the log's: `main.rs` is a binary and its loop cannot be called.
+#[test]
+fn the_node_binary_runs_its_pass_inside_the_golden_signal_meter() {
+    let main = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+        .expect("the node's main.rs is readable");
+    assert!(
+        main.contains("fn serve(") && main.contains("run_pass("),
+        "the scan is not reading the serve loop"
+    );
+    assert!(
+        main.contains("PassMeter::new(Arc::clone(metrics), REQUEST_TIMEOUT)?"),
+        "the meter is no longer built on the scraped registry and the request allowance"
+    );
+    assert!(
+        main.contains("pass_meter.measure(|| {\n                        run_pass("),
+        "the serve loop calls run_pass outside the meter"
+    );
+    assert_eq!(
+        main.matches("run_pass(").count(),
+        1,
+        "a second call to run_pass would be a pass nothing times"
+    );
 }

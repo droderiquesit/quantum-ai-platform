@@ -19,6 +19,11 @@ qip-world-model.workspace = true
 # are in-tree crates under libs/: inward edges, not third-party dependencies.
 qip-ai.workspace = true
 qip-transport.workspace = true
+# The `Qubo` type, and nothing else: `constraint::Problem::to_qubo` emits the
+# type the quantum path's solver port takes (REASON-017), and a second QUBO
+# type here would be one a caller has to convert, wrongly, at the seam. In-tree
+# and already reached through `qip-world-model`, so no new crate is reachable.
+qip-numerics.workspace = true
 
 [lints]
 workspace = true

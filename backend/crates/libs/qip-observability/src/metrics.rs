@@ -830,6 +830,18 @@ pub mod names {
     /// Level shifts the platform found in its own telemetry (OBS-003), labelled
     /// `series`, bounded by the source-file literals the kernel feeds.
     pub const TELEMETRY_ANOMALIES: &str = "qip_telemetry_anomalies_total";
+
+    // The four golden signals (OBS-018), under the same names on every
+    // service and recorded only by `crate::golden::GoldenSignals`. The unit
+    // of work is the service's own: a request for the API, a cycle for a
+    // brain, a pass for a cell. None carries a label beyond `class` on the
+    // error counter, which is a two-value enum; the service is the registry's
+    // own resource, not a label.
+    pub const SERVICE_REQUESTS: &str = "qip_service_requests_total";
+    pub const SERVICE_ERRORS: &str = "qip_service_errors_total";
+    pub const SERVICE_LATENCY_MS: &str = "qip_service_latency_milliseconds";
+    /// A ratio, deliberately not clamped at one: over one is over capacity.
+    pub const SERVICE_SATURATION: &str = "qip_service_saturation_ratio";
     /// Entries in the platform's own hash-chained event log. A gauge rather
     /// than a counter: it is the length of a log, not a rate of appends, and
     /// an operator asking whether the chain is growing wants the length.

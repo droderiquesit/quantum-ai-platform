@@ -41,6 +41,7 @@ pub mod cells;
 pub mod console;
 pub mod fabric;
 pub mod feed;
+pub mod golden;
 pub mod http;
 pub mod json;
 pub mod ledger_views;

@@ -110,6 +110,7 @@ pub use category::{ApprovedCategories, CategoryApproval, ContentSignal, SourceCa
 pub use coverage::{CoverageGap, CoverageMatch, SourceCoverage, SourceRegion, UpdateFrequency};
 pub use decision::{
     DecisionOutcome, LifecycleStage, ReasonStep, Reasoning, RegisteredSource, RegistrationDecision,
+    SourceRegistryEntry,
 };
 pub use endpoint::{
     AccessMechanism, AuthRequirement, Delivery, FeedFormat, FileFormat, McpTarget, PollPlan,

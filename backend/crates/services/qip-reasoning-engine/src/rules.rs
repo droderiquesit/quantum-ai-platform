@@ -56,7 +56,18 @@ pub enum Cond {
 }
 
 impl Cond {
-    fn holds(&self, facts: &BTreeMap<String, Value>) -> bool {
+    /// Every fact the condition reads.
+    pub(crate) fn facts(&self, out: &mut BTreeSet<String>) {
+        match self {
+            Cond::Cmp { fact, .. } | Cond::Present { fact } => {
+                out.insert(fact.clone());
+            }
+            Cond::And(parts) | Cond::Or(parts) => parts.iter().for_each(|c| c.facts(out)),
+            Cond::Not(inner) => inner.facts(out),
+        }
+    }
+
+    pub(crate) fn holds(&self, facts: &BTreeMap<String, Value>) -> bool {
         match self {
             Cond::Present { fact } => facts.contains_key(fact),
             Cond::Cmp { fact, op, value } => facts.get(fact).is_some_and(|have| {
@@ -227,4 +238,115 @@ impl RulePack {
             ))
         }
     }
+
+    /// Every contradiction between this pack and one observed state, each as
+    /// a [`RevisionTask`], in a fixed order.
+    ///
+    /// Takes `&self`: the pack cannot be edited, and a contradicted rule is
+    /// neither dropped nor patched on the way. Refuses an observation with no
+    /// evidence, because a task nobody can trace to a record cannot be
+    /// reviewed, only believed.
+    pub fn contradictions(
+        &self,
+        observation: &[(String, Value)],
+        evidence: &[String],
+    ) -> Result<Vec<RevisionTask>> {
+        if evidence.is_empty() {
+            return Err(Error::invalid(
+                "the observation cites no evidence; supply the ids of the records it rests on",
+            ));
+        }
+        let mut observed = BTreeMap::new();
+        for (k, v) in observation {
+            if let Some(prev) = observed.insert(k.clone(), v.clone())
+                && prev != *v
+            {
+                return Err(Error::invalid(format!(
+                    "fact '{k}' was observed with two different values; supply one"
+                )));
+            }
+        }
+        let task = |conflict, fact: Option<&String>| RevisionTask {
+            pack: self.name.clone(),
+            version: self.version,
+            conflict,
+            fact: fact.cloned(),
+            observation: observed.clone(),
+            evidence: evidence.to_vec(),
+        };
+        let mut firing: Vec<&Rule> = self
+            .rules
+            .iter()
+            .filter(|r| r.when.holds(&observed))
+            .collect();
+        firing.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut tasks = Vec::new();
+        for (i, rule) in firing.iter().enumerate() {
+            if observed
+                .get(&rule.fact)
+                .is_some_and(|seen| *seen != rule.value)
+            {
+                tasks.push(task(
+                    Conflict::RuleAgainstObservation {
+                        rule: rule.id.clone(),
+                    },
+                    Some(&rule.fact),
+                ));
+            }
+            for other in &firing[i + 1..] {
+                if other.fact == rule.fact && other.value != rule.value {
+                    tasks.push(task(
+                        Conflict::RuleAgainstRule {
+                            rule: rule.id.clone(),
+                            other: other.id.clone(),
+                        },
+                        Some(&rule.fact),
+                    ));
+                }
+            }
+        }
+        let mut broken: Vec<&Invariant> = self
+            .invariants
+            .iter()
+            .filter(|i| i.forbidden.holds(&observed))
+            .collect();
+        broken.sort_by(|a, b| a.id.cmp(&b.id));
+        tasks.extend(broken.iter().map(|invariant| {
+            task(
+                Conflict::InvariantAgainstObservation {
+                    invariant: invariant.id.clone(),
+                },
+                None,
+            )
+        }));
+        Ok(tasks)
+    }
+}
+
+/// What a pack's theory was contradicted by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Conflict {
+    /// A rule's premises held in the observation and its conclusion did not.
+    RuleAgainstObservation { rule: String },
+    /// Two rules whose premises both held concluded different values.
+    RuleAgainstRule { rule: String, other: String },
+    /// The observation is a state an invariant declares unreachable.
+    InvariantAgainstObservation { invariant: String },
+}
+
+/// An explicit request to revise the theory, raised by a contradiction
+/// (REASON-031). It carries both sides and the evidence, and changes nothing:
+/// deciding which side is wrong is the reviewer's job, not the detector's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevisionTask {
+    pub pack: String,
+    pub version: u32,
+    pub conflict: Conflict,
+    /// The fact the two sides disagree about; `None` for an invariant, which
+    /// forbids a whole state.
+    pub fact: Option<String>,
+    /// The observation the theory was held against, complete.
+    pub observation: BTreeMap<String, Value>,
+    /// Ids of the records the observation rests on.
+    pub evidence: Vec<String>,
 }

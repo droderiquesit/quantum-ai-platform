@@ -38,6 +38,26 @@
 //! [`RateLimits::narrowed_reserve`], so the cell keeps less of its rate for
 //! quoting until the ratio recovers. It narrows quoting and never withdrawing,
 //! for the reason above.
+//!
+//! Narrowing alone is a monitor, not a limit: the bucket keeps refilling, so a
+//! venue whose ratio is a rule rather than a courtesy would still be sent a
+//! stream of quotes with no trade in it at the full sustained rate. A venue
+//! whose ratio the deployment has stated is therefore held to it —
+//! [`RateLimits::refusing_at_ratio`] — and a placement that would take the
+//! messages sent in the stated interval past
+//! `messages_per_trade_bound × max(trades, 1)` is refused before it is sent,
+//! exactly as one the bucket cannot fund is. The `max` is the allowance
+//! without which a venue could never be traded at all: no trade precedes the
+//! first message. The held count is kept apart from the monitor's tumbling
+//! window and only the interval ending resets it, because a count that reset
+//! every `monitor_window` messages would hand a stream of placements and
+//! cancels a fresh allowance each time it had sent enough of them — the
+//! churn the ratio exists to bound, resetting its own bound. When the
+//! interval ends the count starts again, so a venue the cell stopped trading
+//! at is quoted again at the allowance rather than never. The hold is per venue because
+//! the limits are: [`QuoteBudget::per_venue`] gives each configured venue its
+//! own, and a venue nobody stated a figure for keeps the ceiling and the
+//! monitor.
 
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
@@ -83,6 +103,9 @@ pub struct RateLimits {
     narrowed_reserve: u32,
     messages_per_trade_bound: u32,
     monitor_window: u32,
+    /// How long a ratio window may stand, when the ratio is a limit that
+    /// refuses. `None` is the monitor alone: it narrows and refuses nothing.
+    ratio_interval: Option<Duration>,
 }
 
 /// The default burst a venue session is assumed to allow.
@@ -127,6 +150,11 @@ impl Default for RateLimits {
             narrowed_reserve: DEFAULT_NARROWED_RESERVE,
             messages_per_trade_bound: DEFAULT_MESSAGES_PER_TRADE_BOUND,
             monitor_window: DEFAULT_MONITOR_WINDOW,
+            // The default is a ceiling nobody measured at a venue, and a
+            // refusal at a ratio nobody stated would stop a cell quoting on a
+            // number that is not any venue's. The ratio refuses where a
+            // deployment has named it; see `RateLimits::refusing_at_ratio`.
+            ratio_interval: None,
         }
     }
 }
@@ -199,7 +227,40 @@ impl RateLimits {
             narrowed_reserve,
             messages_per_trade_bound,
             monitor_window,
+            ratio_interval: None,
         })
+    }
+
+    /// The same limits with the message-to-trade ratio held as a limit that
+    /// refuses, measured over a window at most `interval` long.
+    ///
+    /// Without this the bound only narrows: a window that closes over it
+    /// raises the floor placements face, the bucket goes on refilling, and a
+    /// stream of quotes with no trade in it is admitted at the sustained rate
+    /// for as long as it runs — the venue's ratio is then found out when the
+    /// venue enforces it, which is the failure this module exists to prevent.
+    /// With it, a placement that would take the messages sent in the current
+    /// interval past `messages_per_trade_bound × max(trades, 1)` is refused
+    /// before it is sent. A withdrawal is never refused on the ratio, for the
+    /// reason it is never refused at the reserve — and it is still counted,
+    /// because a cancel is a message the venue's ratio is measured on.
+    ///
+    /// The interval is the only thing that resets the count, and it is what
+    /// lets a venue be quoted again after the cell has stopped trading
+    /// there: once it has passed, the allowance of one trade's worth of
+    /// messages is available again. Refused at zero or below, because a
+    /// count reset at every observation holds no messages to refuse on and
+    /// the limit would read as one.
+    pub fn refusing_at_ratio(mut self, interval: Duration) -> Result<Self> {
+        if interval.as_nanos() <= 0 {
+            return Err(Error::invalid(
+                "a message-to-trade interval of zero starts the held count again at every \
+                 observation, so the ratio would refuse nothing while reading as a limit; name \
+                 how long the venue measures its ratio over",
+            ));
+        }
+        self.ratio_interval = Some(interval);
+        Ok(self)
     }
 
     /// The burst, in messages.
@@ -232,6 +293,20 @@ impl RateLimits {
     /// How many messages one monitor window holds.
     pub const fn monitor_window(self) -> u32 {
         self.monitor_window
+    }
+
+    /// How long a ratio window may stand, or `None` where the ratio only
+    /// narrows and refuses nothing.
+    pub const fn ratio_interval(self) -> Option<Duration> {
+        self.ratio_interval
+    }
+
+    /// The messages one interval may hold once `trades` have been reported
+    /// in it. One trade's worth with none, or no venue could ever be quoted
+    /// for the first time.
+    const fn ratio_allowance(self, trades: u32) -> u64 {
+        let trades = if trades == 0 { 1 } else { trades };
+        (self.messages_per_trade_bound as u64) * (trades as u64)
     }
 
     /// The floor a placement must stay above, given the monitor's verdict.
@@ -392,6 +467,10 @@ impl Admission {
 /// One venue's bucket and monitor.
 #[derive(Clone, Debug)]
 struct VenueBucket {
+    /// This venue's own limits. Held here rather than once on the budget
+    /// because a rate and a ratio are a venue's rule: one figure applied to
+    /// every venue a cell holds is right for at most one of them.
+    limits: RateLimits,
     tokens: u32,
     /// Sub-token refill carried between observations, in token-nanoseconds.
     /// Without it a cell passing every millisecond at a rate of 2,048 per
@@ -402,6 +481,13 @@ struct VenueBucket {
     /// admission, so a cell assembled long before its first pass does not
     /// account for that gap.
     last: Option<Timestamp>,
+    /// What the venue has been sent and has traded in the interval its
+    /// ratio is held over, and when that interval began. Only read where the
+    /// ratio refuses, and reset by the interval ending and by nothing else —
+    /// not by the monitor's window below, which tumbles on message count.
+    held_since: Option<Timestamp>,
+    held_messages: u32,
+    held_trades: u32,
     window_messages: u32,
     window_trades: u32,
     narrowed: bool,
@@ -412,11 +498,15 @@ struct VenueBucket {
 }
 
 impl VenueBucket {
-    fn new(capacity: u32) -> Self {
+    fn new(limits: RateLimits) -> Self {
         Self {
-            tokens: capacity,
+            limits,
+            tokens: limits.capacity(),
             carry: 0,
             last: None,
+            held_since: None,
+            held_messages: 0,
+            held_trades: 0,
             window_messages: 0,
             window_trades: 0,
             narrowed: false,
@@ -434,7 +524,9 @@ impl VenueBucket {
     /// backwards `now` is a caller bug or a clock that stepped, and moving the
     /// mark back would hand the bucket the same interval twice on the way
     /// forward.
-    fn refill(&mut self, limits: RateLimits, now: Timestamp) {
+    fn refill(&mut self, now: Timestamp) {
+        self.roll_interval(now);
+        let limits = self.limits;
         let Some(last) = self.last else {
             self.last = Some(now);
             return;
@@ -463,7 +555,9 @@ impl VenueBucket {
     /// eight bytes per venue however long the cell runs. The verdict persists
     /// between windows, so a cell that has stopped sending stays narrowed
     /// until a window closes healthy rather than recovering by going quiet.
-    fn count_messages(&mut self, limits: RateLimits, count: u32) {
+    fn count_messages(&mut self, count: u32) {
+        let limits = self.limits;
+        self.held_messages = self.held_messages.saturating_add(count);
         self.window_messages = self.window_messages.saturating_add(count);
         if self.window_messages < limits.monitor_window {
             return;
@@ -474,6 +568,70 @@ impl VenueBucket {
         self.window_messages = 0;
         self.window_trades = 0;
     }
+
+    /// Start the held count again once the venue's interval has passed.
+    ///
+    /// Only where the ratio refuses. Without it a cell that spent its
+    /// allowance at a venue and then had nothing resting there would be
+    /// refused for ever: no placement, so no trade, so no allowance. It
+    /// touches the held count alone — `narrowed` and the monitor's window
+    /// stay as they were — because the monitor's verdict comes from a full
+    /// window of messages, and a cell must not recover from narrowing by
+    /// going quiet.
+    ///
+    /// A `now` before the interval began resets nothing, for the reason a
+    /// backwards `now` refills nothing.
+    fn roll_interval(&mut self, now: Timestamp) {
+        let Some(interval) = self.limits.ratio_interval() else {
+            return;
+        };
+        match self.held_since {
+            None => self.held_since = Some(now),
+            Some(since) if now.since(since) >= interval => {
+                self.held_messages = 0;
+                self.held_trades = 0;
+                self.held_since = Some(now);
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Why `count` placements may not be sent to `name` now, or `None` when
+    /// they may. Spends nothing and counts nothing, so the peek a requote
+    /// makes and the spend that follows it read one predicate.
+    fn placement_shortfall(&self, name: &str, count: u32) -> Option<String> {
+        let floor = self.limits.placement_floor(self.narrowed);
+        if self.tokens.saturating_sub(floor) < count {
+            return Some(format!(
+                "the quote budget at {name} holds {} message(s) and keeps {floor} of them for \
+                 withdrawals{}, so the {count} this needs are not there; it refills at {} per \
+                 second",
+                self.tokens,
+                if self.narrowed {
+                    " while its message-to-trade ratio is narrowed"
+                } else {
+                    ""
+                },
+                self.limits.refill_per_second()
+            ));
+        }
+        let interval = self.limits.ratio_interval()?;
+        let wanted = u64::from(self.held_messages) + u64::from(count);
+        if wanted > self.limits.ratio_allowance(self.held_trades) {
+            let bound = u64::from(self.limits.messages_per_trade_bound());
+            return Some(format!(
+                "the message-to-trade ratio at {name} allows {bound} message(s) per trade, and \
+                 this interval already holds {} against {} trade(s), so the {count} this needs \
+                 would exceed it; {} trade(s) in the interval would carry them, and the count \
+                 starts again {} millisecond(s) after the interval began",
+                self.held_messages,
+                self.held_trades,
+                wanted.div_ceil(bound),
+                interval.as_millis()
+            ));
+        }
+        None
+    }
 }
 
 /// The per-venue message budget of one cell.
@@ -481,6 +639,7 @@ impl VenueBucket {
 /// Given to the cell by its configuration, like every other bound it holds.
 #[derive(Clone, Debug)]
 pub struct QuoteBudget {
+    /// What a venue with no limits of its own runs under.
     limits: RateLimits,
     /// One bucket per configured venue, and no way to add another. A
     /// `BTreeMap` because the order it is iterated in reaches the pass
@@ -492,22 +651,41 @@ pub struct QuoteBudget {
 impl QuoteBudget {
     /// A full bucket for each of `venues`, under `limits`.
     pub fn new(limits: RateLimits, venues: &[VenueId]) -> Self {
+        Self::per_venue(limits, venues, &BTreeMap::new())
+    }
+
+    /// A full bucket for each of `venues`, each under its own entry of `own`
+    /// and under `fallback` where it has none.
+    ///
+    /// An entry of `own` naming a venue outside `venues` builds no bucket:
+    /// the set stays exactly the configured venues, and
+    /// `CellConfig::validate` has already refused the entry by name, so it is
+    /// not silently dropped on the way here.
+    pub fn per_venue(
+        fallback: RateLimits,
+        venues: &[VenueId],
+        own: &BTreeMap<VenueId, RateLimits>,
+    ) -> Self {
         let mut buckets = BTreeMap::new();
         for venue in venues {
-            buckets.insert(
-                venue.as_str().to_string(),
-                VenueBucket::new(limits.capacity()),
-            );
+            let limits = own.get(venue).copied().unwrap_or(fallback);
+            buckets.insert(venue.as_str().to_string(), VenueBucket::new(limits));
         }
         Self {
-            limits,
+            limits: fallback,
             venues: buckets,
         }
     }
 
-    /// The limits in force.
+    /// The limits a venue with none of its own runs under.
     pub const fn limits(&self) -> RateLimits {
         self.limits
+    }
+
+    /// The limits in force at `venue`, or `None` for a venue this cell holds
+    /// no bucket for.
+    pub fn limits_at(&self, venue: &str) -> Option<RateLimits> {
+        self.venues.get(venue).map(|bucket| bucket.limits)
     }
 
     /// Spend one message's budget at `venue`, or refuse it.
@@ -539,25 +717,10 @@ impl QuoteBudget {
                     reason: unconfigured(name),
                 };
             };
-            bucket.refill(self.limits, now);
-            let floor = self.limits.placement_floor(bucket.narrowed);
-            let spendable = bucket.tokens.saturating_sub(floor);
-            if spendable < *count {
+            bucket.refill(now);
+            if let Some(reason) = bucket.placement_shortfall(name, *count) {
                 bucket.refusals = bucket.refusals.saturating_add(1);
-                return Admission::Refused {
-                    reason: format!(
-                        "the quote budget at {name} holds {} message(s) and keeps {floor} of \
-                         them for withdrawals{}, so the {count} this needs are not there; it \
-                         refills at {} per second",
-                        bucket.tokens,
-                        if bucket.narrowed {
-                            " while its message-to-trade ratio is narrowed"
-                        } else {
-                            ""
-                        },
-                        self.limits.refill_per_second()
-                    ),
-                };
+                return Admission::Refused { reason };
             }
         }
         let mut remaining = 0;
@@ -567,7 +730,7 @@ impl QuoteBudget {
             };
             bucket.tokens = bucket.tokens.saturating_sub(*count);
             bucket.placements = bucket.placements.saturating_add(u64::from(*count));
-            bucket.count_messages(self.limits, *count);
+            bucket.count_messages(*count);
             remaining = bucket.tokens;
         }
         Admission::Admitted { remaining }
@@ -579,7 +742,7 @@ impl QuoteBudget {
                 reason: unconfigured(venue.as_str()),
             };
         };
-        bucket.refill(self.limits, now);
+        bucket.refill(now);
         if bucket.tokens == 0 {
             bucket.refusals = bucket.refusals.saturating_add(1);
             return Admission::Refused {
@@ -588,13 +751,13 @@ impl QuoteBudget {
                      cannot be sent this pass; the order stays open and is withdrawn on a pass \
                      with budget, which is in at most {} millisecond(s)",
                     venue.as_str(),
-                    NANOS_PER_SEC / 1_000_000 / i64::from(self.limits.refill_per_second()).max(1)
+                    NANOS_PER_SEC / 1_000_000 / i64::from(bucket.limits.refill_per_second()).max(1)
                 ),
             };
         }
         bucket.tokens -= 1;
         bucket.withdrawals = bucket.withdrawals.saturating_add(1);
-        bucket.count_messages(self.limits, 1);
+        bucket.count_messages(1);
         Admission::Admitted {
             remaining: bucket.tokens,
         }
@@ -615,7 +778,7 @@ impl QuoteBudget {
         self.venues
             .get(venue)
             .map_or(Depletion::Exhausted, |bucket| {
-                self.limits.depletion(bucket.tokens, bucket.narrowed)
+                bucket.limits.depletion(bucket.tokens, bucket.narrowed)
             })
     }
 
@@ -629,15 +792,16 @@ impl QuoteBudget {
     /// unit on a message no venue ever saw, leaving two controls disagreeing
     /// about how much chasing the cell had done.
     pub fn requote_fundable(&mut self, venue: &VenueId, now: Timestamp) -> bool {
-        let limits = self.limits;
         let Some(bucket) = self.venues.get_mut(venue.as_str()) else {
             return false;
         };
-        bucket.refill(limits, now);
+        bucket.refill(now);
+        // The same predicate `admit_requote` spends under, the ratio
+        // included: a peek that looked only at the bucket would send the
+        // repricer to spend its throttle on a requote the ratio then refused.
         bucket
-            .tokens
-            .saturating_sub(limits.placement_floor(bucket.narrowed))
-            >= REQUOTE_MESSAGES
+            .placement_shortfall(venue.as_str(), REQUOTE_MESSAGES)
+            .is_none()
     }
 
     /// Spend a whole requote's messages at `venue` — both of them or neither.
@@ -662,6 +826,7 @@ impl QuoteBudget {
     /// cell sent is a message, and only what the venue says filled is a trade.
     pub fn observe_trade(&mut self, venue: &VenueId) {
         if let Some(bucket) = self.venues.get_mut(venue.as_str()) {
+            bucket.held_trades = bucket.held_trades.saturating_add(1);
             bucket.window_trades = bucket.window_trades.saturating_add(1);
             bucket.trades = bucket.trades.saturating_add(1);
         }
@@ -676,7 +841,7 @@ impl QuoteBudget {
     /// reason for the silence it is not.
     pub fn refill_all(&mut self, now: Timestamp) {
         for bucket in self.venues.values_mut() {
-            bucket.refill(self.limits, now);
+            bucket.refill(now);
         }
     }
 
@@ -1077,5 +1242,266 @@ mod tests {
                 .is_admitted(),
             "the default budget admits without bound, so the cell has a rate limit in name only"
         );
+    }
+
+    // --- EXEC-004: the ratio as a limit that refuses, per venue -------------
+
+    fn held() -> Result<RateLimits> {
+        // The readable bucket above, with the ratio held: four messages per
+        // trade, measured over at most a second.
+        limits()?.refusing_at_ratio(Duration::from_secs(1))
+    }
+
+    #[test]
+    fn a_placement_past_a_venues_stated_ratio_is_refused_where_the_monitor_alone_admits_it()
+    -> Result<()> {
+        // The failure this prevents: the ratio being found out when the venue
+        // enforces it. Narrowing only raises a floor, so a stream with no
+        // trade in it was admitted for as long as the bucket refilled.
+        let mut monitored = budget()?;
+        let mut limited = QuoteBudget::new(held()?, &[venue()]);
+        for message in 0..4 {
+            assert!(
+                limited
+                    .admit(&venue(), MessageKind::Placement, at(0))
+                    .is_admitted(),
+                "placement {message} was refused inside the allowance of one trade's worth"
+            );
+            assert!(
+                monitored
+                    .admit(&venue(), MessageKind::Placement, at(0))
+                    .is_admitted()
+            );
+        }
+        // The premise, asserted: the bucket is not what stops the fifth. Six
+        // of ten are spendable and four are spent, and the venue that only
+        // monitors its ratio admits the same message.
+        assert_eq!(limited.summary()[0].tokens, 6, "the premise failed");
+        assert!(
+            monitored
+                .admit(&venue(), MessageKind::Placement, at(0))
+                .is_admitted(),
+            "the premise failed: the fifth placement is not fundable from the bucket, so a \
+             refusal below would say nothing about the ratio"
+        );
+        let Admission::Refused { reason } = limited.admit(&venue(), MessageKind::Placement, at(0))
+        else {
+            panic!("a fifth message against no trade was admitted at a bound of four per trade");
+        };
+        assert!(
+            reason.contains("message-to-trade ratio at XPAR"),
+            "the refusal does not name the limit and the venue it fired at: {reason}"
+        );
+        assert_eq!(
+            limited.summary()[0].tokens,
+            6,
+            "the refused placement spent a message it never sent"
+        );
+        assert_eq!(
+            limited.summary()[0].refusals,
+            1,
+            "the refusal was not counted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_stream_with_enough_trades_in_it_is_admitted_in_full_at_a_venue_held_to_its_ratio()
+    -> Result<()> {
+        // The other half: a limit that refused everything would pass the test
+        // above. Two trades carry eight messages at four per trade, which is
+        // a whole window, and the window that closes on them is healthy.
+        let mut budget = QuoteBudget::new(
+            RateLimits::new(32, 2, 4, 6, 4, 8)?.refusing_at_ratio(Duration::from_secs(1))?,
+            &[venue()],
+        );
+        for message in 0..8 {
+            if message % 4 == 0 {
+                budget.observe_trade(&venue());
+            }
+            assert!(
+                budget
+                    .admit(&venue(), MessageKind::Placement, at(0))
+                    .is_admitted(),
+                "placement {message} was refused although the trades reported carry it"
+            );
+        }
+        assert_eq!(budget.summary()[0].trades, 2, "the premise failed");
+        assert_eq!(budget.summary()[0].refusals, 0);
+        assert!(
+            !budget.summary()[0].narrowed,
+            "a window within the ratio closed narrowed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_withdrawal_is_never_refused_on_the_ratio() -> Result<()> {
+        // Withdrawing is not sending. A ratio that refused a cancel would
+        // leave the cell's exposure on the venue it had decided to leave.
+        let mut budget = QuoteBudget::new(held()?, &[venue()]);
+        for _ in 0..4 {
+            assert!(
+                budget
+                    .admit(&venue(), MessageKind::Placement, at(0))
+                    .is_admitted()
+            );
+        }
+        assert!(
+            !budget
+                .admit(&venue(), MessageKind::Placement, at(0))
+                .is_admitted(),
+            "the premise failed: the ratio is not binding, so the withdrawal proves nothing"
+        );
+        assert!(
+            budget
+                .admit(&venue(), MessageKind::Withdrawal, at(0))
+                .is_admitted(),
+            "a cancel was refused because of the ratio"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_stream_of_placements_and_cancels_with_no_trade_in_it_cannot_earn_itself_a_new_allowance()
+    -> Result<()> {
+        // The failure this prevents is the limit resetting itself. The
+        // monitor's window tumbles every eight messages here, and a held
+        // count that tumbled with it would hand four fresh placements to any
+        // stream that had sent four placements and four cancels — which is
+        // quote churn, the traffic a message-to-trade ratio exists to bound.
+        let mut budget = QuoteBudget::new(
+            RateLimits::new(64, 2, 4, 6, 4, 8)?.refusing_at_ratio(Duration::from_secs(1))?,
+            &[venue()],
+        );
+        for _ in 0..4 {
+            assert!(
+                budget
+                    .admit(&venue(), MessageKind::Placement, at(0))
+                    .is_admitted()
+            );
+        }
+        for _ in 0..4 {
+            assert!(
+                budget
+                    .admit(&venue(), MessageKind::Withdrawal, at(0))
+                    .is_admitted()
+            );
+        }
+        // The premise, asserted: the monitor's window did close on those
+        // eight messages — narrowed is its verdict — and the bucket is not
+        // what refuses below: 56 tokens stand above a narrowed floor of six.
+        assert!(
+            budget.summary()[0].narrowed,
+            "the premise failed: the monitor's window has not tumbled, so nothing was there to \
+             reset the held count"
+        );
+        assert_eq!(budget.summary()[0].tokens, 56, "the premise failed");
+        let Admission::Refused { reason } = budget.admit(&venue(), MessageKind::Placement, at(0))
+        else {
+            panic!(
+                "eight messages and no trade earned a ninth: the held count was reset by the \
+                 traffic it is there to bound"
+            );
+        };
+        assert!(
+            reason.contains("message-to-trade ratio at XPAR"),
+            "the ninth message was refused by something other than the ratio: {reason}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_held_count_starts_again_after_its_interval_so_a_quiet_venue_is_quoted_again()
+    -> Result<()> {
+        // The failure this prevents is the permanent one: allowance spent,
+        // nothing resting, so no trade and no allowance, for ever.
+        let mut budget = QuoteBudget::new(held()?, &[venue()]);
+        for _ in 0..4 {
+            assert!(
+                budget
+                    .admit(&venue(), MessageKind::Placement, at(0))
+                    .is_admitted()
+            );
+        }
+        assert!(
+            !budget
+                .admit(&venue(), MessageKind::Placement, at(999))
+                .is_admitted(),
+            "the held count started again before its interval had passed, so the ratio is a \
+             limit on nothing"
+        );
+        assert!(
+            budget
+                .admit(&venue(), MessageKind::Placement, at(1_000))
+                .is_admitted(),
+            "a second after the interval began the venue is still refused, and with nothing \
+             resting there it always will be"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn each_venue_is_held_to_its_own_limits_and_a_venue_with_none_keeps_the_fallback() -> Result<()>
+    {
+        // One figure for every venue is right for at most one of them.
+        let strict = VenueId::new("XSTR");
+        let lenient = VenueId::new("XLEN");
+        let own = BTreeMap::from([(strict.clone(), RateLimits::new(2, 1, 0, 0, 4, 8)?)]);
+        let mut budget =
+            QuoteBudget::per_venue(limits()?, &[strict.clone(), lenient.clone()], &own);
+        assert_eq!(
+            budget.limits_at("XSTR").map(RateLimits::capacity),
+            Some(2),
+            "the venue's own limits did not reach its bucket"
+        );
+        assert_eq!(
+            budget.limits_at("XLEN").map(RateLimits::capacity),
+            Some(10),
+            "a venue with no limits of its own did not keep the fallback"
+        );
+        for _ in 0..2 {
+            assert!(
+                budget
+                    .admit(&strict, MessageKind::Placement, at(0))
+                    .is_admitted()
+            );
+            assert!(
+                budget
+                    .admit(&lenient, MessageKind::Placement, at(0))
+                    .is_admitted()
+            );
+        }
+        assert!(
+            !budget
+                .admit(&strict, MessageKind::Placement, at(0))
+                .is_admitted(),
+            "the strict venue was sent a third message its own limit of two does not hold"
+        );
+        assert!(
+            budget
+                .admit(&lenient, MessageKind::Placement, at(0))
+                .is_admitted(),
+            "the lenient venue was refused at the strict venue's figure"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_ratio_interval_that_would_refuse_nothing_is_refused_at_configuration() -> Result<()> {
+        let zero = limits()?
+            .refusing_at_ratio(Duration::from_nanos(0))
+            .expect_err("an interval of zero was admitted")
+            .message()
+            .to_string();
+        assert!(
+            zero.contains("interval of zero"),
+            "an interval of zero was refused for some other reason: {zero}"
+        );
+        assert!(
+            limits()?.ratio_interval().is_none(),
+            "limits nobody held to a ratio report an interval"
+        );
+        Ok(())
     }
 }

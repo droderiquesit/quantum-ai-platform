@@ -81,9 +81,11 @@ impl ToolRegistry {
         Self::default()
     }
 
-    /// Register a tool. It always starts read-only and sandboxed; there is
-    /// deliberately no parameter to start wider.
-    pub fn register(&mut self, name: &str, kind: ToolKind) -> Result<&ToolSpec> {
+    /// The spec `register` would admit for a tool the platform does not have
+    /// yet (EXPAND-008). Nothing is registered: a proposal is a record of what
+    /// to build, and a missing tool that was registered on being asked for
+    /// would be authorised to read before it existed.
+    pub fn propose(&self, name: &str, kind: ToolKind) -> Result<ToolSpec> {
         let name = name.trim();
         if name.is_empty() {
             return Err(Error::invalid(
@@ -95,12 +97,22 @@ impl ToolRegistry {
                 "tool {name} is already registered; widen it through `promote`, not by registering it again"
             )));
         }
-        let spec = ToolSpec {
+        Ok(ToolSpec {
             name: name.to_string(),
             kind,
             scope: BTreeSet::from([ToolPermission::Read]),
-        };
-        Ok(self.tools.entry(name.to_string()).or_insert(spec))
+        })
+    }
+
+    /// Register a tool. It always starts read-only and sandboxed; there is
+    /// deliberately no parameter to start wider.
+    pub fn register(&mut self, name: &str, kind: ToolKind) -> Result<&ToolSpec> {
+        let spec = self.propose(name, kind)?;
+        Ok(self.tools.entry(spec.name.clone()).or_insert(spec))
+    }
+
+    pub fn get(&self, name: &str) -> Option<&ToolSpec> {
+        self.tools.get(name.trim())
     }
 
     /// Every tool of one kind, in name order.

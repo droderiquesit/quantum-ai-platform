@@ -7,7 +7,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::process::Command;
 
-use qip_reasoning_engine::rules::{Cond, Invariant, Op, Rule, RulePack, Value, Verdict};
+use qip_reasoning_engine::rules::{Cond, Conflict, Invariant, Op, Rule, RulePack, Value, Verdict};
 use serde_json::Value as Json;
 
 fn cmp(fact: &str, op: Op, value: Value) -> Cond {
@@ -547,4 +547,101 @@ fn the_checker_accepts_untampered_traces_and_rejects_and_the_pack_refuses_any_on
         &inputs,
         &serde_json::to_value(&short).unwrap()
     ));
+}
+
+#[test]
+fn a_contradicted_rule_raises_a_revision_task_naming_both_sides_and_is_neither_changed_nor_dropped()
+{
+    // REASON-031. The failure this prevents: a rule the world has contradicted
+    // goes on firing, or is quietly dropped, and either way nobody is asked
+    // which side was wrong.
+    let theory = pack(
+        "credit",
+        vec![
+            rule(
+                "investment-grade-does-not-default",
+                cmp("rating", Op::Ge, Value::Int(7)),
+                "defaulted",
+                Value::Bool(false),
+            ),
+            rule(
+                "missed-coupon-is-a-default",
+                cmp("missed_coupon", Op::Eq, Value::Bool(true)),
+                "defaulted",
+                Value::Bool(true),
+            ),
+        ],
+        vec![Invariant {
+            id: "no-default-while-rated-top".into(),
+            forbidden: Cond::And(vec![
+                cmp("rating", Op::Ge, Value::Int(9)),
+                cmp("defaulted", Op::Eq, Value::Bool(true)),
+            ]),
+        }],
+    );
+    let before = theory.clone();
+    let cited = vec!["filing-17".to_string(), "trustee-notice-4".to_string()];
+
+    // The premise: an observation the theory agrees with raises nothing, so a
+    // task below is a finding and not a reflex.
+    let consistent = facts(&[("rating", Value::Int(8)), ("defaulted", Value::Bool(false))]);
+    assert_eq!(theory.contradictions(&consistent, &cited).unwrap(), vec![]);
+
+    // An investment-grade issuer that defaulted.
+    let observed = facts(&[("rating", Value::Int(8)), ("defaulted", Value::Bool(true))]);
+    let tasks = theory.contradictions(&observed, &cited).unwrap();
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let task = &tasks[0];
+    assert_eq!(
+        task.conflict,
+        Conflict::RuleAgainstObservation {
+            rule: "investment-grade-does-not-default".into()
+        }
+    );
+    assert_eq!((task.pack.as_str(), task.version), ("credit", 7));
+    assert_eq!(task.fact.as_deref(), Some("defaulted"));
+    assert_eq!(task.observation["defaulted"], Value::Bool(true));
+    assert_eq!(task.observation["rating"], Value::Int(8));
+    assert_eq!(task.evidence, cited);
+
+    // Two parts of the theory against each other, and a state an invariant
+    // called unreachable, each raise their own task.
+    let both = facts(&[
+        ("rating", Value::Int(9)),
+        ("missed_coupon", Value::Bool(true)),
+        ("defaulted", Value::Bool(true)),
+    ]);
+    let conflicts: Vec<Conflict> = theory
+        .contradictions(&both, &cited)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.conflict)
+        .collect();
+    assert_eq!(
+        conflicts,
+        vec![
+            Conflict::RuleAgainstObservation {
+                rule: "investment-grade-does-not-default".into()
+            },
+            Conflict::RuleAgainstRule {
+                rule: "investment-grade-does-not-default".into(),
+                other: "missed-coupon-is-a-default".into()
+            },
+            Conflict::InvariantAgainstObservation {
+                invariant: "no-default-while-rated-top".into()
+            },
+        ]
+    );
+
+    // Raising the tasks changed nothing: the contradicted rule is still in the
+    // pack, unmodified, and still fires.
+    assert_eq!(theory, before);
+    let verdict = theory
+        .evaluate(&facts(&[("rating", Value::Int(8))]))
+        .unwrap();
+    assert_eq!(fired(&verdict), vec!["investment-grade-does-not-default"]);
+
+    // An observation resting on nothing cannot raise a task.
+    let error = theory.contradictions(&observed, &[]).unwrap_err();
+    assert!(error.message().contains("cites no evidence"), "{error:?}");
 }

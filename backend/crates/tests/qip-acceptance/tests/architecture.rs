@@ -1069,6 +1069,9 @@ const NO_MONEY_AUTHORITY: &[&str] = &[
     "qip-data-finder",
     "qip-entity-resolution",
     "qip-evolution",
+    // Ranks and budgets research records; depends on contracts and the agent
+    // registries only, and a started item is a record, not an action.
+    "qip-expansion",
     "qip-learning-engine",
     "qip-market-ingestion",
     "qip-mesh",
@@ -1160,6 +1163,56 @@ fn every_service_crate_is_classified_for_money_authority() {
             "{name} appears in both authority lists"
         );
     }
+}
+
+#[test]
+fn nothing_below_a_composition_root_depends_on_the_expansion_engine() {
+    // EXPAND-005: the Intelligence Expansion Engine sits above the brains. It
+    // reads their contract types and nothing they do waits on it.
+    //
+    // The failure this prevents is the engine becoming load-bearing by
+    // accident: a world model or a reflex cell that imports the curriculum to
+    // ask "is this being researched" has made research a dependency of
+    // deciding, and a stalled queue then stalls the thing it was meant to
+    // improve. Only a composition root may hold the engine, and the edge
+    // node's root may not, because it is the reflex path.
+    let graph = dependency_graph();
+    assert_named_crates_exist(&graph, ["qip-expansion", "qip-contracts", "qip-edge-node"]);
+
+    // The anchor, and the first half of the requirement: the engine reads the
+    // brains through the contract layer. If the walk cannot show this edge,
+    // the absences below prove nothing.
+    assert!(
+        reachable_from(&graph, "qip-expansion").contains("qip-contracts"),
+        "the expansion engine no longer depends on the contract types it reads gaps through"
+    );
+
+    let roots = crates_under("backend/crates/apps");
+    let mut checked = 0;
+    let mut holders = BTreeSet::new();
+    for name in graph.keys() {
+        let is_cognition_root = roots.contains(name) && name != "qip-edge-node";
+        if name == "qip-expansion" || name == "qip-acceptance" || is_cognition_root {
+            continue;
+        }
+        checked += 1;
+        if reachable_from(&graph, name).contains("qip-expansion") {
+            holders.insert(name.as_str());
+        }
+    }
+    // Every holder is named, not the first: the crate that took the edge and
+    // the crates that inherit it through that crate are different repairs.
+    assert!(
+        holders.is_empty(),
+        "these crates depend on the expansion engine: {holders:?}. Only a composition root off \
+         the reflex path may hold it, so move the call up to the root that wires both"
+    );
+    // The premise: the loop covered the libraries, services, edge crates and
+    // the runtime rather than skipping everything.
+    assert!(
+        checked > 40,
+        "only {checked} crates were checked against the expansion engine"
+    );
 }
 
 #[test]
@@ -3090,5 +3143,228 @@ fn every_root_that_archives_its_log_seals_its_outcomes_into_the_lake_and_the_dis
     assert!(
         reachable_from(&graph, "qip-kernel").contains(DISCARD_PIPELINE),
         "the kernel no longer composes the data finder, so this boundary has moved"
+    );
+}
+
+// --- EXEC-010: the venue mesh is not a broker-specific layer ----------------
+
+/// Where a concrete venue or broker type may be declared: the adapter layer.
+/// `qip-brokers` holds the venue adapters; `qip-execution-engine` declares
+/// the `Broker` port and the two reference brokers that ship beside it.
+const ADAPTER_LAYER: [&str; 2] = [
+    "backend/crates/services/qip-brokers",
+    "backend/crates/services/qip-execution-engine",
+];
+
+/// Every type the adapter layer implements a venue port for, read from its
+/// source rather than listed here. A list would go stale the day somebody
+/// added an adapter, and the new type would then be nameable anywhere
+/// without this file noticing.
+fn concrete_adapter_types() -> BTreeSet<String> {
+    let mut types = BTreeSet::new();
+    for layer in ADAPTER_LAYER {
+        for file in qip_acceptance::files_with_extension(&format!("{layer}/src"), "rs") {
+            let source = std::fs::read_to_string(&file).expect("readable source");
+            for line in qip_acceptance::production_text(&source).lines() {
+                for port in ["impl Broker for ", "impl VenueAdapter for "] {
+                    if let Some(rest) = line.strip_prefix(port) {
+                        let name: String = rest
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect();
+                        if !name.is_empty() {
+                            types.insert(name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    types
+}
+
+/// Whether `line` names `name` as a whole identifier. `SimulatedBroker` is a
+/// prefix of `SimulatedBrokerage` and a suffix of nothing today, and a
+/// substring match would decide this boundary on that accident.
+fn names_identifier(line: &str, name: &str) -> bool {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    line.match_indices(name).any(|(at, _)| {
+        let before = line[..at].chars().next_back();
+        let after = line[at + name.len()..].chars().next();
+        !before.is_some_and(is_word) && !after.is_some_and(is_word)
+    })
+}
+
+#[test]
+fn nothing_above_the_adapter_layer_names_a_concrete_venue_or_broker_type_except_where_one_is_composed()
+ {
+    // EXEC-010, the half a source scan can hold. Execution is a mesh of
+    // venues behind ports — `Broker`, `VenueAdapter`, the cell's `Placer` —
+    // and the failure this prevents is the layer above growing a branch on
+    // one of them: an order path that asks "is this the simulated exchange?"
+    // works for exactly the venues somebody remembered, and adding or
+    // removing a venue then changes code that was never meant to know venues
+    // exist.
+    //
+    // A concrete type has to be named *somewhere* or nothing would ever be
+    // built, so two places may: an application, which is a composition root
+    // and chooses its adapters; and the kernel, which composes the cycle and
+    // may import and construct its broker — and do nothing else with the
+    // name. Everything else names a port.
+    //
+    // What this does not show is the requirement's second sentence, that a
+    // second venue is addable by configuration alone. That is a property of
+    // `qip-edge-node`, which still opens one gateway for its first venue.
+    let types = concrete_adapter_types();
+    for expected in ["SimulatedExchange", "SimulatedBroker"] {
+        assert!(
+            types.contains(expected),
+            "the premise failed: the adapter layer's port implementations were not found \
+             (missing {expected} among {types:?}), so the scan below looks for nothing"
+        );
+    }
+
+    let mut offenders = Vec::new();
+    let mut scanned: BTreeMap<String, usize> = BTreeMap::new();
+    let mut composed_in_the_kernel = 0usize;
+    let root = repository_root();
+    for file in qip_acceptance::files_with_extension("backend/crates", "rs") {
+        let relative = file
+            .strip_prefix(&root)
+            .expect("a file under the repository root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !relative.contains("/src/") || ADAPTER_LAYER.iter().any(|l| relative.starts_with(l)) {
+            continue;
+        }
+        let crate_path: String = relative.split("/src/").next().unwrap_or("").to_string();
+        *scanned.entry(crate_path).or_default() += 1;
+        if relative.starts_with("backend/crates/apps/") {
+            continue;
+        }
+        let in_kernel = relative.starts_with("backend/crates/runtime/qip-kernel/");
+        let source = std::fs::read_to_string(&file).expect("readable source");
+        let mut in_use = false;
+        for line in qip_acceptance::production_text(&source).lines() {
+            let trimmed = line.trim_start();
+            let importing =
+                in_use || trimmed.starts_with("use ") || trimmed.starts_with("pub use ");
+            if importing {
+                in_use = !trimmed.contains(';');
+            }
+            for name in &types {
+                if !names_identifier(line, name) {
+                    continue;
+                }
+                let constructing = line.contains(&format!("{name}::new("));
+                if in_kernel && (importing || constructing) {
+                    composed_in_the_kernel += 1;
+                    continue;
+                }
+                offenders.push(format!("{relative}: {}", trimmed));
+            }
+        }
+    }
+
+    // The premise: the crates this is about were read. A crate moved out
+    // from under the scan reports zero offenders by being read zero times.
+    for layer in [
+        "backend/crates/edge/qip-edge",
+        "backend/crates/edge/qip-routing",
+        "backend/crates/runtime/qip-kernel",
+        "backend/crates/services/qip-risk-engine",
+    ] {
+        assert!(
+            scanned.get(layer).copied().unwrap_or_default() > 0,
+            "no production source was read under {layer}, so nothing is asserted of it"
+        );
+    }
+    // And the kernel's allowance is still in use. If the kernel stops
+    // composing a broker, the allowance above is a door left open for
+    // nothing and should go.
+    assert!(
+        composed_in_the_kernel > 0,
+        "the kernel no longer imports or constructs a concrete broker, so its allowance in \
+         this test is unused; remove the allowance rather than keep it"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a crate above the adapter layer names a concrete venue or broker type outside a \
+         composition site; name the port (`Broker`, `VenueAdapter`, `Placer`) instead, or \
+         compose the adapter in an application: {offenders:#?}"
+    );
+}
+
+// --- OBS-025: the Reflex path holds no trace-export machinery ---------------
+
+/// What it takes, in this workspace, to send a trace anywhere: starting a
+/// span, draining the tracer, or naming the drain. Each is a call or a module
+/// name, not a word — `qip-edge-node`'s own doc says "the tracer and the
+/// logger reach nothing in this node", and a scan for the bare word would
+/// make that sentence impossible to write.
+const TRACE_EXPORT_MACHINERY: [&str; 5] = [
+    "tracer.export(",
+    "tracer.start(",
+    "Tracer::new(",
+    "openobserve",
+    "traces_url",
+];
+
+#[test]
+fn no_reflex_crate_and_no_part_of_its_node_can_start_export_or_drain_a_trace() {
+    // OBS-025: bridging a trace into the hot path must never make a cell
+    // place a distributed-trace network call; the correlation id travels in
+    // event metadata. That held only because nobody had wired it otherwise —
+    // the node already builds a `Telemetry`, which contains a `Tracer`, and
+    // already depends on `qip-transport`, so the first span started in a pass
+    // plus one copied drain module would have put an HTTP POST with a
+    // ten-second timeout beside the decision thread, and every suite would
+    // still have passed.
+    let sources = |relative: &str| -> Vec<std::path::PathBuf> {
+        qip_acceptance::files_with_extension(relative, "rs")
+            .into_iter()
+            .filter(|path| path.components().any(|c| c.as_os_str() == "src"))
+            .collect()
+    };
+
+    // The premise, first: the scan recognises the machinery where it exists.
+    // Each central root's drain both names the endpoint and drains the
+    // tracer, so a scan that finds nothing there is not looking.
+    for central in ["qip-api", "qip-fastbrain", "qip-deepbrain"] {
+        let drain =
+            qip_acceptance::read(&format!("backend/crates/apps/{central}/src/openobserve.rs"));
+        for needle in ["tracer.export(", "traces_url"] {
+            assert!(
+                drain.contains(needle),
+                "{central}'s drain no longer contains `{needle}`; the scan below would pass on \
+                 a workspace where trace export was spelled another way"
+            );
+        }
+    }
+
+    let mut reflex = sources("backend/crates/edge");
+    let edge_files = reflex.len();
+    reflex.extend(sources("backend/crates/apps/qip-edge-node"));
+    assert!(
+        edge_files > 30 && reflex.len() > edge_files + 10,
+        "only {edge_files} edge source file(s) and {} node source file(s) were found",
+        reflex.len() - edge_files
+    );
+
+    let mut found = Vec::new();
+    for path in &reflex {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        for needle in TRACE_EXPORT_MACHINERY {
+            if text.contains(needle) {
+                found.push(format!("{}: `{needle}`", path.display()));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "the Reflex path holds trace-export machinery: {found:#?}. A cell carries a correlation \
+         id in its event metadata and never calls a trace endpoint (OBS-025); export belongs to \
+         a central root's drain thread"
     );
 }

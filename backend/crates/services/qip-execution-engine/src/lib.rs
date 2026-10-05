@@ -32,6 +32,9 @@
 //! `qip-acceptance`'s `quote_loop` suite asserts that over their source text.
 
 pub mod broker;
+/// Whether a market may be created, listed or seeded at all: three recorded
+/// permissions, and a refusal before any venue call without them (EXEC-007).
+pub mod creation;
 pub mod feasibility;
 pub mod modes;
 pub mod multileg;

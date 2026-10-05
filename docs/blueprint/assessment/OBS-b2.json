@@ -80,26 +80,25 @@
   },
   {
     "id": "OBS-025",
-    "status": "NEEDS-VALIDATION",
-    "current": "qip-edge (backend/crates/edge/qip-edge) and qip-edge-node (backend/crates/apps/qip-edge-node) construct no trace exporter and contain no openobserve drain. `rg -n -i 'openobserve|tracer|otlp|traces_url' backend/crates/apps/qip-edge-node/src backend/crates/edge` returns one hit, a doc comment at qip-edge-node/src/lib.rs:72: 'the tracer and the logger reach nothing in this node'. The node does build a qip_observability::Telemetry, which contains a Tracer, but only the metric registry has a consumer. qip-edge-node's qip-transport dependency serves the mesh link to the central plane, not trace export. Correlation/trace metadata would travel as struct fields, costing bytes rather than a call. No Fabric component exists yet (ADR 0100 decides one, unbuilt), so the Fabric half of the prohibition holds vacuously.",
+    "status": "COMPLETE",
+    "current": "No source file under backend/crates/edge or backend/crates/apps/qip-edge-node/src starts a span, drains the tracer, constructs a Tracer or names the OpenObserve drain, and an architecture test now holds that. The node builds a Telemetry (which contains a Tracer) and depends on qip-transport for the mesh link, so the absence was one copied module away from an HTTP POST beside the decision thread; it is now a refusal. No Fabric component runs (qip-fabricd refuses to start), so the Fabric half holds vacuously.",
     "evidence": [
-      "rg -n -i 'openobserve|tracer|otlp|traces_url' backend/crates/apps/qip-edge-node/src backend/crates/edge -> only the lib.rs:72 doc comment (measured 2026-09-25)",
-      "backend/crates/apps/qip-edge-node/src/lib.rs:70-74 (NodeAssembly: 'the tracer and the logger reach nothing in this node')",
-      "backend/crates/apps/qip-edge-node/Cargo.toml (qip-transport dependency is for the mesh, not tracing)"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::no_reflex_crate_and_no_part_of_its_node_can_start_export_or_drain_a_trace",
+      "backend/crates/apps/qip-edge-node/src/lib.rs (NodeAssembly: 'the tracer and the logger reach nothing in this node')"
     ],
-    "gap": "No named test asserts 'in a harness with no network route to any trace endpoint, a Reflex cell's decision path completes at its benchmarked latency and opens no socket to a trace endpoint.' The absence is structural (no dependency is ever wired for this purpose), not pinned by a regression test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "grep -rn 'openobserve\\|Tracer' backend/crates/edge -> 0; an architecture.rs/resilience.rs test forbidding qip-edge* from ever depending on trace-export machinery would close this",
+    "verification": "cargo test -p qip-acceptance --test architecture no_reflex_crate. The test asserts its premise first: each central root's drain contains tracer.export( and traces_url, so the scan recognises the machinery where it exists. Mutation-verified: adding `let _ = telemetry.tracer.export();` to qip-edge-node's assemble fails it.",
     "work_item": "E12-edge-no-trace-call-regression-test",
     "tier": "T1",
     "size": "S",
-    "notes": "deployable=false because execution_nodes={} in every environment (qip-edge-node is not deployed anywhere), independent of this prohibition holding in the code that exists.\n\nverify: status and flags kept. Fixed the evidence path: the assessor searched backend/crates/edge/qip-edge-node/src, which does not exist (the binary is under apps/). Re-ran against the real paths, with the same result. Added lib.rs:72 as positive evidence and noted that the Fabric half is vacuous because no Fabric exists."
+    "notes": "deployable=false because execution_nodes={} in every environment (qip-edge-node is not deployed anywhere), independent of this prohibition holding in the code that exists.\n\nverify: status and flags kept. Fixed the evidence path: the assessor searched backend/crates/edge/qip-edge-node/src, which does not exist (the binary is under apps/). Re-ran against the real paths, with the same result. Added lib.rs:72 as positive evidence and noted that the Fabric half is vacuous because no Fabric exists.\n\n2026-10-05: NEEDS-VALIDATION -> COMPLETE by the structural guard this row named as its closure. The check's 'at its benchmarked latency' clause is not measured: the cell has no benchmarked latency (blueprint_objectives files the three p99 targets under NeedsReleaseTiming). What is proven is that no trace call exists to wait on."
   },
   {
     "id": "OBS-026",
@@ -112,21 +111,22 @@
       "grep -rn 'connectivity_test\\|network_management' infrastructure/terraform -> 0 matches",
       "docs/architecture/current-state/infrastructure.json (modules/connectivity: enable_partner_interconnect=false in every environment)",
       "infrastructure/terraform/modules/iap-edge/main.tf:207-235 (second LB, log_config enable=true)",
-      "infrastructure/environments/dev/terraform.tfvars:491-499 (public_edge block commented out: no LB is applied in dev)"
+      "infrastructure/environments/dev/terraform.tfvars:491-499 (public_edge block commented out: no LB is applied in dev)",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs::every_subnet_keeps_flow_logs_and_every_load_balancer_backend_logs_its_requests"
     ],
-    "gap": "Connectivity Tests / Network Intelligence Center tooling is entirely absent (0 google_network_management_connectivity_test resources). No test file asserts flow logs cover every Reflex/Fabric/mesh-carrying subnet. Interconnect/VPN metrics do not apply yet (module built, gated off -- GCP Phase 7).",
+    "gap": "Connectivity Tests / Network Intelligence Center tooling is entirely absent (0 google_network_management_connectivity_test resources). Interconnect/VPN metrics do not apply yet (module built, gated off -- GCP Phase 7). Flow logs on every subnet and request logging on every load-balancer backend are now held by a test.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "grep -c flow_sampling infrastructure/terraform/modules/*/main.tf (currently 4 modules); no terraform_contract.rs assertion exists for flow-log coverage or Connectivity Tests today",
+    "verification": "cargo test -p qip-acceptance --test manifest_wiring every_subnet_keeps_flow_logs (every google_compute_subnetwork declares log_config.flow_sampling above zero and every backend service log_config.enable = true; mutation-verified by zeroing one subnet's sampling and by disabling the public edge's log_config). No assertion exists for Connectivity Tests, which nothing declares.",
     "work_item": "E14-network-intelligence-connectivity-tests",
     "tier": "T2",
     "size": "M",
-    "notes": "Trust-zone flow logs are applied in dev today (trust-zones production_evidence). LB logging is declared but no LB exists in any environment. The gap is entirely Connectivity Tests / NIC, which nothing declares.\n\nverify: status and flags kept (trust-zone flow logs are applied in dev). Corrected the claim that LB logging is applied in dev: public_edge is commented out in dev tfvars and iap-edge is instantiated nowhere. Added the second LB module's log_config."
+    "notes": "Trust-zone flow logs are applied in dev today (trust-zones production_evidence). LB logging is declared but no LB exists in any environment. The gap is entirely Connectivity Tests / NIC, which nothing declares.\n\nverify: status and flags kept (trust-zone flow logs are applied in dev). Corrected the claim that LB logging is applied in dev: public_edge is commented out in dev tfvars and iap-edge is instantiated nowhere. Added the second LB module's log_config.\n\n2026-10-05: two of the four instruments are now pinned for every resource of the kind. Stays PARTIAL: Connectivity Tests need a resource type this lane could not prove against the pinned provider, and they are a plan-level decision."
   },
   {
     "id": "OBS-027",
@@ -211,7 +211,7 @@
     "work_item": "E05-product-slo-catalogue",
     "tier": "T2",
     "size": "M",
-    "notes": "The Fabric-backlog half is additionally constrained by C2 (see OBS-032): it cannot be a genuine consumer-lag figure until a real broker exists. The reconciliation-age half is unbuilt but not architecturally blocked."
+    "notes": "The Fabric-backlog half is additionally constrained by C2 (see OBS-032): it cannot be a genuine consumer-lag figure until a real broker exists. The reconciliation-age half is unbuilt but not architecturally blocked.\n\n2026-10-05: not closable by code alone. The source states no target for either objective, so a product catalogue would carry two numbers nobody decided; the backlog series has no running broker (qip-fabricd refuses to start); and no desk-facing route reports any objective yet."
   },
   {
     "id": "OBS-030",
@@ -286,18 +286,19 @@
   },
   {
     "id": "OBS-033",
-    "status": "MISSING",
-    "current": "No warm-service SLO or series exists. qip_observability::slo::default_slos() declares an 'api-availability' Slo (slo.rs:242, target 0.999), but nothing outside tests calls default_slos(), so it is a declaration nothing evaluates or serves. qip-api records no request metric: its only `metrics.count` calls are the OpenObserve drain's own post counters (openobserve.rs:422,436). qip-observability's metric names contain no request-latency, error-rate, saturation, restart or warm-service circuit name. The one circuit series is qip_edge_mesh_circuit (metrics.rs:948), the edge node's uplink, and qip_transport::breaker is used only by qip-edge-node/src/mesh.rs. No Terraform declares an SLO, uptime check or dashboard on Cloud Run's built-in run.googleapis.com/request_* metrics (`rg 'google_monitoring_slo|uptime_check|request_latenc' infrastructure/terraform` -> 0). The warm plane is Cloud Run (ADR 0024, C3). The requirement's notes map 'pod disruption' to instance restarts, and the other four signals apply unchanged.",
+    "status": "PARTIAL",
+    "current": "Three of the five signals now exist as series on the one warm HTTP service: qip-api records request latency, request and error counts by class, and saturation against its connection limit for every request (qip_service_*; see OBS-018), and the two brains record the same four per cycle. No Slo object reads any of them: qip_observability::slo::default_slos() still declares an 'api-availability' Slo nothing outside tests calls. No instance-restart (the Cloud Run reading of 'pod disruption') or warm-service circuit-open series exists; the one circuit series is qip_edge_mesh_circuit, the edge node's uplink. No Terraform declares an SLO, uptime check or dashboard on Cloud Run's built-in request metrics. The warm plane is Cloud Run (ADR 0024, C3).",
     "evidence": [
       "backend/crates/libs/qip-observability/src/slo.rs:242 (api-availability, declared; default_slos has no production caller)",
-      "backend/crates/apps/qip-api/src/openobserve.rs:422,436 (the only metrics.count calls in qip-api, the drain's own counters)",
       "backend/crates/libs/qip-observability/src/metrics.rs:948 (EDGE_MESH_CIRCUIT is edge-only)",
       "rg 'BreakerPolicy' backend/crates/apps -> only qip-edge-node/src/mesh.rs",
-      "rg 'google_monitoring_slo|google_monitoring_uptime_check_config|request_latenc|request_count' infrastructure/terraform -> 0 matches"
+      "rg 'google_monitoring_slo|google_monitoring_uptime_check_config|request_latenc|request_count' infrastructure/terraform -> 0 matches",
+      "backend/crates/apps/qip-api/src/golden.rs",
+      "backend/crates/apps/qip-api/tests/api.rs::a_request_mix_with_failures_moves_all_four_of_the_apis_golden_signals"
     ],
-    "gap": "The one declared SLO is never read by anything; no per-warm-service request-latency/error-rate/saturation/circuit-open series exists; 'pod disruption' has no Cloud Run analogue implemented (only the GKE-shaped name survives from the source table).",
-    "implemented": false,
-    "tested": false,
+    "gap": "No SLO object evaluates the request series that now exist, so p99 and error rate are recorded per service and not reported against a target. No disruption (instance restart) series and no warm-service circuit-open series exists.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -307,7 +308,7 @@
     "work_item": "E12-cloud-run-slo-wireup",
     "tier": "T2",
     "size": "M",
-    "notes": "C3 (GKE retired for Cloud Run) blocks the literal 'pod disruption' framing specifically; the rest (latency, errors, saturation, circuit opens) is simply unbuilt for Cloud Run, not architecturally blocked.\n\nverify: downgraded PARTIAL -> MISSING and cleared implemented/tested/deployable. The only artefact was an uncalled Slo literal (a type existing is never enough), and the 'test' is a declaration check. qip-api records no request series, and no Terraform SLO or uptime check covers Cloud Run. blocked_by C3 kept only for the literal 'pod disruption' framing; the requirement's notes map it to instance restarts, so nothing here is actually blocked."
+    "notes": "C3 (GKE retired for Cloud Run) blocks the literal 'pod disruption' framing specifically; the rest (latency, errors, saturation, circuit opens) is simply unbuilt for Cloud Run, not architecturally blocked.\n\nverify: downgraded PARTIAL -> MISSING and cleared implemented/tested/deployable. The only artefact was an uncalled Slo literal (a type existing is never enough), and the 'test' is a declaration check. qip-api records no request series, and no Terraform SLO or uptime check covers Cloud Run. blocked_by C3 kept only for the literal 'pod disruption' framing; the requirement's notes map it to instance restarts, so nothing here is actually blocked.\n\n2026-10-05: MISSING -> PARTIAL. Not worked as a row (it carries blocked_by C3); re-scored because OBS-018 made its 'qip-api records no request metric' sentence false. tested covers the series, not an SLO."
   },
   {
     "id": "OBS-034",

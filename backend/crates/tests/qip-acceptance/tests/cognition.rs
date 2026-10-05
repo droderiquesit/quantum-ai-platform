@@ -411,3 +411,75 @@ fn every_new_cognition_surface_is_read_only_and_names_no_venue_or_order() {
     );
     let _ = audit;
 }
+
+#[test]
+fn a_constraint_problem_the_fabric_poses_as_a_qubo_is_answered_through_the_quantum_paths_solver_port()
+ {
+    // REASON-017's second sentence: the formulation "can then be offered to
+    // the quantum path as a candidate search". That is a claim about a seam —
+    // the reasoning fabric on one side, `qip-quantum`'s solver port on the
+    // other — and neither crate may reach the other (the reasoning engine
+    // writes evidence; see `architecture.rs`), so it can only be asserted
+    // here. The failure it prevents is an encoder that emits a QUBO the port
+    // accepts and whose answer, decoded, is not a solution of what was posed.
+    use qip_quantum::solver::{ClassicalSolver, QuboSolver, SolverEffort};
+    use qip_reasoning_engine::constraint::{Constraint, Form, Problem, Variable};
+    use qip_reasoning_engine::rules::{Op, Value};
+
+    // Run exactly two of five candidate experiments, at the least cost.
+    let costs = [5i64, 2, 4, 1, 3];
+    let name = |i: usize| format!("run-{i}");
+    let problem = Problem {
+        variables: (0..costs.len())
+            .map(|i| Variable {
+                name: name(i),
+                domain: vec![Value::Int(0), Value::Int(1)],
+            })
+            .collect(),
+        constraints: vec![Constraint {
+            id: "exactly-two".into(),
+            form: Form::Linear {
+                terms: (0..costs.len()).map(|i| (1, name(i))).collect(),
+                op: Op::Eq,
+                bound: 2,
+            },
+        }],
+    };
+    let objective: Vec<(i64, String)> = costs
+        .iter()
+        .enumerate()
+        .map(|(i, cost)| (*cost, name(i)))
+        .collect();
+
+    // The classical baseline, on the problem as posed (ADR 0006): the two
+    // cheapest, at 2 + 1.
+    let baseline = problem
+        .minimise(&objective)
+        .expect("the problem is well formed")
+        .expect("two of five can always be chosen");
+    assert_eq!(baseline.objective, 3);
+    // The premise: the constraint binds. Left to the objective alone the
+    // answer is to run nothing, at no cost — so a formulation that lost the
+    // constraint would be caught below rather than agree by accident.
+    assert!(
+        problem.decode(&objective, &[0, 0, 0, 0, 0]).is_err(),
+        "running nothing was accepted as a solution"
+    );
+
+    // Offered to the quantum path's port, through its trait, as any entrant
+    // in the benchmark is. The classical entrant is the one that is always
+    // available; the port and the QUBO type are what a hosted entrant shares.
+    let qubo = problem
+        .to_qubo(&objective)
+        .expect("a 0/1 problem under a linear equality admits a QUBO");
+    let entrant: &dyn QuboSolver = &ClassicalSolver::new(11);
+    assert!(entrant.is_available(), "{}", entrant.requirement());
+    let candidate = entrant
+        .solve(&qubo, &SolverEffort::default())
+        .expect("the port accepted the formulation");
+
+    let decoded = problem
+        .decode(&objective, &candidate.assignment)
+        .expect("the port's candidate decodes to a solution of the problem as posed");
+    assert_eq!(decoded, baseline);
+}

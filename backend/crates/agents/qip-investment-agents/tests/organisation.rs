@@ -369,6 +369,13 @@ fn book(symbol: &str) -> OrderBook {
 
 /// A desk with enough data for the analysts to say something.
 fn populated_desk() -> Arc<Desk> {
+    desk_holding_causal_claims(Vec::new())
+}
+
+/// [`populated_desk`], with `claims` recorded in its world model's causal
+/// graph. With none, the causal analyst has nothing to trace on any desk in
+/// this file.
+fn desk_holding_causal_claims(claims: Vec<qip_world_model::CausalEdge>) -> Arc<Desk> {
     let mut universe = Universe::new();
     universe.insert(equity("ACME", "100")).unwrap();
     universe.insert(commodity("WTI", "80")).unwrap();
@@ -476,6 +483,9 @@ fn populated_desk() -> Arc<Desk> {
                 FeatureValue::new(value, curve_valid_at(), curve_known_at()),
             );
         }
+    }
+    for claim in claims {
+        world.claim_causal(claim).unwrap();
     }
 
     let mut library = SearchIndex::new();
@@ -1902,6 +1912,165 @@ fn a_breach_the_desk_marked_as_forcing_a_reduction_is_reported_as_more_than_a_bl
             .starts_with("1 limit(s) block and 1 of them require the book to be reduced: "),
         "a limit the desk marked as forcing a reduction was reported as an ordinary \
          block, so the mark still changes nothing: {forcing_claim}"
+    );
+    Ok(())
+}
+
+// --- the causal analyst, on a desk that holds causal claims ------------------
+
+/// A claim recorded five days before the brief, from `cause` to `effect`.
+fn causal_claim(
+    cause: &str,
+    effect: &str,
+    mechanism: qip_world_model::Mechanism,
+    strength: f64,
+    evidence: &[&str],
+) -> qip_world_model::CausalEdge {
+    qip_world_model::CausalEdge::new(
+        cause,
+        effect,
+        mechanism,
+        strength,
+        Duration::from_days(2),
+        now().saturating_sub(Duration::from_days(5)),
+    )
+    .unwrap()
+    .with_evidence(evidence.iter().map(|id| (*id).to_string()).collect())
+}
+
+/// What the causal analyst reported for the standard brief on `desk`.
+fn causal_finding(desk: Arc<Desk>) -> Result<qip_agents::finding::AgentFinding> {
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let run = report
+        .runs
+        .iter()
+        .find(|run| run.agent_id == ids::CAUSAL)
+        .expect("the causal analyst accepted a brief naming an entity and an instrument");
+    Ok(run
+        .finding
+        .clone()
+        .expect("the causal analyst's run produced a finding"))
+}
+
+#[test]
+fn the_causal_analyst_cites_the_claim_a_shock_travelled_along_and_the_records_it_rests_on()
+-> Result<()> {
+    // REASON-006. Two claims join the policy entity to ACME: a weak sentiment
+    // link nobody evidenced, and a strong discount-rate link resting on two
+    // records. The shock travels the strong one. Until the effect carried the
+    // edges it travelled, the analyst looked the pair up again by name, found
+    // both claims, and reported the path as unevidenced on the strength of
+    // the one the number never came from — while citing none of the records
+    // behind the one it did.
+    use qip_world_model::Mechanism;
+    let origin = "entity-policy";
+    let target = object("ACME");
+    let weak_and_bare = causal_claim(origin, target.as_str(), Mechanism::Sentiment, 0.2, &[]);
+    let strong = |evidence: &[&str]| {
+        causal_claim(
+            origin,
+            target.as_str(),
+            Mechanism::DiscountRate,
+            0.9,
+            evidence,
+        )
+    };
+
+    let finding = causal_finding(desk_holding_causal_claims(vec![
+        weak_and_bare.clone(),
+        strong(&["filing-rate-sensitivity", "study-duration"]),
+    ]))?;
+    // The premise: the analyst traced a path and took a view. Before the
+    // floor was read as a fraction of the shock it never could — a one
+    // percent reference shock is below an absolute floor of 0.02 before it
+    // has crossed a single edge, so every desk got "no data" here.
+    assert_eq!(finding.status, FindingStatus::Complete, "{}", finding.claim);
+    assert_eq!(finding.direction, Direction::Positive, "{}", finding.claim);
+
+    // The edge travelled, then that edge's own records. Nothing of the other.
+    assert_eq!(
+        finding.evidence,
+        [
+            "causal:entity-policy->obj-ACME",
+            "filing-rate-sensitivity",
+            "study-duration"
+        ]
+    );
+    assert!(
+        finding.caveats.iter().all(|c| !c.contains("unevidenced")),
+        "the path was called unevidenced because of a claim it did not travel: {:?}",
+        finding.caveats
+    );
+    assert!(
+        finding.missing_inputs.is_empty(),
+        "{:?}",
+        finding.missing_inputs
+    );
+
+    // And the caveat still fires when the claim travelled is the bare one,
+    // which makes the finding partial: the evidence for that edge is an
+    // input the analyst wanted and did not have.
+    let bare = causal_finding(desk_holding_causal_claims(vec![weak_and_bare, strong(&[])]))?;
+    assert_eq!(bare.status, FindingStatus::Partial, "{}", bare.claim);
+    assert_eq!(
+        bare.missing_inputs,
+        ["evidence for causal edge entity-policy -> obj-ACME"]
+    );
+    assert_eq!(bare.evidence, ["causal:entity-policy->obj-ACME"]);
+    assert!(
+        bare.caveats
+            .iter()
+            .any(|c| c == "unevidenced causal claims on the path: entity-policy -> obj-ACME"),
+        "{:?}",
+        bare.caveats
+    );
+    Ok(())
+}
+
+#[test]
+fn the_causal_analyst_says_whether_a_target_it_could_not_reach_is_downstream_at_all() -> Result<()>
+{
+    // REASON-006. Propagation stops at four hops and under a floor, so "not
+    // reached" used to cover two different findings: the graph holds no
+    // mechanism, and the graph holds one too long or too weak to act on. The
+    // first asks someone to record a claim; the second must not.
+    use qip_world_model::Mechanism;
+    let target = object("ACME");
+    let hop = |cause: &str, effect: &str| {
+        causal_claim(cause, effect, Mechanism::SupplyChain, 0.9, &["note"])
+    };
+
+    // Five hops: one more than the analyst will trace.
+    let far = causal_finding(desk_holding_causal_claims(vec![
+        hop("entity-policy", "a"),
+        hop("a", "b"),
+        hop("b", "c"),
+        hop("c", "d"),
+        hop("d", target.as_str()),
+    ]))?;
+    assert_eq!(far.status, FindingStatus::NoView, "{}", far.claim);
+    assert!(
+        far.claim
+            .starts_with("obj-ACME is downstream of entity-policy along 1 path(s), "),
+        "{}",
+        far.claim
+    );
+
+    // A mechanism out of the entity that leads somewhere else entirely.
+    let elsewhere = causal_finding(desk_holding_causal_claims(vec![hop("entity-policy", "a")]))?;
+    assert_eq!(
+        elsewhere.status,
+        FindingStatus::NoView,
+        "{}",
+        elsewhere.claim
+    );
+    assert!(
+        elsewhere
+            .claim
+            .starts_with("obj-ACME is not downstream of entity-policy in the causal graph"),
+        "{}",
+        elsewhere.claim
     );
     Ok(())
 }

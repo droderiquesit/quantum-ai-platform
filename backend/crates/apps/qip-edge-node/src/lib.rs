@@ -37,6 +37,8 @@ pub mod mesh;
 pub mod mirror;
 /// One pass of the node: feed, decide, act, reconcile.
 pub mod pass;
+/// Each venue's own message limits, as the deployment states them.
+pub mod quote_limits;
 pub mod replay;
 /// Cancel-and-replace of a stale resting order, beneath the cell's placer
 /// seam — the caller `qip_routing::reprice` was written for.
@@ -184,7 +186,7 @@ pub fn assemble(
             mode_gate.enable(venue.as_str(), mode, &paper)?;
         }
     }
-    let telemetry = Telemetry::new("qip-edge-node", clock);
+    let telemetry = Telemetry::foreground("qip-edge-node", clock);
     let metrics: Arc<Metrics> = Arc::clone(&telemetry.metrics);
     let mut cell = Cell::new(config, features)?
         .with_mode_gate(mode_gate)

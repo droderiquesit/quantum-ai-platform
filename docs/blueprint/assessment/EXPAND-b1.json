@@ -38,7 +38,7 @@
       "backend/crates/services/qip-capital/tests/exploration.rs:147 two_runs_over_the_same_evidence_select_the_same_probes_in_the_same_order",
       "rg -l 'GapSignal|CurriculumItem|ResearchQueue' backend/crates -> no matches (re-run 2026-09-25)"
     ],
-    "gap": "No GapSignal, CurriculumItem or ResearchQueue type exists. Only uncertainty/ignorance is ranked, and only into capital-held exploration probes that nothing executes; novelty, surprise, failure and unsupported requests become no work at all, and no ranked item can expand sources, ontology, memory, specialists, tools, models or curricula.",
+    "gap": "GapSignal and CurriculumItem (CONTRACT-031/032) and a ranked ResearchQueue (qip-expansion) now exist as libraries, and a queued entry keeps its originating signal, but nothing in a running platform raises a signal or admits a candidate. Only uncertainty is ranked in production, into capital-held exploration probes nothing executes; the e2e check cannot be run.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -54,7 +54,7 @@
     "work_item": "E16-gap-detection-engine",
     "tier": "T3",
     "size": "XL",
-    "notes": "This is the load-bearing MISSING requirement the rest of the EXPAND domain is written against; almost every other EXPAND-0xx requirement depends on this engine or its ResearchQueue/GapSignal types existing. verify: upgraded MISSING -> PARTIAL. The row missed the exploration desk (kernel exploration.rs + qip-capital exploration.rs), which turns the platform's measured ignorance into UCB-ranked, bounded, recorded probes every DECIDE pass and is tested; it is a narrow slice (probes are never executed and expand no capability), so PARTIAL, not more."
+    "notes": "This is the load-bearing MISSING requirement the rest of the EXPAND domain is written against; almost every other EXPAND-0xx requirement depends on this engine or its ResearchQueue/GapSignal types existing. verify: upgraded MISSING -> PARTIAL. The row missed the exploration desk (kernel exploration.rs + qip-capital exploration.rs), which turns the platform's measured ignorance into UCB-ranked, bounded, recorded probes every DECIDE pass and is tested; it is a narrow slice (probes are never executed and expand no capability), so PARTIAL, not more. 2026-10-05: gap restated after qip-expansion landed as a library; status unchanged."
   },
   {
     "id": "EXPAND-003",
@@ -114,15 +114,17 @@
   },
   {
     "id": "EXPAND-005",
-    "status": "MISSING",
-    "current": "Nothing; no Intelligence Expansion Engine crate exists. No 'Scout', 'Evaluation Brain', 'Reflex Mesh', 'Model Foundry' or 'Quantum Foundry' named component exists either -- the platform's actual architecture is organised around the SENSE/UNDERSTAND/DISCOVER/REASON/SIMULATE/DECIDE/ACT/LEARN cycle stages (qip-kernel), not the blueprint's named-brain layering this requirement assumes.",
+    "status": "COMPLETE",
+    "current": "qip-expansion (backend/crates/services/qip-expansion) is the engine's crate: gap classification and the ranked, budgeted ResearchQueue. It depends on qip-core, qip-contracts (GapSignal, GapClass, CurriculumItem) and qip-agents (the Tool and Research registries) and on nothing else. qip-acceptance's architecture suite reads cargo metadata and asserts that the engine reaches the contract layer and that no library, service, edge, agent, quant or runtime crate, nor qip-edge-node, reaches the engine even transitively; every holder is named in the failure. The crate is classified NO_MONEY_AUTHORITY and placed in lane 3.",
     "evidence": [
-      "ls backend/crates/services backend/crates/libs backend/crates/runtime -> no expansion-engine crate",
-      "rg -l 'EvaluationBrain|ReflexMesh|ModelFoundry|QuantumFoundry|struct Scout\\b' backend/crates -> no matches (2026-09-25)"
+      "backend/crates/services/qip-expansion/Cargo.toml (dependencies: serde, qip-core, qip-contracts, qip-agents)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs nothing_below_a_composition_root_depends_on_the_expansion_engine",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs NO_MONEY_AUTHORITY (qip-expansion)",
+      "docs/architecture/lane-placement.md (qip-expansion, lane 3)"
     ],
-    "gap": "The layer itself does not exist, so there is nothing whose placement or dependency direction can be tested.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -131,11 +133,11 @@
       "EXPAND-014"
     ],
     "blocked_by": "",
-    "verification": "No architecture test exists because the crate does not exist. Needed once EXPAND-002 lands: an architecture-suite test reading the workspace dependency graph and asserting nothing on the reflex/risk path depends on the new crate.",
+    "verification": "cargo test -p qip-acceptance --test architecture nothing_below_a_composition_root_depends_on_the_expansion_engine",
     "work_item": "E16-expansion-engine-placement",
     "tier": "T2",
     "size": "M",
-    "notes": "Sized for the placement/dependency test alone; the engine itself is the XL item under EXPAND-002."
+    "notes": "Closed 2026-10-05. Mutations fired and were restored byte-for-byte: a qip-expansion dependency added to qip-world-model (named together with the three crates that inherit it) and to qip-edge-node. This closes the placement only. The engine is a library with no production caller (integrated false), so nothing yet reads the brains' outputs as gap signals or dispatches work to them (EXPAND-002, EXPAND-025). The cognition roots under crates/apps may hold the engine; qip-edge-node may not."
   },
   {
     "id": "EXPAND-006",
@@ -185,19 +187,20 @@
     "work_item": "E16-tool-registry",
     "tier": "T2",
     "size": "L",
-    "notes": "Closed 2026-10-04 as a library; no production caller yet, so integrated stays false."
+    "notes": "Closed 2026-10-04 as a library. One production caller since 2026-10-05: qip-deepbrain registers its hosted model endpoint (language::assemble) and prints the entry on the banner. The connectors, probes, simulators and solvers the roots construct are not registered, so the registry does not yet catalogue every tool and integrated stays false."
   },
   {
     "id": "EXPAND-008",
-    "status": "MISSING",
-    "current": "Nothing. No task-failure-to-ToolSpec pathway exists. The closest analogue is qip_data_finder::replacement::RankedReplacement (backend/crates/services/qip-data-finder/src/replacement.rs) which proposes a ranked replacement SOURCE when one degrades -- a neighbouring but distinct concept (a data source, not an arbitrary missing tool), and it is not triggered by a task's own failure.",
+    "status": "COMPLETE",
+    "current": "ResearchQueue::admit resolves every Need::Tool against qip_agents::tools::ToolRegistry. A tool the registry does not hold is proposed through ToolRegistry::propose -- the ToolSpec `register` would admit, at read-only scope, registered nowhere -- a TaskKind::ToolBuild CurriculumItem is queued for it, and the task itself is queued in State::Blocked naming the tool, where the scheduler never starts it. A second task blocked on the same tool is recorded and adds no second proposal.",
     "evidence": [
-      "rg -l 'ToolSpec|CapabilityPack' backend/crates -> no matches (2026-09-25)",
-      "backend/crates/services/qip-data-finder/src/replacement.rs (nearest neighbour, sources only)"
+      "backend/crates/services/qip-expansion/src/curriculum.rs (ResearchQueue::admit, State::Blocked, TaskKind::ToolBuild, proposals)",
+      "backend/crates/libs/qip-agents/src/tools.rs (ToolRegistry::propose, ToolRegistry::get)",
+      "backend/crates/services/qip-expansion/tests/expansion.rs a_task_needing_an_unregistered_parser_is_blocked_on_it_and_a_tool_proposal_and_build_item_are_queued"
     ],
-    "gap": "No ToolSpec/CapabilityPack proposal path exists for a missing tool, and no mechanism records a task as blocked-on-a-tool rather than failing silently.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -206,11 +209,11 @@
       "EXPAND-014"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needed: submit a task needing an unregistered parser and assert a ToolSpec/CapabilityPack proposal plus a matching curriculum item are created, and the task is recorded blocked rather than failing silently.",
+    "verification": "cargo test -p qip-expansion --test expansion a_task_needing_an_unregistered_parser_is_blocked_on_it_and_a_tool_proposal_and_build_item_are_queued",
     "work_item": "E16-tool-gap-to-buildtask",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-05 as a library: qip-expansion has no production caller, so integrated stays false. No composition root builds a queue because no detector in the tree states a severity or an economic value for what it finds and nothing measures most of the eleven criteria; wiring it would mean inventing them. The proposal is a record with a name, a kind and a read-only scope and no dependency field; scripts/check-dependencies.sh still reports the two permitted crates. The build item inherits the blocked task's score and budget because nothing costs a build yet. A blocked task is not released when the tool is registered; it is admitted again. Mutations fired and were restored: a missing tool ignored and the task queued, a proposal starting with write scope, a second blocked task re-proposing the same tool."
   },
   {
     "id": "EXPAND-009",
@@ -343,14 +346,15 @@
   },
   {
     "id": "EXPAND-014",
-    "status": "MISSING",
-    "current": "Nothing. No Curriculum Engine, CurriculumItem or ResearchQueue exists anywhere in the workspace.",
+    "status": "COMPLETE",
+    "current": "qip_expansion::curriculum::ResearchQueue ranks admitted candidates of the five research kinds (TaskKind::RESEARCH: data acquisition, simulation, label, experiment, campaign) by Score::priority, ties broken by the question's text so the order replays. ResearchQueue::schedule walks that order and starts the highest-ranked eligible item the round's Budget covers; a blocked or already started item is not eligible. Each queued entry keeps the RaisedGap that caused it as its origin.",
     "evidence": [
-      "rg -l 'CurriculumItem|ResearchQueue|CurriculumEngine' backend/crates -> no matches (2026-09-25)"
+      "backend/crates/services/qip-expansion/src/curriculum.rs (TaskKind, ResearchQueue::ranked, ResearchQueue::schedule, Entry::origin)",
+      "backend/crates/services/qip-expansion/tests/expansion.rs candidates_of_all_five_kinds_are_ranked_and_the_scheduler_starts_the_highest_ranked_eligible_item_first"
     ],
-    "gap": "No engine ranks candidate research tasks of any kind, so nothing decides which data acquisition, simulation, label, experiment or campaign runs next.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -359,22 +363,23 @@
       "EXPAND-015"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needed: feed candidates of each type (data, simulation, label, experiment, campaign) and assert a ranked ResearchQueue is emitted and the scheduler starts the highest-ranked eligible item first.",
+    "verification": "cargo test -p qip-expansion --test expansion candidates_of_all_five_kinds_are_ranked_and_the_scheduler_starts_the_highest_ranked_eligible_item_first",
     "work_item": "E16-curriculum-engine",
     "tier": "T3",
     "size": "XL",
-    "notes": "verify: status kept MISSING. Nearest neighbour, for the next reader: the exploration desk ranks uncertainty probes by UCB every DECIDE pass (qip-kernel exploration.rs, qip-capital exploration.rs), but probes are never executed and decide no data acquisition, simulation, label, experiment or campaign, so it is not a curriculum."
+    "notes": "Closed 2026-10-05 as a library: qip-expansion has no production caller, so integrated stays false. No composition root builds a queue because no detector in the tree states a severity or an economic value for what it finds and nothing measures most of the eleven criteria; wiring it would mean inventing them. 'Started' is a state on the queued record. No desk consumes a started item, so in a deployed process this ranking decides nothing yet; the discovery, learning and evolution desks still run on their own cadences. Mutations fired and were restored: the rank reversed, and a started item left eligible."
   },
   {
     "id": "EXPAND-015",
-    "status": "MISSING",
-    "current": "Nothing scores a candidate research task on the eight named criteria (expected economic value, uncertainty reduction, strategic coverage, risk reduction, information gain, cross-domain reuse, compute/data cost, legal/operational feasibility) or records novelty/failure-frequency/urgency as ranking inputs. No CurriculumEngine exists to score against (EXPAND-014).",
+    "status": "COMPLETE",
+    "current": "qip_expansion::curriculum::Criteria holds the eleven inputs as options and Criteria::score refuses a candidate missing any one of them, naming it. Score holds all eleven as values with the priority derived from them and can be built no other way. Ranges are refused rather than clamped: the fractions lie in [0, 1], information gain is finite and not negative, economic value is not negative, cost is above zero, and a feasibility of zero is refused outright.",
     "evidence": [
-      "rg -l 'CurriculumItem' backend/crates -> no matches (2026-09-25)"
+      "backend/crates/services/qip-expansion/src/curriculum.rs (Criteria, Criteria::score, Score)",
+      "backend/crates/services/qip-expansion/tests/expansion.rs a_scored_candidate_holds_all_eleven_inputs_and_one_missing_any_of_them_is_refused_by_name"
     ],
-    "gap": "No scoring record or type exists for any of the eleven named ranking inputs.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -382,11 +387,11 @@
       "EXPAND-014"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needed: score a candidate and assert its score record holds a value for each of the eleven named inputs, refusing a candidate missing any one rather than defaulting it.",
+    "verification": "cargo test -p qip-expansion --test expansion a_scored_candidate_holds_all_eleven_inputs_and_one_missing_any_of_them_is_refused_by_name",
     "work_item": "E16-curriculum-scoring",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status kept MISSING. The exploration desk scores probe candidates on uncertainty times a stated constant value plus a UCB rarity bonus (qip-capital exploration.rs) -- two of the eleven inputs at most, with no record that refuses a missing input -- so the contract does not exist."
+    "notes": "Closed 2026-10-05 as a library: qip-expansion has no production caller, so integrated stays false. No composition root builds a queue because no detector in the tree states a severity or an economic value for what it finds and nothing measures most of the eleven criteria; wiring it would mean inventing them. The blueprint gives no weights: the additive terms are weighted equally and novelty multiplies (EXPAND-042). Expected economic value and compute/data cost are Decimal and cross into f64 only as the ratio used to order candidates. Mutation fired and was restored: a missing urgency scored as zero."
   },
   {
     "id": "EXPAND-016",
@@ -535,7 +540,7 @@
     "work_item": "E09-theory-revision-tasks",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status kept PARTIAL; added the production caller (platform.rs:10252 -> world.rs:404 -> CausalGraph::record_condition_failure) that the integrated flag rested on but the row did not cite."
+    "notes": "verify: status kept PARTIAL; added the production caller (platform.rs:10252 -> world.rs:404 -> CausalGraph::record_condition_failure) that the integrated flag rested on but the row did not cite. 2026-10-05: not closed. The kernel already holds an open ResearchPrompt for a cluster of falsified theses (qip_learning_engine::research::ResearchLedger) and retires a contradicted causal edge, neither through qip_agents::research::ResearchRegistry; recording them there as well would be a second record of one fact and needs deciding first."
   },
   {
     "id": "EXPAND-022",
@@ -585,7 +590,7 @@
     "work_item": "E16-ambient-to-curriculum",
     "tier": "T1",
     "size": "S",
-    "notes": "Duplicates AMBIENT-018."
+    "notes": "Duplicates AMBIENT-018. 2026-10-05: not closed here. Duplicates AMBIENT-018 and was left to that lane; no production ambient mesh emits a signal, and qip-expansion's queue has no production caller to receive one."
   },
   {
     "id": "EXPAND-024",
@@ -617,7 +622,7 @@
   {
     "id": "EXPAND-025",
     "status": "PARTIAL",
-    "current": "No GapSignal and no unifying detector exist, but six of the seven triggers are detected separately in production: surprise -- DetectorRegistry::standard (detector.rs:923-937, constructed at platform.rs:4521, run every DISCOVER pass); low confidence -- the exploration desk's UncertainModel/StaleEstimate candidates from the self model (qip-kernel/src/exploration.rs:20-40); contradictions -- the falsification Book and record_causal_condition_failure (platform.rs:10252); missed opportunities -- score_declined's counterfactual regret on declined paths (platform.rs:16326, DeclinedScore); model drift -- qip_training::estimators::StreamingDrift and degraded_models in qip-deepbrain/src/learning.rs:1051. Unexplained P&L is refused rather than detected (Attribution::residual must be zero, attribution.rs:48-153), and requests no brain or tool can satisfy are not detected anywhere. None of these raises a GapSignal or opens any loop.",
+    "current": "No GapSignal and no unifying detector exist, but six of the seven triggers are detected separately in production: surprise -- DetectorRegistry::standard (detector.rs:923-937, constructed at platform.rs:4521, run every DISCOVER pass); low confidence -- the exploration desk's UncertainModel/StaleEstimate candidates from the self model (qip-kernel/src/exploration.rs:20-40); contradictions -- the falsification Book and record_causal_condition_failure (platform.rs:10252); missed opportunities -- score_declined's counterfactual regret on declined paths (platform.rs:16326, DeclinedScore); model drift -- qip_training::estimators::StreamingDrift and degraded_models in qip-deepbrain/src/learning.rs:1051. Unexplained P&L is refused rather than detected (Attribution::residual must be zero, attribution.rs:48-153), and requests no brain or tool can satisfy are not detected anywhere. None of these raises a GapSignal or opens any loop. Since 2026-10-05 the unifying step exists as a library: qip_expansion::gap::raise turns one Observation into exactly one RaisedGap carrying its GapTrigger (seven variants) and a classified GapSignal.",
     "evidence": [
       "backend/crates/services/qip-opportunity-engine/src/detector.rs:923-937; backend/crates/runtime/qip-kernel/src/platform.rs:4521",
       "backend/crates/runtime/qip-kernel/src/exploration.rs:20-40 (low-confidence and stale-estimate candidates)",
@@ -626,7 +631,7 @@
       "backend/crates/services/qip-learning-engine/src/attribution.rs:48-153 (residual refused, not surfaced)",
       "rg -l 'GapSignal' backend/crates -> no matches (re-run 2026-09-25)"
     ],
-    "gap": "No GapSignal type and no unifying step 1: the six detected triggers each end in their own record or refusal and open no loop; unexplained P&L is refused instead of surfaced; unsupported requests are not detected.",
+    "gap": "No detector calls gap::raise. The six production detections still end in their own records, none of them states the severity or economic value a GapSignal requires, unexplained P&L is refused instead of surfaced, and unsupported requests are not detected. The step that would unify them exists; nothing feeds it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -636,7 +641,7 @@
       "EXPAND-002"
     ],
     "blocked_by": "",
-    "verification": "Each detector has its own suite (qip-opportunity-engine, qip-kernel --test exploration/causal_precedence/learning, qip-training). Needed: raise each of the seven triggers in turn and assert exactly one GapSignal naming its trigger.",
+    "verification": "Each detector has its own suite (qip-opportunity-engine, qip-kernel --test exploration/causal_precedence/learning, qip-training). Needed: raise each of the seven triggers in turn and assert exactly one GapSignal naming its trigger. Engine half: cargo test -p qip-expansion --test expansion each_of_the_seven_triggers_raises_exactly_one_gap_signal_naming_its_trigger (mutation-verified: the trigger not carried).",
     "work_item": "E16-novelty-detection",
     "tier": "T2",
     "size": "M",
@@ -644,14 +649,15 @@
   },
   {
     "id": "EXPAND-026",
-    "status": "MISSING",
-    "current": "No classifier and no GapSignal exist to classify.",
+    "status": "COMPLETE",
+    "current": "qip_expansion::gap::classify maps what each piece of a signal's evidence shows to be missing (gap::Wanting) to one of the nine GapClass values, and refuses evidence that names nothing, names Wanting::Unknown, or names two different lacks. gap::raise builds the GapSignal (CONTRACT-031) only after classification, so an unclassified signal cannot be constructed through it.",
     "evidence": [
-      "rg -l 'GapSignal' backend/crates -> no matches (2026-09-25)"
+      "backend/crates/services/qip-expansion/src/gap.rs (Wanting, classify, raise)",
+      "backend/crates/services/qip-expansion/tests/expansion.rs every_generated_gap_is_classified_into_one_of_the_nine_classes_and_an_unclassifiable_one_is_refused"
     ],
-    "gap": "No nine-class gap classifier exists.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -659,11 +665,11 @@
       "EXPAND-025"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needed: for generated GapSignals, assert the classifier always returns one of the nine classes and refuses a signal it cannot classify rather than defaulting.",
+    "verification": "cargo test -p qip-expansion --test expansion every_generated_gap_is_classified_into_one_of_the_nine_classes_and_an_unclassifiable_one_is_refused",
     "work_item": "E16-gap-classification",
     "tier": "T1",
     "size": "S",
-    "notes": ""
+    "notes": "Closed 2026-10-05 as a library: qip-expansion has no production caller, so integrated stays false. No composition root builds a queue because no detector in the tree states a severity or an economic value for what it finds and nothing measures most of the eleven criteria; wiring it would mean inventing them. Classification is by what the detector established is missing; nothing is inferred from free text. A gap that is both a data gap and a model gap is refused and has to be raised as two signals. Mutations fired and were restored: Unknown given a default class, the first of two lacks winning, a memory gap filed as a model gap."
   },
   {
     "id": "EXPAND-027",
@@ -801,7 +807,7 @@
     "work_item": "E00-paper-boundary-maintenance",
     "tier": "T0",
     "size": "S",
-    "notes": "Marked COMPLETE for the prohibition as stated; any future work that would let a promoted lane reach a live venue is refused by ADR 0099's conflict register (C1) and must stay refused. verify: downgraded COMPLETE -> PARTIAL; e2e true -> false; blocked_by cleared (it is not a BLOCKED row). The cited tests prove the autonomy ceiling, not promotion: neither paper_boundary.rs nor compliance_proof.rs mentions promotion, and none of the cited tests crosses processes. The strategy ladder names Pilot/Scaled 'live with capital' rungs reachable by dual approval (platform.rs:7111). Keeping any live path refused (C1) is unchanged."
+    "notes": "Marked COMPLETE for the prohibition as stated; any future work that would let a promoted lane reach a live venue is refused by ADR 0099's conflict register (C1) and must stay refused. verify: downgraded COMPLETE -> PARTIAL; e2e true -> false; blocked_by cleared (it is not a BLOCKED row). The cited tests prove the autonomy ceiling, not promotion: neither paper_boundary.rs nor compliance_proof.rs mentions promotion, and none of the cited tests crosses processes. The strategy ladder names Pilot/Scaled 'live with capital' rungs reachable by dual approval (platform.rs:7111). Keeping any live path refused (C1) is unchanged. 2026-10-05: not closed. GateStage::Pilot and Scaled are defined as capital-holding rungs that may reach a venue (qip-contracts/src/gate.rs), so a scan that no promotion path names a live-capital rung fails until an ADR says what those rungs mean on a paper-only platform."
   },
   {
     "id": "EXPAND-032",
@@ -832,18 +838,17 @@
   },
   {
     "id": "EXPAND-033",
-    "status": "PARTIAL",
-    "current": "Four of the five named fields already travel together in one record, and the fifth lives elsewhere. qip_data_finder::source::SourceCandidate::new (backend/crates/services/qip-data-finder/src/source.rs:84-128) requires identity (SourceIdentity), discovered_from and discovered_at (provenance), declared_licensing (LicensingPosture), cost (SourceCost) and declared_coverage including update_frequency (declared freshness, coverage.rs:131-137) -- a candidate cannot be built without them. Measured freshness is qip_data_finder::freshness::{LeadLedger, SourceLeadSummary}; licence decisions are admission::{LicensingDecision} plus legal.rs's three-valued Legality; utility is scoring::{RoutingClass, SourceScores}. All are reached from production through DataFinder::assess (finder.rs:40-169), called from qip-deepbrain's DiscoveryDesk (main.rs:508, discovery.rs:173 -> Platform::assess_sources, platform.rs:15946), and the crate carries 178 tests (118 integration, 60 unit). No single record carries utility beside the other four, and no test refuses an entry missing exactly one of the five as a combined gate.",
+    "status": "COMPLETE",
+    "current": "RegisteredSource::entry (qip-data-finder/src/decision.rs) returns a SourceRegistryEntry borrowing all five from the one record DataFinder stores: provenance (SourceLineage: where and when discovered, probed and decided), cost (SourceCost), licence (the LicensingPosture the registration was decided on), freshness (the declared UpdateFrequency) and utility (Routing: class and composite score). A source lacking any one never becomes an entry: the catalogue loader refuses a record with no discovered_from, cost, declared_licensing or update_frequency by name, and a blank discovered_from; DataFinder::assess registers neither an undetermined licence nor a source scoring below Routing::COLD_THRESHOLD. Production path: catalogue::load -> qip-deepbrain DiscoveryDesk -> Platform::assess_sources -> DataFinder::assess.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/source.rs:84-128 (SourceCandidate: identity, provenance, licensing, cost, coverage)",
-      "backend/crates/services/qip-data-finder/src/coverage.rs:131-137 (update_frequency)",
-      "backend/crates/services/qip-data-finder/src/quality.rs:12-30 (SourceQuality/SourceCost)",
-      "backend/crates/services/qip-data-finder/src/freshness.rs:1-30 (LeadLedger)",
-      "backend/crates/services/qip-data-finder/src/finder.rs:40-169",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15946-15952 (assess_sources)",
-      "qip-data-finder tests: legality.rs (27 tests), tiers.rs (19 tests), lifecycle.rs (10 tests), registration.rs"
+      "backend/crates/services/qip-data-finder/src/decision.rs (SourceRegistryEntry, RegisteredSource::entry)",
+      "backend/crates/services/qip-data-finder/src/catalogue.rs (load)",
+      "backend/crates/services/qip-data-finder/src/source.rs (SourceCandidate::validate)",
+      "backend/crates/services/qip-data-finder/src/scoring.rs (Routing::decide, COLD_THRESHOLD)",
+      "backend/crates/services/qip-data-finder/tests/source_registry.rs a_source_lacking_any_one_of_the_five_is_refused_and_a_complete_one_is_stored_with_all_five",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs (the production caller of assess_sources)"
     ],
-    "gap": "Provenance, cost, licence, freshness and utility are each modelled and tested in a separate type; no single Source Registry entry carries all five, and no test refuses an entry missing exactly one of the five as a combined gate.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -851,10 +856,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder (legality.rs, tiers.rs, lifecycle.rs and the finder.rs suites). Needed: register a source missing one of the five fields as ONE combined record and assert refusal; register a complete one and assert it is stored and readable with all five together.",
+    "verification": "cargo test -p qip-data-finder --test source_registry a_source_lacking_any_one_of_the_five_is_refused_and_a_complete_one_is_stored_with_all_five",
     "work_item": "E08-unified-source-registry",
     "tier": "T1",
     "size": "M",
-    "notes": "qip-data-finder's own module doc already names this crate as the audit's largest former Layer-1 gap that has since been closed piecemeal; unifying the five fields into one registry record is the remaining step. verify: status kept PARTIAL; corrected details. scoring::Routing does not exist (it is RoutingClass); the crate has 178 tests, not 111; and SourceCandidate::new already requires provenance, licence, cost and declared freshness together, so the missing piece is utility in the same record plus the combined refusal test."
+    "notes": "Closed 2026-10-05. The entry is a view over the stored record, not a second record. Freshness is the declared update frequency; measured freshness stays in freshness::LeadLedger and in the freshness term of the score. Utility is measured at assessment, so a source lacks it by scoring below the floor. The registry holds registered sources only, not rejected candidates, and sensors, marketplaces and discovery methods have no entry kind of their own. The discovery pass runs only where QIP_DEEPBRAIN_DISCOVER_EVERY is set. Mutations fired and were restored: the entry reporting a hard-coded freshness, the entry reporting a licence other than the one decided on, the utility floor admitting a 0.18 composite, and a blank provenance accepted."
   }
 ]
