@@ -45,6 +45,11 @@
  *   node scripts/model-gateway.mjs --check     # configuration and reachability
  *   node scripts/model-gateway.mjs --probe     # reachability only, no key, nothing sent
  *
+ * Every `--task` also needs `ALGORIK_WORKER_AGENT=<the calling agent's name>`
+ * and a call ceiling, `ALGORIK_WORKER_MAX_CALLS`. Each request, allowed or
+ * refused, appends one line to the ledger naming that agent, the model and
+ * the decision.
+ *
  * The key is read from a *file* by default, never from an argument and never
  * from the environment where a crash dump would hold it. `_FILE` indirection
  * matches how the platform reads every other credential.
@@ -405,11 +410,30 @@ export function inapplicable(config, args) {
   return null;
 }
 
-/** Calls spent so far, counted from the ledger rather than from memory. */
-function spent() {
-  if (!existsSync(LEDGER)) return 0;
-  return readFileSync(LEDGER, "utf8").split("\n").filter((line) => line.trim()).length;
+/**
+ * Calls spent so far, counted from the ledger rather than from memory.
+ *
+ * Every request leaves a line (see `run`), and only the ones that reached the
+ * provider are spend: a refusal is marked `billed: false` and is not counted.
+ * A line written before the marker existed, or one that does not parse,
+ * counts — a budget that cannot read its own ledger errs towards spent.
+ */
+export function spent(ledger = LEDGER) {
+  if (!existsSync(ledger)) return 0;
+  return readFileSync(ledger, "utf8")
+    .split("\n")
+    .filter((line) => line.trim())
+    .filter((line) => {
+      try {
+        return JSON.parse(line).billed !== false;
+      } catch {
+        return true;
+      }
+    }).length;
 }
+
+/** A calling agent's name, in the roster's own shape so it cannot carry a line break into the ledger. */
+const AGENT_NAME = /^[a-z][a-z0-9-]{0,63}$/;
 
 async function check(config) {
   if (config.problems.length > 0) {
@@ -429,23 +453,73 @@ async function check(config) {
 }
 
 /**
- * One task, one call.
+ * One task, one call, one audit line.
  *
  * The task file carries the whole worker contract — the same five fields the
  * orchestration policy requires of any worker, because a task without
  * acceptance criteria produces output nobody can judge.
+ *
+ * Every request appends exactly one line to the ledger, naming the calling
+ * agent, the model and the decision, whichever way it went. The ledger used
+ * to be written only when the provider answered, so each of the gateway's
+ * refusals — the ones that say most about what an agent tried to send — left
+ * no trace, and "how many requests were made" could not be answered from it.
+ * `billed` keeps the two readings apart: the budget counts spend, the audit
+ * counts requests.
+ *
+ * `agent` is what the caller says it is. Nothing here authenticates it; the
+ * line records the claim, and a request that makes none is refused.
  */
-async function run(config, taskPath) {
-  const task = JSON.parse(readFileSync(taskPath, "utf8"));
-  for (const field of ["task", "context", "acceptance", "paths"]) {
-    if (!task[field]) {
-      console.error(`task file is missing '${field}'; the worker contract requires it`);
-      return 2;
-    }
+export async function run(config, taskPath, { agent, fetchImpl = fetch, ledger = LEDGER } = {}) {
+  const started = Date.now();
+  const named = AGENT_NAME.test(agent ?? "");
+  let taskName = null;
+  const audit = (decision, billed, detail = {}) =>
+    appendFileSync(
+      ledger,
+      `${JSON.stringify({
+        at: new Date().toISOString(),
+        agent: named ? agent : null,
+        task: taskName,
+        model: config.model ?? null,
+        decision,
+        billed,
+        ...detail,
+        ms: Date.now() - started,
+      })}\n`,
+    );
+
+  const problems = [...config.problems];
+  if (!named) {
+    problems.push(
+      "ALGORIK_WORKER_AGENT must name the calling agent (lowercase letters, digits and -) — " +
+        "an audit line that cannot say who asked is not one",
+    );
+  }
+  if (problems.length > 0) {
+    audit("refused:unconfigured", false, { problems: problems.length });
+    console.error("gateway not configured:");
+    for (const problem of problems) console.error(`  - ${problem}`);
+    return 78;
   }
 
-  const used = spent();
+  let task;
+  try {
+    task = JSON.parse(readFileSync(taskPath, "utf8"));
+  } catch {
+    task = {};
+  }
+  const missing = ["task", "context", "acceptance", "paths"].find((field) => !task[field]);
+  if (missing || typeof task.task !== "string" || !Array.isArray(task.paths)) {
+    audit("refused:task-contract", false, { missing: missing ?? "a field of the wrong type" });
+    console.error(`task file is missing '${missing ?? "a well-formed task or paths"}'; the worker contract requires it`);
+    return 2;
+  }
+  taskName = task.task.slice(0, 120);
+
+  const used = spent(ledger);
   if (used >= config.maxCalls) {
+    audit("refused:budget", false, { used, max_calls: config.maxCalls });
     console.error(`budget exhausted: ${used} of ${config.maxCalls} calls already spent`);
     return 3;
   }
@@ -462,59 +536,58 @@ async function run(config, taskPath) {
 
   const found = screenPayload(payload);
   if (found.length > 0) {
+    // The names of the shapes, never the payload: the ledger is not a second
+    // place for the credential to be.
+    audit("refused:credential", false, { shapes: found });
     console.error(`refused: the payload carries ${found.join(", ")}.`);
     console.error("Sharing this repository's source is authorized; sharing a credential is not.");
     console.error("Remove the credential from the context and try again.");
     return 4;
   }
 
-  const started = Date.now();
-  const response = await chatCompletion(config, [
-    { role: "system", content: WORKER_SYSTEM_PROMPT },
-    { role: "user", content: payload },
-  ]);
+  let response;
+  let body;
+  try {
+    response = await chatCompletion(
+      config,
+      [
+        { role: "system", content: WORKER_SYSTEM_PROMPT },
+        { role: "user", content: payload },
+      ],
+      { fetchImpl },
+    );
+    if (response.ok) body = await response.json();
+  } catch (cause) {
+    // Billed, because nobody can know whether the model ran: the request left
+    // and no answer came back that says it did not.
+    audit("failed:transport", true);
+    console.error(`the call failed in transit: ${cause?.message ?? cause}`);
+    return 5;
+  }
 
   if (!response.ok) {
+    audit("refused:provider", false, { status: response.status });
     console.error(`provider refused: ${response.status} ${response.statusText}`);
     return 5;
   }
-  const body = await response.json();
   const usage = body.usage ?? {};
+  const tokens = {
+    prompt_tokens: usage.prompt_tokens ?? null,
+    completion_tokens: usage.completion_tokens ?? null,
+  };
   const completion = completionText(body);
   if (!completion.ok) {
     // Still billed: the tokens were spent whether or not anything came back.
-    appendFileSync(
-      LEDGER,
-      `${JSON.stringify({
-        at: new Date().toISOString(),
-        task: task.task.slice(0, 120),
-        model: config.model,
-        prompt_tokens: usage.prompt_tokens ?? null,
-        completion_tokens: usage.completion_tokens ?? null,
-        ms: Date.now() - started,
-        empty: true,
-      })}\n`,
-    );
+    audit("refused:empty-completion", true, { ...tokens, empty: true });
     console.error(`refused: ${completion.reason}`);
     return 6;
   }
-  const text = completion.text;
 
   // The ledger is the budget's source of truth: counting in memory loses the
   // count on every crash, and a budget that resets on failure is not a budget.
-  appendFileSync(
-    LEDGER,
-    `${JSON.stringify({
-      at: new Date().toISOString(),
-      task: task.task.slice(0, 120),
-      model: config.model,
-      prompt_tokens: usage.prompt_tokens ?? null,
-      completion_tokens: usage.completion_tokens ?? null,
-      ms: Date.now() - started,
-    })}\n`,
-  );
+  audit("allowed", true, tokens);
 
-  process.stdout.write(text);
+  process.stdout.write(completion.text);
   return 0;
 }
 
@@ -539,10 +612,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     console.error("usage: node scripts/model-gateway.mjs --task <file.json> | --check | --probe");
     process.exit(64);
   }
-  if (config.problems.length > 0) {
-    console.error("gateway not configured:");
-    for (const problem of config.problems) console.error(`  - ${problem}`);
-    process.exit(78);
-  }
-  process.exit(await run(config, args[taskIndex + 1]));
+  // An unconfigured gateway is refused inside `run`, with exit 78 as before,
+  // because that refusal is a request too and leaves its audit line there.
+  process.exit(await run(config, args[taskIndex + 1], { agent: process.env.ALGORIK_WORKER_AGENT?.trim() }));
 }

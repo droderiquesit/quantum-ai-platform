@@ -114,6 +114,10 @@ fn print_help() {
     println!("                    sign the labelled slice fixture's grant and policy with");
     println!("                    the fixture key and publish them to a loopback broker's");
     println!("                    control stream. A fixture, not how grants are issued");
+    println!("  event-fabric schema-gate --base <lock> --head <lock>");
+    println!("                    judge the head's schemas.lock.json against the base's:");
+    println!("                    exit 3 if a field was removed, renamed or retyped");
+    println!("                    without a version bump, 0 if every change only adds");
     println!();
     println!("`registrations` exits 3 while any catalogued source is still refused, and");
     println!("`replay` exits 3 if the chain is broken or a registry disagrees. Both exit");

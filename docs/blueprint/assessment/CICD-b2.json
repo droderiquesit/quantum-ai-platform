@@ -2,26 +2,23 @@
   {
     "id": "CICD-035",
     "status": "PARTIAL",
-    "current": "scripts/model-gateway.mjs writes a spend ledger (`.worker-spend.jsonl`, key `ALGORIK_WORKER_LEDGER`) on every completed or empty-completion call: `run()` appends `{at, task, model, prompt_tokens, completion_tokens, ms}` on success (model-gateway.mjs:375-386) and the same shape with `empty: true` when the provider returns no content (model-gateway.mjs:356-367). `spent()` (model-gateway.mjs:261-264) counts calls from that ledger for the budget check.",
+    "current": "The gateway's command-line path now audits every request. scripts/model-gateway.mjs `run` appends exactly one ledger line per `--task` request, allowed or refused, naming the calling agent (ALGORIK_WORKER_AGENT; a request that names none is refused and still audited with agent null), the model and the decision: allowed, refused:task-contract, refused:budget, refused:credential (the shapes' names, never the payload), refused:provider, refused:empty-completion, failed:transport, refused:unconfigured. `billed` keeps spend apart from requests, so `spent()` counts only what reached the provider and a refusal does not consume the call ceiling. The agent's name is what the caller says it is; nothing authenticates it. The fleet path (ADR 0102, scripts/fleet/worker.mjs) keeps its own ledger: one object per packet, reserved before the call, recording the packet's role, the model, the status and every attempt. ci.yml's new `scripts` job runs both suites on every push and pull request.",
     "evidence": [
-      "scripts/model-gateway.mjs:261-264 (spent)",
-      "scripts/model-gateway.mjs:292-303 (task-contract and budget refusals, return 2/3, no ledger line)",
-      "scripts/model-gateway.mjs:315-321 (credential-screen refusal, return 4, no ledger line)",
-      "scripts/model-gateway.mjs:347-350 (provider HTTP refusal, return 5, no ledger line)",
-      "scripts/model-gateway.mjs:356-367 (empty-completion ledger write)",
-      "scripts/model-gateway.mjs:375-386 (success ledger write)",
-      "scripts/model-gateway.mjs:407-411 (unconfigured gateway, exit 78, no ledger line)",
-      "scripts/model-gateway.test.mjs (10 tests, none assert ledger completeness or an agent-identity field)"
+      "scripts/model-gateway.mjs (`run`: the `audit` closure and its eight call sites; `spent`: `billed !== false`)",
+      "scripts/model-gateway.test.mjs ('every request leaves exactly one audit line naming the agent, the model and the decision, whether it was allowed or refused': nine requests, nine lines)",
+      "scripts/fleet/worker.test.mjs ('the ledger object exists as a worst-case reservation before the call is made...', 'one packet makes exactly one chat call ... and leaves one output object and one ledger object')",
+      "scripts/fleet/worker.test.mjs ('a missing, unparseable, invalid, unpriced or over-cap packet is refused before any call and leaves no ledger object')",
+      ".github/workflows/ci.yml `scripts` job (node --test over the three suites)"
     ],
-    "gap": "The ledger records model, tokens and timing but never a calling-agent identity and never a policy decision field, and five refusal paths write no ledger line: unconfigured/ambiguous config (exit 78, model-gateway.mjs:407-411), task-contract refusal (:292-296), budget exhausted (:299-303), credential found in the payload (:315-321) and provider HTTP refusal (:347-350). So 'the number of audit records equals the number of requests' is false by construction for every refused call. The gateway is also outside backend/crates and frontend/packages, is not invoked from ci.yml, and its own test file is not run in CI (no reference to model-gateway in .github/workflows/ or Makefile).",
+    "gap": "The fleet path does not ledger a packet it refuses before the call: a packet its validator or the gateway's credential screen refuses leaves no ledger object, by ADR 0102's design and pinned by worker.test.mjs. Such a refusal reaches only the task's stderr, so over a window that includes one, ledger objects do not equal requests. Changing that amends ADR 0102. Separately, the calling agent on the command-line path is self-declared, and no provider credential is present, so the gateway has never audited a live call.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Needed: a test that dispatches N calls (mixing at least one refusal of each kind) against a fake fetch and asserts N ledger lines exist, each naming the calling agent.",
+    "verification": "node --test scripts/model-gateway.test.mjs (23 tests, 23 pass on 2026-10-04). The audit test was mutation-verified: with the credential refusal's audit call deleted it failed 'the number of audit lines is not the number of requests', and passed again on a byte-for-byte restore. Also cargo test -p qip-acceptance --test pipeline_scripts (backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs): every_test_file_under_scripts_is_run_by_the_pipelines_scripts_job (mutation-verified: a suite removed from the job's line).",
     "work_item": "E13-model-gateway-audit-completeness",
     "tier": "T1",
     "size": "S",
@@ -861,6 +858,6 @@
     "work_item": "E14-change-window-gate",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-04: not wired. infra.yml's `up` runs `terraform apply -auto-approve` with no saved plan, so the gate has no list of resource types to judge; wiring it means restructuring `up` to plan, show the plan as JSON, call the gate and apply that plan, and proving it needs a dispatch of infra.yml against the dev project, which is an external action."
   }
 ]

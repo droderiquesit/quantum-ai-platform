@@ -22,27 +22,32 @@
     "work_item": "E02",
     "tier": "T2",
     "size": "M",
-    "notes": "The mechanism (version+fingerprint per topic) is real and unit-proven; it just has no production caller yet."
+    "notes": "The mechanism (version+fingerprint per topic) is real and unit-proven; it just has no production caller yet. 2026-10-04: still no production caller, in either registry. qip-kernel's platform.rs appends to its log at eight sites and the workspace has sixty-five EventBody types, and registering one needs a sample of it; the fabric broker's own admission (qip_streaming::event_fabric::broker::Broker::register_schema, which refuses a batch whose schema id and version the stream never registered) is also called only from tests, because qip-fabricd does not compose a broker yet. CICD-070's gate covers the nine bodies in schemas.lock.json and nothing else."
   },
   {
     "id": "CICD-070",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "`qip event-fabric schema-gate --base <lock> --head <lock>` (backend/crates/apps/qip-cli/src/event_fabric/schema_gate.rs) judges the head's schemas.lock.json against the base's, topic by topic, with qip_events::event_fabric::schema_id::check_compatible - the rule the broker and the registry already use. Exit 3 when a field was removed, renamed or retyped at the same version (nested fields included), when a version rolled back, or when a locked topic's row was deleted; exit 0 when fields were only added or the version was bumped (ADR 0100 §5); exit 1 when a lock cannot be read, parsed, or carries a shape that does not hash to its id. schemas.lock.json now commits each bound body's full recursive shape beside its id (the nine ids are unchanged), and the lock suite asserts the committed shape is the one the Rust type has. ci.yml's test job runs the gate on every pull request against the lock at the pull request's base commit, fetched by id. Before this the lock compared the tree with itself: a row regenerated in place after a field was removed passed CI at the version every consumer already trusted.",
     "evidence": [
-      "grep -ri schema .github/workflows/*.yml returns no job or step",
-      "Makefile has no schema-compatibility target"
+      "backend/crates/apps/qip-cli/src/event_fabric/schema_gate.rs (parse, judge, run; COMPATIBLE=0, INCOMPATIBLE=3)",
+      "backend/crates/apps/qip-cli/src/event_fabric/mod.rs (SUBCOMMANDS and dispatch route `schema-gate`)",
+      "backend/crates/libs/qip-events/schemas.lock.json (nine rows, each with `shape`)",
+      ".github/workflows/ci.yml test job, step 'schema compatibility against the base' (pull_request only)",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs (the committed lock through the real gate, and the CI step pinned line by line)",
+      "backend/crates/apps/qip-cli/tests/event_fabric_schema_gate.rs (five tests through the family dispatcher)",
+      "local run of the CI step's command against the pre-change lock: 'schema gate: COMPATIBLE — 9 base topic(s) compared, 0 changed and still readable', exit 0 (2026-10-04)"
     ],
-    "gap": "No CI job diffs a changed event body's SchemaRegistry fingerprint/version between base and head and rejects an incompatible change; qip_events::registry::SchemaRegistry can only detect drift within a single process's in-memory registration, which is not wired to CI at all (see CICD-069).",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "None against the row's check. Limits: (1) the gate covers the nine fabric-bound bodies the lock holds (six reflex topics, three P0 control frames), not every EventBody in the workspace (CICD-069); (2) it runs on pull requests only, so a direct push to main is not judged, and main has no branch protection (CICD-045), so a red gate flags a pull request and cannot stop its merge; (3) the step has not yet run on GitHub, because this branch is unpushed - the tests drive the same command.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "CICD-069"
     ],
     "blocked_by": "",
-    "verification": "none exists; would be a new ci.yml job running a registry-diff binary against origin/main",
+    "verification": "cargo test -p qip-cli --test event_fabric_schema_gate (backend/crates/apps/qip-cli/tests/event_fabric_schema_gate.rs): a_field_removed_at_the_same_version_fails_the_gate_and_a_field_added_passes_it, a_nested_field_that_changed_kind_fails_the_gate_though_no_field_name_moved, a_version_bump_admits_a_break_and_a_rollback_or_a_deleted_row_does_not, a_changed_id_with_no_shape_to_compare_is_refused_rather_than_assumed_additive, a_lock_that_cannot_be_trusted_or_read_is_a_refusal_and_never_a_verdict; and cargo test -p qip-acceptance --test event_fabric_schema_lock (backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs): a_bound_body_that_loses_a_field_fails_the_compatibility_gate_and_one_that_gains_a_field_passes, the_pipeline_runs_the_compatibility_gate_against_the_pull_requests_base_lock. Mutation-verified: admitting a changed id without comparing shapes, dropping the rollback arm, admitting a missing shape, deleting the id check in parse, and deleting the CI step each failed the test written for it and passed again on a byte-for-byte restore.",
     "work_item": "E02",
     "tier": "T2",
     "size": "M",
@@ -299,7 +304,7 @@
     "work_item": "E00",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status unchanged (MISSING). Added the delivery-workflow convention to 'current'; it is prose, carries no origin taxonomy, and nothing checks linkage. No .github template or hook enforces it (.github holds only workflows; .claude/hooks has no such check)."
+    "notes": "verify: status unchanged (MISSING). Added the delivery-workflow convention to 'current'; it is prose, carries no origin taxonomy, and nothing checks linkage. No .github template or hook enforces it (.github holds only workflows; .claude/hooks has no such check). 2026-10-04: left MISSING. A required goal line on every pull request changes how every pull request is opened, which is the owner's decision, and with main unprotected (CICD-045) a check for it would flag and not refuse."
   },
   {
     "id": "CICD-082",
