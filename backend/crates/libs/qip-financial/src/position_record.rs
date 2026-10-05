@@ -54,6 +54,8 @@ pub enum ExitRoute {
     Redemption,
     /// Held to maturity.
     Maturity,
+    /// Sold on the secondary market at a discount to mark (ASSET-013).
+    SecondarySale,
 }
 
 /// When and how a position leaves, checked against its lockup at the one place

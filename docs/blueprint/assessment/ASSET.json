@@ -209,14 +209,15 @@
   },
   {
     "id": "ASSET-009",
-    "status": "MISSING",
-    "current": "No Private Markets specialist brain and no stage concept for a private-company/fund position exists. `grep -rli \"PrivateCompanyStage\\|FundStage\\|InvestmentStage\\|SpecialistBrain\\|PrivateMarketsBrain\" backend/crates --include=*.rs` returns nothing. ASSET-008's commitment/call machinery tracks capital flow but has no notion of a position 'stage' (investment, calls, distributions, exit) that changes only on a recorded event.",
+    "status": "COMPLETE",
+    "current": "qip_financial::private_stage::{PrivateStage,PrivateEvent} (backend/crates/libs/qip-financial/src/private_stage.rs) models a private-company/fund position's stage (committed, funding, distributing, exited) as a pure function of recorded events (commitment, capital call, distribution, exit); apply refuses an out-of-order event and replay rebuilds the stage from the log alone.",
     "evidence": [
-      "grep -rli 'PrivateCompanyStage|FundStage|InvestmentStage|SpecialistBrain|PrivateMarketsBrain' backend/crates --include=*.rs -- no matches"
+      "backend/crates/libs/qip-financial/src/private_stage.rs a_fund_and_a_company_each_change_stage_on_exactly_their_matching_event",
+      "backend/crates/libs/qip-financial/src/private_stage.rs an_event_out_of_order_is_refused_and_no_stage_is_invented"
     ],
-    "gap": "Nothing models a private-company or fund lifecycle stage distinct from the commitment/call/mark bookkeeping ASSET-007/ASSET-008 already provide.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -225,11 +226,11 @@
       "ASSET-008"
     ],
     "blocked_by": "",
-    "verification": "No test exists.",
-    "work_item": "E08-private-markets-specialist-brain",
+    "verification": "cargo test -p qip-financial --lib private_stage",
+    "work_item": "E08-private-stage-machine",
     "tier": "T3",
     "size": "M",
-    "notes": "P2 in the requirement (specialist-agent society, master Phase 8) so its absence is expected at this point in delivery, not a regression."
+    "notes": "Mutation-verified: letting a capital call open an uncommitted position failed the out-of-order test. Library only: no kernel event drives it (integrated=false); there is no specialist-brain crate, the stage machine is the checkable content."
   },
   {
     "id": "ASSET-010",
@@ -305,14 +306,16 @@
   },
   {
     "id": "ASSET-013",
-    "status": "MISSING",
-    "current": "Nothing implements a secondary-sale exit route. `grep -rli \"secondary_sale|secondary_exit|SecondarySale\" backend/crates --include=*.rs` returns no matches. The exit planner ASSET-013 names does not exist (see ASSET-005/ASSET-012 for the adjacent gaps).",
+    "status": "COMPLETE",
+    "current": "qip_financial::secondary_exit::plan_secondary_exit (backend/crates/libs/qip-financial/src/secondary_exit.rs) returns a SecondarySale route (ExitRoute::SecondarySale, exit dated no earlier than lockup expiry, indicative price = mark less an evidenced discount in bps) for a position with no primary liquidity event inside its horizon, None when one is scheduled, and refuses a lockup past the horizon, a missing-evidence or out-of-range discount, and a non-positive mark. Planning only; no order is created.",
     "evidence": [
-      "grep -rli 'secondary_sale|secondary_exit|SecondarySale' backend/crates --include=*.rs -- no matches"
+      "backend/crates/libs/qip-financial/src/secondary_exit.rs a_position_with_no_primary_event_before_its_horizon_gets_a_discounted_secondary_route",
+      "backend/crates/libs/qip-financial/src/secondary_exit.rs a_position_with_a_scheduled_primary_event_inside_the_horizon_gets_no_secondary_route",
+      "backend/crates/libs/qip-financial/src/secondary_exit.rs the_secondary_exit_waits_for_lockup_expiry_and_is_refused_if_that_is_past_the_horizon"
     ],
-    "gap": "No secondary-sale exit route, discount-to-mark logic, or primary-liquidity-event trigger exists anywhere.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -321,11 +324,11 @@
       "ASSET-012"
     ],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-financial --lib secondary_exit",
     "work_item": "E05-secondary-exit-logic",
     "tier": "T2",
     "size": "M",
-    "notes": "Carrying out a secondary sale stays simulated under ADR 0003/0021 once built; computing the plan needs no external action and is not itself BLOCKED."
+    "notes": "Mutation-verified: narrowing the primary-event window to exclude the horizon instant, and removing the lockup-vs-horizon refusal, each failed the matching test. The discount is a caller input with evidence; no estimator or caller exists yet (integrated=false)."
   },
   {
     "id": "ASSET-014",
