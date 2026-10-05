@@ -2348,3 +2348,50 @@ fn nothing_that_moves_capital_can_reach_a_language_model() {
         );
     }
 }
+
+#[test]
+fn a_quantum_solver_and_the_evidence_writers_cannot_reach_each_other() {
+    // QUANT-014: no quantum result changes the authenticity, trust or
+    // corroboration of an evidence item; the evidence fabric alone sets that.
+    // `Evidence::reliability` is a public field, so the only thing standing
+    // between a quantum output and a trust score is that no crate holding both
+    // can be reached from either side. Both directions are asserted: the
+    // solver reaching a writer could set trust, and a writer reaching the
+    // solver could let an optimiser's answer stand in for corroboration.
+    // `qip-kernel` composes both and is deliberately not asserted here; its
+    // seam needs a unit test (see the register's QUANT-014 gap).
+    const EVIDENCE_WRITERS: [&str; 2] = ["qip-reasoning-engine", "qip-mesh"];
+    let graph = dependency_graph();
+    for writer in EVIDENCE_WRITERS {
+        assert!(
+            graph.contains_key(writer),
+            "{writer} is not a crate in this workspace; this test names \
+             something that no longer exists and constrains nothing"
+        );
+        assert!(
+            !reachable_from(&graph, writer).contains("qip-quantum"),
+            "the evidence writer {writer} can reach a quantum solver"
+        );
+        assert!(
+            !reachable_from(&graph, "qip-quantum").contains(writer),
+            "the quantum solver can reach the evidence writer {writer}"
+        );
+    }
+    // Vacuity anchors: absences prove nothing if the solver reaches nothing,
+    // or if the evidence writers reach nothing.
+    assert!(
+        !reachable_from(&graph, "qip-quantum").is_empty(),
+        "qip-quantum reaches nothing, so every absence above is trivial"
+    );
+    assert!(
+        EVIDENCE_WRITERS
+            .iter()
+            .any(|w| !reachable_from(&graph, w).is_empty()),
+        "the evidence writers reach nothing, so every absence above is trivial"
+    );
+    assert!(
+        reachable_from(&graph, "qip-kernel").contains("qip-quantum")
+            && reachable_from(&graph, "qip-kernel").contains("qip-reasoning-engine"),
+        "the kernel no longer composes both sides, so this boundary has moved"
+    );
+}

@@ -547,6 +547,82 @@ fn a_genuinely_better_feasible_quantum_answer_is_used_and_the_gain_is_measured()
 }
 
 #[test]
+fn a_feasible_quantum_answer_better_by_less_than_the_margin_loses_to_the_classical_baseline()
+-> Result<()> {
+    // The margin is the rule QUANT-030 exists for. A tie hands the quantum path
+    // an improvement of exactly zero, which a router with the margin deleted
+    // still refuses; only an answer that is genuinely, slightly better exposes
+    // a router that has stopped asking for more than noise.
+    let problem = discrete(12, 4)?;
+    let weak_baseline_policy = RoutingPolicy {
+        minimum_assets_for_quantum: 4,
+        exact_enumeration_limit: 2,
+        quantum_margin: 0.0001,
+        ..RoutingPolicy::default()
+    };
+    let encoding = QuboEncoding::equal_weight_bounded(4, 1.0, 0.3);
+    // The annealer is seeded and can land on the optimum, leaving nothing to
+    // beat; walk seeds until one leaves room rather than hoping seed 99 does.
+    let mut found: Option<(u64, f64, Vec<u8>, f64)> = None;
+    for seed in 1..200u64 {
+        let baseline = ComputeRouter::classical(seed)
+            .with_policy(weak_baseline_policy)
+            .solve(&problem)?;
+        let mut best: Option<(Vec<u8>, f64)> = None;
+        for a in 0..12 {
+            for b in (a + 1)..12 {
+                for c in (b + 1)..12 {
+                    for d in (c + 1)..12 {
+                        let mut assignment = vec![0u8; 12];
+                        for index in [a, b, c, d] {
+                            assignment[index] = 1;
+                        }
+                        let objective = problem.objective_at(&encoding.to_weights(&assignment));
+                        if objective
+                            < best.as_ref().map_or(baseline.classical_objective, |b| b.1) - 1e-9
+                        {
+                            best = Some((assignment, objective));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((assignment, objective)) = best {
+            found = Some((seed, baseline.classical_objective, assignment, objective));
+            break;
+        }
+    }
+    // Premise: a strictly better feasible answer exists, or this test would
+    // pass on a baseline that was already optimal and prove nothing.
+    let (seed, baseline_objective, better, objective) =
+        found.expect("some seed must leave the weak baseline room to improve");
+    let improvement = (baseline_objective - objective) / baseline_objective.abs();
+    assert!(improvement > 1e-9, "improvement was {improvement}");
+
+    // A margin twice the real improvement: better, feasible, and not enough.
+    let policy = RoutingPolicy {
+        quantum_margin: improvement * 2.0,
+        ..weak_baseline_policy
+    };
+    let decision = ComputeRouter::classical(seed)
+        .with_policy(policy)
+        .with_quantum(Arc::new(ScriptedProvider {
+            assignment: better,
+            simulated: false,
+        }))
+        .solve(&problem)?;
+
+    assert_ne!(decision.chosen, Solver::Quantum, "{}", decision.rationale);
+    assert!(
+        decision.rationale.contains("inside the") && decision.rationale.contains("margin"),
+        "{}",
+        decision.rationale
+    );
+    assert!(decision.run_for(Solver::Quantum).unwrap().feasible);
+    Ok(())
+}
+
+#[test]
 fn a_failed_quantum_attempt_leaves_the_classical_answer_standing() -> Result<()> {
     #[derive(Debug)]
     struct Broken;
