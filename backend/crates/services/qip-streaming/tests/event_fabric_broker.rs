@@ -803,3 +803,70 @@ fn consuming_a_partition_from_the_same_offset_twice_returns_byte_identical_batch
     );
     Ok(())
 }
+
+// --- RES-058: a retry across a broker restart is neither lost nor duplicated
+
+/// RES-058. The failover this requirement names is, with a replication
+/// factor of one, a broker restart: a produce that was appended and whose
+/// acknowledgement never arrived, a new leader epoch, and the producer
+/// retrying the same batch. The failure this prevents is the dense-sequence
+/// rule starting from an empty table after the restart, reading the retry as
+/// the next new batch and appending it a second time.
+///
+/// Mutation: remove the replay of a partition's existing batches through the
+/// producer table when the partition is opened - the retry is then appended
+/// again and the high watermark reads 2.
+#[test]
+fn a_batch_retried_after_a_broker_restart_appears_once_and_a_stale_epoch_is_still_fenced()
+-> Result<()> {
+    let dir = temp_dir("res058");
+    let stream = "orders";
+    let partition = partition::partition_for("k", 1)?;
+    let (epoch, first_leader_epoch, original_offset);
+    {
+        let broker = Broker::open(&dir, clock())?;
+        broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+        broker.register_schema(stream, 1, 1, sample_shape())?;
+        epoch = broker.init_producer(stream, partition, "cell-eu-1")?;
+        first_leader_epoch = broker.leader_epoch();
+        original_offset = broker
+            .produce(stream, "k", drain_batch("cell-eu-1", epoch, 0, 0, b"once"))?
+            .base_offset();
+    } // the acknowledgement is lost with the broker.
+
+    let broker = Broker::open(&dir, clock())?;
+    broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+    broker.register_schema(stream, 1, 1, sample_shape())?;
+    assert!(
+        broker.leader_epoch() > first_leader_epoch,
+        "premise: the restart bumped the leader epoch"
+    );
+    assert_eq!(
+        broker.metadata(stream, partition)?.high_watermark(),
+        1,
+        "premise: the first attempt survived the restart"
+    );
+
+    let retried = broker.produce(stream, "k", drain_batch("cell-eu-1", epoch, 0, 0, b"once"))?;
+    assert_eq!(retried.base_offset(), original_offset);
+    assert_eq!(
+        broker.metadata(stream, partition)?.high_watermark(),
+        1,
+        "the retried record was appended a second time"
+    );
+
+    // A new incarnation fences the old one even though the old one's table
+    // entry came from replay rather than from a live produce.
+    let newer = broker.init_producer(stream, partition, "cell-eu-1")?;
+    assert!(
+        newer > epoch,
+        "premise: the new incarnation has a newer epoch"
+    );
+    broker.produce(stream, "k", drain_batch("cell-eu-1", newer, 1, 1, b"next"))?;
+    let err = broker
+        .produce(stream, "k", drain_batch("cell-eu-1", epoch, 2, 2, b"stale"))
+        .unwrap_err();
+    assert!(err.to_string().contains("is fenced by epoch"), "{err}");
+    assert_eq!(broker.metadata(stream, partition)?.high_watermark(), 2);
+    Ok(())
+}

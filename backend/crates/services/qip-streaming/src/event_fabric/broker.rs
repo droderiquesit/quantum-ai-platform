@@ -409,6 +409,9 @@ impl Broker {
         let payload_hash = payload_fingerprint(&batch);
         let label = partition_label(stream, partition);
 
+        // Opened before admission: opening replays the log into the producer
+        // table, and a retry admitted against an empty table is appended twice.
+        let state = self.partition_state(stream, partition)?;
         let admission = {
             let mut producers = self.producers.lock().unwrap_or_else(|e| e.into_inner());
             producers.admit(
@@ -420,8 +423,6 @@ impl Broker {
                 payload_hash,
             )?
         };
-
-        let state = self.partition_state(stream, partition)?;
 
         match admission {
             Admission::Appended { .. } => {
@@ -718,8 +719,49 @@ impl Broker {
         // hold two `SegmentLog`s open on the same directory, which
         // `SegmentLog::open`'s own guard would refuse for the second one
         // anyway.
-        let state = partitions.entry(key).or_insert(state).clone();
+        if let Some(winner) = partitions.get(&key) {
+            return Ok(winner.clone());
+        }
+        // Replayed while still holding the partitions lock, so no produce
+        // can be admitted against this partition before the table knows what
+        // the log already holds.
+        self.recover_producers(stream, partition, &state.log)?;
+        partitions.insert(key, state.clone());
         Ok(state)
+    }
+
+    /// Rebuild the producer table and the retry-offset memory for one
+    /// partition from the batches already durable in it (RES-058).
+    ///
+    /// ponytail: reads the whole partition once at open, so the cost grows
+    /// with its length; persist a snapshot beside the segments if opening a
+    /// long partition ever becomes slow.
+    fn recover_producers(&self, stream: &str, partition: u32, log: &PartitionLog) -> Result<()> {
+        let label = partition_label(stream, partition);
+        for offset in 0..log.high_water() {
+            let Some(batch) = log.read(offset)? else {
+                continue;
+            };
+            let Ok(record_count) = u64::try_from(batch.records.len()) else {
+                continue;
+            };
+            if record_count == 0 || batch.producer_id.is_empty() {
+                continue;
+            }
+            {
+                let mut producers = self.producers.lock().unwrap_or_else(|e| e.into_inner());
+                producers.restore(
+                    &batch.producer_id,
+                    &label,
+                    batch.producer_epoch,
+                    batch.base_sequence,
+                    record_count,
+                    payload_fingerprint(&batch),
+                )?;
+            }
+            self.remember_offset(&batch.producer_id, &label, batch.base_sequence, offset);
+        }
+        Ok(())
     }
 
     fn remember_offset(
