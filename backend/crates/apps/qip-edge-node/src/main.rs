@@ -63,7 +63,7 @@ use qip_edge_node::gateway::NodeGateway;
 use qip_edge_node::halt::{FLAG_VARIABLE, HaltFlag};
 use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
-use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
+use qip_edge_node::pass::{PassLog, PassMeter, PassOutcome, PassStats, run_pass};
 use qip_edge_node::quote_limits::{QUOTE_LIMITS_VARIABLE, VenueQuoteLimits};
 use qip_edge_node::reprice::{REPRICE_VARIABLE, Requoter, parse_reprice};
 use qip_edge_node::share::RegionShareStatus;
@@ -864,11 +864,14 @@ fn serve(
     // after the exchange, per the order below.
     let mut last_report = WorkReport::default();
     let mut stats = PassStats::default();
-    // Requote and break lines are per event on a path that runs at message
-    // rate; at most five per ten seconds reach stderr, and the journal and the
-    // metrics hold the rest (OBS-021).
-    let mut line_sampler =
-        qip_observability::sampling::LineSampler::new(5, Duration::from_secs(10))?;
+    // Requote, break and failed-pass lines are per event on a path that runs
+    // at message rate; at most five per ten seconds reach stderr, and the
+    // journal and the metrics hold the rest (OBS-021). The bound lives in
+    // `PassLog` so `tests/pass.rs` can drive it through real passes.
+    let mut pass_log = PassLog::new(5, Duration::from_secs(10))?;
+    // The four golden signals with the pass as the unit of work, saturation
+    // measured against the allowance this loop gives one request (OBS-018).
+    let pass_meter = PassMeter::new(Arc::clone(metrics), REQUEST_TIMEOUT)?;
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
@@ -949,50 +952,30 @@ fn serve(
                 if let (Some(pass_loop), Some(simulated)) =
                     (pass_loop.as_deref_mut(), gateway.simulated_mut())
                 {
-                    match run_pass(
-                        cell,
-                        simulated,
-                        &mut *pass_loop.feed,
-                        pass_loop.requoter.as_deref_mut(),
-                        &mut stats,
-                        now,
-                    ) {
-                        Ok(PassOutcome::Ran {
-                            report,
-                            requotes,
-                            breaks,
-                            ..
-                        }) => {
-                            // Every requote outcome, not only the failures:
-                            // an order that is no longer where the cell
-                            // sent it is a line the log has to carry.
-                            for requote in &requotes {
-                                if let Some(line) = line_sampler.offer(
-                                    now,
-                                    &format!("qip-edge-node: requote: {}", requote.describe()),
-                                ) {
-                                    eprintln!("{line}");
-                                }
-                            }
-                            for detail in &breaks {
-                                if let Some(line) = line_sampler.offer(
-                                    now,
-                                    &format!("qip-edge-node: reconciliation break: {detail}"),
-                                ) {
-                                    eprintln!("{line}");
-                                }
-                            }
-                            last_report = *report;
-                        }
+                    let outcome = pass_meter.measure(|| {
+                        run_pass(
+                            cell,
+                            simulated,
+                            &mut *pass_loop.feed,
+                            pass_loop.requoter.as_deref_mut(),
+                            &mut stats,
+                            now,
+                        )
+                    });
+                    // Every requote outcome, not only the failures — an
+                    // order that is no longer where the cell sent it is a
+                    // line the log has to carry — every break, and a failed
+                    // pass, all through the one sampler.
+                    pass_log.write(now, &outcome, &mut std::io::stderr());
+                    match outcome {
+                        Ok(PassOutcome::Ran { report, .. }) => last_report = *report,
                         Ok(PassOutcome::Halted { .. }) => {
                             last_report = WorkReport::default();
                         }
                         // A pass that failed is a fact the journal already
                         // holds where the cell refused; the loop keeps serving
                         // so the halt poll and the flush keep running.
-                        Err(error) => {
-                            eprintln!("qip-edge-node: the pass failed: {}", error.message());
-                        }
+                        Err(_) => {}
                     }
                 }
                 let health = link.as_deref().map(MeshLink::health);

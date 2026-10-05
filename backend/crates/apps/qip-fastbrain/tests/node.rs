@@ -245,3 +245,118 @@ fn a_quiesce_that_did_not_come_from_this_node_is_refused_and_the_loop_keeps_runn
         "reading the quiesce endpoint asked the node to stop"
     );
 }
+
+/// OBS-018 on this node: the loop records latency, traffic, errors and
+/// saturation for its unit of work, the cycle.
+///
+/// The failures in the mix are cycles over the fast-path budget, which is
+/// this node's own definition of a failed cycle and the one `RunSummary`
+/// already counts as a breach — so the error series is held to that count and
+/// the two cannot drift apart.
+#[test]
+fn the_loop_records_the_four_golden_signals_and_counts_a_cycle_over_its_budget_as_an_error() {
+    use qip_observability::metrics::{Labels, labels, names};
+
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let started = clock.now();
+    let cleared = roster::clear(started).expect("the deployed roster clears its own check");
+    let mut platform = platform(clock.clone());
+    let mut feed = Feed::synthetic(
+        5,
+        Duration::from_secs(60),
+        started.saturating_sub(Duration::from_mins(30)),
+    );
+    let archive = ChainArchive::open(Arc::new(MemoryKeyValueStore::default()))
+        .expect("an empty archive opens");
+    let stop = Arc::new(AtomicBool::new(false));
+
+    // The premise: nothing has run, so none of the four exists yet.
+    let before = platform.telemetry().metrics.snapshot();
+    assert_eq!(before.counter_total(names::SERVICE_REQUESTS), 0);
+    assert!(
+        before
+            .gauge(names::SERVICE_SATURATION, &Labels::new())
+            .is_none()
+    );
+
+    // Three cycles under a budget no test machine can miss.
+    let roomy = FastBrainConfig {
+        cycle_interval: Duration::from_millis(10),
+        cycle_budget: Duration::from_secs(600),
+        max_cycles: Some(3),
+        ..FastBrainConfig::default()
+    };
+    let status = Arc::new(Mutex::new(NodeStatus::opening(
+        &cleared,
+        &roomy,
+        "synthetic-exchange",
+        false,
+        started,
+    )));
+    let clean = node::run(
+        &mut platform,
+        &mut feed,
+        &archive,
+        &roomy,
+        &status,
+        &stop,
+        &clock,
+        |_| {},
+    )
+    .expect("the loop runs");
+    assert_eq!(clean.cycles, 3);
+    assert_eq!(
+        clean.breaches, 0,
+        "the premise is three cycles inside budget"
+    );
+    let served = platform.telemetry().metrics.snapshot();
+    assert_eq!(served.counter_total(names::SERVICE_REQUESTS), 3);
+    assert_eq!(
+        served.counter_total(names::SERVICE_ERRORS),
+        0,
+        "a cycle inside its budget was counted as an error"
+    );
+
+    // Two more under a one-nanosecond budget no cycle can meet, so what is
+    // tested is the recording and not the speed of the machine.
+    let impossible = FastBrainConfig {
+        cycle_interval: Duration::from_millis(10),
+        cycle_budget: Duration::from_nanos(1),
+        max_cycles: Some(2),
+        ..FastBrainConfig::default()
+    };
+    let breached = node::run(
+        &mut platform,
+        &mut feed,
+        &archive,
+        &impossible,
+        &status,
+        &stop,
+        &clock,
+        |_| {},
+    )
+    .expect("the loop runs");
+    assert_eq!(
+        breached.breaches, 2,
+        "the premise is two cycles over budget"
+    );
+
+    let after = platform.telemetry().metrics.snapshot();
+    assert_eq!(after.counter_total(names::SERVICE_REQUESTS), 5, "traffic");
+    assert_eq!(
+        after.counter(names::SERVICE_ERRORS, &labels([("class", "service")])),
+        2,
+        "errors"
+    );
+    let latency = after
+        .histogram(names::SERVICE_LATENCY_MS, &Labels::new())
+        .expect("the latency histogram");
+    assert_eq!(latency.count, 5, "latency");
+    let saturation = after
+        .gauge(names::SERVICE_SATURATION, &Labels::new())
+        .expect("the saturation gauge");
+    assert!(
+        saturation > 0.0,
+        "a cycle that took time consumed none of its interval: {saturation}"
+    );
+}

@@ -3146,3 +3146,305 @@ fn every_workload_the_infrastructure_declares_has_a_complete_entry_in_the_worklo
         );
     }
 }
+
+// --- OBS-020: application and control logs go to Cloud Logging --------------
+
+/// Every `resource "<type>" "<name>" { … }` block in one Terraform file, as
+/// `(type, name, body)`, comments stripped.
+///
+/// A block opens at a line beginning `resource "` and closes at the first
+/// line that is exactly `}`. Brittle on purpose, like the catalogue scan
+/// above: a reformatted module makes this return nothing, and every caller
+/// asserts it found blocks before asserting anything about them.
+fn terraform_resources(text: &str) -> Vec<(String, String, String)> {
+    let mut found = Vec::new();
+    let mut open: Option<(String, String, Vec<&str>)> = None;
+    let stripped = without_comments(text);
+    for line in stripped.lines() {
+        if let Some((kind, name, body)) = open.as_mut() {
+            if line == "}" {
+                found.push((kind.clone(), name.clone(), body.join("\n")));
+                open = None;
+            } else {
+                body.push(line);
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("resource \"") {
+            let mut parts = rest.split('"');
+            let kind = parts.next().unwrap_or_default().to_string();
+            let name = parts.nth(1).unwrap_or_default().to_string();
+            open = Some((kind, name, Vec::new()));
+        }
+    }
+    found
+}
+
+/// The quoted or bare value of `argument` in a resource body, trimmed.
+fn terraform_argument(body: &str, argument: &str) -> Option<String> {
+    body.lines().find_map(|line| {
+        let (name, value) = line.trim().split_once('=')?;
+        (name.trim() == argument).then(|| value.trim().to_string())
+    })
+}
+
+/// The identity each module that creates a workload runs it as, and where.
+/// `(file, the service accounts the file may declare, the member the grant
+/// must name)`. The portal's identity is created in `modules/secrets` beside
+/// the landing's and granted in the catalogue, so its row lists no accounts.
+const WORKLOAD_LOG_WRITERS: [(&str, &[&str], &str); 3] = [
+    (
+        "infrastructure/terraform/modules/cloudrun/main.tf",
+        &["workload"],
+        "google_service_account.workload.email",
+    ),
+    (
+        "infrastructure/terraform/modules/execution-node/main.tf",
+        &["node"],
+        "google_service_account.node.email",
+    ),
+    (
+        "infrastructure/terraform/catalogue.tf",
+        &[],
+        "module.secrets.console_service_account_email",
+    ),
+];
+
+#[test]
+fn every_workload_identity_may_write_to_cloud_logging_in_its_own_project_and_no_sink_routes_logs_elsewhere()
+ {
+    // OBS-020, and until this test the placement was declared and unchecked:
+    // the grants existed, `grep logWriter` over this crate found nothing, and
+    // a refactor that dropped one would have produced a workload whose every
+    // line was refused at the Logging API with nobody told — the failure the
+    // catalogue's own comment calls "a workload nobody can operate".
+    //
+    // What is deliberately not claimed. The landing's identity holds no grant
+    // of any kind, on purpose (`modules/secrets`: "an identity with a
+    // credential it has no way to use is a standing grant with no purpose");
+    // it is a static site and is not in the table above. And nothing here
+    // shows a line arriving: no environment runs a workload under these
+    // grants today.
+    for (file, accounts, member) in WORKLOAD_LOG_WRITERS {
+        let resources = terraform_resources(&read(file));
+        let grants: Vec<&(String, String, String)> = resources
+            .iter()
+            .filter(|(kind, _, _)| kind == "google_project_iam_member")
+            .collect();
+        // The premise: the scan reads this file's grants at all.
+        assert!(
+            !grants.is_empty(),
+            "{file}: no google_project_iam_member block was parsed, so nothing below is checked"
+        );
+        let declared: BTreeSet<&str> = resources
+            .iter()
+            .filter(|(kind, _, _)| kind == "google_service_account")
+            .map(|(_, name, _)| name.as_str())
+            .collect();
+        assert_eq!(
+            declared,
+            accounts.iter().copied().collect::<BTreeSet<&str>>(),
+            "{file} declares a different set of workload identities than this test covers; a new \
+             identity needs its own log-writer grant and its own row here"
+        );
+        let writers: Vec<&&(String, String, String)> = grants
+            .iter()
+            .filter(|(_, _, body)| {
+                terraform_argument(body, "role").as_deref() == Some("\"roles/logging.logWriter\"")
+            })
+            .collect();
+        assert_eq!(
+            writers.len(),
+            1,
+            "{file}: expected exactly one roles/logging.logWriter grant, found {}",
+            writers.len()
+        );
+        let (_, name, body) = writers[0];
+        assert_eq!(
+            terraform_argument(body, "project").as_deref(),
+            Some("var.project_id"),
+            "{file}: `{name}` grants log writing somewhere other than the workload's own project"
+        );
+        assert_eq!(
+            terraform_argument(body, "member"),
+            Some(format!("\"serviceAccount:${{{member}}}\"")),
+            "{file}: `{name}` does not grant log writing to the workload's own identity"
+        );
+    }
+
+    // No sink routes logs anywhere but a Cloud Logging bucket. Zero sinks
+    // exist today, so the premise is the scan itself: it reads the committed
+    // tree and sees resources in it.
+    let files: Vec<std::path::PathBuf> = files_with_extension("infrastructure/terraform", "tf")
+        .into_iter()
+        .filter(|path| !path.components().any(|c| c.as_os_str() == ".terraform"))
+        .collect();
+    assert!(
+        files.len() > 20,
+        "only {} Terraform file(s) were found to scan for sinks",
+        files.len()
+    );
+    let mut scanned = 0usize;
+    for path in &files {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        for (kind, name, body) in terraform_resources(&text) {
+            scanned += 1;
+            if kind.starts_with("google_logging_") && kind.ends_with("_sink") {
+                let destination = terraform_argument(&body, "destination").unwrap_or_default();
+                assert!(
+                    destination.starts_with("\"logging.googleapis.com/"),
+                    "{}: sink `{name}` routes logs to {destination}; application and control \
+                     logs go to Cloud Logging buckets and nowhere else (OBS-020)",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(
+        scanned > 50,
+        "only {scanned} resource block(s) were parsed out of the Terraform tree; the sink scan \
+         is not reading it"
+    );
+}
+
+/// The four deployed composition roots, and where each builds its telemetry.
+const DEPLOYED_TELEMETRY_ROOTS: [&str; 4] = [
+    "backend/crates/apps/qip-api/src/main.rs",
+    "backend/crates/apps/qip-fastbrain/src/main.rs",
+    "backend/crates/apps/qip-deepbrain/src/main.rs",
+    "backend/crates/apps/qip-edge-node/src/lib.rs",
+];
+
+#[test]
+fn every_deployed_process_echoes_its_structured_log_to_stderr_and_no_drain_ships_logs_elsewhere() {
+    // The other half of OBS-020. A log-writer grant is no use to a record
+    // that never leaves the process: the structured logger kept its records
+    // in memory unless echo was on, and no root turned it on. Each root now
+    // builds its telemetry with `Telemetry::foreground`, whose echo is proven
+    // in `qip-observability/tests/telemetry.rs`.
+    for root in DEPLOYED_TELEMETRY_ROOTS {
+        let text = read(root);
+        assert!(
+            text.contains("= Telemetry::foreground(\"qip-"),
+            "{root} no longer builds its telemetry with Telemetry::foreground, so its structured \
+             log records stay in process memory"
+        );
+        assert!(
+            !text.contains("= Telemetry::new("),
+            "{root} builds a second, silent telemetry surface beside the echoing one"
+        );
+    }
+
+    // And nothing ships application logs to a second store. The in-tree
+    // drains post metrics and traces; ADR 0028 says logs go to OpenObserve
+    // too, and which store is authoritative for logs is undecided. A drain
+    // that began posting logs would decide it by accident, so the day one
+    // does, this fails and the decision is made in a record first.
+    for drain in [
+        "backend/crates/apps/qip-api/src/openobserve.rs",
+        "backend/crates/apps/qip-fastbrain/src/openobserve.rs",
+        "backend/crates/apps/qip-deepbrain/src/openobserve.rs",
+    ] {
+        let text = read(drain);
+        // Every endpoint the drain builds, by the one form it builds them in.
+        // The whole set is compared, so the premise — that the scan finds the
+        // two it should — and the prohibition are one assertion: ADR 0028's
+        // `/api/{org}/v1/logs`, or any other third path, fails it.
+        let endpoints: BTreeSet<&str> = text
+            .split("with_path(&format!(\"/api/{}/")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .collect();
+        assert_eq!(
+            endpoints,
+            BTreeSet::from(["traces", "v1/metrics"]),
+            "{drain} posts to a different set of endpoints than metrics and traces; a log \
+             endpoint here would send application logs to a store other than Cloud Logging \
+             (OBS-020)"
+        );
+    }
+}
+
+// --- OBS-026: flow logs on every subnet, request logs on every backend ------
+
+/// The body of the first `<name> { … }` block nested in a resource body.
+///
+/// Closes at the first line that is only a closing brace, which is right for
+/// the flat blocks this is used on (`log_config`) and would be wrong for one
+/// that nests another; the callers assert on arguments inside it, so a block
+/// cut short fails rather than passes.
+fn nested_block(body: &str, name: &str) -> Option<String> {
+    let mut lines = body.lines();
+    lines.find(|line| line.trim() == format!("{name} {{"))?;
+    Some(
+        lines
+            .take_while(|line| line.trim() != "}")
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+#[test]
+fn every_subnet_keeps_flow_logs_and_every_load_balancer_backend_logs_its_requests() {
+    // Two of OBS-026's four instruments, held for every resource of the kind
+    // rather than for the ones somebody remembered: the plan "enables flow
+    // logs on the subnets that carry Reflex, Fabric and mesh traffic … and
+    // enables logging on every load balancer". Both were true and unchecked,
+    // so a subnet added for a new plane without a `log_config` would have
+    // been a network path nothing could reconstruct after an incident, and
+    // nothing would have said so.
+    //
+    // Not claimed: Connectivity Tests, which this tree declares none of, and
+    // Interconnect or VPN metrics, whose module is gated off everywhere.
+    let files: Vec<std::path::PathBuf> = files_with_extension("infrastructure/terraform", "tf")
+        .into_iter()
+        .filter(|path| !path.components().any(|c| c.as_os_str() == ".terraform"))
+        .collect();
+    let mut subnets = 0usize;
+    let mut backends = 0usize;
+    for path in &files {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        for (kind, name, body) in terraform_resources(&text) {
+            let log_config = nested_block(&body, "log_config");
+            match kind.as_str() {
+                "google_compute_subnetwork" => {
+                    subnets += 1;
+                    let sampling = log_config
+                        .as_deref()
+                        .and_then(|block| terraform_argument(block, "flow_sampling"))
+                        .and_then(|value| value.parse::<f64>().ok());
+                    assert!(
+                        sampling.is_some_and(|rate| rate > 0.0),
+                        "{}: subnet `{name}` keeps no flow logs (log_config.flow_sampling is \
+                         {sampling:?}); every subnet records what talked to what (OBS-026)",
+                        path.display()
+                    );
+                }
+                "google_compute_backend_service" | "google_compute_region_backend_service" => {
+                    backends += 1;
+                    let enabled = log_config
+                        .as_deref()
+                        .and_then(|block| terraform_argument(block, "enable"));
+                    assert_eq!(
+                        enabled.as_deref(),
+                        Some("true"),
+                        "{}: load-balancer backend `{name}` does not log its requests \
+                         (OBS-026)",
+                        path.display()
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    // The premise: both kinds exist and the scan saw them. Four subnets and
+    // two backends on the day this was written; a floor, so adding one does
+    // not fail this, and removing the scan's ability to see any does.
+    assert!(
+        subnets >= 4 && backends >= 2,
+        "the scan found {subnets} subnet(s) and {backends} load-balancer backend(s); it is not \
+         reading the modules that declare them"
+    );
+}

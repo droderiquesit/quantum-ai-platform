@@ -60,6 +60,7 @@ use qip_core::error::Result;
 use qip_core::{Duration, Timestamp};
 use qip_events::log::LogRecord;
 use qip_kernel::{CycleReport, Platform};
+use qip_observability::golden::{GoldenSignals, Outcome};
 use qip_storage::ChainArchive;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -293,6 +294,11 @@ pub fn run(
     let mut archived = 0usize;
     let mut since_archive = 0u64;
 
+    // The four golden signals, with the cycle as this service's unit of work
+    // (OBS-018). Into the platform's own registry, so they are scraped and
+    // drained beside every series the cycle itself records.
+    let golden = GoldenSignals::new(platform.telemetry().metrics.clone());
+
     let reason = loop {
         if let Some(reason) = should_stop(config, cycles, clock.now().since(started), stop) {
             break reason;
@@ -325,6 +331,24 @@ pub fn run(
 
         let mut outcome = step(platform, now, config.cycle_interval);
         outcome.observed = observed;
+
+        // A failed cycle is the one this loop already counts as failed: a
+        // stage that did not run. An overrun is not one — on this node it is
+        // a note about the schedule — and it is what saturation shows: the
+        // share of the interval the cycle consumed, past one when it overran.
+        // A zero interval is refused by `DeepBrainConfig::parse`; one that
+        // reached here by another road stops the loop rather than charting a
+        // division by zero.
+        let cycle_millis = outcome.elapsed.as_secs_f64() * 1000.0;
+        golden.finished(
+            cycle_millis,
+            if outcome.report.traversed_every_stage() {
+                Outcome::Served
+            } else {
+                Outcome::Failed
+            },
+        );
+        golden.saturation(cycle_millis, config.cycle_interval.as_secs_f64() * 1000.0)?;
 
         cycles += 1;
 
@@ -662,6 +686,102 @@ mod tests {
         assert_eq!(summary.stopped_because, Stop::CycleLimit);
         assert_eq!(summary.cycles, 3);
         assert_eq!(platform.cycle_count(), 3);
+    }
+
+    /// OBS-018 on this node: the loop records latency, traffic, errors and
+    /// saturation for its unit of work, the cycle.
+    ///
+    /// The failures in the mix are cycles the platform refuses whole — asked
+    /// to reason as of an instant before one it has already reasoned at — so
+    /// no stage runs and the loop's own `failed_cycles` counts them. That is
+    /// the count the error series is held to, so the two cannot drift.
+    #[test]
+    fn the_loop_records_the_four_golden_signals_and_counts_a_refused_cycle_as_an_error() {
+        use qip_observability::metrics::{Labels, labels, names};
+
+        let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(
+            start().saturating_add(Duration::from_secs(3600)),
+        ));
+        let mut platform = platform(clock.clone());
+        let stop = Arc::new(AtomicBool::new(false));
+
+        // The premise: nothing has run, so none of the four exists yet.
+        let before = platform.telemetry().metrics.snapshot();
+        assert_eq!(before.counter_total(names::SERVICE_REQUESTS), 0);
+        assert!(
+            before
+                .gauge(names::SERVICE_SATURATION, &Labels::new())
+                .is_none()
+        );
+
+        let config = DeepBrainConfig {
+            max_cycles: Some(3),
+            ..brisk()
+        };
+        let clean = run(
+            &mut platform,
+            &archive(),
+            &config,
+            &shared(&config),
+            &stop,
+            &clock,
+            0,
+            None,
+            |_| {},
+        )
+        .expect("the loop runs");
+        assert_eq!(clean.failed_cycles, 0, "the premise is three clean cycles");
+        let served = platform.telemetry().metrics.snapshot();
+        assert_eq!(served.counter_total(names::SERVICE_REQUESTS), 3);
+        assert_eq!(
+            served.counter_total(names::SERVICE_ERRORS),
+            0,
+            "a clean cycle was counted as an error"
+        );
+
+        // The loop is now handed a clock an hour behind the one it ran on —
+        // a second clock, because a `ManualClock` never moves backwards — so
+        // every cycle it asks for is refused.
+        let behind: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+        let config = DeepBrainConfig {
+            max_cycles: Some(2),
+            ..brisk()
+        };
+        let refused = run(
+            &mut platform,
+            &archive(),
+            &config,
+            &shared(&config),
+            &stop,
+            &behind,
+            0,
+            None,
+            |_| {},
+        )
+        .expect("the loop runs");
+        assert_eq!(
+            refused.failed_cycles, 2,
+            "the premise is two cycles the platform refused whole"
+        );
+
+        let after = platform.telemetry().metrics.snapshot();
+        assert_eq!(after.counter_total(names::SERVICE_REQUESTS), 5, "traffic");
+        assert_eq!(
+            after.counter(names::SERVICE_ERRORS, &labels([("class", "service")])),
+            2,
+            "errors"
+        );
+        let latency = after
+            .histogram(names::SERVICE_LATENCY_MS, &Labels::new())
+            .expect("the latency histogram");
+        assert_eq!(latency.count, 5, "latency");
+        let saturation = after
+            .gauge(names::SERVICE_SATURATION, &Labels::new())
+            .expect("the saturation gauge");
+        assert!(
+            saturation > 0.0,
+            "a cycle that took time consumed none of its interval: {saturation}"
+        );
     }
 
     #[test]

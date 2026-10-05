@@ -39,9 +39,13 @@
 use crate::feed::{FeedTick, SimulatedFeed};
 use crate::gateway::SimulatedGateway;
 use crate::reprice::{Requote, Requoter, RequotingPlacer};
-use qip_core::error::Result;
-use qip_core::time::Timestamp;
+use qip_core::error::{Error, Result};
+use qip_core::time::{Duration, Timestamp};
 use qip_edge::cell::{Cell, ConfirmedFill, WorkReport};
+use qip_observability::golden::{GoldenSignals, Outcome};
+use qip_observability::metrics::Metrics;
+use qip_observability::sampling::LineSampler;
+use std::sync::Arc;
 
 /// Running totals for the health surface.
 ///
@@ -104,6 +108,134 @@ pub enum PassOutcome {
         /// halted by its kill switch.
         breaks: Vec<String>,
     },
+}
+
+/// The stderr lines the pass loop may write, bounded by a sample rate
+/// (OBS-021).
+///
+/// A requote outcome is minted per stale resting order per book update, so a
+/// line for each makes stderr proportional to message count, and on a
+/// deployed node stderr is billed log ingestion read by nobody at that rate.
+/// The sampler was first wired in `main.rs`, where no test could reach it:
+/// a later edit restoring a bare `eprintln!` in the loop would have compiled,
+/// passed every suite and put the volume back. It lives here so
+/// `tests/pass.rs` drives it through real passes.
+///
+/// Nothing is lost by the bound. Every requote and every break is a series
+/// (`qip_edge_orders_repriced_total`, `qip_edge_reconciliation_breaks_total`)
+/// and a journal entry, and the first line of a window carries how many the
+/// last one dropped.
+#[derive(Debug)]
+pub struct PassLog {
+    sampler: LineSampler,
+}
+
+impl PassLog {
+    /// At most `per_window` lines per `window`; a zero rate or window is
+    /// refused by the sampler rather than silently dropping everything.
+    pub fn new(per_window: u32, window: Duration) -> Result<Self> {
+        Ok(Self {
+            sampler: LineSampler::new(per_window, window)?,
+        })
+    }
+
+    /// Write what one turn of the loop has to say, and return how many lines
+    /// were written.
+    ///
+    /// A failed write is ignored on purpose: `eprintln!` panics when stderr
+    /// is closed, and a cell that stops deciding because nobody is reading
+    /// its log has the dependency backwards.
+    pub fn write(
+        &mut self,
+        now: Timestamp,
+        outcome: &Result<PassOutcome>,
+        sink: &mut dyn std::io::Write,
+    ) -> usize {
+        let offered: Vec<String> = match outcome {
+            Ok(PassOutcome::Ran {
+                requotes, breaks, ..
+            }) => requotes
+                .iter()
+                .map(|requote| format!("qip-edge-node: requote: {}", requote.describe()))
+                .chain(
+                    breaks
+                        .iter()
+                        .map(|detail| format!("qip-edge-node: reconciliation break: {detail}")),
+                )
+                .collect(),
+            Ok(PassOutcome::Halted { .. }) => Vec::new(),
+            Err(error) => vec![format!(
+                "qip-edge-node: the pass failed: {}",
+                error.message()
+            )],
+        };
+        let mut written = 0;
+        for line in offered {
+            if let Some(line) = self.sampler.offer(now, &line) {
+                let _ = writeln!(sink, "{line}");
+                written += 1;
+            }
+        }
+        written
+    }
+}
+
+/// The node's four golden signals, with the pass as its unit of work
+/// (OBS-018).
+///
+/// The cell's own series say what a pass decided. None said how long the
+/// turn took, how many ended badly, or how much of the health surface's
+/// patience one consumed — and on this binary the pass runs on the thread
+/// that answers the probe, so a slow pass is a probe that waits. A closure
+/// rather than a second `run_pass` signature, so the loop still calls
+/// [`run_pass`] by name and this only stands around it.
+#[derive(Debug)]
+pub struct PassMeter {
+    golden: GoldenSignals,
+    allowance_millis: f64,
+}
+
+impl PassMeter {
+    /// `allowance` is how long the health surface allows one request: the
+    /// denominator of saturation. Zero is refused at start-up rather than
+    /// divided by on every pass.
+    pub fn new(metrics: Arc<Metrics>, allowance: std::time::Duration) -> Result<Self> {
+        if allowance.is_zero() {
+            return Err(Error::invalid(
+                "configuration: the pass meter needs the health surface's request allowance, and \
+                 it was zero; pass the request timeout the node serves under",
+            ));
+        }
+        Ok(Self {
+            golden: GoldenSignals::new(metrics),
+            allowance_millis: allowance.as_secs_f64() * 1000.0,
+        })
+    }
+
+    /// Run `pass`, time it on a monotonic clock, and record it.
+    ///
+    /// A turn that found the cell halted is served, not failed: the loop did
+    /// what a halted node does, and the halt has its own gauge. A pass that
+    /// returned an error or ended in a reconciliation break is a failure of
+    /// this service. Saturation is the share of the request allowance the
+    /// turn consumed — at one, a probe queued behind the pass has waited as
+    /// long as the node itself would wait for a request.
+    pub fn measure(&self, pass: impl FnOnce() -> Result<PassOutcome>) -> Result<PassOutcome> {
+        let began = std::time::Instant::now();
+        let outcome = pass();
+        let millis = began.elapsed().as_secs_f64() * 1000.0;
+        let ended = match &outcome {
+            Ok(PassOutcome::Ran { breaks, .. }) if !breaks.is_empty() => Outcome::Failed,
+            Ok(_) => Outcome::Served,
+            Err(_) => Outcome::Failed,
+        };
+        self.golden.finished(millis, ended);
+        // The allowance was proven positive at construction and an elapsed
+        // time is finite and non-negative, so the one refusal `saturation`
+        // has cannot occur here.
+        let _ = self.golden.saturation(millis, self.allowance_millis);
+        outcome
+    }
 }
 
 /// Feed, decide, act, and reconcile — once.

@@ -186,7 +186,7 @@ pub fn assemble(
             mode_gate.enable(venue.as_str(), mode, &paper)?;
         }
     }
-    let telemetry = Telemetry::new("qip-edge-node", clock);
+    let telemetry = Telemetry::foreground("qip-edge-node", clock);
     let metrics: Arc<Metrics> = Arc::clone(&telemetry.metrics);
     let mut cell = Cell::new(config, features)?
         .with_mode_gate(mode_gate)

@@ -3294,3 +3294,77 @@ fn nothing_above_the_adapter_layer_names_a_concrete_venue_or_broker_type_except_
          compose the adapter in an application: {offenders:#?}"
     );
 }
+
+// --- OBS-025: the Reflex path holds no trace-export machinery ---------------
+
+/// What it takes, in this workspace, to send a trace anywhere: starting a
+/// span, draining the tracer, or naming the drain. Each is a call or a module
+/// name, not a word — `qip-edge-node`'s own doc says "the tracer and the
+/// logger reach nothing in this node", and a scan for the bare word would
+/// make that sentence impossible to write.
+const TRACE_EXPORT_MACHINERY: [&str; 5] = [
+    "tracer.export(",
+    "tracer.start(",
+    "Tracer::new(",
+    "openobserve",
+    "traces_url",
+];
+
+#[test]
+fn no_reflex_crate_and_no_part_of_its_node_can_start_export_or_drain_a_trace() {
+    // OBS-025: bridging a trace into the hot path must never make a cell
+    // place a distributed-trace network call; the correlation id travels in
+    // event metadata. That held only because nobody had wired it otherwise —
+    // the node already builds a `Telemetry`, which contains a `Tracer`, and
+    // already depends on `qip-transport`, so the first span started in a pass
+    // plus one copied drain module would have put an HTTP POST with a
+    // ten-second timeout beside the decision thread, and every suite would
+    // still have passed.
+    let sources = |relative: &str| -> Vec<std::path::PathBuf> {
+        qip_acceptance::files_with_extension(relative, "rs")
+            .into_iter()
+            .filter(|path| path.components().any(|c| c.as_os_str() == "src"))
+            .collect()
+    };
+
+    // The premise, first: the scan recognises the machinery where it exists.
+    // Each central root's drain both names the endpoint and drains the
+    // tracer, so a scan that finds nothing there is not looking.
+    for central in ["qip-api", "qip-fastbrain", "qip-deepbrain"] {
+        let drain =
+            qip_acceptance::read(&format!("backend/crates/apps/{central}/src/openobserve.rs"));
+        for needle in ["tracer.export(", "traces_url"] {
+            assert!(
+                drain.contains(needle),
+                "{central}'s drain no longer contains `{needle}`; the scan below would pass on \
+                 a workspace where trace export was spelled another way"
+            );
+        }
+    }
+
+    let mut reflex = sources("backend/crates/edge");
+    let edge_files = reflex.len();
+    reflex.extend(sources("backend/crates/apps/qip-edge-node"));
+    assert!(
+        edge_files > 30 && reflex.len() > edge_files + 10,
+        "only {edge_files} edge source file(s) and {} node source file(s) were found",
+        reflex.len() - edge_files
+    );
+
+    let mut found = Vec::new();
+    for path in &reflex {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        for needle in TRACE_EXPORT_MACHINERY {
+            if text.contains(needle) {
+                found.push(format!("{}: `{needle}`", path.display()));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "the Reflex path holds trace-export machinery: {found:#?}. A cell carries a correlation \
+         id in its event metadata and never calls a trace endpoint (OBS-025); export belongs to \
+         a central root's drain thread"
+    );
+}
