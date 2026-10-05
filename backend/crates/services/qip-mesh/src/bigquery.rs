@@ -1,8 +1,20 @@
 //! The research warehouse: stream rows into a BigQuery table, and query it.
 //!
 //! Two operations, because they are the two
-//! [`crate::provider::StorageTarget::BigQuery`] exists for: getting research
-//! history in, and getting columnar scans of it back out.
+//! [`qip_storage::provider::StorageTarget::BigQuery`] exists for: getting
+//! research history in, and getting columnar scans of it back out.
+//!
+//! # Why this lives here and not beside the Cloud Storage adapter
+//!
+//! It was `qip_storage::gcp::bigquery` until DATA-058 was read against the
+//! dependency graph. `qip-storage` is a Lane 0 crate: `qip-edge-node` links
+//! it for its journal, so the reflex cell's deployable carried a BigQuery
+//! client it could never legitimately call. Nothing constructed one there,
+//! and "nothing does" is the kind of guarantee a comment holds. This crate
+//! is the analytical port's home ([`crate::provider::MeshTarget::BigQuery`])
+//! and is outside the edge node's dependency closure, so the absence is now
+//! a property of the graph, pinned by `qip-acceptance`'s
+//! `no_crate_on_the_reflex_path_can_reach_the_bigquery_client`.
 //!
 //! # The two ways BigQuery reports failure without failing
 //!
@@ -23,8 +35,9 @@
 //! and "we did not find out". This adapter never converts an incomplete job
 //! into an empty result set; see [`BigQueryWarehouse::query`].
 
-use super::{GcpAccess, percent_encode, status_refusal};
 use qip_core::error::{Error, Result};
+use qip_storage::gcp::{GcpAccess, percent_encode, status_refusal};
+use qip_storage::managed::ManagedSettings;
 use qip_transport::{HttpClient, Method};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -95,12 +108,25 @@ impl BigQueryConfig {
     /// Supply the endpoint and credential.
     ///
     /// A deployment's project, dataset and access are resolved by the
-    /// composition root through
-    /// [`crate::managed::ManagedSettings::big_query_config`]; this crate
-    /// reads no environment variable itself.
+    /// composition root into a [`ManagedSettings`] and handed to
+    /// [`Self::from_managed`]; this crate reads no environment variable
+    /// itself.
     pub fn with_access(mut self, access: GcpAccess) -> Self {
         self.access = access;
         self
+    }
+
+    /// The configuration a composition root resolved.
+    ///
+    /// Neither the project nor the dataset has a default — see
+    /// [`ManagedSettings::big_query_target`], which refuses rather than
+    /// guess either.
+    pub fn from_managed(
+        settings: &ManagedSettings,
+        clock: std::sync::Arc<dyn qip_core::Clock>,
+    ) -> Result<Self> {
+        let (project, dataset) = settings.big_query_target()?;
+        Ok(Self::new(project, dataset).with_access(settings.gcp_access(clock)?))
     }
 
     pub fn with_max_rows_per_insert(mut self, rows: usize) -> Self {

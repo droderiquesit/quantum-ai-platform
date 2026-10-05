@@ -36,6 +36,7 @@ fn evaluation(id: &str, verdict: Verdict, confidence: f64) -> Evaluation {
     Evaluation {
         hypothesis_id: id.to_string(),
         class: "price_dislocation".to_string(),
+        subject: String::new(),
         verdict,
         expected_move_bps: 100.0,
         realised_move_bps: 90.0,

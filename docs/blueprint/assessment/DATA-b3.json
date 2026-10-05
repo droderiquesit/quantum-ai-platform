@@ -127,28 +127,29 @@
   },
   {
     "id": "DATA-058",
-    "status": "PARTIAL",
-    "current": "The runtime half holds, vacuously: qip_storage::gcp::bigquery::BigQueryWarehouse is referenced nowhere outside qip-storage itself (rg BigQueryWarehouse backend/crates, excluding crates/libs/qip-storage, finds nothing), so no reflex or order decision can wait on a BigQuery read or write. The structural half the acceptance check names does NOT hold: the gcp module (BigQuery client included) is compiled unconditionally into qip-storage (backend/crates/libs/qip-storage/src/lib.rs:58, no cargo feature), and the reflex deployable qip-edge-node depends on qip-storage directly (backend/crates/apps/qip-edge-node/Cargo.toml:24) for its journal target; qip-fastbrain does too (Cargo.toml:24). qip-edge itself does not reach qip-storage (cargo metadata normal-dependency reachability, 2026-09-25). backend/crates/tests/qip-acceptance/tests/architecture.rs has the dependency_graph()/reachable_from() harness (:72, :360) used for similar properties (no_edge_cell_can_reach_a_language_model at :715) but no assertion names BigQuery or qip-storage.",
+    "status": "COMPLETE",
+    "current": "The BigQuery client is no longer in a crate the reflex cell links. It was qip_storage::gcp::bigquery, compiled unconditionally into qip-storage, which qip-edge-node depends on for its journal; it is now qip_mesh::bigquery (backend/crates/services/qip-mesh/src/bigquery.rs), the analytical port's crate (MeshTarget::BigQuery), which is outside qip-edge-node's normal-dependency closure -- the set docs/architecture/lane-placement.md defines as Lane 0. qip-storage keeps what the Cloud Storage adapter and the warehouse share (GcpAccess, the token sources, the status and encoding rules, now public) and ManagedSettings::big_query_target; BigQueryConfig::from_managed pairs it with the access. The architecture suite finds the crate that defines `pub struct BigQueryWarehouse` from the source, requires exactly one, and asserts no edge crate (crates/edge/* and qip-edge-node) is it or can reach it. The 16 warehouse tests moved with the client; the 36 Cloud Storage and credential tests stayed (52 before, 52 after).",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/lib.rs:58 (pub mod gcp; unconditional)",
-      "backend/crates/libs/qip-storage/Cargo.toml (no [features]; qip-transport dependency exists for the gcp adapters)",
-      "backend/crates/apps/qip-edge-node/Cargo.toml:24 (qip-storage)",
-      "backend/crates/apps/qip-fastbrain/Cargo.toml:24 (qip-storage)",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:72,360,715 (harness to extend; no BigQuery-specific assertion)"
+      "backend/crates/services/qip-mesh/src/bigquery.rs (moved from backend/crates/libs/qip-storage/src/gcp/bigquery.rs)",
+      "backend/crates/libs/qip-storage/src/gcp/mod.rs (no bigquery module; GcpAccess::request, status_refusal, percent_encode public)",
+      "backend/crates/libs/qip-storage/src/managed.rs (big_query_target)",
+      "test: no_crate_on_the_reflex_path_can_reach_the_bigquery_client (backend/crates/tests/qip-acceptance/tests/architecture.rs)",
+      "backend/crates/services/qip-mesh/tests/bigquery.rs (16 tests, moved) / backend/crates/libs/qip-storage/tests/gcp.rs (36 tests, kept)",
+      "mutation: re-adding the edge (qip-mesh as a dependency of qip-edge-node) failed the test ('the reflex crate qip-edge-node can reach qip-mesh, which holds the BigQuery client'); defining a second BigQueryWarehouse in qip-storage failed its premise ('expected exactly one crate ... found {qip-mesh, qip-storage}'); Cargo.toml, Cargo.lock and the source restored byte-for-byte"
     ],
-    "gap": "No named test asserts the isolation, and the test the requirement's verification describes would FAIL today rather than pass: at crate granularity qip-edge-node (and qip-fastbrain) reach qip-storage, which unconditionally contains the BigQuery client. Closing it needs the gcp adapters moved behind a boundary the reflex crates do not reach (a separate crate or a cargo feature the edge node does not enable) and then an architecture.rs reachability assertion; the runtime property itself holds only because nothing constructs BigQueryWarehouse.",
+    "gap": "Closed by the requirement's acceptance check. Stated limits: the reflex path is qip-edge-node's closure, as the lane register defines it; qip-fastbrain (Lane 3, the central cycle) still reaches qip-mesh through the kernel, so the central order path's isolation from BigQuery remains the runtime fact that nothing constructs a BigQueryWarehouse in any composition root, not a graph property. Rows in other domains that cite backend/crates/libs/qip-storage/src/gcp/bigquery.rs as evidence now point at a path that moved.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Would add, after separating the gcp adapters from what qip-edge-node links: an architecture.rs test asserting reachable_from(&graph, \"qip-edge-node\") and reachable_from(&graph, \"qip-edge\") exclude the crate that holds the BigQuery client, mutation-verified by re-adding the edge",
+    "verification": "cargo test -p qip-acceptance --test architecture no_crate_on_the_reflex_path_can_reach_the_bigquery_client; cargo test -p qip-mesh --test bigquery; cargo test -p qip-storage --test gcp",
     "work_item": "E01",
     "tier": "T1",
     "size": "M",
-    "notes": "P0 invariant; cheapest and highest-value gap to close of the whole DATA-053..076 set, since the code to prove is already correct. verify: NEEDS-VALIDATION -> PARTIAL, deployable true -> false, size S -> M. The row said the code to prove is already correct; it is not at the granularity the acceptance check names -- qip-edge-node/Cargo.toml:24 depends on qip-storage, whose gcp::bigquery module is compiled unconditionally (lib.rs:58), so the proposed reachability test fails today. Only the runtime half (nothing constructs BigQueryWarehouse) holds. deployable false because the reflex path runs only in qip-edge-node and execution_nodes = {} everywhere."
+    "notes": "PARTIAL -> COMPLETE: the client moved behind a boundary the reflex crates do not reach and the reachability assertion the row asked for exists, mutation-verified by re-adding the edge. No crate was added: qip-mesh already depended on qip-storage and qip-transport. deployable stays false because the reflex path runs only in qip-edge-node and execution_nodes = {} everywhere."
   },
   {
     "id": "DATA-059",

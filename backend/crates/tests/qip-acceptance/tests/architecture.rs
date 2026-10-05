@@ -2429,6 +2429,78 @@ fn the_risk_gate_and_everything_that_holds_it_cannot_reach_the_redis_client() {
     }
 }
 
+/// DATA-058: BigQuery is isolated from the hot path, because no crate on the
+/// reflex path can reach the crate that holds the BigQuery client.
+///
+/// The client was `qip_storage::gcp::bigquery`, and `qip-edge-node` links
+/// `qip-storage` for its journal: the reflex cell's deployable carried a
+/// warehouse client, and the only thing keeping a pass from waiting on a
+/// BigQuery round trip was that nobody had written the call. Which crate
+/// holds the client is read from the source rather than named here, so
+/// moving it back — or into any other crate the cell links — fails this
+/// test without anyone having to remember to update a constant.
+#[test]
+fn no_crate_on_the_reflex_path_can_reach_the_bigquery_client() {
+    const CLIENT: &str = "pub struct BigQueryWarehouse";
+    let root = repository_root();
+    let mut holders = BTreeSet::new();
+    for path in qip_acceptance::files_with_extension("backend/crates", "rs") {
+        let relative = path
+            .strip_prefix(&root)
+            .expect("the file is under the repository")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !relative.contains("/src/") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {relative}: {error}"));
+        if text.lines().any(|line| line.starts_with(CLIENT)) {
+            // backend/crates/<group>/<crate>/src/...: the directory is the
+            // package name, which `every_crate_on_disk_is_a_member_of_the_workspace`
+            // holds every crate to.
+            let crate_name = relative
+                .split('/')
+                .nth(3)
+                .unwrap_or_else(|| panic!("{relative} is not under a crate directory"));
+            holders.insert(crate_name.to_string());
+        }
+    }
+    // Premise first: the client exists, in exactly one crate. With none this
+    // test would assert the absence of an edge to nothing.
+    assert_eq!(
+        holders.len(),
+        1,
+        "expected exactly one crate to define the BigQuery client, found {holders:?}"
+    );
+    let holder = holders.iter().next().expect("one holder").as_str();
+
+    let graph = dependency_graph();
+    let cells = edge_crates();
+    assert_named_crates_exist(&graph, [holder]);
+    assert_named_crates_exist(&graph, cells.iter().map(String::as_str));
+    // The anchor: a composition root reaches the client's crate, so the walk
+    // can see the edge it is about to assert the absence of.
+    assert!(
+        reachable_from(&graph, "qip-api").contains(holder),
+        "no composition root reaches {holder}, so the absences below prove nothing"
+    );
+
+    for crate_name in cells {
+        assert_ne!(
+            crate_name, holder,
+            "the BigQuery client is defined in the reflex crate {crate_name}"
+        );
+        let reachable = reachable_from(&graph, &crate_name);
+        assert!(
+            !reachable.contains(holder),
+            "the reflex crate {crate_name} can reach {holder}, which holds the BigQuery client; \
+             no reflex or order decision may be able to wait on a BigQuery read or write: \
+             {reachable:?}"
+        );
+    }
+}
+
 #[test]
 fn no_edge_cell_can_reach_a_reasoning_crate() {
     // REASON-034 names the reasoner directly. `no_edge_cell_can_reach_a_language_model`

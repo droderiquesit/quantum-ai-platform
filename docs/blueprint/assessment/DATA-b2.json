@@ -101,38 +101,46 @@
   },
   {
     "id": "DATA-031",
-    "status": "PARTIAL",
-    "current": "qip_data_finder::discovery_targets::targets_from (backend/crates/services/qip-data-finder/src/discovery_targets.rs): from world-model gaps and forecast errors plus the set of covered entities, returns discovery targets, uncovered entities only, a spike (error/baseline >= multiple) outranking a bare gap; refuses a non-positive or non-finite baseline. Not called by DiscoveryDesk.",
+    "status": "COMPLETE",
+    "current": "qip_kernel::source_discovery reads the three inputs where the three services that own them meet: Platform::knowledge_gaps (universe entities the world model holds no current close for), Platform::forecast_errors (each entity's latest scored-thesis error, |realised - expected| in the claim's direction, against the mean of every other error in the calibration window) and cover (a vendor reference on the ledger, or a registered unquarantined source declaring the entity), and hands them to qip_data_finder::discovery_targets::targets_from. Platform::assess_sources reads the targets before anything registers and returns them on SourceAssessment.targets; qip-deepbrain's DiscoveryDesk reads them once per pass, assesses the catalogue entries that declare a targeted entity first, and reports them on the cycle line. qip_learning_engine::Evaluation now carries the claim's subject, without which a scored thesis could not name the entity it was wrong about.",
     "evidence": [
-      "test: a_forecast_error_spike_on_an_entity_no_source_covers_yields_a_target_naming_it (backend/crates/services/qip-data-finder/tests/discovery_targets.rs)",
-      "test: a_world_model_gap_is_a_target_unless_covered_and_a_spike_outranks_a_bare_gap",
-      "test: a_baseline_that_would_manufacture_a_spike_is_refused",
-      "mutation: dropping the covered-entity exclusion, and dropping the baseline check, each failed the matching test; restored"
+      "backend/crates/runtime/qip-kernel/src/source_discovery.rs (knowledge_gaps, forecast_errors, discovery_targets, DISCOVERY_SPIKE_MULTIPLE)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (assess_sources reads targets first; SourceAssessment.targets)",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs (DiscoveryDesk::maybe_run orders entries by target)",
+      "backend/crates/services/qip-learning-engine/src/evaluation.rs (Evaluation.subject)",
+      "test: a_forecast_error_spike_on_an_uncovered_entity_is_the_pass_s_target_and_its_candidate_goes_first (backend/crates/apps/qip-deepbrain/src/discovery.rs)",
+      "test: a_forecast_error_spike_on_an_entity_no_source_covers_becomes_a_discovery_target_naming_it (backend/crates/runtime/qip-kernel/tests/source_discovery.rs)",
+      "test: a_universe_entity_the_world_model_has_no_close_for_is_a_gap_until_a_bar_arrives (same file)",
+      "test: a_forecast_error_spike_on_an_entity_no_source_covers_yields_a_target_naming_it (backend/crates/services/qip-data-finder/tests/discovery_targets.rs, existing)",
+      "mutation: counting nothing as cover, dropping the subject from an evaluation, inverting the gap test, reading targets after registration, ignoring targets when ordering the desk's entries, and raising the spike multiple out of reach each failed the matching test for that reason; all restored byte-for-byte"
     ],
-    "gap": "The target generator exists and is tested, but nothing feeds it: no code reads the world model for gaps or the learning loop for per-entity forecast errors, and DiscoveryDesk still assesses only the operator-committed candidate file. The integration check (a spike reaches a target through the running loop) is not demonstrated.",
+    "gap": "Closed by the requirement's own check, through the desk a deployment runs. Stated limits: gaps 'in strategies' are not a separate input -- a strategy's instruments are universe entities and are read as world-model gaps, nothing reads a strategy's own unmet data needs; the baseline is the platform's usual error over the window, not a per-entity history; and a target no catalogue entry declares is reported and answered by nobody, because nothing finds a source it was not told about (CRAWL, DATA-020). Cover is matched on the platform's own entity ids, so a catalogue entry counts only if its declared instruments use them.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder --test discovery_targets (5 tests; unit level only)",
+    "verification": "cargo test -p qip-deepbrain --lib discovery::tests::a_forecast_error_spike_on_an_uncovered_entity_is_the_pass_s_target_and_its_candidate_goes_first; cargo test -p qip-kernel --test source_discovery (2 tests); cargo test -p qip-data-finder --test discovery_targets",
     "work_item": "E08-gap-driven-discovery",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: MISSING -> PARTIAL. Pure function proven; wiring into DiscoveryDesk with real gap and forecast-error inputs remains."
+    "notes": "PARTIAL -> COMPLETE: theses scored through Platform::learn_from (the LEARN stage's call) with a spike on an entity nothing covers produce a target naming it on the desk's pass. deployable stays false: no environment sets the discovery cadence (see DATA-033)."
   },
   {
     "id": "DATA-032",
-    "status": "PARTIAL",
-    "current": "qip_data_finder::discovery_targets::queries_for: one DiscoveryQuery per geography x domain x language of an entity profile, each carrying entity, geography, domain, language and text containing all four; a profile missing any dimension, or for a different entity, is refused so no untagged query exists.",
+    "status": "COMPLETE",
+    "current": "qip_data_finder::discovery_targets::queries_for: one DiscoveryQuery per geography x domain x language of an entity profile, each carrying all four dimensions; a profile missing any is refused. locations_for: the candidate locations for a query -- the catalogued candidates that declare the query's entity and serve its geography (a declared SourceRegion whose name is the geography, or Global) -- each a CandidateLocation carrying the query's four tags, the source id and the endpoint. A location can only be built from a query, and a query with any blank dimension is refused, so no untagged location exists. Nothing is invented: with no such candidate the answer is empty.",
     "evidence": [
-      "test: every_generated_query_is_tagged_with_geography_entity_domain_and_language (backend/crates/services/qip-data-finder/tests/discovery_targets.rs)",
-      "test: a_profile_missing_any_dimension_produces_no_queries_at_all",
-      "mutation: removing the empty-dimension refusal failed the second test; restored"
+      "backend/crates/services/qip-data-finder/src/discovery_targets.rs (queries_for, CandidateLocation, locations_for)",
+      "test: every_query_and_candidate_location_from_a_gap_carries_all_four_dimensions (backend/crates/services/qip-data-finder/tests/discovery_targets.rs)",
+      "test: a_query_missing_any_dimension_yields_no_location_at_all (same file)",
+      "test: every_generated_query_is_tagged_with_geography_entity_domain_and_language (same file, existing)",
+      "test: a_profile_missing_any_dimension_produces_no_queries_at_all (same file, existing)",
+      "mutation: dropping the blank-dimension refusal, ignoring geography, ignoring the entity, and blanking a location's language each failed the matching test for that reason; all restored byte-for-byte"
     ],
-    "gap": "Queries are generated and tagged, but candidate locations (the requirement's second output) are not, no query is ever sent anywhere (CRAWL/search is DATA-020), and no entity profile source exists in the platform.",
+    "gap": "Closed by the requirement's own unit check; not integrated. No composition root calls queries_for or locations_for, because no entity profile source exists in the platform (nothing knows an entity's geographies, domains and languages) and no query is sent anywhere (CRAWL/search is DATA-020). A location's domain and language are the query's -- what it is proposed for -- not properties the publisher has been shown to have; DataFinder::assess finds that out.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -142,11 +150,11 @@
       "DATA-031"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder --test discovery_targets",
+    "verification": "cargo test -p qip-data-finder --test discovery_targets (7 tests)",
     "work_item": "E08-discovery-query-generation",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: MISSING -> PARTIAL. The unit check for queries holds; candidate locations are not built."
+    "notes": "PARTIAL -> COMPLETE on the unit check (queries and candidate locations both tagged with all four dimensions, the test failing if any is missing). integrated stays false until an entity profile source and a search stage exist."
   },
   {
     "id": "DATA-033",
@@ -347,7 +355,7 @@
     "work_item": "E13-no-landing-bucket-test",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: NEEDS-VALIDATION->PARTIAL. The assessor's evidence said only the data and evidence modules declare buckets; there are nine bucket resources in seven modules (none for external content, so clause one still holds). The check's identity clause is not met: deepbrain, which runs the discovery probe and the connectors, holds roles/storage.objectCreator on the evidence bucket, applied in dev."
+    "notes": "verify: NEEDS-VALIDATION->PARTIAL. The assessor's evidence said only the data and evidence modules declare buckets; there are nine bucket resources in seven modules (none for external content, so clause one still holds). The check's identity clause is not met: deepbrain, which runs the discovery probe and the connectors, holds roles/storage.objectCreator on the evidence bucket, applied in dev. 2026-10-04 lane note: blocked on DATA-049's scout identity -- the identity that reaches external sources is the deep brain's, which holds object-create on the evidence bucket; separating it is an infrastructure change that has to be planned and applied."
   },
   {
     "id": "DATA-041",

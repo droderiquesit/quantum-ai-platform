@@ -170,6 +170,7 @@ mod tests {
         Evaluation {
             hypothesis_id: id.into(),
             class: class.into(),
+            subject: String::new(),
             verdict,
             expected_move_bps: 100.0,
             realised_move_bps: -80.0,
