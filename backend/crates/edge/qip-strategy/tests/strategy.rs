@@ -1273,6 +1273,176 @@ fn a_distilled_model_carries_its_own_coefficients_and_evaluates_in_bounded_steps
 }
 
 #[test]
+fn a_model_whose_declared_cost_exceeds_the_budget_is_refused_by_the_compiler() {
+    let limits = CompilerLimits {
+        max_nodes: 16,
+        max_depth: 8,
+    };
+    let strategy = |model: DistilledModel| {
+        let inputs = (0..model.arity()).map(|_| Expr::Statistic(1.0)).collect();
+        spec_with(
+            "costly",
+            Expr::Model { model, inputs }.greater_than(Expr::Statistic(0.0)),
+        )
+    };
+    // Premise: the same budget admits a small model, so the refusal below is
+    // about the model's cost and not about the limits being unusable.
+    let small = DistilledModel::linear("small", 0.0, vec![1.0, 1.0]).unwrap();
+    StrategyCompiler::with_limits(catalogue(), limits)
+        .compile(&strategy(small))
+        .unwrap();
+
+    // One input, many nodes: the model's own cost is the only thing that can
+    // push the strategy over the budget, so the refusal cannot be credited to
+    // the number of expressions around it.
+    let mut chain: Vec<TreeNode> = (0..63)
+        .map(|index| TreeNode::Branch {
+            input: 0,
+            threshold: 0.0,
+            below: index + 1,
+            at_or_above: index + 1,
+        })
+        .collect();
+    chain.push(TreeNode::Leaf { value: 1.0 });
+    let large = DistilledModel::tree("large", 1, chain).unwrap();
+    assert!(large.cost() > limits.max_nodes);
+    let refused = StrategyCompiler::with_limits(catalogue(), limits)
+        .compile(&strategy(large))
+        .unwrap_err();
+    assert_eq!(refused.code(), "guard", "{refused}");
+    assert!(refused.to_string().contains("budget"), "{refused}");
+}
+
+#[test]
+fn a_model_evaluated_twice_and_after_a_wire_round_trip_is_bit_identical_on_generated_inputs() {
+    let tree = DistilledModel::tree(
+        "forked",
+        2,
+        vec![
+            TreeNode::Branch {
+                input: 0,
+                threshold: 0.1,
+                below: 1,
+                at_or_above: 2,
+            },
+            TreeNode::Leaf { value: -0.3 },
+            TreeNode::Branch {
+                input: 1,
+                threshold: -0.2,
+                below: 3,
+                at_or_above: 4,
+            },
+            TreeNode::Leaf { value: 0.7 },
+            TreeNode::Leaf { value: 1.1 },
+        ],
+    )
+    .unwrap();
+    let linear = DistilledModel::linear("mix", 0.1, vec![0.37, -0.91]).unwrap();
+    let mut rng = qip_core::Xoshiro256::seeded(17);
+    let mut compared = 0;
+    for model in [tree, linear] {
+        let carried: DistilledModel =
+            serde_json::from_str(&serde_json::to_string(&model).unwrap()).unwrap();
+        for _ in 0..500 {
+            let inputs = [
+                qip_core::Rng::next_f64(&mut rng) * 4.0 - 2.0,
+                qip_core::Rng::next_f64(&mut rng) * 4.0 - 2.0,
+            ];
+            let first = model.evaluate(&inputs).unwrap().to_bits();
+            assert_eq!(first, model.evaluate(&inputs).unwrap().to_bits());
+            assert_eq!(first, carried.evaluate(&inputs).unwrap().to_bits());
+            compared += 1;
+        }
+    }
+    // Premise: the comparisons ran, over a draw wide enough to cross the
+    // tree's thresholds, rather than the loop being empty.
+    assert_eq!(compared, 1000);
+}
+
+#[test]
+fn a_model_deserialised_with_a_backward_branch_is_refused_at_compile_not_trusted() {
+    let sound = DistilledModel::tree(
+        "sound",
+        1,
+        vec![
+            TreeNode::Branch {
+                input: 0,
+                threshold: 0.5,
+                below: 1,
+                at_or_above: 2,
+            },
+            TreeNode::Leaf { value: -1.0 },
+            TreeNode::Leaf { value: 1.0 },
+        ],
+    )
+    .unwrap();
+    let encoded = serde_json::to_string(&sound).unwrap();
+    assert!(encoded.contains("\"below\":1"), "{encoded}");
+    // The wire form has no constructor in front of it: point the branch at
+    // itself, which is a loop with no worst case.
+    let looping: DistilledModel =
+        serde_json::from_str(&encoded.replace("\"below\":1", "\"below\":0")).unwrap();
+    assert_ne!(looping, sound);
+
+    let refused = compiler()
+        .compile(&spec_with(
+            "looping",
+            Expr::Model {
+                model: looping,
+                inputs: vec![Expr::Statistic(1.0)],
+            }
+            .greater_than(Expr::Statistic(0.0)),
+        ))
+        .unwrap_err();
+    assert!(refused.to_string().contains("bounded"), "{refused}");
+}
+
+#[test]
+fn a_model_never_takes_more_steps_than_its_declared_cost_on_adversarial_inputs() {
+    let depth = 40;
+    let mut nodes: Vec<TreeNode> = (0..depth)
+        .map(|index| TreeNode::Branch {
+            input: index % 2,
+            threshold: 0.0,
+            below: index + 1,
+            at_or_above: index + 1,
+        })
+        .collect();
+    nodes.push(TreeNode::Leaf { value: 1.0 });
+    let tree = DistilledModel::tree("chain", 2, nodes).unwrap();
+    let linear = DistilledModel::linear("wide", 0.5, vec![0.25; 30]).unwrap();
+
+    let extremes = [
+        0.0,
+        -0.0,
+        f64::MAX,
+        f64::MIN,
+        f64::MIN_POSITIVE,
+        1e-300,
+        -1e300,
+    ];
+    let mut evaluated = 0;
+    for model in [&tree, &linear] {
+        for a in extremes {
+            for b in extremes {
+                let inputs: Vec<f64> = (0..model.arity())
+                    .map(|i| if i % 2 == 0 { a } else { b })
+                    .collect();
+                // Overflow to a non-finite total is a refusal, not a step count.
+                if let Ok((_, steps)) = model.evaluate_counted(&inputs) {
+                    assert!(steps <= model.cost(), "{} took {steps}", model.name());
+                    evaluated += 1;
+                }
+            }
+        }
+    }
+    // Premise: the loop really evaluated, and the deepest path charged the
+    // whole chain, so a bound of `cost()` is tight rather than vacuous.
+    assert!(evaluated >= extremes.len() * extremes.len());
+    assert_eq!(tree.evaluate_counted(&[0.0, 0.0]).unwrap().1, tree.cost());
+}
+
+#[test]
 fn a_decision_tree_that_could_descend_backwards_is_refused() {
     let looping = DistilledModel::tree(
         "loop",

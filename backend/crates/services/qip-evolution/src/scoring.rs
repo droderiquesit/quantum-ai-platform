@@ -199,6 +199,76 @@ impl ContextualScore {
     }
 }
 
+/// Who leads in one context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Standing {
+    ChallengerLeads,
+    ChampionLeads,
+    /// Equal scores, or an incomparable pair: nothing favours the challenger.
+    Level,
+}
+
+/// Both scorecards for one context and who leads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContextStanding {
+    pub champion: ContextualScore,
+    pub challenger: ContextualScore,
+    pub standing: Standing,
+}
+
+/// Champion against challenger, one standing per shared context.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeadToHead {
+    pub standings: Vec<ContextStanding>,
+}
+
+impl HeadToHead {
+    /// Whether the challenger leads somewhere and does not lead everywhere:
+    /// the case an overall ranking hides.
+    pub fn is_split(&self) -> bool {
+        let leads = self
+            .standings
+            .iter()
+            .filter(|each| each.standing == Standing::ChallengerLeads)
+            .count();
+        leads > 0 && leads < self.standings.len()
+    }
+
+    /// The contexts the challenger leads in, in context order.
+    pub fn challenger_leads_in(&self) -> Vec<&str> {
+        self.standings
+            .iter()
+            .filter(|each| each.standing == Standing::ChallengerLeads)
+            .map(|each| each.champion.context())
+            .collect()
+    }
+
+    pub fn summarise(&self) -> String {
+        if self.standings.is_empty() {
+            return "no context has both scored yet".to_string();
+        }
+        let parts: Vec<String> = self
+            .standings
+            .iter()
+            .map(|each| {
+                format!(
+                    "{}: challenger {:.2} against champion {:.2} ({})",
+                    each.champion.context(),
+                    each.challenger.score(),
+                    each.champion.score(),
+                    match each.standing {
+                        Standing::ChallengerLeads => "challenger leads",
+                        Standing::ChampionLeads => "champion leads",
+                        Standing::Level => "level",
+                    }
+                )
+            })
+            .collect();
+        let verdict = if self.is_split() { "split; " } else { "" };
+        format!("{verdict}{}", parts.join("; "))
+    }
+}
+
 /// One thing that happened, and how well it went.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Outcome {
@@ -399,6 +469,37 @@ impl Scoreboard {
                 best
             }
         })
+    }
+
+    /// Champion and challenger scored side by side in every context both have
+    /// been seen in (MODEL-043).
+    ///
+    /// One standing per context, never only an overall ranking: a challenger
+    /// that leads in a calm regime and trails in a volatile one pools to
+    /// "average", which is what [`Self::pooled`] warns about, and would be
+    /// promoted or refused as a whole on the strength of a number that
+    /// describes neither regime. A context only one of them has been seen in
+    /// is left out rather than compared with a prior, because a comparison
+    /// with one side is not a comparison.
+    pub fn head_to_head(&self, champion: &str, challenger: &str) -> HeadToHead {
+        let standings = self
+            .scores_of(champion)
+            .into_iter()
+            .filter_map(|held| {
+                let rival = self.score(challenger, held.context())?;
+                let standing = match rival.score().partial_cmp(&held.score()) {
+                    Some(std::cmp::Ordering::Greater) => Standing::ChallengerLeads,
+                    Some(std::cmp::Ordering::Less) => Standing::ChampionLeads,
+                    _ => Standing::Level,
+                };
+                Some(ContextStanding {
+                    champion: held,
+                    challenger: rival,
+                    standing,
+                })
+            })
+            .collect();
+        HeadToHead { standings }
     }
 
     /// Every subject on the board, in canonical order.

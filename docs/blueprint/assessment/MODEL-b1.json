@@ -57,24 +57,18 @@
   },
   {
     "id": "MODEL-003",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip_strategy::model::DistilledModel has exactly two forms (Linear, Tree); its constructors refuse non-finite coefficients and any tree node that could descend backwards, and cost() is a property of the value (model.rs:59-155). Op::cost charges a model node its model.cost() (program.rs:125-130) and StrategyCompiler::compile refuses a strategy whose reachable cost exceeds CompilerLimits::max_nodes (compile.rs:339-345). qip_edge::Cell::check_models_promoted (cell.rs:2645-2681) refuses to deploy a plan carrying an inline model the cell's signed policy manifest (the trained_models slot) does not name at the model's own digest — and that manifest now has a producer: Platform::promote_model journals a ModelPromotion (qip-kernel/src/model_serving.rs:210) and qip-api's mesh ships Platform::model_manifest in every cell's payload (qip-api/src/mesh.rs:880,973). On the foundry side, distil refuses a student whose cost exceeds FidelityPolicy::maximum_student_cost, and InTreeProvider::serve rebuilds a deserialised payload through the form's constructor so an unbounded tree is refused at serve.",
     "evidence": [
-      "backend/crates/edge/qip-strategy/src/model.rs:59-155",
-      "backend/crates/edge/qip-strategy/src/program.rs:125-130 (Op::cost: Self::Model { model, .. } => model.cost())",
-      "backend/crates/edge/qip-strategy/src/compile.rs:339-345",
-      "backend/crates/edge/qip-edge/src/cell.rs:2620-2681",
-      "backend/crates/libs/qip-contracts/src/policy.rs:600",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:210-295 (promote_model, model_manifest)",
-      "backend/crates/apps/qip-api/src/mesh.rs:880,973 (trained_models slot produced per cycle)",
-      "test: a_cell_holding_no_manifest_refuses_a_plan_with_an_inline_model_and_admits_one_without (backend/crates/edge/qip-edge/tests/model_manifest.rs:113)",
-      "test: a_plan_is_admitted_only_when_the_manifest_names_its_model_at_its_own_digest (backend/crates/edge/qip-edge/tests/model_manifest.rs:158)",
-      "test: a_student_too_expensive_for_the_hot_path_is_refused_by_name (backend/crates/services/qip-training/tests/training.rs:1001)",
-      "test: a_payload_the_forms_constructor_refuses_is_refused_at_serve_not_at_score (backend/crates/services/qip-training/tests/serving.rs:308)",
-      "test (does NOT exercise a model): a_strategy_whose_worst_case_cost_exceeds_the_budget_is_refused (backend/crates/edge/qip-strategy/tests/strategy.rs:255) — its oversized plan is an expression tree, wide_tree(12)",
-      "mutation (this pass, on a git-archive export of HEAD): Op::cost's Model arm changed to `Self::Model { .. } => 1` — cargo test -p qip-strategy --no-fail-fast printed 'test result: ok. 36 passed; 0 failed', so no test fires when a model's cost stops being charged against the budget"
+      "backend/crates/edge/qip-strategy/src/model.rs (DistilledModel::validate, called by both constructors and by the compiler; evaluate_counted)",
+      "backend/crates/edge/qip-strategy/src/compile.rs (Expr::Model lowering calls model.validate(); measure and Op::cost charge model.cost())",
+      "test: a_model_whose_declared_cost_exceeds_the_budget_is_refused_by_the_compiler (backend/crates/edge/qip-strategy/tests/strategy.rs) -- mutation: measure and Op::cost Model arms changed to 1 -> test failed at unwrap_err on an Ok compile; restored",
+      "test: a_model_deserialised_with_a_backward_branch_is_refused_at_compile_not_trusted (same file) -- mutation: removed model.validate() from lowering -> failed at unwrap_err; restored",
+      "test: a_model_never_takes_more_steps_than_its_declared_cost_on_adversarial_inputs (same file) -- mutation: leaf step count + 1 -> failed on steps <= cost; restored",
+      "cargo test -p qip-strategy: 'test result: ok. 39 passed; 0 failed' (integration suite)",
+      "existing: backend/crates/edge/qip-edge/tests/model_manifest.rs; qip-training tests/training.rs::a_student_too_expensive_for_the_hot_path_is_refused_by_name; tests/serving.rs::a_payload_the_forms_constructor_refuses_is_refused_at_serve_not_at_score"
     ],
-    "gap": "No test proves the node refuses a model whose declared cost exceeds the reflex budget: with the model's cost removed from Op::cost every qip-strategy test still passes (mutation above), because the cited budget test carries no model and a_distilled_model_carries_its_own_coefficients_and_evaluates_in_bounded_steps asserts only compiled.cost() >= model.cost(), which a one-node charge satisfies. No benchmark of adversarial inputs against a declared cost exists. Format-at-activation is weaker than it reads: DistilledModel derives Deserialize, so a plan read from a file bypasses DistilledModel::tree's forward-descent and arity checks and compile() does not re-run them (evaluate stays loop-bounded by nodes.len(), and a branch reading an input beyond the arity silently reads 0.0); at the node the only guard against such a value is the manifest digest match, which holds only because every manifest entry comes from a constructor-built distillate.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -84,11 +78,11 @@
       "MODEL-051"
     ],
     "blocked_by": "",
-    "verification": "Existing: backend/crates/edge/qip-edge/tests/model_manifest.rs; qip-training tests/training.rs::a_student_too_expensive_for_the_hot_path_is_refused_by_name; tests/serving.rs::a_payload_the_forms_constructor_refuses_is_refused_at_serve_not_at_score. Needed: a node-side test compiling a plan whose DistilledModel cost exceeds CompilerLimits::max_nodes (mutation-verified against Op::cost), a deploy-time re-validation of a deserialised model's form, and an adversarial-input benchmark bounding evaluation steps by cost()",
+    "verification": "backend/crates/edge/qip-strategy/tests/strategy.rs::a_model_whose_declared_cost_exceeds_the_budget_is_refused_by_the_compiler; ::a_model_deserialised_with_a_backward_branch_is_refused_at_compile_not_trusted; ::a_model_never_takes_more_steps_than_its_declared_cost_on_adversarial_inputs",
     "work_item": "E10-model-cost-budget-proof",
     "tier": "T0",
     "size": "S",
-    "notes": "verify: downgraded COMPLETE -> PARTIAL. The bounded form, the manifest gate and the foundry-side budget refusal are real and tested, but the node-side 'refuse a model above the reflex budget' behaviour has no test that fires (mutation-proven), the adversarial-input benchmark the check names does not exist, and a deserialised model skips the form constructor. The previous note's claim that no ModelManifest producer exists is stale: qip-api/src/mesh.rs:880,973 produces the slot from Platform::model_manifest (the doc comment at cell.rs:2632-2641 saying 'produced nowhere yet' is itself stale)."
+    "notes": "verify: downgraded COMPLETE -> PARTIAL. The bounded form, the manifest gate and the foundry-side budget refusal are real and tested, but the node-side 'refuse a model above the reflex budget' behaviour has no test that fires (mutation-proven), the adversarial-input benchmark the check names does not exist, and a deserialised model skips the form constructor. The previous note's claim that no ModelManifest producer exists is stale: qip-api/src/mesh.rs:880,973 produces the slot from Platform::model_manifest (the doc comment at cell.rs:2632-2641 saying 'produced nowhere yet' is itself stale). | Closed 2026-10-04: the node-side cost-budget refusal, deploy-time (compile-time) re-validation of a deserialised model, and a step-bound-by-cost test over adversarial inputs now exist and are each mutation-verified. The depends_on MODEL-051 concerns distribution of the plan, not this requirement's own behaviour."
   },
   {
     "id": "MODEL-004",
@@ -438,13 +432,11 @@
     "status": "PARTIAL",
     "current": "DistilledModel::evaluate (backend/crates/edge/qip-strategy/src/model.rs:193-248) is a pure function with no I/O, no randomness and no HashMap-order dependency, evaluated identically for identical inputs; it runs in the hot lane (via Op::Model in a Cell's CompiledStrategy) and is the ModelForm every promoted model must take, so nothing outside this bounded, deterministic form can reach the hot or warm lane.",
     "evidence": [
-      "backend/crates/edge/qip-strategy/src/model.rs:193-248",
-      "backend/crates/edge/qip-strategy/src/program.rs:356-364",
-      "test: a_linear_student_served_from_its_artifact_scores_exactly_what_it_evaluates (backend/crates/services/qip-training/tests/serving.rs:134) — asserts .to_bits() equality across a JSON round-trip on five probes",
-      "test: a_tree_student_served_from_its_artifact_scores_exactly_what_it_evaluates (backend/crates/services/qip-training/tests/serving.rs:156)",
-      "test: evaluation_is_deterministic (backend/crates/edge/qip-strategy/tests/strategy.rs:1076) — repeated runtime evaluation, but its plan carries no model"
+      "backend/crates/edge/qip-strategy/tests/strategy.rs::a_model_evaluated_twice_and_after_a_wire_round_trip_is_bit_identical_on_generated_inputs -- mutation: wall-clock term added to linear evaluate -> failed; restored",
+      "backend/crates/edge/qip-strategy/tests/strategy.rs::a_model_never_takes_more_steps_than_its_declared_cost_on_adversarial_inputs -- mutation: leaf step count + 1 -> failed; restored",
+      "cargo test -p qip-strategy --test strategy: 'test result: ok. 40 passed; 0 failed'"
     ],
-    "gap": "Bit-identical output is asserted only within one process, across a JSON round-trip, on five fixed probes. There is no generated-input property test, no two-node or two-build-target comparison, and no measurement of evaluation steps against DistilledModel::cost().",
+    "gap": "Closed this pass: a generated-input property test (1000 draws, two evaluations plus a wire round-trip, bit-identical) and a step-count-versus-cost() test over adversarial extremes. Remaining: the requirement's 'on two nodes' half, i.e. a comparison across two machines or build targets, which cannot be demonstrated inside one checkout; and the hot/warm placement of a distilled model depends on MODEL-006's signed packaging.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -458,7 +450,7 @@
     "work_item": "E10-bit-identical-model-eval-test",
     "tier": "T1",
     "size": "S",
-    "notes": "The existing instance is qip-strategy's DistilledModel per ADR 0083, as this requirement's own notes say. verify: status kept PARTIAL; tested corrected false -> true and gap corrected. The row said no test asserts bit-identical output across two evaluations; qip-training's serving tests do (a served distillate's score equals model.evaluate bit for bit), within one process. The cross-node and cost-bound halves remain unproven."
+    "notes": "The existing instance is qip-strategy's DistilledModel per ADR 0083, as this requirement's own notes say. verify: status kept PARTIAL; tested corrected false -> true and gap corrected. The row said no test asserts bit-identical output across two evaluations; qip-training's serving tests do (a served distillate's score equals model.evaluate bit for bit), within one process. The cross-node and cost-bound halves remain unproven. | 2026-10-04: two of three open halves closed; left PARTIAL for the cross-node comparison."
   },
   {
     "id": "MODEL-018",

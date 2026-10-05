@@ -216,6 +216,14 @@ impl StorageSettings {
         self.provider().key_value(namespace)
     }
 
+    /// Build a blob store, failing here rather than at the first write. The
+    /// port content that must outlive a restart and may be large goes
+    /// through — model artifacts, for one — because the key-value port
+    /// refuses the Cloud Storage target.
+    pub fn blobs(&self, namespace: &str) -> Result<std::sync::Arc<dyn crate::BlobStore>> {
+        self.provider().blobs(namespace)
+    }
+
     /// Prove the configuration describes a store this process can write to.
     ///
     /// Constructing a store is not enough on its own: the file adapter creates

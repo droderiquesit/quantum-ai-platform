@@ -369,3 +369,58 @@ fn a_stricter_policy_refuses_what_the_default_admits() -> Result<()> {
     );
     Ok(())
 }
+
+// --- the classical baseline gate (ADR 0006, MODEL-031) -----------------------
+
+fn linear_spec() -> TrainingSpec {
+    TrainingSpec::new(
+        "baseline",
+        "1.0.0",
+        "research",
+        "signal-set",
+        ModelFamily::Linear { ridge: 1e-2 },
+    )
+}
+
+#[test]
+fn a_candidate_is_refused_unless_a_baseline_with_a_fitted_calibration_is_on_record() -> Result<()> {
+    use qip_kernel::central::models::require_calibrated_baseline;
+
+    let data = signal_dataset()?;
+    let (fit_set, _) = data.split_at_fraction(linear_spec().holdout_fraction)?;
+    let uncalibrated = fit(&linear_spec(), &data)?;
+    // Premise: a fresh fit carries the identity, so the refusal below is about
+    // calibration and not about the baseline being absent.
+    assert!(uncalibrated.calibration().is_identity());
+
+    let mut registry = ModelRegistry::new();
+    let reference = uncalibrated.reference();
+    assert!(
+        require_calibrated_baseline(&registry, &reference).is_err(),
+        "a baseline nobody recorded was accepted"
+    );
+
+    register_fit(
+        &mut registry,
+        &uncalibrated,
+        &SkillPolicy::default(),
+        "research",
+        now(),
+    )?;
+    let refused = require_calibrated_baseline(&registry, &reference).unwrap_err();
+    assert!(
+        refused.to_string().contains("without a fitted calibration"),
+        "{refused}"
+    );
+
+    let calibrated = uncalibrated.calibrated_on(&fit_set)?;
+    assert!(!calibrated.calibration().is_identity());
+    register_fit(
+        &mut registry,
+        &calibrated,
+        &SkillPolicy::default(),
+        "research",
+        now(),
+    )?;
+    require_calibrated_baseline(&registry, &reference)
+}
