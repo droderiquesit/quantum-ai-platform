@@ -817,10 +817,22 @@ mod tests {
         store: Arc<dyn qip_core::kv::KeyValueStore>,
         opened: Timestamp,
     ) -> ConnectorFeed {
+        journaled_frankfurter_serving(
+            store,
+            opened,
+            r#"{"amount":1.0,"base":"EUR","date":"2026-08-26","rates":{"GBP":0.85898,"JPY":181.59,"USD":1.1622}}"#,
+        )
+    }
+
+    /// The same feed serving `table`, so a test can choose what the body holds.
+    fn journaled_frankfurter_serving(
+        store: Arc<dyn qip_core::kv::KeyValueStore>,
+        opened: Timestamp,
+        table: &str,
+    ) -> ConnectorFeed {
         let mut manifest =
             FrankfurterRatesConnector::shipped_manifest().expect("the shipped manifest parses");
         manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
-        let table = r#"{"amount":1.0,"base":"EUR","date":"2026-08-26","rates":{"GBP":0.85898,"JPY":181.59,"USD":1.1622}}"#;
         let transport = Box::new(SourceEmulator::serving(
             manifest.endpoint.path.clone(),
             table,
@@ -833,6 +845,68 @@ mod tests {
         feed.journal_to(store)
             .expect("a journal opens on an empty store");
         feed
+    }
+
+    /// The raw payload is discarded once distilled (EVID-020). A canary
+    /// string rides in a field of the served body that the connector does not
+    /// keep; after a full poll nothing durable or delivered may contain it:
+    /// not the journal, not a released record, not the digest the platform
+    /// references. The digest's hash still proves the canary was in the
+    /// bytes that were read; without that half the test would pass for a
+    /// source that never carried the canary at all.
+    ///
+    /// Mutated by adding a `body: String` field to `FetchDigest` and filling
+    /// it with the fetched text; the serialised digest then contains the
+    /// canary and the test fails at the digest assertion; restored.
+    #[test]
+    fn a_canary_in_the_fetched_body_is_found_in_no_digest_record_or_journal_after_the_poll() {
+        const CANARY: &str = "CANARY-9f3b1c7e-not-for-retention";
+        let opened = instant("2026-08-27T00:00:00Z");
+        let table = format!(
+            r#"{{"amount":1.0,"base":"EUR","date":"2026-08-26","note":"{CANARY}","rates":{{"GBP":0.85898,"JPY":181.59,"USD":1.1622}}}}"#
+        );
+        let store: Arc<dyn qip_core::kv::KeyValueStore> =
+            Arc::new(qip_storage::MemoryKeyValueStore::default());
+        let mut feed = journaled_frankfurter_serving(store.clone(), opened, &table);
+
+        let mut digests = Vec::new();
+        let records = feed
+            .poll_referencing(opened, &mut |digest| {
+                digests.push(digest.clone());
+                Ok(())
+            })
+            .expect("the poll delivers");
+
+        assert_eq!(
+            records.len(),
+            3,
+            "premise: the table was read and distilled"
+        );
+        assert_eq!(digests.len(), 1, "premise: one fetch was digested");
+        assert_eq!(
+            digests[0].sha256(),
+            qip_core::hash::sha256_hex(table.as_bytes()),
+            "premise: the hash covers the bytes that carried the canary"
+        );
+        let digest_json = serde_json::to_string(&digests[0]).expect("a digest serialises");
+        assert!(
+            !digest_json.contains(CANARY),
+            "the digest retained the body"
+        );
+        assert!(!format!("{:?}", digests[0]).contains(CANARY));
+        assert!(
+            !format!("{records:?}").contains(CANARY),
+            "a record carried the body"
+        );
+        let keys = store.keys_with_prefix("").expect("the store lists");
+        assert!(!keys.is_empty(), "premise: the journal wrote something");
+        for key in keys {
+            let value = store.get(&key).expect("reads").expect("listed key exists");
+            assert!(
+                !value.to_string().contains(CANARY),
+                "the journal key {key} retained the body"
+            );
+        }
     }
 
     /// A journal that cannot be written leaves the connector where it stood,
