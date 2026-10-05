@@ -490,26 +490,25 @@
   },
   {
     "id": "FABRIC-049",
-    "status": "PARTIAL",
-    "current": "qip_transport::queue::OutboundQueue and qip_streaming::local::LocalQueue each declare an explicit message-count capacity and a declared overload policy (refuse-newest for OutboundQueue; drop-oldest for LocalQueue), enforced structurally (a zero-capacity queue is refused at construction). Neither has a byte quota, a per-producer quota, or a consumer lag limit. Reach: OutboundQueue lives inside qip_transport::MeshPublisher (mesh.rs:723,766), built by qip-edge's uplink (qip-edge-node) and qip-mesh's CapitalDispatcher (qip-api's mesh); neither runs in any environment (execution_nodes = {}, QIP_MESH_CELLS unset). LocalQueue is reached only from tests.",
+    "status": "COMPLETE",
+    "current": "Broker::produce charges every batch against its producer's per-second byte and message quota (Broker::charge_quota, window of one second on the broker's Clock) and refuses an over-quota batch with the wait, before the producer table sees it so no sequence is spent. On a RefuseProducer stream it also refuses while any checkpointed consumer group trails the high watermark by more than the policy's lag_limit (Broker::refuse_when_a_group_lags); streams declared to tolerate a backlog are not refused. OutboundQueue and LocalQueue keep their message-count capacity and declared overload policy.",
     "evidence": [
-      "backend/crates/libs/qip-transport/src/queue.rs:1-60 (QueueStats, capacity, refused counter)",
-      "backend/crates/services/qip-streaming/src/local.rs:29-70 (capacity, dropped counter, refuses zero capacity)",
-      "grep -rn 'byte.quota\\|per.producer.quota\\|lag.limit\\|consumer.lag' backend/crates/libs/qip-transport backend/crates/services/qip-streaming --include=*.rs -> no results"
+      "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs five tests (ran: ok, 5 passed)",
+      "mutations fired and restored: charge_quota call removed (3 tests failed at expect_err); over_bytes forced false (byte test failed); spent.retain removed (window-restore test failed); lag comparison forced false (lag test failed); RefuseProducer early return removed (backlog test failed)"
     ],
-    "gap": "Per-producer byte and message quotas and the lag limit are now declared on every StreamPolicy and stored by Broker::declare_stream, but nothing enforces them: Refusal::Quota is defined in the protocol and produced by no broker path, and no consumer-lag action exists. Still needs a per-producer meter in Broker::produce and a lag check, each with a counter.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/libs/qip-transport/tests/reliability.rs:555 a_full_outbound_queue_refuses_by_name_rather_than_growing, :633 a_queue_with_no_room_at_all_is_refused_at_construction; would additionally need byte-quota, per-producer-quota and consumer-lag-limit tests, none of which exist because none of those concepts exist.",
+    "verification": "cargo test -p qip-streaming --test event_fabric_quota; backend/crates/libs/qip-transport/tests/reliability.rs a_full_outbound_queue_refuses_by_name_rather_than_growing",
     "work_item": "E03",
     "tier": "T1",
     "size": "M",
-    "notes": "Message-count quotas and overload policy are the strongest-covered half of this requirement; byte/per-producer/lag are the missing halves and are all buildable without a new dependency. verify: status PARTIAL kept; deployable downgraded to false -- the cited queues run only in qip-edge-node and qip-api's mesh, which no committed environment enables. (The Platform EventLog's capacity bound is deployed, but it is a retention bound on one log, not a per-stream quota.)"
+    "notes": "integrated stays false: no process calls Broker::produce (qip-fabricd serves no broker). The lag check sees only groups that have checkpointed (a group that never committed has no key) and scans checkpoint keys per produce; both are marked ponytail in the code."
   },
   {
     "id": "FABRIC-050",

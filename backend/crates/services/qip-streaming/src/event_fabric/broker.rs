@@ -41,7 +41,7 @@ use qip_storage::{DurableStore, EngineConfig, KeyValueStore};
 
 use qip_events::event_fabric::codec::{Batch, ContentHash, LogicalTimestamp, stamp_broker};
 use qip_events::event_fabric::hlc::{HlcTimestamp, PartitionClock};
-use qip_events::event_fabric::policy::StreamPolicy;
+use qip_events::event_fabric::policy::{OverloadPolicy, StreamPolicy};
 use qip_events::event_fabric::schema_id::{Shape, check_compatible};
 
 use qip_transport::event_fabric::protocol::{FetchResponse, Metadata, ProduceAck};
@@ -233,7 +233,20 @@ pub struct Broker {
     /// directory's own constant gives: the leader epoch is a fact about the
     /// process, a checkpoint is a fact about a consumer.
     checkpoints: DurableStore,
+    /// What each `(stream, producer)` has spent in the current
+    /// [`QUOTA_WINDOW_NS`] window: `(window_start_ns, bytes, messages)`.
+    /// Entries from an older window are dropped whenever a new window
+    /// opens, so the map is bounded by the producers active in one window.
+    quota_spent: Mutex<QuotaSpend>,
 }
+
+/// `(stream, producer)` to `(window_start_ns, bytes, messages)`.
+type QuotaSpend = BTreeMap<(String, String), (i64, u64, u64)>;
+
+/// The period a stream's per-producer byte and message quotas are measured
+/// over: one second, because `peak_bytes_per_second` is the unit the same
+/// policy sizes its stream in (FABRIC-049).
+const QUOTA_WINDOW_NS: i64 = 1_000_000_000;
 
 impl Broker {
     /// Open (or create) a broker rooted at `data_dir`, bumping and
@@ -257,6 +270,7 @@ impl Broker {
             schemas: Mutex::new(BTreeMap::new()),
             recent_offsets: Mutex::new(BTreeMap::new()),
             checkpoints,
+            quota_spent: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -402,6 +416,8 @@ impl Broker {
         let partition_count = self.partition_count(stream)?;
         let partition = partition::partition_for(key, partition_count)?;
         self.require_registered_schema(stream, batch.schema_id, batch.schema_version)?;
+        self.refuse_when_a_group_lags(stream, partition)?;
+        self.charge_quota(stream, &batch)?;
 
         let record_count = u64::try_from(batch.records.len()).map_err(|_| {
             Error::invalid("a batch carries more records than a u64 count can represent")
@@ -650,6 +666,82 @@ impl Broker {
     pub fn sealed_segment_starts(&self, stream: &str, partition: u32) -> Result<Vec<u64>> {
         let state = self.partition_state(stream, partition)?;
         Ok(state.log.sealed_segment_starts())
+    }
+
+    /// FABRIC-049's lag limit: on a stream declared `RefuseProducer` (P0/P1,
+    /// never dropped), refuse a produce while any consumer group that has
+    /// checkpointed this partition trails the high watermark by more than
+    /// the policy's `lag_limit` batches. Other overload policies tolerate a
+    /// backlog by declaration and are not refused here. Runs before the
+    /// producer table so a refused batch consumes no sequence number.
+    ///
+    /// A group that has never committed has no checkpoint and is invisible
+    /// here; the limit bounds the lag of groups the broker knows about.
+    /// ponytail: scans checkpoint keys per produce, O(groups on the
+    /// broker); index groups by partition if that count ever grows large.
+    fn refuse_when_a_group_lags(&self, stream: &str, partition: u32) -> Result<()> {
+        let policy = self.stream_policy(stream)?;
+        if policy.overload_policy() != OverloadPolicy::RefuseProducer {
+            return Ok(());
+        }
+        let high_watermark = self.partition_state(stream, partition)?.log.high_water();
+        let suffix = format!("|{stream}|{partition}");
+        for key in self.checkpoints.keys_with_prefix("")? {
+            let Some(group) = key.strip_suffix(&suffix) else {
+                continue;
+            };
+            let Some(committed) = self.committed_offset(group, stream, partition)? else {
+                continue;
+            };
+            let lag = high_watermark.saturating_sub(committed.saturating_add(1));
+            if lag > policy.lag_limit() {
+                return Err(Error::denied(format!(
+                    "group '{group}' trails {stream}:{partition} by {lag} batches, past the                      stream's lag limit of {}; the producer is refused until the group catches up",
+                    policy.lag_limit()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Charge `batch` against its producer's byte and message quota for the
+    /// current window, refusing with the time to wait when either would be
+    /// exceeded (FABRIC-049). A refused batch is not charged, so a producer
+    /// that backs off as told is not penalised twice. Runs before the
+    /// producer table sees the batch: a producer over quota must not be
+    /// able to consume sequence numbers it was never allowed to use.
+    fn charge_quota(&self, stream: &str, batch: &Batch) -> Result<()> {
+        let policy = self.stream_policy(stream)?;
+        let messages = u64::try_from(batch.records.len())
+            .map_err(|_| Error::invalid("a batch carries more records than a u64 can count"))?;
+        let bytes = batch
+            .records
+            .iter()
+            .try_fold(0u64, |sum, r| sum.checked_add(r.payload.len() as u64))
+            .ok_or_else(|| Error::numeric("a batch's payload bytes overflow a u64"))?;
+        let now = self.clock.now().as_nanos();
+        let mut spent = self.quota_spent.lock().unwrap_or_else(|e| e.into_inner());
+        let window_start = now - now.rem_euclid(QUOTA_WINDOW_NS);
+        spent.retain(|_, (start, _, _)| *start == window_start);
+        let entry = spent
+            .entry((stream.to_string(), batch.producer_id.clone()))
+            .or_insert((window_start, 0, 0));
+        let over_bytes = entry.1.saturating_add(bytes) > policy.byte_quota_per_producer();
+        let over_messages = entry.2.saturating_add(messages) > policy.message_quota_per_producer();
+        if over_bytes || over_messages {
+            let retry_after_ms = (window_start + QUOTA_WINDOW_NS - now) / 1_000_000;
+            return Err(Error::denied(format!(
+                "producer '{}' is over its quota on stream '{stream}' ({} of {} bytes, {} of {}                  messages this second, this batch adds {bytes} and {messages}); retry after                  {retry_after_ms} ms",
+                batch.producer_id,
+                entry.1,
+                policy.byte_quota_per_producer(),
+                entry.2,
+                policy.message_quota_per_producer(),
+            )));
+        }
+        entry.1 += bytes;
+        entry.2 += messages;
+        Ok(())
     }
 
     fn partition_count(&self, stream: &str) -> Result<u32> {
