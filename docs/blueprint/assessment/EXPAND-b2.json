@@ -143,7 +143,7 @@
     "work_item": "E08-research-registry",
     "tier": "T4",
     "size": "XL",
-    "notes": "Closed 2026-10-04 as a library; no production caller yet (integrated false). Matching is exact on normalised text, not semantic; open questions, benchmark suites and contradictions are not separate entry kinds."
+    "notes": "Closed 2026-10-04 as a library; no production caller yet (integrated false). Matching is exact on normalised text, not semantic; open questions, benchmark suites and contradictions are not separate entry kinds. 2026-10-05: ResearchQueue::admit (qip-expansion) screens every candidate's question and refuses a prior null; that caller is itself a library, so integrated stays false."
   },
   {
     "id": "EXPAND-040",
@@ -195,31 +195,28 @@
   },
   {
     "id": "EXPAND-042",
-    "status": "PARTIAL",
-    "current": "No Curriculum Engine exists. The platform's one automatically generated investigation queue - the DISCOVER stage's qip_opportunity_engine::engine::OpportunityEngine, held live on Platform (platform.rs:230, constructed at platform.rs:4520) - already has this requirement's property in its own domain: an opportunity's score is importance x confidence x novelty (engine.rs:159), candidates below EngineConfig::minimum_score are dropped, and the queue is ordered by score per unit of investigation cost (opportunity.rs value_per_cost). Because the terms multiply, a maximally novel candidate with zero importance or confidence scores zero and cannot outrank one with positive value; and novelty decays with repetition, so it is a discount rather than an objective.",
+    "status": "COMPLETE",
+    "current": "Criteria::score computes priority = feasibility x merit x (1 + novelty), where merit is economic value per unit of cost plus the seven other unitless inputs. Novelty multiplies and never adds, so a candidate with maximum novelty and zero on every other input has a priority of exactly zero, below any candidate with positive economic value and information gain, and two candidates with equal novelty rank by the rest. The DISCOVER queue's own importance x confidence x novelty rule is unchanged.",
     "evidence": [
-      "rg -c 'Curriculum' backend/crates --type rust -> only backend/crates/apps/qip-cli/src/blueprint.rs (a description string)",
-      "backend/crates/services/qip-opportunity-engine/src/engine.rs:159 (score = importance * confidence * novelty), engine.rs:161 (minimum_score filter)",
-      "backend/crates/services/qip-opportunity-engine/src/opportunity.rs:81-90 (value_per_cost ordering)",
-      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:516 the_queue_is_ordered_by_value_per_unit_of_investigation_cost (three first-alert, equal-novelty candidates ordered by the other criteria)",
-      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:425 repeated_alerts_on_the_same_subject_lose_novelty",
-      "backend/crates/services/qip-evolution/src/discovery.rs:158 (FeatureScreen - unreached outside its own tests, not a ranker)"
+      "backend/crates/services/qip-expansion/src/curriculum.rs (Criteria::score)",
+      "backend/crates/services/qip-expansion/tests/expansion.rs novelty_alone_never_outranks_a_candidate_with_economic_value_and_information_gain",
+      "backend/crates/services/qip-opportunity-engine/src/engine.rs (the DISCOVER queue's multiplicative score)"
     ],
-    "gap": "There is no Curriculum Engine and no research-candidate ranker; the property holds only for the DISCOVER queue, whose non-novelty criteria are anomaly importance, detector confidence and investigation cost, not economic value and information gain (EXPAND-015). The second half of the check (maximum novelty with zero on every other criterion never outranks a positive-value candidate) holds by the multiplicative formula but no test asserts it, and nothing is property-tested over generated candidates.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [
       "EXPAND-015"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-opportunity-engine --test discovery the_queue_is_ordered_by_value_per_unit_of_investigation_cost (demonstrates equal novelty ranking differently on other criteria). No test for the zero-value/max-novelty half, and no curriculum ranker to property-test.",
+    "verification": "cargo test -p qip-expansion --test expansion novelty_alone_never_outranks_a_candidate_with_economic_value_and_information_gain",
     "work_item": "E08-curriculum-engine",
     "tier": "T3",
     "size": "L",
-    "notes": "The scoring inputs this rule needs (EXPAND-015) are outside this batch's scope; EXPAND-042 through EXPAND-046 all depend on the same absent CurriculumEngine. verify: upgraded MISSING -> PARTIAL on evidence the assessor dismissed as 'novelty used internally for catalyst scoring': OpportunityEngine ranks the platform's unrequested investigation queue on importance x confidence x novelty, which is this requirement's rule applied to the DISCOVER queue, with a named test for the equal-novelty half. The curriculum engine itself is still unbuilt; the gap says so."
+    "notes": "Closed 2026-10-05 as a library: qip-expansion has no production caller, so integrated stays false. No composition root builds a queue because no detector in the tree states a severity or an economic value for what it finds and nothing measures most of the eleven criteria; wiring it would mean inventing them. The property is checked over 2,000 generated candidates, a quarter of them carrying value and information gain and nothing else, and once through the queue with the tie-break set against the valued candidate. Mutation fired and was restored: novelty added to merit instead of multiplying it."
   },
   {
     "id": "EXPAND-043",
@@ -299,7 +296,7 @@
     "work_item": "E08-curriculum-engine",
     "tier": "T4",
     "size": "XL",
-    "notes": "This requirement explicitly never relaxes the control that raised the underlying failure (veto, halt, retirement) — those controls are real and unaffected; only the curriculum-feeding step is absent."
+    "notes": "This requirement explicitly never relaxes the control that raised the underlying failure (veto, halt, retirement) — those controls are real and unaffected; only the curriculum-feeding step is absent. 2026-10-05: not closed. Adverse selection and failed arbitrage sagas have no event on the central log, so a replayed history cannot contain all five failure types."
   },
   {
     "id": "EXPAND-046",
@@ -448,7 +445,7 @@
       "backend/crates/libs/qip-agents/tests/agents.rs:49 a_capability_set_refuses_what_it_does_not_grant",
       "backend/crates/agents/qip-investment-agents/tests/organisation.rs:116 no_research_side_agent_can_reach_the_market (over the production roster)"
     ],
-    "gap": "Two things stop this being COMPLETE. (1) Scope: the explicit-grant model covers agent manifests only. The other holders of execution authority use separate mechanisms with no shared statement or test of this property - strategies through the lifecycle ladder and dual approval, edge cells through signed capital envelopes - and the capability kinds the expansion engine is meant to grant (tools, brains) have no registry to grant through (EXPAND-037, EXPAND-052). (2) Verification: the requirement's method is a property over generated grants (the executable set equals the granted set, and adding any research permission leaves it unchanged). No such test exists. The cited test a_research_agent_cannot_be_granted_order_submission proves a role/capability combination is refused at validation; the explicit-grant semantics rest on CapabilitySet::require being plain set membership, shown only on fixed examples (a_capability_set_refuses_what_it_does_not_grant, a_gated_facility_cannot_be_reached_without_its_capability).",
+    "gap": "The property now holds over generated grants for the two grant models qip-agents owns: an agent's CapabilitySet and a tool's scope. It is not stated or tested for the other holders of execution authority: strategies, through the lifecycle ladder and dual approval, and edge cells, through signed capital envelopes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -456,7 +453,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test agents (52 tests incl. a_research_agent_cannot_be_granted_order_submission, a_capability_set_refuses_what_it_does_not_grant); cargo test -p qip-investment-agents --test organisation no_research_side_agent_can_reach_the_market. Missing: a property test over generated CapabilitySets asserting executable set == granted set and invariance under added read/research capabilities; and the same property for strategy and edge-envelope grants.",
+    "verification": "cargo test -p qip-agents --test agents (52 tests incl. a_research_agent_cannot_be_granted_order_submission, a_capability_set_refuses_what_it_does_not_grant); cargo test -p qip-investment-agents --test organisation no_research_side_agent_can_reach_the_market. Missing: a property test over generated CapabilitySets asserting executable set == granted set and invariance under added read/research capabilities; and the same property for strategy and edge-envelope grants. Added 2026-10-05: cargo test -p qip-agents --test explicit_grants what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_permission_adds_to_it (mutation-verified: ProposeTrade implying SubmitOrder, and LeaveSandbox quietly granting Write). Still missing: the same property for strategy and edge-envelope grants.",
     "work_item": "E16-execution-grant-property-test",
     "tier": "T1",
     "size": "S",
@@ -473,16 +470,16 @@
     "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries a_new_tool_is_read_only_and_sandboxed_until_a_promotion_widens_exactly_the_granted_scope",
+    "verification": "cargo test -p qip-agents --test expansion_registries a_new_tool_is_read_only_and_sandboxed_until_a_promotion_widens_exactly_the_granted_scope; cargo test -p qip-deepbrain --lib language::tests::the_hosted_endpoint_is_a_registered_tool_that_leaves_its_sandbox_only_on_the_attestation",
     "work_item": "E16-tool-registry",
     "tier": "T3",
     "size": "L",
-    "notes": "Closed 2026-10-04 as a library; no production caller yet (integrated false). The promotion here is a registry call citing an evaluation string, not the signed promotion of EXPAND-049."
+    "notes": "Closed 2026-10-04 as a library. Integrated 2026-10-05: qip-deepbrain's language::assemble registers the hosted model endpoint read-only, promotes it to LeaveSandbox only on the operator's attestation, and builds the adapter through hosted_adapter, which asks ToolRegistry::authorise first (mutation-verified three ways). No environment names a hosted provider, so the registry is empty in every deployment today. The promotion cites an evaluation string, not the signed promotion of EXPAND-049."
   },
   {
     "id": "EXPAND-053",
@@ -534,7 +531,7 @@
     "work_item": "E08-brain-registry",
     "tier": "T2",
     "size": "M",
-    "notes": "Applies however a specialist is invoked per the requirement's notes, including an ambient wake (EXPAND-024) — that wake path was not verified in this pass. verify: status PARTIAL unchanged; test citation corrected. The cited vocabulary.rs:255 test asserts FindingStatus::NoView via the no_data path (the subject has no geography), which is 'looked and found nothing', not abstention. Replaced with organisation.rs:907 the_macro_analyst_defers_on_an_intraday_horizon, which asserts Deferred, and added the dispatch-level deferral (chief.rs:370) and the reasoning engine's exclusion (engine.rs:188)."
+    "notes": "Applies however a specialist is invoked per the requirement's notes, including an ambient wake (EXPAND-024) — that wake path was not verified in this pass. verify: status PARTIAL unchanged; test citation corrected. The cited vocabulary.rs:255 test asserts FindingStatus::NoView via the no_data path (the subject has no geography), which is 'looked and found nothing', not abstention. Replaced with organisation.rs:907 the_macro_analyst_defers_on_an_intraday_horizon, which asserts Deferred, and added the dispatch-level deferral (chief.rs:370) and the reasoning engine's exclusion (engine.rs:188). 2026-10-05: not closed. AgentManifest.competencies is free prose, so abstention cannot be enforced against it; that needs a machine-readable boundary declared for every manifest, which is a design decision."
   },
   {
     "id": "EXPAND-055",
@@ -579,7 +576,7 @@
     "work_item": "E10-promotion-calibration-gate",
     "tier": "T3",
     "size": "M",
-    "notes": "The calibration-error arithmetic already exists in qip-ai::evaluation and could be reused; what is missing is the stress/regime-shift held-out set construction and the promotion-time gate wiring it to a refusal."
+    "notes": "The calibration-error arithmetic already exists in qip-ai::evaluation and could be reused; what is missing is the stress/regime-shift held-out set construction and the promotion-time gate wiring it to a refusal. 2026-10-05: not closed. Needs a declared calibration-error bound and a definition of the stress and regime-shift sets; the blueprint gives neither and choosing them inside the promotion gate is a model governance decision."
   },
   {
     "id": "EXPAND-057",
@@ -637,36 +634,33 @@
   },
   {
     "id": "EXPAND-059",
-    "status": "PARTIAL",
-    "current": "No expansion engine exists, but the research work the platform does generate already runs inside finite budgets that refuse rather than overrun. (1) Capital: the exploration budget (qip-capital/src/exploration.rs; qip-kernel/src/exploration.rs) is a stated share of deployable capital held in the reservation ledger; ExplorationBook::plan funds the candidates that fit and declines the rest by name (ExplorationPlan::declined), with at most 8 open probes and no probe above a quarter of the budget; it runs in DECIDE on Platform. (2) Compute: every agent's Budget is charged before the call it pays for and refuses a call that would exceed it (qip-agents budget ledger). (3) Search: qip-lifecycle's TrialBook caps each strategy family at 500 trials per calendar quarter and refuses the charge that would exceed it, though the charge is taken at promotion rather than before the search runs.",
+    "status": "COMPLETE",
+    "current": "ResearchQueue::schedule takes one Budget per round with a compute bound and a capital bound. It charges compute with each task's compute_data_cost and capital with its CurriculumItem.budget, starts in rank order only what both bounds still cover, and records every other eligible task as State::Deferred with the amounts in the reason. A deferred task is considered again next round, and a negative budget is refused. Beneath the engine the existing bounds are unchanged: the exploration budget, each agent's compute budget and the trial book.",
     "evidence": [
-      "backend/crates/services/qip-capital/src/exploration.rs:1-80 (budget_for, plan, declined-and-named, MAXIMUM_OPEN_PROBES, MAXIMUM_PROBE_SHARE)",
-      "backend/crates/services/qip-capital/tests/exploration.rs:40 the_live_probes_can_never_commit_more_than_the_budget (six queued, four funded, two declined as 'uncommitted')",
-      "backend/crates/libs/qip-agents/tests/agents.rs:235 the_ledger_refuses_the_call_that_would_exceed_the_budget; :248 tokens_are_charged_before_the_call_not_after",
-      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:1673 the_five_hundredth_trial_of_a_quarter_charges_and_the_five_hundred_and_first_is_refused",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4539,13100 (ExplorationDesk in the production cycle)",
-      "rg -c 'ExpansionBudget|ComputeBudget|ResearchBudget' backend/crates --type rust -> no matches"
+      "backend/crates/services/qip-expansion/src/curriculum.rs (Budget, Round, ResearchQueue::schedule, State::Deferred)",
+      "backend/crates/services/qip-expansion/tests/expansion.rs a_queue_costing_more_than_the_expansion_budget_starts_only_what_fits_and_defers_the_rest_by_name",
+      "backend/crates/services/qip-capital/tests/exploration.rs the_live_probes_can_never_commit_more_than_the_budget"
     ],
-    "gap": "There is no expansion-task queue with one compute budget across research tasks, and no per-task compute cost estimate to test 'start only what fits'. The trial budget is charged after the search has spent its compute. A deferred-task record exists only for exploration probes (ExplorationPlan::declined).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [
       "EXPAND-042"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital --test exploration the_live_probes_can_never_commit_more_than_the_budget; cargo test -p qip-agents --test agents the_ledger_refuses_the_call_that_would_exceed_the_budget. No test queues research tasks against a single expansion compute budget.",
+    "verification": "cargo test -p qip-expansion --test expansion a_queue_costing_more_than_the_expansion_budget_starts_only_what_fits_and_defers_the_rest_by_name",
     "work_item": "E08-curriculum-engine",
     "tier": "T2",
     "size": "M",
-    "notes": "AMBIENT-023 is the equivalent budget requirement for ambient cognition, per this requirement's notes; neither is built. verify: upgraded MISSING -> PARTIAL. The exploration budget's plan does exactly this requirement's check for capital (queue exceeds budget; only what fits is funded; the rest is declined by name), with a named test; agent compute budgets refuse before the call. The engine-level compute budget is still absent."
+    "notes": "Closed 2026-10-05 as a library: qip-expansion has no production caller, so integrated stays false. No composition root builds a queue because no detector in the tree states a severity or an economic value for what it finds and nothing measures most of the eleven criteria; wiring it would mean inventing them. The scheduler is greedy in rank order: a cheaper lower-ranked task may start after a dearer higher-ranked one is deferred. No composition root states an expansion budget. Mutations fired and were restored: the compute bound dropped, and the capital bound dropped."
   },
   {
     "id": "EXPAND-060",
     "status": "PARTIAL",
-    "current": "The data-rights refusal exists on the one acquisition path the platform has. Platform::assess_sources wraps qip_data_finder::DataFinder::assess (Legality::and, least-permissive, never collects on Unknown - legal.rs:28-92) and refuses a source whose licence does not grant the configured usage before it reaches the catalogue. Its production caller is qip-deepbrain's DiscoveryDesk (discovery.rs; wired at main.rs:491-508), whose cadence deepbrain_discover_every is null in every environment's tfvars, so the pass is off as committed. The authority half is partly held elsewhere: manifest validation refuses any grant beyond security policy (ChangeAutonomyLevel for every role, OverrideRiskLimit outside Control). No tool registry exists to refuse an out-of-policy tool, and no jurisdiction-eligibility check applies to an expansion task, because no expansion task type exists.",
+    "current": "The data-rights refusal exists on the one acquisition path the platform has. Platform::assess_sources wraps qip_data_finder::DataFinder::assess (Legality::and, least-permissive, never collects on Unknown - legal.rs:28-92) and refuses a source whose licence does not grant the configured usage before it reaches the catalogue. Its production caller is qip-deepbrain's DiscoveryDesk (discovery.rs; wired at main.rs:491-508), whose cadence deepbrain_discover_every is null in every environment's tfvars, so the pass is off as committed. The authority half is partly held elsewhere: manifest validation refuses any grant beyond security policy (ChangeAutonomyLevel for every role, OverrideRiskLimit outside Control). No tool registry exists to refuse an out-of-policy tool, and no jurisdiction-eligibility check applies to an expansion task, because no expansion task type exists. Since 2026-10-05 the engine's own admission refuses all three as a library: ResearchQueue::admit refuses a Need::Source outside the licensed set, a Need::Tool whose permission ToolRegistry::authorise denies, and a jurisdiction outside the eligible set, before anything is queued.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/legal.rs:28-92 (Legality::and, never collects on Unknown)",
       "backend/crates/runtime/qip-kernel/tests/platform_services.rs:283 a_source_licensed_only_for_research_never_reaches_the_catalogue",
@@ -675,7 +669,7 @@
       "backend/crates/libs/qip-agents/tests/agents.rs:125 no_agent_may_change_its_own_autonomy_level",
       "rg -c 'CurriculumItem' backend/crates --type rust -> no matches (no expansion task type exists)"
     ],
-    "gap": "Only the data-rights leg is refused before acquisition, and only on a pass no environment enables. No tool-outside-security-policy refusal (no tool registry, EXPAND-052), no regulatory-eligibility or jurisdiction refusal on an expansion task, and no expansion task type to carry the three-task check.",
+    "gap": "The engine refuses all three legs at admission, but the licensed-source set and the eligible-jurisdiction set are stated by its caller: no composition root derives them from DataFinder's licensing decisions or from a jurisdiction policy, and the engine has no production caller. In production only the data-rights leg is refused, on a discovery pass.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -685,7 +679,7 @@
       "EXPAND-042"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test platform_services a_source_licensed_only_for_research_never_reaches_the_catalogue. No test submits an out-of-policy tool or an ineligible-jurisdiction task, because neither can be expressed.",
+    "verification": "cargo test -p qip-kernel --test platform_services a_source_licensed_only_for_research_never_reaches_the_catalogue. No test submits an out-of-policy tool or an ineligible-jurisdiction task, because neither can be expressed. Engine half: cargo test -p qip-expansion --test expansion a_task_outside_licence_security_policy_or_jurisdiction_is_refused_before_anything_is_queued (mutation-verified, one mutation per leg).",
     "work_item": "E08-curriculum-engine",
     "tier": "T2",
     "size": "M",

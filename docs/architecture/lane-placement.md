@@ -72,6 +72,7 @@ crates is placed in the slowest lane it hosts.
 | qip-entity-resolution | 3 | entity resolution over evidence |
 | qip-evolution | 3 | challenger and promotion; shadow before live |
 | qip-agency | 3 | goal specs, tool registry and bounded intervention plans as contracts; slow-plane cognition that depends only on lane 0 and is reached only where a composition root wires it |
+| qip-expansion | 3 | gap classification and the ranked, budgeted research queue; records only, above the brains, and held by no crate below a composition root |
 | qip-learning-engine | 3 | calibration from resolved outcomes |
 | qip-prediction | 3 | prediction markets; reached only where a composition root wires it |
 | qip-reasoning-engine | 3 | hypotheses and confidence as arithmetic |

@@ -316,6 +316,7 @@ fn run() -> Result<()> {
     // When a provider was named and withheld, this line is where an operator
     // learns which precondition is missing and which variable supplies it.
     println!("  language model:   {}", language_model.describe());
+    println!("  tool registry:    {}", language_model.describe_tools());
     println!(
         "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \
          conservative default the first desk order into an empty book is refused by \
