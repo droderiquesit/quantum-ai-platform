@@ -75,6 +75,14 @@ run "a_declared_hostname_creates_the_whole_edge_and_nothing_on_port_80" {
     condition     = google_compute_backend_bucket.static_shell[0].enable_cdn == true
     error_message = "the static shell is served without Cloud CDN"
   }
+
+  # GCP-055: and the cache mode is said out loud. `enable_cdn` alone leaves
+  # what is cached to the provider's default, and FORCE_CACHE_ALL would cache
+  # a response whatever its headers say.
+  assert {
+    condition     = google_compute_backend_bucket.static_shell[0].cdn_policy[0].cache_mode == "CACHE_ALL_STATIC"
+    error_message = "the static shell's CDN does not cache with the explicit CACHE_ALL_STATIC mode"
+  }
 }
 
 # A backend bucket takes only an edge-type policy. The attachment itself is an

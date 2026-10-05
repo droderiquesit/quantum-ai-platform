@@ -137,3 +137,24 @@ run "a_node_without_its_own_nat_reserves_no_address" {
     error_message = "an address was reserved although the module creates no NAT"
   }
 }
+
+# GCP-059: the node boots verified. Read off the planned template rather than
+# the module text, and with the group held at zero: the template is what a
+# later scale-up boots, so a shield that came only with a running instance
+# would be missing from the one machine an operator starts in a hurry.
+run "the_template_a_node_boots_from_is_shielded_even_while_the_group_is_held_at_zero" {
+  command = plan
+
+  variables {
+    node_count = 0
+  }
+
+  assert {
+    condition = alltrue([
+      google_compute_instance_template.node.shielded_instance_config[0].enable_secure_boot,
+      google_compute_instance_template.node.shielded_instance_config[0].enable_vtpm,
+      google_compute_instance_template.node.shielded_instance_config[0].enable_integrity_monitoring,
+    ])
+    error_message = "the node's template does not enable secure boot, the vTPM and integrity monitoring together, so a tampered image can boot on the hot path"
+  }
+}

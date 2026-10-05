@@ -308,18 +308,18 @@
   },
   {
     "id": "GCP-013",
-    "status": "PARTIAL",
-    "current": "modules/trust-zones (main.tf:516-548) and modules/execution-node (main.tf:158-183) each declare a `google_compute_router_nat` with `nat_ip_allocate_option = \"AUTO_ONLY\"` (not reserved/static) and `source_subnetwork_ip_ranges_to_nat = \"LIST_OF_SUBNETWORKS\"`. modules/egress-proxy renders an Envoy sidecar (infrastructure/egress/envoy.yaml) with a plan-time gate asserting the bootstrap dials only named hosts — a domain-allowlist control, but not the GCP-managed Secure Web Proxy product. No workload has an external IP (per infrastructure.rs's `the_execution_node_has_no_external_address_and_no_container_runtime`, which covers only the execution node).",
+    "status": "COMPLETE",
+    "current": "Both Cloud NAT gateways the tree declares (modules/trust-zones and modules/execution-node) allocate MANUAL_ONLY and translate to a google_compute_address their own module reserves, EXTERNAL and in the gateway's own region. Each translates only the subnets it names (LIST_OF_SUBNETWORKS) and logs every translation (log_config enable = true, filter = ALL). No google_compute_route is declared, so a subnet's only way out is the VPC's default route through its region's gateway, and no VM definition carries an external address. Domain control is the in-tree Envoy allow-list (modules/egress-proxy, infrastructure/egress/envoy.yaml). There is no managed Secure Web Proxy resource; the check reads 'Cloud NAT ... or Secure Web Proxy', so it does not require one. The reserved-address half landed under SEC-013 and this row had kept saying AUTO_ONLY.",
     "evidence": [
-      "infrastructure/terraform/modules/trust-zones/main.tf:516-548 (Cloud NAT, AUTO_ONLY, LIST_OF_SUBNETWORKS, logging ALL)",
-      "infrastructure/terraform/modules/execution-node/main.tf:158-183 (per-node Cloud NAT, AUTO_ONLY, off unless create_egress_nat)",
-      "infrastructure/terraform/main.tf:159-170,427 (dev's gitops_enabled generates management-zone GitHub egress, so dev's plan creates the trust-zone NAT)",
-      "infrastructure/terraform/modules/egress-proxy/main.tf:1-40 (Envoy domain-allowlist gate, not Secure Web Proxy)",
-      "backend/crates/tests/qip-acceptance/tests/egress.rs:506 the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named",
-      "backend/crates/tests/qip-acceptance/tests/egress.rs:1780 no_zone_or_node_has_an_egress_rule_that_bypasses_the_proxy",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:661 the_execution_node_has_no_external_address_and_no_container_runtime (execution node only)"
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs every_cloud_nat_translates_named_subnets_to_a_reserved_address_in_its_own_region_and_logs_it (walks every .tf under infrastructure/, so a third gateway is held too)",
+      "infrastructure/terraform/modules/trust-zones/main.tf (google_compute_address.nat, google_compute_router_nat.egress)",
+      "infrastructure/terraform/modules/execution-node/main.tf (google_compute_address.nat, google_compute_router_nat.egress, off unless create_egress_nat)",
+      "infrastructure/terraform/modules/execution-node/tests/capacity.tftest.hcl a_node_that_owns_its_egress_nat_reserves_the_address_it_translates_to, a_node_without_its_own_nat_reserves_no_address",
+      "infrastructure/terraform/modules/egress-proxy/main.tf (Envoy domain-allowlist gate, not Secure Web Proxy)",
+      "backend/crates/tests/qip-acceptance/tests/egress.rs the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named, no_zone_or_node_has_an_egress_rule_that_bypasses_the_proxy",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs no_virtual_machine_the_repository_defines_carries_an_external_address"
     ],
-    "gap": "NAT addresses are auto-allocated, not the reserved static egress identities the requirement names; there is no Secure Web Proxy resource, only an in-tree Envoy allowlist; and everything is single-region so 'each execution region has its own' is unexercised.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -327,11 +327,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "egress.rs::the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named and ::no_zone_or_node_has_an_egress_rule_that_bypasses_the_proxy prove the domain allow-list and that no zone/node egress rule bypasses it; infrastructure.rs::the_execution_node_has_no_external_address_and_no_container_runtime proves no external IP on the node. No test asserts NAT uses reserved static addresses (there are none: AUTO_ONLY) or that a managed Secure Web Proxy enforces the allow-list.",
+    "verification": "cargo test -p qip-acceptance --test gcp_placement every_cloud_nat_translates_named_subnets_to_a_reserved_address_in_its_own_region_and_logs_it (mutation-verified 2026-10-04; seven mutations each failed it for the stated reason and were restored byte-for-byte: AUTO_ONLY on the trust-zones gateway; nat_ips pointed at a variable; ALL_SUBNETWORKS_ALL_IP_RANGES on the node gateway; log filter ERRORS_ONLY; the node's address reserved in another region; a third gateway with Google's defaults in a new module; a google_compute_route). With: cargo test -p qip-acceptance --test infrastructure no_virtual_machine_the_repository_defines_carries_an_external_address; cargo test -p qip-acceptance --test egress no_zone_or_node_has_an_egress_rule_that_bypasses_the_proxy; cd infrastructure/terraform/modules/execution-node && terraform init -backend=false && terraform test -filter=tests/capacity.tftest.hcl (6 passed)",
     "work_item": "E14-static-egress",
     "tier": "T1",
     "size": "S",
-    "notes": "Closest-to-complete row in this domain: the security posture (no external IPs, domain-scoped egress, audited) is real, just implemented with Cloud NAT AUTO_ONLY + Envoy rather than reserved addresses + Secure Web Proxy. verify: evidence corrected. The cited no-external-address test is infrastructure.rs:661, not terraform_contract.rs:660; no such function exists in that file. It also covers only the execution node, which is not a crawler/agent/builder workload. tested stays true because egress.rs's domain-allow-list tests (:506, :1780) exercise the domain-control half. NAT line ranges corrected. PARTIAL confirmed: NAT is AUTO_ONLY, not reserved static, and there is no Secure Web Proxy."
+    "notes": "Closest-to-complete row in this domain: the security posture (no external IPs, domain-scoped egress, audited) is real, just implemented with Cloud NAT AUTO_ONLY + Envoy rather than reserved addresses + Secure Web Proxy. verify: evidence corrected. The cited no-external-address test is infrastructure.rs:661, not terraform_contract.rs:660; no such function exists in that file. It also covers only the execution node, which is not a crawler/agent/builder workload. tested stays true because egress.rs's domain-allow-list tests (:506, :1780) exercise the domain-control half. NAT line ranges corrected. PARTIAL confirmed: NAT is AUTO_ONLY, not reserved static, and there is no Secure Web Proxy. Closed 2026-10-04 (round 3). What this row lacked was not the reserved address, which SEC-013 had already landed, but a guard over the whole tree: each gateway's plan harness reads one gateway and neither sees a third. Limits, stated: 'each execution region has its own' is held by construction (a Cloud NAT gateway is regional, the guard requires its address in the same region, and the execution-node module creates its own gateway in the node's region) and has only ever been planned, never applied in two regions at once, which is C8. No managed Secure Web Proxy is used. The trust-zones plan harness was not re-run in this session; the execution-node one was."
   },
   {
     "id": "GCP-014",
@@ -362,15 +362,16 @@
   },
   {
     "id": "GCP-015",
-    "status": "MISSING",
-    "current": "No `google_compute_reservation` or Compute Engine commitment resource exists anywhere in the tree. modules/execution-node provisions plain on-demand Compute Engine instances only.",
+    "status": "COMPLETE",
+    "current": "modules/execution-node declares google_compute_reservation.node: specific_reservation count = var.node_count (the group's target_size), machine_type = var.machine_type, specific_reservation_required = true, declared only when node_count > 0. The instance template consumes it by name through reservation_affinity SPECIFIC_RESERVATION. It landed under FINOPS-001 and this row had kept saying no reservation existed. No Fabric instance group exists; the guard reads every instance group manager in the tree, so the first one written is held to the same facts. No commitment resource exists, and the check ('a specific reservation, or ... a commitment') does not need one.",
     "evidence": [
-      "grep -rn 'google_compute_reservation\\|commitment' infrastructure/terraform returns nothing outside unrelated identifiers",
-      "infrastructure/terraform/modules/execution-node/main.tf (google_compute_instance, no reservation_affinity block)"
+      "infrastructure/terraform/modules/execution-node/main.tf (google_compute_reservation.node; reservation_affinity in google_compute_instance_template.node)",
+      "infrastructure/terraform/modules/execution-node/tests/capacity.tftest.hcl a_node_with_an_instance_holds_a_reservation_sized_to_its_target_and_consumes_it, a_node_held_at_zero_plans_no_reservation_and_no_affinity",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs every_machine_group_the_repository_defines_consumes_a_specific_reservation_sized_to_its_target"
     ],
-    "gap": "No reservation or commitment mechanism exists; this follows GCP-008's benchmark sizing, which itself is only partly done, and applies to production scale which the workflow currently refuses.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -378,12 +379,12 @@
       "GCP-001",
       "GCP-008"
     ],
-    "blocked_by": "C8",
-    "verification": "No test exists. An infra-plan check would assert every production Reflex/Fabric instance group consumes a specific reservation or is covered by a commitment sized to its instance count.",
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test gcp_placement every_machine_group_the_repository_defines_consumes_a_specific_reservation_sized_to_its_target (mutation-verified 2026-10-04; five mutations each failed it and were restored byte-for-byte: the reservation count hard-coded to 1; specific_reservation_required = false; affinity type ANY_RESERVATION; the reservation's machine_type differing from the template's; a second group manager in a new module whose template reserves nothing). cd infrastructure/terraform/modules/execution-node && terraform init -backend=false && terraform test -filter=tests/capacity.tftest.hcl (6 passed)",
     "work_item": "E14-capacity-reservations",
     "tier": "T2",
     "size": "M",
-    "notes": "Applies to production, which infra.yml and the deploy gate refuse without a human dispatch (ADR 0003/0021); ADR 0093's cost instruction and C8 both apply."
+    "notes": "Applies to production, which infra.yml and the deploy gate refuse without a human dispatch (ADR 0003/0021); ADR 0093's cost instruction and C8 both apply. Closed 2026-10-04 (round 3) on the footing FINOPS-001 was: the declaration and its plan test, not an applied reservation. blocked_by C8 is cleared from the row because it applies to provisioning only, and that part is unchanged: execution_nodes = {} in every environment, billing is disabled on dev and prod is refused by the workflow, so no capacity is held anywhere today and integrated and deployable stay false. The surge instance of the blue-green update policy is not reserved (an owner cost decision). The reservation follows the module's C3/C3D allow-list; the C4D/C4 class is GCP-001."
   },
   {
     "id": "GCP-016",
@@ -631,26 +632,25 @@
   },
   {
     "id": "GCP-026",
-    "status": "MISSING",
-    "current": "No Shared VPC (host/service project attachment) resource exists anywhere in the tree; every environment is one project with one VPC, so there is no host/service project relationship to bound.",
+    "status": "COMPLETE",
+    "current": "No Shared VPC exists: no google_compute_shared_vpc_host_project and no google_compute_shared_vpc_service_project (the only two resource types the google provider's schema names shared_vpc), and no google_compute_subnetwork_iam_* grant lending a subnet to another principal. Every environment is one project with its own VPC. The bound is held as a refusal: the acceptance suite fails the first such resource and its message names what has to be shown before one is admitted.",
     "evidence": [
-      "grep -rn 'shared_vpc\\|google_compute_shared_vpc' infrastructure/terraform returns nothing"
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs no_shared_vpc_is_declared_so_no_host_project_lends_a_subnet_across_a_folder",
+      "grep -rn 'shared_vpc\\|subnetwork_iam' infrastructure --include=*.tf returns nothing (2026-10-04)"
     ],
-    "gap": "Vacuously unviolated (nothing exists to violate the constraint), but there is also no positive evidence of the permitted pattern, and it depends on the folder/project model of GCP-016 to have a 'domain/folder' to confine Shared VPC to.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "GCP-016"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-acceptance --test gcp_placement no_shared_vpc_is_declared_so_no_host_project_lends_a_subnet_across_a_folder (mutation-verified 2026-10-04: a google_compute_shared_vpc_host_project and, separately, a google_compute_subnetwork_iam_member declared in a new module each failed it; both removed)",
     "work_item": "E14-org-folder-hierarchy",
     "tier": "T4",
     "size": "S",
-    "notes": ""
+    "notes": "Closed 2026-10-04 (round 3) as a refusal, the only form of this bound the tree can hold today. The blueprint states a permission ('may still be used inside a domain/folder'), so the checkable content is the bound, and the requirement's plan check quantifies over Shared VPC host projects: there are none, and one can no longer appear unnoticed. Not demonstrated, and not demonstrable here: the permitted pattern. Using Shared VPC inside a folder needs the folder and project model of GCP-016, which is organisation-level administration outside this repository; whoever lands it replaces the refusal with the same-folder check the failure message describes. integrated and deployable stay false: a refusal deploys nothing."
   },
   {
     "id": "GCP-027",
@@ -702,31 +702,29 @@
   },
   {
     "id": "GCP-029",
-    "status": "PARTIAL",
-    "current": "No mesh, Gateway or internal ALB exists in the Reflex/Fabric path. modules/execution-node runs no container runtime (so no mesh sidecar). Its only proxy is a loopback-bound Envoy egress unit that has no venue route. Its firewall permits egress only to the central plane, Google APIs and (outside shadow mode) its venues directly. No environment instantiates the module (execution_nodes = {}), and no Fabric broker exists, so the Fabric half has nothing to hold the property.",
+    "status": "COMPLETE",
+    "current": "The prohibition is asserted as its own property across the tree, against load balancers that do exist: every backend service (public-edge's application, iap-edge's service) takes a serverless endpoint group as its backend and nothing else, every endpoint group is SERVERLESS, no target pool exists, and no file that defines a machine (instance, template or group manager) declares a forwarding rule, backend service, URL map, proxy, endpoint group, service attachment, network-services or mesh resource. The walk reads every .tf, so a Fabric broker module is held the day it is written. modules/execution-node runs no container runtime (so no sidecar), its only proxy is a loopback-bound Envoy egress unit with no venue route, and its firewall permits egress only to the central plane, Google APIs and its venues directly. No mesh exists anywhere (C3) and no Fabric broker VM exists (GCP-005). No environment instantiates the node module (execution_nodes = {}).",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:661 the_execution_node_has_no_external_address_and_no_container_runtime",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1807 an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else",
-      "backend/crates/tests/qip-acceptance/tests/egress.rs:1635 neither_the_fast_path_nor_an_execution_node_can_reach_a_proxy_that_is_not_its_own",
-      "backend/crates/tests/qip-acceptance/tests/egress.rs:1680 the_proxy_offers_no_route_to_a_venue_and_cannot_carry_an_order",
-      "infrastructure/terraform/main.tf:659-661 (module.execution_node for_each = var.execution_nodes, empty everywhere)"
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs no_machine_the_repository_defines_sits_behind_a_load_balancer_or_inside_a_mesh",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs the_execution_node_module_declares_no_load_balancer_or_mesh_hop_on_the_venue_path",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs the_execution_node_has_no_external_address_and_no_container_runtime",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else",
+      "backend/crates/tests/qip-acceptance/tests/egress.rs neither_the_fast_path_nor_an_execution_node_can_reach_a_proxy_that_is_not_its_own, the_proxy_offers_no_route_to_a_venue_and_cannot_carry_an_order",
+      "infrastructure/terraform/modules/execution-node/main.tf (google_compute_instance_group_manager.node publishes a named port, and the root outputs its instance_group: everything a balancer would need, which is why the backend check reads other files)"
     ],
-    "gap": "The prohibition holds only because the machinery it prohibits (mesh, GKE service plane, Fabric brokers) does not exist yet; no test directly asserts 'no Reflex/Fabric route passes through a Gateway/ALB/mesh proxy address' as its own property, since there is no such route to test today.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "GCP-001",
-      "GCP-005"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "infrastructure.rs::the_execution_node_has_no_external_address_and_no_container_runtime (no container runtime, so no sidecar is possible), infrastructure.rs::an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else (no LB/proxy egress rule), and egress.rs::the_proxy_offers_no_route_to_a_venue_and_cannot_carry_an_order prove the Reflex-node half at module level. No test covers the Fabric half, because there is no broker. A plan-level test is needed once GCP-002/GCP-010/GCP-028 exist.",
+    "verification": "cargo test -p qip-acceptance --test gcp_placement no_machine_the_repository_defines_sits_behind_a_load_balancer_or_inside_a_mesh (mutation-verified 2026-10-04; four mutations each failed it and were restored byte-for-byte: the console edge's backend group pointed at a machine-group variable; the public edge's endpoint group typed GCE_VM_IP_PORTMAP; a new module declaring a forwarding rule beside an instance template; a target pool). With infrastructure.rs::the_execution_node_module_declares_no_load_balancer_or_mesh_hop_on_the_venue_path, ::the_execution_node_has_no_external_address_and_no_container_runtime, ::an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else and egress.rs::the_proxy_offers_no_route_to_a_venue_and_cannot_carry_an_order for the route and sidecar halves",
     "work_item": "E14-vpc-separation",
     "tier": "T1",
     "size": "S",
-    "notes": "This is the one row where 'nothing built yet' makes the prohibition trivially true; re-score once the warm-service mesh (GCP-028) exists, because a prohibition that has never coexisted with the thing it forbids is unproven, not satisfied. verify: NEEDS-VALIDATION->PARTIAL, integrated true->false. NEEDS-VALIDATION means reached but untested, and this row is the reverse: tests exist, but no environment instantiates modules/execution-node. The tests are now cited correctly: infrastructure.rs:661, not terraform_contract.rs:660, plus infrastructure.rs:1807 and egress.rs:1635/:1680 for the route half. The Fabric half has no broker to test."
+    "notes": "This is the one row where 'nothing built yet' makes the prohibition trivially true; re-score once the warm-service mesh (GCP-028) exists, because a prohibition that has never coexisted with the thing it forbids is unproven, not satisfied. verify: NEEDS-VALIDATION->PARTIAL, integrated true->false. NEEDS-VALIDATION means reached but untested, and this row is the reverse: tests exist, but no environment instantiates modules/execution-node. The tests are now cited correctly: infrastructure.rs:661, not terraform_contract.rs:660, plus infrastructure.rs:1807 and egress.rs:1635/:1680 for the route half. The Fabric half has no broker to test. Closed 2026-10-04 (round 3). The earlier verifier's objection was that no test asserted the prohibition as its own property and that it had never coexisted with what it forbids. It is now asserted against the two load balancers the tree declares, and against any machine module rather than one named file. What it has still never coexisted with is a mesh (C3, none exists), a Fabric broker (GCP-005) or a deployed node, so for those the prohibition is held by refusal, and integrated stays false. Re-score when GCP-028 or GCP-005 lands; this guard is the first thing either must pass."
   },
   {
     "id": "GCP-030",
