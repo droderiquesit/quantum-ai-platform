@@ -3730,6 +3730,85 @@ impl EventBody for CycleJournalEntry {
     }
 }
 
+/// The journalled record of one desk fill, written before the book takes it,
+/// and the only place the fill lives between one process and the next
+/// (LEDGER-005, LEDGER-007).
+///
+/// Until this record existed [`TrackedCapital`] was the one book of record
+/// that no log could rebuild: `Platform` opened it at the configured initial
+/// equity on every start, so a restart forgot every position the desk held,
+/// every fee it had paid, the peak its drawdown is measured from and the
+/// equity the day opened at. The last two are the dangerous half — a process
+/// halted on its daily loss or its drawdown came back from a restart reading
+/// zero on both, with the positions that caused the loss gone from every
+/// limit that would have refused adding to them.
+///
+/// Every argument [`TrackedCapital::apply_fill`] takes is a field here and
+/// nothing else is, so [`Platform::resume_book`] books the same fill through
+/// the same arithmetic and reaches the same state. `costs` is the fee the
+/// venue charged on this fill, as its own figure beside the price rather
+/// than netted into it (LEDGER-011): the book's running `costs_paid` is the
+/// sum of this field over the log, and each fee is traceable to the record —
+/// and so to the order and the fill — that incurred it.
+///
+/// `simulated` is the fill's own account of where it came from, carried
+/// rather than assumed, for the reason `OrderManager::has_live_fills` gives.
+/// Nothing reads it to decide anything; the log says what the fill said.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FillBooked {
+    pub order_id: String,
+    pub fill_id: String,
+    pub object_id: String,
+    pub venue: String,
+    pub side: Side,
+    pub quantity: Decimal,
+    pub price: Decimal,
+    pub costs: Decimal,
+    /// The instant the fill is booked at, which is the instant the day
+    /// anchor is asked about. Not the envelope's `occurred_at`: that is when
+    /// the platform recorded it, and a replay that anchored the day on the
+    /// recording instant would move a fill across midnight.
+    pub at: Timestamp,
+    pub simulated: bool,
+}
+
+/// The journalled record of a corporate action reaching the desk's book.
+///
+/// The second and last way the book changes without a fill: a split
+/// multiplies a held quantity and divides its cost. Written whenever an
+/// action that changes share counts is applied — **whether or not the book
+/// held the instrument at the time** — because what a restart must not do is
+/// apply the action again: the tape is re-fed to a new process, the action
+/// comes due against it a second time, and a lot the log rebuilt would be
+/// split twice. A record for a book that held nothing is what stops a lot
+/// opened *after* the split, at post-split prices, from being split on the
+/// next start.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LotAdjusted {
+    /// The action's idempotency key, as `CorporateAction::idempotency_key`
+    /// gives it.
+    pub action: String,
+    pub object_id: String,
+    pub quantity_factor: Decimal,
+}
+
+/// The producer both book records carry, and the discriminator
+/// [`Platform::resume_book`] selects on beside the topic: `PositionUpdated`
+/// is shared with the cells' deltas and the retirement dispositions.
+const BOOK_ORIGIN: &str = "kernel/book";
+
+impl EventBody for FillBooked {
+    /// The platform's own fill, in the class the log never evicts. The topic
+    /// had a retention class and a stream and, until this record, no writer.
+    const TOPIC: Topic = Topic::OrderFilled;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+impl EventBody for LotAdjusted {
+    const TOPIC: Topic = Topic::PositionUpdated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 /// One open position at its average entry cost. Quantity is signed: negative
 /// is short.
 #[derive(Clone, Copy, Debug)]
@@ -3797,6 +3876,12 @@ struct TrackedCapital {
     day_open: DayOpen,
     /// Open positions keyed by instrument.
     positions: BTreeMap<String, PositionLot>,
+    /// The corporate actions this book has already taken, by idempotency
+    /// key — resumed from the log's [`LotAdjusted`] records, which is the
+    /// point: `Platform::corporate_actions_applied` begins empty in every
+    /// process, and it alone would let a re-fed split reach a resumed lot a
+    /// second time.
+    actions_taken: BTreeSet<String>,
 }
 
 impl TrackedCapital {
@@ -3821,7 +3906,51 @@ impl TrackedCapital {
                 equity: initial_equity,
             },
             positions: BTreeMap::new(),
+            actions_taken: BTreeSet::new(),
         }
+    }
+
+    /// The lot `object` would hold once a corporate action had multiplied
+    /// its share count by `factor`: quantity times the factor, average cost
+    /// divided by it, so quantity times cost is unchanged to the unit.
+    /// `None` when the book holds none of it.
+    ///
+    /// Computed apart from [`Self::adjust_lot`] so the live path can refuse
+    /// an unrepresentable adjustment *before* it journals one: a record of
+    /// an adjustment the book then could not take is a log the next start
+    /// cannot replay.
+    fn lot_after(&self, object: &str, factor: Decimal) -> Result<Option<PositionLot>> {
+        let Some(lot) = self.positions.get(object) else {
+            return Ok(None);
+        };
+        let quantity = lot.quantity.checked_mul(factor).ok_or_else(|| {
+            Error::numeric(format!(
+                "the corporate action on {object} multiplies a holding of {} by {factor} and \
+                 the product is not representable; correct the action",
+                lot.quantity
+            ))
+        })?;
+        let average_price = lot.average_price.checked_div(factor).ok_or_else(|| {
+            Error::numeric(format!(
+                "the corporate action on {object} divides a cost basis of {} by {factor} and \
+                 the quotient is not representable; correct the action",
+                lot.average_price
+            ))
+        })?;
+        Ok(Some(PositionLot {
+            quantity,
+            average_price,
+        }))
+    }
+
+    /// Take one corporate action's adjustment and remember having taken it.
+    /// The one arithmetic the live path and [`Platform::resume_book`] share.
+    fn adjust_lot(&mut self, action: &str, object: &str, factor: Decimal) -> Result<()> {
+        if let Some(lot) = self.lot_after(object, factor)? {
+            self.positions.insert(object.to_string(), lot);
+        }
+        self.actions_taken.insert(action.to_string());
+        Ok(())
     }
 
     /// Re-anchor the day if the clock has passed midnight since the last look.
@@ -4721,6 +4850,11 @@ impl Platform {
         // 0085 §5). Two fields borrowed disjointly, as the ledger's resume
         // is, so the log is read while the book is written.
         Self::resume_capital_calls(&platform.event_log, &mut platform.commitments)?;
+        // The desk's own book, replayed from the fills and lot adjustments
+        // the log holds. Before this seam a restart opened the book flat:
+        // the positions, the fees, the drawdown's peak and the day's loss
+        // were all forgotten, and the limits read a book that held nothing.
+        platform.resume_book(now)?;
         // The committed venue registrations, through the same journaled path
         // an operator's runtime approval takes. A record the registry refuses
         // — a source with no declared requirement — stops assembly with the
@@ -6880,6 +7014,115 @@ impl Platform {
         Ok(resumed)
     }
 
+    // --- the desk's book (LEDGER-005) ---------------------------------------------
+
+    /// Rebuild the desk's book from the log's own record of it, in log
+    /// order, through the arithmetic the live path books with — and return
+    /// how many records were replayed.
+    ///
+    /// The seam [`TrackedCapital`] lacked, and the one whose absence cost
+    /// most: every other resume here restores a registry, and this restores
+    /// what the limits read. A process that restarted used to open flat at
+    /// the configured equity, so the positions it held, the fees it had
+    /// paid, its drawdown from peak and the loss it had taken that day were
+    /// all gone — a restart lifted a daily-loss halt and a drawdown halt by
+    /// forgetting what tripped them.
+    ///
+    /// **The fold, exactly.** Each [`FillBooked`] goes through
+    /// [`TrackedCapital::apply_fill`] with the arguments the live booking
+    /// passed, and each [`LotAdjusted`] through [`TrackedCapital::adjust_lot`];
+    /// nothing else has ever moved the book. The book is reopened at the
+    /// first fill's own instant rather than at this boot's, because the day
+    /// anchor only advances: a book opened *now* would never re-anchor on a
+    /// replayed fill, and would report the desk's whole lifetime loss as
+    /// today's. It is then asked about `now`, as a cycle asks, so a restart
+    /// on a later day opens that day at the equity the log leaves and a
+    /// restart on the same day keeps the day's loss.
+    ///
+    /// Each replayed fill is carried into the risk aggregate through
+    /// [`Self::aggregate_fill`], the call the live path makes, so the
+    /// exposure the pre-trade check reads is the resumed book's and not a
+    /// flat one beside it.
+    ///
+    /// **What this does not rebuild, stated because it would otherwise read
+    /// as covered.** The opening equity is this boot's configuration, as the
+    /// desk's mandate is; a deployment that changed it between starts moves
+    /// the cash the fold begins from. A cell's fills never reach this book
+    /// at all — they are booked to the per-user ledger and the aggregate —
+    /// so nothing here restores them. And a fill whose record the log
+    /// refused is not in it: the live path reports that when it happens.
+    ///
+    /// Refused — assembly stops — when the log holds a book record this
+    /// build cannot decode or an adjustment the rebuilt book cannot take.
+    /// Skipping it would open a book the log does not describe.
+    fn resume_book(&mut self, now: Timestamp) -> Result<usize> {
+        enum Entry {
+            Fill(FillBooked),
+            Adjustment(LotAdjusted),
+        }
+        // Collected before anything is applied: the log is read while the
+        // book and the aggregate are written, and the aggregate is reached
+        // through `&mut self`. Bounded by the log's own retained records.
+        let mut entries = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.lineage.producer != BOOK_ORIGIN {
+                continue;
+            }
+            let frame = StreamEnvelope::from_frame(&record.event)?;
+            let entry = if record.event.topic == FillBooked::TOPIC {
+                Entry::Fill(frame.decode::<FillBooked>()?.body)
+            } else if record.event.topic == LotAdjusted::TOPIC {
+                Entry::Adjustment(frame.decode::<LotAdjusted>()?.body)
+            } else {
+                continue;
+            };
+            entries.push((record.sequence, entry));
+        }
+        let first_fill = entries.iter().find_map(|(_, entry)| match entry {
+            Entry::Fill(fill) => Some(fill.at),
+            Entry::Adjustment(_) => None,
+        });
+        if let Some(opened_at) = first_fill {
+            self.capital = TrackedCapital::new(self.config.initial_equity, opened_at);
+        }
+        let resumed = entries.len();
+        for (sequence, entry) in entries {
+            match entry {
+                Entry::Fill(fill) => {
+                    let moved = self.capital.apply_fill(
+                        &fill.object_id,
+                        fill.side,
+                        fill.price,
+                        fill.quantity,
+                        fill.costs,
+                        fill.at,
+                    );
+                    self.aggregate_fill(&fill.object_id, moved);
+                }
+                Entry::Adjustment(adjusted) => self
+                    .capital
+                    .adjust_lot(
+                        &adjusted.action,
+                        &adjusted.object_id,
+                        adjusted.quantity_factor,
+                    )
+                    .map_err(|why| {
+                        Error::invalid(format!(
+                            "the event log's record {sequence} adjusts the desk's holding of {} \
+                             for corporate action {} and the book the log rebuilt refuses it \
+                             ({}); the book cannot be resumed from this log — archive the log \
+                             and start a new one",
+                            adjusted.object_id,
+                            adjusted.action,
+                            why.message()
+                        ))
+                    })?,
+            }
+        }
+        self.capital.open_day(now);
+        Ok(resumed)
+    }
+
     // --- investment requests ----------------------------------------------------
 
     /// Decide a user's investment request against their mandate, and journal
@@ -7958,11 +8201,12 @@ impl Platform {
     /// [`WalletJudgement::NothingObserved`] rather than the bare `Ok(())`
     /// that made it indistinguishable from a book that reconciled clean.
     /// The caller is required to say which happened, because the type gives
-    /// it no way to ignore the difference. The ledger's view is one
-    /// entry, the desk's cash at the broker's venue, with the capital
-    /// ledger's reservations against it; it is supplied only when a
-    /// statement names that venue-asset, because the wallet refuses a
-    /// ledger view nobody has observed. In-flight is zero and stated so:
+    /// it no way to ignore the difference. The ledger's view is the desk's
+    /// cash at the broker's venue, with the capital ledger's reservations
+    /// against it, and each position the book holds there; every one is
+    /// supplied only when a statement names that venue-asset, because the
+    /// wallet refuses a ledger view nobody has observed. In-flight is zero
+    /// and stated so:
     /// this process instructs no transfer (ADR 0021), so nothing is ever in
     /// flight towards its book. A stale statement makes the assembly a
     /// refused record, which the journal keeps; reconciliation then finds
@@ -7979,17 +8223,38 @@ impl Platform {
             venue: desk_venue.clone(),
             asset: Asset::new(SETTLEMENT_CURRENCY.to_string())?,
         };
-        let ledger_views = if self.holdings_observed.contains_key(&desk_key) {
-            vec![LedgerView::new(
-                desk_venue,
-                desk_key.asset,
+        let mut ledger_views = Vec::new();
+        if self.holdings_observed.contains_key(&desk_key) {
+            ledger_views.push(LedgerView::new(
+                desk_venue.clone(),
+                desk_key.asset.clone(),
                 self.capital.cash,
                 self.reservations.reserved_total(),
                 Decimal::ZERO,
-            )?]
-        } else {
-            Vec::new()
-        };
+            )?);
+        }
+        // The desk's positions, on the terms its cash is on: a view for
+        // every instrument the book holds at the desk's venue that a
+        // statement names, and for no other. Until this the book's
+        // positions were compared with nothing — a statement naming a held
+        // instrument halted as unrecorded by a ledger that had booked it,
+        // so the only honest statement was one that left positions off.
+        // Nothing is reserved against a position here and nothing is in
+        // flight (ADR 0021), so the expectation is the lot's own quantity.
+        for key in self.holdings_observed.keys() {
+            if key.venue == desk_venue
+                && *key != desk_key
+                && let Some(lot) = self.capital.positions.get(key.asset.as_str())
+            {
+                ledger_views.push(LedgerView::new(
+                    desk_venue.clone(),
+                    key.asset.clone(),
+                    lot.quantity,
+                    Decimal::ZERO,
+                    Decimal::ZERO,
+                )?);
+            }
+        }
         self.decide_fabric(
             FabricCommand::Wallet(WalletCommand::Assemble {
                 observations,
@@ -8528,6 +8793,21 @@ impl Platform {
     /// Commissions and fees paid across every fill, cumulative.
     pub fn trading_costs(&self) -> Decimal {
         self.capital.costs_paid
+    }
+
+    /// The desk's cash, after every booked fill's notional and costs.
+    pub fn cash(&self) -> Decimal {
+        self.capital.cash
+    }
+
+    /// The desk's open positions as the book holds them: signed quantity
+    /// and average entry cost, by instrument.
+    pub fn positions_at_cost(&self) -> BTreeMap<String, (Decimal, Decimal)> {
+        self.capital
+            .positions
+            .iter()
+            .map(|(object, lot)| (object.clone(), (lot.quantity, lot.average_price)))
+            .collect()
     }
 
     /// Score resolved theses and recompute the calibration over the window.
@@ -9723,7 +10003,7 @@ impl Platform {
     /// make the correction unreachable forever. Leaving it pending instead
     /// would re-report the same corrupt record on every cycle for the life of
     /// the process.
-    fn apply_due_corporate_actions(&mut self) -> usize {
+    fn apply_due_corporate_actions(&mut self, now: Timestamp) -> usize {
         let due: Vec<String> = self
             .corporate_actions_pending
             .iter()
@@ -9739,7 +10019,7 @@ impl Platform {
             let Some(action) = self.corporate_actions_pending.remove(&key) else {
                 continue;
             };
-            match self.apply_corporate_action(&action) {
+            match self.apply_corporate_action(&key, &action, now) {
                 Ok(()) => {
                     self.corporate_actions_applied.insert(key);
                     applied += 1;
@@ -9786,7 +10066,12 @@ impl Platform {
     /// Because cost is preserved exactly, [`RiskAggregates`]' at-cost gross and
     /// net do not move and need no second adjustment that could disagree with
     /// this one.
-    fn apply_corporate_action(&mut self, action: &CorporateAction) -> Result<()> {
+    fn apply_corporate_action(
+        &mut self,
+        key: &str,
+        action: &CorporateAction,
+        now: Timestamp,
+    ) -> Result<()> {
         let object = action.object_id.as_str();
         let bars = self.bar_history.get_mut(object).ok_or_else(|| {
             Error::invalid(format!(
@@ -9849,38 +10134,36 @@ impl Platform {
                  holding the platform still owns"
             )));
         }
-        let Some(lot) = self.capital.positions.get_mut(object) else {
+        // A book the log rebuilt has already taken this action in an earlier
+        // process. The series above still needed it — bars are re-fed to
+        // every process and held in memory only — and the lot must not have
+        // it twice.
+        if self.capital.actions_taken.contains(key) {
             return Ok(());
-        };
-        let quantity = lot.quantity.checked_mul(quantity_factor).ok_or_else(|| {
-            Error::numeric(format!(
-                "the corporate action on {object} multiplies a holding of {} by \
-                 {quantity_factor} and the product is not representable; correct the action",
-                lot.quantity
-            ))
-        })?;
-        let average_price = lot
-            .average_price
-            .checked_div(quantity_factor)
-            .ok_or_else(|| {
-                Error::numeric(format!(
-                    "the corporate action on {object} divides a cost basis of {} by \
-                 {quantity_factor} and the quotient is not representable; correct the action",
-                    lot.average_price
-                ))
-            })?;
-        lot.quantity = quantity;
-        lot.average_price = average_price;
-        Ok(())
+        }
+        // Refused first, then journalled, then applied, in the order every
+        // resume seam here keeps: the log has the record before the book
+        // moves, and never a record of an adjustment the book could not take.
+        self.capital.lot_after(object, quantity_factor)?;
+        self.journal_record(
+            LotAdjusted {
+                action: key.to_string(),
+                object_id: object.to_string(),
+                quantity_factor,
+            },
+            BOOK_ORIGIN,
+            now,
+        )?;
+        self.capital.adjust_lot(key, object, quantity_factor)
     }
 
-    fn stage_sense(&mut self, _now: Timestamp) -> StageOutcome {
+    fn stage_sense(&mut self, now: Timestamp) -> StageOutcome {
         // Before anything is counted: an action whose ex-date the tape has
         // crossed is applied to the history this stage is about to report and
         // to the lot the risk stages read. Here rather than in `observe`
         // because a batch may carry the action and the bar that makes it due in
         // any order, and an adjustment applied mid-batch would see half a tape.
-        let adjusted = self.apply_due_corporate_actions();
+        let adjusted = self.apply_due_corporate_actions(now);
         let pending_actions = self.corporate_actions_pending.len();
         let instruments = self.price_history.len();
         let prices: usize = self.price_history.values().map(Vec::len).sum();
@@ -15918,6 +16201,39 @@ impl Platform {
             // risk state real: the same fills the outcome capture records are
             // the fills the monitor's equity is built from, so the two can
             // never tell different stories.
+            //
+            // Journalled first, so the book is the fold of the log and a
+            // restart rebuilds it ([`Self::resume_book`]). A log that will
+            // not take the record does not stop the booking: the venue has
+            // already filled, and a book that left the fill out would read
+            // every limit low by exactly it. What it costs is said out loud
+            // instead — this is the one state a restart cannot rebuild.
+            if let Err(error) = self.journal_record(
+                FillBooked {
+                    order_id: result.order_id.to_string(),
+                    fill_id: fill.fill_id.to_string(),
+                    object_id: object_id.to_string(),
+                    venue: venue.to_string(),
+                    side,
+                    quantity: fill.quantity,
+                    price: fill.price,
+                    costs: fill.costs,
+                    at: fill.at,
+                    simulated: fill.simulated,
+                },
+                BOOK_ORIGIN,
+                now,
+            ) {
+                self.capture_problems.push(format!(
+                    "fill {} on order {} was booked and could not be journalled ({}); the book \
+                     now holds what the event log cannot rebuild and a restart would open \
+                     without it — archive the log to free its capacity before this process \
+                     stops",
+                    fill.fill_id,
+                    result.order_id,
+                    error.message()
+                ));
+            }
             let moved = self.capital.apply_fill(
                 object_id.as_str(),
                 side,
