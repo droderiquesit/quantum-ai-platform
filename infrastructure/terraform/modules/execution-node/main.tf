@@ -673,6 +673,30 @@ resource "google_compute_firewall" "health_checks" {
   target_tags   = [local.node_tag]
 }
 
+# A shell reaches the node only through Identity-Aware Proxy (GCP-057). IAP
+# TCP forwarding originates from one documented range; admitting that range on
+# port 22 and nothing else means the door is open to the holders of
+# roles/iap.tunnelResourceAccessor who also pass OS Login (enable-oslogin
+# above), and still closed to the internet, which cannot source from it. Without
+# the rule "no public SSH" is true only because nobody can open a shell at all,
+# and the first operator who needed one would be tempted to widen the deny.
+resource "google_compute_firewall" "iap_ssh" {
+  project = var.project_id
+  name    = "${local.name}-iap-ssh"
+  network = var.network_id
+
+  direction = "INGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+
+  source_ranges = ["35.235.240.0/20"]
+  target_tags   = [local.node_tag]
+}
+
 # Everything else inbound is denied. The VPC denies ingress by default and this
 # rule changes nothing about that — it is here so a reviewer can see the posture
 # on the machine that holds the venue sessions rather than infer it from a
