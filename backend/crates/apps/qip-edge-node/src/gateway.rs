@@ -327,6 +327,16 @@ impl SimulatedGateway {
         Ok(())
     }
 
+    /// The venue's clock: the latest pass instant this gateway has been
+    /// advanced to, and the assembly instant before the first.
+    ///
+    /// What the feed stamps on each line as the venue's own time. It exists
+    /// on the simulated gateway alone, for the reason [`Self::quotes`] does:
+    /// a real venue states its time on its own wire.
+    pub fn now(&self) -> Timestamp {
+        self.now
+    }
+
     /// Orders held for an instant no pass has reached yet.
     pub fn held_count(&self) -> usize {
         self.held.values().map(Vec::len).sum()

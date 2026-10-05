@@ -612,6 +612,7 @@ impl Requoter {
                         });
                         continue;
                     }
+                    let mut acknowledged = None;
                     let requote = Self::replace(
                         &mut self.repricer,
                         &mut self.by_child,
@@ -622,7 +623,39 @@ impl Requoter {
                         &client_id,
                         touch,
                         now,
+                        &mut acknowledged,
                     );
+                    // Into the cell's chain, each half where it became
+                    // known. The withdrawal is sealed whatever followed it:
+                    // a cancel the venue acknowledged and a replacement it
+                    // then refused is an order the cell holds open and no
+                    // venue holds, and before this the only record of that
+                    // was a line on stderr.
+                    if let Some(acknowledged) = acknowledged {
+                        cell.record_requote_withdrawal(
+                            &order.order_id,
+                            &order.venue,
+                            &client_id,
+                            acknowledged,
+                            now,
+                        );
+                    }
+                    if let Requote::Replaced {
+                        replacement,
+                        quantity,
+                        price,
+                        ..
+                    } = &requote
+                    {
+                        cell.record_replacement(
+                            &order.order_id,
+                            &order.venue,
+                            replacement,
+                            *quantity,
+                            *price,
+                            now,
+                        );
+                    }
                     requotes.push(requote);
                 }
             }
@@ -633,6 +666,10 @@ impl Requoter {
     /// Carry one cancel-and-replace instruction to the venue: cancel, apply
     /// the acknowledgement to the child, and only then mint and send the
     /// replacement.
+    ///
+    /// `withdrawal` is left holding the remainder the venue acknowledged
+    /// withdrawing, the moment it has — whichever way the rest of the
+    /// instruction goes — so the caller can seal it into the cell's journal.
     #[allow(clippy::too_many_arguments)]
     fn replace(
         repricer: &mut Repricer,
@@ -644,6 +681,7 @@ impl Requoter {
         client_id: &str,
         touch: Touch,
         now: Timestamp,
+        withdrawal: &mut Option<Decimal>,
     ) -> Requote {
         let order_id = order.order_id.clone();
         let acknowledged = match venue.cancel(client_id, &order.object_id, &order.venue, now) {
@@ -656,6 +694,7 @@ impl Requoter {
                 };
             }
         };
+        *withdrawal = Some(acknowledged);
         let booked = tracked
             .parent
             .child(client_id)

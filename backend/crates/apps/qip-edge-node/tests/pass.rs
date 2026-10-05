@@ -25,6 +25,7 @@ use qip_edge::cell::PlacedOrder;
 use qip_edge::cell::WorkReport;
 use qip_edge::cell::{CellConfig, PolledHalt, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
+use qip_edge::journal::Decision;
 use qip_edge::journal::Journal;
 use qip_edge::policy::VerifiedPolicy;
 use qip_edge::quoting::{Depletion, RateLimits};
@@ -1154,6 +1155,198 @@ fn a_fill_that_arrived_this_pass_is_booked_before_staleness_is_judged() -> Resul
     assert!(!node.cell.is_halted());
     assert_eq!(stats.fills, 1);
     assert_eq!(stats.repriced, 1);
+    Ok(())
+}
+
+/// REFLEX-039: a requote is a cancel the venue acknowledges and an order the
+/// venue accepts, and until the cell was told of either it sealed neither.
+/// The chain said an order was sent at 100 and, some passes later, filled at
+/// 100.50, with nothing between; and the cell's own open order went on
+/// naming the limit it was first sent with, a price nothing rested at.
+///
+/// The witness is the hard case: the cancel races a fill. One share trades
+/// before the withdrawal is acknowledged, so the venue withdraws the
+/// remainder and not what was sent, and the replacement has both a new price
+/// and a new size. Then the replacement is itself cancelled, at its time to
+/// live, so both halves of "cancel and replace" are read back from the chain.
+#[test]
+fn a_requote_seals_its_cancel_acknowledgement_and_its_replacement_and_moves_the_open_order()
+-> Result<()> {
+    fn sealed(node: &NodeAssembly, kind: &str) -> Vec<Decision> {
+        node.cell
+            .journal()
+            .entries()
+            .iter()
+            .filter(|entry| entry.decision.kind() == kind)
+            .map(|entry| entry.decision.clone())
+            .collect()
+    }
+
+    // A twelve-second time to live, so the order sent at `t(10)` is requoted
+    // at `t(20)` and expires by `t(25)`: nothing in the pass loop answers a
+    // heartbeat, and the simulated venue degrades its session after thirty.
+    let (mut node, mut gateway, mut feed) =
+        node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(12))?)?;
+    let mut requoter = requoter(&node)?;
+    let mut stats = PassStats::default();
+    let resting = rest_one_order(
+        &mut node,
+        &mut gateway,
+        &mut feed,
+        &mut requoter,
+        &mut stats,
+    )?;
+    assert!(
+        sealed(&node, "requote_withdrawn").is_empty() && sealed(&node, "order_replaced").is_empty(),
+        "the premise is a chain with no requote in it"
+    );
+
+    // The race: one share trades, then the bid moves past the threshold.
+    let taken = gateway.seed_aggressor(&object(), Side::Sell, dec!("100"), dec!("1"), t(15))?;
+    assert!(
+        taken.is_positive() && taken < resting.quantity,
+        "the premise is a partial fill: {taken} of {}",
+        resting.quantity
+    );
+    gateway.seed_touch(&object(), Side::Buy, dec!("100.5"), dec!("1"), t(16))?;
+    let remainder = resting.quantity - taken;
+    let replacement = format!("{}-c1", resting.order_id);
+
+    let second = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        Some(&mut requoter),
+        &mut stats,
+        t(20),
+    )?;
+    let PassOutcome::Ran {
+        requotes, breaks, ..
+    } = second
+    else {
+        panic!("the node halted on the pass that should requote: {second:?}");
+    };
+    assert_eq!(
+        requotes,
+        vec![Requote::Replaced {
+            order_id: resting.order_id.clone(),
+            withdrawn: resting.order_id.clone(),
+            replacement: replacement.clone(),
+            quantity: remainder,
+            price: dec!("100.5"),
+        }],
+        "the premise is one order withdrawn and re-sent at a new price and a new size"
+    );
+    assert!(breaks.is_empty(), "{breaks:?}");
+
+    // The journal reflects each acknowledgement: the venue's of the cancel,
+    // with the remainder it withdrew, and the venue's of the replacement.
+    assert_eq!(
+        sealed(&node, "requote_withdrawn"),
+        vec![Decision::RequoteWithdrawn {
+            order_id: resting.order_id.clone(),
+            venue: VENUE.to_string(),
+            withdrawn: resting.order_id.clone(),
+            acknowledged: remainder.to_string(),
+        }],
+        "the cancel the venue acknowledged is not in the chain as it was acknowledged"
+    );
+    assert_eq!(
+        sealed(&node, "order_replaced"),
+        vec![Decision::OrderReplaced {
+            order_id: resting.order_id.clone(),
+            venue: VENUE.to_string(),
+            replacement: replacement.clone(),
+            quantity: remainder.to_string(),
+            price: "100.5".to_string(),
+        }],
+        "the replacement the venue accepted is not in the chain as it was accepted"
+    );
+    // In the order the facts became known: the fill that raced the cancel,
+    // then the withdrawal, then the replacement.
+    let kinds: Vec<&str> = node
+        .cell
+        .journal()
+        .entries()
+        .iter()
+        .filter(|entry| entry.at == t(20))
+        .map(|entry| entry.decision.kind())
+        .collect();
+    let position = |kind: &str| {
+        kinds
+            .iter()
+            .position(|recorded| *recorded == kind)
+            .unwrap_or_else(|| panic!("the pass journaled no `{kind}`: {kinds:?}"))
+    };
+    assert!(
+        position("filled") < position("requote_withdrawn")
+            && position("requote_withdrawn") < position("order_replaced"),
+        "the race was journaled out of order: {kinds:?}"
+    );
+
+    // Open-order state reflects them too: one intention, still open, resting
+    // where the venue holds it, with the raced fill accounted exactly once.
+    let open = node.cell.open_orders();
+    let intention = open
+        .iter()
+        .find(|order| order.order_id == resting.order_id)
+        .expect("the requoted intention is still open");
+    assert_eq!(
+        intention.price,
+        dec!("100.5"),
+        "the cell's open order still names a limit nothing rests at"
+    );
+    assert_eq!(
+        intention.filled, taken,
+        "the raced fill was lost or doubled"
+    );
+    assert_eq!(intention.remaining(), remainder);
+    assert!(intention.closed.is_none());
+    assert!(gateway.venue_holds_open(&replacement));
+    assert!(!gateway.venue_holds_open(&resting.order_id));
+    assert_eq!(
+        node.cell.position(&venue(), &object()),
+        venue_position(&gateway),
+        "the cell's position and the venue's disagree after the race"
+    );
+    assert_eq!(node.cell.position(&venue(), &object()), taken);
+
+    // And the plain cancel: at its time to live the replacement is
+    // withdrawn, the venue holds nothing for the intention, and the chain
+    // says what was withdrawn.
+    let third = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        Some(&mut requoter),
+        &mut stats,
+        t(25),
+    )?;
+    assert!(matches!(third, PassOutcome::Ran { .. }), "{third:?}");
+    assert!(
+        !gateway.venue_holds_open(&replacement),
+        "the venue still holds the order the cell cancelled"
+    );
+    let expired: Vec<Decision> = sealed(&node, "order_expired")
+        .into_iter()
+        .filter(|decision| {
+            matches!(decision, Decision::OrderExpired { order_id, .. } if order_id == &resting.order_id)
+        })
+        .collect();
+    assert_eq!(
+        expired,
+        vec![Decision::OrderExpired {
+            order_id: resting.order_id.clone(),
+            venue: VENUE.to_string(),
+            withdrawn: remainder.to_string(),
+        }],
+        "the cancel is not in the chain with the quantity the venue withdrew"
+    );
+    assert_eq!(
+        node.cell.position(&venue(), &object()),
+        venue_position(&gateway),
+        "the cell's position and the venue's disagree after the cancel"
+    );
     Ok(())
 }
 
