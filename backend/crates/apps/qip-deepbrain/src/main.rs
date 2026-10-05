@@ -108,7 +108,7 @@ fn run() -> Result<()> {
     // registry made for the health thread would answer every scrape with an
     // empty surface forever, while the platform recorded diligently into one
     // nothing could reach.
-    let telemetry = Telemetry::new("qip-deepbrain", clock.clone());
+    let telemetry = Telemetry::foreground("qip-deepbrain", clock.clone());
     let metrics = telemetry.metrics.clone();
     // A second handle on the same three `Arc`s, taken for the same reason the
     // registry handle above is: the drain thread must read the registry the

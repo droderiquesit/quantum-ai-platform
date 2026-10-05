@@ -100,6 +100,11 @@ impl Logger {
         self.echo.store(u8::from(echo), Ordering::SeqCst);
     }
 
+    /// Whether records are also written to stderr.
+    pub fn echoes(&self) -> bool {
+        self.echo.load(Ordering::SeqCst) == 1
+    }
+
     pub fn log(
         &self,
         severity: Severity,
@@ -116,7 +121,7 @@ impl Logger {
             message: message.into(),
             fields,
         };
-        if self.echo.load(Ordering::SeqCst) == 1 {
+        if self.echoes() {
             eprintln!("{}", record.to_line());
         }
         let mut guard = self.records.lock().unwrap_or_else(|e| e.into_inner());

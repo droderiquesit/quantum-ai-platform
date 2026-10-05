@@ -33,7 +33,7 @@ use qip_edge::telemetry::{
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SimulatedFeed};
 use qip_edge_node::gateway::SimulatedGateway;
-use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
+use qip_edge_node::pass::{PassLog, PassMeter, PassOutcome, PassStats, run_pass};
 use qip_edge_node::reprice::{Requote, Requoter};
 use qip_edge_node::share::RegionShareStatus;
 use qip_edge_node::{NodeAssembly, assemble};
@@ -2317,4 +2317,258 @@ fn an_assembled_node_enables_order_taking_and_routing_at_its_venue_and_nothing_e
         );
     }
     Ok(())
+}
+
+// --- OBS-021: the pass loop's stderr is sampled, not per event --------------
+
+/// Lines the sampler lets through per window in the storm below — the figure
+/// `main.rs` passes to [`PassLog::new`].
+const LINES_PER_WINDOW: u32 = 5;
+
+/// Run `passes` passes inside one nine-second span with the touch walking
+/// away from a resting order on every one, so every pass mints at least one
+/// requote outcome, and return `(requote outcomes, lines written)`.
+///
+/// The span is fixed and the pass count is the variable, because that is the
+/// shape of the claim: a busier market in the same wall-clock window.
+fn stderr_lines_for_a_requote_storm(passes: i64) -> Result<(usize, usize)> {
+    let (mut node, mut gateway, mut feed) =
+        node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
+    let mut requoter = requoter(&node)?;
+    let mut stats = PassStats::default();
+    // A wide book, so the bid has a hundred whole units to walk through
+    // before it reaches the offer.
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("301"), dec!("400"), t(1))?;
+    let first = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        Some(&mut requoter),
+        &mut stats,
+        t(10),
+    )?;
+    let PassOutcome::Ran { report, .. } = &first else {
+        panic!("a running node reported its first pass as halted: {first:?}");
+    };
+    assert_eq!(report.orders.len(), 1, "the premise is one resting order");
+    assert_eq!(report.orders[0].price, dec!("200"), "resting at the mid");
+
+    let mut log = PassLog::new(LINES_PER_WINDOW, Duration::from_secs(10))?;
+    let mut sink: Vec<u8> = Vec::new();
+    let mut outcomes = 0usize;
+    let mut written = 0usize;
+    for pass in 0..passes {
+        let now = at_ms(20_000 + pass * 9_000 / passes);
+        // Somebody bids one whole unit above the last bid: a hundred ticks
+        // past whatever the cell has resting behind it.
+        let bid = dec!("201") + Decimal::from(pass);
+        gateway.seed_touch(&object(), Side::Buy, bid, dec!("1"), now)?;
+        let outcome = run_pass(
+            &mut node.cell,
+            &mut gateway,
+            &mut feed,
+            Some(&mut requoter),
+            &mut stats,
+            now,
+        );
+        match &outcome {
+            Ok(PassOutcome::Ran { requotes, .. }) => outcomes += requotes.len(),
+            other => panic!("pass {pass} of the storm did not run: {other:?}"),
+        }
+        written += log.write(now, &outcome, &mut sink);
+    }
+    let text = String::from_utf8(sink).expect("the log is text");
+    assert_eq!(
+        text.lines().count(),
+        written,
+        "the count returned is not the count of lines that reached the sink"
+    );
+    assert!(
+        text.lines()
+            .all(|line| line.starts_with("qip-edge-node: requote: ")),
+        "{text}"
+    );
+    Ok((outcomes, written))
+}
+
+/// OBS-021's own check: the same nine seconds, eight passes and then eighty,
+/// and the stderr volume is the sample rate both times.
+///
+/// Before `PassLog` the loop wrote one line per requote outcome, so the
+/// eighty-pass window wrote ten times the eight-pass one — log ingestion
+/// proportional to how busy the market was, on the one process whose busy
+/// moments are the ones an operator most needs a readable log for.
+#[test]
+fn the_stderr_a_node_writes_in_one_window_is_the_sample_rate_whether_it_held_eight_passes_or_eighty()
+-> Result<()> {
+    let (few_outcomes, few_lines) = stderr_lines_for_a_requote_storm(8)?;
+    let (many_outcomes, many_lines) = stderr_lines_for_a_requote_storm(80)?;
+    // The premise, first: both storms offered more lines than the sampler
+    // allows, and the larger offered several times the smaller. Without this
+    // an idle node would pass by writing nothing.
+    assert!(
+        few_outcomes > LINES_PER_WINDOW as usize,
+        "the small storm minted only {few_outcomes} requote outcome(s), so the bound was never \
+         reached and nothing below is about sampling"
+    );
+    assert!(
+        many_outcomes >= few_outcomes * 5,
+        "the large storm minted {many_outcomes} outcome(s) against {few_outcomes}: not a \
+         meaningfully busier window"
+    );
+    assert_eq!(
+        few_lines, LINES_PER_WINDOW as usize,
+        "the small storm did not fill the window's allowance"
+    );
+    assert_eq!(
+        many_lines, few_lines,
+        "ten times the passes wrote a different number of lines: stderr volume follows message \
+         count, not the sample rate"
+    );
+    Ok(())
+}
+
+/// The other half of the wiring: the binary writes its per-pass lines through
+/// [`PassLog`] and has no per-event `eprintln!` of its own beside it.
+///
+/// A source scan, because `main.rs` is a binary and no test can call its
+/// loop. It asserts its premise first — that the scan is reading the loop —
+/// and matches the two fragments that would each mint a line per event.
+#[test]
+fn the_node_binary_writes_its_per_pass_lines_only_through_the_sampled_pass_log() {
+    let main = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+        .expect("the node's main.rs is readable");
+    assert!(
+        main.contains("run_pass(") && main.contains("fn serve("),
+        "the scan is not reading the serve loop"
+    );
+    assert!(
+        main.contains("pass_log.write(now, &outcome, &mut std::io::stderr())"),
+        "the serve loop no longer hands its pass outcome to PassLog"
+    );
+    for per_event in ["requote.describe()", "reconciliation break:"] {
+        assert!(
+            !main.contains(per_event),
+            "main.rs formats `{per_event}` itself: a per-event line beside the sampled log"
+        );
+    }
+}
+
+// --- OBS-018: the node's four golden signals, the pass as the unit of work --
+
+/// A pass that runs, a pass the gateway refuses, and a pass that runs again:
+/// the meter counts three, times three, counts the refused one as this
+/// service's failure, and reports how much of the request allowance the last
+/// one consumed.
+///
+/// The refused pass is asked for at an instant earlier than the last, which
+/// `SimulatedGateway::advance_to` refuses before anything is released — a
+/// real failure of the real pass, not a closure that returns an error.
+#[test]
+fn a_run_of_passes_with_a_refused_one_moves_all_four_of_the_nodes_golden_signals() -> Result<()> {
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    let registry = Arc::clone(node.scrape_registry());
+    let meter = PassMeter::new(Arc::clone(&registry), std::time::Duration::from_secs(2))?;
+    let mut stats = PassStats::default();
+
+    // The premise: no pass has run, so none of the four exists.
+    let before = registry.snapshot();
+    assert_eq!(before.counter_total(names::SERVICE_REQUESTS), 0);
+    assert_eq!(before.counter_total(names::SERVICE_ERRORS), 0);
+    assert!(
+        before
+            .gauge(names::SERVICE_SATURATION, &Labels::new())
+            .is_none()
+    );
+
+    let mut pass_at = |now: Timestamp| {
+        meter.measure(|| {
+            run_pass(
+                &mut node.cell,
+                &mut gateway,
+                &mut feed,
+                None,
+                &mut stats,
+                now,
+            )
+        })
+    };
+    let first = pass_at(t(10))?;
+    assert!(
+        matches!(first, PassOutcome::Ran { .. }),
+        "the premise is a pass that ran: {first:?}"
+    );
+    let backwards = pass_at(t(5));
+    let refusal = backwards.expect_err("a pass asked for before the last one ran");
+    assert!(
+        refusal.message().contains("passes run forward"),
+        "the pass failed for another reason: {}",
+        refusal.message()
+    );
+    let third = pass_at(t(20))?;
+    assert!(matches!(third, PassOutcome::Ran { .. }), "{third:?}");
+
+    let after = registry.snapshot();
+    assert_eq!(after.counter_total(names::SERVICE_REQUESTS), 3, "traffic");
+    assert_eq!(
+        after.counter(names::SERVICE_ERRORS, &labels([("class", "service")])),
+        1,
+        "errors: the refused pass and nothing else"
+    );
+    let latency = after
+        .histogram(names::SERVICE_LATENCY_MS, &Labels::new())
+        .expect("the latency histogram");
+    assert_eq!(latency.count, 3, "latency");
+    let saturation = after
+        .gauge(names::SERVICE_SATURATION, &Labels::new())
+        .expect("the saturation gauge");
+    assert!(
+        saturation > 0.0 && saturation < 1.0,
+        "a pass in a test took none, or all, of a two-second allowance: {saturation}"
+    );
+    Ok(())
+}
+
+/// A meter with no allowance to measure against is refused at start-up, so
+/// the loop cannot chart a division by zero on every pass.
+#[test]
+fn a_pass_meter_with_no_request_allowance_is_refused_before_the_loop_starts() -> Result<()> {
+    let (node, _gateway, _feed) = node_with_feed(PricingPolicy::Marketable)?;
+    let refused = PassMeter::new(
+        Arc::clone(node.scrape_registry()),
+        std::time::Duration::ZERO,
+    )
+    .expect_err("a zero allowance");
+    assert!(
+        refused.message().starts_with("configuration:"),
+        "{}",
+        refused.message()
+    );
+    Ok(())
+}
+
+/// The binary runs its pass inside the meter. A source scan for the same
+/// reason as the log's: `main.rs` is a binary and its loop cannot be called.
+#[test]
+fn the_node_binary_runs_its_pass_inside_the_golden_signal_meter() {
+    let main = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+        .expect("the node's main.rs is readable");
+    assert!(
+        main.contains("fn serve(") && main.contains("run_pass("),
+        "the scan is not reading the serve loop"
+    );
+    assert!(
+        main.contains("PassMeter::new(Arc::clone(metrics), REQUEST_TIMEOUT)?"),
+        "the meter is no longer built on the scraped registry and the request allowance"
+    );
+    assert!(
+        main.contains("pass_meter.measure(|| {\n                        run_pass("),
+        "the serve loop calls run_pass outside the meter"
+    );
+    assert_eq!(
+        main.matches("run_pass(").count(),
+        1,
+        "a second call to run_pass would be a pass nothing times"
+    );
 }

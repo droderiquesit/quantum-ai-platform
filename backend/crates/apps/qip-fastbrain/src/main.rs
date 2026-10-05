@@ -194,7 +194,7 @@ fn run() -> Result<()> {
     // while the platform recorded into one nothing could reach — which is the
     // shape of the defect this whole surface exists to close, rebuilt one
     // level up.
-    let telemetry = Telemetry::new("qip-fastbrain", clock.clone());
+    let telemetry = Telemetry::foreground("qip-fastbrain", clock.clone());
     let metrics = telemetry.metrics.clone();
     // A second handle on the same three `Arc`s, taken for the same reason the
     // registry handle above is: the drain thread must read the registry the

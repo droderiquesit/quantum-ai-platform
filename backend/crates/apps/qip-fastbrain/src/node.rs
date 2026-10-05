@@ -25,6 +25,7 @@
 use qip_core::error::Result;
 use qip_core::{Duration, Timestamp};
 use qip_kernel::{CycleReport, Platform};
+use qip_observability::golden::{GoldenSignals, Outcome};
 use qip_storage::ChainArchive;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -189,6 +190,11 @@ pub fn run(
     let mut archived = 0usize;
     let mut since_archive = 0u64;
 
+    // The four golden signals, with the cycle as this service's unit of work
+    // (OBS-018). Into the platform's own registry, so they are scraped and
+    // drained beside every series the cycle itself records.
+    let golden = GoldenSignals::new(platform.telemetry().metrics.clone());
+
     let reason = loop {
         if stop.load(Ordering::Relaxed) {
             break Stop::Requested;
@@ -216,6 +222,26 @@ pub fn run(
         set_status(status, |status| status.cycle_started(now));
 
         let outcome = step(platform, feed, now, config.cycle_budget)?;
+
+        // A failed cycle is this node's own notion of one: over the fast-path
+        // budget, or a stage that did not run. Stage problems are not folded
+        // in — they have their own series, and several are standing sentences
+        // about the platform's state rather than work that did not happen.
+        let cycle_millis = outcome.elapsed.as_secs_f64() * 1000.0;
+        golden.finished(
+            cycle_millis,
+            if outcome.over_budget || !outcome.report.traversed_every_stage() {
+                Outcome::Failed
+            } else {
+                Outcome::Served
+            },
+        );
+        // Saturation is the share of the interval the cycle consumed: at one
+        // the node has no gap left between cycles, and past one it is
+        // behind. A zero interval is refused by `FastBrainConfig::parse`; one
+        // that reached here by another road stops the loop rather than
+        // charting a division by zero.
+        golden.saturation(cycle_millis, config.cycle_interval.as_secs_f64() * 1000.0)?;
 
         cycles += 1;
         observed += outcome.observed as u64;

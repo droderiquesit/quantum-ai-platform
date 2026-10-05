@@ -215,8 +215,11 @@ fn run() -> Result<()> {
     // state rather than starting a second, disconnected one. The OpenObserve
     // drain thread, if configured below, reads from this handle; the platform
     // records into the same one.
-    let telemetry = Telemetry::new("qip-api", clock.clone());
+    let telemetry = Telemetry::foreground("qip-api", clock.clone());
     let telemetry_for_export = telemetry.clone();
+    // The registry the request wrapper records the four golden signals into
+    // (OBS-018), taken here for the same reason: it is the platform's own.
+    let request_metrics = telemetry.metrics.clone();
     // The limit set, read once here and never again: a bound reaches a
     // running process through this file and nothing else (ADR 0061).
     let (limits, limits_banner) = load_risk_limits()?;
@@ -481,7 +484,17 @@ fn run() -> Result<()> {
         None => handler,
     };
 
-    let server = Server::bind(&address, handler, ServerLimits::default())?;
+    // Outermost, so the latency it records is what the caller waited for the
+    // whole chain to answer, and bound with the same limits it reports
+    // saturation against (OBS-018).
+    let server_limits = ServerLimits::default();
+    let handler: Arc<dyn qip_api::http::Handler> = Arc::new(qip_api::golden::GoldenHandler::new(
+        handler,
+        request_metrics,
+        server_limits.max_concurrent,
+    )?);
+
+    let server = Server::bind(&address, handler, server_limits)?;
     let bound = server.local_address()?;
 
     // The start-up banner. An operator should be able to read what this
