@@ -33,6 +33,7 @@
 //! the assignment classically and refuses a claim that does not match.
 
 pub mod benchmark;
+pub mod foundry;
 pub mod provider;
 pub mod qaoa;
 pub mod solver;
