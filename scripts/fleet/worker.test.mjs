@@ -23,8 +23,10 @@ import {
   RESERVED_SOURCE,
   ROLES,
   assess,
+  bucketStore,
   ceilingRefusal,
   costMicroUsd,
+  dayTotalMicroUsd,
   ledgerCost,
   ledgerEntry,
   payloadOf,
@@ -32,6 +34,7 @@ import {
   readEnv,
   reservation,
   reservedPath,
+  retryDelayMs,
   runTask,
   settle,
   usdToMicro,
@@ -145,11 +148,20 @@ function fleet({ objects = { [PACKET]: JSON.stringify(good) }, haltFrom = Infini
 }
 
 /** One task against a fresh in-memory fleet. */
-async function task(options = {}, env = ENV) {
+async function task(options = {}, env = ENV, extra = {}) {
   const world = fleet(options);
   const lines = [];
-  const code = await runTask({ env, fetchImpl: world.fetchImpl, now: () => NOW, log: (line) => lines.push(line) });
-  return { ...world, code, lines, said: lines.join("\n") };
+  const waits = [];
+  const code = await runTask({
+    env,
+    fetchImpl: world.fetchImpl,
+    now: () => NOW,
+    log: (line) => lines.push(line),
+    random: () => 0.5,
+    sleep: async (ms) => void waits.push(ms),
+    ...extra,
+  });
+  return { ...world, code, lines, waits, said: lines.join("\n") };
 }
 
 const ledgerObject = (cost) => JSON.stringify({ cost_micro_usd: cost });
@@ -438,7 +450,7 @@ test("the ledger object records what the API reported, the price row used, the c
     choices: [{ finish_reason: "stop", message: { content: "ready" } }],
     usage: { prompt_tokens: 7, completion_tokens: 1, total_tokens: 8 },
   };
-  const settled = settle({ packet: good, row, worstMicro, outcome: { body } });
+  const settled = settle({ packet: good, row, worstMicro, outcome: { body }, tries: { attempts: 2, statuses: [429, 200], waitedMs: 1500 } });
   const entry = ledgerEntry({
     packet: good,
     run: "run-1",
@@ -481,31 +493,34 @@ test("the ledger object records what the API reported, the price row used, the c
     cost_basis: "reported",
     status: "ok",
     http_status: null,
+    attempts: 2,
+    attempt_http_statuses: [429, 200],
+    waited_ms: 1500,
     input_sha256: "in",
     output_sha256: createHash("sha256").update("ready").digest("hex"),
     ms: 1000,
   });
 });
 
-test("a call the API put no usage figure on is billed at the worst case and labelled a bound, never recorded as zero", () => {
+test("a call the API put no usage figure on is billed at the worst case and labelled a bound, never recorded as zero, unless the provider said 429 or 503", () => {
   const { row, worstMicro } = assess(good, { slotCapMicro: SLOT_CAP });
   // Premise: the worst case is not zero, or "billed at the worst case" says nothing.
   assert.equal(worstMicro, 400);
   const settled = (outcome) => settle({ packet: good, row, worstMicro, outcome });
   const cases = [
-    [{ error: "The operation was aborted due to timeout" }, "no_response", null],
-    [{ httpStatus: 429 }, "provider_refused", 429],
-    [{ httpStatus: 500 }, "provider_refused", 500],
-    [{ body: { model: FLASH_LITE, choices: [{ message: { content: "ready" } }] } }, "usage_missing", null],
-    [{ body: { model: FLASH_LITE, usage: { prompt_tokens: "7", completion_tokens: 1 } } }, "usage_missing", null],
-    [{ body: { model: FLASH_LITE, usage: { prompt_tokens: 7, completion_tokens: -1 } } }, "usage_missing", null],
+    [{ error: "The operation was aborted due to timeout" }, "no_response", null, "worst_case_no_response"],
+    [{ httpStatus: 500 }, "provider_refused", 500, "worst_case"],
+    [{ httpStatus: 400 }, "provider_refused", 400, "worst_case"],
+    [{ body: { model: FLASH_LITE, choices: [{ message: { content: "ready" } }] } }, "usage_missing", null, "worst_case"],
+    [{ body: { model: FLASH_LITE, usage: { prompt_tokens: "7", completion_tokens: 1 } } }, "usage_missing", null, "worst_case"],
+    [{ body: { model: FLASH_LITE, usage: { prompt_tokens: 7, completion_tokens: -1 } } }, "usage_missing", null, "worst_case"],
   ];
-  for (const [outcome, status, httpStatus] of cases) {
+  for (const [outcome, status, httpStatus, basis] of cases) {
     const result = settled(outcome);
     assert.equal(result.status, status, JSON.stringify(outcome));
     assert.equal(result.http_status, httpStatus);
     assert.equal(result.cost_micro_usd, worstMicro, `${status} was not billed at the worst case`);
-    assert.equal(result.cost_basis, "worst_case");
+    assert.equal(result.cost_basis, basis);
     assert.equal(result.prompt_tokens, null, "a token count was invented for a call that reported none");
   }
 });
@@ -749,7 +764,7 @@ test("a key set in the task's environment is refused by the vertex preset before
 
 test("a refused or silent provider still leaves an output object and a settled ledger object, and the task fails", async () => {
   const cases = [
-    [async () => answer(429, {}), "provider_refused"],
+    [async () => answer(500, {}), "provider_refused"],
     [async () => { throw new Error("The operation was aborted due to timeout"); }, "no_response"],
     [async () => completion({ choices: [{ finish_reason: "length", message: { content: "" } }] }), "empty"],
   ];
@@ -789,4 +804,135 @@ test("the model's answer is stored byte for byte as text, and nothing it says ch
   assert.equal(ledger.status, "ok");
   assert.equal(ledger.cost_micro_usd, 2);
   assert.equal(ledger.cost_basis, "reported");
+});
+
+// --- retry (ADR 0102: 17 of 40 and 4 of 17 calls were answered 429) ---------
+
+const refusedWith = (status, headers = {}) => ({
+  ...answer(status, {}),
+  headers: { get: (name) => headers[name.toLowerCase()] ?? null },
+});
+/** The model endpoint answers each call from `replies` in turn, the last one forever. */
+const replying = (replies) => {
+  let at = 0;
+  return async () => replies[Math.min(at++, replies.length - 1)]();
+};
+
+test("a 429 followed by a 200 yields one ok packet billed once, from usage, with both attempts recorded", async () => {
+  const { code, seen, bucket, waits, said } = await task({ chat: replying([() => refusedWith(429), () => completion()]) });
+  assert.equal(code, 0, said);
+  assert.equal(seen.chat.length, 2);
+  const ledger = JSON.parse(bucket.get(LEDGER));
+  assert.equal(ledger.status, "ok");
+  assert.equal(ledger.cost_micro_usd, 2, "billed for the refusal as well as the answer, or not from usage");
+  assert.equal(ledger.cost_basis, "reported");
+  assert.equal(ledger.attempts, 2);
+  assert.deepEqual(ledger.attempt_http_statuses, [429, 200]);
+  // random() is 0.5 and the first ceiling is 2000 ms.
+  assert.deepEqual(waits, [1000]);
+  assert.equal(ledger.waited_ms, 1000);
+});
+
+test("four consecutive 429s end as provider_refused costing nothing, with four attempts, three waits and no output text", async () => {
+  const { code, seen, bucket, waits } = await task({ chat: replying([() => refusedWith(429)]) });
+  assert.notEqual(code, 0);
+  assert.equal(seen.chat.length, 4, "not four attempts in total");
+  const ledger = JSON.parse(bucket.get(LEDGER));
+  assert.equal(ledger.status, "provider_refused");
+  assert.equal(ledger.http_status, 429);
+  assert.equal(ledger.cost_micro_usd, 0, "a refusal the provider did not process was billed");
+  assert.equal(ledger.cost_basis, "refused_unbilled");
+  assert.equal(ledger.attempts, 4);
+  assert.deepEqual(ledger.attempt_http_statuses, [429, 429, 429, 429]);
+  // Full jitter at random() 0.5 over 2000, 4000, 8000 ms.
+  assert.deepEqual(waits, [1000, 2000, 4000]);
+  assert.equal(ledger.waited_ms, 7000);
+  assert.equal(JSON.parse(bucket.get(OUTPUT)).text, "");
+});
+
+test("a 503 is retried like a 429, and 400, 500 and a transport failure are each tried once and never again", async () => {
+  const retried = await task({ chat: replying([() => refusedWith(503), () => completion()]) });
+  assert.equal(retried.seen.chat.length, 2);
+  const cases = [
+    [() => refusedWith(400), "worst_case"],
+    [() => refusedWith(500), "worst_case"],
+    [() => { throw new Error("socket hang up"); }, "worst_case_no_response"],
+  ];
+  for (const [reply, basis] of cases) {
+    const { seen, bucket, waits } = await task({ chat: replying([reply, () => completion()]) });
+    assert.equal(seen.chat.length, 1, "a non-retryable failure was sent again");
+    assert.deepEqual(waits, []);
+    const ledger = JSON.parse(bucket.get(LEDGER));
+    assert.equal(ledger.cost_micro_usd, 400, "an unknown outcome was not billed at the worst case");
+    assert.equal(ledger.cost_basis, basis);
+    assert.equal(ledger.attempts, 1);
+  }
+});
+
+test("a transport failure on a retry is billed at the worst case and says so, because nobody can know whether the model ran", async () => {
+  const { seen, bucket } = await task({ chat: replying([() => refusedWith(429), () => { throw new Error("socket hang up"); }]) });
+  assert.equal(seen.chat.length, 2);
+  const ledger = JSON.parse(bucket.get(LEDGER));
+  assert.equal(ledger.status, "no_response");
+  assert.equal(ledger.cost_micro_usd, 400);
+  assert.equal(ledger.cost_basis, "worst_case_no_response");
+  assert.deepEqual(ledger.attempt_http_statuses, [429, null]);
+});
+
+test("Retry-After in whole seconds is honoured, capped at sixty seconds and at the deadline left, and a malformed one falls back to jitter", () => {
+  const base = { attempt: 1, random: () => 0.5, remainingMs: 300_000 };
+  assert.equal(retryDelayMs({ ...base, retryAfter: "7" }), 7000, "Retry-After was not honoured");
+  assert.equal(retryDelayMs({ ...base, retryAfter: "0" }), 0);
+  assert.equal(retryDelayMs({ ...base, retryAfter: "3600" }), 60_000, "a wait over a minute");
+  assert.equal(retryDelayMs({ ...base, retryAfter: "30", remainingMs: 12_000 }), 12_000, "a wait past the deadline");
+  for (const bad of ["soon", "-5", "1.5", "Wed, 21 Oct 2026 07:28:00 GMT", "", undefined, null]) {
+    assert.equal(retryDelayMs({ ...base, retryAfter: bad }), 1000, `'${bad}' was believed`);
+  }
+});
+
+test("the worker waits what Retry-After says, through the injected sleep", async () => {
+  const { waits } = await task({ chat: replying([() => refusedWith(429, { "retry-after": "7" }), () => completion()]) });
+  assert.deepEqual(waits, [7000]);
+});
+
+test("the backoff is full jitter over base times two to the attempt, drawn from the injected random function and nothing else", () => {
+  const draw = (attempt, value) => retryDelayMs({ attempt, random: () => value, remainingMs: 300_000 });
+  assert.deepEqual([1, 2, 3].map((attempt) => draw(attempt, 0.999999)), [1999, 3999, 7999]);
+  assert.deepEqual([1, 2, 3].map((attempt) => draw(attempt, 0)), [0, 0, 0]);
+  assert.equal(draw(2, 0.25), 1000);
+});
+
+test("HALT appearing between attempts stops the retries, sends nothing further, and records a refused_unbilled zero", async () => {
+  // HALT is looked for at the start (1), before the call (2) and before the
+  // second attempt (3): present from the third look.
+  const { code, seen, bucket, said } = await task({ haltFrom: 3, chat: replying([() => refusedWith(429)]) });
+  assert.equal(seen.haltChecks, 3, "HALT was not looked for before the retry");
+  assert.equal(seen.chat.length, 1, "a call was sent after the fleet was halted");
+  assert.notEqual(code, 0);
+  assert.ok(said.includes("HALT exists"), said);
+  const ledger = JSON.parse(bucket.get(LEDGER));
+  assert.equal(ledger.status, "halted");
+  assert.equal(ledger.cost_micro_usd, 0);
+  assert.equal(ledger.cost_basis, "refused_unbilled");
+  assert.equal(ledger.attempts, 1);
+  assert.equal(bucket.has(OUTPUT), false);
+});
+
+test("a retry never waits past the task's own deadline: with none left the refusal is final", async () => {
+  // The clock jumps five minutes once the first attempt has been answered.
+  let late = false;
+  const now = () => new Date(NOW.getTime() + (late ? 300_000 : 0));
+  const chat = replying([() => ((late = true), refusedWith(429))]);
+  const { seen, bucket, waits } = await task({ chat }, ENV, { now });
+  assert.equal(seen.chat.length, 1, "retried with no deadline left");
+  assert.deepEqual(waits, []);
+  assert.equal(JSON.parse(bucket.get(LEDGER)).cost_basis, "refused_unbilled");
+});
+
+test("the day's total counts a reserved but unfinalised object at its worst case and a refused_unbilled one at zero", async () => {
+  const reserved = JSON.stringify({ status: "reserved", cost_micro_usd: 400, cost_basis: "worst_case" });
+  const unbilled = JSON.stringify({ status: "provider_refused", cost_micro_usd: 0, cost_basis: "refused_unbilled" });
+  const world = fleet({ objects: { "ledger/2026-10-04/a-0.json": reserved, "ledger/2026-10-04/a-1.json": unbilled } });
+  const store = bucketStore({ bucket: BUCKET, token: async () => "tok", fetchImpl: world.fetchImpl });
+  assert.equal(await dayTotalMicroUsd(store, "2026-10-04"), 400);
 });

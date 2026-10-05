@@ -36,8 +36,18 @@
  * its spend, where a ledger written only on the way out would leave none, and
  * spend with no ledger object is the one thing ADR 0102 says halts the fleet.
  * `cost_basis` says which kind of number each object holds: `reported` is a
- * measurement, `worst_case` is a bound, `no_call` is zero because nothing was
- * sent.
+ * measurement, `worst_case` is a bound, `worst_case_no_response` is a bound
+ * because a transport failure does not say whether the model ran, `no_call`
+ * is zero because nothing was sent, and `refused_unbilled` is zero because
+ * the provider answered 429 or 503 and so processed nothing.
+ *
+ * ## Retry (ADR 0102, measured 2026-10-05)
+ *
+ * Vertex answered 429 to 17 of 40 calls on one model and 4 of 17 on another
+ * at Job parallelism 8. The one chat call is retried on 429 and 503 only, at
+ * most four attempts in all, and billed for what ran: a refusal that carries
+ * no usage costs nothing, where billing it at the worst case booked 22,440 of
+ * a run's 27,252 micro-USD as spend that never happened.
  *
  * ## Money
  *
@@ -93,6 +103,12 @@ const TEXT_FIELDS = ["packet_id", "role", "model", "why_this_tier", "task", "con
 const TOKEN_FIELDS = ["max_input_tokens", "max_output_tokens"];
 const PATH_FIELDS = ["paths", "source_paths"];
 const FIELDS = [...TEXT_FIELDS, ...PATH_FIELDS, ...TOKEN_FIELDS];
+
+/** ADR 0102 retry policy: 429 and 503 only, four attempts in all. */
+export const RETRY_STATUSES = [429, 503];
+export const MAX_ATTEMPTS = 4;
+const BACKOFF_BASE_MS = 2000;
+const MAX_WAIT_MS = 60_000;
 
 /** Below the Job's default 600 s task timeout, so the worker settles its own ledger. */
 const CHAT_TIMEOUT_MS = 300_000;
@@ -359,11 +375,69 @@ export function ledgerCost(text) {
   }
 }
 
+/**
+ * How long to wait after failed attempt number `attempt` (1-based), in ms.
+ *
+ * A valid `Retry-After` (whole seconds) is honoured; anything else, an
+ * HTTP-date included, falls back to full jitter over base * 2^(attempt-1),
+ * `random` being injected so a test is deterministic. Never more than 60 s,
+ * and never more than the task's `remainingMs`.
+ * ponytail: HTTP-date Retry-After is not parsed; Vertex was not observed to send one.
+ */
+export function retryDelayMs({ attempt, retryAfter, random, remainingMs }) {
+  const asked = typeof retryAfter === "string" && /^\d{1,6}$/.test(retryAfter.trim()) ? Number(retryAfter.trim()) * 1000 : null;
+  const wait = asked ?? Math.floor(random() * BACKOFF_BASE_MS * 2 ** (attempt - 1));
+  return Math.max(0, Math.min(wait, MAX_WAIT_MS, remainingMs));
+}
+
+/**
+ * The one chat call, retried on 429 and 503. `send(timeoutMs)` returns a
+ * response; `halted()` is looked up before every attempt after the first.
+ *
+ * Returns `{ outcome, attempts, statuses, waitedMs }`, or `{ halted: true, ... }`
+ * when HALT appeared between attempts. A thrown error is never retried: bytes
+ * may have been sent and the provider may have run the model.
+ */
+export async function callWithRetry({ send, halted, random, sleep, now, deadlineMs }) {
+  const began = now();
+  const statuses = [];
+  let waitedMs = 0;
+  for (let attempt = 1; ; attempt += 1) {
+    const remainingMs = deadlineMs - (now() - began);
+    const result = (extra) => ({ attempts: statuses.length, statuses, waitedMs, ...extra });
+    if (attempt > 1 && (await halted())) return result({ halted: true });
+    let response;
+    try {
+      response = await send(Math.max(1, Math.min(CHAT_TIMEOUT_MS, remainingMs)));
+      if (response.ok) {
+        const body = await response.json();
+        statuses.push(response.status);
+        return result({ outcome: { body } });
+      }
+    } catch (cause) {
+      statuses.push(null);
+      return result({ outcome: { error: String(cause?.message ?? cause) } });
+    }
+    statuses.push(response.status);
+    const left = deadlineMs - (now() - began);
+    if (!RETRY_STATUSES.includes(response.status) || attempt >= MAX_ATTEMPTS || left <= 0) {
+      return result({ outcome: { httpStatus: response.status } });
+    }
+    const wait = retryDelayMs({ attempt, retryAfter: response.headers?.get?.("retry-after"), random, remainingMs: left });
+    await sleep(wait);
+    waitedMs += wait;
+  }
+}
+
 /** What the ledger says before the call: the worst case, held. */
 export const reservation = (worstMicro) => ({ status: "reserved", cost_micro_usd: worstMicro, cost_basis: "worst_case" });
 
+const NO_ATTEMPTS = { attempts: 0, statuses: [], waitedMs: 0 };
+
 /** What the ledger says when HALT stopped the call after the reservation. */
 export const NO_CALL = { status: "halted", cost_micro_usd: 0, cost_basis: "no_call" };
+
+const attemptsOf = (tries) => ({ attempts: tries.attempts, attempt_http_statuses: tries.statuses, waited_ms: tries.waitedMs });
 
 /**
  * What one call cost, from what the API said about it, or from its silence.
@@ -373,8 +447,11 @@ export const NO_CALL = { status: "halted", cost_micro_usd: 0, cost_basis: "no_ca
  * usage figure on is billed at the worst case and labelled as a bound**: a
  * timeout does not say whether the model ran, and a ledger that records zero
  * for "unknown" is the understatement that lets a day run past its ceiling.
+ * The exception is a 429 or 503, where the provider said it processed nothing:
+ * that is billed zero as `refused_unbilled`. `tries` is `callWithRetry`'s
+ * attempt record and is carried into the ledger as it is.
  */
-export function settle({ packet, row, worstMicro, outcome }) {
+export function settle({ packet, row, worstMicro, outcome, tries = NO_ATTEMPTS }) {
   const body = outcome.body ?? {};
   const completion = completionText(body);
   const said = {
@@ -387,14 +464,18 @@ export function settle({ packet, row, worstMicro, outcome }) {
     http_status,
     cost_micro_usd: worstMicro,
     cost_basis: "worst_case",
+    ...attemptsOf(tries),
     prompt_tokens: null,
     completion_tokens: null,
     total_tokens: null,
     billed_output_tokens: null,
     ...said,
   });
-  if (outcome.error) return bound("no_response");
-  if (outcome.httpStatus) return bound("provider_refused", outcome.httpStatus);
+  if (outcome.error) return { ...bound("no_response"), cost_basis: "worst_case_no_response" };
+  if (outcome.httpStatus) {
+    const refused = bound("provider_refused", outcome.httpStatus);
+    return RETRY_STATUSES.includes(outcome.httpStatus) ? { ...refused, cost_micro_usd: 0, cost_basis: "refused_unbilled" } : refused;
+  }
 
   const { prompt_tokens: prompt, completion_tokens: completed, total_tokens: total } = body.usage ?? {};
   if (![prompt, completed].every((count) => Number.isSafeInteger(count) && count >= 0)) return bound("usage_missing");
@@ -414,6 +495,7 @@ export function settle({ packet, row, worstMicro, outcome }) {
     http_status: null,
     cost_micro_usd: costMicroUsd(row, prompt, billedOutput),
     cost_basis: "reported",
+    ...attemptsOf(tries),
     prompt_tokens: prompt,
     completion_tokens: completed,
     total_tokens: Number.isSafeInteger(total) ? total : null,
@@ -453,6 +535,9 @@ export function ledgerEntry({ packet, run, index, day, row, worstMicro, inputSha
     cost_basis: settled.cost_basis,
     status: settled.status,
     http_status: settled.http_status ?? null,
+    attempts: settled.attempts ?? 0,
+    attempt_http_statuses: settled.attempt_http_statuses ?? [],
+    waited_ms: settled.waited_ms ?? 0,
     input_sha256: inputSha256,
     output_sha256: settled.text ? sha256(settled.text) : null,
     ms,
@@ -565,6 +650,8 @@ export async function runTask({
   now = () => new Date(),
   prices = PRICES,
   log = console.error,
+  random = Math.random,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
   const refuse = (code, message) => {
     log(`refused: ${message}`);
@@ -633,21 +720,33 @@ export async function runTask({
     return refuse(3, halted);
   }
 
-  let outcome;
-  try {
-    const response = await chatCompletion(
-      config,
-      [
-        { role: "system", content: WORKER_SYSTEM_PROMPT },
-        { role: "user", content: payload },
-      ],
-      { fetchImpl, timeoutMs: CHAT_TIMEOUT_MS },
+  const messages = [
+    { role: "system", content: WORKER_SYSTEM_PROMPT },
+    { role: "user", content: payload },
+  ];
+  const result = await callWithRetry({
+    send: (timeoutMs) => chatCompletion(config, messages, { fetchImpl, timeoutMs }),
+    halted: () => store.exists("HALT"),
+    random,
+    sleep,
+    now: () => now().getTime(),
+    deadlineMs: CHAT_TIMEOUT_MS,
+  });
+  if (result.halted) {
+    // Every earlier attempt was a 429 or 503, which the provider did not process.
+    await store.write(
+      ledgerName,
+      record({
+        status: "halted",
+        http_status: result.statuses.at(-1),
+        cost_micro_usd: 0,
+        cost_basis: "refused_unbilled",
+        ...attemptsOf(result),
+      }),
     );
-    outcome = response.ok ? { body: await response.json() } : { httpStatus: response.status };
-  } catch (cause) {
-    outcome = { error: String(cause?.message ?? cause) };
+    return refuse(3, halted);
   }
-  const settled = settle({ packet, row, worstMicro, outcome });
+  const settled = settle({ packet, row, worstMicro, outcome: result.outcome, tries: result });
 
   // The output first: if the task dies between the two writes the ledger
   // still holds the reservation, which overstates and never understates.
