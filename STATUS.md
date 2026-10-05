@@ -8,7 +8,8 @@ Branch: `docs/hermes-phase-0`, worktree `.claude/worktrees/hermes-phase-0`.
 ## Measured so far
 - Register, 2026-10-05 after three rounds of requirement lanes: 328 complete (20.5%), 653 partial, 374 missing, 166 blocked, 80 unscored of 1601. Most closures are library-level (`integrated=false`).
 - Integrated tree (`db97c010`): `cargo test --workspace --no-fail-fast` exit 0, 588 `test result:` lines, 7131 passed, 0 failed, 0 ignored; clippy 0 warnings; fmt clean.
-- Unmerged: REFLEX lane (edge-cell conflicts, being resolved), RISK lane (its new guard RISK-001 refuses the CAPITAL lane's `rebalance.rs` as an unnamed TransferIntent originator; needs an owner decision, not a guard edit), six round 3 worktrees cut off mid-work by a session limit (uncommitted, kept).
+- REFLEX lane merged (`adba039e`) after an independent security review (APPROVE): edge, edge-node and acceptance suites 1146 passed, 0 failed. Open ticket from that review: a crossed simulated snapshot refused in `SimulatedFeed::publish` stops `run_pass` before fill confirmation and expiry withdrawal (fails closed for new orders, not for resting ones).
+- Unmerged: RISK lane (its new guard RISK-001 refuses the CAPITAL lane's `rebalance.rs` as an unnamed TransferIntent originator; needs an owner decision, not a guard edit), six round 3 worktrees cut off mid-work by a session limit (uncommitted, kept).
 - Blueprint of record in direction: v12.0 and GCP v3.0 (ADR 0101). 1,601 requirements, 31 domains.
 - Nothing of the platform itself is deployed; no market data is ingested from a real source; the portal has not been run this session.
 
