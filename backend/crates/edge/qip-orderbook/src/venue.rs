@@ -21,7 +21,7 @@
 //! captured session reproduce this state exactly.
 
 use crate::auction::AuctionState;
-use crate::book::Book;
+use crate::book::{Book, BookCheckpoint};
 use crate::snapshot::{BookKind, VenueSnapshot};
 use crate::view::{BookCondition, BookView, Level, Sweep};
 use qip_contracts::{BookSide, MarketMessage, MessageBody, TradeCondition, VenueId, VenueStatus};
@@ -39,6 +39,29 @@ pub struct LastTrade {
     pub aggressor: Option<BookSide>,
     /// Venue time of the print.
     pub at: Timestamp,
+}
+
+/// Everything a [`VenueState`] holds, as plain data a replay can start from.
+///
+/// Carries the bookkeeping the book alone lacks (sequence, session totals, the
+/// stale flag): a restore that dropped `awaiting_snapshot` would hand back a
+/// book known to be wrong as though it were whole.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VenueCheckpoint {
+    object_id: ObjectId,
+    venue: VenueId,
+    status: VenueStatus,
+    book: BookCheckpoint,
+    auction: Option<AuctionState>,
+    last_trade: Option<LastTrade>,
+    session_volume: Decimal,
+    session_notional: Decimal,
+    trade_count: u64,
+    awaiting_snapshot: bool,
+    reset_reason: Option<String>,
+    last_update: Option<Timestamp>,
+    last_sequence: Option<u64>,
+    applied: u64,
 }
 
 /// One instrument at one venue.
@@ -336,6 +359,47 @@ impl VenueState {
     /// Which resolution the book is built from.
     pub fn kind(&self) -> BookKind {
         self.book.kind()
+    }
+
+    /// Capture the whole state so a replay can start from here.
+    pub fn checkpoint(&self) -> VenueCheckpoint {
+        VenueCheckpoint {
+            object_id: self.object_id.clone(),
+            venue: self.venue.clone(),
+            status: self.status,
+            book: self.book.checkpoint(),
+            auction: self.auction,
+            last_trade: self.last_trade,
+            session_volume: self.session_volume,
+            session_notional: self.session_notional,
+            trade_count: self.trade_count,
+            awaiting_snapshot: self.awaiting_snapshot,
+            reset_reason: self.reset_reason.clone(),
+            last_update: self.last_update,
+            last_sequence: self.last_sequence,
+            applied: self.applied,
+        }
+    }
+
+    /// Rebuild a state from a checkpoint; continuing it with the messages that
+    /// followed reaches the state a replay from the start reaches.
+    pub fn restore(c: &VenueCheckpoint) -> Result<Self> {
+        Ok(Self {
+            object_id: c.object_id.clone(),
+            venue: c.venue.clone(),
+            status: c.status,
+            book: Book::restore(&c.book)?,
+            auction: c.auction,
+            last_trade: c.last_trade,
+            session_volume: c.session_volume,
+            session_notional: c.session_notional,
+            trade_count: c.trade_count,
+            awaiting_snapshot: c.awaiting_snapshot,
+            reset_reason: c.reset_reason.clone(),
+            last_update: c.last_update,
+            last_sequence: c.last_sequence,
+            applied: c.applied,
+        })
     }
 
     /// A comparable picture of the whole state.

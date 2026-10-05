@@ -58,6 +58,7 @@ pub mod engine;
 mod fsio;
 pub mod gcp;
 pub mod kv;
+pub mod lake;
 pub mod managed;
 pub mod provider;
 pub mod redis;

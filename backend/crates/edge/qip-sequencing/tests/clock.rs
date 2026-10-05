@@ -5,7 +5,7 @@
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::testing::{Property, approx_eq};
 use qip_core::{Duration, Timestamp};
-use qip_sequencing::{ClockDiscipline, ClockObservation};
+use qip_sequencing::{ClockDiscipline, ClockObservation, CorrectionKind};
 
 const NANOS_PER_MICRO: i64 = 1_000;
 
@@ -244,4 +244,85 @@ fn clearing_the_history_after_a_clock_step_does_not_release_the_monotonic_floor(
         1,
         "and the clamp is counted, not hidden"
     );
+}
+
+#[test]
+fn a_correction_is_recorded_leaves_the_originals_alone_and_can_be_reversed() {
+    let mut rng = Xoshiro256::seeded(23);
+    let mut discipline = discipline();
+    for observation in observations(
+        &mut rng,
+        32,
+        Duration::from_micros(200),
+        Duration::ZERO,
+        NANOS_PER_MICRO,
+    ) {
+        discipline.observe(observation);
+    }
+    // Premise: the estimate is trusted and non-zero, so a correction is due.
+    let estimate = discipline.estimate().expect("observations were made");
+    assert!(estimate.trustworthy && !estimate.offset.is_zero());
+
+    let venue = Timestamp::from_nanos(1_704_207_900_000_000_000);
+    let capture = venue.saturating_add(Duration::from_micros(250));
+    let traced = discipline.discipline_traced(venue, capture);
+
+    assert_eq!(traced.venue_time, venue);
+    assert_eq!(traced.capture_time, capture);
+    assert_eq!(traced.normalized, venue.saturating_add(estimate.offset));
+    assert_eq!(traced.corrections.len(), 1);
+    let correction = traced.corrections[0];
+    assert_eq!(correction.kind, CorrectionKind::OffsetEstimate);
+    assert_eq!(correction.delta, estimate.offset);
+    assert_eq!(correction.applied_at, capture);
+    assert_eq!(correction.samples, 32);
+    assert_eq!(traced.reversed(), venue);
+}
+
+#[test]
+fn the_monotonic_floor_is_a_recorded_correction_and_reversing_both_recovers_the_venue_time() {
+    let mut rng = Xoshiro256::seeded(29);
+    let mut discipline = discipline();
+    for observation in observations(
+        &mut rng,
+        32,
+        Duration::from_micros(200),
+        Duration::ZERO,
+        NANOS_PER_MICRO,
+    ) {
+        discipline.observe(observation);
+    }
+    let late = Timestamp::from_nanos(1_704_207_900_000_000_000);
+    let first = discipline.discipline_traced(late, late);
+    assert_eq!(
+        first.corrections.len(),
+        1,
+        "premise: the first call only has the estimate"
+    );
+
+    let early = late.saturating_sub(Duration::from_secs(1));
+    let second = discipline.discipline_traced(early, late);
+
+    assert_eq!(second.normalized, first.normalized);
+    let kinds: Vec<_> = second.corrections.iter().map(|c| c.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            CorrectionKind::OffsetEstimate,
+            CorrectionKind::MonotonicFloor
+        ]
+    );
+    assert!(second.corrections[1].delta.as_nanos() > 0);
+    assert_eq!(second.venue_time, early);
+    assert_eq!(second.reversed(), early);
+}
+
+#[test]
+fn an_untrusted_estimate_records_no_correction() {
+    let mut discipline = discipline();
+    let venue = Timestamp::from_nanos(1_704_207_900_000_000_000);
+    assert!(discipline.estimate().is_none(), "premise: no observations");
+    let traced = discipline.discipline_traced(venue, venue);
+    assert!(traced.corrections.is_empty());
+    assert_eq!(traced.normalized, venue);
 }

@@ -138,6 +138,7 @@ pub mod dataset;
 pub mod distill;
 pub mod estimators;
 pub mod job;
+pub mod labels;
 pub mod local;
 pub mod serve;
 pub mod vertex;
