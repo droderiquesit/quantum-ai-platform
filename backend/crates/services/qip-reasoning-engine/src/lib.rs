@@ -31,12 +31,16 @@
 
 pub mod bayes;
 pub mod belief;
+pub mod constraint;
 pub mod engine;
 pub mod evidence;
 pub mod hypothesis;
+pub mod lifecycle;
+pub mod network;
 pub mod providers;
 pub mod redteam;
 pub mod rules;
+pub mod temporal;
 
 pub use bayes::{BaseRate, BeliefUpdate, EvidenceStrength};
 pub use belief::BeliefState;

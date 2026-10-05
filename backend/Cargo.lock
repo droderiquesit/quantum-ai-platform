@@ -761,6 +761,7 @@ dependencies = [
  "qip-agents",
  "qip-ai",
  "qip-core",
+ "qip-numerics",
  "qip-transport",
  "qip-world-model",
  "serde",
