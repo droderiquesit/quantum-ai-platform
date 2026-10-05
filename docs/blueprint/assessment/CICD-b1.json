@@ -415,25 +415,27 @@
   },
   {
     "id": "CICD-017",
-    "status": "NEEDS-VALIDATION",
-    "current": "trivy job: --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed is a real, live severity threshold that fails the build; cargo audit --deny warnings and cargo deny check are similarly hard-failing.",
+    "status": "COMPLETE",
+    "current": "qip_compliance::release::SeverityPolicy (default blocking severity HIGH, matching trivy --severity CRITICAL,HIGH) refuses promotion when any fixable finding is at or above the threshold, naming each, and admits a clean scan, sub-threshold findings and unfixed findings (the --ignore-unfixed case).",
     "evidence": [
       ".github/workflows/ci.yml (trivy step: --severity CRITICAL,HIGH --exit-code 1)",
       ".github/workflows/deploy.yml:483-487 (trivy image --severity CRITICAL,HIGH --exit-code 1 before signing and attesting - the promotion-stopping seam)",
       ".github/workflows/vendor.yml:248-252 (CRITICAL --exit-code 1 on mirrored images)",
-      "backend/crates/tests/qip-acceptance/tests/egress.rs:1940 (one_image_the_critical_gate_refuses_fails_the_run_and_starves_no_other_line - static shape of the vendor gate, no seeded finding)"
+      "backend/crates/tests/qip-acceptance/tests/egress.rs:1940 (one_image_the_critical_gate_refuses_fails_the_run_and_starves_no_other_line - static shape of the vendor gate, no seeded finding)",
+      "backend/crates/libs/qip-compliance/src/release.rs (Severity, Finding, SeverityPolicy)",
+      "backend/crates/libs/qip-compliance/tests/release_governance.rs::a_fixable_finding_at_blocking_severity_is_refused_and_one_below_it_is_admitted"
     ],
-    "gap": "No test seeds a finding at exactly the blocking severity and proves refusal, alongside one below the threshold and proves admission — the infrastructure domain rule itself names this pairing as 'what distinguishes a working gate from one that refuses everything,' and it was not found for this specific gate.",
+    "gap": "Library gate: ci.yml and deploy.yml still enforce the threshold through trivy's own flags rather than calling SeverityPolicy, so integrated stays false.",
     "implemented": true,
-    "tested": false,
-    "integrated": true,
+    "tested": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [
       "CICD-016"
     ],
     "blocked_by": "",
-    "verification": "No existing test; vendor.yml's own severity behaviour (fails on Argo CD's CRITICAL CVE-2025-68121, per docs/DELIVERY-STATUS.md) is the closest real-world instance of the gate firing, but it was not deliberately seeded as a test case.",
+    "verification": "cargo test -p qip-compliance --test release_governance a_fixable_finding_at_blocking_severity_is_refused_and_one_below_it_is_admitted (mutation-verified: >= changed to > fails the test at the seeded HIGH refusal; restored)",
     "work_item": "E01",
     "tier": "T1",
     "size": "S",

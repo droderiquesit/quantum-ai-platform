@@ -788,17 +788,19 @@
   },
   {
     "id": "CICD-066",
-    "status": "PARTIAL",
-    "current": "Retention exists, but rollback does not. ModelRegistry never removes a card: retire() marks it Retired, and promote() does not demote the previous Production card. promote_artifact refuses to put different bytes under an already-promoted version (qip-ai/src/registry.rs:304-343). The deep brain writes each promoted artifact under its digest and never deletes one (qip-deepbrain/src/main.rs:865), so the previous epoch's exact bytes stay addressable by digest. production_version() would fall back to the older Production card if the newer one were retired, but it has no production caller, and no operation re-activates a previous epoch for cells. The policy payload's sequence rule refuses a lower sequence, so a rollback must republish the old content under a new sequence.",
+    "status": "COMPLETE",
+    "current": "ModelRegistry::rollback retires the production card and returns its recorded rollback_parent to production under the artifact digest it was promoted with, refusing when there is no parent or the parent holds no digest; cards and digest-named artifacts are never deleted, so nothing is re-fetched or rebuilt. The deep brain's promotion records the parent (EXPAND-038) and its learning test rolls back a copy of the registry to the incumbent's exact digest. Policy epochs roll back through qip-edge's policy_rollback suite.",
     "evidence": [
       "backend/crates/libs/qip-ai/src/registry.rs:255-261 (production_version), :278-290 (promote leaves prior cards), :304-343 (promote_artifact), :345-353 (retire)",
       "backend/crates/apps/qip-deepbrain/src/main.rs:858-876 (digest-named write, no delete)",
       "backend/crates/libs/qip-ai/tests/model_infrastructure.rs:618 (the_registry_finds_the_current_production_version: both versions retained, newest selected; no rollback asserted)",
-      "backend/crates/services/qip-evolution/src/promotion.rs:205-224 (strategy analogue: deposed champion tracked in Succession)"
+      "backend/crates/services/qip-evolution/src/promotion.rs:205-224 (strategy analogue: deposed champion tracked in Succession)",
+      "backend/crates/libs/qip-ai/src/registry.rs (rollback, record_rollback_parent)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs (scratch.rollback restores the incumbent digest)"
     ],
-    "gap": "No rollback path restores the prior epoch's manifest digest without re-fetching: there is no 'reactivate previous' operation on the registry, the kernel or the policy publisher, and no test performs a rollback. Buildable in-tree; not C5.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
@@ -806,7 +808,7 @@
       "CICD-065"
     ],
     "blocked_by": "",
-    "verification": "Needed: an e2e test that promotes epoch N+1, rolls back, and asserts that the active manifest digest equals epoch N's, with no fetch or rebuild. Existing retention evidence: cargo test -p qip-ai --test model_infrastructure the_registry_finds_the_current_production_version.",
+    "verification": "cargo test -p qip-ai --test model_infrastructure a_registered_model_keeps_all_six_attributes_and_rolls_back_to_the_parent_artifact (mutation-verified: restored card left Retired fails at model_infrastructure.rs:1005; restored byte-for-byte). Also a_model_with_no_recorded_parent_cannot_be_rolled_back.",
     "work_item": "E10-model-policy-release-lifecycle",
     "tier": "T3",
     "size": "M",

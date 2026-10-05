@@ -7,7 +7,8 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_compliance::release::{
-    ChangeKind, ChangeWindows, Gate, GateVerdict, PromotionPolicy, RemediationExecutor, Runbook,
+    ChangeKind, ChangeWindows, Finding, Gate, GateVerdict, PromotionPolicy, RemediationExecutor,
+    Runbook, Severity, SeverityPolicy,
 };
 use qip_compliance::signing::SigningKey;
 use qip_core::Timestamp;
@@ -197,4 +198,43 @@ fn a_network_change_outside_every_declared_window_is_refused_and_inside_one_is_a
         "an empty window never opens"
     );
     Ok(())
+}
+
+fn finding(id: &str, severity: Severity, fix_available: bool) -> Finding {
+    Finding {
+        id: id.to_string(),
+        severity,
+        fix_available,
+    }
+}
+
+#[test]
+fn a_fixable_finding_at_blocking_severity_is_refused_and_one_below_it_is_admitted() {
+    let policy = SeverityPolicy::default();
+    // Premise: a clean scan and a scan with only sub-threshold noise admit,
+    // so the refusal below is the finding's doing, not the fixture's.
+    assert!(policy.admit(&[]).is_ok());
+    let below = [
+        finding("CVE-LOW", Severity::Low, true),
+        finding("CVE-MED", Severity::Medium, true),
+    ];
+    assert!(policy.admit(&below).is_ok());
+    // An unfixed CRITICAL is `--ignore-unfixed`'s case: reported, not blocking.
+    assert!(
+        policy
+            .admit(&[finding("CVE-UNFIXED", Severity::Critical, false)])
+            .is_ok()
+    );
+
+    let mut seeded = below.to_vec();
+    seeded.push(finding("CVE-SEEDED-HIGH", Severity::High, true));
+    let refusal = policy.admit(&seeded).err().map(|e| e.to_string());
+    assert!(
+        refusal
+            .as_deref()
+            .is_some_and(|m| m.contains("CVE-SEEDED-HIGH") && !m.contains("CVE-MED")),
+        "{refusal:?}"
+    );
+    // A stricter policy moves the line: MEDIUM now blocks.
+    assert!(SeverityPolicy::new(Severity::Medium).admit(&below).is_err());
 }

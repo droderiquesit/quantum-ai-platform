@@ -9925,3 +9925,65 @@ fn the_diagnose_action_reaches_no_step_that_writes() {
         }
     }
 }
+
+// --- CICD-084: dev holds no production secret --------------------------------
+
+/// The value of a `project_id = "..."` line in one environment's tfvars.
+fn environment_project(environment: &str) -> String {
+    let content = read(&format!(
+        "infrastructure/environments/{environment}/terraform.tfvars"
+    ));
+    without_comments(&content)
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "project_id").then(|| value.trim().trim_matches('"').to_string())
+        })
+        .unwrap_or_else(|| panic!("{environment} declares no project_id"))
+}
+
+#[test]
+fn dev_secrets_cannot_be_a_production_secret_because_no_two_environments_share_a_project() {
+    // Secret Manager containers are project-scoped and named per environment,
+    // so isolation is two facts: the module only ever writes into the project
+    // it is handed, and no two environments are handed the same one. Today it
+    // holds because prod was never provisioned; this fails the day someone
+    // points dev and prod at one project to save a bill.
+    let projects: Vec<(&str, String)> = ["dev", "test", "stage", "prod"]
+        .into_iter()
+        .map(|environment| (environment, environment_project(environment)))
+        .collect();
+    assert!(
+        projects
+            .iter()
+            .any(|(_, project)| project != "unprovisioned"),
+        "premise: at least one environment names a real project, or the uniqueness check is vacuous"
+    );
+    for (index, (environment, project)) in projects.iter().enumerate() {
+        if project == "unprovisioned" {
+            continue;
+        }
+        for (other, other_project) in &projects[index + 1..] {
+            assert_ne!(
+                project, other_project,
+                "{environment} and {other} share project {project}; a shared project shares its \
+                 secret store, so dev could hold or read a production secret"
+            );
+        }
+    }
+
+    let module = without_comments(&read("infrastructure/terraform/modules/secrets/main.tf"));
+    let container = module
+        .split("resource \"google_secret_manager_secret\" \"platform\"")
+        .nth(1)
+        .and_then(|rest| rest.split("\nresource ").next())
+        .expect("premise: the platform secret container resource was found");
+    assert!(
+        container.contains("project   = var.project_id"),
+        "the secret containers must be created in the project the environment passes in"
+    );
+    assert!(
+        container.contains("\"${each.value}-${var.environment}\""),
+        "a secret id without the environment suffix could collide with another environment's"
+    );
+}
