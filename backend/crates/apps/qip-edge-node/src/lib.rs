@@ -156,6 +156,13 @@ pub fn assemble(
     if let Some(mirror) = &mirror {
         config.venue_regions = mirror.venue_regions().clone();
     }
+    // The fourth instance. `qip_routing::health` could quarantine a venue
+    // that rejects orders, was tested, and no cell held one: a venue that
+    // was down failed every pass it was sent to, and with it every other
+    // venue's orders in that pass. Armed here with the routing crate's own
+    // defaults, so a deployed cell stops sending to a venue rejecting a
+    // fifth of at least ten orders and tries it again five minutes later.
+    config = config.with_venue_health(qip_routing::health::HealthPolicy::default());
     // EXEC-020: the node enables only the two modes its paper path actually
     // performs, order taking and routing, and only at the venues the cell may
     // trade. The other six modes (quoting, liquidity provision, derivatives,

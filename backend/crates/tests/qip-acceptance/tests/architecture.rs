@@ -794,6 +794,142 @@ fn no_edge_cell_can_reach_a_historical_data_reader() {
 }
 
 #[test]
+fn no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store() {
+    // RES-081: loss of BigQuery or Bigtable has no direct impact on the
+    // reflex path. Held structurally, in two parts, because the chaos form
+    // of the check has nothing to make unreachable: neither store is
+    // provisioned, and no test can prove a negative about a network.
+    //
+    // First, the crates a pass is made of cannot reach the storage crate at
+    // all — the adapters for both stores live there and nowhere else.
+    let graph = dependency_graph();
+    assert_named_crates_exist(&graph, ["qip-storage", "qip-edge-node"]);
+    // The anchor: the node does link storage, for its journal mirror, so the
+    // walk can show presence and the absences below mean something.
+    assert!(
+        reachable_from(&graph, "qip-edge-node").contains("qip-storage"),
+        "the edge node no longer reaches qip-storage, so the absences this test asserts prove \
+         nothing about the walk"
+    );
+    let cell_crates = crates_under("backend/crates/edge");
+    assert!(
+        cell_crates.contains("qip-edge"),
+        "the cell crate was not found: {cell_crates:?}"
+    );
+    for crate_name in &cell_crates {
+        assert_named_crates_exist(&graph, [crate_name.as_str()]);
+        let reachable = reachable_from(&graph, crate_name);
+        assert!(
+            !reachable.contains("qip-storage"),
+            "the edge crate {crate_name} can reach qip-storage, where the BigQuery and Bigtable \
+             adapters live; a pass must decide from memory alone"
+        );
+    }
+
+    // Second, the one edge artifact that does link storage names neither
+    // store and opens key-value stores only. `qip-storage`'s own suite holds
+    // the other half: `key_value` refuses both targets
+    // (a_warehouse_or_a_wide_column_target_cannot_be_opened_as_the_key_value_store_a_process_keeps_its_state_on).
+    const FORBIDDEN: [&str; 4] = ["BigQuery", "Bigtable", "bigquery", ".blobs("];
+    let adapters = qip_acceptance::read("backend/crates/libs/qip-storage/src/provider.rs");
+    for token in ["BigQuery", "Bigtable", "pub fn blobs("] {
+        assert!(
+            adapters.contains(token),
+            "qip-storage no longer names {token}, so scanning the node for it proves nothing"
+        );
+    }
+    let mut scanned = 0usize;
+    let mut opens_key_value = false;
+    for path in qip_acceptance::files_with_extension("backend/crates/apps/qip-edge-node/src", "rs")
+    {
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        scanned += 1;
+        for (index, line) in text.lines().enumerate() {
+            // Shipped code, not prose: a comment may name a store to say why
+            // the node does not use it.
+            let code = line.split("//").next().unwrap_or_default();
+            opens_key_value |= code.contains(".key_value(");
+            for token in FORBIDDEN {
+                assert!(
+                    !code.contains(token),
+                    "{}:{} names {token}; the edge node may keep its journal on a key-value \
+                     store and reach no warehouse, wide-column store or blob store",
+                    path.display(),
+                    index + 1
+                );
+            }
+        }
+    }
+    assert!(
+        scanned >= 10,
+        "only {scanned} node sources were scanned; the path is wrong"
+    );
+    assert!(
+        opens_key_value,
+        "the node opens no key-value store, so the scan found nothing because it looked at \
+         nothing a store is opened from"
+    );
+}
+
+#[test]
+fn every_composition_root_that_resolves_a_storage_target_refuses_a_cache_as_the_store_of_record() {
+    // RES-072 / ARCH-054: losing Memorystore loses no financial state only
+    // while nothing authoritative can be put there. `StorageSettings` will
+    // resolve `memorystore` for whoever asks — it has an adapter — so the
+    // refusal is each root's to make, and a root that forgets it puts its
+    // event-log archive and journals in a cache with persistence disabled
+    // the first time the variable is edited. `qip` itself was that root
+    // until this test was written. Held here, so the sixth root to resolve a
+    // target cannot be the one that forgets.
+    const RESOLVE: &str = "StorageSettings::from_env(";
+    let root = repository_root();
+    let mut resolved: Vec<String> = Vec::new();
+    for path in qip_acceptance::files_with_extension("backend/crates/apps", "rs") {
+        let relative = path
+            .strip_prefix(&root)
+            .expect("the file is under the repository")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !relative.contains("/src/") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {relative}: {error}"));
+        for (offset, _) in text.match_indices(RESOLVE) {
+            // The statement the call is part of: everything up to the `;`
+            // that ends it. The refusal has to be chained there, before the
+            // settings are bound to a name anything could open a store from.
+            let statement = text[offset..].split(';').next().unwrap_or_default();
+            assert!(
+                statement.contains("require_authoritative"),
+                "{relative} resolves a storage target and does not chain \
+                 StorageSettings::require_authoritative onto it, so QIP_STORAGE_TARGET=memorystore \
+                 would make a cache this process's store of record"
+            );
+            resolved.push(relative.clone());
+        }
+    }
+    // Premise: the scan found the roots that exist. Five resolve a target
+    // today; fewer means the pattern or the path stopped matching and the
+    // loop above asserted nothing.
+    resolved.sort();
+    resolved.dedup();
+    for expected in [
+        "backend/crates/apps/qip-api/src/main.rs",
+        "backend/crates/apps/qip-cli/src/main.rs",
+        "backend/crates/apps/qip-deepbrain/src/config.rs",
+        "backend/crates/apps/qip-edge-node/src/main.rs",
+        "backend/crates/apps/qip-fastbrain/src/config.rs",
+    ] {
+        assert!(
+            resolved.iter().any(|found| found == expected),
+            "{expected} no longer resolves a storage target where this scan looks: {resolved:?}"
+        );
+    }
+}
+
+#[test]
 fn only_the_edge_cell_itself_holds_an_order_manager() {
     // A cell is a composition root, and like the kernel it is the one place
     // the pieces are allowed to meet. A protocol decoder, an order book, a

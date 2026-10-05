@@ -543,3 +543,41 @@ fn a_cache_target_is_refused_as_the_store_of_record_and_every_durable_target_is_
     }
     assert!(StorageSettings::in_memory().require_authoritative().is_ok());
 }
+
+#[test]
+fn a_warehouse_or_a_wide_column_target_cannot_be_opened_as_the_key_value_store_a_process_keeps_its_state_on()
+ {
+    // RES-081: losing BigQuery or Bigtable must not reach a process that
+    // decides. Every such process opens its journal and its archive with
+    // `key_value`, so the property is that this call can never hand back a
+    // store backed by either — whatever the target variable was set to. A
+    // provider that quietly opened *something* for these targets would put
+    // a remote warehouse behind the edge node's journal flush, which runs on
+    // the thread the pass runs on.
+    let dir = temp_dir("warehouse");
+    let root = dir.display().to_string();
+    // Premise: the same call does open a store for a target that is one, so
+    // the refusals below are about the target and not about the fixture.
+    let engine = StorageSettings::from_values(Some("engine"), Some(&root)).expect("resolves");
+    assert!(
+        engine.key_value("cell-journal").is_ok(),
+        "the premise failed: the engine target opened no store"
+    );
+
+    for target in [StorageTarget::BigQuery, StorageTarget::Bigtable] {
+        // Premise: the name parses, so what is refused is the store.
+        let settings = StorageSettings::from_values(Some(target.as_str()), None)
+            .unwrap_or_else(|error| panic!("{} does not resolve: {error}", target.as_str()));
+        assert_eq!(settings.target(), target);
+        assert!(
+            settings.key_value("cell-journal").is_err(),
+            "{} was opened as a key-value store",
+            target.as_str()
+        );
+        assert!(
+            settings.preflight().is_err(),
+            "a process configured for {} passed its start-up probe",
+            target.as_str()
+        );
+    }
+}

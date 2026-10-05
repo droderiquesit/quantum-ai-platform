@@ -46,6 +46,59 @@ pub enum Decision {
     },
     /// A sequence gap was detected and the affected books reset.
     GapDetected { stream: String, detail: String },
+    /// A venue's feed has said nothing for longer than the cell lets a book
+    /// go unrefreshed, so every order bound for that venue is now refused.
+    ///
+    /// The incident record for a stall. A sequence gap announces itself; a
+    /// feed that simply stops produces no message to hang a record on, and
+    /// before this entry existed a cell blinded that way went quiet with
+    /// nothing in the chain saying why. `last_heard` is the cell's own
+    /// receipt instant, not the venue's clock, and `limit_ms` is the bound
+    /// it was judged against, so the entry can be checked from itself.
+    FeedSilent {
+        venue: String,
+        last_heard: Timestamp,
+        limit_ms: i64,
+    },
+    /// A feed that had gone silent was heard again, and this is what the
+    /// cell was holding at that venue across the interval it could not see.
+    ///
+    /// The reconciliation record for a stall. `silent_from` and the entry's
+    /// own instant bound the blind interval; `resting_orders` is how many
+    /// orders the cell still had open at the venue when sight returned —
+    /// exposure a market it was not watching could have filled — and
+    /// `stale_books` how many of the venue's books are still awaiting a
+    /// resynchronisation, because being heard again is not being whole again.
+    FeedReconciled {
+        venue: String,
+        silent_from: Timestamp,
+        resting_orders: usize,
+        stale_books: usize,
+    },
+    /// One book was discarded as unreliable and nothing is priced from it
+    /// until it is rebuilt.
+    ///
+    /// The start of an unreliable interval, per instrument. `GapDetected`
+    /// names a stream; this names each book the gap took with it, and it is
+    /// also the only record of a book discarded for crossing while the
+    /// venue said it was trading, which no gap announces.
+    BookReset {
+        venue: String,
+        object: String,
+        reason: String,
+    },
+    /// A discarded book was rebuilt from a snapshot and is priced from again.
+    ///
+    /// The end of the interval [`Self::BookReset`] opened. `unreliable_from`
+    /// repeats where it began, so one entry bounds the interval a replay
+    /// must not train or price on; `None` is a book that was handed to the
+    /// cell already discarded. `levels` is how many edits rebuilt it.
+    BookResynchronised {
+        venue: String,
+        object: String,
+        unreliable_from: Option<Timestamp>,
+        levels: usize,
+    },
     /// A strategy emitted a signal.
     SignalRaised {
         strategy: String,
@@ -142,6 +195,23 @@ pub enum Decision {
         order_id: String,
         venue: String,
         withdrawn: String,
+    },
+    /// A resting order was withdrawn because its venue failed — the feed
+    /// went silent, or the venue was quarantined for rejecting orders —
+    /// while the cell itself kept running.
+    ///
+    /// The third cause of the same action, kept apart from
+    /// [`Self::OrderExpired`] and [`Self::MassCancelled`] for the reason
+    /// those two are kept apart from each other: a review of one venue's
+    /// outage has to be able to find the orders that outage pulled without
+    /// reading them off a chain of routine expiries, and nothing halted.
+    /// `reason` is the venue's fault as the cell stated it; `withdrawn` is
+    /// the venue's own answer to the cancel.
+    VenueWithdrawn {
+        order_id: String,
+        venue: String,
+        withdrawn: String,
+        reason: String,
     },
     /// Something was refused, with the gate that refused it.
     Refused { gate: String, reason: String },
@@ -416,12 +486,17 @@ impl Decision {
         match self {
             Self::Ingested { .. } => "ingested",
             Self::GapDetected { .. } => "gap_detected",
+            Self::FeedSilent { .. } => "feed_silent",
+            Self::FeedReconciled { .. } => "feed_reconciled",
+            Self::BookReset { .. } => "book_reset",
+            Self::BookResynchronised { .. } => "book_resynchronised",
             Self::SignalRaised { .. } => "signal_raised",
             Self::EdgePriced { .. } => "edge_priced",
             Self::OrderSent { .. } => "order_sent",
             Self::Filled { .. } => "filled",
             Self::OrderExpired { .. } => "order_expired",
             Self::MassCancelled { .. } => "mass_cancelled",
+            Self::VenueWithdrawn { .. } => "venue_withdrawn",
             Self::Refused { .. } => "refused",
             Self::ReconciliationBreak { .. } => "reconciliation_break",
             Self::HaltChanged { .. } => "halt_changed",
