@@ -220,25 +220,25 @@
   },
   {
     "id": "FABRIC-066",
-    "status": "MISSING",
-    "current": "Producer batching is caller-driven, not automatic background batching with a bounded linger time. qip_streaming::Publisher::publish_batch (backend/crates/services/qip-streaming/src/ports.rs:76-96) is a default loop over a caller-supplied Vec that stops at the first failure; nothing accumulates records in the background of the caller and flushes on a size or linger bound. `grep -in 'linger|batch_size|flush_interval' backend/crates/libs/qip-transport/src/mesh.rs` returns nothing.",
+    "status": "PARTIAL",
+    "current": "qip_transport::event_fabric::batcher::Batcher (CONTRACT-043) accumulates records into one Batch and flushes on a required max_records or max_linger bound, both refused at zero; its test asserts fewer transport writes than records and no record waiting past the linger. It is poll-driven by the caller's clock, not a background flusher, and no producer path constructs one.",
     "evidence": [
       "backend/crates/services/qip-streaming/src/ports.rs:76-96",
       "grep -in 'linger|batch_size|flush_interval|MAX_BATCH' backend/crates/libs/qip-transport/src/mesh.rs -> no match"
     ],
-    "gap": "No background batcher with a bounded size and bounded linger time exists; every batch is assembled and sent by the calling code, synchronously.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Not 'in the background of the caller': the caller polls Batcher::due. No production caller constructs a Batcher, and the throughput benchmark at the P2 target rate the requirement's check names does not exist.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Needs a benchmark proving throughput at the P2 class's target rate plus a unit test asserting no batch exceeds its size or linger bound.",
+    "verification": "cargo test -p qip-transport --test event_fabric_batcher (size and linger bounds only; no benchmark)",
     "work_item": "E03",
     "tier": "T2",
     "size": "M",
-    "notes": "Buildable on the existing blocking-thread model; does not need Tokio (the runtime question is FABRIC-062's)."
+    "notes": "Assessment corrected from MISSING: the earlier text predates the Batcher. Remaining work: a producer wrapper that owns a flush thread, and a benchmark (FABRIC-029)."
   },
   {
     "id": "FABRIC-067",

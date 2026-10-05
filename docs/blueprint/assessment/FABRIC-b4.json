@@ -396,46 +396,45 @@
   },
   {
     "id": "FABRIC-102",
-    "status": "MISSING",
-    "current": "No Eventarc trigger exists anywhere in Terraform (grep -rn Eventarc infrastructure -> no hits), so the prohibition is not currently violated, but no acceptance test guards the invariant against a future addition.",
+    "status": "COMPLETE",
+    "current": "No Terraform, tfvars or workflow file names a google_eventarc_ resource or eventarc.googleapis.com, and an acceptance scan now fails the build if one appears.",
     "evidence": [
-      "grep -rn 'Eventarc\\|eventarc' infrastructure backend/crates/tests -i -> no hits at all",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs: no function named for Eventarc"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_core_path_exclusions.rs no_terraform_or_workflow_file_provisions_eventarc_or_cloud_tasks (ran: ok; mutation: a google_cloud_tasks_queue resource added under infrastructure/terraform, test failed naming the file and the requirement, removed); the_scan_names_eventarc_and_cloud_tasks_and_ignores_comments proves the scan fires and skips prose"
     ],
-    "gap": "No architecture/infrastructure acceptance test fails a workspace service target of an Eventarc trigger; the guardrail this requirement's verification names does not exist.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Not written. Would be an acceptance test scanning Terraform for google_eventarc_trigger resources and failing if any targets a workspace service.",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_core_path_exclusions",
     "work_item": "E01",
     "tier": "T1",
     "size": "S",
-    "notes": "Currently true by absence, but unguarded; cheap to close."
+    "notes": "Guards Terraform and workflows only; an Eventarc or Cloud Tasks call made from application code through a Google API client would need a client crate, which the two-dependency policy already refuses."
   },
   {
     "id": "FABRIC-103",
-    "status": "MISSING",
-    "current": "No Cloud Tasks queue or handler exists anywhere in the workspace (grep -rn 'Cloud Tasks|cloud_tasks|CloudTasks' -> no hits), so the prohibition is not currently violated, but nothing guards it.",
+    "status": "COMPLETE",
+    "current": "No Terraform, tfvars or workflow file names a google_cloud_tasks_ resource or cloudtasks.googleapis.com, and an acceptance scan now fails the build if one appears.",
     "evidence": [
-      "grep -rn 'Cloud Tasks\\|cloud_tasks\\|CloudTasks' infrastructure backend/crates/tests -i -> no hits"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_core_path_exclusions.rs no_terraform_or_workflow_file_provisions_eventarc_or_cloud_tasks (ran: ok; mutation: a google_cloud_tasks_queue resource added under infrastructure/terraform, test failed with 'FABRIC-103 (Cloud Tasks) forbids on the internal path', removed)"
     ],
-    "gap": "No acceptance test fails an internal service enqueuing to, or invoked by, Cloud Tasks.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Not written. Would be an acceptance test scanning for google_cloud_tasks_queue resources and any non-allow-listed internal caller.",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_core_path_exclusions",
     "work_item": "E01",
     "tier": "T1",
     "size": "S",
-    "notes": "Currently true by absence, but unguarded; cheap to close."
+    "notes": "Same scan as FABRIC-102; an allow-list for a justified external-facing queue does not exist and would need a person's decision."
   },
   {
     "id": "FABRIC-104",
