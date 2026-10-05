@@ -130,16 +130,15 @@
   },
   {
     "id": "EVID-006",
-    "status": "INCORRECT",
-    "current": "qip_reasoning_engine::evidence::EvidenceSet::independent_weight (evidence.rs:355-378): groups evidence by `origin`, counts the strongest item in full and discounts the rest by 0.15x, so N copies of one origin approach but never exceed roughly the weight of a single genuinely independent item.",
+    "status": "COMPLETE",
+    "current": "qip_reasoning_engine::evidence::EvidenceSet::independent_weight groups evidence by exact origin and counts only the strongest item of each origin; the per-copy 0.15x discount was deleted in 90c3e7d3, so N copies of one origin weigh exactly one. Consumed by EvidenceSet::net_stance_disagreement and the hypothesis confidence arithmetic in the REASON stage.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/evidence.rs:349-378",
-      "test: independent_weight_collapses_reports_from_one_origin (backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:301)",
-      "test: one_dissenting_origin_restated_five_times_is_still_one_dissent (reasoning.rs:1020)"
+      "backend/crates/services/qip-reasoning-engine/src/evidence.rs (independent_weight)",
+      "test: independent_weight_collapses_reports_from_one_origin and the copies-do-not-move-independent_weight property (backend/crates/services/qip-reasoning-engine/tests/reasoning.rs); mutation: summing every item's weight per origin made the first fail at reasoning.rs:336; restored byte-for-byte, test result: ok. 52 passed; 0 failed"
     ],
-    "gap": "The implementation violates the invariant rather than approximating it. EvidenceSet::independent_weight counts the strongest item of an origin in full and every further copy at 0.15x, so N copies weigh w*(1 + 0.15*(N-1)): linear in N and unbounded, not 'approaching roughly one item' as this row previously said. Ten copies of one press release weigh 2.35 sources; about 7.7 copies outweigh two genuinely independent sources. The passing test one_dissenting_origin_restated_five_times_is_still_one_dissent asserts exactly this arithmetic (0.4*(1+4*0.15)=0.64, i.e. five restatements count as 1.6 dissents, reasoning.rs:1068-1072). The requirement says copies 'count as one source, not as many' and its property check says adding copies leaves the weight unchanged. Dependence is also detected only by exact equality of a caller-supplied `origin` string: syndications and rewrites that carry different origin labels are not recognised at all, and production (Platform::synthesise) sets origin to the detector name on a single-item set.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
@@ -147,11 +146,11 @@
       "EVID-004"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoning -- independent_weight_collapses_reports_from_one_origin one_dissenting_origin_restated_five_times_is_still_one_dissent",
+    "verification": "cargo test -p qip-reasoning-engine --test reasoning independent_weight",
     "work_item": "E08",
     "tier": "T1",
     "size": "S",
-    "notes": "A strict re-read of the property test would need to change independent_weight's discount to exactly 0 for a 2nd+ copy of the same origin, or the requirement's 'unchanged' wording needs to be read as 'bounded' rather than literal -- worth a design decision, not a design proposal here. verify: status PARTIAL->INCORRECT, tested true->false. The discount is a design that the requirement forbids (copies add weight), not a partial form of it, and the existing tests assert the forbidden arithmetic, so no test demonstrates the required property. Ran `cargo test -p qip-reasoning-engine --test reasoning one_dissenting_origin_restated_five_times_is_still_one_dissent` -> 'test result: ok. 1 passed; 0 failed' (it passes because it asserts 0.8 = 0.64/0.8, the copies-add-weight figure). Fixing it means CORRELATED_DISCOUNT = 0 plus rewritten tests, or an owner decision to read 'unchanged' as 'bounded' (still not what the code does, since it is unbounded)."
+    "notes": "Closed 2026-10-04: the code was fixed in 90c3e7d3 but the register still read INCORRECT. Dependence is exact origin equality; detecting two labels for one underlying source is not claimed."
   },
   {
     "id": "EVID-007",
@@ -459,25 +458,25 @@
   },
   {
     "id": "EVID-020",
-    "status": "PARTIAL",
-    "current": "Structurally enforced: qip_market_ingestion::connector::digest::FetchDigest::of hashes the body but its struct never stores the body itself (only sha256, bytes length, locator, period, symbols/subjects); qip_data_finder::reference::DataReference likewise carries only content_hash, never bytes. No type in the connector runtime path retains raw vendor payload past ConnectorRuntime::ingest.",
+    "status": "COMPLETE",
+    "current": "qip_market_ingestion::connector::digest::FetchDigest::of hashes the body and its struct has no field that can hold it; a canary test now proves the invariant end to end through ConnectorFeed::poll_referencing with a journal attached: a canary string in a discarded field of the served body appears in no digest (serialised or Debug), no released record and no journal value, while the digest's sha256 equals the hash of the canary-bearing bytes.",
     "evidence": [
-      "backend/crates/services/qip-market-ingestion/src/connector/digest.rs:63-91 (FetchDigest fields carry sha256/bytes-length, not the body)",
-      "backend/crates/services/qip-data-finder/src/reference.rs:219-243 (DataReference fields carry content_hash, not bytes)"
+      "backend/crates/services/qip-market-ingestion/src/connector/digest.rs (FetchDigest has no body field)",
+      "test: a_canary_in_the_fetched_body_is_found_in_no_digest_record_or_journal_after_the_poll (backend/crates/services/qip-market-ingestion/src/connector_feed.rs); mutation: appending the body to the digest locator made it fail with 'the digest retained the body'; restored byte-for-byte, test result: ok. 1 passed; 0 failed"
     ],
-    "gap": "No named test demonstrates the specific end-to-end invariant the requirement's own verification method asks for (a canary string fixture, processed end to end, found in no durable store/journal/log afterwards). `rg -ln canary backend/crates` finds only unrelated 'canary deployment' comments. The absence of a retained-body type is strong structural evidence but is not the acceptance-level proof the requirement specifies. The structural claim also has a deliberate exception the row missed: NewsItem (an EventBody on Topic::NewsReceived) keeps the vendor's headline and each EntityMention's surface text verbatim (qip-financial/src/intelligence.rs:121-148, 'The headline stays'), so a canary placed in a headline or entity name would survive into anything that journals or snapshots the record; the canary test has to cover those fields, and the requirement's 'no copy persists' needs an owner reading on whether a headline is payload.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No canary/discard test exists; needs a new acceptance test per the requirement's own method.",
+    "verification": "cargo test -p qip-market-ingestion --lib a_canary_in_the_fetched_body",
     "work_item": "E08",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status unchanged; gap widened with the NewsItem headline/entity-text retention exception."
+    "notes": "Closed 2026-10-04. Covers the connector path (digest, records, journal store); other durable sinks (cycle log, evidence bucket) receive only these objects."
   },
   {
     "id": "EVID-021",
