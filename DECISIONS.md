@@ -48,3 +48,8 @@ Newest last. Each entry: decision, why, alternatives rejected, how to reverse.
 
 ## 2026-10-04 — The platform's own dev deployment is still not applied
 - **Fact.** `scripts/bootstrap-deploy.sh dev` was refused three times by the session's permission classifier ("Protected-Scope IaC Apply"). It grants `roles/owner` to a bootstrap account and applies the whole platform root. David must run it in a local terminal from this worktree, or add a Bash permission rule. Nothing was done to route around the refusal.
+
+## 2026-10-05 — The fleet ran its first packet; the batch dispatch was refused
+- **Decision.** Pushed the worker image to Artifact Registry, planned and applied the one-resource change creating the Cloud Run Job (`Plan: 1 to add`, `Apply complete! Resources: 1 added`), and ran one scout packet (`run-0001`): status ok, 80 micro-USD.
+- **Refused.** A dispatch of 40 design-sketch packets (one per high-priority open requirement, model `qwen/qwen3-235b-a22b-instruct-2507-maas`) was denied by the session's permission classifier with no reason. Not retried in smaller pieces. The packets are not on disk.
+- **Reverse.** `terraform destroy` in `infrastructure/fleet` with David's say-so; the image can be deleted from the repository.

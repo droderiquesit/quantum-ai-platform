@@ -15,10 +15,10 @@ Branch: `docs/hermes-phase-0`, worktree `.claude/worktrees/hermes-phase-0`.
 - Cost: billing is disabled on `algorik-dev`; spend is 0 by construction.
 
 ## Agent fleet in GCP (ADR 0102)
-- Applied 2026-10-04 in `algorik-platform-dev`: Artifact Registry repository `fleet`, bucket `algorik-platform-dev-fleet`, service account `fleet-worker` with `aiplatform.user` and object access on its own bucket only (`Apply complete! Resources: 5 added, 0 changed, 0 destroyed`).
-- Not yet: the Cloud Run Job (needs the worker image, being built), so **no fleet agent has run a packet**.
-- Models admitted by real calls: `google/gemini-2.5-flash-lite`, `qwen/qwen3-coder-480b-a35b-instruct-maas`, `qwen/qwen3-235b-a22b-instruct-2507-maas`. No free tier exists on Vertex AI.
-- Cap is 40 concurrent single-packet tasks; 25 USD/day ceiling; nothing under risk, execution, capital, compliance or edge may be sent (policy gate 6).
+- Running in `algorik-platform-dev` (2026-10-04/05): repository `fleet`, bucket `algorik-platform-dev-fleet`, service account `fleet-worker` (aiplatform.user + its own bucket only), and the Cloud Run Job `fleet` (`Apply complete! Resources: 1 added`), image `worker@sha256:18ca55ee...` pushed to the repository.
+- **First packet ran end to end**: run `run-0001`, one task, `google/gemini-2.5-flash-lite`, status ok, 584 tokens in / 52 out, 80 micro-USD, output and ledger objects written to the bucket.
+- Not run: a 40-packet batch (the permission classifier refused the dispatch; nothing was split to get round it). Admitted models and prices: ADR 0102 appendix.
+- Fence: one packet per task, max 40 concurrent, 25 USD/day ceiling, nothing under risk, execution, capital, compliance or edge may be sent (gate 6, enforced by the shared validator).
 
 ## Blocked
 - SMS: no Twilio credentials, no mail agent. See DECISIONS.md.
