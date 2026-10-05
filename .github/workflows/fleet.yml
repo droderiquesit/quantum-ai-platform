@@ -157,7 +157,7 @@ jobs:
           PROJECT: ${{ steps.identity.outputs.project }}
         run: |
           terraform -chdir=infrastructure/fleet init -input=false \
-            -backend-config="bucket=${PROJECT}-qip-tfstate"
+            -backend-config="bucket=${PROJECT}-fleet-tfstate"
 
       - name: plan
         env:

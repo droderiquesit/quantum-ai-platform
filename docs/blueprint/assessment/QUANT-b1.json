@@ -1,16 +1,13 @@
 [
   {
     "id": "QUANT-001",
-    "status": "PARTIAL",
-    "current": "qip-quantum (provider::SimulatedProvider/HostedProvider, qaoa::solve, statevector::StateVector, solver::{ClassicalSolver,QuantumInspiredSolver,IbmQuantumSolver}, benchmark::SolverBenchmark) plus qip-optimization-engine::router::ComputeRouter implement exactly one workload family: hybrid QAOA/QUBO portfolio allocation. No workload-family registry and no shared benchmark harness spanning families exists.",
+    "status": "COMPLETE",
+    "current": "qip_quantum::foundry::Foundry is the workload-family registry: the seven blueprint families (FamilyKind::ALL) are each either registered with baseline, objective and threshold or recorded NotBuilt with a reason, and Foundry::unaccounted() lists any silently absent. Foundry::platform() registers portfolio allocation (the ComputeRouter baseline and its 0.01 margin) and records the six research families as not built. QUBO solvers share SolverBenchmark; the six unbuilt families have no harness entry because they have no encoding.",
     "evidence": [
-      "backend/crates/libs/qip-quantum/src/lib.rs:35-55",
-      "backend/crates/services/qip-optimization-engine/src/router.rs:196-388",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4322-4325",
-      "backend/crates/libs/qip-agents/src/capability.rs:41 (Capability::RunQuantumOptimization — a governance flag with no solver call site; grep -rn RunQuantumOptimization backend/crates found only capability.rs and qip-investment-agents/src/manifests.rs:383)",
-      "test: backend/crates/services/qip-optimization-engine/tests/optimization.rs (24 tests, one family; 98 is the whole qip-optimization-engine crate)"
+      "backend/crates/libs/qip-quantum/src/foundry.rs (Foundry, FamilyKind, Foundry::platform, Foundry::unaccounted)",
+      "test: no_blueprint_family_is_silently_absent_from_the_platform_foundry (backend/crates/libs/qip-quantum/tests/foundry.rs)"
     ],
-    "gap": "No named registry of the seven blueprint workload families (graph/search, feature/ensemble selection, quantum kernels/variational models, quantum reservoir/extreme-learning, scenario/hypothesis selection, structured symbolic/combinatorial search) or a shared harness enumerating them and their build status; only portfolio allocation (QUANT-017) exists.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -18,11 +15,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-optimization-engine --test optimization --no-fail-fast (the one family's tests); no acceptance test enumerates a workload-family registry because none exists to enumerate",
+    "verification": "cargo test -p qip-quantum --test foundry -- no_blueprint_family_is_silently_absent_from_the_platform_foundry an_empty_foundry_reports_every_family_as_unaccounted",
     "work_item": "E10",
     "tier": "T2",
     "size": "L",
-    "notes": "The umbrella requirement; QUANT-013 and QUANT-017/018 are the named family entries in this batch, and QUANT-017 is the only one built. NON_RUST/NEW_DEPENDENCY apply only if the QML/kernel/reservoir families are pursued (would need Qiskit, C5 of ADR 0099's conflict register); the registry mechanism itself needs no new dependency. verify: integrated/deployable true->false. PlatformConfig::quantum_enabled defaults false (config.rs:534) and its only setter with_quantum() (config.rs:573) has no caller in backend/crates/apps/*/src; qip-api builds PlatformConfig::default() (main.rs:139) without it, so ComputeRouter's quantum branch executes in no composition root, and qip_quantum::benchmark::SolverBenchmark (the only harness) has no caller outside tests (grep of SolverBenchmark/ClassicalValidator/HostedProvider outside qip-quantum and tests/: none). Only the classical half of the one family runs in a deployed binary. Also corrected the test count: tests/optimization.rs is 24 tests (cargo test -p qip-optimization-engine: 'test result: ok. 24 passed' for optimization.rs), not 98."
+    "notes": "The umbrella requirement; QUANT-013 and QUANT-017/018 are the named family entries in this batch, and QUANT-017 is the only one built. NON_RUST/NEW_DEPENDENCY apply only if the QML/kernel/reservoir families are pursued (would need Qiskit, C5 of ADR 0099's conflict register); the registry mechanism itself needs no new dependency. verify: integrated/deployable true->false. PlatformConfig::quantum_enabled defaults false (config.rs:534) and its only setter with_quantum() (config.rs:573) has no caller in backend/crates/apps/*/src; qip-api builds PlatformConfig::default() (main.rs:139) without it, so ComputeRouter's quantum branch executes in no composition root, and qip_quantum::benchmark::SolverBenchmark (the only harness) has no caller outside tests (grep of SolverBenchmark/ClassicalValidator/HostedProvider outside qip-quantum and tests/: none). Only the classical half of the one family runs in a deployed binary. Also corrected the test count: tests/optimization.rs is 24 tests (cargo test -p qip-optimization-engine: 'test result: ok. 24 passed' for optimization.rs), not 98. Mutation-verified: omitting GraphSearch from the not-built loop in Foundry::platform made the test fail at the unaccounted() assertion; restored. integrated=false: no composition root consults the Foundry yet. The six research families remain not built (QUANT-013, 018, 020-026); QML families would need an ADR for any dependency."
   },
   {
     "id": "QUANT-002",
@@ -321,14 +318,13 @@
   },
   {
     "id": "QUANT-015",
-    "status": "PARTIAL",
-    "current": "The one family that exists (portfolio allocation) has all three elements, but only as hardcoded fields rather than a declared, refusable registration: solve_classical (router.rs:400, fn body 400-431) is the baseline, PortfolioProblem::objective_at (problem.rs:284) is the objective both paths are scored on, and RoutingPolicy::quantum_margin (router.rs:163, default 0.01 at :186) is the threshold.",
+    "status": "COMPLETE",
+    "current": "Foundry::register refuses a family lacking a classical baseline, a shared objective, or a positive finite promotion threshold, each with its own message; a family cannot be accounted for twice.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/router.rs:400-431",
-      "backend/crates/services/qip-optimization-engine/src/problem.rs:284",
-      "backend/crates/services/qip-optimization-engine/src/router.rs:145-166"
+      "backend/crates/libs/qip-quantum/src/foundry.rs (Foundry::register)",
+      "test: a_family_without_a_classical_baseline_is_refused, a_family_without_a_shared_objective_is_refused, a_family_without_a_usable_promotion_threshold_is_refused (backend/crates/libs/qip-quantum/tests/foundry.rs)"
     ],
-    "gap": "No workload-registration API or type exists in qip-quantum or qip-optimization-engine; the three elements are implicit RoutingPolicy/PortfolioProblem struct fields for the single hardcoded family rather than a contract a family registration could be refused for lacking.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -336,21 +332,23 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-optimization-engine --test optimization -- every_routing_decision_records_the_classical_objective (indirect evidence the three elements exist for the one family); a dedicated 'registering a workload family is refused when it lacks a baseline / a shared objective / a threshold' unit test does not exist because no registration mechanism exists",
+    "verification": "cargo test -p qip-quantum --test foundry -- a_family_without_a_classical_baseline_is_refused a_family_without_a_shared_objective_is_refused a_family_without_a_usable_promotion_threshold_is_refused",
     "work_item": "E10",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: integrated/deployable true->false; the threshold (quantum_margin) is only evaluated in ComputeRouter's quantum branch, which executes in no composition root, and no registration contract exists. Corrected default citation router.rs:239 -> :186. Status PARTIAL confirmed."
+    "notes": "verify: integrated/deployable true->false; the threshold (quantum_margin) is only evaluated in ComputeRouter's quantum branch, which executes in no composition root, and no registration contract exists. Corrected default citation router.rs:239 -> :186. Status PARTIAL confirmed. Mutation-verified three ways (baseline check removed, objective check removed, threshold > 0 relaxed to >= 0): each failed its own test and only that test; restored. integrated=false: ComputeRouter still holds its threshold as a RoutingPolicy field rather than reading the registry."
   },
   {
     "id": "QUANT-016",
-    "status": "PARTIAL",
-    "current": "qip_optimization_engine::router::ComputeRouter::quantum_assessment (router.rs:232-283) declines a continuous problem unless RoutingPolicy::quantum_on_continuous, declines a problem below RoutingPolicy::minimum_assets_for_quantum (default 50), and declines a problem above the provider's max_qubits — each with a named reason returned as quantum_note; qip-kernel journals quantum_note every cycle via SolverRoutingJournal (platform.rs:2650-2681,12148).",
+    "status": "COMPLETE",
+    "current": "ComputeRouter::quantum_assessment declines continuous convex problems, problems below minimum_assets_for_quantum and problems above the provider max_qubits, each with a named reason journaled as quantum_note, and attempts an eligible instance; all four branches now tested.",
     "evidence": [
       "backend/crates/services/qip-optimization-engine/src/router.rs:232-283",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:2650-2681,12148"
+      "test: a_problem_larger_than_the_devices_qubits_is_declined_with_the_reason_and_an_eligible_one_is_attempted (backend/crates/services/qip-optimization-engine/tests/optimization.rs)",
+      "test: a_continuous_problem_never_goes_to_a_quantum_solver",
+      "test: a_small_discrete_problem_does_not_justify_a_quantum_attempt"
     ],
-    "gap": "The 'exceeds the provider's qubits' decline branch (router.rs:268-277) has no dedicated test — no test in optimization.rs constructs a problem larger than a provider's max_qubits and asserts the decline and its reason (grep for 'exceeds the provider' / a qubits-sized assertion in tests/optimization.rs found none).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -358,11 +356,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-optimization-engine --test optimization -- a_continuous_problem_never_goes_to_a_quantum_solver a_small_discrete_problem_does_not_justify_a_quantum_attempt a_simulated_result_is_labelled_as_not_being_evidence_of_advantage; the max_qubits decline branch needs a fourth test",
+    "verification": "cargo test -p qip-optimization-engine --test optimization -- a_continuous_problem_never_goes_to_a_quantum_solver a_small_discrete_problem_does_not_justify_a_quantum_attempt a_problem_larger_than_the_devices_qubits_is_declined_with_the_reason_and_an_eligible_one_is_attempted",
     "work_item": "E10",
     "tier": "T0",
     "size": "S",
-    "notes": "Three of the four required cases (continuous, below minimum, eligible-attempt) are named-test-covered; only the above-max-qubits case is untested, which is why this is PARTIAL rather than COMPLETE. verify: integrated/deployable true->false. quantum_assessment runs on every production solve but returns at its first check ('no quantum provider is configured', router.rs:233-239) in every deployed binary, because PlatformConfig::quantum_enabled defaults false (config.rs:534) and its only setter with_quantum() (config.rs:573) has no caller in backend/crates/apps/*/src; qip-api builds PlatformConfig::default() (main.rs:139) without it; the continuous/minimum-size/max-qubits declines are evaluated only in tests. Confirmed no router test for the max_qubits decline (grep 'exceeds the provider' across backend/crates tests: none; quantum.rs the_simulator_refuses_a_problem_it_cannot_hold and hosted.rs the_device_the_service_describes_bounds_the_problem_independently_of_configuration are provider-level refusals, not the router's recorded decline). Status PARTIAL confirmed."
+    "notes": "Three of the four required cases (continuous, below minimum, eligible-attempt) are named-test-covered; only the above-max-qubits case is untested, which is why this is PARTIAL rather than COMPLETE. verify: integrated/deployable true->false. quantum_assessment runs on every production solve but returns at its first check ('no quantum provider is configured', router.rs:233-239) in every deployed binary, because PlatformConfig::quantum_enabled defaults false (config.rs:534) and its only setter with_quantum() (config.rs:573) has no caller in backend/crates/apps/*/src; qip-api builds PlatformConfig::default() (main.rs:139) without it; the continuous/minimum-size/max-qubits declines are evaluated only in tests. Confirmed no router test for the max_qubits decline (grep 'exceeds the provider' across backend/crates tests: none; quantum.rs the_simulator_refuses_a_problem_it_cannot_hold and hosted.rs the_device_the_service_describes_bounds_the_problem_independently_of_configuration are provider-level refusals, not the router's recorded decline). Status PARTIAL confirmed. Mutation-verified: raising the qubit bound by 10 in router.rs made the new test fail at assert!(!attempted); restored."
   },
   {
     "id": "QUANT-017",

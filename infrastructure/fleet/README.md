@@ -32,10 +32,12 @@ resumes. The harder stop is `worker_may_call_models = false` and an apply.
 
 ## What it does not do
 
-- No Artifact Registry repository, no dispatch identity, no billing budget (a
-  monthly budget already exists, ADR 0102 decision 5), no image. The image is a
-  required variable, pinned by digest, because the Job cannot be created
-  without one that exists.
+- No dispatch identity, no billing budget (a monthly budget already exists,
+  ADR 0102 decision 5), and it builds no image. `image` is null until one has
+  been pushed to the `fleet` repository this root creates; the Job is created
+  only once an image, pinned by digest, is given. So the first apply creates
+  the repository, the bucket and the worker identity, and the second creates
+  the Job.
 - Cost ceilings are passed to the dispatcher as environment values. Google
   does not enforce them.
 
@@ -58,17 +60,22 @@ An agent does not apply. Nothing here has been applied.
 1. Enable the APIs (human step; `enable_apis` stays false):
    ```
    gcloud services enable aiplatform.googleapis.com run.googleapis.com \
-     storage.googleapis.com iam.googleapis.com --project algorik-platform-dev
+     storage.googleapis.com iam.googleapis.com artifactregistry.googleapis.com \
+     --project algorik-platform-dev
    ```
-2. State bucket: this root needs its own backend prefix. Using the platform's
-   state bucket with a different prefix keeps the states separate:
+2. State bucket: the fleet keeps its own, `<project>-fleet-tfstate`, so an
+   identity that plans the fleet needs no access to the platform's state. It
+   was created by hand on 2026-10-04 (versioned, uniform access, public access
+   prevented), as a state bucket has to be:
    ```
-   terraform init -backend-config="bucket=<state-bucket>" -backend-config="prefix=fleet"
+   terraform init -backend-config="bucket=algorik-platform-dev-fleet-tfstate"
    ```
 3. Plan, and read it:
    ```
-   terraform plan -out fleet.plan \
-     -var project_id=algorik-platform-dev \
-     -var image=<region>-docker.pkg.dev/algorik-platform-dev/<repo>/worker@sha256:<digest>
+   terraform plan -out fleet.plan -var project_id=algorik-platform-dev
+   ```
+   and, once an image has been pushed, again with
+   ```
+   -var image=us-east4-docker.pkg.dev/algorik-platform-dev/fleet/worker@sha256:<digest>
    ```
 4. Apply only the plan you read: `terraform apply fleet.plan`.

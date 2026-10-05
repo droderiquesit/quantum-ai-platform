@@ -402,6 +402,9 @@ fn build_inputs(
         directional_persistence: stats.persistence,
         belief_confidence: belief,
         queue: queue_position(platform, object_id, state.book.as_ref()),
+        // No portfolio correlation view is wired into this per-instrument
+        // loop yet; `None` says so rather than claiming a zero exposure.
+        correlated: None,
     })
 }
 

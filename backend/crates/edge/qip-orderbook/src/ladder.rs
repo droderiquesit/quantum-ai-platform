@@ -83,6 +83,11 @@ impl Ladder {
         self.levels.is_empty()
     }
 
+    /// Every level in ascending price order, whichever side this is.
+    pub(crate) fn levels(&self) -> impl Iterator<Item = (&Decimal, &LadderLevel)> {
+        self.levels.iter()
+    }
+
     pub(crate) fn clear(&mut self) {
         self.levels.clear();
     }

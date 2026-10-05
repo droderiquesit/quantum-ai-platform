@@ -420,6 +420,30 @@ pub trait VenueAdapter: Broker {
         describe_missing(self.venue_id(), &self.missing_requirements())
     }
 
+    /// Send an order only if the venue declares the capability it needs.
+    ///
+    /// Provided, so no adapter can skip it: an order whose type is absent from
+    /// [`Broker::capabilities`] is refused here, before the adapter's own
+    /// `submit_order` runs and before anything reaches a venue. Callers above
+    /// the adapter use this rather than `submit_order` (EXEC-011).
+    fn submit_declared(
+        &mut self,
+        ticket: &ReadyTicket,
+        order: &Order,
+        at: Timestamp,
+    ) -> Result<OrderAck> {
+        let capabilities = self.capabilities();
+        let needed = order.order_type.as_str();
+        if !capabilities.supported_types.iter().any(|t| t == needed) {
+            return Err(qip_core::error::Error::denied(format!(
+                "{} does not declare the {needed} order type (it declares {:?}); send an order \
+                 type it declares, or work this one into child orders upstream",
+                capabilities.name, capabilities.supported_types
+            )));
+        }
+        self.submit_order(ticket, order, at)
+    }
+
     /// Connect, authenticate and heartbeat, in the only order that works.
     ///
     /// Provided rather than left to each adapter so the sequence is the same

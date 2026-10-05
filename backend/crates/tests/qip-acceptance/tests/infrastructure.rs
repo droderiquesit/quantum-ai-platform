@@ -3546,6 +3546,32 @@ fn no_firewall_allow_rule_permits_the_whole_internet() {
 }
 
 #[test]
+fn every_subnet_in_the_terraform_reaches_google_apis_over_private_google_access() {
+    // GCP-033: a subnet without Private Google Access sends a workload to
+    // Cloud Storage, Spanner or Artifact Registry through an external address
+    // or a NAT route, which is the path the requirement closes. A fifth subnet
+    // added in a new module is one more block that looks like the others.
+    let mut subnets = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for (name, body) in terraform_resources(&content, "google_compute_subnetwork") {
+            subnets += 1;
+            assert!(
+                body.lines()
+                    .any(|l| l.split_whitespace().collect::<Vec<_>>()
+                        == ["private_ip_google_access", "=", "true"]),
+                "{}: the subnet `{name}` does not set private_ip_google_access = true",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        subnets >= 4,
+        "only {subnets} subnets were read; the walk is not reaching the modules"
+    );
+}
+
+#[test]
 fn the_fast_brain_cannot_reach_anything_that_could_serve_a_language_model() {
     // ADR 0008, consequence 3: nothing on the hot path consults a model. The
     // binary refuses to start if an agent it hosts holds `call_language_model`;

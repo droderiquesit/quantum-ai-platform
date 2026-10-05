@@ -16,9 +16,9 @@ variable "project_id" {
 }
 
 variable "region" {
-  description = "Region for the Job and the bucket."
+  description = "Region for the Job, the bucket and the image repository. The dev environment's own region."
   type        = string
-  default     = "us-central1"
+  default     = "us-east4"
 }
 
 variable "environment" {
@@ -55,11 +55,12 @@ variable "cost_center" {
 }
 
 variable "image" {
-  description = "The worker image, pinned by digest: a policy that trusts a tag trusts whoever can push it."
+  description = "The worker image, pinned by digest: a policy that trusts a tag trusts whoever can push it. Null until one has been pushed; the Job is not created without it."
   type        = string
+  default     = null
 
   validation {
-    condition     = can(regex("@sha256:[0-9a-f]{64}$", var.image))
+    condition     = var.image == null || can(regex("@sha256:[0-9a-f]{64}$", var.image))
     error_message = "image must be pinned by digest (name@sha256:<64 hex>), never by tag."
   }
 }

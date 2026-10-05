@@ -307,27 +307,27 @@
   },
   {
     "id": "ARCH-013",
-    "status": "MISSING",
-    "current": "nothing named a lane-placement register exists. Functionally, the crate-dependency graph does keep the reflex cell (qip-edge, no dependency on qip-kernel) structurally separate from central-plane/kernel logic (proven by architecture.rs:792 no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy — qip-kernel reaches qip-capital, which no edge crate may reach — plus :715 and :1028), but no artifact assigns each component a lane and a correctness requirement the way the blueprint's table does.",
+    "status": "COMPLETE",
+    "current": "docs/architecture/lane-placement.md is the lane-placement register: every workspace crate has one row naming its lane (0-4) and the correctness requirement that placement meets. qip-acceptance's lane_placement suite fails on an unplaced or phantom crate, on a Lane 0 set that differs from the normal-dependency closure of qip-edge-node, and on any Lane 0 or Lane 1 crate that takes a normal dependency on a slower-lane crate.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:715,792,1028 (edge crates cannot reach a language model, qip-capital/qip-lifecycle — and so not qip-kernel — or a quantum solver)",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:792 no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy",
-      "grep for 'lane.placement'/'Lane 0' across backend/ and docs/architecture returned zero hits outside docs/blueprint itself",
-      "backend/crates/apps/qip-fastbrain/src/node.rs:133 platform.run_cycle(now) under roster.rs:24 MAXIMUM_BUDGET = 50 ms — the full eight-stage cycle (UNDERSTAND's causal discovery, REASON, SIMULATE, LEARN) runs on the fast-path binary"
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs every_workspace_crate_has_exactly_one_lane_and_a_stated_requirement",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs the_lane_zero_set_is_exactly_what_the_reflex_node_compiles",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs no_fast_lane_crate_depends_on_a_slower_lane_crate",
+      "docs/architecture/lane-placement.md"
     ],
-    "gap": "No lane-placement register exists to inspect. Placement discipline is enforced only implicitly, through the workspace's libs/services/runtime/edge dependency-direction rule, not through an explicit lane taxonomy with stated correctness requirements per lane.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "None today; would require authoring docs/architecture/lane-placement.md (or similar) and an acceptance test reading it.",
+    "verification": "cargo test -p qip-acceptance --test lane_placement (3 passed; mutation: registering qip-orderbook at lane 3 failed two of the three, restored, 3 passed)",
     "work_item": "E00",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: status MISSING kept (no register exists). Replaced the architecture.rs:1391 citation, which is about libs not depending on services and says nothing about qip-edge, with :792/:715/:1028. Added counter-evidence that placement is not held: qip-fastbrain runs cognitive stages inside a 50 ms fast-path cycle (see ARCH-020)."
+    "notes": "Mutation-verified. The Lane 1 rows cover the cell and centre link and the fabric daemon only; the peer reflex mesh is ARCH-011 and does not exist. qip-fastbrain is registered at Lane 3 because it runs the full kernel cycle (ARCH-019)."
   },
   {
     "id": "ARCH-014",

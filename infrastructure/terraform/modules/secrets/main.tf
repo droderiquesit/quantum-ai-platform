@@ -305,3 +305,26 @@ resource "google_service_account" "landing" {
   display_name = "The landing, holding no credential"
   description  = "Runs the Cloud Run landing. Reads no secret and no platform; the portal's URL is inlined at build time."
 }
+
+# Data-access audit logs for the two services that hold the platform's secrets
+# and keys (SEC-045, SEC-059).
+#
+# Admin-activity logs are on by Google's default; DATA_READ is not, and it is
+# the only log that records a read of a secret's value. Without this block a
+# credential could be read by any principal holding secretAccessor and leave
+# no queryable record of who, which is the failure an audit trail exists to
+# prevent. ADMIN_READ is included so a listing of secrets or keys, the
+# reconnaissance step before a read, is recorded too.
+resource "google_project_iam_audit_config" "secrets_and_keys" {
+  for_each = toset(["secretmanager.googleapis.com", "cloudkms.googleapis.com"])
+
+  project = var.project_id
+  service = each.key
+
+  dynamic "audit_log_config" {
+    for_each = toset(["ADMIN_READ", "DATA_READ", "DATA_WRITE"])
+    content {
+      log_type = audit_log_config.value
+    }
+  }
+}

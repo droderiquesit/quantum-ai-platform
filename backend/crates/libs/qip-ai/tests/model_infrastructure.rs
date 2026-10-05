@@ -1032,3 +1032,58 @@ fn a_model_with_no_recorded_parent_cannot_be_rolled_back() {
         "a refused rollback retired the model"
     );
 }
+
+// --- packages (MODEL-068) ---------------------------------------------------
+
+#[test]
+fn a_package_of_each_of_the_four_kinds_registers_and_any_other_kind_is_refused() {
+    use qip_ai::registry::PackageKind;
+    let mut registry = ModelRegistry::new();
+    let digest = |seed: &str| qip_core::hash::sha256_hex(seed.as_bytes());
+
+    for kind in PackageKind::ALL {
+        registry
+            .register_package(
+                kind.as_str(),
+                "pack",
+                "1.0.0",
+                &digest(kind.as_str()),
+                now(),
+            )
+            .unwrap();
+        assert!(registry.package(kind, "pack", "1.0.0").is_some());
+    }
+    assert_eq!(registry.packages().count(), 4, "premise: four kinds held");
+
+    // The discriminating half: a kind outside the four, including near
+    // misses, is refused by name and registers nothing.
+    for other in ["", "models", "Model", "dataset", "weights"] {
+        let refused = registry
+            .register_package(other, "pack", "2.0.0", &digest("x"), now())
+            .unwrap_err();
+        assert!(
+            refused.message().contains("not a package kind"),
+            "{refused}"
+        );
+    }
+    assert_eq!(registry.packages().count(), 4, "a refused kind was filed");
+
+    // One version, one artifact, for every kind: the policy half of
+    // MODEL-034.
+    let refused = registry
+        .register_package("policy", "pack", "1.0.0", &digest("other bytes"), now())
+        .unwrap_err();
+    assert_eq!(refused.code(), "denied");
+    assert!(
+        registry
+            .register_package("policy", "pack", "1.0.0", &digest("policy"), now())
+            .is_ok(),
+        "re-registering the same digest is idempotent"
+    );
+    // A value that is not a digest names nothing.
+    assert!(
+        registry
+            .register_package("risk", "pack", "3.0.0", "not-a-digest", now())
+            .is_err()
+    );
+}

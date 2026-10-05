@@ -9,7 +9,7 @@ use qip_core::error::{Error, Result};
 use qip_core::time::SystemClock;
 use qip_core::{CorrelationId, Duration, EventId, Lineage, Timestamp};
 use qip_events::event_fabric::codec::{Batch, MessageType, PayloadCodec, Record};
-use qip_events::event_fabric::policy::AckProfile;
+use qip_events::event_fabric::policy::{AckProfile, QosClass};
 use qip_events::{Envelope, EventBody, Topic};
 use qip_transport::breaker::BreakerPolicy;
 use qip_transport::event_fabric::batcher::{Batcher, BatcherConfig};
@@ -88,6 +88,7 @@ fn producer(produces: Arc<AtomicUsize>) -> Producer {
         stream: "orders".to_string(),
         partition: 0,
         producer_id: "cell-eu-1".to_string(),
+        qos_class: QosClass::P2MarketJournal,
         ack_profile: AckProfile::LeaderOnly,
         retry_policy: RetryPolicy::default(),
         breaker_policy: BreakerPolicy::default(),

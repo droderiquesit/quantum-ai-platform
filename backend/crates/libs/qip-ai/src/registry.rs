@@ -256,6 +256,59 @@ impl ModelCard {
 #[derive(Clone, Debug, Default)]
 pub struct ModelRegistry {
     cards: BTreeMap<String, ModelCard>,
+    packages: BTreeMap<String, Package>,
+}
+
+/// The four kinds of package the registry holds (MODEL-068).
+///
+/// A closed set on purpose: the registry is what a deployment is checked
+/// against, and a kind it does not know is a thing it cannot say anything
+/// true about. [`PackageKind::parse`] refuses the rest by name rather than
+/// filing them under a catch-all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageKind {
+    Model,
+    Policy,
+    Feature,
+    Risk,
+}
+
+impl PackageKind {
+    pub const ALL: [Self; 4] = [Self::Model, Self::Policy, Self::Feature, Self::Risk];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::Policy => "policy",
+            Self::Feature => "feature",
+            Self::Risk => "risk",
+        }
+    }
+
+    pub fn parse(kind: &str) -> Result<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|known| known.as_str() == kind)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "`{kind}` is not a package kind the registry holds; the kinds are model, \
+                     policy, feature and risk"
+                ))
+            })
+    }
+}
+
+/// One registered package version and the digest of its bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Package {
+    pub kind: PackageKind,
+    pub name: String,
+    pub version: String,
+    /// SHA-256 of the package's bytes, hex. Computed by the producer;
+    /// the registry checks its shape and never overwrites it.
+    pub digest: String,
+    pub registered_at: Timestamp,
 }
 
 impl ModelRegistry {
@@ -269,6 +322,69 @@ impl ModelRegistry {
 
     pub fn len(&self) -> usize {
         self.cards.len()
+    }
+
+    /// Register a package of one of the four kinds under `name@version`.
+    ///
+    /// Refuses an unknown kind, a digest that is not 64 hex characters (a
+    /// digest nobody computed names nothing), and a second digest under a
+    /// version already registered — the same rule
+    /// [`Self::promote_artifact`] keeps for models, so a version names one
+    /// artifact whatever kind of package it is. Re-registering the same
+    /// digest is idempotent.
+    pub fn register_package(
+        &mut self,
+        kind: &str,
+        name: &str,
+        version: &str,
+        digest: &str,
+        at: Timestamp,
+    ) -> Result<()> {
+        let kind = PackageKind::parse(kind)?;
+        if name.trim().is_empty() || version.trim().is_empty() {
+            return Err(Error::invalid(
+                "a package needs a name and a version to be referenced by",
+            ));
+        }
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(Error::invalid(format!(
+                "{name}@{version} carries `{digest}`, which is not a SHA-256 digest; compute \
+                 the digest of the package's bytes and register that"
+            )));
+        }
+        let key = format!("{}:{name}@{version}", kind.as_str());
+        if let Some(existing) = self.packages.get(&key) {
+            if existing.digest == digest {
+                return Ok(());
+            }
+            return Err(Error::denied(format!(
+                "{} package {name}@{version} was registered at {} and these bytes digest to {digest}; \
+                 a version names one artifact — register the new bytes under a new version",
+                kind.as_str(),
+                existing.digest
+            )));
+        }
+        self.packages.insert(
+            key,
+            Package {
+                kind,
+                name: name.to_string(),
+                version: version.to_string(),
+                digest: digest.to_string(),
+                registered_at: at,
+            },
+        );
+        Ok(())
+    }
+
+    /// A registered package, by kind and `name@version`.
+    pub fn package(&self, kind: PackageKind, name: &str, version: &str) -> Option<&Package> {
+        self.packages
+            .get(&format!("{}:{name}@{version}", kind.as_str()))
+    }
+
+    pub fn packages(&self) -> impl Iterator<Item = &Package> {
+        self.packages.values()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -447,6 +563,47 @@ impl ModelRegistry {
         restored.deployed_at = Some(at);
         restored.retired_at = None;
         Ok(restored)
+    }
+
+    /// Return a retired model to production: the rollback half of automatic
+    /// retirement (MODEL-045).
+    ///
+    /// Refused unless the card is retired, carries the artifact digest it was
+    /// promoted with (so what comes back is bytes that passed the gate, not a
+    /// card that merely exists), last evaluated as passed, and has not drifted
+    /// past its own threshold. A rollback to a model that is itself degraded
+    /// replaces one failure with another and says it recovered.
+    pub fn reactivate(&mut self, reference: &str, at: Timestamp) -> Result<()> {
+        let card = self
+            .get_mut(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        if card.stage != ModelStage::Retired {
+            return Err(Error::denied(format!(
+                "{reference} is not retired, so there is nothing to reactivate"
+            )));
+        }
+        if card.artifact_digest.is_none() {
+            return Err(Error::denied(format!(
+                "{reference} was never promoted with an artifact, so no known-good bytes exist \
+                 to roll back to"
+            )));
+        }
+        if card.latest_evaluation().is_none_or(|e| !e.passed) {
+            return Err(Error::denied(format!(
+                "{reference} cannot be reactivated without a passing evaluation"
+            )));
+        }
+        if card.drift_score > card.drift_threshold {
+            return Err(Error::denied(format!(
+                "{reference} has itself drifted to {:.3}, past its threshold {:.3}; it is not a \
+                 known-good model to roll back to",
+                card.drift_score, card.drift_threshold
+            )));
+        }
+        card.stage = ModelStage::Production;
+        card.deployed_at = Some(at);
+        card.retired_at = None;
+        Ok(())
     }
 
     /// Retire a model. Anything referencing it afterwards is rejected.

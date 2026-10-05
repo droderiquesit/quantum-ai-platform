@@ -9,3 +9,4 @@ pub mod group;
 pub mod partition;
 pub mod producer;
 pub mod service;
+pub mod sink;

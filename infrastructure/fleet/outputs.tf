@@ -27,16 +27,21 @@ output "halt_object_uri" {
 }
 
 output "job_name" {
-  description = "The Cloud Run Job."
-  value       = google_cloud_run_v2_job.fleet.name
+  description = "The Cloud Run Job, or null while no image has been given."
+  value       = try(google_cloud_run_v2_job.fleet[0].name, null)
 }
 
 output "job_parallelism" {
   description = "Read off the Job."
-  value       = google_cloud_run_v2_job.fleet.template[0].parallelism
+  value       = try(google_cloud_run_v2_job.fleet[0].template[0].parallelism, null)
 }
 
 output "job_max_retries" {
   description = "Read off the Job; must be 0."
-  value       = google_cloud_run_v2_job.fleet.template[0].template[0].max_retries
+  value       = try(google_cloud_run_v2_job.fleet[0].template[0].template[0].max_retries, null)
+}
+
+output "image_repository" {
+  description = "Where the worker image is pushed: <this>/worker."
+  value       = "${google_artifact_registry_repository.fleet.location}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.fleet.repository_id}"
 }

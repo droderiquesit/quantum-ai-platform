@@ -251,3 +251,118 @@ fn for_any_interleaving_of_sends_lost_acks_retries_and_producer_restarts_each_se
         );
     }
 }
+
+/// FABRIC-058's property: whatever order a superseded producer A and its
+/// successor B interleave in, including A resuming after a pause and aiming
+/// at exactly the sequence the table expects next (the one aim a sequence
+/// check alone cannot refuse), no batch under A's epoch is appended after
+/// B's first append.
+///
+/// Mutation: in `ProducerTable::admit`, drop the `FencedEpoch` refusal (the
+/// `epoch < current` arm) — fails, because A's resumed batch is then
+/// `Appended` and the log records an epoch-1 entry after an epoch-2 one.
+#[test]
+fn for_any_schedule_a_resumed_superseded_producer_never_appends_after_its_successors_first_append()
+{
+    const TRIALS: u64 = 60;
+    const STEPS: u64 = 24;
+
+    let mut fenced_attempts_seen = 0u64;
+    for trial in 0..TRIALS {
+        let mut rng = Xoshiro256::seeded(1_000 + trial);
+        let mut table = ProducerTable::new();
+        // (epoch, sequence) of every batch the table appended, in order.
+        let mut log: Vec<(u64, u64)> = Vec::new();
+        let mut b_started = false;
+
+        for step in 0..STEPS {
+            let next = table
+                .last_sequence(PRODUCER, PARTITION)
+                .map_or(0, |s| s + 1);
+            let who_is_b = rng.below(3) == 0;
+            // A never stops trying after B starts: that is the zombie the
+            // requirement names.
+            let epoch = if who_is_b { 2 } else { 1 };
+            let outcome = table
+                .admit(
+                    PRODUCER,
+                    PARTITION,
+                    epoch,
+                    next,
+                    1,
+                    hash(&format!("t{trial}-s{step}-e{epoch}")),
+                )
+                .unwrap_or_else(|e| panic!("trial {trial}: admit must decide, not error: {e:?}"));
+            match outcome {
+                Admission::Appended { .. } => {
+                    if who_is_b {
+                        b_started = true;
+                    }
+                    log.push((epoch, next));
+                }
+                Admission::FencedEpoch { current_epoch } => {
+                    assert!(
+                        !who_is_b && b_started && current_epoch == 2,
+                        "trial {trial}: only A may be fenced, and only by B's epoch"
+                    );
+                    fenced_attempts_seen += 1;
+                }
+                other => panic!("trial {trial}: unexpected decision {other:?}"),
+            }
+        }
+
+        if let Some(first_b) = log.iter().position(|(epoch, _)| *epoch == 2) {
+            assert!(
+                log[first_b..].iter().all(|(epoch, _)| *epoch == 2),
+                "trial {trial}: an epoch-1 batch was appended after epoch 2's first append: {log:?}"
+            );
+        }
+        let sequences: Vec<u64> = log.iter().map(|(_, s)| *s).collect();
+        let dense: Vec<u64> = (0..sequences.len() as u64).collect();
+        assert_eq!(sequences, dense, "trial {trial}: the log must stay dense");
+    }
+    // Premise: the schedules actually produced zombies to refuse; a run in
+    // which A never resumed after B would pass a table with no fencing.
+    assert!(
+        fenced_attempts_seen > 0,
+        "no trial ever had A try again after B started"
+    );
+}
+
+/// FABRIC-032's second half: the table discards a retry (above) and also
+/// refuses a gap. A batch that skips a sequence is a producer that lost a
+/// record locally; appending it would turn that into a hole nobody can later
+/// tell from a deliberate one.
+///
+/// Mutation: in `ProducerTable::admit`, append `&& false` to the
+/// `base_sequence > expected` condition so the hole is never refused — fails,
+/// because the gapped batch is then not answered `OutOfOrder`.
+#[test]
+fn a_batch_that_skips_a_sequence_is_refused_naming_the_one_expected_and_leaves_the_stream_unchanged()
+ {
+    let mut table = ProducerTable::new();
+    let first = table
+        .admit(PRODUCER, PARTITION, 1, 0, 1, hash("seq0"))
+        .expect("the first batch appends");
+    assert_eq!(first, Admission::Appended { next_sequence: 1 });
+    assert_eq!(table.last_sequence(PRODUCER, PARTITION), Some(0));
+
+    let gapped = table
+        .admit(PRODUCER, PARTITION, 1, 2, 1, hash("seq2-skipping-1"))
+        .expect("a gap is a decision, not a malformed request");
+    assert_eq!(
+        gapped,
+        Admission::OutOfOrder { expected: 1 },
+        "a batch at sequence 2 after sequence 0 must be refused, naming 1 as the one expected"
+    );
+    assert_eq!(
+        table.last_sequence(PRODUCER, PARTITION),
+        Some(0),
+        "a refused gap must not advance the stream"
+    );
+
+    let filled = table
+        .admit(PRODUCER, PARTITION, 1, 1, 1, hash("seq1"))
+        .expect("the expected sequence still appends after a refused gap");
+    assert_eq!(filled, Admission::Appended { next_sequence: 2 });
+}

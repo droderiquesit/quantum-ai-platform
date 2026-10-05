@@ -39,7 +39,10 @@ pub mod identity;
 pub mod tracker;
 
 pub use arbitration::{ArbitrationEvent, ArbitrationOutcome, LineArbiter, LineHealth};
-pub use clock::{ClockDiscipline, ClockEstimate, ClockObservation};
+pub use clock::{
+    ClockCorrection, ClockDiscipline, ClockEstimate, ClockObservation, CorrectionKind,
+    DisciplinedTime,
+};
 pub use failover::{FailoverEvent, FailoverOutcome, FailoverReconciler, FailoverStats};
 pub use identity::{reset_message, synthetic_id};
 pub use tracker::{

@@ -1,48 +1,52 @@
 [
   {
     "id": "WORLD-001",
-    "status": "MISSING",
-    "current": "nothing implements world-model-level disagreement recording. The closest analog is agent-level dissent inside one hypothesis: qip_reasoning_engine::engine::ReasoningOutcome.dissenters (backend/crates/services/qip-reasoning-engine/src/engine.rs:64-70) records which agents argued against a thesis, and the module doc states the policy explicitly ('It does not average agent convictions into a house view... Disagreement is carried through to the hypothesis as contradicting evidence'). This is disagreement among agents about one hypothesis, not disagreement among competing world models — no second thing to disagree with the first exists (see WORLD-010).",
+    "status": "COMPLETE",
+    "current": "qip_world_model::federation::Federation::arbitrate returns an Arbitration whose Disagreement holds every live member view, minority included, and the max-min spread; an arbitrated probability exists only as a field of that Arbitration. backend/crates/services/qip-world-model/src/federation.rs",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/engine.rs:64-70 (ReasoningOutcome.dissenters)",
-      "backend/crates/services/qip-reasoning-engine/src/engine.rs:9-12 (module doc: 'It does not average agent convictions into a house view... Disagreement is carried through... let the red team weigh it')",
-      "no ModelDisagreement type: `rg -n \"ModelDisagreement\" backend/crates -g '*.rs'` returns nothing"
+      "backend/crates/services/qip-world-model/src/federation.rs",
+      "backend/crates/services/qip-world-model/tests/federation.rs -- arbitration_over_generated_diverging_views_keeps_every_view_and_measures_the_spread"
     ],
-    "gap": "No World Model Federation exists (WORLD-010 missing), so there is no second world-model view to disagree with the first; consequently no mechanism records inter-model disagreement or a divergence measure between competing model views.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010", "CONTRACT-023"],
+    "depends_on": [
+      "WORLD-010",
+      "CONTRACT-023"
+    ],
     "blocked_by": "",
-    "verification": "Not written. Would need a property test generating diverging model outputs and asserting arbitration keeps every member's view plus a disagreement measure — impossible today because there is only one model to test with.",
+    "verification": "cargo test -p qip-world-model --test federation -- arbitration_over_generated_diverging_views_keeps_every_view_and_measures_the_spread (mutation-verified: halving the spread fails it.)",
     "work_item": "E09",
     "tier": "T4",
     "size": "XL",
-    "notes": "Depends structurally on the federation (WORLD-010) existing first; recording disagreement is meaningless with a population of one. verify: status MISSING confirmed (no second world model, no disagreement record; qip-lifecycle's HorizonDisagreement is a strategy-horizon dispute, not a world-model one). Corrected the module-doc citation from engine.rs:14-17 to engine.rs:9-12, where the quoted text actually is."
+    "notes": "Library-level: the federation is in-process with a journal; no composition root builds one and the journal is not yet appended to the central event log (integrated=false). | Depends structurally on the federation (WORLD-010) existing first; recording disagreement is meaningless with a population of one. verify: status MISSING confirmed (no second world model, no disagreement record; qip-lifecycle's HorizonDisagreement is a strategy-horizon dispute, not a world-model one). Corrected the module-doc citation from engine.rs:14-17 to engine.rs:9-12, where the quoted text actually is."
   },
   {
     "id": "WORLD-002",
-    "status": "MISSING",
-    "current": "nothing. No branch/parent/trigger lineage exists for world models. qip_reasoning_engine::hypothesis::HypothesisStatus (backend/crates/services/qip-reasoning-engine/src/hypothesis.rs:224-237) has Draft/Approved/Rejected/Active/Resolved/Superseded — 'Superseded' is replacement, not a branch with a recorded parent and trigger.",
+    "status": "COMPLETE",
+    "current": "Federation::branch records parent, trigger and created_at as a Lineage; lineage_from_journal rebuilds the tree from the journal alone. backend/crates/services/qip-world-model/src/federation.rs",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs:224-237 (HypothesisStatus, no Branch variant)",
-      "`rg -l \"WorldModelBranch|ModelBranch|branch_lineage|BranchLineage\" backend/crates -g '*.rs'` returns nothing"
+      "backend/crates/services/qip-world-model/src/federation.rs",
+      "backend/crates/services/qip-world-model/tests/federation.rs -- a_branch_records_parent_trigger_and_time_and_the_tree_rebuilds_from_the_journal_alone"
     ],
-    "gap": "No world model can branch because there is no population of world models to branch from (WORLD-010), and no lineage-recording type (parent, triggering evidence/event, created-at) exists anywhere in the tree.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
-    "verification": "Not written. Would need a replay test rebuilding the branch tree from the event log alone and comparing it to the live tree.",
+    "verification": "cargo test -p qip-world-model --test federation -- a_branch_records_parent_trigger_and_time_and_the_tree_rebuilds_from_the_journal_alone (mutation-verified: dropping the trigger fails it.)",
     "work_item": "E09",
     "tier": "T4",
     "size": "XL",
-    "notes": ""
+    "notes": "Library-level: the federation is in-process with a journal; no composition root builds one and the journal is not yet appended to the central event log (integrated=false). | "
   },
   {
     "id": "WORLD-003",
@@ -228,25 +232,25 @@
   },
   {
     "id": "WORLD-010",
-    "status": "MISSING",
-    "current": "nothing. Exactly one qip_world_model::world::WorldModel instance exists system-wide, held as `world: Upstream<WorldModel>` on qip-kernel's Platform.",
+    "status": "COMPLETE",
+    "current": "Federation registers many declared models spanning domain, region, horizon, abstraction and hypothesis, including Scenario and Counterfactual kinds; spanned() and silent_since() read the registry. backend/crates/services/qip-world-model/src/federation.rs",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:793-806 (single live Upstream<WorldModel> field, with a comment noting that before this it was a copy nothing ever wrote to)",
-      "`rg -i 'world model federation|worldmodelfederation' backend/crates -g '*.rs'` matches only a documentation-label string in backend/crates/apps/qip-cli/src/blueprint.rs, not an implementation"
+      "backend/crates/services/qip-world-model/src/federation.rs",
+      "backend/crates/services/qip-world-model/tests/federation.rs -- a_population_differs_on_all_five_axes_and_every_member_produced_state_this_cycle"
     ],
-    "gap": "No population of concurrent, specialised world models exists along any of the five named axes (domain, geography, horizon, abstraction level, hypothesis); there is one shared instance every consumer reads.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Not written. Would read the federation's registry during one cycle and assert models differ along all five axes — impossible today, there is no registry.",
+    "verification": "cargo test -p qip-world-model --test federation -- a_population_differs_on_all_five_axes_and_every_member_produced_state_this_cycle (not mutation-run separately: the same registry is exercised by every mutation-verified federation test.)",
     "work_item": "E09",
     "tier": "T4",
     "size": "XL",
-    "notes": "This is the foundational gap every other federation-shaped WORLD requirement (001, 002, 013-027) depends on."
+    "notes": "Library-level: the federation is in-process with a journal; no composition root builds one and the journal is not yet appended to the central event log (integrated=false). | This is the foundational gap every other federation-shaped WORLD requirement (001, 002, 013-027) depends on."
   },
   {
     "id": "WORLD-011",
@@ -263,7 +267,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
     "verification": "Not written; a chaos test withdrawing the world model and asserting consumers still produce reduced-coverage output would fail today (everything reading `self.world` would be starved).",
     "work_item": "E09",
@@ -318,7 +324,9 @@
     "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
     "verification": "understanding.rs::a_recognised_macro_release_lands_under_the_analysts_name_keyed_by_its_economy and qip-investment-agents vocabulary.rs::the_macro_analyst_reads_the_series_the_macro_arm_writes_keyed_by_the_subjects_economy prove the rates/policy arm; no test replays an event in each of the seven named sub-domains.",
     "work_item": "E09",
@@ -344,7 +352,9 @@
     "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
     "verification": "backend/crates/runtime/qip-kernel/tests/absorption.rs::a_fundamental_that_previously_vanished_now_lands_with_its_own_two_instants proves the absorption arm; no test replays an earnings release plus a capital-structure change.",
     "work_item": "E09",
@@ -374,7 +384,9 @@
     "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
     "verification": "connector_contract.rs proves the weather connector's decoding; nothing proves a weather reading updates the world model, and no route/product graph exists to test a disruption against.",
     "work_item": "E09",
@@ -400,7 +412,9 @@
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
     "verification": "backend/crates/services/qip-world-model/tests/liquidity.rs; no test covers order-flow, lead/lag, impact or execution state as world-model fields.",
     "work_item": "E09",
@@ -423,7 +437,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
     "verification": "backend/crates/services/qip-prediction/tests/ (46 tests) proves EventMarket/conditional-probability logic in isolation; no production caller exists to demonstrate it reached.",
     "work_item": "E09",
@@ -447,7 +463,9 @@
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
     "verification": "qip-capital's own test suite (per current-state map); no test seeds a paper book across two corridors and asserts a distinct world-model belief agrees with the ledger, because no such distinct belief layer exists.",
     "work_item": "E09",
@@ -474,7 +492,9 @@
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
     "verification": "backend/crates/runtime/qip-kernel/tests/collateral.rs (production counterparty-exposure review); backend/crates/runtime/qip-kernel/tests/bridges.rs (bridge model, tests-only reach); no test fails a custodian and asserts the reachable contagion set.",
     "work_item": "E09",
@@ -496,7 +516,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
     "verification": "Not written.",
     "work_item": "E09",
@@ -520,7 +542,9 @@
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
     "verification": "backend/crates/services/qip-twin/tests/twin.rs; no test asserts lineage from a branched state because counterfactuals/scenarios are not modeled as world-model branches.",
     "work_item": "E09",
@@ -530,111 +554,125 @@
   },
   {
     "id": "WORLD-022",
-    "status": "MISSING",
-    "current": "nothing. No merge operation exists for world models or branches anywhere in the tree.",
+    "status": "COMPLETE",
+    "current": "Federation::merge makes a node naming both parents; both parents are marked Merged and stay readable. backend/crates/services/qip-world-model/src/federation.rs",
     "evidence": [
-      "`rg -in 'fn merge' backend/crates/services/qip-world-model -g '*.rs'` returns nothing relevant to model/branch merging"
+      "backend/crates/services/qip-world-model/src/federation.rs",
+      "backend/crates/services/qip-world-model/tests/federation.rs -- a_merged_model_names_both_parents_and_each_parents_history_stays_readable"
     ],
-    "gap": "No branches exist to merge (WORLD-002 missing), so no merge operation or dual-parent record exists either.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010", "WORLD-002"],
+    "depends_on": [
+      "WORLD-010",
+      "WORLD-002"
+    ],
     "blocked_by": "",
-    "verification": "Not written.",
+    "verification": "cargo test -p qip-world-model --test federation -- a_merged_model_names_both_parents_and_each_parents_history_stays_readable (mutation-verified: recording one parent fails it.)",
     "work_item": "E09",
     "tier": "T4",
     "size": "L",
-    "notes": ""
+    "notes": "Library-level: the federation is in-process with a journal; no composition root builds one and the journal is not yet appended to the central event log (integrated=false). | "
   },
   {
     "id": "WORLD-023",
-    "status": "MISSING",
-    "current": "nothing. No world model has a declared expiry or an exclusion-from-arbitration mechanism.",
+    "status": "COMPLETE",
+    "current": "Federation::arbitrate excludes a model at or after its expiry, journals one Expired event, and renew() brings it back (refusing a renewal into the past). backend/crates/services/qip-world-model/src/federation.rs",
     "evidence": [
-      "`rg -n 'fn expire|expiry' backend/crates/services/qip-world-model/src/*.rs` returns nothing"
+      "backend/crates/services/qip-world-model/src/federation.rs",
+      "backend/crates/services/qip-world-model/tests/federation.rs -- an_expired_model_is_excluded_exactly_when_the_clock_reaches_its_expiry_and_returns_on_renewal"
     ],
-    "gap": "No expiry field, no arbitration to exclude a model from (WORLD-025 missing), and no renewal mechanism.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010", "WORLD-025"],
+    "depends_on": [
+      "WORLD-010",
+      "WORLD-025"
+    ],
     "blocked_by": "",
-    "verification": "Not written.",
+    "verification": "cargo test -p qip-world-model --test federation -- an_expired_model_is_excluded_exactly_when_the_clock_reaches_its_expiry_and_returns_on_renewal (mutation-verified: changing >= to > fails it on the boundary instant.)",
     "work_item": "E09",
     "tier": "T3",
     "size": "M",
-    "notes": ""
+    "notes": "Library-level: the federation is in-process with a journal; no composition root builds one and the journal is not yet appended to the central event log (integrated=false). | "
   },
   {
     "id": "WORLD-024",
-    "status": "MISSING",
-    "current": "No world model is scored by predictive calibration. Adjacent-but-distinct scoring exists: qip_world_model::falsification tracks per-causal-edge verdicts (Established/Suggestive/retired), and qip_learning_engine::self_model tracks per-component (detector/analyst/rung/strategy) accuracy — neither scores 'a world model' as a unit, because only one undifferentiated model exists.",
+    "status": "COMPLETE",
+    "current": "Federation::calibration is the mean Brier score of the model own resolved forecasts, Calibration::Unscored before any resolve. backend/crates/services/qip-world-model/src/federation.rs",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/falsification.rs:717 (Verdict, per causal claim, not per model)",
-      "backend/crates/services/qip-learning-engine/src/self_model.rs (per-component, not per-model)",
-      "backend/crates/libs/qip-ai/src/evaluation.rs (PredictionOutcome/Calibration/DriftReport — used for training-data drift in qip-deepbrain/src/learning.rs:1420, not for world-model calibration; the :1899 use is inside #[cfg(test)] mod tests)"
+      "backend/crates/services/qip-world-model/src/federation.rs",
+      "backend/crates/services/qip-world-model/tests/federation.rs -- a_model_scores_its_own_resolved_forecasts_and_reports_unscored_before_any"
     ],
-    "gap": "No calibration score is computed for a world model as a unit, and 'unscored, not defaulted' cannot be demonstrated because there is no plurality of models to compare and no such score exists at all.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
-    "verification": "Not written.",
+    "verification": "cargo test -p qip-world-model --test federation -- a_model_scores_its_own_resolved_forecasts_and_reports_unscored_before_any (mutation-verified: replacing the squared error and returning a default score each fail it.)",
     "work_item": "E09",
     "tier": "T3",
     "size": "L",
-    "notes": "The self-model (WORLD-007) is the closest existing pattern to adapt — same refuse-below-minimum-sample discipline could apply to per-model calibration once a federation exists. verify: status MISSING confirmed; corrected the falsification.rs citation (Verdict is at :717) and flagged that the deepbrain learning.rs:1899 site is test code."
+    "notes": "Library-level: the federation is in-process with a journal; no composition root builds one and the journal is not yet appended to the central event log (integrated=false). | The self-model (WORLD-007) is the closest existing pattern to adapt — same refuse-below-minimum-sample discipline could apply to per-model calibration once a federation exists. verify: status MISSING confirmed; corrected the falsification.rs citation (Verdict is at :717) and flagged that the deepbrain learning.rs:1899 site is test code."
   },
   {
     "id": "WORLD-025",
-    "status": "MISSING",
-    "current": "nothing. No World Model Arbitration layer exists.",
+    "status": "COMPLETE",
+    "current": "Arbitration records evidence fit, predictive performance (1-Brier), causal coherence and uncertainty for every compared model as a ScoredView with a composite. backend/crates/services/qip-world-model/src/federation.rs",
     "evidence": [
-      "`rg -il 'arbitrat' backend/crates -g '*.rs'` matches only qip-sequencing (network message arbitration) and qip-optimization-engine (unrelated horizon term), never a world-model arbitration layer",
-      "`rg -in 'evidence.fit|causal.coherence|CausalCoherence|EvidenceFit' backend/crates -g '*.rs'` returns nothing"
+      "backend/crates/services/qip-world-model/src/federation.rs",
+      "backend/crates/services/qip-world-model/tests/federation.rs -- arbitration_records_all_four_dimensions_and_ranks_by_evidence_fit_when_only_that_differs"
     ],
-    "gap": "None of the four named comparison dimensions (evidence fit, predictive performance/calibration, causal coherence, uncertainty) exist as a scored, recorded comparison between models, because there is no plurality of models to compare (WORLD-010).",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
-    "verification": "Not written.",
+    "verification": "cargo test -p qip-world-model --test federation -- arbitration_records_all_four_dimensions_and_ranks_by_evidence_fit_when_only_that_differs (mutation-verified: ignoring evidence fit fails it.)",
     "work_item": "E09",
     "tier": "T4",
     "size": "XL",
-    "notes": ""
+    "notes": "Library-level: the federation is in-process with a journal; no composition root builds one and the journal is not yet appended to the central event log (integrated=false). | "
   },
   {
     "id": "WORLD-026",
-    "status": "MISSING",
-    "current": "nothing. No arbitration layer exists to make a branch/merge/abstain/request-more-information decision.",
+    "status": "COMPLETE",
+    "current": "Arbitration decides Branch, Merge, Abstain or RequestMoreInformation with a recorded reason; Abstain yields no arbitrated probability and a request names the models and proposition. backend/crates/services/qip-world-model/src/federation.rs",
     "evidence": [
-      "depends entirely on WORLD-025, confirmed absent by the same greps"
+      "backend/crates/services/qip-world-model/src/federation.rs",
+      "backend/crates/services/qip-world-model/tests/federation.rs -- arbitration_produces_each_of_the_four_actions_with_a_reason_and_the_right_output"
     ],
-    "gap": "No arbitration layer, hence no decision among the four named actions and no recorded reason for any of them.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-025"],
+    "depends_on": [
+      "WORLD-025"
+    ],
     "blocked_by": "",
-    "verification": "Not written.",
+    "verification": "cargo test -p qip-world-model --test federation -- arbitration_produces_each_of_the_four_actions_with_a_reason_and_the_right_output (mutation-verified: removing the abstain rule and removing the unscored-request rule each fail it.)",
     "work_item": "E09",
     "tier": "T4",
     "size": "L",
-    "notes": ""
+    "notes": "Library-level: the federation is in-process with a journal; no composition root builds one and the journal is not yet appended to the central event log (integrated=false). | "
   },
   {
     "id": "WORLD-027",
@@ -652,7 +690,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
     "verification": "Not written. Would be an architecture-suite test (backend/crates/tests/qip-acceptance/tests/architecture.rs) asserting registration; no registry exists to assert against.",
     "work_item": "E09",
@@ -674,7 +714,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
     "verification": "Not written.",
     "work_item": "E09",
@@ -697,7 +739,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-010"],
+    "depends_on": [
+      "WORLD-010"
+    ],
     "blocked_by": "",
     "verification": "Not written.",
     "work_item": "E09",
@@ -709,14 +753,18 @@
     "id": "WORLD-030",
     "status": "MISSING",
     "current": "nothing. No return path exists because no symbolic reasoning fabric exists to produce derivations/constraints/rejections in the first place (WORLD-029).",
-    "evidence": ["same negative evidence as WORLD-029"],
+    "evidence": [
+      "same negative evidence as WORLD-029"
+    ],
     "gap": "No symbolic fabric, hence nothing to flow back into a federation that also does not exist.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-029"],
+    "depends_on": [
+      "WORLD-029"
+    ],
     "blocked_by": "",
     "verification": "Not written.",
     "work_item": "E09",
@@ -742,7 +790,9 @@
     "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-013"],
+    "depends_on": [
+      "WORLD-013"
+    ],
     "blocked_by": "",
     "verification": "qip-investment-agents vocabulary.rs::the_macro_analyst_reads_the_series_the_macro_arm_writes_keyed_by_the_subjects_economy proves the rates/inflation/growth read; no test asserts routing across the named topics because the agent reads four numeric series and has no topic scope.",
     "work_item": "E09",
@@ -767,7 +817,9 @@
     "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-014"],
+    "depends_on": [
+      "WORLD-014"
+    ],
     "blocked_by": "",
     "verification": "qip-investment-agents organisation.rs::the_credit_analyst_refuses_to_assume_a_duration_it_does_not_have exercises the credit read on fixture spreads; no test covers statements, earnings, corporate events or guidance, because no agent reads them.",
     "work_item": "E09",
@@ -791,7 +843,9 @@
     "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["WORLD-015"],
+    "depends_on": [
+      "WORLD-015"
+    ],
     "blocked_by": "",
     "verification": "qip-investment-agents organisation.rs::the_commodities_analyst_stamps_each_curve_point_observed_from_the_store exercises the curve read on a fixture; no test covers suppliers, logistics, inventories, production constraints or shipping.",
     "work_item": "E09",

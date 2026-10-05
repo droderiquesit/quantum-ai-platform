@@ -32,7 +32,7 @@
     "work_item": "E11",
     "tier": "T3",
     "size": "XL",
-    "notes": "Flagged NEW_DEPENDENCY in the requirement, but the existing centre-cell spine achieves authenticated delivery over plaintext HTTP/1.1 plus HMAC-signed envelopes (ADR 0002's permitted in-tree hashing) with no new crate; the same pattern is plausibly reusable peer-to-peer, so BLOCKED-by-C2 is not asserted here without a concrete design showing otherwise."
+    "notes": "Flagged NEW_DEPENDENCY in the requirement, but the existing centre-cell spine achieves authenticated delivery over plaintext HTTP/1.1 plus HMAC-signed envelopes (ADR 0002's permitted in-tree hashing) with no new crate; the same pattern is plausibly reusable peer-to-peer, so BLOCKED-by-C2 is not asserted here without a concrete design showing otherwise. | Protocol rules now exist in qip_mesh::peer (epoch, fencing, FIRE, bounds); still MISSING end to end because there is no peer transport (MESH-038 blocked on a dependency record) and no cell wiring."
   },
   {
     "id": "MESH-002",
@@ -63,28 +63,27 @@
   },
   {
     "id": "MESH-003",
-    "status": "PARTIAL",
-    "current": "The downward signed path is implemented and hardened: qip_edge::policy::VerifiedPolicy / qip_edge::envelope::VerifiedEnvelope (signature-recomputing construction only) received through qip_edge::mesh::PolicyDownlink/CapitalDownlink, wired from qip-edge-node/src/mesh.rs into Cell::apply_policy/apply_halt/renew_capital.",
+    "status": "COMPLETE",
+    "current": "qip_mesh::peer::decode refuses any peer frame of kind policy, policy_pack, capital_grant, risk_pack, model_pack, strategy_pack or belief_pack, naming the signed centre path; the endpoint journals the refusal and its state is unchanged. The downward verified path is exercised by qip-edge/tests/mesh.rs. backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/envelope.rs:25 (VerifiedEnvelope, private inner)",
-      "backend/crates/edge/qip-edge/tests/mesh.rs::a_downlink_that_cannot_verify_anything_refuses_to_exist",
-      "backend/crates/edge/qip-edge/tests/cell.rs::an_unsigned_envelope_cannot_become_a_verified_one, tampering_with_any_bound_invalidates_the_signature"
+      "backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- a_well_formed_pack_policy_or_grant_delivered_by_a_peer_is_refused_journaled_and_changes_nothing"
     ],
-    "gap": "The 'peers never carry policy' half of the invariant has nothing to test against: no peer channel exists (MESH-001 is MISSING), so no test demonstrates that a well-formed signed pack delivered over a peer connection is refused. The property is vacuously true today rather than demonstrated.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "MESH-001"
     ],
     "blocked_by": "",
-    "verification": "backend/crates/edge/qip-edge/tests/mesh.rs (10 tests) proves the downward path; a test delivering a valid pack over a peer connection and asserting refusal must be written once MESH-001 exists.",
+    "verification": "cargo test -p qip-mesh --test peer -- a_well_formed_pack_policy_or_grant_delivered_by_a_peer_is_refused_journaled_and_changes_nothing (mutation-verified: by disabling the downward-only kind check, each in backend/crates/services/qip-mesh/src/peer.rs was disabled in turn and the named test failed; restored byte-for-byte and the suite passes 15/15).",
     "work_item": "E11",
     "tier": "T1",
     "size": "S",
-    "notes": ""
+    "notes": "Library-level protocol rules in qip_mesh::peer with no transport: no cell composition root calls them yet (integrated=false) and the peer transport itself is MESH-038, blocked on a dependency record (ADR 0002/0009)."
   },
   {
     "id": "MESH-004",
@@ -118,28 +117,28 @@
   },
   {
     "id": "MESH-005",
-    "status": "PARTIAL",
-    "current": "qip_arbitrage::scan::Opportunity::cycle_id / cycle_legs (backend/crates/edge/qip-arbitrage/src/legs.rs:80-149) gives a cycle a reproducible identity (path kind + every leg's object@venue/side + opened_at) and a per-cycle deadline (valid_until) refused if it is not strictly after opened_at. This is local to one cell's own scan, not a token exchanged between peers.",
+    "status": "COMPLETE",
+    "current": "qip_mesh::peer::EpochDraft::build refuses an epoch missing any of the seven fields (cycle, legs, size, min_edge_bps, model_versions, ttl, unwind_policy) naming the field; OpportunityEpoch round-trips inside PeerMessage::Token and has a content identity. backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/src/legs.rs:80-149",
-      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs::the_cycle_id_replays_at_one_instant_and_separates_two (1233)",
-      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs::legs_that_would_expire_before_the_cycle_opens_are_refused (1256)"
+      "backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- an_epoch_missing_any_one_of_its_seven_fields_is_refused_naming_that_field",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- a_token_survives_a_round_trip_and_epochs_differing_in_any_field_have_different_identities"
     ],
-    "gap": "Opportunity::cycle_id/cycle_legs cover four of the seven named fields in substance -- the cycle (path kind + object@venue/side sequence), its legs, each leg's signed size, and a TTL-shaped deadline (valid_until) -- but not as one epoch type: there is no minimum-edge field, no model-version field and no unwind-policy field (rg for OpportunityEpoch|OpportunityToken|unwind_policy|UnwindPolicy|min_edge across backend/crates returns nothing), construction does not refuse a missing field by name, and nothing is ever exchanged as a token between peers because MESH-001 does not exist.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "MESH-001"
     ],
     "blocked_by": "",
-    "verification": "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs::legs_that_would_expire_before_the_cycle_opens_are_refused proves the existing TTL-shaped field; a unit test on a new OpportunityEpoch type refusing construction missing any of the seven named fields is the remaining work (ties to CONTRACT-015).",
+    "verification": "cargo test -p qip-mesh --test peer -- an_epoch_missing_any_one_of_its_seven_fields_is_refused_naming_that_field a_token_survives_a_round_trip_and_epochs_differing_in_any_field_have_different_identities (mutation-verified: by disabling the ttl-ceiling and field checks, each in backend/crates/services/qip-mesh/src/peer.rs was disabled in turn and the named test failed; restored byte-for-byte and the suite passes 15/15).",
     "work_item": "E02",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: gap said cycle_id/CycleLeg cover '2 of the 7' fields; cycle_legs also carries the cycle identity and a per-leg size (legs.rs:118-146), so 4 of 7 in substance -- gap corrected. Status PARTIAL and flags unchanged."
+    "notes": "verify: gap said cycle_id/CycleLeg cover '2 of the 7' fields; cycle_legs also carries the cycle identity and a per-leg size (legs.rs:118-146), so 4 of 7 in substance -- gap corrected. Status PARTIAL and flags unchanged. | Library-level protocol rules in qip_mesh::peer with no transport: no cell composition root calls them yet (integrated=false) and the peer transport itself is MESH-038, blocked on a dependency record (ADR 0002/0009)."
   },
   {
     "id": "MESH-006",
@@ -188,7 +187,7 @@
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": "Host clock discipline (chrony/PTP) is an infrastructure decision outside this repository's scope; the in-tree work is the measured-offset export and the exclusion gate."
+    "notes": "Host clock discipline (chrony/PTP) is an infrastructure decision outside this repository's scope; the in-tree work is the measured-offset export and the exclusion gate. | Left PARTIAL: clock-offset admission and offset gauge not built; needs a measured-offset source from a real peer link."
   },
   {
     "id": "MESH-008",
@@ -221,31 +220,29 @@
   },
   {
     "id": "MESH-009",
-    "status": "PARTIAL",
-    "current": "Two pre-trade bounds exist in the reached path, neither a loss bound. qip_edge::dispersion::{DispersionPolicy,DispersionVerdict} (backend/crates/edge/qip-edge/src/dispersion.rs) bounds the fill-time spread between a cycle's venues (DEFAULT_DISPERSION_BOUND=250ms), which the module doc says bounds worst-case unwind cost. qip_arbitrage::plan::LegPlanner::plan (backend/crates/edge/qip-arbitrage/src/plan.rs:205-215) refuses a plan whose residual exposure if it stops after its first leg (LegPlan::residual_after(1)) exceeds PlanSettings::leg_risk_budget; qip-edge-node sets that budget (src/arbitrage.rs:67,185-190, PLAN_BUDGET=50000). qip_execution_engine::multileg::LegGroup::max_leg_risk bounds unmatched notional while a group works, but LegGroup has no production caller.",
+    "status": "COMPLETE",
+    "current": "Each epoch carries an unwind policy (max_recovery_loss) and per-leg declared unwind loss; declare_fire refuses when the summed worst case exceeds the bound, and an Unwind message costing more than the leg declared is refused and not booked, so realized loss cannot pass the bound. backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/dispersion.rs:1-15,52",
-      "backend/crates/edge/qip-edge/src/dispersion.rs:481 a_pair_of_venues_a_bound_apart_is_inside_it_and_one_nanosecond_further_is_not (inline #[cfg(test)], not tests/dispersion.rs)",
-      "backend/crates/edge/qip-arbitrage/src/plan.rs:205-215 (residual_after(1) vs leg_risk_budget, refused)",
-      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs:817 a_plan_whose_residual_exceeds_its_budget_is_refused",
-      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:67,185-190 (PlanSettings::with_budget at the composition root)",
-      "backend/crates/services/qip-execution-engine/src/multileg.rs:325 (LegGroup::max_leg_risk; not integrated)"
+      "backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- fire_is_refused_when_the_worst_recovery_loss_exceeds_the_bound_declared_before_it",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- realized_recovery_loss_never_passes_the_bound_over_every_order_of_unwinds",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- an_unwind_costing_more_than_the_leg_declared_is_refused_and_not_booked"
     ],
-    "gap": "Both reached bounds are proxies fixed before FIRE -- a time spread and a gross stranded-notional budget -- not a currency ceiling on realized recovery loss stated by a per-cycle unwind policy. Nothing computes realized recovery loss, nothing checks it against a declared bound across adversarial sequences of partial fills and peer losses, and MESH-008's saga (which this bound would govern) is itself only partial with no cross-region form.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "MESH-008"
     ],
     "blocked_by": "",
-    "verification": "backend/crates/edge/qip-edge/tests/dispersion.rs (4 tests) plus 9 inline tests prove the time-bound gate; qip-arbitrage tests/arbitrage.rs:817 proves the leg-risk budget refusal. A property test asserting realized recovery loss never exceeds a bound declared before FIRE across generated adversarial fill sequences, with a mutation that skips the check producing a counterexample, is the remaining work.",
+    "verification": "cargo test -p qip-mesh --test peer -- fire_is_refused_when_the_worst_recovery_loss_exceeds_the_bound_declared_before_it realized_recovery_loss_never_passes_the_bound_over_every_order_of_unwinds an_unwind_costing_more_than_the_leg_declared_is_refused_and_not_booked (mutation-verified: by removing the pre-FIRE bound check and the per-leg cap, each in backend/crates/services/qip-mesh/src/peer.rs was disabled in turn and the named test failed; restored byte-for-byte and the suite passes 15/15).",
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: cited test path was tests/dispersion.rs but the test is inline in src/dispersion.rs:481 -- corrected; the assessor missed the qip-arbitrage plan leg-risk budget (refused pre-trade, tested, set by qip-edge-node) and LegGroup::max_leg_risk -- added. Status PARTIAL and flags unchanged."
+    "notes": "verify: cited test path was tests/dispersion.rs but the test is inline in src/dispersion.rs:481 -- corrected; the assessor missed the qip-arbitrage plan leg-risk budget (refused pre-trade, tested, set by qip-edge-node) and LegGroup::max_leg_risk -- added. Status PARTIAL and flags unchanged. | Library-level protocol rules in qip_mesh::peer with no transport: no cell composition root calls them yet (integrated=false) and the peer transport itself is MESH-038, blocked on a dependency record (ADR 0002/0009)."
   },
   {
     "id": "MESH-010",
@@ -529,15 +526,15 @@
   },
   {
     "id": "MESH-021",
-    "status": "MISSING",
-    "current": "nothing. There is no opportunity-epoch type, so there is nothing to synchronize participants on and nothing to fence stale actors against. The nearest analogue, qip_arbitrage's per-cycle cycle_id plus CycleLeg::valid_until, is scoped to one cell's own local cycle and is never checked against a second participant's view of the same opportunity.",
+    "status": "COMPLETE",
+    "current": "PeerEndpoint::receive fences every reservation, FIRE, fill and unwind message on the epoch sequence; a stale or replayed token cannot roll the epoch back; each refusal is journaled with kind stale_epoch. backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/src/legs.rs:80-101 (cycle_id, single-cell)",
-      "rg -il epoch backend/crates/edge/qip-arbitrage backend/crates/edge/qip-edge -> matches are all Timestamp::EPOCH (Unix epoch) or day-numbering, unrelated to opportunity epochs"
+      "backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- a_message_from_a_superseded_epoch_changes_nothing_and_is_journaled_as_refused"
     ],
-    "gap": "No fencing mechanism exists at all: no reservation, FIRE, fill or saga message carries an epoch that a second participant could check for staleness, because there is neither an epoch type (MESH-005 is only partial) nor a second participant (MESH-001 is missing).",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -546,27 +543,25 @@
       "MESH-005"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needed: interleaved generated messages from superseded epochs, including a restarted node holding a stale epoch, none of which changes reservation/execution/saga state, each journaled as refused.",
+    "verification": "cargo test -p qip-mesh --test peer -- a_message_from_a_superseded_epoch_changes_nothing_and_is_journaled_as_refused (mutation-verified: by removing the sequence comparison, each in backend/crates/services/qip-mesh/src/peer.rs was disabled in turn and the named test failed; restored byte-for-byte and the suite passes 15/15).",
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "Library-level protocol rules in qip_mesh::peer with no transport: no cell composition root calls them yet (integrated=false) and the peer transport itself is MESH-038, blocked on a dependency record (ADR 0002/0009)."
   },
   {
     "id": "MESH-022",
-    "status": "PARTIAL",
-    "current": "qip_arbitrage's CycleLeg carries a per-cycle deadline (valid_until) refused at construction if it is not strictly after the cycle's opened_at instant (backend/crates/edge/qip-arbitrage/src/legs.rs:118-131). The cell enforces it at send time: on the passive-first path a remaining leg whose valid_until has passed is not sent and the cycle is broken instead (backend/crates/edge/qip-edge/src/cell.rs:6344-6358), and Cell::withdraw_expired withdraws resting orders past their time to live (cell.rs:4139). The validity is a fixed node constant, LEG_VALIDITY = 30s (qip-edge-node/src/arbitrage.rs:60), applied by ArbitrageDesk.",
+    "status": "COMPLETE",
+    "current": "Epoch validation refuses a missing, non-positive or above-ceiling TTL; PeerEndpoint::declare_fire/send_leg refuse at or after expiry and receive() discards and journals late messages. backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/src/legs.rs:118-131",
-      "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs:1256 legs_that_would_expire_before_the_cycle_opens_are_refused",
-      "backend/crates/edge/qip-edge/src/cell.rs:6344-6358 (no remaining leg crossed past valid_until)",
-      "backend/crates/edge/qip-edge/tests/passive.rs:610 a_resting_leg_that_half_filled_and_then_expired_stops_the_cell_rather_than_crossing_a_stale_price",
-      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:60 (LEG_VALIDITY constant, 30s)"
+      "backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- an_epoch_with_no_ttl_or_a_ttl_above_the_ceiling_is_refused_and_one_at_the_ceiling_is_admitted",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- no_leg_is_sent_and_no_message_is_applied_at_or_after_the_epoch_expiry"
     ],
-    "gap": "This bounds one local cycle's own deadline, not an opportunity epoch's TTL: there is no configured TTL ceiling and no refusal of a TTL above one (LEG_VALIDITY is a hard-coded constant), the send-time expiry check covers the passive-first path's remaining legs rather than being proven for every send path by a property test, messages bearing an expired epoch cannot be discarded because no epoch messages exist, and there is no synchronized-clock check (MESH-007 is missing).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -574,11 +569,11 @@
       "MESH-007"
     ],
     "blocked_by": "",
-    "verification": "qip-arbitrage tests/arbitrage.rs::legs_that_would_expire_before_the_cycle_opens_are_refused proves the construction refusal and qip-edge tests/passive.rs::a_resting_leg_that_half_filled_and_then_expired_stops_the_cell_rather_than_crossing_a_stale_price proves one send-time enforcement; a unit test refusing an epoch TTL of zero or above a configured ceiling, plus a property test that no leg fires at or after expiry on the synchronized clock, is the remaining work.",
+    "verification": "cargo test -p qip-mesh --test peer -- an_epoch_with_no_ttl_or_a_ttl_above_the_ceiling_is_refused_and_one_at_the_ceiling_is_admitted no_leg_is_sent_and_no_message_is_applied_at_or_after_the_epoch_expiry (mutation-verified: by removing the ceiling check and the send-time expiry check, each in backend/crates/services/qip-mesh/src/peer.rs was disabled in turn and the named test failed; restored byte-for-byte and the suite passes 15/15).",
     "work_item": "E02",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: the assessor missed the cell's send-time enforcement of valid_until (cell.rs:6349) and its test in tests/passive.rs -- added. Status PARTIAL and flags unchanged."
+    "notes": "verify: the assessor missed the cell's send-time enforcement of valid_until (cell.rs:6349) and its test in tests/passive.rs -- added. Status PARTIAL and flags unchanged. | Library-level protocol rules in qip_mesh::peer with no transport: no cell composition root calls them yet (integrated=false) and the peer transport itself is MESH-038, blocked on a dependency record (ADR 0002/0009)."
   },
   {
     "id": "MESH-023",

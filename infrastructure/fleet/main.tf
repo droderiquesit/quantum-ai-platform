@@ -17,9 +17,10 @@
 terraform {
   required_version = ">= 1.9.0"
 
-  # State shares the platform's bucket under its own prefix, so a plan here
-  # cannot see, and so cannot propose to change, the platform's resources.
-  # The bucket is passed at init (`-backend-config`), as infra.yml does.
+  # State lives in the fleet's own bucket (`<project>-fleet-tfstate`), passed
+  # at init with `-backend-config`. Not the platform's state bucket: an
+  # identity that plans the fleet then needs no access to the platform's
+  # state, and a plan here cannot see the platform's resources at all.
   backend "gcs" {
     prefix = "fleet"
   }
@@ -53,7 +54,7 @@ locals {
 
   # Vertex AI, Cloud Run, the bucket and the identity. Enabling is a human act
   # by default (`enable_apis = false`); see README.md.
-  apis = ["aiplatform.googleapis.com", "run.googleapis.com", "storage.googleapis.com", "iam.googleapis.com"]
+  apis = ["aiplatform.googleapis.com", "run.googleapis.com", "storage.googleapis.com", "iam.googleapis.com", "artifactregistry.googleapis.com"]
 }
 
 resource "google_project_service" "api" {
@@ -107,7 +108,26 @@ resource "google_storage_bucket_iam_member" "worker" {
   member = "serviceAccount:${google_service_account.worker.email}"
 }
 
+# The one repository the worker image is pushed to. The worker identity holds
+# no role on it: Cloud Run's own service agent pulls the image, so a worker
+# can neither push an image nor read another one.
+resource "google_artifact_registry_repository" "fleet" {
+  repository_id = "fleet"
+  location      = var.region
+  format        = "DOCKER"
+  description   = "The fleet worker image (ADR 0102). Pushed by a person or CI, never by a worker."
+  labels        = local.labels
+
+  depends_on = [google_project_service.api]
+}
+
+# Created only once an image exists. The first apply has to create the
+# repository before anything can be pushed to it, and a Job naming an image
+# that is not there fails at create with a message about the image, not about
+# the order.
 resource "google_cloud_run_v2_job" "fleet" {
+  count = var.image == null ? 0 : 1
+
   name                = "fleet"
   location            = var.region
   labels              = local.labels

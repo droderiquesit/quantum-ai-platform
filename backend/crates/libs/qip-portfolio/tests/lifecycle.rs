@@ -220,14 +220,16 @@ fn book_holding_one_position() -> Portfolio {
         dec!("100000"),
         now(),
     );
-    portfolio.apply_fill(
-        &instrument(),
-        dec!("100"),
-        dec!("10"),
-        dec!("0"),
-        now(),
-        None,
-    );
+    portfolio
+        .apply_fill(
+            &instrument(),
+            dec!("100"),
+            dec!("10"),
+            dec!("0"),
+            now(),
+            None,
+        )
+        .unwrap();
     portfolio
 }
 
@@ -333,14 +335,16 @@ fn a_position_that_finished_unwinding_closes_and_the_closed_record_refuses_both_
     assert_eq!(portfolio.flag_position(&object_id()), Ok(true));
     assert_eq!(portfolio.begin_unwind(&object_id()), Ok(true));
 
-    portfolio.apply_fill(
-        &instrument(),
-        dec!("-100"),
-        dec!("11"),
-        dec!("0"),
-        now(),
-        None,
-    );
+    portfolio
+        .apply_fill(
+            &instrument(),
+            dec!("-100"),
+            dec!("11"),
+            dec!("0"),
+            now(),
+            None,
+        )
+        .unwrap();
 
     // Premise: the unwind actually reached flat.
     let position = portfolio

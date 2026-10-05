@@ -565,14 +565,26 @@ owner's instruction "Get the fleet up".
 | 2026-10-04 | `curl https://cloud.google.com/vertex-ai/generative-ai/pricing` ("Agent Platform Pricing"), read as text | per 1M tokens: Gemini 2.5 Flash Lite input `$0.10`, text output `$0.40`; Gemini 3.1 Flash-Lite input `$0.25` (global); Gemini 3.5 Flash-Lite input `$0.30` (global); gpt-oss-20b `$0.07` / `$0.25`; gpt-oss-120b `$0.09` / `$0.36`; Gemma 4 26B `$0.15` / `$0.60`; Llama 4 Maverick `$0.35` / `$1.15` | **No free tier for token usage is on the page.** "No charge" appears only for grounding-query allowances and embedding outputs. The free-tier hypothesis is refuted for Vertex AI: the fleet is low-cost, not free |
 | 2026-10-04 | `curl https://docs.cloud.google.com/vertex-ai/generative-ai/docs/data-governance`, read as text | "Google won't use your data to train or fine-tune any AI/ML models without your prior permission or instruction. This applies to all managed models on Gemini Enterprise Agent Platform, including GA and pre-GA models."; Gemini models cache inputs and outputs "in-memory ... isolated at the project level, and has a 24-hour TTL"; "Google may log prompts to detect potential abuse" | Gate 4 has an observed no-training statement for Google's own models. Retention is not zero by default: a 24-hour in-memory cache and abuse-monitoring logging exist, so packets stay on non-reserved paths |
 
-**What step 2 admits.** One model passes every test this record sets (listed,
-called, priced, and covered by an observed no-training statement):
-`google/gemini-2.5-flash-lite`, as the T1 tier. The partner and open
-model-as-a-service entries (gpt-oss, Llama, DeepSeek, Qwen, Kimi) have an
-observed price and **no terms read per publisher**, so they stay UNPROVEN and
-are not admitted. No public rating was consulted, and none is needed to admit
-the cheapest Google-published model that works; a rating may nominate a
-second tier later and the fleet's own acceptance ratio decides.
+| 2026-10-04 | `curl https://docs.cloud.google.com/vertex-ai/generative-ai/docs/maas/use-open-models`, read as text | "Gemini Enterprise Agent Platform supports a curated list of open models as managed models. These open models can be used ... as a model as a service (MaaS) and are offered as a managed API."; "Managed open models are serverless"; "Customer prompts and model responses are not shared with third parties when using the Gemini Enterprise API, including open models." | The open models Google serves are *managed models*, so the data-governance page's "applies to all managed models" covers them. This is Google's statement about Google's service; a publisher's own licence for the weights was not read |
+| 2026-10-04 | the same one-call probe, `max_tokens` 24, against five open models in `global` | `qwen/qwen3-coder-480b-a35b-instruct-maas`: 15 tokens in, 2 out, content `ready`. `qwen/qwen3-235b-a22b-instruct-2507-maas`: 15 in, 2 out, `ready`. `openai/gpt-oss-120b-maas`: `Operation timed out after 90002 milliseconds with 0 bytes received`. `deepseek-ai/deepseek-v3.2-maas`: `429 Resource exhausted`. `meta/llama-4-maverick-17b-128e-instruct-maas`: `404 ... was not found or your project does not have access to it` | Two large open models are callable from this project today. The other three are not, each for a different reason, and none of the three is admitted |
+| 2026-10-04 | the pricing page above, same read | per 1M tokens: Qwen3-Coder-480B-A35B-Instruct input `$0.22`, output `$1.80`; Qwen3-235B-A22B-Instruct-2507 input `$0.22`, output `$0.88` | Priced, so a packet naming either has a price row |
+| 2026-10-04 | `terraform plan` then `terraform apply fleet.plan` in `infrastructure/fleet`, state in `gs://algorik-platform-dev-fleet-tfstate` | `Plan: 5 to add, 0 to change, 0 to destroy.` then `Apply complete! Resources: 5 added, 0 changed, 0 destroyed.` | The repository, the bucket, the `fleet-worker` account and its two bindings exist. The Job does not: no image has been pushed |
+
+**What step 2 admits.** Three models pass every test this record sets
+(listed, called, priced, and covered by an observed no-training statement):
+`google/gemini-2.5-flash-lite` as the cheap tier, and the two open models
+`qwen/qwen3-coder-480b-a35b-instruct-maas` and
+`qwen/qwen3-235b-a22b-instruct-2507-maas` as the larger tiers. gpt-oss,
+DeepSeek and Llama stay out because the project could not call them; Kimi,
+GLM, MiniMax and Gemma were not probed. No public rating was consulted; the
+fleet's own acceptance ratio decides between tiers.
+
+**The owner asked on 2026-10-04 for the largest open models from Hugging
+Face, deployed in GCP.** The managed open models above are that, served by
+Google per token with no accelerator to rent. Deploying weights from Hugging
+Face onto GPUs is not done by this record: it needs accelerators, which
+`infrastructure.md` and ADR 0093 hold behind their own decision, a price per
+hour nobody has observed here, and a quota nobody has checked.
 
 At the observed price, the 20 USD/day model allowance is 200 million input
 tokens or 50 million output tokens of this model, by arithmetic on the two

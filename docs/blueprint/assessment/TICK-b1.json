@@ -194,14 +194,13 @@
   {
     "id": "TICK-008",
     "status": "PARTIAL",
-    "current": "qip_events::EventLog (backend/crates/libs/qip-events/src/log.rs, hash-chained, SHA-256 over sequence+previous_hash+payload) and qip_storage::ChainArchive give append-only, tamper-evident history and are wired at start-up in every central binary. But the deployed storage target for qip-api/qip-fastbrain/qip-deepbrain on Cloud Run is `memory` (QIP_STORAGE_TARGET=memory in every gitops environment per the libs-foundation current-state record), so nothing written survives a process restart in the deployed shape, and there is no Tick Lake retention-policy component (TICK-037 does not exist either) governing removal. Two corrections. The cited verification test asserts the opposite of this requirement for ticks: decision_relevant_topics_are_retained_permanently_and_never_dropped ends by asserting Topic::MarketTick.is_lossy_tolerable() and !requires_permanent_retention() (backbone.rs:110-111), and the log evicts Transient records oldest-first from its in-memory index (log.rs:25-30). And the production SENSE path writes no tick to the log at all. What is genuinely immutable is the generic mechanism: the file-backed JSONL log is append-only and tamper-evident (log.rs:65-70; chain.rs:185 an_archived_record_that_was_edited_breaks_the_chain_at_its_own_position).",
+    "current": "Adds a writer-side half: qip_storage::lake::Lake seals each segment once (a second write to the key is refused and the original survives), exposes no delete (delete_segment refuses, naming the retention policy), and treats a correction as a new segment. The generic append-only mechanisms are unchanged: the hash-chained EventLog and ChainArchive.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/log.rs:25-30,65-70 (transient records evicted from the index; file append-only)",
-      "backend/crates/libs/qip-storage/tests/chain.rs:185 an_archived_record_that_was_edited_breaks_the_chain_at_its_own_position",
-      "backend/crates/libs/qip-events/tests/backbone.rs:110-111 (MarketTick asserted lossy-tolerable)",
-      "infrastructure/gitops/envs/*/{api,fastbrain,deepbrain}.yaml QIP_STORAGE_TARGET=memory (all four environments)"
+      "backend/crates/libs/qip-storage/src/lake.rs",
+      "backend/crates/libs/qip-storage/tests/lake.rs::a_sealed_segment_cannot_be_overwritten_or_deleted_through_the_writer",
+      "backend/crates/libs/qip-storage/tests/chain.rs:185 an_archived_record_that_was_edited_breaks_the_chain_at_its_own_position"
     ],
-    "gap": "No tick or order-book history is written to any durable store, so there is nothing for the append-only mechanism to protect; tick topics are declared Transient and evictable; the deployed storage target is memory; and no Tick Lake writer or retention/object-hold configuration (TICK-037) exists to refuse overwrite or delete.",
+    "gap": "The writer refuses overwrite and delete only sequentially (a read-then-write; Cloud Storage needs ifGenerationMatch=0 to close the race); the storage-side half of the requirement's check, a retention policy or object hold that refuses the same operation outside the retention policy (TICK-037), is not configured; tick topics are still RetentionClass::Transient in the event log and nothing writes tick history to the lake in any composition root.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -215,7 +214,7 @@
     "work_item": "E05",
     "tier": "T1",
     "size": "M",
-    "notes": "The `engine` (WAL) storage target exists and is tested but is not the deployed target in any environment. verify: status PARTIAL kept, verification replaced: the previously cited backbone test asserts MarketTick is lossy-tolerable, the reverse of this requirement. Cited the chain tamper test for the generic append-only mechanism instead and recorded that no tick history is written durably."
+    "notes": "Writer API half done and mutation-verified (overwrite check disabled fails a_sealed_segment_cannot_be_overwritten...). Stays PARTIAL for the storage-configuration half and the wiring."
   },
   {
     "id": "TICK-009",
@@ -367,14 +366,14 @@
   },
   {
     "id": "TICK-015",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip_orderbook::{L3Book, L2Book} (l3.rs, l2.rs) rebuild deterministically from MarketMessage, keeping orders in a BTreeMap for replay-stable iteration, tested at the exact invariant this requirement names.",
     "evidence": [
-      "backend/crates/edge/qip-orderbook/src/l3.rs:101 (BTreeMap<u64, RestingOrder>)",
-      "backend/crates/edge/qip-orderbook/tests/replay.rs:21 applying_a_stream_twice_from_a_fresh_book_gives_byte_identical_snapshots",
-      "backend/crates/edge/qip-edge/src/cell.rs:1007,2825-2828 (CellLiquidity holds VenueState, reached from qip-edge-node's Cell::apply_batch)"
+      "backend/crates/edge/qip-orderbook/src/l3.rs (BTreeMap order index, queue-ordered ladders)",
+      "backend/crates/edge/qip-orderbook/tests/replay.rs::applying_a_stream_twice_from_a_fresh_book_gives_byte_identical_snapshots",
+      "backend/crates/edge/qip-orderbook/tests/replay.rs::a_replay_started_from_a_checkpoint_matches_a_replay_from_the_start_at_every_sequence"
     ],
-    "gap": "Reached only from qip-edge-node (never deployed, execution_nodes={}) or from qip-market-ingestion's depth.rs, whose only caller (IngestionService) is constructed exclusively inside #[cfg(test)]; determinism is demonstrated within one process/run, not proven across hosts.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -382,11 +381,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-orderbook --test replay -- applying_a_stream_twice_from_a_fresh_book_gives_byte_identical_snapshots",
+    "verification": "cargo test -p qip-orderbook --test replay: two independent reconstructions, one resumed from a serialized checkpoint, have identical VenueSnapshot digests after every message (3 seeds) and identical per-level queue order. Mutation: scrambling checkpoint queue order failed it.",
     "work_item": "E06",
     "tier": "T1",
     "size": "S",
-    "notes": "P0 in the blueprint; this is the strongest-evidenced row among the undeployed-edge-node group. verify: status PARTIAL kept (no checkpoint-start or cross-host reconstruction test; tests/replay.rs has none). Cleared blocked_by external:billing: that test is in-tree work; billing gates only deploying the node."
+    "notes": "Closed with TICK-041's restore half: the requirement's check (checkpoint-started vs from-start reconstruction, equal hash at every sequence) now runs. Digest is over raw fixed-point integers with BTreeMap iteration, so it carries no host or scheduling input; cross-host equality is by construction rather than measured. Deployment of the edge node is TICK-035/billing and does not change the reconstruction property."
   },
   {
     "id": "TICK-016",
@@ -724,16 +723,17 @@
   },
   {
     "id": "TICK-029",
-    "status": "PARTIAL",
-    "current": "L3Book exists structurally in qip-orderbook (l3.rs), and the general licensing refusal machinery (qip_data_finder::legal::Legality::and, which never permits on Unknown) would apply to any L3 source if one were configured. But no code ties L3/order-level capture specifically to a joint licence-entitlement-and-cost-justification gate at configuration load time — LicensingClass is generic across all record kinds, not L3-specific.",
+    "status": "COMPLETE",
+    "current": "qip_orderbook::admission::DepthAdmissions::load refuses the whole per-venue depth configuration, naming the venue, when a venue asks for order_by_order depth without both a non-blank l3_entitlement and a non-blank l3_cost_justification; order-level terms on an aggregated venue, a duplicate venue and an unknown depth are refused too. An admitted venue yields an L3Admission whose open_state builds the order-by-order VenueState that captures order-level events; a venue not listed is not admitted. The general Legality machinery in qip-data-finder is unchanged and still applies to the source.",
     "evidence": [
-      "backend/crates/edge/qip-orderbook/src/l3.rs:309 (L3Book, queue_position)",
-      "backend/crates/services/qip-data-finder/src/legal.rs:28-92 (Legality::and, generic to all sources)",
-      "rg -ni \"l3\" backend/crates/services/qip-data-finder -> no L3-specific gate found"
+      "backend/crates/edge/qip-orderbook/src/admission.rs",
+      "backend/crates/edge/qip-orderbook/tests/admission.rs::loading_refuses_order_level_capture_unless_both_facts_are_recorded",
+      "backend/crates/edge/qip-orderbook/tests/admission.rs::an_admitted_venue_captures_order_level_events_and_an_unlisted_one_is_not_admitted",
+      "backend/crates/edge/qip-orderbook/tests/admission.rs::order_level_terms_on_an_aggregated_venue_and_duplicates_are_refused"
     ],
-    "gap": "No configuration-load refusal specifically requires both a licence entitlement and a recorded cost justification before L3 capture is admitted; the general licensing gate is necessary but not sufficient for what this requirement names.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -741,11 +741,11 @@
       "TICK-014"
     ],
     "blocked_by": "",
-    "verification": "A new config-load test refusing L3 capture absent both an entitlement and a cost-justification record.",
+    "verification": "cargo test -p qip-orderbook --test admission (3 passed). Mutations (each failed the named tests, then restored byte-for-byte, 3 passed): blank values accepted; justification replaced by a constant; duplicate-venue insert check inverted.",
     "work_item": "E08",
     "tier": "T1",
     "size": "S",
-    "notes": "P0 for the licence half per the requirement's own note; the general Legality machinery already gives that half most of what it needs."
+    "notes": "Mutation-verified. Residual: no composition root (qip-edge-node) reads this configuration yet, and VenueState::order_by_order stays public for tests and diagnostics, so the gate is a configuration contract rather than a type that makes an unadmitted L3 state unconstructible; integrated stays false."
   },
   {
     "id": "TICK-030",
@@ -802,14 +802,13 @@
   },
   {
     "id": "TICK-032",
-    "status": "PARTIAL",
-    "current": "qip_financial::quality::LicensingClass::allows_raw_display gates raw-payload display/retention and is used in replay.rs and alternative.rs; a replay with no declared licence is refused as 'not displayable' (tested: sense.rs:989 a_replay_nobody_declared_a_licence_for_is_not_displayable). The connector runtime separately computes a payload digest of exactly the bytes served, tested (connector_runtime.rs:1100). Two qualifications: allows_raw_display governs showing raw values in the UI/API, not retaining them; and FetchDigest::of hashes each poll's body and never stores it, so raw venue bytes are never retained under any licence. The prohibition half therefore holds vacuously and the retain-where-permitted half is absent; the digest is per poll, not per message.",
+    "status": "COMPLETE",
+    "current": "Lake::write_segment stores raw venue bytes only when the partition's Entitlement has raw_retention_permitted; otherwise the SegmentRecord keeps raw_sha256 (payload hash and lineage) and raw_key is None and no raw object is written. With retention permitted the raw object exists and hashes to the recorded raw_sha256. The existing display gate (LicensingClass::allows_raw_display) is a separate property and is unchanged.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/quality.rs:31 (allows_raw_display)",
-      "backend/crates/services/qip-market-ingestion/tests/sense.rs:989 a_replay_nobody_declared_a_licence_for_is_not_displayable",
-      "backend/crates/services/qip-market-ingestion/tests/connector_runtime.rs:1100 a_delivered_poll_carries_a_digest_of_exactly_the_bytes_the_source_served"
+      "backend/crates/libs/qip-storage/src/lake.rs",
+      "backend/crates/libs/qip-storage/tests/lake.rs::raw_bytes_are_kept_only_where_the_entitlement_permits_and_the_hash_is_kept_either_way"
     ],
-    "gap": "No Tick Lake exists to test raw-bytes-present-vs-absent against per this requirement's own verification method; what is demonstrated is display-time gating and a poll-level digest, not per-message raw-byte retention keyed to rights at the point of decode.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -819,11 +818,11 @@
       "TICK-025"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-market-ingestion --test sense -- a_replay_nobody_declared_a_licence_for_is_not_displayable",
+    "verification": "cargo test -p qip-storage --test lake (7 passed). Mutations (each failed exactly the named test, then restored byte-for-byte, 7 passed): raw kept regardless of entitlement -> raw_bytes_are_kept_only_where_the_entitlement_permits...; overwrite check disabled -> a_sealed_segment_cannot_be_overwritten...; entitlement filter disabled -> a_job_granted_one_entitlement...; checksum check disabled -> re_materializing_a_manifest_matches_its_checksums...",
     "work_item": "E06",
     "tier": "T1",
     "size": "S",
-    "notes": "P0 in the blueprint. verify: status PARTIAL kept; recorded that the cited display gate is a different property from retention and that raw bytes are retained nowhere, so neither branch of the requirement's verification is exercised."
+    "notes": "Residual: qip_storage::lake::Lake is not yet selected by any composition root (storage_target cannot name the lake, enable_cloud_storage=false everywhere), so integrated and deployable stay false. No capture adapter hands raw bytes to the lake yet; the per-message (not per-poll) raw hash is the caller's to compute."
   },
   {
     "id": "TICK-033",

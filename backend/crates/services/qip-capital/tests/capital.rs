@@ -18,7 +18,9 @@ use qip_capital::allocation::{
 use qip_capital::capacity::{CapacityBound, CapacityModel};
 use qip_capital::envelope::{EnvelopeIssuer, EnvelopeTerms, MAXIMUM_ENVELOPE_VALIDITY};
 use qip_capital::exposure::{AggregateExposure, CellPosition, ConcentrationLimits};
-use qip_capital::margin::{MarginModel, assess_liquidity};
+use qip_capital::margin::{
+    ExitCost, ExitUnavailable, MarginModel, assess_liquidity, estimate_exit,
+};
 use qip_capital::recall::{RecallReason, RecallRegister, RecallState};
 use qip_capital::reservation::{MAXIMUM_RESERVATION_VALIDITY, ReservationLedger};
 use qip_contracts::governance::Approval;
@@ -1688,6 +1690,113 @@ fn a_liquidity_assessment_needs_a_participation_rate_in_the_unit_interval() -> R
             "a participation rate of {rate} was accepted"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn an_exit_is_costed_from_depth_and_an_unavailable_quote_or_borrow_is_not_costed_as_zero()
+-> Result<()> {
+    let profile = LiquidityProfile::listed(Decimal::from_int(1_000_000), 5.0);
+    let costs = TransactionCostModel::default();
+
+    // Premise: the same position with a quote and (for a short) borrow is priced.
+    let long = estimate_exit(
+        Decimal::from_int(250_000),
+        &profile,
+        &costs,
+        0.1,
+        true,
+        true,
+    )?;
+    let ExitCost::Estimated {
+        days,
+        impact_bps,
+        borrow_bps_annual,
+    } = long
+    else {
+        panic!("a quoted long must be estimated, got {long:?}");
+    };
+    // 250k units against 10% of a 1m-unit day is 2.5 sessions; impact is
+    // 40bp * sqrt(0.1).
+    assert!((days - 2.5).abs() < 1e-9, "{days}");
+    assert!(
+        (impact_bps - 40.0 * 0.1_f64.sqrt()).abs() < 1e-9,
+        "{impact_bps}"
+    );
+    assert!(borrow_bps_annual.abs() < 1e-12, "{borrow_bps_annual}");
+    let short = estimate_exit(
+        Decimal::from_int(-250_000),
+        &profile,
+        &costs,
+        0.1,
+        true,
+        true,
+    )?;
+    assert!(
+        matches!(short, ExitCost::Estimated { borrow_bps_annual, .. } if (borrow_bps_annual - 50.0).abs() < 1e-12)
+    );
+
+    // Unavailable is its own answer, not a zero.
+    assert_eq!(
+        estimate_exit(
+            Decimal::from_int(250_000),
+            &profile,
+            &costs,
+            0.1,
+            false,
+            true
+        )?,
+        ExitCost::Unavailable(ExitUnavailable::NoQuote)
+    );
+    assert_eq!(
+        estimate_exit(
+            Decimal::from_int(-250_000),
+            &profile,
+            &costs,
+            0.1,
+            true,
+            false
+        )?,
+        ExitCost::Unavailable(ExitUnavailable::NoBorrow)
+    );
+    // A long does not need borrow.
+    assert!(matches!(
+        estimate_exit(
+            Decimal::from_int(250_000),
+            &profile,
+            &costs,
+            0.1,
+            true,
+            false
+        )?,
+        ExitCost::Estimated { .. }
+    ));
+    assert_eq!(
+        estimate_exit(
+            Decimal::from_int(1),
+            &LiquidityProfile::illiquid(30.0, 250.0),
+            &costs,
+            0.1,
+            true,
+            true
+        )?,
+        ExitCost::Unavailable(ExitUnavailable::NoVolumeEstimate)
+    );
+
+    // A crowded exit: three cells in one name leave through one door, so the
+    // book takes longer than any single cell's slice suggests.
+    let positions = crowded_book();
+    let profiles: BTreeMap<String, LiquidityProfile> =
+        [("ACME".to_string(), profile.clone())].into();
+    let crowded = assess_liquidity(&positions, &profiles, 0.1)?;
+    let acme = crowded
+        .horizons
+        .iter()
+        .find(|h| h.instrument == "ACME")
+        .and_then(|h| h.days);
+    assert_eq!(acme, Some(0.75));
+    let alone = assess_liquidity(&positions[..1], &profiles, 0.1)?;
+    assert_eq!(alone.horizons[0].days, Some(0.3));
     Ok(())
 }
 

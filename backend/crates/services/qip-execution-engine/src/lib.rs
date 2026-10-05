@@ -33,6 +33,7 @@
 
 pub mod broker;
 pub mod feasibility;
+pub mod modes;
 pub mod multileg;
 pub mod observation;
 pub mod oms;
@@ -54,8 +55,8 @@ pub use origination::{
     OriginationRequest, Valuation,
 };
 pub use quoting::{
-    QueuePosition, QuoteDecision, QuoteInputs, QuotePair, QuotePolicy, QuoteReference, SpreadTerms,
-    Withheld, quote,
+    CorrelatedExposure, QueuePosition, QuoteDecision, QuoteInputs, QuotePair, QuotePolicy,
+    QuoteReference, SpreadTerms, Withheld, quote,
 };
 pub use session::{
     RecordedInstruction, RecordedSession, SESSION_ENTRY_LIMIT, SESSION_WINDOW, SealOutcome,

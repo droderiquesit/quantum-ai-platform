@@ -85,6 +85,33 @@ resource "google_compute_security_policy" "edge" {
     }
   }
 
+  # The WAF third of section 40.14. Preconfigured OWASP sets, evaluated before
+  # the rate limit so an injection attempt is refused on its content rather
+  # than merely counted against a budget. Blocking at sensitivity 1 (the
+  # set's lowest, fewest false positives) because a WAF in preview mode reads
+  # as protection and refuses nothing.
+  rule {
+    action   = "deny(403)"
+    priority = 1500
+    match {
+      expr {
+        expression = "evaluatePreconfiguredWaf('sqli-v33-stable', {'sensitivity': 1})"
+      }
+    }
+    description = "Refuse SQL injection patterns."
+  }
+
+  rule {
+    action   = "deny(403)"
+    priority = 1600
+    match {
+      expr {
+        expression = "evaluatePreconfiguredWaf('xss-v33-stable', {'sensitivity': 1})"
+      }
+    }
+    description = "Refuse cross-site scripting patterns."
+  }
+
   # The rate limit, per client address. `rate_based_ban` rather than
   # `throttle`: a throttle refuses the excess and lets the next minute start
   # clean, which an automated client does not notice; a ban makes the refusal

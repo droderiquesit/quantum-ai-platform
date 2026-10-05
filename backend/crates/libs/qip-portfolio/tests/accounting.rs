@@ -10,7 +10,7 @@ use qip_financial::quality::Provenance;
 use qip_financial::risk_profile::{FactorExposures, RiskCharacteristics, factors};
 use qip_financial::universe::Universe;
 use qip_portfolio::exposure::Exposure;
-use qip_portfolio::lot::{Lot, LotMethod, close_lots_with};
+use qip_portfolio::lot::{Lot, LotMethod, LotSelection, close_lots_with};
 use qip_portfolio::portfolio::Portfolio;
 use qip_portfolio::position::{Position, PositionSide};
 use std::collections::BTreeMap;
@@ -371,7 +371,8 @@ fn equity_equals_cash_plus_positions_exactly() {
         dec!("45"),
         now(),
         None,
-    );
+    )
+    .unwrap();
     book.apply_fill(
         &msft,
         Decimal::from_int(-200),
@@ -379,7 +380,8 @@ fn equity_equals_cash_plus_positions_exactly() {
         dec!("24"),
         now(),
         None,
-    );
+    )
+    .unwrap();
 
     let prices = BTreeMap::from([
         (aapl.object_id.as_str().to_string(), dec!("155")),
@@ -441,7 +443,8 @@ fn property_the_accounting_identity_survives_any_sequence_of_fills() {
                     dec!("1.25"),
                     later(index as i64),
                     None,
-                );
+                )
+                .unwrap();
             }
             let prices = BTreeMap::from([(object.object_id.as_str().to_string(), dec!("175"))]);
             let valuation = book.value(&prices, later(100));
@@ -468,7 +471,8 @@ fn realised_plus_unrealised_equals_the_change_in_equity_net_of_flows() {
         dec!("50"),
         now(),
         None,
-    );
+    )
+    .unwrap();
     book.apply_fill(
         &object,
         Decimal::from_int(-400),
@@ -476,7 +480,8 @@ fn realised_plus_unrealised_equals_the_change_in_equity_net_of_flows() {
         dec!("20"),
         later(1),
         None,
-    );
+    )
+    .unwrap();
 
     let prices = BTreeMap::from([(object.object_id.as_str().to_string(), dec!("170"))]);
     let valuation = book.value(&prices, later(2));
@@ -501,7 +506,8 @@ fn an_unpriced_position_is_reported_rather_than_valued_at_zero() {
         Decimal::ZERO,
         now(),
         None,
-    );
+    )
+    .unwrap();
 
     let valuation = book.value(&BTreeMap::new(), later(1));
     assert_eq!(valuation.unpriced, vec!["ILLIQ".to_string()]);
@@ -524,7 +530,8 @@ fn weights_sum_to_the_invested_fraction_of_equity() {
         Decimal::ZERO,
         now(),
         None,
-    );
+    )
+    .unwrap();
     book.apply_fill(
         &b,
         Decimal::from_int(1000),
@@ -532,7 +539,8 @@ fn weights_sum_to_the_invested_fraction_of_equity() {
         Decimal::ZERO,
         now(),
         None,
-    );
+    )
+    .unwrap();
 
     let prices = BTreeMap::from([
         (a.object_id.as_str().to_string(), dec!("100")),
@@ -556,7 +564,8 @@ fn dividends_are_credited_to_cash() {
         Decimal::ZERO,
         now(),
         None,
-    );
+    )
+    .unwrap();
     let cash_before = book.cash;
 
     let credited = book.credit_income(&object.object_id, dec!("0.24"), later(30));
@@ -582,7 +591,8 @@ fn exposures_are_aggregated_along_every_axis() {
         Decimal::ZERO,
         now(),
         None,
-    );
+    )
+    .unwrap();
     book.apply_fill(
         &bank,
         Decimal::from_int(-1000),
@@ -590,7 +600,8 @@ fn exposures_are_aggregated_along_every_axis() {
         Decimal::ZERO,
         now(),
         None,
-    );
+    )
+    .unwrap();
 
     let prices = BTreeMap::from([
         (tech.object_id.as_str().to_string(), dec!("100")),
@@ -664,7 +675,8 @@ fn an_unclassified_instrument_still_counts_toward_gross() {
         Decimal::ZERO,
         now(),
         None,
-    );
+    )
+    .unwrap();
 
     let prices = BTreeMap::from([(object.object_id.as_str().to_string(), dec!("100"))]);
     let exposures = book
@@ -715,7 +727,8 @@ fn a_factor_loading_that_is_not_a_number_refuses_the_breakdown_rather_than_readi
         Decimal::ZERO,
         now(),
         None,
-    );
+    )
+    .unwrap();
     let prices = BTreeMap::from([(poisoned.object_id.as_str().to_string(), dec!("100"))]);
 
     let refusal = book
@@ -762,7 +775,8 @@ fn a_snapshot_captures_the_book() {
         Decimal::ZERO,
         now(),
         None,
-    );
+    )
+    .unwrap();
 
     let prices = BTreeMap::from([(object.object_id.as_str().to_string(), dec!("160"))]);
     let snapshot = book.snapshot(&prices, later(1));
@@ -782,7 +796,8 @@ fn compaction_keeps_positions_with_history() {
         Decimal::ZERO,
         now(),
         None,
-    );
+    )
+    .unwrap();
     book.apply_fill(
         &object,
         Decimal::from_int(-100),
@@ -790,7 +805,8 @@ fn compaction_keeps_positions_with_history() {
         Decimal::ZERO,
         later(1),
         None,
-    );
+    )
+    .unwrap();
 
     assert_eq!(book.position_count(), 0, "flat");
     book.compact();
@@ -799,4 +815,113 @@ fn compaction_keeps_positions_with_history() {
         1,
         "a closed position keeps its trade history for attribution"
     );
+}
+
+/// LEDGER-002. A EUR-priced fill booked into a USD book would move cash by
+/// the EUR number as if it were dollars: the identity still balances, so
+/// nothing downstream would ever notice the misstatement. The book must
+/// refuse, and refuse without touching cash, positions or costs.
+#[test]
+fn a_fill_priced_in_another_unit_is_refused_and_leaves_the_book_untouched() {
+    let mut book = portfolio(1_000_000);
+    let usd = equity("USDCO", "100", Sector::InformationTechnology, "US");
+    let mut eur = equity("EURCO", "100", Sector::InformationTechnology, "DE");
+    eur.currency = Currency::EUR;
+
+    // Premise: the book is a USD book, and the two instruments differ in unit.
+    assert_eq!(book.base_currency, Currency::USD);
+    assert_eq!(usd.currency, Currency::USD);
+    assert_eq!(eur.currency, Currency::EUR);
+    // Premise: a same-unit fill is admitted, so the refusal below is about
+    // the unit and not about fills in general.
+    book.apply_fill(&usd, dec!("10"), dec!("100"), dec!("1"), now(), None)
+        .unwrap();
+    let cash_before = book.cash;
+    let costs_before = book.cumulative_costs;
+    let held_before = book.position_count();
+    assert_eq!(cash_before, Decimal::from_int(1_000_000 - 1_000 - 1));
+
+    let refusal = book
+        .apply_fill(&eur, dec!("10"), dec!("100"), dec!("1"), later(1), None)
+        .expect_err("a EUR fill into a USD book must be refused");
+    assert!(refusal.to_string().contains("EUR"), "{refusal}");
+    assert_eq!(book.cash, cash_before);
+    assert_eq!(book.cumulative_costs, costs_before);
+    assert_eq!(book.position_count(), held_before);
+}
+
+/// LEDGER-010. Two relief methods realise different gains from the same
+/// stack, so a disposal that does not say which one chose its lot cannot be
+/// audited; and a relief that loses or invents basis makes the gain wrong
+/// while every balance still adds up. For any stack, any method and any
+/// partial close: every trade names the method, open quantity plus relieved
+/// quantity is what was held, and open basis plus relieved basis is exactly
+/// what was paid.
+#[test]
+fn every_disposal_names_its_relief_method_and_open_plus_relieved_basis_is_what_was_paid() {
+    let methods = [
+        LotMethod::FirstInFirstOut,
+        LotMethod::LastInFirstOut,
+        LotMethod::HighestCost,
+        LotMethod::LowestCost,
+    ];
+    Property::new("lot relief conserves quantity and basis")
+        .cases(200)
+        .for_all(
+            |rng| {
+                use qip_core::rng::Rng;
+                let lots: Vec<(i64, Decimal)> = (0..(2 + rng.below(5) as usize))
+                    .map(|_| {
+                        (
+                            1 + rng.below(100) as i64,
+                            any_positive_decimal(rng).round_dp(2).max(dec!("0.01")),
+                        )
+                    })
+                    .collect();
+                let held: i64 = lots.iter().map(|(q, _)| q).sum();
+                let close = 1 + rng.below(held as u64) as i64;
+                (lots, close, rng.below(4) as usize)
+            },
+            |(lots, close, which)| {
+                let method = methods[*which];
+                let mut stack: Vec<Lot> = lots
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (q, p))| Lot::new(Decimal::from_int(*q), *p, later(i as i64)))
+                    .collect();
+                let paid: Decimal = stack.iter().map(|l| l.quantity * l.price).sum();
+                let held: Decimal = stack.iter().map(|l| l.quantity).sum();
+                let trades = close_lots_with(
+                    &mut stack,
+                    Decimal::from_int(*close),
+                    dec!("100"),
+                    Decimal::ZERO,
+                    later(365),
+                    method,
+                );
+                if trades.is_empty() {
+                    return Err("a close of a held quantity produced no disposal".to_string());
+                }
+                if trades
+                    .iter()
+                    .any(|t| t.relief != Some(LotSelection::Mechanical(method)))
+                {
+                    return Err(format!("a disposal under {method:?} does not name it"));
+                }
+                let relieved: Decimal = trades.iter().map(|t| t.quantity).sum();
+                let open: Decimal = stack.iter().map(|l| l.quantity).sum();
+                if relieved + open != held {
+                    return Err(format!("{relieved} relieved + {open} open != {held} held"));
+                }
+                let basis: Decimal = trades
+                    .iter()
+                    .map(|t| t.quantity * t.open_price)
+                    .sum::<Decimal>()
+                    + stack.iter().map(|l| l.quantity * l.price).sum::<Decimal>();
+                if basis != paid {
+                    return Err(format!("basis {basis} != paid {paid}"));
+                }
+                Ok(())
+            },
+        );
 }
