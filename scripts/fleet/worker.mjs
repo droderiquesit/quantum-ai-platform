@@ -110,6 +110,9 @@ export const MAX_ATTEMPTS = 4;
 const BACKOFF_BASE_MS = 2000;
 const MAX_WAIT_MS = 60_000;
 
+/** The least max_output_tokens a thinking-class row's packet may carry. */
+const THINKING_MIN_OUTPUT_TOKENS = 1000;
+
 /** Below the Job's default 600 s task timeout, so the worker settles its own ledger. */
 const CHAT_TIMEOUT_MS = 300_000;
 const STORAGE = "https://storage.googleapis.com";
@@ -334,6 +337,33 @@ export function assess(packet, { prices = PRICES, slotCapMicro }) {
         `model '${packet.model}' has no row in the price table (scripts/fleet/prices.json), so the packet has no ` +
           `worst case and is not run on an estimate. Use a priced model (${Object.keys(prices.models).join(", ")}), ` +
           "or observe the price and commit a dated row",
+      ],
+    };
+  }
+  // A row's own bounds are checked here and not in validatePacket, which
+  // never sees the table. Refused, never clamped: a packet cut to fit is a
+  // dispatcher bug that survives.
+  if (row.max_input_tokens_ceiling !== undefined && packet.max_input_tokens > row.max_input_tokens_ceiling) {
+    return {
+      problems: [
+        `max_input_tokens ${packet.max_input_tokens} is above ${row.max_input_tokens_ceiling}, the largest prompt ` +
+          `${packet.model} is priced for (${row.note ?? "a larger prompt is billed at a higher, unrowed price"}). ` +
+          `Lower max_input_tokens to at most ${row.max_input_tokens_ceiling} or split the packet`,
+      ],
+    };
+  }
+  // ponytail: the worker passes max_output_tokens to the endpoint as max_tokens
+  // unchanged, and for a thinking model that bound covers thinking tokens
+  // too, so a small one is spent entirely on thinking and the answer comes
+  // back empty, billed. A packet for such a model should set
+  // max_output_tokens >= 1500; 1000 is the floor refused here, not a
+  // recommendation. Raise the floor if `empty` shows up in a ledger above it.
+  if (row.thinking === true && packet.max_output_tokens < THINKING_MIN_OUTPUT_TOKENS) {
+    return {
+      problems: [
+        `max_output_tokens ${packet.max_output_tokens} is below ${THINKING_MIN_OUTPUT_TOKENS} for ${packet.model}, a thinking ` +
+          "model: its hidden thinking tokens count against the bound and are billed as output, so a small bound is " +
+          "paid for and returns nothing. Raise max_output_tokens to at least 1500",
       ],
     };
   }

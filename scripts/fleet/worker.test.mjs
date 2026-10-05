@@ -199,7 +199,7 @@ test("a cost is the tokens at the row's two prices, rounded up to the micro-doll
 
 // --- the price table -------------------------------------------------------
 
-test("the committed price table holds exactly the three models observed on 2026-10-04, at their observed prices", () => {
+test("the committed price table holds exactly the four models observed on 2026-10-04 and 2026-10-05, at their observed prices", () => {
   // The list is the assertion: a fourth model has to be argued for in the
   // commit that adds it, with the date and the page, and a price edited by
   // hand fails here rather than in the invoice.
@@ -210,9 +210,58 @@ test("the committed price table holds exactly the three models observed on 2026-
   const page = "https://cloud.google.com/vertex-ai/generative-ai/pricing";
   assert.deepEqual(rows, [
     ["google/gemini-2.5-flash-lite", 100_000, 400_000, "2026-10-04", page],
+    ["google/gemini-3.1-pro-preview", 2_000_000, 12_000_000, "2026-10-05", page],
     ["qwen/qwen3-235b-a22b-instruct-2507-maas", 220_000, 880_000, "2026-10-04", page],
     ["qwen/qwen3-coder-480b-a35b-instruct-maas", 220_000, 1_800_000, "2026-10-04", page],
   ]);
+});
+
+const PRO = "google/gemini-3.1-pro-preview";
+const proPacket = { ...good, model: PRO, max_input_tokens: 4000, max_output_tokens: 2000 };
+
+test("the thinking pro row is priced at 2.00 in and 12.00 out per million and carries its above-200K prices in its note", () => {
+  const row = priceRow(PRICES, PRO);
+  assert.equal(row.input_micro_usd_per_mtok, 2_000_000);
+  assert.equal(row.output_micro_usd_per_mtok, 12_000_000);
+  assert.equal(row.thinking, true);
+  assert.equal(row.max_input_tokens_ceiling, 200_000);
+  assert.ok(row.note.includes("4.00 in / 18.00 out above 200K"), row.note);
+});
+
+test("a 4000-in and 2000-out packet on the pro row has a worst case of exactly 32000 micro-dollars", () => {
+  const { problems, worstMicro } = assess(proPacket, { slotCapMicro: SLOT_CAP });
+  assert.deepEqual(problems, []);
+  // 4000 * 2.00 / 1e6 + 2000 * 12.00 / 1e6 USD = 0.008 + 0.024 = 0.032.
+  assert.equal(worstMicro, 32_000);
+});
+
+test("thinking tokens that only the total reports are billed as output on the pro row", () => {
+  const { row, worstMicro } = assess(proPacket, { slotCapMicro: SLOT_CAP });
+  // 1 visible token, 899 hidden: total 1000 - 100 prompt = 900 generated.
+  const usage = { prompt_tokens: 100, completion_tokens: 1, total_tokens: 1000 };
+  const settled = settle({ packet: proPacket, row, worstMicro, outcome: { body: { model: PRO, choices: [{ message: { content: "x" } }], usage } } });
+  assert.equal(settled.billed_output_tokens, 900);
+  // 100 * 2.00 + 900 * 12.00 = 200 + 10800 micro-dollars; billing only completion_tokens would give 212.
+  assert.equal(settled.cost_micro_usd, 11_000);
+});
+
+test("a thinking row refuses an output bound below 1000 and admits exactly 1000", () => {
+  const small = assess({ ...proPacket, max_output_tokens: 999 }, { slotCapMicro: SLOT_CAP });
+  assert.equal(small.problems.length, 1);
+  assert.ok(small.problems[0].includes("max_output_tokens 999 is below 1000"), small.problems[0]);
+  assert.ok(small.problems[0].includes("at least 1500"), "the refusal does not say what to do");
+  assert.deepEqual(assess({ ...proPacket, max_output_tokens: 1000 }, { slotCapMicro: SLOT_CAP }).problems, []);
+  // The bound is the row's, not every model's: flash-lite takes 500.
+  assert.deepEqual(assess(good, { slotCapMicro: SLOT_CAP }).problems, []);
+});
+
+test("a packet that could send more than 200000 tokens to the pro row is refused, not clamped, and 200000 is admitted", () => {
+  const over = assess({ ...proPacket, max_input_tokens: 200_001 }, { slotCapMicro: 5_000_000 });
+  assert.equal(over.problems.length, 1);
+  assert.ok(over.problems[0].includes("max_input_tokens 200001 is above 200000"), over.problems[0]);
+  const at = assess({ ...proPacket, max_input_tokens: 200_000 }, { slotCapMicro: 5_000_000 });
+  assert.deepEqual(at.problems, []);
+  assert.equal(at.worstMicro, 400_000 + 24_000);
 });
 
 test("a model with no price row has no worst case and is refused, including a name every object answers to", () => {

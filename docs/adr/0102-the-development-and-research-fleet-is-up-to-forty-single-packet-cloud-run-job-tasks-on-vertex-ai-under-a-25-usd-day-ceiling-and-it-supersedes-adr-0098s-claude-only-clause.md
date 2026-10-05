@@ -569,10 +569,12 @@ owner's instruction "Get the fleet up".
 | 2026-10-04 | the same one-call probe, `max_tokens` 24, against five open models in `global` | `qwen/qwen3-coder-480b-a35b-instruct-maas`: 15 tokens in, 2 out, content `ready`. `qwen/qwen3-235b-a22b-instruct-2507-maas`: 15 in, 2 out, `ready`. `openai/gpt-oss-120b-maas`: `Operation timed out after 90002 milliseconds with 0 bytes received`. `deepseek-ai/deepseek-v3.2-maas`: `429 Resource exhausted`. `meta/llama-4-maverick-17b-128e-instruct-maas`: `404 ... was not found or your project does not have access to it` | Two large open models are callable from this project today. The other three are not, each for a different reason, and none of the three is admitted |
 | 2026-10-04 | the pricing page above, same read | per 1M tokens: Qwen3-Coder-480B-A35B-Instruct input `$0.22`, output `$1.80`; Qwen3-235B-A22B-Instruct-2507 input `$0.22`, output `$0.88` | Priced, so a packet naming either has a price row |
 | 2026-10-04 | `terraform plan` then `terraform apply fleet.plan` in `infrastructure/fleet`, state in `gs://algorik-platform-dev-fleet-tfstate` | `Plan: 5 to add, 0 to change, 0 to destroy.` then `Apply complete! Resources: 5 added, 0 changed, 0 destroyed.` | The repository, the bucket, the `fleet-worker` account and its two bindings exist. The Job does not: no image has been pushed |
+| 2026-10-05 | one `POST .../v1/projects/algorik-platform-dev/locations/global/endpoints/openapi/chat/completions`, model `google/gemini-3.1-pro-preview`; then the pricing page above, read again | the call returned content `ready`, 7 tokens in, 1 out; the page lists "Gemini 3.1 Pro Preview" at `$2.00` per 1M input tokens and `$12.00` per 1M output and thinking tokens for prompts up to 200K tokens, and `$4.00` / `$18.00` above 200K | Callable and priced, so it has a row. It is a thinking model: thinking tokens are billed as output and count against `max_tokens`, so the price table marks it `thinking` and the worker refuses a packet with `max_output_tokens` below 1000 (1500 or more advised) or `max_input_tokens` above 200000, the only prompt size the row's prices cover |
 
-**What step 2 admits.** Three models pass every test this record sets
+**What step 2 admits.** Four models pass every test this record sets
 (listed, called, priced, and covered by an observed no-training statement):
-`google/gemini-2.5-flash-lite` as the cheap tier, and the two open models
+`google/gemini-2.5-flash-lite` as the cheap tier, `google/gemini-3.1-pro-preview`
+(added 2026-10-05) as a premium thinking tier, and the two open models
 `qwen/qwen3-coder-480b-a35b-instruct-maas` and
 `qwen/qwen3-235b-a22b-instruct-2507-maas` as the larger tiers. gpt-oss,
 DeepSeek and Llama stay out because the project could not call them; Kimi,

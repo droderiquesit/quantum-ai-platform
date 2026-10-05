@@ -1,6 +1,15 @@
 {
   "unit": "USD per 1,000,000 tokens, as decimal text",
   "models": {
+    "google/gemini-3.1-pro-preview": {
+      "input_usd_per_mtok": "2.00",
+      "output_usd_per_mtok": "12.00",
+      "observed": "2026-10-05",
+      "source": "https://cloud.google.com/vertex-ai/generative-ai/pricing",
+      "thinking": true,
+      "max_input_tokens_ceiling": 200000,
+      "note": "Google lists 2.00 in / 12.00 out (output includes thinking tokens) for prompts up to 200K tokens, and 4.00 in / 18.00 out above 200K. Only the up-to-200K prices are rowed, so the worker refuses a packet whose max_input_tokens exceeds max_input_tokens_ceiling."
+    },
     "google/gemini-2.5-flash-lite": {
       "input_usd_per_mtok": "0.10",
       "output_usd_per_mtok": "0.40",
