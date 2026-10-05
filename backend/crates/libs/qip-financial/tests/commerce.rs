@@ -1,5 +1,9 @@
 //! Contract tests for the simulated commerce plane.
 
+// Fixture helpers outside `#[test]` functions state their premises with
+// `expect`; a failed premise should stop the test with its name.
+#![allow(clippy::expect_used)]
+
 use qip_core::{Decimal, dec};
 use qip_financial::commerce::*;
 use qip_financial::physical::{
