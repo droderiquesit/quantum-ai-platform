@@ -19,6 +19,7 @@ pub mod calendar;
 pub mod cashflow;
 pub mod catalogue;
 pub mod category;
+pub mod commerce;
 pub mod constraints;
 pub mod costs;
 pub mod credit;
