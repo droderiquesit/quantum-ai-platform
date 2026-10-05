@@ -83,14 +83,20 @@ fn t(secs: i64) -> Timestamp {
 // --- one committed row ------------------------------------------------------
 
 /// One row of `schemas.lock.json`: the topic and version a body is bound at,
-/// the Rust type sampled to compute its shape, and the [`SchemaId`] that
-/// shape hashes to.
+/// the Rust type sampled to compute its shape, the [`SchemaId`] that shape
+/// hashes to, and the shape itself.
+///
+/// The shape is committed, not only its hash, because a hash can say that a
+/// body changed and never how. `qip event-fabric schema-gate` (CICD-070)
+/// compares the base branch's lock with the head's, and telling a field that
+/// was added from one that was removed takes both shapes.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct LockRow {
     topic: String,
     version: u32,
     type_name: String,
     schema_id: String,
+    shape: Shape,
 }
 
 fn row_for<T: EventBody>(sample: &T) -> LockRow {
@@ -101,6 +107,7 @@ fn row_for<T: EventBody>(sample: &T) -> LockRow {
         version: T::SCHEMA_VERSION,
         type_name: std::any::type_name::<T>().to_string(),
         schema_id: schema_id.as_str().to_string(),
+        shape,
     }
 }
 
@@ -117,6 +124,7 @@ fn row_for_binding<T: serde::Serialize>(binding: TopicBinding, sample: &T) -> Lo
         version: binding.schema_version,
         type_name: std::any::type_name::<T>().to_string(),
         schema_id: schema_id.as_str().to_string(),
+        shape,
     }
 }
 
@@ -496,6 +504,14 @@ fn every_bound_body_has_the_shape_its_lock_row_records() {
              bump the schema version if the change is deliberate",
             row.type_name, row.topic
         );
+        // The committed shape is what the compatibility gate compares, so it
+        // must be the shape the type really has and not merely one that was
+        // true when the row was written.
+        assert_eq!(
+            locked.shape, row.shape,
+            "{} (topic {}) is locked with a shape it no longer has",
+            row.type_name, row.topic
+        );
     }
 }
 
@@ -534,5 +550,177 @@ fn the_lock_has_exactly_one_row_per_bound_body_and_version() {
         computed_rows().len(),
         "schemas.lock.json does not have exactly one row per bound body; it has drifted from \
          the topics this build actually binds"
+    );
+}
+
+// --- the compatibility gate (CICD-070) ---------------------------------------
+
+/// The committed lock, with `change` applied to one row's shape and that
+/// row's id recomputed — exactly what regenerating the lock in place after
+/// editing the Rust type would commit. Written to a scratch file and
+/// returned with the topic that was changed.
+fn lock_with_one_row_changed(
+    name: &str,
+    change: impl Fn(&mut BTreeMap<String, Shape>),
+) -> (PathBuf, String) {
+    let mut rows = committed_rows();
+    let row = rows
+        .iter_mut()
+        .find(|row| matches!(&row.shape, Shape::Object(fields) if fields.len() > 1))
+        .expect("at least one locked body is an object with more than one field");
+    let Shape::Object(fields) = &mut row.shape else {
+        unreachable!("selected for being an object")
+    };
+    change(fields);
+    row.schema_id = SchemaId::new(&row.topic, row.version, &row.shape)
+        .as_str()
+        .to_string();
+    let topic = row.topic.clone();
+    let path = std::env::temp_dir().join(format!(
+        "qip-schema-lock-{}-{name}.json",
+        std::process::id()
+    ));
+    std::fs::write(&path, serde_json::to_string_pretty(&rows).unwrap()).unwrap();
+    (path, topic)
+}
+
+/// `qip event-fabric schema-gate --base <committed lock> --head <head>`,
+/// through the family dispatcher the binary routes to.
+fn schema_gate(head: &std::path::Path) -> qip_cli::event_fabric::Outcome {
+    let arguments: Vec<String> = [
+        qip_cli::event_fabric::schema_gate::SUBCOMMAND,
+        "--base",
+        lock_file_path().to_str().unwrap(),
+        "--head",
+        head.to_str().unwrap(),
+    ]
+    .iter()
+    .map(|part| part.to_string())
+    .collect();
+    qip_cli::event_fabric::dispatch(&arguments, &qip_cli::event_fabric::Environment::process())
+        .expect("the gate reads both locks")
+}
+
+/// CICD-070, on the lock this repository actually commits: a fabric body
+/// that loses a field at its current version fails the gate CI runs, and the
+/// same body gaining a field passes it.
+///
+/// The failure this prevents is the one the lock above cannot see. Remove a
+/// field from `OutcomeRecord`, run this suite, paste the regenerated row into
+/// `schemas.lock.json` as its failure message invites — and every test above
+/// is green again, at a version every consumer already trusts.
+///
+/// Mutation: in `schema_gate::judge`, admit a changed id at the same version
+/// without calling `check_compatible`. The removal below then exits 0.
+#[test]
+fn a_bound_body_that_loses_a_field_fails_the_compatibility_gate_and_one_that_gains_a_field_passes()
+{
+    use qip_cli::event_fabric::schema_gate::{COMPATIBLE, INCOMPATIBLE};
+
+    // Premise: the committed lock against itself is compatible and every
+    // bound body was compared, so the gate is reading the real file and the
+    // verdicts below come from the seeded change alone.
+    let unchanged = schema_gate(&lock_file_path());
+    assert_eq!(unchanged.code, COMPATIBLE, "{:?}", unchanged.lines);
+    assert_eq!(
+        unchanged.lines,
+        vec![format!(
+            "schema gate: COMPATIBLE — {} base topic(s) compared, 0 changed and still readable",
+            computed_rows().len()
+        )]
+    );
+
+    let (head, topic) = lock_with_one_row_changed("gained", |fields| {
+        fields.insert("added_by_the_gate_test".to_string(), Shape::String);
+    });
+    let gained = schema_gate(&head);
+    let _ = std::fs::remove_file(&head);
+    assert_eq!(gained.code, COMPATIBLE, "{:?}", gained.lines);
+    assert!(
+        gained.lines[0].starts_with(&format!("{topic}: version")),
+        "the additive change was not reported against {topic}: {:?}",
+        gained.lines
+    );
+
+    let removed_field = std::cell::RefCell::new(String::new());
+    let (head, topic) = lock_with_one_row_changed("lost", |fields| {
+        let (name, _) = fields.pop_first().expect("the row has a field to lose");
+        *removed_field.borrow_mut() = name;
+    });
+    let lost = schema_gate(&head);
+    let _ = std::fs::remove_file(&head);
+    assert_eq!(
+        lost.code, INCOMPATIBLE,
+        "{topic} lost a field at its current version and the gate passed it: {:?}",
+        lost.lines
+    );
+    assert!(
+        lost.lines[0].starts_with(&format!("{topic} ("))
+            && lost.lines[0].contains(&format!(
+                "field '{}' is absent from the new shape",
+                removed_field.borrow()
+            )),
+        "the finding does not name the topic and the field that went: {:?}",
+        lost.lines
+    );
+}
+
+/// CICD-070's other half: the gate is something the pipeline runs, against
+/// the lock this suite reads, with the base taken from the commit the pull
+/// request would merge into.
+///
+/// Mutation: delete the "schema compatibility against the base" step from
+/// ci.yml. The premise assertion below fails naming it.
+#[test]
+fn the_pipeline_runs_the_compatibility_gate_against_the_pull_requests_base_lock() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(4)
+        .expect("qip-acceptance sits four levels below the repository root");
+    let workflow = std::fs::read_to_string(repo.join(".github/workflows/ci.yml")).unwrap();
+
+    // The one step, from its name to the next step at the same indent.
+    let step: Vec<&str> = workflow
+        .lines()
+        .skip_while(|line| line.trim() != "- name: schema compatibility against the base")
+        .skip(1)
+        .take_while(|line| !line.starts_with("      - ") && !line.starts_with("  #"))
+        .map(str::trim)
+        .collect();
+    assert!(
+        !step.is_empty(),
+        "ci.yml has no step named 'schema compatibility against the base'"
+    );
+
+    // Whole lines throughout. The lock's path is checked against the file
+    // this suite reads, so the step cannot be gating some other file while
+    // the suite locks this one.
+    let lock = "backend/crates/libs/qip-events/schemas.lock.json";
+    assert!(
+        lock_file_path().ends_with("crates/libs/qip-events/schemas.lock.json"),
+        "premise: the path in the step below is the lock this suite reads"
+    );
+    for line in [
+        "if: github.event_name == 'pull_request'".to_string(),
+        "BASE_SHA: ${{ github.event.pull_request.base.sha }}".to_string(),
+        "git fetch --no-tags --depth=1 origin \"$BASE_SHA\"".to_string(),
+        format!("git show \"$BASE_SHA:{lock}\" > \"$RUNNER_TEMP/base.lock.json\""),
+        "cargo run --quiet -p qip-cli --bin qip -- event-fabric schema-gate \\".to_string(),
+        "--base \"$RUNNER_TEMP/base.lock.json\" \\".to_string(),
+        "--head crates/libs/qip-events/schemas.lock.json".to_string(),
+    ] {
+        assert!(
+            step.contains(&line.as_str()),
+            "the schema compatibility step no longer has the line `{line}`: {step:?}"
+        );
+    }
+    // The step runs in the `test` job, whose working directory is `backend`:
+    // the head path above is relative to it.
+    assert!(
+        workflow.contains(
+            "    name: test\n    runs-on: ubuntu-latest\n    defaults:\n      run:\n        \
+             working-directory: backend\n"
+        ),
+        "ci.yml's test job no longer runs in backend/, so the step's --head path points nowhere"
     );
 }

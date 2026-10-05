@@ -7,6 +7,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   METADATA_TOKEN_URL,
   PROVIDERS,
@@ -16,7 +19,9 @@ import {
   inapplicable,
   metadataToken,
   probe,
+  run,
   screenPayload,
+  spent,
 } from "./model-gateway.mjs";
 
 test("an empty completion is a refusal naming the finish reason, not an empty success", () => {
@@ -297,4 +302,164 @@ test("a keyed provider's chat call is unchanged: its own key, the v1 path, and n
   // No deadline was given, so none is set: the command line never had one.
   assert.equal(requests[0].init.signal, undefined);
   assert.equal(JSON.parse(requests[0].init.body).max_tokens, 4000);
+});
+
+// --- one request, one audit line (CICD-035), and the call ceiling (CICD-030) ---
+
+/** A scratch directory: `task(body)` writes a task file, `lines()` reads the ledger back. */
+function desk() {
+  const dir = mkdtempSync(join(tmpdir(), "gateway-"));
+  const ledger = join(dir, "ledger.jsonl");
+  let n = 0;
+  return {
+    ledger,
+    task(body) {
+      const path = join(dir, `task-${n++}.json`);
+      writeFileSync(path, JSON.stringify(body));
+      return path;
+    },
+    lines: () =>
+      readFileSync(ledger, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    remove: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+const keyed = (maxCalls) =>
+  configure(
+    { ALGORIK_WORKER_PROVIDER: "huggingface", ALGORIK_WORKER_MODEL: "org/model", HF_TOKEN_FILE: "/f", ALGORIK_WORKER_MAX_CALLS: String(maxCalls) },
+    () => "k",
+  );
+const goodTask = { task: "summarise the module", context: "fn main() {}", acceptance: "one paragraph", paths: ["notes.md"] };
+const answer = (content) => ({
+  ok: true,
+  status: 200,
+  json: async () => ({ choices: [{ message: { content } }], usage: { prompt_tokens: 3, completion_tokens: 2 } }),
+});
+
+test("every request leaves exactly one audit line naming the agent, the model and the decision, whether it was allowed or refused", async () => {
+  // The failure: the ledger was written only when the provider answered, so
+  // the gateway's refusals left no trace and a count of ledger lines was not
+  // a count of requests.
+  const d = desk();
+  const token = `hf_${"A".repeat(34)}`;
+  const answers = [answer("done"), { ok: false, status: 503, statusText: "busy" }, answer(""), "throw"];
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    const next = answers[requests.length - 1];
+    if (next === "throw") throw new Error("socket hang up");
+    return next;
+  };
+  const as = (config, task, agent = "test-engineer") => run(config, d.task(task), { agent, fetchImpl, ledger: d.ledger });
+  const config = keyed(3);
+  // Premise: the configuration is one the gateway accepts, so every refusal
+  // below is the one its request was built to draw.
+  assert.deepEqual(config.problems, []);
+
+  const codes = [
+    await as(config, goodTask),
+    await as(config, { ...goodTask, acceptance: "" }),
+    await as(config, { ...goodTask, context: `configured with ${token}` }),
+    await as(config, goodTask),
+    await as(config, goodTask),
+    await as(config, goodTask),
+    await as(config, goodTask),
+    await as(configure({ ALGORIK_WORKER_PROVIDER: "huggingface", HF_TOKEN_FILE: "/f", ...budget }, () => "k"), goodTask),
+    // No agent named at all. `null`, because `undefined` would take the default.
+    await as(config, goodTask, null),
+  ];
+  assert.deepEqual(codes, [0, 2, 4, 5, 6, 5, 3, 78, 78]);
+
+  const lines = d.lines();
+  assert.equal(lines.length, codes.length, "the number of audit lines is not the number of requests");
+  assert.deepEqual(
+    lines.map((line) => line.decision),
+    [
+      "allowed",
+      "refused:task-contract",
+      "refused:credential",
+      "refused:provider",
+      "refused:empty-completion",
+      "failed:transport",
+      "refused:budget",
+      "refused:unconfigured",
+      "refused:unconfigured",
+    ],
+  );
+  assert.deepEqual(
+    lines.map((line) => line.agent),
+    [...Array(8).fill("test-engineer"), null],
+    "a line does not name the agent that asked, or names one for the request that gave none",
+  );
+  assert.deepEqual(
+    lines.map((line) => line.model),
+    ["org/model", "org/model", "org/model", "org/model", "org/model", "org/model", "org/model", null, "org/model"],
+  );
+  // Only what reached the provider was sent, and the refused credential is
+  // in neither the requests nor the ledger.
+  assert.equal(requests.length, 4);
+  assert.ok(!readFileSync(d.ledger, "utf8").includes(token), "the ledger holds the credential it refused to send");
+  assert.deepEqual(lines[2].shapes, ["Hugging Face token"]);
+  d.remove();
+});
+
+test("a spent call ceiling refuses the next task before anything is sent, and a refusal spends none of it", async () => {
+  // The failure: a ceiling nothing ever exercised. Every other test hands the
+  // gateway a budget as a fixture and none reaches it.
+  const d = desk();
+  const { requests, fetchImpl } = scripted(answer("one"), answer("two"));
+  const as = (task) => run(keyed(1), d.task(task), { agent: "test-engineer", fetchImpl, ledger: d.ledger });
+
+  // A refusal first: it is audited and it is not spend.
+  assert.equal(await as({ ...goodTask, paths: "" }), 2);
+  assert.equal(spent(d.ledger), 0, "a refused request was counted against the call ceiling");
+
+  // Premise: with the ceiling unspent the call goes out.
+  assert.equal(await as(goodTask), 0);
+  assert.equal(requests.length, 1);
+  assert.equal(spent(d.ledger), 1);
+
+  assert.equal(await as(goodTask), 3, "a second call was made past a ceiling of one");
+  assert.equal(requests.length, 1, "the refused call was sent anyway");
+  assert.deepEqual(d.lines().at(-1).decision, "refused:budget");
+  d.remove();
+});
+
+test("without a positive call ceiling the gateway is not configured, and a task run against it sends nothing", async () => {
+  const base = { ALGORIK_WORKER_PROVIDER: "huggingface", ALGORIK_WORKER_MODEL: "org/model", HF_TOKEN_FILE: "/f" };
+  const complaint = (config) => config.problems.filter((p) => p.startsWith("ALGORIK_WORKER_MAX_CALLS must be a positive number"));
+  // Premise: a positive ceiling draws no complaint, so the complaint below is
+  // about the ceiling and not about the rest of the fixture.
+  assert.deepEqual(configure({ ...base, ALGORIK_WORKER_MAX_CALLS: "5" }, () => "k").problems, []);
+  for (const value of [undefined, "0", "-1", "many"]) {
+    const config = configure({ ...base, ...(value === undefined ? {} : { ALGORIK_WORKER_MAX_CALLS: value }) }, () => "k");
+    assert.equal(complaint(config).length, 1, `a ceiling of ${value} was accepted`);
+
+    const d = desk();
+    const { requests, fetchImpl } = scripted(answer("sent"));
+    assert.equal(await run(config, d.task(goodTask), { agent: "test-engineer", fetchImpl, ledger: d.ledger }), 78);
+    assert.equal(requests.length, 0, `a task was sent under a ceiling of ${value}`);
+    d.remove();
+  }
+});
+
+test("a ledger line the budget cannot read, or one written before refusals were recorded, counts as spent", () => {
+  const d = desk();
+  writeFileSync(
+    d.ledger,
+    [
+      JSON.stringify({ at: "2026-09-01T00:00:00Z", task: "old", model: "m", ms: 1 }),
+      "not json at all",
+      JSON.stringify({ decision: "refused:budget", billed: false }),
+      JSON.stringify({ decision: "allowed", billed: true }),
+      "",
+    ].join("\n"),
+  );
+  // Three: the legacy line, the unreadable one and the allowed one. Not four,
+  // and not one.
+  assert.equal(spent(d.ledger), 3);
+  d.remove();
 });

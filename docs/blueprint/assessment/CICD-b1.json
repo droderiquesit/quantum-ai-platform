@@ -84,7 +84,7 @@
     "work_item": "E01",
     "tier": "T1",
     "size": "S",
-    "notes": "e2e is false only because no environment past dev has ever been promoted through the (suspended) GitOps chain; the digest-only invariant itself is proven statically and holds today. verify: downgraded COMPLETE -> PARTIAL. The image/manifest half is genuinely and rigorously proven (gitops.rs digest walks, registry immutable tags, BinAuthz deny-by-default, digest-pinned Dockerfile FROMs - all re-checked), but the requirement also covers package pins and every GitHub Action is pinned by a mutable tag, which the repo's own security baseline lists as an open real finding; TO-PIN placeholders remain in four environments' manifests; and the admission-refusal half has never run against a workload."
+    "notes": "e2e is false only because no environment past dev has ever been promoted through the (suspended) GitOps chain; the digest-only invariant itself is proven statically and holds today. verify: downgraded COMPLETE -> PARTIAL. The image/manifest half is genuinely and rigorously proven (gitops.rs digest walks, registry immutable tags, BinAuthz deny-by-default, digest-pinned Dockerfile FROMs - all re-checked), but the requirement also covers package pins and every GitHub Action is pinned by a mutable tag, which the repo's own security baseline lists as an open real finding; TO-PIN placeholders remain in four environments' manifests; and the admission-refusal half has never run against a workload. 2026-10-04: action pins not attempted. Pinning 38 `uses:` lines needs each action's commit SHA from GitHub, and a wrong one breaks every workflow with no way to run them from this tree."
   },
   {
     "id": "CICD-004",
@@ -140,16 +140,19 @@
   },
   {
     "id": "CICD-006",
-    "status": "PARTIAL",
-    "current": "scripts/check-secrets.sh (8 regexes, git grep over the tracked working tree) runs in ci.yml's secrets job with fetch-depth 0; gitleaks@8.30.0 runs via trunk-io/trunk-action; backend/crates/tests/qip-acceptance/tests/security.rs::no_secret_value_appears_in_any_committed_configuration and infrastructure.rs::no_secret_value_appears_in_the_terraform assert the same over their respective trees.",
+    "status": "COMPLETE",
+    "current": "scripts/check-secrets.sh scans the tracked tree by default and, with --history, every line any commit reachable from HEAD ever added (git log --cc, so a merge's own resolution is read too), with the same patterns and exclusions. ci.yml's secrets job runs both on a fetch-depth 0 clone, and `make secrets` runs both. The history mode refuses a shallow clone (exit 2) rather than report one commit as the history, refuses an unknown argument rather than fall through to the tree scan, and names the commit and path of a finding without reprinting the matched line. A finding is skipped only when scripts/secrets-reviewed.txt records `<commit> <path> <what it was>`; a line with no reason silences nothing. Run over this repository on 2026-10-04 it read 1870 commits and found two pattern-shaped placeholders and no credential: the JSON shape of a GitHub App credential with '...' for the key body (f8d0c24a, infrastructure/gitops/bootstrap/README.md) and a doc comment naming a key id ending in EXAMPLE (fb860245, connector/manifest.rs). Both were read and are recorded. gitleaks via trunk and the two acceptance scans over configuration and Terraform remain.",
     "evidence": [
-      "scripts/check-secrets.sh:1-85",
-      ".github/workflows/ci.yml:393-399 (secrets job, fetch-depth 0)",
+      "scripts/check-secrets.sh (the `--history` case arm)",
+      "scripts/secrets-reviewed.txt (two reviewed placeholders, each with its reason)",
+      ".github/workflows/ci.yml secrets job (fetch-depth 0; `./scripts/check-secrets.sh` then `./scripts/check-secrets.sh --history`)",
+      "Makefile `secrets` target (tree, then history)",
+      "./scripts/check-secrets.sh --history -> 'secret scan: nothing found in 1870 commits of history' (2026-10-04, this worktree)",
       ".trunk/trunk.yaml:26-31 (gitleaks@8.30.0)",
-      "backend/crates/tests/qip-acceptance/tests/security.rs:952 (no_secret_value_appears_in_any_committed_configuration)",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:48 (no_secret_value_appears_in_the_terraform)"
+      "backend/crates/tests/qip-acceptance/tests/security.rs (no_secret_value_appears_in_any_committed_configuration)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs (no_secret_value_appears_in_the_terraform)"
     ],
-    "gap": "check-secrets.sh only greps the current working tree despite the fetch-depth:0 checkout, so a secret introduced and later removed in an earlier commit would not be caught; gitleaks via trunk lints the changed/working tree by default, not necessarily full repository history either — 'a secret scanner run over the full history of every repository' is not demonstrated.",
+    "gap": "None against the row's check for this repository. Three limits, stated so the green is not over-read: (1) the history scan reads commits reachable from HEAD, so an unmerged branch is scanned when CI runs on that branch and a dangling object is never scanned; (2) 'every repository' is one repository here (the multi-repository split was declined, C6); (3) the new CI step has not yet run on GitHub, because this branch is unpushed - the same command was run locally on a full clone.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -157,7 +160,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "./scripts/check-secrets.sh (exit 0, 'nothing found'); cargo test -p qip-acceptance --test security -- no_secret_value_appears_in_any_committed_configuration",
+    "verification": "cargo test -p qip-acceptance --test pipeline_scripts (backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs): a_secret_committed_and_then_deleted_passes_the_tree_scan_and_fails_the_history_scan, a_reviewed_finding_is_skipped_only_when_the_record_says_what_it_was, a_shallow_clone_is_refused_rather_than_reported_clean, the_pipeline_runs_the_history_scan_on_a_full_clone. Each mutation-verified against the real script in a scratch repository: history limited to the newest commit, the reason requirement dropped, the shallow refusal deleted, the CI step deleted - each failed its own test and passed again on a byte-for-byte restore. Plus ./scripts/check-secrets.sh --history (exit 0).",
     "work_item": "E01",
     "tier": "T1",
     "size": "S",
@@ -374,7 +377,7 @@
       ".github/workflows/deploy.yml:91-262 (gate job)",
       "gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-09-25)"
     ],
-    "gap": "Merge half still open: main has no branch protection or ruleset, a repository setting outside any committed file (external action, not doable from this tree). The waiver half is now guarded: no workflow may carry continue-on-error and no backend test may be marked ignored; a dropped job is still caught only by the substring checks.",
+    "gap": "Merge half still open: main has no branch protection or ruleset, a repository setting outside any committed file (external action, not doable from this tree). The waiver half is guarded: no workflow may carry continue-on-error, no backend test may be marked ignored, and a gate that is dropped, moved to another job or commented out is now caught structurally rather than by a substring search - pipeline_scripts.rs pins nine gates as whole step lines of the jobs that own them.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -384,7 +387,7 @@
       "CICD-014"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test pipeline_waivers (no_workflow_marks_a_step_as_allowed_to_fail, no_test_in_the_backend_is_ignored; mutation-verified); merge half needs required status checks on main",
+    "verification": "cargo test -p qip-acceptance --test pipeline_waivers (no_workflow_marks_a_step_as_allowed_to_fail, no_test_in_the_backend_is_ignored; mutation-verified); cargo test -p qip-acceptance --test pipeline_scripts every_gate_the_pipeline_claims_is_a_step_of_its_own_job_and_not_a_mention (mutation-verified: with `- run: cargo audit --deny warnings` commented out, the_pipeline_gates_on_everything_it_claims_to still passed and this test failed naming security-audit); merge half needs required status checks on main",
     "work_item": "E01",
     "tier": "T1",
     "size": "S",
@@ -451,7 +454,7 @@
       "backend/crates/tests/qip-acceptance/tests/architecture.rs::nothing_outside_a_composition_root_holds_an_order_manager",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs::cargo_resolves_every_manifest_form_that_defeated_a_hand_written_parser"
     ],
-    "gap": "architecture.rs checks dependency rules and state/order-manager ownership well, but three named clauses have no check: (1) hot-path violations - nothing flags a blocking call added on the hot path, which the verification names explicitly (no test in qip-acceptance or any crate scans for one); (2) latency and failure invariants are not checked structurally before merge (performance.rs budgets are cost measurements, not an invariant check on a diff); (3) ADR conformance is not machine-checked (the_decision_core_named_by_adr_0009_is_the_set_actually_held_to_two covers one ADR). And because main is unprotected, a failing architecture test flags a PR but cannot stop its merge.",
+    "gap": "The first of three unchecked clauses is now checked: a blocking primitive on the cell's pass path (a sleep, a spawned or parked thread, a channel, a condition variable, a socket or child process of its own, or a file opened anywhere but the cell's journal) fails event_fabric_architecture.rs's no_crate_on_the_cells_pass_path_sleeps_spawns_a_thread_or_opens_a_socket_of_its_own. It is a token scan, so it cannot see a lock held across I/O or a qip-transport call whose timeout is too long. Still open: (2) latency and failure invariants are not checked structurally before merge (performance.rs budgets are cost measurements, not an invariant check on a diff); (3) ADR conformance is not machine-checked beyond the_decision_core_named_by_adr_0009_is_the_set_actually_held_to_two. And because main is unprotected, a failing architecture test flags a PR but cannot stop its merge.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -459,7 +462,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test architecture --no-fail-fast; plus a new check that refuses a blocking call (std::thread::sleep, a socket read without a timeout, a lock held across I/O) in the hot-path crates, and required status checks on main.",
+    "verification": "cargo test -p qip-acceptance --test architecture --no-fail-fast; cargo test -p qip-acceptance --test event_fabric_architecture (no_crate_on_the_cells_pass_path_sleeps_spawns_a_thread_or_opens_a_socket_of_its_own, mutation-verified: a std::thread::sleep appended to crates/edge/qip-routing/src/lib.rs failed it naming that file and the token, and it passed again on a byte-for-byte restore); required status checks on main remain an external setting.",
     "work_item": "E01",
     "tier": "T1",
     "size": "M",
@@ -484,7 +487,7 @@
     "work_item": "E00",
     "tier": "T1",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-04: left as it is. A check that fails a change to a rule file without a citation is a process decision for the owner, and with main unprotected (CICD-045) it would flag and not refuse."
   },
   {
     "id": "CICD-020",
@@ -726,22 +729,23 @@
   {
     "id": "CICD-030",
     "status": "PARTIAL",
-    "current": "scripts/model-gateway.mjs refuses to start without ALGORIK_WORKER_MAX_CALLS (a mandatory call ceiling); scripts/worker-capacity.sh measures the sustainable concurrency and binds the ladder (§2 of docs/plan/algorik-orchestration-policy.md: 8→16→32→64→100, climbed only on a measured ≥10% verified-output-per-token gain over six tasks); §8 names global/per-worker budgets and automatic pause at 80% of any budget or on a provider rate limit.",
+    "current": "Three quotas are enforced in code and tested. (1) The gateway's call ceiling: scripts/model-gateway.mjs is not configured without a positive ALGORIK_WORKER_MAX_CALLS, and a spent ceiling refuses the next task before anything is sent; a refusal does not spend it. (2) The fleet's concurrency: scripts/fleet/dispatch.mjs refuses a dispatch of more than forty packets (MAX_TASKS), and the Job's own parallelism is refused above forty at plan time (infrastructure/fleet/variables.tf). (3) The budget: the dispatcher holds the day's ledger total plus the summed worst case of the whole dispatch to 80% of the daily ceiling, each worker checks its own packet against the day, and a packet over the slot cap is refused. A provider rate limit (429/503) is retried at most four times with backoff and Retry-After, and stops on HALT. ci.yml's `scripts` job runs all three suites. scripts/worker-capacity.sh and the ladder in docs/plan/algorik-orchestration-policy.md §2 remain measurement and policy.",
     "evidence": [
-      "docs/plan/algorik-orchestration-policy.md:239-266 (§8 Budgets and automatic pause)",
-      "docs/plan/algorik-orchestration-policy.md:12-56 (§1-2 capacity measurement and the ladder)",
-      "scripts/model-gateway.test.mjs (10 tests, 10 pass under node --test on 2026-09-25; every one passes ALGORIK_WORKER_MAX_CALLS=5 as a fixture and none asserts a missing/zero ceiling or an exhausted budget is refused)",
-      "scripts/model-gateway.mjs:163-166 (MAX_CALLS required), :300-301 (budget exhausted refusal) - untested"
+      "scripts/model-gateway.mjs (`configure`: ALGORIK_WORKER_MAX_CALLS must be positive; `run`: refused:budget before the call)",
+      "scripts/model-gateway.test.mjs ('a spent call ceiling refuses the next task before anything is sent, and a refusal spends none of it'; 'without a positive call ceiling the gateway is not configured, and a task run against it sends nothing')",
+      "scripts/fleet/dispatch.mjs (MAX_TASKS = 40) and dispatch.test.mjs ('forty packets are dispatched and forty-one are refused...'; 'the summed worst case of the whole dispatch, not each packet's own, is held to the eighty percent line')",
+      "scripts/fleet/worker.test.mjs ('the day's total plus a worst case may reach eighty percent of the daily ceiling and may not pass it'; 'four consecutive 429s end as provider_refused costing nothing...')",
+      ".github/workflows/ci.yml `scripts` job"
     ],
-    "gap": "The gateway's call ceiling exists in code (model-gateway.mjs:163-166, :300-301) but no test exercises it: all ten tests supply a valid budget as a fixture. The gateway has never routed a live call (no provider credential is present), so the quota protects nothing in practice. The concurrency ladder and the 80%-budget pause are policy text in docs/plan/algorik-orchestration-policy.md §2 and §8, enforced by no code; no test proves 'tasks launched beyond the concurrency quota are queued or refused'.",
+    "gap": "The concurrency quota is per dispatch, not per fleet: dispatch.mjs does not ask whether an earlier execution is still running, so two overlapping dispatches can run more than forty tasks between them (the file's own note says so). The budget still holds across them, because every packet reserves its worst case in the day's ledger before its call. Closing it means listing running executions from the dispatcher, which is a call to Google Cloud this tree cannot exercise. The command-line gateway has never carried a live call (no provider credential is present); the fleet has, by scripts/fleet/worker.mjs's own record of Vertex answering 429 at Job parallelism 8.",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "node --test scripts/model-gateway.test.mjs (ran 2026-09-25: '# tests 10', '# pass 10', '# fail 0' - none covers the ceiling); a new test asserting configure() without ALGORIK_WORKER_MAX_CALLS reports the problem and a spent ledger refuses the call.",
+    "verification": "node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs (82 tests, 82 pass on 2026-10-04). The two ceiling tests were mutation-verified: with the budget refusal removed, 'a second call was made past a ceiling of one'; with refusals counted as spend, 'a refused request was counted against the call ceiling'; with the positive-ceiling check removed, 'a ceiling of undefined was accepted'. Each passed again on a byte-for-byte restore.",
     "work_item": "E00",
     "tier": "T1",
     "size": "S",

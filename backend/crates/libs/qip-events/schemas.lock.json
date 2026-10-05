@@ -3,54 +3,483 @@
     "topic": "policy.distributed",
     "version": 1,
     "type_name": "qip_mesh::spine::PolicyFrame",
-    "schema_id": "50b731e2267ebb6d67fb767bd3199484d2fcda5098052e6062b8652e5a4840ab"
+    "schema_id": "50b731e2267ebb6d67fb767bd3199484d2fcda5098052e6062b8652e5a4840ab",
+    "shape": {
+      "Object": {
+        "adversary_profiles": {
+          "Object": {
+            "produced_at": "String",
+            "value": {
+              "Object": {
+                "venues": {
+                  "Object": {
+                    "XNYS": {
+                      "Object": {
+                        "posture": "String"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "belief_priors": {
+          "Object": {
+            "produced_at": "String",
+            "value": {
+              "Object": {
+                "priors": {
+                  "Object": {
+                    "AAPL": "Number"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "capital_grants": {
+          "Object": {
+            "produced_at": "String",
+            "value": {
+              "Object": {
+                "live_grants": {
+                  "Array": "String"
+                }
+              }
+            }
+          }
+        },
+        "causal_digest": {
+          "Object": {
+            "produced_at": "String",
+            "value": {
+              "Object": {
+                "active_edges": {
+                  "Array": "String"
+                }
+              }
+            }
+          }
+        },
+        "cell": "String",
+        "compiled_plan": {
+          "Object": {
+            "produced_at": "String",
+            "value": {
+              "Object": {
+                "digest": "String",
+                "strategies": "Number"
+              }
+            }
+          }
+        },
+        "cycle_whitelist": {
+          "Object": {
+            "produced_at": "String",
+            "value": {
+              "Object": {
+                "conversions": {
+                  "Array": {
+                    "Object": {
+                      "cost_fraction": "String",
+                      "from": "String",
+                      "market": "String",
+                      "side": "String",
+                      "to": "String",
+                      "venue": "String",
+                      "venue_class": "String"
+                    }
+                  }
+                },
+                "cycles": {
+                  "Object": {
+                    "cycle-1": "String"
+                  }
+                },
+                "start_sizes": {
+                  "Object": {
+                    "USD": "String"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "dispositions": {
+          "Object": {
+            "produced_at": "String",
+            "value": {
+              "Object": {
+                "unwinds": {
+                  "Object": {
+                    "alpha": {
+                      "Object": {
+                        "AAPL": "String"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "episodic_digest": {
+          "Object": {
+            "produced_at": "String",
+            "value": {
+              "Object": {
+                "digest": "String",
+                "episodes": "Number"
+              }
+            }
+          }
+        },
+        "feasibility_constraints": {
+          "Object": {
+            "produced_at": "String",
+            "value": {
+              "Object": {
+                "dark_regions": {
+                  "Array": "String"
+                },
+                "fee_floor": {
+                  "Object": {
+                    "XNYS": "String"
+                  }
+                },
+                "minimum_order": {
+                  "Object": {
+                    "XNYS": "String"
+                  }
+                },
+                "tick": {
+                  "Object": {
+                    "XNYS": "String"
+                  }
+                },
+                "withdrawn_venues": {
+                  "Array": "String"
+                }
+              }
+            }
+          }
+        },
+        "halted": "Bool",
+        "inventory_targets": {
+          "Object": {
+            "produced_at": "String",
+            "value": {
+              "Object": {
+                "reference_prices": {
+                  "Object": {
+                    "AAPL": "String"
+                  }
+                },
+                "targets": {
+                  "Object": {
+                    "AAPL": "String"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "issued_at": "String",
+        "regime_state": {
+          "Object": {
+            "produced_at": "String",
+            "value": {
+              "Object": {
+                "confidence": "Number",
+                "regime": "String"
+              }
+            }
+          }
+        },
+        "risk_envelope": {
+          "Object": {
+            "produced_at": "String",
+            "value": {
+              "Object": {
+                "limits": {
+                  "Object": {
+                    "max_gross": "String"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "sequence": "Number",
+        "signature": "String",
+        "trained_models": {
+          "Object": {
+            "produced_at": "String",
+            "value": {
+              "Object": {
+                "models": {
+                  "Object": {
+                    "model-a": "String"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "valid_for": "Number"
+      }
+    }
   },
   {
     "topic": "reflex.chain_span",
     "version": 1,
     "type_name": "qip_contracts::reflex::ChainSpan",
-    "schema_id": "b210acdb5cf7a402bb2d26ba9ebc58802af1e2968446b71a32ad0e97d32577f1"
+    "schema_id": "b210acdb5cf7a402bb2d26ba9ebc58802af1e2968446b71a32ad0e97d32577f1",
+    "shape": {
+      "Object": {
+        "cell": "String",
+        "first_seq": "Number",
+        "last_seq": "Number",
+        "session": "Number",
+        "tail_digest": "String"
+      }
+    }
   },
   {
     "topic": "reflex.fabric_gap",
     "version": 1,
     "type_name": "qip_contracts::reflex::Gap",
-    "schema_id": "f3df22c44dbc9fb60763f0168dbc0464bbcb928186bf6fe45c61ac7185c9849d"
+    "schema_id": "f3df22c44dbc9fb60763f0168dbc0464bbcb928186bf6fe45c61ac7185c9849d",
+    "shape": {
+      "Object": {
+        "from_seq": "Number",
+        "reason": "String",
+        "stream": "String",
+        "to_seq": "Number"
+      }
+    }
   },
   {
     "topic": "reflex.journal_recorded",
     "version": 1,
     "type_name": "qip_contracts::reflex::JournalEntry",
-    "schema_id": "72696d109a5bdf32f7ad9bf0a39a6e0a4e9a61581a7ba414132fe03d1da099a2"
+    "schema_id": "72696d109a5bdf32f7ad9bf0a39a6e0a4e9a61581a7ba414132fe03d1da099a2",
+    "shape": {
+      "Object": {
+        "at": "Number",
+        "decision": {
+          "Object": {
+            "Filled": {
+              "Object": {
+                "fee": "String",
+                "object": "String",
+                "order_id": "String",
+                "price": "String",
+                "quantity": "String",
+                "quote_unit": "String",
+                "shares": {
+                  "Array": {
+                    "Array": "String"
+                  }
+                },
+                "side": "String",
+                "simulated": "Bool",
+                "venue": "String"
+              }
+            }
+          }
+        },
+        "digest": "String",
+        "sequence": "Number",
+        "version": "String"
+      }
+    }
   },
   {
     "topic": "reflex.market_event_applied",
     "version": 1,
     "type_name": "qip_contracts::market_event::MarketEvent",
-    "schema_id": "7eea153c73ee3d0e592075a0e93fc6a19abbf0fce8c8767a41c3a9f8cae9c0ca"
+    "schema_id": "7eea153c73ee3d0e592075a0e93fc6a19abbf0fce8c8767a41c3a9f8cae9c0ca",
+    "shape": {
+      "Object": {
+        "entitlement": {
+          "Object": {
+            "Granted": {
+              "Object": {
+                "dataset": "String",
+                "expires_at": "String",
+                "usage": "String"
+              }
+            }
+          }
+        },
+        "event_time": "String",
+        "normalized_time": "String",
+        "payload": {
+          "Object": {
+            "body": {
+              "Object": {
+                "Trade": {
+                  "Object": {
+                    "aggressor": "String",
+                    "condition": "String",
+                    "price": "String",
+                    "quantity": "String"
+                  }
+                }
+              }
+            },
+            "capture_time": "String",
+            "object_id": "String",
+            "origin": {
+              "Object": {
+                "feed": "String",
+                "partition": "Number",
+                "sequence": "Number",
+                "venue": "String"
+              }
+            },
+            "venue_time": "String"
+          }
+        },
+        "receive_time": "String",
+        "source_hash": "String",
+        "uncertainty": "Number"
+      }
+    }
   },
   {
     "topic": "reflex.outcome_recorded",
     "version": 1,
     "type_name": "qip_contracts::reflex::OutcomeRecord",
-    "schema_id": "f23ab09b6c5aba07821b96ddad44715145cd2addea030851feaa0d880d4fe75d"
+    "schema_id": "f23ab09b6c5aba07821b96ddad44715145cd2addea030851feaa0d880d4fe75d",
+    "shape": {
+      "Object": {
+        "cell": "String",
+        "entry": {
+          "Object": {
+            "at": "Number",
+            "decision": {
+              "Object": {
+                "Filled": {
+                  "Object": {
+                    "fee": "String",
+                    "object": "String",
+                    "order_id": "String",
+                    "price": "String",
+                    "quantity": "String",
+                    "quote_unit": "String",
+                    "shares": {
+                      "Array": {
+                        "Array": "String"
+                      }
+                    },
+                    "side": "String",
+                    "simulated": "Bool",
+                    "venue": "String"
+                  }
+                }
+              }
+            },
+            "digest": "String",
+            "sequence": "Number",
+            "version": "String"
+          }
+        },
+        "journal_digest": "String",
+        "journal_sequence": "Number",
+        "session": "Number"
+      }
+    }
   },
   {
     "topic": "reflex.pass_marked",
     "version": 1,
     "type_name": "qip_contracts::replay::PassMarker",
-    "schema_id": "a6802387b4e4e88cd9567e6ec9d4085fb21a2ebd7afd2e54874ea652e7657f05"
+    "schema_id": "a6802387b4e4e88cd9567e6ec9d4085fb21a2ebd7afd2e54874ea652e7657f05",
+    "shape": {
+      "Object": {
+        "binary_version": "String",
+        "cell": "String",
+        "config_digest": "String",
+        "control": {
+          "Array": {
+            "Object": {
+              "event_id": "String",
+              "offset": "Number",
+              "partition": "Number",
+              "stream": "String"
+            }
+          }
+        },
+        "gateway_seed": "Number",
+        "now_ns": "Number",
+        "pass": "Number",
+        "plan_digest": "String",
+        "readings": {
+          "Object": {
+            "halt_flag": {
+              "Object": {
+                "detail": "String",
+                "state": "String"
+              }
+            },
+            "journal_pressure": {
+              "Object": {
+                "detail": "String",
+                "state": "String"
+              }
+            },
+            "region_wire": {
+              "Object": {
+                "detail": "String",
+                "state": "String"
+              }
+            }
+          }
+        },
+        "session": "String",
+        "tape_digest": "String",
+        "tape_from": "Number",
+        "tape_to": "Number"
+      }
+    }
   },
   {
     "topic": "risk.approved",
     "version": 1,
     "type_name": "qip_mesh::spine::CapitalGrantFrame",
-    "schema_id": "452be8ec56caa7ceb1fb9e39e1d20c10c9ee711680eaa0584b31230f71019381"
+    "schema_id": "452be8ec56caa7ceb1fb9e39e1d20c10c9ee711680eaa0584b31230f71019381",
+    "shape": {
+      "Object": {
+        "approver": "String",
+        "cell": "String",
+        "expires_at": "String",
+        "granted_at": "String",
+        "gross_limit": "String",
+        "loss_limit": "String",
+        "order_limit": "String",
+        "signature": "String",
+        "strategy": "String",
+        "venues": {
+          "Array": "String"
+        }
+      }
+    }
   },
   {
     "topic": "system.kill_switch_engaged",
     "version": 1,
     "type_name": "qip_mesh::spine::HaltFrame",
-    "schema_id": "8d174dab9bd9f17571786f56b7bc47c80b4100d46aa601a396c69afe37f5c4a0"
+    "schema_id": "8d174dab9bd9f17571786f56b7bc47c80b4100d46aa601a396c69afe37f5c4a0",
+    "shape": {
+      "Object": {
+        "cell": "String",
+        "issued_at": "String",
+        "reason": "String",
+        "signature": "String"
+      }
+    }
   }
 ]
