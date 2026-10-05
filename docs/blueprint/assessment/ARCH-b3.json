@@ -605,26 +605,27 @@
   },
   {
     "id": "ARCH-072",
-    "status": "NEEDS-VALIDATION",
+    "status": "COMPLETE",
     "current": "Application code (backend/), the Fabric substitute (qip-transport/qip-events/qip-streaming), IaC (infrastructure/terraform), policies (docs/ops/policies, docs/operations/arbitrage-policy.md, docs/plan/algorik-orchestration-policy.md), schemas (qip_events::registry::SchemaRegistry, qip_contracts::wire CELL_DELTA_SCHEMA_VERSION), environment desired state (infrastructure/environments/*, infrastructure/gitops/envs/*) and model/config (qip-ai's model registry) all resolve to paths in this one repository, and ci.yml's jobs (format, lint, test, release-build, dependency-policy, security-audit, dependency-supply-chain, sbom, frontend-portal, frontend-landing, trivy, trunk, infrastructure, secrets) run from the same push/PR trigger against one commit.",
     "evidence": [
       "docs/adr/0016-repository-layout.md",
       ".github/workflows/ci.yml:8-12 (one push/PR trigger), :27-393 (job list spanning Rust, frontend, infra, secrets)",
       "test: backend/crates/tests/qip-acceptance/tests/gitops.rs:1510 every_argo_cd_application_points_at_this_repository_and_at_one_environment_directory_that_exists (environment desired state lives here, not in a separate env repo -- one slice of the requirement)",
-      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md:129 (C6 declined: 'The monorepo keeps one gate, one history and one review surface')"
+      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md:129 (C6 declined: 'The monorepo keeps one gate, one history and one review surface')",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs the_whole_platform_resolves_to_one_repository_built_from_one_commit"
     ],
-    "gap": "No acceptance test directly asserts single-repository placement or would fail if a second repository appeared; the fact is demonstrated by directory inspection and by ci.yml's job list, not by a named test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "ls backend infrastructure docs frontend (single tree) and .github/workflows/ci.yml's job list; no dedicated test exists",
+    "verification": "cargo test -p qip-acceptance --test blueprint_arch the_whole_platform_resolves_to_one_repository_built_from_one_commit (mutation: adding a submodules file failed it; restored, passed)",
     "work_item": "E00-monorepo-placement-test",
     "tier": "T1",
     "size": "S",
-    "notes": "ADR 0099's conflict register declines C6 (the seven-repository split) outright, keeping ADR 0016's one repository; that decision itself is not code and so is not a 'test' in the strict sense either. verify: status and flags kept. Added the one named test that proves a slice (GitOps applications point only at this repository); it does not cover the whole placement claim, so tested stays false. ci.yml job list completed (dependency-supply-chain and trunk were omitted)."
+    "notes": "Now held by a test: each artefact class resolves to a path, no submodules file exists, and no workflow checks out another repository."
   }
 ]
