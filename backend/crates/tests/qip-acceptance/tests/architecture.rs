@@ -2387,3 +2387,41 @@ fn nothing_that_moves_capital_can_reach_a_language_model() {
         );
     }
 }
+
+/// RISK-031: the Risk Gate produces verdicts with no Redis, because nothing
+/// that holds it can reach the crate that owns the Redis client.
+///
+/// An in-tree RESP client exists (`qip_storage::redis`), so "Redis is not on
+/// the dependency allowlist" is not why the gate is Redis-free. If a gate
+/// crate gained an edge to `qip-storage`, a memorystore-backed process would
+/// fail its storage preflight and the gate would return no verdict at all.
+#[test]
+fn the_risk_gate_and_everything_that_holds_it_cannot_reach_the_redis_client() {
+    let graph = dependency_graph();
+    // Premise first: the client's crate exists and something does reach it,
+    // otherwise absence below is vacuous.
+    assert!(
+        graph.contains_key("qip-storage"),
+        "qip-storage is not a crate here"
+    );
+    assert!(
+        reachable_from(&graph, "qip-api").contains("qip-storage"),
+        "no composition root reaches qip-storage, so this test proves nothing"
+    );
+    for gate_holder in [
+        "qip-risk",
+        "qip-risk-engine",
+        "qip-execution-engine",
+        "qip-edge",
+    ] {
+        assert!(
+            graph.contains_key(gate_holder),
+            "{gate_holder} is not a crate in this workspace"
+        );
+        let reachable = reachable_from(&graph, gate_holder);
+        assert!(
+            !reachable.contains("qip-storage"),
+            "{gate_holder} can reach the Redis client crate qip-storage: {reachable:?}"
+        );
+    }
+}

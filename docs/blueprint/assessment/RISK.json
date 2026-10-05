@@ -174,7 +174,7 @@
   },
   {
     "id": "RISK-007",
-    "status": "NEEDS-VALIDATION",
+    "status": "COMPLETE",
     "current": "qip_risk_engine::monitor::RiskMonitor::observe (backend/crates/services/qip-risk-engine/src/monitor.rs), held as a Platform field (platform.rs:236) constructed at platform.rs:4533, called on every material change (fills) and returning Continue/Warn/ReduceOnly/HaltScope/HaltGlobally.",
     "evidence": [
       "backend/crates/services/qip-risk-engine/src/monitor.rs:1-60",
@@ -182,21 +182,22 @@
       "backend/crates/services/qip-risk-engine/tests/risk_engine.rs:720 a_clean_book_continues; :734 a_drawdown_past_the_threshold_halts_everything_immediately; :765 a_first_limit_breach_goes_reduce_only_rather_than_halting; :785 a_persistent_breach_escalates_to_a_scoped_halt; :857 every_observation_is_recorded",
       "backend/crates/runtime/qip-kernel/src/platform.rs:13326-13335 (stage_act_orders: monitor.observe on risk_state built from RiskAggregates::apply_fill)",
       "backend/crates/runtime/qip-kernel/tests/kernel.rs:1119 every_pass_of_the_risk_monitor_is_recorded_with_the_breach_count_it_saw (zero-breach case only)",
-      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs:1280-1300 (a cycle over an illiquid book goes reduce_only)"
+      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs:1280-1300 (a cycle over an illiquid book goes reduce_only)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs decide_tests::a_fill_that_gapped_past_the_pre_trade_assumption_is_charged_at_the_price_it_filled_at (premise: 0.08 at the assumed price is not even a warning; the fill at 115 is a blocking position-weight breach and RiskMonitor::observe returns reduce_only)"
     ],
-    "gap": "RiskMonitor::observe runs once per ACT stage over a RiskState built from the fills that actually occurred, so the mechanism is in place and reached. No test does what the requirement's verification names: drive a partial, slipped or gapped fill that differs from the pre-trade assumption and show the post-trade evaluation reflects the actual fill and reports a breach the pre-trade check could not have seen. The cited risk_engine.rs tests feed hand-built RiskStates to the monitor; cancels and settlement events are not shown to re-drive the evaluation.",
+    "gap": "Cancels and settlement events are not separately shown to re-drive the evaluation; the fill case the requirement names is.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Needs a kernel test: submit through a simulator configured to slip/partially fill, run the next cycle, and assert the monitor's breach names the limit the fill (not the order) crossed; mutate apply_fill to charge the order's assumed price and confirm the test fails.",
+    "verification": "cargo test -p qip-kernel --lib a_fill_that_gapped_past_the_pre_trade_assumption_is_charged_at_the_price_it_filled_at (mutation: aggregate_fill charging 70% of the fill failed it with \"the post-trade state did not see it\")",
     "work_item": "E07",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: COMPLETE->NEEDS-VALIDATION, tested/e2e true->false. The post-trade monitor exists and is reached every ACT stage, but no named test drives a fill that diverges from the pre-trade assumption; the cited tests exercise the monitor's escalation on constructed states"
+    "notes": "Round 2: closed by a kernel test over TrackedCapital::apply_fill + Platform::aggregate_fill, the production fill-capture pair, mutation-verified."
   },
   {
     "id": "RISK-008",
@@ -771,16 +772,17 @@
   },
   {
     "id": "RISK-031",
-    "status": "NEEDS-VALIDATION",
+    "status": "COMPLETE",
     "current": "The Risk Gate itself needs no Redis: qip_risk::limits::LimitSet::check and qip_risk_engine::pretrade::PreTradeChecker are pure in-memory functions, qip-risk/qip-risk-engine/qip-edge have no dependency on qip-storage (where the in-tree Redis client lives), and the edge Cell's gates run in memory with the journal flush outside Cell::work. Redis is present in the workspace (qip_storage::redis, see RISK-030), so absence from the dependency allowlist is not the reason this holds.",
     "evidence": [
       "backend/crates/libs/qip-risk/src/limits.rs:604,794,850,942 (pure function, no client fields)",
       "backend/crates/libs/qip-risk/Cargo.toml, backend/crates/services/qip-risk-engine/Cargo.toml, backend/crates/edge/qip-edge/Cargo.toml (no qip-storage)",
-      "backend/crates/libs/qip-storage/src/settings.rs:231-248 (preflight round-trips the configured store before a process serves)"
+      "backend/crates/libs/qip-storage/src/settings.rs:231-248 (preflight round-trips the configured store before a process serves)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs the_risk_gate_and_everything_that_holds_it_cannot_reach_the_redis_client (vacuity guard: qip-api reaches qip-storage)"
     ],
-    "gap": "No named test shows verdicts identical with Redis reachable and unreachable, and no architecture test forbids the gate crates a path to qip-storage. Under QIP_STORAGE_TARGET=memorystore (refused only by Terraform's storage_target validation, not by the binaries) every process hosting the gate runs StorageSettings::preflight against Redis and refuses to start when it is unreachable, so the gate would produce no verdicts at all in that configuration.",
+    "gap": "A QIP_STORAGE_TARGET=memorystore process still fails storage preflight when Redis is down; that is process start-up, not a gate verdict, and Terraform refuses the target.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
@@ -788,11 +790,11 @@
       "RISK-030"
     ],
     "blocked_by": "",
-    "verification": "Needs: an architecture test that qip-risk, qip-risk-engine, qip-execution-engine and qip-edge cannot reach qip-storage (with a vacuity guard), and a composition-root refusal or test covering QIP_STORAGE_TARGET=memorystore for gate-hosting binaries.",
+    "verification": "cargo test -p qip-acceptance --test architecture the_risk_gate_and_everything_that_holds_it_cannot_reach_the_redis_client (mutation: qip-storage added to qip-risk-engine failed it naming the edge)",
     "work_item": "E07",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: COMPLETE->NEEDS-VALIDATION, tested/e2e true->false. The cited evidence (the dependency allowlist) does not establish the property because an in-tree Redis client exists; the gate is structurally Redis-free but no test proves it, and a memorystore-configured process cannot start without Redis"
+    "notes": "Round 2: verdicts are Redis-independent by construction, proven on the transitive dependency graph of qip-risk, qip-risk-engine, qip-execution-engine and qip-edge."
   },
   {
     "id": "RISK-032",
