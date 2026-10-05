@@ -294,15 +294,15 @@
   },
   {
     "id": "QUANT-014",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "No guard exists, but the surface the prohibition protects partly does: qip_reasoning_engine::evidence::Evidence carries a public `reliability` field documented as 'how much to trust it' (evidence.rs:199-200), EvidenceSet groups by originating source for corroboration, and qip-mesh holds an L0 immutable EvidenceStore. Today neither qip-reasoning-engine nor qip-mesh reaches qip-quantum and qip-quantum reaches neither (cargo tree -e normal: 0 matches each; qip-quantum depends only on qip-core, qip-numerics, qip-transport), so the prohibition holds by absence - but qip-kernel reaches both qip-quantum and qip-reasoning-engine, and Evidence.reliability is a public field, so nothing structural stops a kernel change from writing a quantum output into trust.",
     "evidence": [
       "backend/crates/services/qip-reasoning-engine/src/evidence.rs:184-200 (Evidence, pub reliability)",
       "backend/crates/libs/qip-quantum/Cargo.toml [dependencies] (qip-core, qip-numerics, qip-transport only)"
     ],
-    "gap": "No test pins the absence. An architecture-graph test in QUANT-004's pattern (qip-quantum cannot reach qip-reasoning-engine/qip-mesh evidence writers, and vice versa, with a vacuity anchor) is buildable now against the existing evidence crates and does not need the Evidence & Truth Fabric; the kernel-side seam (a quantum result never becomes an Evidence or changes its reliability) needs a unit test at the kernel. The second half of the verification (feeding a quantum clustering result through the pipeline) waits on QUANT-013.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Structural half closed: qip-acceptance architecture test a_quantum_solver_and_the_evidence_writers_cannot_reach_each_other proves qip-quantum and qip-reasoning-engine/qip-mesh cannot reach each other (mutation: adding qip-reasoning-engine to qip-quantum's dependencies fails it). Still open: the kernel-side unit test that a quantum clustering result leaves every Evidence's reliability unchanged, which waits on QUANT-013.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -310,7 +310,7 @@
       "QUANT-013"
     ],
     "blocked_by": "",
-    "verification": "no test; once an evidence store exists, would need an architecture-graph test (QUANT-004's pattern) proving no writer reachable from qip-quantum can set its authenticity/trust fields, plus a unit test feeding a quantum clustering result through the evidence pipeline and asserting every item's authenticity/confidence is unchanged",
+    "verification": "cargo test -p qip-acceptance --test architecture evidence_writers: 1 passed",
     "work_item": "E08",
     "tier": "T2",
     "size": "M",

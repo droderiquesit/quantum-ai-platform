@@ -242,7 +242,7 @@
   },
   {
     "id": "QUANT-030",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip_optimization_engine::router::ComputeRouter::solve (backend/crates/services/qip-optimization-engine/src/router.rs:290-394): always solves the classical baseline first, attempts quantum only where warranted, and its selection arm (router.rs:329-383) returns the classical answer for every one of: an infeasible/non-finite quantum answer (router.rs:331-339), a tie or an improvement inside the required margin (router.rs:357-368, quantum_note literally 'a tie is not evidence'), and a quantum solve that errors (router.rs:304-324, 'the quantum attempt failed ... so the classical baseline stands'). Reached from production via qip_portfolio_engine::construction::PortfolioConstructor::size (construction.rs:159,163,343,366) and qip_kernel::platform (platform.rs:167,4323, 4331-area), which every deployed app (api/cli/deepbrain/fastbrain) composes.",
     "evidence": [
       "backend/crates/services/qip-optimization-engine/src/router.rs:290-394",
@@ -254,7 +254,7 @@
       "test: a_genuinely_better_feasible_quantum_answer_is_used_and_the_gain_is_measured (optimization.rs:461-524)",
       "test: a_failed_quantum_attempt_leaves_the_classical_answer_standing (optimization.rs:526-561)"
     ],
-    "gap": "(1) The verification names four cases. Three have tests (tie, infeasible, provider failure); 'inside the margin' has none. The skeptic mutation-checked this in a scratch copy of backend/ (the shared checkout was not touched): changing router.rs:346 from `if improvement > self.policy.quantum_margin` to `if improvement > 0.0`, which deletes the margin entirely, left every qip-optimization-engine test passing (10+16+48+24, the four cited tests included). The tie test hands the quantum path exactly the baseline's answer (improvement 0.0), and the positive test uses a 0.0001 margin. The margin is the rule this row exists for, and no test would notice it gone. The non-finite-weights half of SolverRun::is_usable (router.rs:89-91) is also untested; otherwise 'failing validation' is the same feasibility arm as 'infeasible'. (2) No deployed composition root ever attaches a quantum provider. qip-api, qip-fastbrain and qip-deepbrain build PlatformConfig::default() (quantum_enabled: false, qip-kernel/src/config.rs:534), and only qip-cli's --config JSON can set it, so the loss arms (router.rs:329-383) never execute in a deployable process. (3) SolverRoutingJournal (platform.rs:2650-2680) journals chosen/ran/objectives/quantum_note but not the rationale. The reason the classical path won reaches the log only as free text inside the proposal description (qip-portfolio-engine/src/construction.rs:500-512).",
+    "gap": "Closed: the inside-the-margin case now has a test. Residual, not part of the requirement's unit check: no deployed composition root attaches a quantum provider (deployable stays false) and SolverRoutingJournal does not carry the rationale as a field.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -262,7 +262,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-optimization-engine --test optimization: 24 passed, run by the skeptic on 2026-09-25 in a scratch copy. This proves the tie, infeasible and failed-provider cases. Test to write: a quantum answer better than the baseline by less than the margin (e.g. 0.5% at a 1% margin) is refused, with 'inside the' margin wording in the rationale. Mutation-verify it against the `> 0.0` mutation above, which it must kill.",
+    "verification": "cargo test -p qip-optimization-engine --test optimization: 26 passed (a_feasible_quantum_answer_better_by_less_than_the_margin_loses_to_the_classical_baseline). Mutation: router.rs `improvement > self.policy.quantum_margin` -> `improvement > 0.0` fails that test (25 passed, 1 failed), restored byte-for-byte, 26 passed.",
     "work_item": "E10",
     "tier": "T0",
     "size": "S",
@@ -376,14 +376,14 @@
   },
   {
     "id": "QUANT-035",
-    "status": "MISSING",
+    "status": "PARTIAL",
     "current": "nothing",
     "evidence": [
       "infrastructure/terraform/modules/trust-zones/main.tf:112-124 (the only admission control that exists: a zone-level 'ibm-quantum' egress purpose, not a job-class filter)"
     ],
-    "gap": "No admission check for job class (optimisation/hypothesis-search/QML-research) or for synchronous-vs-asynchronous eligibility exists anywhere (grep for JobClass/synchronous/async_eligible in qip-quantum/src/provider.rs found only the polling-loop machinery for an already-submitted job, not an admission gate). The only thing narrowing access today is the trust-zone module's 'optimisation' egress-purpose name, which is a network-zone label, not a job-class enumeration, and there is no zone at all for hypothesis/search or QML research specifically.",
-    "implemented": false,
-    "tested": false,
+    "gap": "qip_quantum::foundry::admit_job refuses a synchronous job and any class outside optimisation/hypothesis-search/quantum-ml-research, naming the eligible classes. No Quantum Gateway exists to call it, so it is unintegrated; the 'all benchmark-gated' half is not enforced by it.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -391,7 +391,7 @@
       "QUANT-032"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Test to write (integration): a job of each eligible class is accepted; a job of any other class, or one flagged synchronous, is refused with a reason naming the eligible classes.",
+    "verification": "cargo test -p qip-quantum --test foundry: 7 passed (a_job_of_each_eligible_class_is_admitted_and_anything_else_is_refused_naming_the_classes). Mutations: synchronous refusal disabled, and class match changed to starts_with, each fail the test; restored.",
     "work_item": "E10",
     "tier": "T2",
     "size": "M",

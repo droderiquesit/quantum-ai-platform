@@ -112,3 +112,31 @@ fn a_not_built_record_needs_a_reason_and_a_family_cannot_be_accounted_for_twice(
     assert!(f.register(FamilyKind::GraphSearch, &complete()).is_err());
     Ok(())
 }
+
+#[test]
+fn a_job_of_each_eligible_class_is_admitted_and_anything_else_is_refused_naming_the_classes() {
+    use qip_quantum::foundry::{JobClass, admit_job};
+    assert_eq!(JobClass::ALL.len(), 3, "premise: three eligible classes");
+    for class in JobClass::ALL {
+        assert_eq!(admit_job(class.name(), false).ok(), Some(class));
+    }
+    // Substring trap: "optimisation" is a substring of "optimisation-live"
+    // and must not match it.
+    for bad in ["trading", "optimisation-live", "", "Optimisation"] {
+        let refusal = admit_job(bad, false).unwrap_err();
+        for class in JobClass::ALL {
+            assert!(
+                refusal.message().contains(class.name()),
+                "{bad}: {}",
+                refusal.message()
+            );
+        }
+    }
+    let sync = admit_job("optimisation", true).unwrap_err();
+    assert!(sync.message().contains("synchronous"), "{}", sync.message());
+    assert!(
+        sync.message().contains("hypothesis-search"),
+        "{}",
+        sync.message()
+    );
+}

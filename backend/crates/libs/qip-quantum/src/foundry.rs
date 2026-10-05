@@ -184,3 +184,52 @@ impl Foundry {
         Ok(f)
     }
 }
+
+/// The three job classes the Quantum Gateway admits (QUANT-035). A job outside
+/// them is refused rather than defaulted into the nearest one, because a class
+/// is what decides which benchmark gates the job answers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum JobClass {
+    Optimisation,
+    HypothesisSearch,
+    QuantumMlResearch,
+}
+
+impl JobClass {
+    pub const ALL: [JobClass; 3] = [
+        JobClass::Optimisation,
+        JobClass::HypothesisSearch,
+        JobClass::QuantumMlResearch,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            JobClass::Optimisation => "optimisation",
+            JobClass::HypothesisSearch => "hypothesis-search",
+            JobClass::QuantumMlResearch => "quantum-ml-research",
+        }
+    }
+}
+
+/// Admission filter for a gateway job. Refuses a synchronous job (a caller that
+/// needs the answer inline would make execution depend on a queue it does not
+/// control, QUANT-008) and any class outside [`JobClass::ALL`]; both refusals
+/// name the eligible classes so the caller knows what to ask for instead.
+///
+/// Matching is on the whole delimited name, never a substring.
+pub fn admit_job(class: &str, synchronous: bool) -> Result<JobClass> {
+    let eligible = JobClass::ALL.map(JobClass::name).join(", ");
+    if synchronous {
+        return Err(Error::denied(format!(
+            "a synchronous quantum job is refused; submit it asynchronously as one of: {eligible}"
+        )));
+    }
+    JobClass::ALL
+        .into_iter()
+        .find(|c| c.name() == class)
+        .ok_or_else(|| {
+            Error::denied(format!(
+                "job class {class:?} is not admitted; the eligible classes are: {eligible}"
+            ))
+        })
+}
