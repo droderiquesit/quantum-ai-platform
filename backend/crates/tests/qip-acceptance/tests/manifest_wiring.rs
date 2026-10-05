@@ -1146,6 +1146,21 @@ const REPRICING_IS_A_PER_NODE_DECISION_NOT_A_DEFAULT: &str = "Absent, a resting 
      replacement of an order no venue holds. Setting it is the runbook's \
      per-node act when a node is brought up against a book whose tick is known.";
 
+/// Each venue's own message limits, which no environment can state.
+const A_VENUES_LIMITS_ARE_THE_VENUES_NOT_AN_ENVIRONMENTS: &str = "Absent, every \
+     venue a node holds runs the cell's default message ceiling with a \
+     message-to-trade monitor that narrows and does not refuse, and the node \
+     says so venue by venue at start-up. `QIP_VENUE_QUOTE_LIMITS` is \
+     `<venue>=<burst>:<per second>:<withdrawal reserve>:<narrowed reserve>:\
+     <messages per trade>:<window>:<ratio interval ms>` — a venue's own rate \
+     and ratio, which are that venue's rule and not a property of an \
+     environment: one figure in every node's template would be too loose for \
+     the strict venue and too tight for the lenient one, which is the defect \
+     the per-venue form exists to remove. The only order entry any node \
+     reaches is the in-process simulator, which enforces no limit of its own, \
+     so there is no figure to write yet. Setting it is the runbook's per-node \
+     act when a node is brought up against a venue whose limits are known.";
+
 /// A seed, whose default is derived and whose override is for reproduction.
 const A_SEED_IS_DERIVED_NOT_DEPLOYED: &str = "The seed is derived from the \
      node's own identity so that two cells do not retry in lockstep, and the \
@@ -1488,6 +1503,11 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "qip-edge-node",
         "QIP_REPRICE",
         REPRICING_IS_A_PER_NODE_DECISION_NOT_A_DEFAULT,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_VENUE_QUOTE_LIMITS",
+        A_VENUES_LIMITS_ARE_THE_VENUES_NOT_AN_ENVIRONMENTS,
     ),
     (
         "qip-fastbrain",

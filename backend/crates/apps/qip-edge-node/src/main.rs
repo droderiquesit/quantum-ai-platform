@@ -61,6 +61,7 @@ use qip_edge_node::halt::{FLAG_VARIABLE, HaltFlag};
 use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
+use qip_edge_node::quote_limits::{QUOTE_LIMITS_VARIABLE, VenueQuoteLimits};
 use qip_edge_node::reprice::{REPRICE_VARIABLE, Requoter, parse_reprice};
 use qip_edge_node::share::RegionShareStatus;
 use qip_edge_node::strategies::{
@@ -173,6 +174,12 @@ struct NodeConfig {
     /// venues are at home — every node deployed so far — and is announced at
     /// start-up rather than assumed; see `qip_edge_node::cross_region`.
     mirror: Option<CrossRegionMirror>,
+    /// Each venue's own message rate and message-to-trade ratio (EXEC-004).
+    /// Empty is every venue on the cell's fallback ceiling, announced venue
+    /// by venue at start-up; an entry that is malformed, or names a venue
+    /// outside `QIP_VENUES`, stops the process — see
+    /// `qip_edge_node::quote_limits`.
+    quote_limits: VenueQuoteLimits,
 }
 
 impl NodeConfig {
@@ -280,6 +287,12 @@ impl NodeConfig {
             &region,
             &venues,
         )?;
+        // Read against the venue list for the same reason the mirror is: a
+        // limit stated for a venue this cell may not trade binds nothing.
+        let quote_limits = VenueQuoteLimits::read(
+            std::env::var(QUOTE_LIMITS_VARIABLE).ok().as_deref(),
+            &venues,
+        )?;
         if reprice.is_some() && feed.is_none() {
             return Err(Error::invalid(format!(
                 "configuration: {REPRICE_VARIABLE} is set and {FEED_VARIABLE} is not; a node \
@@ -306,6 +319,7 @@ impl NodeConfig {
             plan_path,
             reprice,
             mirror,
+            quote_limits,
         })
     }
 }
@@ -357,6 +371,22 @@ fn run() -> Result<()> {
     let mut cell_config = CellConfig::new(&config.cell_id, &config.region);
     for venue in &config.venues {
         cell_config = cell_config.with_venue(venue.clone());
+    }
+    // EXEC-004. Until this line every node ran one default budget on every
+    // venue, so a venue's own rate and ratio were found out when the venue
+    // enforced them. Stated limits refuse before the gateway is called; a
+    // venue with none keeps the fallback ceiling, and that is said by name
+    // rather than left to be assumed.
+    let cell_config = config.quote_limits.apply(cell_config);
+    for line in config.quote_limits.banner_lines() {
+        println!("{line}");
+    }
+    for venue in config.quote_limits.unstated(&config.venues) {
+        println!(
+            "qip-edge-node: awaiting {QUOTE_LIMITS_VARIABLE} for {venue}: without it this venue \
+             runs the cell's default message ceiling, which is no venue's stated limit, and \
+             its message-to-trade ratio narrows quoting without refusing it"
+        );
     }
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
 

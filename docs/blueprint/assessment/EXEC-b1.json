@@ -88,17 +88,18 @@
   },
   {
     "id": "EXEC-004",
-    "status": "PARTIAL",
-    "current": "qip_edge::quoting::{QuoteBudget, Admission, RateLimits, VenueBudgetState} (backend/crates/edge/qip-edge/src/quoting.rs:79,374,483,715) implements a token-bucket message budget per configured venue and a tumbling message-to-trade monitor with a withdrawal reserve. Cell spends it before any Placer call (cell.rs:3708-3710; refusal under GATE_QUOTE_BUDGET, cell.rs:164) and on requotes (Cell::requote_fundable/spend_requote, reached from qip-edge-node reprice.rs:575,607). Three things fall short of the requirement. (1) One RateLimits value (CellConfig::quote_limits, cell.rs:353) is applied identically to every venue a cell holds (QuoteBudget::new, cell.rs:1199), so there is no per-venue rate or ratio. (2) qip-edge-node never sets quote_limits (no reference anywhere in backend/crates/apps/qip-edge-node/src), so the only production composition always runs RateLimits::default() (cell.rs:402; quoting.rs:122), whose own doc says the numbers are 'not a claim about any venue'. (3) The message-to-trade bound never refuses a placement for exceeding the ratio. When a window closes over the bound, count_messages (quoting.rs:466) only raises the placement floor from withdrawal_reserve to narrowed_reserve (placement_floor, quoting.rs:238). The bucket keeps refilling at refill_per_second, so admit_all (quoting.rs:528) admits a stream with no trades at the full sustained rate indefinitely.",
+    "status": "COMPLETE",
+    "current": "Each venue is held to its own limits and both limits refuse before the gateway is called. qip_edge::cell::CellConfig::venue_quote_limits (set by with_venue_quote_limits, refused at assembly for a venue the cell does not hold) reaches qip_edge::quoting::QuoteBudget::per_venue, where every venue's bucket carries its own RateLimits; a venue with none keeps CellConfig::quote_limits. The rate half is the token bucket as before. The ratio half is RateLimits::refusing_at_ratio(interval): a placement that would take the messages the venue has been sent in the stated interval past messages_per_trade_bound x max(trades, 1) is refused in VenueBucket::placement_shortfall, the one predicate admit_all, admit_requote and requote_fundable all read, so the refusal lands before Cell::place_net, Cell::admit_cycle or Cell::spend_requote lets anything reach a Placer; it is journaled and counted under GATE_QUOTE_BUDGET with a reason naming the ratio. A withdrawal is never refused on the ratio but is counted in it. The held count is kept apart from the monitor's tumbling window and only the interval ending resets it (VenueBucket::roll_interval), so a stream of placements and cancels cannot earn itself a new allowance, and a venue the cell stopped trading at is quoted again once the interval has passed. qip-edge-node reads QIP_VENUE_QUOTE_LIMITS (qip_edge_node::quote_limits::VenueQuoteLimits::read: <venue>=<burst>:<per second>:<withdrawal reserve>:<narrowed reserve>:<messages per trade>:<window>:<ratio interval ms>, refusing a malformed entry, a venue outside QIP_VENUES and a venue stated twice) and main.rs applies it to the cell configuration before assemble(); a venue nobody stated limits for is announced at start-up as running the default ceiling.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/quoting.rs:79,374,483,715 (the budget); :122 (RateLimits::default); :238 (placement_floor); :466 (count_messages sets a narrowed flag, nothing else); :528 (admit_all refuses only below the floor)",
-      "backend/crates/edge/qip-edge/src/cell.rs:164,353,402,1199,3708-3710,7719",
-      "backend/crates/apps/qip-edge-node/src/reprice.rs:537,575,607; no quote_limits/RateLimits reference in backend/crates/apps/qip-edge-node/src",
-      "test a_net_is_refused_before_it_reaches_the_venue_once_the_quote_budget_is_spent (backend/crates/edge/qip-edge/tests/quoting.rs:275) -- the rate half",
-      "test a_window_that_closes_with_too_few_trades_narrows_quoting_and_not_withdrawing (backend/crates/edge/qip-edge/src/quoting.rs:875) -- narrowing, not a refusal at the ratio",
-      "test only_a_fill_the_venue_reported_counts_as_a_trade_against_the_message_to_trade_ratio (backend/crates/edge/qip-edge/tests/quoting.rs:625) -- the denominator only"
+      "backend/crates/edge/qip-edge/src/quoting.rs (RateLimits::refusing_at_ratio, ratio_allowance, VenueBucket::placement_shortfall, roll_interval, held_messages/held_trades, QuoteBudget::per_venue, limits_at)",
+      "backend/crates/edge/qip-edge/src/cell.rs (CellConfig::venue_quote_limits, with_venue_quote_limits, the stray-venue refusal in CellConfig::validate, Cell::quote_limits_at)",
+      "backend/crates/apps/qip-edge-node/src/quote_limits.rs (VenueQuoteLimits::read/apply/banner_lines/unstated); backend/crates/apps/qip-edge-node/src/main.rs (NodeConfig::quote_limits, config.quote_limits.apply(cell_config))",
+      "test quotes_driven_past_a_venues_own_rate_are_refused_before_the_gateway_is_called, quotes_with_fewer_trades_than_a_venues_ratio_allows_are_refused_before_the_gateway_is_called, a_stream_within_a_venues_own_rate_and_ratio_is_admitted_in_full, quote_limits_for_a_venue_the_cell_does_not_hold_are_refused_at_assembly (backend/crates/edge/qip-edge/tests/quoting.rs)",
+      "test a_node_refuses_quotes_past_the_venues_stated_rate_before_the_simulated_venue_sees_them, a_node_refuses_quotes_past_the_venues_stated_message_to_trade_ratio_before_the_simulated_venue_sees_them, a_node_sends_a_stream_within_the_venues_stated_rate_and_ratio_in_full, the_binary_reads_the_quote_limits_variable_and_applies_it_to_the_cell_it_assembles (backend/crates/apps/qip-edge-node/tests/pass.rs) -- the assembled node against the SimulatedGateway, limits read through the declaration",
+      "unit tests quoting::tests::{a_placement_past_a_venues_stated_ratio_is_refused_where_the_monitor_alone_admits_it, a_withdrawal_is_never_refused_on_the_ratio, a_stream_of_placements_and_cancels_with_no_trade_in_it_cannot_earn_itself_a_new_allowance, the_held_count_starts_again_after_its_interval_so_a_quiet_venue_is_quoted_again, each_venue_is_held_to_its_own_limits_and_a_venue_with_none_keeps_the_fallback} and quote_limits::tests::* in qip-edge-node",
+      "mutation-verified, each restored byte-for-byte: the ratio check disabled failed the cell test at 'the gateway was called past two messages' (5 vs 2) and the node test at 5 vs 2 submissions; per_venue ignoring a venue's own limits failed at 'the venue's own limits did not reach the budget' (4096 vs 3); the held count reset by the monitor's window failed the place-and-cancel test at 'eight messages and no trade earned a ninth'; an interval that never rolls failed the quiet-venue test; the stray-venue refusal removed failed its test; VenueQuoteLimits::apply made a no-op failed all three node tests at the premise; refusing_at_ratio dropped from the parser failed the node ratio test (5 vs 2); main.rs dropping the apply failed the source check"
     ],
-    "gap": "Per-venue configuration and a message-to-trade limit that refuses. The rate half is enforced before sending, but on one cell-wide default that no deployment configures. The ratio half narrows burst headroom instead of refusing the excess, so the requirement's check is not demonstrated: 'with fewer trades than its ratio allows ... the excess placements are refused before the adapter is called'.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -106,11 +107,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge quoting:: ; cargo test -p qip-edge --test quoting prove the bucket, the reserve and narrowing. Missing: per-venue RateLimits read from the node's configuration. Missing: a test that drives a zero-trade stream at a simulated venue and shows placements beyond the configured messages-per-trade bound refused before the Placer is called, beside a stream within both limits admitted in full.",
+    "verification": "cargo test -p qip-edge --lib quoting:: ; cargo test -p qip-edge --test quoting ; cargo test -p qip-edge-node --lib quote_limits:: ; cargo test -p qip-edge-node --test pass a_node_",
     "work_item": "E04-per-venue-quote-limits-and-ratio-refusal",
     "tier": "T1",
     "size": "M",
-    "notes": "deployable=false only because qip-edge-node, the sole binary that runs this path, is provisioned nowhere (execution_nodes = {} in dev/stage/test/prod terraform.tfvars) -- not because the control itself is incomplete. verify: COMPLETE -> PARTIAL; e2e true -> false. Three reasons. (1) RateLimits is one value per cell (cell.rs:353), not per venue. (2) qip-edge-node never sets it, so every deployment would run RateLimits::default(), which its own doc says is not any venue's limit. (3) The message-to-trade monitor raises the floor (count_messages/placement_floor) instead of refusing, and refill continues at the full rate, so the ratio is never a refusing limit. The cited tests prove the bucket and the narrowing, not a per-venue ratio refusal. e2e: the cited tests are in-process crate tests with test Placers, not a cross-process or cycle-level run."
+    "notes": "Completed. Three things a reader should not assume. (1) A venue with no entry in QIP_VENUE_QUOTE_LIMITS keeps the default ceiling and a ratio that narrows without refusing; that is announced per venue at start-up, and the variable is argued unset in manifest_wiring.rs's READ_BUT_NOT_SET because the only order entry any node reaches is the in-process simulator, which has no stated limit. Making the declaration mandatory per venue is one refusal in VenueQuoteLimits::read and was not done for that reason. (2) The ratio is read as messages <= bound x max(trades, 1) within the stated interval, placements and cancels both counted and only placements refused: a stream with no trade in it is therefore held to one trade's worth of messages per interval, not to zero, because otherwise no venue could be quoted for the first time. (3) Rate and ratio refusals share the quote_budget gate label; the reason says which limit fired. deployable=false only because qip-edge-node is provisioned nowhere (execution_nodes = {} in every environment). e2e=false: in-process tests, no cross-process run."
   },
   {
     "id": "EXEC-005",
@@ -162,26 +163,28 @@
   },
   {
     "id": "EXEC-007",
-    "status": "MISSING",
-    "current": "nothing. No code checks that a market-creation request has recorded venue, product and jurisdiction permission before proceeding. qip_execution_engine::origination::{OriginationRequest, OriginationMandate, ClassApproval} (backend/crates/services/qip-execution-engine/src/origination.rs:145,177,189,205) is an adjacent but different gate -- a business-approval mandate for quoting an instrument with no observable market, checked by instrument class, valuation confidence and an operator's ClassApproval -- not by venue/product/jurisdiction legal permission -- and it has zero production callers.",
+    "status": "COMPLETE",
+    "current": "qip_execution_engine::creation is the gate. CreationPermissions starts empty and has no other constructor; record() takes one CreationAuthority (Venue, Product, Jurisdiction) for one CreationRequest (action create/list/seed, venue, product, jurisdiction, matched exactly) with a mandatory evidence reference; admit() refuses a request lacking any of the three, naming every missing authority at once, and otherwise mints a CreationAdmission -- private fields, no Deserialize, no Default, one mint -- which is the only thing a create, list or seed operation may be written to demand. A permission covers one action: permission to list is not permission to seed. No Market Factory exists (EXEC-006 is BLOCKED), so nothing in production consumes an admission; the gate is built ahead of the capability it guards, as the requirement's own notes prescribe.",
     "evidence": [
-      "backend/crates/services/qip-execution-engine/src/origination.rs:145-260 (the adjacent, unrelated gate)",
-      "grep for OriginationMandate|OriginationRequest|ClassApproval in backend/crates/runtime/qip-kernel/src and backend/crates/apps/*/src returns no production hits",
-      "grep for creation-permission logic across backend/crates/libs/qip-compliance returns nothing"
+      "backend/crates/services/qip-execution-engine/src/creation.rs (CreationAuthority, CreationAction, CreationRequest, CreationPermissions::{record, missing, admit}, CreationAdmission)",
+      "test a_market_is_listed_at_a_simulated_venue_only_once_the_venue_the_product_rules_and_the_jurisdiction_all_permit_it (backend/crates/tests/qip-acceptance/tests/market_creation.rs) -- refused with nothing listed and no order entry at the SimulatedExchange as each of the three permissions is recorded in turn, then admitted and listed; the neighbouring seed action still refused",
+      "test a_creation_admission_has_one_mint_and_cannot_be_built_or_decoded_anywhere_else (same file) -- no Deserialize or Default derive, no public field, no constructor on the type, one literal in its module",
+      "unit tests creation::tests::{with_nothing_recorded_every_action_is_refused_naming_all_three_authorities, any_two_of_the_three_permissions_are_not_enough, a_permission_covers_one_action_venue_product_and_jurisdiction_and_nothing_beside_them, an_admission_carries_the_request_it_was_minted_for_and_each_authoritys_reference, a_permission_with_no_reference_or_a_request_that_names_nothing_is_refused}",
+      "mutation-verified, each restored byte-for-byte: the jurisdiction never asked for failed the acceptance test at the list of what is missing and four unit tests; the refusal dropped failed it at 'a market was listed without all three recorded permissions'; a permission read without its action failed the one-action unit test (0 missing vs 3); a second constructor and a public field each failed the one-mint guard"
     ],
-    "gap": "No refusal gate exists that checks recorded venue, product-rule and jurisdiction permission before a market-creation request. qip-execution-engine::origination is not a substitute: it gates a different decision (an operator sign-off to quote an already-conceptual instrument) with a different vocabulary (AbsenceCause, ClassApproval), not venue/product/jurisdiction law.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Missing: a test asserting a creation request with no recorded permission is refused before any adapter call, and admitted only once venue, product and jurisdiction permissions are all recorded. None exists because no such gate exists.",
+    "verification": "cargo test -p qip-acceptance --test market_creation ; cargo test -p qip-execution-engine --lib creation::",
     "work_item": "E17-market-creation-permission-gate",
     "tier": "T2",
     "size": "M",
-    "notes": "The requirement's own notes explain this is deliberately NOT scored BLOCKED even though EXEC-006 is: 'Flagging it would score the control BLOCKED and leave the capability it guards to be built first' -- the gate should exist ahead of the capability it will guard."
+    "notes": "Completed as a refusal, which is what the requirement is. integrated=false and that is exact: no composition root calls CreationPermissions::admit because no create, list or seed operation exists for it to stand in front of. The acceptance test's list_where_permitted is a test-local stand-in for that operation (admission first, venue second), not a Market Factory. Two existing listing functions stay ungated and are not market creation: SimulatedExchange::list and list_synthetic are the venue simulator modelling its own catalogue, the second reached from qip-edge-node's SimulatedGateway::ensure_listed. EXEC-027's architecture test has to draw that line when EXEC-006 is built; the Factory's operations must take a CreationAdmission. This is not qip_execution_engine::origination, which gates quoting an instrument with no observable market on a business approval."
   },
   {
     "id": "EXEC-008",
@@ -234,28 +237,27 @@
   {
     "id": "EXEC-010",
     "status": "PARTIAL",
-    "current": "qip_brokers::adapter::VenueAdapter trait (backend/crates/services/qip-brokers/src/adapter.rs:310) and AdapterClass enum with only Simulated/Sandbox variants (adapter.rs:63; refuses the string 'live' at deserialisation) form one execution seam. qip_edge::cell::Placer (backend/crates/edge/qip-edge/src/cell.rs:8051) is the only order-sending seam a Cell uses, and it names no broker. Concrete adapters: SimulatedExchange (exchange.rs:201), RestOrderEntryAdapter (rest.rs:450), DexVenue (dex.rs:76, model-only). The central Platform holds one Box<dyn Broker> (platform.rs:4370). But qip-edge-node, the one composition that runs VenueAdapter, opens exactly one order-entry gateway and one simulated feed, for config.venues.first() (backend/crates/apps/qip-edge-node/src/main.rs:406-440). Its own test says 'The node's order entry reaches one venue, so a cell configured for two can never be shown the second's account' (backend/crates/apps/qip-edge-node/tests/pass.rs:1655-1661), and a restarted two-venue node stays paused.",
+    "current": "The trait seams are real (qip_brokers::adapter::VenueAdapter over AdapterClass::{Simulated, Sandbox}; qip_edge::cell::Placer as the cell's only order-sending seam; the central Platform holds one Box<dyn Broker>) and the first half of the verification now has its architecture test: nothing_above_the_adapter_layer_names_a_concrete_venue_or_broker_type_except_where_one_is_composed reads every type the adapter layer implements Broker or VenueAdapter for out of the source, and asserts no production line outside qip-brokers and qip-execution-engine names one as a whole identifier, except in an application (a composition root) and in qip-kernel where the name is only imported or constructed. The second half is still false: qip-edge-node opens exactly one order-entry gateway and one simulated feed, for config.venues.first(), and run_pass is typed to one SimulatedGateway, so a second venue named in QIP_VENUES is never reached.",
     "evidence": [
-      "backend/crates/services/qip-brokers/src/adapter.rs:63,310",
-      "backend/crates/edge/qip-edge/src/cell.rs:8051",
-      "backend/crates/apps/qip-edge-node/src/main.rs:406-417 (one gateway, for config.venues.first())",
-      "test a_restarted_node_whose_second_venue_cannot_answer_keeps_refusing_rather_than_resuming (backend/crates/apps/qip-edge-node/tests/pass.rs:1655) -- its comment states the node reaches one venue",
-      "test every_class_this_crate_can_be_is_paper (backend/crates/services/qip-brokers/tests/safety.rs:264)",
-      "test no_configuration_deserialises_into_a_live_venue (backend/crates/services/qip-brokers/tests/safety.rs:240)"
+      "backend/crates/services/qip-brokers/src/adapter.rs (VenueAdapter, AdapterClass); backend/crates/edge/qip-edge/src/cell.rs (Placer)",
+      "test nothing_above_the_adapter_layer_names_a_concrete_venue_or_broker_type_except_where_one_is_composed (backend/crates/tests/qip-acceptance/tests/architecture.rs), mutation-verified and restored byte-for-byte: stringify!(SimulatedExchange) in qip-routing's production source and stringify!(SimulatedBroker) in qip-kernel's each failed it naming the line; the lookalike SimulatedExchangeRate did not, which is the delimited match working",
+      "backend/crates/apps/qip-edge-node/src/main.rs (gateway_venue = config.venues.first(); one NodeGateway::open, one SimulatedFeed::new); backend/crates/apps/qip-edge-node/src/pass.rs (run_pass takes one &mut SimulatedGateway and one &mut SimulatedFeed)",
+      "test a_restarted_node_whose_second_venue_cannot_answer_keeps_refusing_rather_than_resuming (backend/crates/apps/qip-edge-node/tests/pass.rs) -- its comment states the node's order entry reaches one venue",
+      "test every_class_this_crate_can_be_is_paper, no_configuration_deserialises_into_a_live_venue (backend/crates/services/qip-brokers/tests/safety.rs)"
     ],
-    "gap": "The trait seams are real, but the requirement's second property fails today. Adding a second venue to the edge composition takes a composition-root change (a second gateway and feed), not only configuration and an adapter. No architecture test checks either property: that nothing above the adapter layer names a venue or broker type, or that a venue is addable by configuration. backend/crates/tests/qip-acceptance/tests/architecture.rs has neither.",
+    "gap": "A second simulated venue cannot be added to the edge composition by configuration and an adapter alone. The node needs a gateway and a feed per configured venue, and run_pass, the requoter wrapper, the drop-copy drain and the venue-account read are each written against exactly one SimulatedGateway. Until that exists no test can add a venue through QIP_VENUES and show an order reaching it, which is the second assertion the requirement's verification names. The first assertion is now held by an architecture test.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Missing: an architecture.rs test walking the dependency graph and imports for a hard-coded venue or broker type above qip-brokers. Missing: a qip-edge-node test that adds a second simulated venue through QIP_VENUES alone and shows an order reaching it. Today the node cannot do this (main.rs:406).",
+    "verification": "cargo test -p qip-acceptance --test architecture nothing_above_the_adapter_layer . Missing: a qip-edge-node test that adds a second simulated venue through QIP_VENUES alone and shows an order reaching it; today the node cannot do this.",
     "work_item": "E04-multi-venue-node-gateway-and-venue-mesh-architecture-test",
     "tier": "T1",
     "size": "M",
-    "notes": "Master Phase 0 lists the venue adapter SDK as a foundation exit capability, hence P0. deployable=false because qip-edge-node, which links this trait's concrete adapters, is provisioned nowhere. verify: NEEDS-VALIDATION -> PARTIAL. NEEDS-VALIDATION presumes the code implements the requirement and only lacks a test, and it does not fully implement it. The node opens one gateway for config.venues.first() (main.rs:406), and pass.rs:1655's own comment says a second configured venue can never be reached. So 'a second simulated venue can be added with only configuration and an adapter' is false for the one composition that runs VenueAdapter. Cited lines verified: adapter.rs:63,310; cell.rs:8051; safety.rs:240,264."
+    "notes": "Blocked on nothing external: the remaining work is a per-venue gateway and feed in qip-edge-node (one SimulatedGateway per entry of QIP_VENUES behind one Placer that dispatches on the order's venue), which EXEC-015 and EXEC-034 also wait on. The architecture test's kernel allowance is asserted to be in use, so it is removed rather than left open if the kernel stops composing a broker. deployable=false because qip-edge-node is provisioned nowhere."
   },
   {
     "id": "EXEC-011",
@@ -283,14 +285,18 @@
   },
   {
     "id": "EXEC-012",
-    "status": "MISSING",
-    "current": "nothing. No native-order-type or session-feature extension mechanism exists anywhere in qip-brokers or qip-routing.",
+    "status": "COMPLETE",
+    "current": "The common contract carries a declared-extension mechanism and one simulated venue uses it. qip_brokers::adapter::VenueAdapter::native_extensions() declares a venue's NativeExtension list (empty by default); submit_native(ticket, order, &NativeInstruction, at) is a provided method that refuses an instruction naming an extension the adapter does not declare before the adapter's own code runs, and never downgrades it to submit_order; the adapter's submit_native_order carries a declared one, and its default refuses. The order is the same qip_execution_engine::order::Order every adapter takes, so EXEC-011's contract did not change. SimulatedExchange::with_post_only() gives the simulator a native post-only order type (POST_ONLY) the common OrderType lacks: through SimulatedExchange::take_order it is rate-limited, validated and admitted exactly as a plain order, and differs in one thing -- at a price that would take liquidity it is rejected with nothing traded and nothing resting, where the plain limit executes.",
     "evidence": [
-      "grep -n native backend/crates/services/qip-brokers/src/*.rs -> only dex.rs:345, an unrelated error-message comment naming an alternative"
+      "backend/crates/services/qip-brokers/src/adapter.rs (NativeExtension, NativeInstruction, VenueAdapter::{native_extensions, submit_native, submit_native_order})",
+      "backend/crates/services/qip-brokers/src/exchange.rs (POST_ONLY, SimulatedExchange::with_post_only, would_take, take_order)",
+      "test a_venues_native_post_only_order_reaches_it_through_a_declared_extension_and_keeps_its_native_meaning (backend/crates/services/qip-brokers/tests/exchange.rs) -- premise first: post_only is not a common order type and a plain limit at the offer fills; then the declared extension, a crossing post-only order rejected by the venue with no fill and no resting record, and one behind the touch resting with the side, quantity and price that were sent",
+      "test an_adapter_that_declares_no_native_extension_refuses_the_order_rather_than_sending_it_plain and a_post_only_instruction_on_an_order_with_no_price_is_refused_rather_than_sent_as_a_market_order (same file)",
+      "mutation-verified, each restored byte-for-byte: the declaration check skipped failed the second test on the refusal's wording; the venue's would-take check disabled failed the first at 'a post-only order at the offer was executed as a plain limit'; the venue not declaring the type failed all three; the instruction dropped on an unpriced order failed the third at 'a post-only market order was sent'"
     ],
-    "gap": "The common VenueAdapter contract has no declared-extension mechanism at all, so there is nothing to keep a venue-native feature reachable through -- the requirement's whole premise (a feature stays reachable as a declared extension rather than being dropped) is unbuilt.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -298,11 +304,11 @@
       "EXEC-011"
     ],
     "blocked_by": "",
-    "verification": "Missing entirely.",
+    "verification": "cargo test -p qip-brokers --test exchange -- post_only native",
     "work_item": "E04-venue-native-feature-extension",
     "tier": "T2",
     "size": "L",
-    "notes": "The requirement itself notes this becomes testable only with a second venue (Phase 3); the extension mechanism should still be part of the Phase 0 adapter SDK so adding native features later does not change EXEC-011's contract."
+    "notes": "Completed for the mechanism and the requirement's own check. integrated=false: no production caller sends a native instruction, because the cell's Placer seam carries a price and a quantity and no instruction, and qip-edge-node builds its SimulatedExchange without with_post_only. The mechanism's one entry point is order entry; a session-level native feature has no entry point and no adapter declares one, so the requirement's 'session feature' example is not exercised. RestOrderEntryAdapter and every other adapter declare nothing and so refuse every native instruction."
   },
   {
     "id": "EXEC-013",

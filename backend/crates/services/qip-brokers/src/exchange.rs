@@ -26,8 +26,9 @@
 //! same seed produce byte-identical fills.
 
 use crate::adapter::{
-    AdapterClass, CashBalance, Heartbeat, MarginState, MarketData, OrderAck, PositionSnapshot,
-    VenueAdapter, VenueOrder, VenueOrderState, stamp_simulated,
+    AdapterClass, CashBalance, Heartbeat, MarginState, MarketData, NativeExtension,
+    NativeInstruction, OrderAck, PositionSnapshot, VenueAdapter, VenueOrder, VenueOrderState,
+    stamp_simulated,
 };
 use crate::connection::{ConnectionState, ReadyTicket};
 use crate::credential::{
@@ -246,7 +247,19 @@ pub struct SimulatedExchange {
     /// What answering instructions has shown about this venue, for blueprint
     /// §34.4's observed rung. See [`ObservationTally`] for why it is boxed.
     tally: Box<ObservationTally>,
+    /// Whether this venue has a post-only order type of its own (EXEC-012).
+    /// Off unless [`SimulatedExchange::with_post_only`] turned it on: most
+    /// simulated venues model the common contract and nothing past it.
+    post_only: bool,
 }
+
+/// The simulated venue's native order type: a limit order that is rejected
+/// rather than executed if it would take liquidity on arrival.
+///
+/// The common contract has no word for it — `OrderType::Limit` crosses when
+/// its price reaches the touch — which is what makes it a native extension
+/// rather than a sixth common order type.
+pub const POST_ONLY: &str = "post_only";
 
 /// What this venue has observed about itself, as distinct from what it
 /// publishes.
@@ -337,7 +350,20 @@ impl SimulatedExchange {
             rates: RateLedger::new(),
             traded_notional: Decimal::ZERO,
             tally: Box::new(ObservationTally::new()),
+            post_only: false,
         }
+    }
+
+    /// Give this venue a native post-only order type (EXEC-012).
+    ///
+    /// A venue built without this declares no native extension and refuses
+    /// an order carrying one, which is the pair the requirement asks for: the
+    /// feature reachable where the venue has it, and refused — not sent as a
+    /// plain limit — where it does not.
+    #[must_use]
+    pub fn with_post_only(mut self) -> Self {
+        self.post_only = true;
+        self
     }
 
     pub fn settings(&self) -> ExchangeSettings {
@@ -815,6 +841,204 @@ impl SimulatedExchange {
     }
 }
 
+impl SimulatedExchange {
+    /// Whether a limit at `price` would take what is resting on arrival.
+    fn would_take(&self, order: &Order, price: Decimal) -> bool {
+        let Some(touch) = self.engine.best(&order.object_id, order.side.opposite()) else {
+            return false;
+        };
+        match order.side {
+            Side::Buy => price >= touch.price,
+            Side::Sell => price <= touch.price,
+        }
+    }
+
+    /// The venue's whole intake of one order, common or post-only.
+    ///
+    /// One body for both doors so a post-only order is rate-limited, counted,
+    /// validated and admitted exactly as a plain one is, and differs in one
+    /// thing only: where a plain limit that reaches the touch executes, a
+    /// post-only one is rejected with nothing traded and nothing resting.
+    fn take_order(
+        &mut self,
+        ticket: &ReadyTicket,
+        order: &Order,
+        at: Timestamp,
+        post_only: bool,
+    ) -> Result<OrderAck> {
+        self.connection.observe(at);
+        self.connection.authorise(ticket, at)?;
+        order.validate()?;
+        self.submitted = self.submitted.saturating_add(1);
+
+        // §34.1's rate limit, enforced by the venue rather than trusted to the
+        // sender. A real venue answers "too many" by dropping the session, and
+        // a simulator that accepted an unlimited burst would be a rehearsal for
+        // a venue that does not exist — the order path would meet its first
+        // rate refusal in a deployment.
+        let venue = self.venue.as_str().to_string();
+        let limits = self.settings.rate_limits;
+        if let Err(error) = self.rates.spend_order(&venue, &limits, at) {
+            self.rejected = self.rejected.saturating_add(1);
+            return Err(error);
+        }
+
+        let kind = order.order_type.as_str().to_string();
+        // The one refusal on this path attributable to the order's *type*:
+        // `limit_of` refuses an execution algorithm because it is one.
+        // Everything else here — an unlisted instrument, an off-lot size, a
+        // spent rate window — refuses a particular order and says nothing
+        // about its kind, so none of them feeds the rejected set. A refusal
+        // filed under a type nobody refused would teach the promotion ladder
+        // that the venue rejects `market`.
+        let limit = self.limit_of(order).inspect_err(|_| {
+            self.rejected = self.rejected.saturating_add(1);
+            self.tally.rejected_order_types.insert(kind.clone());
+        })?;
+        if let Err(error) = self.admit(order, limit) {
+            self.rejected = self.rejected.saturating_add(1);
+            return Err(error);
+        }
+        if post_only {
+            // The native semantics, applied by the venue and not by the
+            // caller: a caller that checked the touch itself and then sent a
+            // plain limit would be racing the book.
+            let Some(price) = limit else {
+                self.rejected = self.rejected.saturating_add(1);
+                return Err(Error::invalid(format!(
+                    "{} is a {} order and {POST_ONLY} is an instruction for a limit order: an \
+                     order with no price cannot be told to rest; send it as a limit",
+                    order.order_id.as_str(),
+                    order.order_type.as_str()
+                )));
+            };
+            if self.would_take(order, price) {
+                self.rejected = self.rejected.saturating_add(1);
+                return Err(Error::denied(format!(
+                    "{} rejected {POST_ONLY} order {}: a {} limit of {price} would take \
+                     liquidity on arrival, and a {POST_ONLY} order only ever rests. Nothing \
+                     traded and nothing rests; price it behind the touch or send a plain limit",
+                    self.venue.as_str(),
+                    order.order_id.as_str(),
+                    order.side.as_str()
+                )));
+            }
+        }
+        // The venue has taken it. Recorded on acceptance rather than on a
+        // fill, because a limit order that rests unfilled was still accepted
+        // and that is what the order-type check asks.
+        self.tally.accepted_order_types.insert(kind);
+
+        let round_trip = self.round_trip();
+        let landed = at.saturating_add(round_trip);
+        let outcome = self.engine.execute(
+            &order.object_id,
+            &order.order_id,
+            order.side,
+            order.quantity,
+            limit,
+            landed,
+            Participant::Client,
+        );
+
+        let mut fills = Vec::new();
+        // Collected first because booking a fill borrows the venue's books, and
+        // a trade can touch two client orders at once.
+        let trades = outcome.trades.clone();
+        for trade in &trades {
+            // The order being submitted is the one that crossed — a trade
+            // exists only because it took what was resting — so it pays the
+            // taker rate. The counterparty below provided the liquidity and
+            // pays the maker rate, which on a real schedule is frequently a
+            // rebate and is the whole reason the two are told apart.
+            let bookable = self.make_fill(
+                &order.order_id,
+                &order.object_id,
+                order.side,
+                trade.price,
+                trade.quantity,
+                Liquidity::Taker,
+                landed,
+            )?;
+            fills.push(bookable.fill.clone());
+            self.record(bookable)?;
+            if trade.maker_owner.is_client() {
+                let maker_side = order.side.opposite();
+                let maker_fill = self.make_fill(
+                    &trade.maker,
+                    &order.object_id,
+                    maker_side,
+                    trade.price,
+                    trade.quantity,
+                    Liquidity::Maker,
+                    landed,
+                )?;
+                self.record(maker_fill)?;
+                self.credit_maker(&trade.maker, trade.quantity, landed);
+            }
+        }
+
+        let remaining = order.quantity - outcome.filled;
+        let state = if remaining <= Decimal::ZERO {
+            VenueOrderState::Filled
+        } else if outcome.resting {
+            if outcome.filled > Decimal::ZERO {
+                VenueOrderState::PartiallyFilled {
+                    filled: outcome.filled,
+                }
+            } else {
+                VenueOrderState::Working
+            }
+        } else {
+            VenueOrderState::Cancelled {
+                reason: format!(
+                    "{remaining} of {} could not be taken immediately, and an unpriced order does \
+                     not rest",
+                    order.quantity
+                ),
+            }
+        };
+
+        let priority = self
+            .engine
+            .resting(&order.object_id, &order.order_id)
+            .map_or(0, |resting| resting.sequence);
+        self.orders.insert(
+            order.order_id.as_str().to_string(),
+            ExchangeOrder {
+                order_id: order.order_id.clone(),
+                object_id: order.object_id.clone(),
+                side: order.side,
+                original_quantity: order.quantity,
+                quantity: order.quantity,
+                filled: outcome.filled,
+                limit,
+                state: state.clone(),
+                revision: 0,
+                submitted_at: landed,
+                updated_at: landed,
+                priority,
+            },
+        );
+
+        stamp_simulated(&mut fills, self.is_simulated());
+        Ok(OrderAck {
+            order_id: order.order_id.clone(),
+            venue: self.venue.as_str().to_string(),
+            at: landed,
+            latency: round_trip,
+            detail: format!(
+                "{} filled of {}, {} remaining",
+                outcome.filled, order.quantity, remaining
+            ),
+            state,
+            fills,
+            remaining,
+            simulated: self.is_simulated(),
+        })
+    }
+}
+
 impl VenueAdapter for SimulatedExchange {
     fn venue_id(&self) -> &VenueId {
         &self.venue
@@ -929,151 +1153,40 @@ impl VenueAdapter for SimulatedExchange {
         order: &Order,
         at: Timestamp,
     ) -> Result<OrderAck> {
-        self.connection.observe(at);
-        self.connection.authorise(ticket, at)?;
-        order.validate()?;
-        self.submitted = self.submitted.saturating_add(1);
+        self.take_order(ticket, order, at, false)
+    }
 
-        // §34.1's rate limit, enforced by the venue rather than trusted to the
-        // sender. A real venue answers "too many" by dropping the session, and
-        // a simulator that accepted an unlimited burst would be a rehearsal for
-        // a venue that does not exist — the order path would meet its first
-        // rate refusal in a deployment.
-        let venue = self.venue.as_str().to_string();
-        let limits = self.settings.rate_limits;
-        if let Err(error) = self.rates.spend_order(&venue, &limits, at) {
-            self.rejected = self.rejected.saturating_add(1);
-            return Err(error);
+    fn native_extensions(&self) -> Vec<NativeExtension> {
+        if !self.post_only {
+            return Vec::new();
         }
+        vec![NativeExtension {
+            name: POST_ONLY.to_string(),
+            summary: "a limit order rejected rather than executed if it would take liquidity \
+                      on arrival"
+                .to_string(),
+        }]
+    }
 
-        let kind = order.order_type.as_str().to_string();
-        // The one refusal on this path attributable to the order's *type*:
-        // `limit_of` refuses an execution algorithm because it is one.
-        // Everything else here — an unlisted instrument, an off-lot size, a
-        // spent rate window — refuses a particular order and says nothing
-        // about its kind, so none of them feeds the rejected set. A refusal
-        // filed under a type nobody refused would teach the promotion ladder
-        // that the venue rejects `market`.
-        let limit = self.limit_of(order).inspect_err(|_| {
-            self.rejected = self.rejected.saturating_add(1);
-            self.tally.rejected_order_types.insert(kind.clone());
-        })?;
-        if let Err(error) = self.admit(order, limit) {
-            self.rejected = self.rejected.saturating_add(1);
-            return Err(error);
+    fn submit_native_order(
+        &mut self,
+        ticket: &ReadyTicket,
+        order: &Order,
+        instruction: &NativeInstruction,
+        at: Timestamp,
+    ) -> Result<OrderAck> {
+        // `submit_native` has already refused a name this venue did not
+        // declare, so the only name that reaches here is the one below. It
+        // is checked again because this method is on a public trait and an
+        // instruction this venue cannot carry must never be sent plain.
+        if !self.post_only || instruction.extension != POST_ONLY {
+            return Err(Error::denied(format!(
+                "{} has no native extension {}; the order was not sent",
+                self.venue.as_str(),
+                instruction.extension
+            )));
         }
-        // The venue has taken it. Recorded on acceptance rather than on a
-        // fill, because a limit order that rests unfilled was still accepted
-        // and that is what the order-type check asks.
-        self.tally.accepted_order_types.insert(kind);
-
-        let round_trip = self.round_trip();
-        let landed = at.saturating_add(round_trip);
-        let outcome = self.engine.execute(
-            &order.object_id,
-            &order.order_id,
-            order.side,
-            order.quantity,
-            limit,
-            landed,
-            Participant::Client,
-        );
-
-        let mut fills = Vec::new();
-        // Collected first because booking a fill borrows the venue's books, and
-        // a trade can touch two client orders at once.
-        let trades = outcome.trades.clone();
-        for trade in &trades {
-            // The order being submitted is the one that crossed — a trade
-            // exists only because it took what was resting — so it pays the
-            // taker rate. The counterparty below provided the liquidity and
-            // pays the maker rate, which on a real schedule is frequently a
-            // rebate and is the whole reason the two are told apart.
-            let bookable = self.make_fill(
-                &order.order_id,
-                &order.object_id,
-                order.side,
-                trade.price,
-                trade.quantity,
-                Liquidity::Taker,
-                landed,
-            )?;
-            fills.push(bookable.fill.clone());
-            self.record(bookable)?;
-            if trade.maker_owner.is_client() {
-                let maker_side = order.side.opposite();
-                let maker_fill = self.make_fill(
-                    &trade.maker,
-                    &order.object_id,
-                    maker_side,
-                    trade.price,
-                    trade.quantity,
-                    Liquidity::Maker,
-                    landed,
-                )?;
-                self.record(maker_fill)?;
-                self.credit_maker(&trade.maker, trade.quantity, landed);
-            }
-        }
-
-        let remaining = order.quantity - outcome.filled;
-        let state = if remaining <= Decimal::ZERO {
-            VenueOrderState::Filled
-        } else if outcome.resting {
-            if outcome.filled > Decimal::ZERO {
-                VenueOrderState::PartiallyFilled {
-                    filled: outcome.filled,
-                }
-            } else {
-                VenueOrderState::Working
-            }
-        } else {
-            VenueOrderState::Cancelled {
-                reason: format!(
-                    "{remaining} of {} could not be taken immediately, and an unpriced order does \
-                     not rest",
-                    order.quantity
-                ),
-            }
-        };
-
-        let priority = self
-            .engine
-            .resting(&order.object_id, &order.order_id)
-            .map_or(0, |resting| resting.sequence);
-        self.orders.insert(
-            order.order_id.as_str().to_string(),
-            ExchangeOrder {
-                order_id: order.order_id.clone(),
-                object_id: order.object_id.clone(),
-                side: order.side,
-                original_quantity: order.quantity,
-                quantity: order.quantity,
-                filled: outcome.filled,
-                limit,
-                state: state.clone(),
-                revision: 0,
-                submitted_at: landed,
-                updated_at: landed,
-                priority,
-            },
-        );
-
-        stamp_simulated(&mut fills, self.is_simulated());
-        Ok(OrderAck {
-            order_id: order.order_id.clone(),
-            venue: self.venue.as_str().to_string(),
-            at: landed,
-            latency: round_trip,
-            detail: format!(
-                "{} filled of {}, {} remaining",
-                outcome.filled, order.quantity, remaining
-            ),
-            state,
-            fills,
-            remaining,
-            simulated: self.is_simulated(),
-        })
+        self.take_order(ticket, order, at, true)
     }
 
     fn cancel_order(&mut self, order_id: &OrderId, at: Timestamp) -> Result<OrderAck> {

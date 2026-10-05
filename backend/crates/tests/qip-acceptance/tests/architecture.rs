@@ -2512,3 +2512,152 @@ fn a_quantum_solver_and_the_evidence_writers_cannot_reach_each_other() {
         "the kernel no longer composes both sides, so this boundary has moved"
     );
 }
+
+// --- EXEC-010: the venue mesh is not a broker-specific layer ----------------
+
+/// Where a concrete venue or broker type may be declared: the adapter layer.
+/// `qip-brokers` holds the venue adapters; `qip-execution-engine` declares
+/// the `Broker` port and the two reference brokers that ship beside it.
+const ADAPTER_LAYER: [&str; 2] = [
+    "backend/crates/services/qip-brokers",
+    "backend/crates/services/qip-execution-engine",
+];
+
+/// Every type the adapter layer implements a venue port for, read from its
+/// source rather than listed here. A list would go stale the day somebody
+/// added an adapter, and the new type would then be nameable anywhere
+/// without this file noticing.
+fn concrete_adapter_types() -> BTreeSet<String> {
+    let mut types = BTreeSet::new();
+    for layer in ADAPTER_LAYER {
+        for file in qip_acceptance::files_with_extension(&format!("{layer}/src"), "rs") {
+            let source = std::fs::read_to_string(&file).expect("readable source");
+            for line in qip_acceptance::production_text(&source).lines() {
+                for port in ["impl Broker for ", "impl VenueAdapter for "] {
+                    if let Some(rest) = line.strip_prefix(port) {
+                        let name: String = rest
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect();
+                        if !name.is_empty() {
+                            types.insert(name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    types
+}
+
+/// Whether `line` names `name` as a whole identifier. `SimulatedBroker` is a
+/// prefix of `SimulatedBrokerage` and a suffix of nothing today, and a
+/// substring match would decide this boundary on that accident.
+fn names_identifier(line: &str, name: &str) -> bool {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    line.match_indices(name).any(|(at, _)| {
+        let before = line[..at].chars().next_back();
+        let after = line[at + name.len()..].chars().next();
+        !before.is_some_and(is_word) && !after.is_some_and(is_word)
+    })
+}
+
+#[test]
+fn nothing_above_the_adapter_layer_names_a_concrete_venue_or_broker_type_except_where_one_is_composed()
+ {
+    // EXEC-010, the half a source scan can hold. Execution is a mesh of
+    // venues behind ports — `Broker`, `VenueAdapter`, the cell's `Placer` —
+    // and the failure this prevents is the layer above growing a branch on
+    // one of them: an order path that asks "is this the simulated exchange?"
+    // works for exactly the venues somebody remembered, and adding or
+    // removing a venue then changes code that was never meant to know venues
+    // exist.
+    //
+    // A concrete type has to be named *somewhere* or nothing would ever be
+    // built, so two places may: an application, which is a composition root
+    // and chooses its adapters; and the kernel, which composes the cycle and
+    // may import and construct its broker — and do nothing else with the
+    // name. Everything else names a port.
+    //
+    // What this does not show is the requirement's second sentence, that a
+    // second venue is addable by configuration alone. That is a property of
+    // `qip-edge-node`, which still opens one gateway for its first venue.
+    let types = concrete_adapter_types();
+    for expected in ["SimulatedExchange", "SimulatedBroker"] {
+        assert!(
+            types.contains(expected),
+            "the premise failed: the adapter layer's port implementations were not found \
+             (missing {expected} among {types:?}), so the scan below looks for nothing"
+        );
+    }
+
+    let mut offenders = Vec::new();
+    let mut scanned: BTreeMap<String, usize> = BTreeMap::new();
+    let mut composed_in_the_kernel = 0usize;
+    let root = repository_root();
+    for file in qip_acceptance::files_with_extension("backend/crates", "rs") {
+        let relative = file
+            .strip_prefix(&root)
+            .expect("a file under the repository root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !relative.contains("/src/") || ADAPTER_LAYER.iter().any(|l| relative.starts_with(l)) {
+            continue;
+        }
+        let crate_path: String = relative.split("/src/").next().unwrap_or("").to_string();
+        *scanned.entry(crate_path).or_default() += 1;
+        if relative.starts_with("backend/crates/apps/") {
+            continue;
+        }
+        let in_kernel = relative.starts_with("backend/crates/runtime/qip-kernel/");
+        let source = std::fs::read_to_string(&file).expect("readable source");
+        let mut in_use = false;
+        for line in qip_acceptance::production_text(&source).lines() {
+            let trimmed = line.trim_start();
+            let importing =
+                in_use || trimmed.starts_with("use ") || trimmed.starts_with("pub use ");
+            if importing {
+                in_use = !trimmed.contains(';');
+            }
+            for name in &types {
+                if !names_identifier(line, name) {
+                    continue;
+                }
+                let constructing = line.contains(&format!("{name}::new("));
+                if in_kernel && (importing || constructing) {
+                    composed_in_the_kernel += 1;
+                    continue;
+                }
+                offenders.push(format!("{relative}: {}", trimmed));
+            }
+        }
+    }
+
+    // The premise: the crates this is about were read. A crate moved out
+    // from under the scan reports zero offenders by being read zero times.
+    for layer in [
+        "backend/crates/edge/qip-edge",
+        "backend/crates/edge/qip-routing",
+        "backend/crates/runtime/qip-kernel",
+        "backend/crates/services/qip-risk-engine",
+    ] {
+        assert!(
+            scanned.get(layer).copied().unwrap_or_default() > 0,
+            "no production source was read under {layer}, so nothing is asserted of it"
+        );
+    }
+    // And the kernel's allowance is still in use. If the kernel stops
+    // composing a broker, the allowance above is a door left open for
+    // nothing and should go.
+    assert!(
+        composed_in_the_kernel > 0,
+        "the kernel no longer imports or constructs a concrete broker, so its allowance in \
+         this test is unused; remove the allowance rather than keep it"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a crate above the adapter layer names a concrete venue or broker type outside a \
+         composition site; name the port (`Broker`, `VenueAdapter`, `Placer`) instead, or \
+         compose the adapter in an application: {offenders:#?}"
+    );
+}

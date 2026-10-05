@@ -381,7 +381,21 @@ pub struct CellConfig {
     /// constructor that refuses an incoherent one, so this field being
     /// public cannot smuggle a budget past the checks the way
     /// `crossing_interval` can — the fields inside it are private.
+    ///
+    /// This is what a venue runs under when [`Self::venue_quote_limits`]
+    /// holds nothing for it.
     pub quote_limits: RateLimits,
+    /// The limits of each venue that has its own (EXEC-004).
+    ///
+    /// A message rate and a message-to-trade ratio are a venue's rule, so
+    /// one figure applied to every venue a cell holds is right for at most
+    /// one of them: too loose for the strict venue, which then enforces its
+    /// limit on the cell, or too tight for the lenient one. A venue absent
+    /// from this map keeps `quote_limits`, so the budget is still never
+    /// absent. An entry for a venue the cell was not configured for is
+    /// refused at assembly rather than ignored — it is a limit somebody
+    /// wrote that would bind nothing.
+    pub venue_quote_limits: BTreeMap<VenueId, RateLimits>,
     /// The spread in fill time a multi-venue cycle may carry (§32.1).
     /// Always in force, for the reason above.
     pub dispersion: DispersionPolicy,
@@ -449,6 +463,7 @@ impl CellConfig {
             venue_regions: BTreeMap::new(),
             crossing_interval: None,
             quote_limits: RateLimits::default(),
+            venue_quote_limits: BTreeMap::new(),
             dispersion: DispersionPolicy::default(),
             decomposition: DecompositionPolicy::default(),
             journal_wire: false,
@@ -601,7 +616,29 @@ impl CellConfig {
         if let Some(interval) = self.crossing_interval {
             Self::check_crossing_interval(interval)?;
         }
+        if let Some(stray) = self
+            .venue_quote_limits
+            .keys()
+            .find(|venue| !self.venues.contains(venue))
+        {
+            return Err(Error::invalid(format!(
+                "cell {} was given quote limits for {}, which is not a venue it was configured \
+                 for; the limit would bind nothing while reading as one, so name the venue in \
+                 QIP_VENUES or remove its limits",
+                self.cell_id,
+                stray.as_str()
+            )));
+        }
         Ok(())
+    }
+
+    /// Hold `venue` to its own message limits rather than the cell's
+    /// fallback (EXEC-004). The venue must be one this cell was configured
+    /// for; [`Self::validate`] refuses the entry otherwise.
+    #[must_use]
+    pub fn with_venue_quote_limits(mut self, venue: VenueId, limits: RateLimits) -> Self {
+        self.venue_quote_limits.insert(venue, limits);
+        self
     }
 
     pub fn with_venue(mut self, venue: VenueId) -> Self {
@@ -1297,7 +1334,11 @@ impl Cell {
         // cell was never configured for, which would be an unbounded label
         // as well as a venue with a fresh full budget every time its name
         // changed.
-        let budget = QuoteBudget::new(config.quote_limits, &config.venues);
+        let budget = QuoteBudget::per_venue(
+            config.quote_limits,
+            &config.venues,
+            &config.venue_quote_limits,
+        );
         let fill_times = FillTimes::new(config.dispersion, &config.venues);
         let journal_pressure = config
             .journal_wire
@@ -8395,6 +8436,17 @@ impl Cell {
     /// different state again from one with no venue at all.
     pub fn quote_budget(&self) -> Vec<crate::quoting::VenueBudgetState> {
         self.budget.summary()
+    }
+
+    /// The message limits in force at `venue` — its own where the
+    /// configuration stated them, the cell's fallback otherwise — or `None`
+    /// for a venue this cell holds no budget for (EXEC-004).
+    ///
+    /// Read from the budget the cell spends rather than from the
+    /// configuration it was built from, so what a composition root reports
+    /// as a venue's limit is the figure that will refuse.
+    pub fn quote_limits_at(&self, venue: &VenueId) -> Option<RateLimits> {
+        self.budget.limits_at(venue.as_str())
     }
 
     /// How depleted `venue`'s message budget is (§29.2's threshold

@@ -193,6 +193,7 @@ not a funding).
 | `QIP_HALT_FLAG_PATH` | polled halt flag, absolute path | unset: broadcast halt only, said at start |
 | `QIP_MESH_PEER`, `QIP_MESH_SEED` | the centre | unset: the cell publishes nothing, receives no capital and stops when its envelope expires (**ran**) |
 | `QIP_ARBITRAGE_STRATEGY`, `QIP_DEFAULT_PRICING`, `QIP_STRATEGY_PLAN_PATH`, `QIP_REPRICE`, `QIP_CROSS_REGION_MIRROR_PATH` | desk, strategy pricing, plan, requote threshold, cross-region mirror | each unset one is announced as "awaiting" (**ran**) |
+| `QIP_VENUE_QUOTE_LIMITS` | each venue's own message rate and message-to-trade ratio, `<venue>=<burst>:<per second>:<withdrawal reserve>:<narrowed reserve>:<messages per trade>:<window>:<ratio interval ms>`, comma-separated; a stated venue is refused past either limit before the gateway is called | unset: every venue runs the cell's default ceiling and its ratio only narrows, announced per venue as "awaiting"; a malformed entry or a venue outside `QIP_VENUES` stops the process (**repo**, binary **not run** with it; `cargo test -p qip-edge-node --test pass a_node_` drives the assembled node) |
 | `QIP_STORAGE_TARGET`, `QIP_STORAGE_ROOT` | journal destination | memory; the template uses `engine` at `/var/lib/qip/journal` (**repo**) |
 | `QIP_MIRROR_PATH` | retired | stops the process, naming the replacement |
 
