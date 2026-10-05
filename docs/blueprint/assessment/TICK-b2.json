@@ -155,7 +155,7 @@
   },
   {
     "id": "TICK-040",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip_orderbook::replay::replay reconstructs a venue's history in batch and carries the integrity finding on its output: one ReplayStep flag per message and one UnreliablePeriod per episode (a Gap naming the missing sequences, or an OutOfOrder message), opened at the first message after the fault and closed at the next venue Reset. While open, book edits are withheld (the book is already wrong) while trades, status and auctions still apply. The live path (Sequencer, Decision::GapDetected, VenueState::reset) is unchanged.",
     "evidence": [
       "backend/crates/edge/qip-orderbook/src/replay.rs",
@@ -164,7 +164,7 @@
       "backend/crates/edge/qip-orderbook/tests/integrity.rs::a_reset_closes_the_period_and_the_messages_after_it_are_reliable_again",
       "backend/crates/edge/qip-orderbook/tests/integrity.rs::a_message_behind_one_already_applied_is_flagged_out_of_order"
     ],
-    "gap": "",
+    "gap": "Holds for canonical records fed straight to qip_orderbook::replay, which is what tests/integrity.rs does, and fails behind the platform's own sequencer, which is how canonical records are produced. Removing one packet from a recorded venue-native session makes the sequencer abandon the hole and emit a Reset stamped with the missing sequence; replay reads that Reset as a completed rebuild, the next packet is contiguous with it, and no period is flagged: every step reads reliable against a book rebuilt from nothing. Removing two packets flags everything after, by sequence arithmetic and not by design. Evidence and the tripwire: qip-acceptance tests/tick_replay.rs::a_hole_one_packet_wide_is_replayed_as_wholly_reliable_which_is_the_open_gap_and_not_the_intent. Closing it needs a Reset that says who declared it, or a replay that does not take a reset with no snapshot behind it for a rebuild (see TICK-017).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -178,7 +178,7 @@
     "work_item": "E06-gap-flag-persistence",
     "tier": "T1",
     "size": "M",
-    "notes": "Mutation-verified. Residual: no replay, training or label job consumes ReplayOutput yet, so nothing forces a downstream consumer to read the flag (integrated false); the period close assumes the snapshot after a Reset is complete, since the canonical schema has no end-of-snapshot marker."
+    "notes": "Mutation-verified. Residual: no replay, training or label job consumes ReplayOutput yet, so nothing forces a downstream consumer to read the flag (integrated false); the period close assumes the snapshot after a Reset is complete, since the canonical schema has no end-of-snapshot marker. Downgraded COMPLETE -> PARTIAL 2026-10-05 by the TICK-017 lane: the requirement's own check (remove one message from a recorded sequence, the period is flagged on replay output) fails for a recorded venue-native sequence run through the platform's sequencer. The four integrity.rs tests still pass and still prove what they proved."
   },
   {
     "id": "TICK-041",
@@ -204,29 +204,33 @@
     "work_item": "E06-book-snapshot-restore",
     "tier": "T1",
     "size": "S",
-    "notes": "Mutation-verified. Residual: no running process takes a checkpoint yet (the qip-edge cell holds VenueStates but never snapshots them), so integrated stays false; the requirement's own check is the property test over generated sequences."
+    "notes": "Mutation-verified. Residual: no running process takes a checkpoint yet (the qip-edge cell holds VenueStates but never snapshots them), so integrated stays false; the requirement's own check is the property test over generated sequences. Qualified 2026-10-05 by the TICK-017 lane: 'a checkpoint round-trips through serde_json' holds for the book and not for the venue state's timestamps. qip_core::Timestamp serialises to the millisecond, so a stored VenueCheckpoint restores last_trade.at and last_update truncated, and its VenueSnapshot digest differs from the checkpointed state's once a print stamped below a millisecond has been applied. The requirement is about book state, which is unaffected, so the status stands; replay.rs's fixtures carry no trades, which is why its test does not see it."
   },
   {
     "id": "TICK-042",
-    "status": "MISSING",
-    "current": "nothing -- no 'aligner' type exists anywhere in the tree. `rg -n aligner backend/crates` returns no hits; the only cross-venue hits (qip-arbitrage/src/graph.rs, qip-routing/src/path.rs) are live execution-routing concerns operating on current quotes, not a replay-time alignment of asynchronous historical streams that carries clock uncertainty.",
+    "status": "COMPLETE",
+    "current": "qip_sequencing::align relates two events from streams that do not share a clock. Placed holds an event time, the half-width of the interval its true instant lies in, and the instant this cell learned of it; Placed::from_disciplined takes the uncertainty the clock discipline published (rounded up, plus the whole of any monotonic-floor move) and refuses a timestamp no offset estimate was applied to, whose error nobody measured. align(first, second) returns the stamped lag, the summed uncertainty carried through, and an Order that is Before or After only when the stamps are further apart than both uncertainties together and Unordered otherwise. The enum has no variant for simultaneity. Arrival order is reported separately and exactly, because both arrivals are on the cell's own clock, and never stands in for event order. as_of joins one event against another stream, taking the latest event that demonstrably happened before it and had arrived by then, and listing the ones it cannot order.",
     "evidence": [
-      "rg -n 'aligner|Aligner' backend/crates -> no hits",
-      "backend/crates/edge/qip-arbitrage/src/graph.rs (unrelated: live cross-venue routing)"
+      "backend/crates/edge/qip-sequencing/src/align.rs (Placed, Order, Alignment, align, AsOf, as_of)",
+      "backend/crates/edge/qip-sequencing/tests/align.rs::an_order_is_reported_only_beyond_the_combined_uncertainty_and_is_then_the_true_order",
+      "backend/crates/edge/qip-sequencing/tests/align.rs::identical_stamps_are_unordered_rather_than_simultaneous_and_the_bound_itself_is_not_an_order",
+      "backend/crates/edge/qip-sequencing/tests/align.rs::arrival_order_is_reported_exactly_and_never_stands_in_for_event_order",
+      "backend/crates/edge/qip-sequencing/tests/align.rs::the_as_of_join_takes_the_latest_demonstrably_prior_event_that_had_arrived_and_lists_what_it_cannot_order",
+      "backend/crates/edge/qip-sequencing/tests/align.rs::a_timestamp_no_estimate_corrected_is_refused_and_a_corrected_one_carries_its_published_uncertainty"
     ],
-    "gap": "No component relates asynchronous venues/regions by event time and information arrival while carrying clock uncertainty through, and none refuses to assert an ordering the timestamps cannot support.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "none",
+    "verification": "cargo test -p qip-sequencing --test align: 'test result: ok. 5 passed; 0 failed'. The property runs 4,000 generated pairs whose clocks each err by up to their stated uncertainty and asserts its own premises: more than 200 pairs inside the combined uncertainty, more than 200 outside it, and more than 20 whose stamps are in the wrong order, each of which must be reported Unordered. Six mutations, each killed and restored byte-for-byte by sha256: ordering on the first clock's uncertainty alone ('stamps -102ns apart on clocks good to 238ns were ordered After'); treating the bound itself as an order ('stamps 333ns apart on clocks good to 333ns were ordered Before'); a join that ignores arrival (latest_prior Some(3), not Some(0)); counting any correction as an estimate (a floored-only time was placed); dropping the floor from the carried uncertainty (9381ns, not 10.009ms); reversing arrival order.",
     "work_item": "E11-cross-venue-aligner",
     "tier": "T2",
     "size": "L",
-    "notes": "verify: MISSING confirmed. Closest code, for whoever builds it: qip_sequencing::clock::ClockEstimate publishes uncertainty_nanos_f64 (clock.rs:69-70), the input an aligner would carry through, but it has no production caller (TICK-056); qip_feature_dag::features::aligned_tail (features.rs:583) pairs two instruments' mids by shared sampling bucket with no clock uncertainty, which an aligner would have to supersede for cross-venue features."
+    "notes": "Closed 2026-10-05 as a pure function with its property test, which is the requirement's own check. integrated stays false: nothing in a composition root aligns two streams. The one cross-instrument pairing in the tree, qip_feature_dag::features::aligned_tail, pairs mids by shared sampling bucket and does not go through this; it is used within one venue's clock, and a cross-venue feature built on it would assert the simultaneity this refuses. TICK-063 (cross-region lead/lag) is the first consumer and should take Placed, not timestamps. ClockDiscipline, the source of the uncertainty, still has no non-test caller (TICK-031/TICK-033)."
   },
   {
     "id": "TICK-043",
@@ -777,18 +781,21 @@
   },
   {
     "id": "TICK-065",
-    "status": "PARTIAL",
-    "current": "Internal orders/fills/decisions are written directly to qip-capital's ledger and to the hash-chained qip_events::log::EventLog by construction (platform.rs's many self.event_log.append(...) sites, e.g. lines 4715,5187,5245,5303,5358,8165) -- a structurally separate code path from qip_data_finder's bounded/pass-through retention pipeline (retention.rs, campaign.rs), which only ever receives world-sourced records. A real, tested CloudStorageBlobStore adapter (see TICK-035) exists as the not-yet-wired 'lake' half of this requirement's two named destinations. The 'never discarded' half is a checked invariant, not an absence: every own-order/fill/position topic is RetentionClass::Irreplaceable, Retention::Permanent (topic.rs:601-613, ADR 0089), the log never evicts such a record and refuses the append instead (log.rs:818-835), and is_lossy_tolerable is false for them.",
+    "status": "COMPLETE",
+    "current": "Every root that hands its event log to the hash-chained archive now seals the platform's own outcomes into the Tick/Internal Lake at the same hand-over. qip_storage::ChainArchive::with_outcome_lake (chain.rs) makes absorb call qip_storage::lake::Lake::seal_internal_outcomes (lake.rs) before it writes the chain, and qip-api, qip-fastbrain and qip-deepbrain open their archive with `.with_outcome_lake(storage.blobs(LAKE_NAMESPACE)?)`, as does qip-cli's `cycle`, the one CLI command that runs the platform. An outcome is a record whose topic requires permanent retention, the declaration the event log already refuses to evict on: orders, fills, positions, risk and compliance verdicts, the kill switch, and the cycle's own decision record, attributions and lessons. Each is one canonical-JSON line with its log linkage intact, under lake/class=internal/venue=platform/date=<day it occurred>/instrument=all/entitlement=internal/chain-<first>-<last>.canonical. Ticks, quotes, bars, news and fetched documents in the same slice are left out. The ledger half is the archive itself and qip-capital's ledger, unchanged. The world-data reference/discard pipeline (qip-data-finder) cannot reach any crate that creates an order, a fill or a ledger entry, the two writers cannot reach it, and nothing it ships names the archive or the lake.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4715,5187,5245,5303,5358,8165",
-      "backend/crates/services/qip-data-finder/src/retention.rs",
-      "backend/crates/libs/qip-storage/src/gcp/storage.rs:174",
-      "backend/crates/libs/qip-events/src/topic.rs:601-613 (own orders/fills -> Irreplaceable)",
-      "backend/crates/libs/qip-events/src/log.rs:818-835",
-      "backend/crates/libs/qip-events/tests/backbone.rs:95 decision_relevant_topics_are_retained_permanently_and_never_dropped",
-      "backend/crates/libs/qip-events/tests/backbone.rs:2090 the_snapshot_window_rolls_replaceable_records_by_age_and_never_a_permanent_one"
+      "backend/crates/libs/qip-storage/src/chain.rs (ChainArchive::with_outcome_lake; absorb seals the lake first, the chain second)",
+      "backend/crates/libs/qip-storage/src/lake.rs (Lake::seal_internal_outcomes, LAKE_NAMESPACE, INTERNAL_ENTITLEMENT)",
+      "backend/crates/apps/qip-api/src/main.rs, qip-fastbrain/src/main.rs, qip-deepbrain/src/main.rs, qip-cli/src/main.rs (cycle): the archive opened with .with_outcome_lake",
+      "backend/crates/libs/qip-storage/tests/outcome_lake.rs::a_hand_over_seals_the_platforms_own_outcomes_into_the_internal_lake_and_nothing_the_world_sent",
+      "backend/crates/libs/qip-storage/tests/outcome_lake.rs::a_lake_that_refuses_the_write_stops_the_hand_over_before_the_ledger_moves_and_the_retry_loses_nothing",
+      "backend/crates/libs/qip-storage/tests/outcome_lake.rs::sealing_the_same_outcomes_under_the_same_id_is_not_an_overwrite_and_a_different_body_is",
+      "backend/crates/libs/qip-storage/tests/outcome_lake.rs::an_archive_given_no_lake_archives_the_log_and_seals_nothing",
+      "backend/crates/apps/qip-fastbrain/tests/outcome_lake.rs::the_run_loop_seals_every_outcome_the_cycles_recorded_into_the_internal_lake_and_no_market_event",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::every_root_that_archives_its_log_seals_its_outcomes_into_the_lake_and_the_discard_pipeline_cannot_reach_them",
+      "backend/crates/libs/qip-events/src/topic.rs (Topic::requires_permanent_retention, the one declaration both the log and the lake read)"
     ],
-    "gap": "qip_storage::lake::Lake now exists as the lake destination (RecordClass::Internal is a first-class partition), but nothing writes the platform's own orders, fills or decisions to it, and no architecture test proves 'no edge into the pass-through/discard stage' across qip-data-finder and the lake/ledger writers. Within the event log the never-discard property is enforced by RetentionClass and tested.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -798,10 +805,10 @@
       "TICK-035"
     ],
     "blocked_by": "",
-    "verification": "qip-events tests/backbone.rs:95 (OrderFilled requires permanent retention and is never lossy-tolerable) and :2090 (the 90-day roll removes stale ticks and never an OrderFilled record). No architecture test of the lake/ledger routing, because there is no lake writer.",
+    "verification": "cargo test -p qip-storage --test outcome_lake: 'test result: ok. 4 passed; 0 failed'. cargo test -p qip-fastbrain --test outcome_lake (the real node::run loop and flush over a real Platform and synthetic feed): 'test result: ok. 1 passed; 0 failed'. cargo test -p qip-acceptance --test architecture: 'test result: ok. 37 passed; 0 failed'. Mutations, each restored byte-for-byte by sha256 and re-run green: (1) sealing every record instead of outcomes failed the storage test with left [1,2,3,4,5,6] right [2,3,5,6] and the fastbrain test with 'the lake holds a record that is not one of the platform's own outcomes' (7 vs 3); (2) narrowing the filter to the Irreplaceable retention row alone failed the fastbrain test with 'LearningCompleted at sequence 3 is in the log and not in the lake', which is how the first version of the filter was caught dropping the cycle's decision record; (3) writing the chain before the lake failed with 'the ledger moved past a failed lake write' (6 vs 0); (4) removing the idempotent re-seal failed with the lake's own 'is sealed' refusal; (5) removing .with_outcome_lake from qip-fastbrain's main.rs failed the architecture test naming qip-fastbrain; (6) a file in qip-data-finder/src naming ChainArchive failed it naming the file.",
     "work_item": "E06-internal-outcomes-irreplaceable",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: tested false -> true, status kept PARTIAL. The assessor missed qip_events::retention::RetentionClass: own orders/fills are Irreplaceable/Permanent and two named backbone tests prove the log never evicts them."
+    "notes": "Closed 2026-10-05. Residuals, none of which is this requirement's: under QIP_STORAGE_TARGET=memory, the deployed default, the lake is an in-process blob store like the archive beside it and dies with the instance; durability is the storage target's (TICK-035). The lake write is at-least-once: a chain write that fails part way is retried from a later position under a new segment id that repeats records the first segment holds, a duplicate and never a loss, and each line carries its record hash. What is sealed is everything the log keeps permanently, a superset of orders, fills and decisions. Nothing reads the internal class yet (TICK-026, TICK-045) and the lake carries no retention policy (TICK-037). A JSON line holds its timestamps to the millisecond, as the log's own serialised form does (see TICK-017)."
   }
 ]

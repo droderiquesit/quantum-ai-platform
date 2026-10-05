@@ -2720,3 +2720,189 @@ fn a_quantum_solver_and_the_evidence_writers_cannot_reach_each_other() {
         "the kernel no longer composes both sides, so this boundary has moved"
     );
 }
+
+// --- the platform's own outcomes: lake and ledger, never the discard path ---
+
+/// The shipped code of every file under `relative`, by repository path, with
+/// prose lines (first token `//`) removed so a comment naming a call is not
+/// read as the call.
+fn shipped_code_under(relative: &str) -> BTreeMap<String, String> {
+    let root = repository_root();
+    let mut out = BTreeMap::new();
+    for path in qip_acceptance::files_with_extension(relative, "rs") {
+        let name = path
+            .strip_prefix(&root)
+            .expect("the file is under the repository")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !name.contains("/src/") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {name}: {error}"));
+        let code: String = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        out.insert(name, code);
+    }
+    out
+}
+
+/// Blueprint TICK-065: the platform's own orders, fills and decisions are
+/// written to the Tick/Internal Lake and to the ledger, and never routed
+/// through the world-data pass-through/discard pipeline.
+///
+/// The lake had a tested writer and no caller: every binary archived its
+/// event log to the hash chain and nothing connected that hand-over to the
+/// lake, so "internal history" was a partition class with nothing in it. The
+/// connection is `ChainArchive::with_outcome_lake`, and what holds it is not
+/// that three files happen to call it today. A root that hands its log to the
+/// archive without attaching the lake is the same gap reopened in one binary,
+/// and it fails here by name.
+///
+/// The second half is the absence. The discard pipeline lives in
+/// `qip-data-finder`; the two writers live in `qip-storage`. The pipeline
+/// cannot reach any crate that creates an order, a fill or a ledger entry, so
+/// there is no type in it that could carry one; the writers cannot reach the
+/// pipeline; and although the pipeline links `qip-storage` for its own
+/// journals, nothing it ships names the archive or the lake.
+#[test]
+fn every_root_that_archives_its_log_seals_its_outcomes_into_the_lake_and_the_discard_pipeline_cannot_reach_them()
+ {
+    // --- 1. every archiving root attaches the lake --------------------------
+    let apps = shipped_code_under("backend/crates/apps");
+    let app_of = |path: &str| -> String {
+        path.trim_start_matches("backend/crates/apps/")
+            .split('/')
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let archiving: BTreeSet<String> = apps
+        .iter()
+        .filter(|(_, code)| code.contains(".absorb("))
+        .map(|(path, _)| app_of(path))
+        .collect();
+    // Premise: the walk found the hand-overs. The three central binaries each
+    // run the cycle and archive it; a scan that missed them would pass on
+    // nothing.
+    for central in ["qip-api", "qip-fastbrain", "qip-deepbrain"] {
+        assert!(
+            archiving.contains(central),
+            "{central} no longer hands its event log to the archive, or the scan no longer \
+             sees it: {archiving:?}"
+        );
+    }
+    for app in &archiving {
+        let main = format!("backend/crates/apps/{app}/src/main.rs");
+        let code = apps
+            .get(&main)
+            .unwrap_or_else(|| panic!("{app} archives its log and has no {main}"));
+        assert!(
+            code.contains("ChainArchive::open("),
+            "{app} hands records to an archive that {main} does not open; this test reads the \
+             root to find where the lake is attached and no longer knows where that is"
+        );
+        assert!(
+            code.contains(".with_outcome_lake("),
+            "{app} archives its event log without attaching the Tick/Internal Lake. Its orders, \
+             fills and verdicts reach the ledger and never the lake (TICK-065). Open the archive \
+             with `.with_outcome_lake(storage.blobs(qip_storage::lake::LAKE_NAMESPACE)?)`"
+        );
+    }
+
+    // --- 2. the writers are where this test says they are --------------------
+    let storage = shipped_code_under("backend/crates/libs/qip-storage");
+    let chain = &storage["backend/crates/libs/qip-storage/src/chain.rs"];
+    let lake = &storage["backend/crates/libs/qip-storage/src/lake.rs"];
+    assert!(
+        chain.contains("fn with_outcome_lake(") && chain.contains(".seal_internal_outcomes("),
+        "the archive no longer seals outcomes into the lake at its hand-over"
+    );
+    assert!(
+        lake.contains("fn seal_internal_outcomes(")
+            && lake.contains("requires_permanent_retention()"),
+        "the lake no longer decides an outcome by the topic's own permanent-retention \
+         declaration; a second list of outcome topics can disagree with the log's"
+    );
+
+    // --- 3. no edge into the pass-through/discard stage ----------------------
+    const DISCARD_PIPELINE: &str = "qip-data-finder";
+    const OUTCOME_WRITERS: &str = "qip-storage";
+    // Where an order, a fill, a position or a ledger entry is created.
+    const OUTCOME_SOURCES: [&str; 6] = [
+        "qip-execution-engine",
+        "qip-brokers",
+        "qip-capital",
+        "qip-portfolio-engine",
+        "qip-risk-engine",
+        "qip-kernel",
+    ];
+    let graph = dependency_graph();
+    for named in OUTCOME_SOURCES
+        .iter()
+        .chain([&DISCARD_PIPELINE, &OUTCOME_WRITERS])
+    {
+        assert!(
+            graph.contains_key(*named),
+            "{named} is not a crate in this workspace; this test names something that no \
+             longer exists and constrains nothing"
+        );
+    }
+    let from_pipeline = reachable_from(&graph, DISCARD_PIPELINE);
+    // Vacuity anchor: the pipeline reaches something, so an absence is a fact
+    // about the graph and not about an empty walk.
+    assert!(
+        from_pipeline.contains("qip-market-ingestion"),
+        "the discard pipeline reaches nothing it is known to use: {from_pipeline:?}"
+    );
+    for source in OUTCOME_SOURCES {
+        assert!(
+            !from_pipeline.contains(source),
+            "{DISCARD_PIPELINE} can reach {source}: the world-data reference/discard pipeline \
+             can now hold an order, a fill or a ledger entry, and a discard applied there \
+             loses a record nothing can re-fetch"
+        );
+    }
+    // The pipeline does link `qip-storage`: its journals sit on the same
+    // key-value port everything else uses, so the manifest cannot carry this
+    // half. The source can. Nothing the pipeline ships names the archive, the
+    // lake or the call that seals an outcome, so it holds no handle to either
+    // writer.
+    let pipeline = shipped_code_under("backend/crates/services/qip-data-finder");
+    assert!(
+        pipeline.contains_key("backend/crates/services/qip-data-finder/src/retention.rs"),
+        "the scan did not see the discard pipeline's retention module; the absences below \
+         would be absences in nothing: {:?}",
+        pipeline.keys().collect::<Vec<_>>()
+    );
+    for (path, code) in &pipeline {
+        for handle in [
+            "ChainArchive",
+            "with_outcome_lake",
+            "seal_internal_outcomes",
+            "lake::",
+        ] {
+            assert!(
+                !code.contains(handle),
+                "{path} names `{handle}`: the world-data reference/discard pipeline now holds \
+                 a handle to the lake or the ledger archive, the two places an internal outcome \
+                 is written"
+            );
+        }
+    }
+    assert!(
+        !reachable_from(&graph, OUTCOME_WRITERS).contains(DISCARD_PIPELINE),
+        "{OUTCOME_WRITERS} can reach {DISCARD_PIPELINE}: the lake and ledger writers can \
+         route a record through the discard pipeline"
+    );
+    // And the kernel, which produces the outcomes, does reach the pipeline for
+    // world data, so the absences above are a boundary between two things
+    // that are both in use rather than a crate nobody links.
+    assert!(
+        reachable_from(&graph, "qip-kernel").contains(DISCARD_PIPELINE),
+        "the kernel no longer composes the data finder, so this boundary has moved"
+    );
+}

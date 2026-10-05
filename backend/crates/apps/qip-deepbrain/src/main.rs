@@ -93,7 +93,12 @@ fn run() -> Result<()> {
         .storage
         .preflight()
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-    let archive = ChainArchive::open(config.storage.key_value("event-log")?)?;
+    // The same hand-over that archives the log seals the platform's own
+    // orders, fills and verdicts into the Tick/Internal Lake (TICK-065).
+    // Opened here, so a lake that cannot be opened stops the process rather
+    // than the first archived cycle.
+    let archive = ChainArchive::open(config.storage.key_value("event-log")?)?
+        .with_outcome_lake(config.storage.blobs(qip_storage::lake::LAKE_NAMESPACE)?);
 
     // Bound before the platform is assembled: a busy port is a deployment
     // mistake, and finding it after building a platform wastes the start-up.

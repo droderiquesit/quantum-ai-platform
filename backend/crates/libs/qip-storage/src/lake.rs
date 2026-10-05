@@ -22,12 +22,40 @@
 //! it does not, the segment record still carries the raw payload's SHA-256 so
 //! lineage survives, and the bytes are not stored. Compression is not done
 //! here: it needs a codec and the workspace has two dependencies.
+//!
+//! The platform's own outcomes reach the lake through
+//! [`Lake::seal_internal_outcomes`], called by [`crate::ChainArchive::absorb`]
+//! at the same hand-over that archives the event log (blueprint TICK-065).
+//! Which records those are is not decided here: it is the topic's own
+//! `requires_permanent_retention`, the declaration the event log already
+//! refuses to evict on, so a topic cannot be permanent in the log and absent
+//! from the lake because two lists disagreed.
 
 use crate::blob::BlobStore;
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256_hex;
+use qip_events::envelope::canonical_json;
+use qip_events::log::LogRecord;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The blob namespace a composition root opens the lake under.
+pub const LAKE_NAMESPACE: &str = "lake";
+
+/// The entitlement the platform's own records are held under. Nobody licensed
+/// them to the platform, so there is no vendor to name; the partition still
+/// needs one, because a path with no entitlement cannot be formed.
+pub const INTERNAL_ENTITLEMENT: &str = "internal";
+
+/// The venue component of an internal partition: the records are the
+/// platform's, whichever venue an order inside one names.
+pub const INTERNAL_VENUE: &str = "platform";
+
+/// The instrument component of an internal partition. One segment holds every
+/// outcome of a hand-over, across instruments, in log order: splitting a fill
+/// from the risk verdict that admitted it would separate the two records a
+/// reader most needs side by side.
+pub const INTERNAL_INSTRUMENT: &str = "all";
 
 /// What the lake accepts. Deliberately closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -219,6 +247,71 @@ impl<'a> Lake<'a> {
             raw_sha256,
             raw_key,
         })
+    }
+
+    /// Seal the platform's own outcomes among `records` as internal history,
+    /// one segment per calendar day they occurred on, each line one record in
+    /// canonical JSON with its log linkage intact.
+    ///
+    /// A record is an outcome when its topic requires permanent retention:
+    /// orders, fills, positions, risk and compliance verdicts, the kill
+    /// switch, and the cycle's own decision record, its attributions and
+    /// lessons. Not only the `Irreplaceable` row of the retention table: the
+    /// cycle journal is filed as an episode, and a filter on that one row
+    /// kept every fill and dropped the record of why nothing was traded. A
+    /// market tick or a fetched document in the same slice is left out, so
+    /// the lake's internal class holds what cannot be re-fetched and nothing
+    /// that can.
+    ///
+    /// Sealing the same records under the same id again is not an error and
+    /// writes nothing: the caller hands over before it advances its own
+    /// watermark, so a hand-over that failed after this step is retried with
+    /// the same id and must not be refused for having half-succeeded. A
+    /// *different* body under a sealed id is still refused.
+    pub fn seal_internal_outcomes(
+        &self,
+        segment_id: &str,
+        records: &[&LogRecord],
+    ) -> Result<Vec<SegmentRecord>> {
+        let mut by_date: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        for record in records {
+            if !record.event.topic.requires_permanent_retention() {
+                continue;
+            }
+            let line = canonical_json(&serde_json::to_value(record)?);
+            let body = by_date
+                .entry(record.event.occurred_at.to_date_string())
+                .or_default();
+            body.extend_from_slice(line.as_bytes());
+            body.push(b'\n');
+        }
+        let mut sealed = Vec::new();
+        for (date, canonical) in by_date {
+            let partition = Partition::new(
+                RecordClass::Internal,
+                INTERNAL_VENUE,
+                &date,
+                INTERNAL_INSTRUMENT,
+                Entitlement {
+                    id: INTERNAL_ENTITLEMENT.to_string(),
+                    raw_retention_permitted: false,
+                },
+            )?;
+            let key = format!("{}/{segment_id}.canonical", partition.prefix());
+            let canonical_sha256 = sha256_hex(&canonical);
+            if self.store.digest(&key)?.as_deref() == Some(canonical_sha256.as_str()) {
+                sealed.push(SegmentRecord {
+                    partition,
+                    key,
+                    canonical_sha256,
+                    raw_sha256: None,
+                    raw_key: None,
+                });
+                continue;
+            }
+            sealed.push(self.write_segment(&partition, segment_id, canonical, None)?);
+        }
+        Ok(sealed)
     }
 
     /// There is no delete. Removal goes through the retention policy.
