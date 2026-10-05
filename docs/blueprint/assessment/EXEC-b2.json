@@ -4,12 +4,10 @@
     "status": "MISSING",
     "current": "nothing. No per-venue, per-mode legal/operational-support registry exists anywhere in the tree. The only mode-shaped gate in-tree is qip_edge::cell::Cell's GATE_LIVE_VENUE (backend/crates/edge/qip-edge/src/cell.rs:68, refused at cell.rs:2960 and cell.rs:3864), which refuses every order to a live-class venue outright (the paper-trading boundary) -- a coarse live-vs-paper class check, not a per-venue registry distinguishing which of EXEC-001/013-019's eight modes is enabled for that venue.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:68 (GATE_LIVE_VENUE)",
-      "backend/crates/edge/qip-edge/src/cell.rs:3864 (metrics.refusal(GATE_LIVE_VENUE) inside Cell::send)",
-      "backend/crates/edge/qip-edge/tests/paper_boundary.rs:229-301 (proves the live-class refusal; a different, coarser property than a per-mode registry)",
-      "grep -rn 'supported_mode|enabled_mode|VenueMode|permitted_mode' backend/crates --type rust: no matches"
+      "backend/crates/services/qip-execution-engine/src/modes.rs",
+      "tests with_nothing_enabled_every_mode_is_refused_and_enabling_one_admits_only_that_one and a_mode_without_both_legal_and_operational_support_cannot_be_enabled; both mutation-verified"
     ],
-    "gap": "No config type, gate or registry exists that enables or disables an individual execution mode (continuous quoting, order taking, liquidity provision, routing, derivatives, event contracts, decentralised venues, physical marketplaces) per venue based on legal/operational support; with nothing built, the fail-closed default ('with nothing enabled, every mode is refused') happens to hold only because no mode-aware order path exists at all, not because a registry enforces it.",
+    "gap": "A fail-closed per-venue gate exists (qip_execution_engine::modes::ModeGate: nothing enabled by default, enable() requires recorded legal AND operational support for a named jurisdiction, admit() returns the only ModeAdmission token) and is tested, but no order path (OMS, edge cell, kernel) requires a ModeAdmission, so an order in a disabled mode is not yet refused in production.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -26,11 +24,11 @@
       "EXEC-019"
     ],
     "blocked_by": "",
-    "verification": "Test needed: construct a simulated venue with no mode enabled and assert an order attempt in each of the eight modes is refused before an order object exists (mirroring GATE_LIVE_VENUE's own paper_boundary.rs pattern), then enable one mode and assert only that mode admits.",
+    "verification": "cargo test -p qip-execution-engine --lib modes:: ; Missing: OrderManager::submit (or Cell) demanding a ModeAdmission, with an acceptance test that an order in each mode is refused before an order object exists.",
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "Stays PARTIAL: wiring the gate as mandatory changes every existing submit caller and their fixtures, so it needs its own slice."
   },
   {
     "id": "EXEC-021",
