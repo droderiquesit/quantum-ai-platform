@@ -24,6 +24,7 @@ pub mod features;
 pub mod federation;
 pub mod granger;
 pub mod graph;
+pub mod inference;
 pub mod liquidity;
 pub mod relationship;
 pub mod resolution_source;
@@ -47,6 +48,10 @@ pub use falsification::{
 };
 pub use features::{FEATURE_HISTORY, Feature, FeatureLookup, FeatureStore, FeatureValue};
 pub use graph::{Fact, KnowledgeGraph, Node, NodeKind};
+pub use inference::{
+    Abduction, Candidate, CausalPath, Counterfactual, EdgeCitation, Identification, Intervention,
+    Surprise,
+};
 pub use liquidity::{
     Concentration, DepthObservation, LiquidityDrift, LiquidityMap, LiquidityTopology, VenueDepth,
     VenueShift,

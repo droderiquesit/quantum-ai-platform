@@ -720,6 +720,16 @@ impl CausalEdge {
         self.strength * self.confidence
     }
 
+    /// [`Self::transmission`] with the mechanism's sign: what one unit of the
+    /// cause's move becomes at the effect.
+    pub fn signed_transmission(&self) -> f64 {
+        if self.mechanism.preserves_sign() {
+            self.transmission()
+        } else {
+            -self.transmission()
+        }
+    }
+
     /// Whether the claim rests on anything.
     pub fn is_evidenced(&self) -> bool {
         !self.evidence.is_empty()
@@ -913,6 +923,13 @@ pub struct Effect {
     pub chain: Vec<Mechanism>,
     /// Nodes traversed, starting at the origin.
     pub path: Vec<String>,
+    /// The edges traversed, in order, as positions in [`CausalGraph::edges`].
+    ///
+    /// `path` names nodes, and two claims can join the same pair of nodes
+    /// under different mechanisms with different evidence. A reader citing
+    /// the evidence a transmission rests on needs the edge, not the pair.
+    #[serde(default)]
+    pub edges: Vec<usize>,
     /// Product of the confidences along the chain.
     pub confidence: f64,
 }
@@ -1431,31 +1448,43 @@ impl CausalGraph {
     /// same `known_at`, so a reader cannot see a future claim or a past
     /// refutation it did not have.
     pub fn outgoing(&self, cause: &str, known_at: Timestamp) -> Vec<&CausalEdge> {
-        self.by_cause
-            .get(cause)
-            .map(|indices| {
-                indices
-                    .iter()
-                    .filter_map(|i| self.edges.get(*i))
-                    .filter(|e| e.recorded_at <= known_at && !e.retired_by(known_at))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.outgoing_indexed(cause, known_at)
+            .into_iter()
+            .map(|(_, edge)| edge)
+            .collect()
     }
 
     /// Edges arriving at `effect` — what could explain a move — known by
     /// `known_at` and not retired by then, on [`Self::outgoing`]'s terms.
     pub fn incoming(&self, effect: &str, known_at: Timestamp) -> Vec<&CausalEdge> {
-        self.by_effect
-            .get(effect)
-            .map(|indices| {
-                indices
-                    .iter()
-                    .filter_map(|i| self.edges.get(*i))
-                    .filter(|e| e.recorded_at <= known_at && !e.retired_by(known_at))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.incoming_indexed(effect, known_at)
+            .into_iter()
+            .map(|(_, edge)| edge)
+            .collect()
+    }
+
+    /// [`Self::outgoing`], each edge with its position in [`Self::edges`].
+    ///
+    /// The position is the edge's identity. Two claims may join the same pair
+    /// under different mechanisms, so "the edge from a to b" names neither,
+    /// and a reader that cites an edge has to be able to say which.
+    pub fn outgoing_indexed(&self, cause: &str, known_at: Timestamp) -> Vec<(usize, &CausalEdge)> {
+        self.live(self.by_cause.get(cause), known_at)
+    }
+
+    /// [`Self::incoming`], each edge with its position in [`Self::edges`].
+    pub fn incoming_indexed(&self, effect: &str, known_at: Timestamp) -> Vec<(usize, &CausalEdge)> {
+        self.live(self.by_effect.get(effect), known_at)
+    }
+
+    /// The one statement of point in time for both directions.
+    fn live(&self, indices: Option<&Vec<usize>>, known_at: Timestamp) -> Vec<(usize, &CausalEdge)> {
+        indices
+            .into_iter()
+            .flatten()
+            .filter_map(|i| Some((*i, self.edges.get(*i)?)))
+            .filter(|(_, e)| e.recorded_at <= known_at && !e.retired_by(known_at))
+            .collect()
     }
 
     /// Propagate a shock from `origin`, breadth-first with attenuation.
@@ -1488,6 +1517,7 @@ impl CausalGraph {
             expected_at: at,
             chain: Vec::new(),
             path: vec![origin.to_string()],
+            edges: Vec::new(),
             confidence: 1.0,
         });
 
@@ -1495,7 +1525,7 @@ impl CausalGraph {
             if current.order >= max_order {
                 continue;
             }
-            for edge in self.outgoing(&current.target, known_at) {
+            for (index, edge) in self.outgoing_indexed(&current.target, known_at) {
                 if current.path.contains(&edge.effect) {
                     continue; // a cycle would amplify without limit
                 }
@@ -1514,6 +1544,8 @@ impl CausalGraph {
                 chain.push(edge.mechanism);
                 let mut path = current.path.clone();
                 path.push(edge.effect.clone());
+                let mut edges = current.edges.clone();
+                edges.push(index);
 
                 let effect = Effect {
                     target: edge.effect.clone(),
@@ -1522,6 +1554,7 @@ impl CausalGraph {
                     expected_at: current.expected_at.saturating_add(edge.lag),
                     chain,
                     path,
+                    edges,
                     confidence: current.confidence * edge.confidence,
                 };
 

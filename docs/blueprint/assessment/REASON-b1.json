@@ -94,7 +94,7 @@
     "work_item": "E09",
     "tier": "T1",
     "size": "S",
-    "notes": "Cheap to close relative to most REASON gaps: the type already carries the field end-to-end; the only missing step is populating platform.rs:12354 from the findings' originating agent/model identities and adding a test that asserts it."
+    "notes": "2026-10-05: Not closed, and not 'S'. What blocks it is that there is no model identity to cite: AgentFinding carries no model field, no AgentManifest in the tree sets `models` (grep for `with_models`, `models: vec![` and `.models = ` over backend/crates outside tests returns nothing), and the eighteen agents are deterministic computations. Filling SynthesisInput.models from the findings would name agents as models. It needs an agent that calls a model and records which, on the qip-agents contract, first. | prior note: Cheap to close relative to most REASON gaps: the type already carries the field end-to-end; the only missing step is populating platform.rs:12354 from the findings' originating agent/model identities and adding a test that asserts it."
   },
   {
     "id": "REASON-005",
@@ -124,20 +124,17 @@
   },
   {
     "id": "REASON-006",
-    "status": "PARTIAL",
-    "current": "qip_world_model::causal::CausalGraph::propagate (backend/crates/services/qip-world-model/src/causal.rs:1466-1558) does breadth-first shock propagation with per-hop attenuation, sign flips and lag timing, returning Vec<Effect> where each Effect (causal.rs:903-918) carries target, order, magnitude, expected_at, chain (the Mechanism of each hop), path (node names from the origin) and confidence. It carries no CausalEdge identity and no evidence. It is reached from production twice: Platform::stress_through_the_graph (qip-kernel/src/platform.rs:12905-12942) via WorldModel::propagate's fixed 0.001 magnitude floor (world.rs:895-906), whose PropagatedShock keeps only target/magnitude/order/over_days and drops path and chain; and qip_investment_agents::reasoning::CausalAnalyst (reasoning.rs:85; MAX_ORDER 4, MAGNITUDE_FLOOR 0.02), registered in chief.rs:288, which re-derives per-hop evidenced status from the node path (reasoning.rs:115-124) and reports only the unevidenced links, as caveat text. The only production writer of causal edges is Platform::discover_temporal_precedence (platform.rs:10181-10277, ADR 0054: mechanism-free temporal-precedence edges).",
+    "status": "COMPLETE",
+    "current": "qip_world_model::inference::CausalGraph::intervene(variable, known_at) returns exactly the variable's descendants as of that instant — no magnitude floor, no hop limit — and every simple directed path to each, every edge an EdgeCitation carrying the edge's position in CausalGraph::edges, its mechanism and its evidence ids; a query that would travel more than MAX_PATHS (4096) paths is refused, never truncated. causal::Effect now carries `edges`, the positions of the edges a propagated effect travelled, so where two claims join the same pair the answer names the one it followed. Production: qip_investment_agents::reasoning::CausalAnalyst (chief.rs, on the roster qip-kernel's Platform dispatches every REASON pass) cites the travelled edges and each one's own evidence ids in its finding, and calls intervene when propagation did not reach the target, to say whether the target is downstream at all.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/causal.rs:903-918 (Effect: path of node names + mechanisms, no edge ids, no evidence), :946-952 (PropagationResult.truncated), :1466-1558 (propagate: magnitude_floor/max_order cut, strongest path per target only)",
-      "backend/crates/services/qip-world-model/src/world.rs:895-906 (WorldModel::propagate hard-codes a 0.001 floor)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12905-12960 (stress_through_the_graph maps Effect to PropagatedShock, discarding path and chain)",
-      "backend/crates/agents/qip-investment-agents/src/reasoning.rs:57-130 (CausalAnalyst::analyse; evidence only as an 'unevidenced links' caveat)",
-      "backend/crates/agents/qip-investment-agents/src/chief.rs:288",
-      "test: backend/crates/services/qip-world-model/tests/understanding.rs::a_shock_propagates_and_attenuates_with_each_hop (line 321)",
-      "test: backend/crates/services/qip-world-model/tests/understanding.rs::competitive_substitution_flips_the_sign (line 343)",
-      "test: backend/crates/services/qip-world-model/tests/understanding.rs::propagation_terminates_on_a_cycle (line 404)",
-      "test: backend/crates/services/qip-world-model/tests/understanding.rs::a_shock_at_the_supplier_reaches_the_customers_customer (line 1128)"
+      "backend/crates/services/qip-world-model/src/inference.rs (EdgeCitation, CausalPath, Intervention, CausalGraph::intervene, MAX_PATHS)",
+      "backend/crates/services/qip-world-model/src/causal.rs (Effect::edges; outgoing_indexed / incoming_indexed)",
+      "backend/crates/services/qip-world-model/tests/inference.rs :: an_intervention_reaches_exactly_the_descendants_along_directed_paths_that_cite_their_edges_and_evidence (150 generated DAGs with parallel claims; affected set against an independent transitive closure, every path checked edge by edge, path counts against an independent count, sinks, point in time, and the refusal past the bound). Mutations: not following a path onward failed the descendant assertion ({v1,v3,v4} against {v1..v5}); citing an edge without its evidence failed the evidence assertion.",
+      "backend/crates/services/qip-world-model/tests/inference.rs :: a_propagated_effect_cites_the_edge_it_travelled_where_two_claims_join_the_same_pair. Mutation: recording a fixed index failed it ([0] against [1]).",
+      "backend/crates/agents/qip-investment-agents/src/reasoning.rs (CausalAnalyst::analyse)",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs :: the_causal_analyst_cites_the_claim_a_shock_travelled_along_and_the_records_it_rests_on; the_causal_analyst_says_whether_a_target_it_could_not_reach_is_downstream_at_all (both through Organisation::dispatch). Mutations: dropping the edge's own records, judging evidence on every claim between the pair, and never finding the target downstream each failed one of them."
     ],
-    "gap": "(1) 'Each path cites its edges and the evidence for them' is not met by what propagate returns: an Effect names nodes and mechanisms, not the CausalEdge records or their evidence lists, so where two edges join the same pair the path is ambiguous; the kernel's stress consumer discards path and chain entirely, and CausalAnalyst reconstructs only a yes/no 'unevidenced' caveat. (2) The affected set is not 'exactly the intervened variable's descendants': propagate drops effects below magnitude_floor and beyond max_order (counted in `truncated`, never named), both production callers pass a non-zero floor and a finite order, only the strongest path per target is kept, and with a floor of 0 a descendant reached only through a zero-transmission edge is neither returned nor counted (magnitude.abs() > previous.abs() is false at 0). (3) No property test over generated DAGs asserts affected == descendants, that every returned path is a directed path, or the sink case; the named tests are hand-built two- and three-node fixtures.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -145,54 +142,48 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-world-model --test understanding — 'test result: ok. 56 passed; 0 failed' (run 2026-09-25). Proves attenuation, sign flips, lag timing and cycle termination on fixtures. No test covers descendant-set equality on generated DAGs or per-path edge/evidence citation.",
+    "verification": "cd backend && cargo test -p qip-world-model --test inference -- an_intervention_reaches a_propagated_effect && cargo test -p qip-investment-agents --test organisation the_causal_analyst",
     "work_item": "E09",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: downgraded COMPLETE -> PARTIAL. The propagation core is real, production-reached and tested, but the requirement's evidence-citation clause is unmet by the returned type (no edge ids, no evidence), the production affected set is floor/order-truncated rather than the full descendant set, the kernel consumer throws the path away, and no test follows the requirement's generated-DAG method. Closing it: carry edge indices and evidence on Effect, expose an unfloored descendant query, and add the generated-DAG property test. | prior note: This is the strongest-covered REASON requirement in the current tree: production-reached, hardened, and directly tested with named property-style tests (cycle termination, sign flips, attenuation, lag timing)."
+    "notes": "2026-10-05: Closed by inference.rs and the analyst wiring. Two limits on 'integrated', stated rather than implied. (1) The tests drive Organisation::dispatch, not a kernel cycle. (2) On a deployed platform the opportunity engine names the same subject as a brief's entity and instrument (qip-opportunity-engine/src/engine.rs sets affected_entities to [subject]), so the analyst's origin is ordinarily its own target: there the intervene arm is what runs, whenever the subject has an outgoing claim, and the citing arm needs a brief whose entity differs from its instrument. Found on the way and fixed, because the test could not pass without it: the analyst passed its floor (0.02, documented as a fraction of the shock) to propagate as an absolute magnitude against a 0.01 reference shock, so every effect on every desk was truncated and the analyst could report nothing but 'no data'; the floor is now scaled by the shock, and reverting that fails the first analyst test on its premise. Not changed: the kernel's stress_through_the_graph still maps Effect to PropagatedShock without the path, and Effect::explain still prints magnitude * 100 as 'of the original move', which is only true of a unit shock. | prior note: verify: downgraded COMPLETE -> PARTIAL. The propagation core is real, production-reached and tested, but the requirement's evidence-citation clause is unmet by the returned type (no edge ids, no evidence), the production affected set is floor/order-truncated rather than the full descendant set, the kernel consumer throws the path away, and no test follows the requirement's generated-DAG method. Closing it: carry edge indices and evidence on Effect, expose an unfloored descendant query, and add the generated-DAG property test. | prior note: This is the strongest-covered REASON requirement in the current tree: production-reached, hardened, and directly tested with named property-style tests (cycle termination, sign flips, attenuation, lag timing)."
   },
   {
     "id": "REASON-007",
-    "status": "PARTIAL",
-    "current": "qip_world_model::confounder::{Confounder, ConfounderSet} (backend/crates/services/qip-world-model/src/confounder.rs) distinguishes Confounder::observed (a series, genuinely regressed out via qip_numerics::stats::granger_causality_controlling_for) from Confounder::unobserved (named but unmeasurable, which marks the resulting edge EdgeStanding::Suggestive rather than Established, in qip_world_model::causal). Reached from production via qip_kernel::causal_review::audit_controls (causal_review.rs:224-300), which re-runs each temporal-precedence edge through granger::establish_temporal_precedence_controlling_for with one measured cross-sectional factor as an observed Confounder, assembled by Platform::causal_review (platform.rs:10045, called at :9901). central/causal.rs (the causal-digest producer) does not use confounders.",
+    "status": "COMPLETE",
+    "current": "qip_world_model::inference::CausalGraph::identify(treatment, outcome, known_at) derives the answer from the graph's own structure and returns one of three verdicts. Identified names the adjustment set it used — the treatment's parents that connect to the outcome without passing through the treatment, plus any common cause a direct edge records it was established under — and the confounders (variables upstream of the treatment and of the outcome by a route avoiding the treatment). NoCausalPath says the graph holds no directed path, so any association is confounding. Unidentified, with its reason, is returned for an unobserved common cause recorded on any edge touching the treatment and for a graph with a feedback loop; no estimate is offered. Conservative in one stated place: a latent adjacent to the treatment always answers Unidentified, though a fuller criterion could sometimes still identify the effect. The caller-named control of confounder.rs and causal_review::audit_controls is unchanged.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/confounder.rs:1-40,95-207",
-      "backend/crates/services/qip-world-model/src/causal.rs (EdgeStanding::Suggestive)",
-      "backend/crates/runtime/qip-kernel/src/causal_review.rs:224-300 (audit_controls: one platform-chosen cross-sectional factor)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:9901,10045 (causal_review)",
-      "test: backend/crates/services/qip-world-model/tests/confounders.rs::an_edge_established_under_a_control_records_what_it_was_adjusted_for (line 50)",
-      "test: backend/crates/services/qip-world-model/tests/confounders.rs::an_unobserved_confounder_makes_the_edge_suggestive_and_never_raises_its_confidence (line 100)",
-      "test: backend/crates/tests/qip-acceptance/tests/cognition.rs::an_unobserved_confounder_cannot_reach_a_regression_across_the_crate_boundary (line 240)"
+      "backend/crates/services/qip-world-model/src/inference.rs (Identification, CausalGraph::identify)",
+      "backend/crates/services/qip-world-model/tests/inference.rs :: the_adjustment_set_blocks_every_backdoor_path_and_an_unobserved_confounder_is_unidentified (250 generated DAGs; every backdoor path enumerated and judged by a d-separation walk written in the test, nothing downstream of the treatment adjusted for, confounders against an independent closure, all three verdicts asserted to occur; then the textbook fork, a latent confounder, a declared control, a feedback loop and an unknown variable by hand). Mutations: adjusting for nothing left a backdoor path open and failed; ignoring unobserved common causes failed; counting causes that act only through the treatment as confounders failed ({v0} against {})."
     ],
-    "gap": "This is bivariate confounder adjustment where the caller names the confounders (up to MAX_CONFOUNDERS=8), not the fabric identifying confounders itself from graph structure, and there is no general backdoor-path/adjustment-set computation over an arbitrary causal graph, nor an explicit 'unidentified' verdict distinct from 'suggestive'. The requirement's 'identifies the confounders' and 'states the adjustment set' clauses are not met — the caller supplies confounders rather than the fabric deriving an adjustment set from the graph's own structure.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [
       "REASON-006"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-world-model --test confounders — 'test result: ok. 5 passed; 0 failed' (run 2026-09-25).",
+    "verification": "cd backend && cargo test -p qip-world-model --test inference the_adjustment_set_blocks_every_backdoor_path_and_an_unobserved_confounder_is_unidentified",
     "work_item": "E09",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status and flags unchanged. Evidence corrected: the assessor cited central/causal.rs as a production composer of the controlled test; it is not (it produces the causal digest and uses no confounder). The only production use is causal_review::audit_controls, which supplies a single platform-chosen factor — still not a graph-derived adjustment set. | prior note: The mechanism this requirement is closest to graded up from would be adding automatic backdoor-set discovery over CausalGraph (walking incoming/outgoing edges to find common ancestors of cause and effect) rather than requiring the caller to name confounders by hand."
+    "notes": "2026-10-05: Closed by CausalGraph::identify. integrated=false: no composition root, kernel stage or cell calls it yet; the earlier integrated=true on this row described the narrower mechanism named in the prior notes, which is still reached. The natural caller is Platform::discover_temporal_precedence / causal_review, which still choose their one control themselves. | prior note: verify: status and flags unchanged. Evidence corrected: the assessor cited central/causal.rs as a production composer of the controlled test; it is not (it produces the causal digest and uses no confounder). The only production use is causal_review::audit_controls, which supplies a single platform-chosen factor — still not a graph-derived adjustment set. | prior note: The mechanism this requirement is closest to graded up from would be adding automatic backdoor-set discovery over CausalGraph (walking incoming/outgoing edges to find common ancestors of cause and effect) rather than requiring the caller to name confounders by hand."
   },
   {
     "id": "REASON-008",
-    "status": "PARTIAL",
-    "current": "qip_world_model::causal::CausalGraph::propagate (backend/crates/services/qip-world-model/src/causal.rs:1466) computes a forward shock's downstream magnitude given the graph's own mechanisms and transmissions, which is structurally the same computation a counterfactual ('what would Y have been had X moved by this much') needs, and Effect::explain (causal.rs:922) narrates the mechanism chain with the graph edges it used. qip_twin::counterfactual::CounterfactualEngine (backend/crates/services/qip-twin/src/counterfactual.rs) separately prices decision alternatives the platform did not take, reached from qip-kernel's LEARN stage — but that engine answers 'what if the platform had acted differently', not 'what does the causal graph imply would have happened if a named variable had taken a different value', which is this requirement's specific question.",
+    "status": "COMPLETE",
+    "current": "qip_world_model::inference::CausalGraph::counterfactual(variable, observed, hypothetical, outcome, observed_outcome, known_at) states what the graph implies the outcome would have been: the observed outcome plus the change at the variable times the signed transmission summed over every directed path, everything else held as observed. The result carries the total effect and every path with its EdgeCitations (edge position, mechanism, evidence ids), and Counterfactual::explain renders it as a sentence naming each edge and its evidence. Each edge passes on CausalEdge::signed_transmission, the same quantity propagate uses. Refused rather than answered: a pair with no path (no recorded mechanism is not evidence of no effect), a graph with a feedback loop, and a value that is not a number.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/causal.rs:920-942,1466-1558",
-      "backend/crates/services/qip-twin/src/counterfactual.rs:494,544,639,818",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:201-206,16209,16211",
-      "test: backend/crates/services/qip-world-model/tests/understanding.rs::an_effect_explains_itself_in_words (line 962)"
+      "backend/crates/services/qip-world-model/src/inference.rs (Counterfactual, CausalGraph::counterfactual)",
+      "backend/crates/services/qip-world-model/src/causal.rs (CausalEdge::signed_transmission)",
+      "backend/crates/services/qip-world-model/tests/inference.rs :: a_counterfactual_outcome_equals_the_hand_computed_value_and_cites_the_edges_it_used (a three-edge structural model with known equations, one route sign-flipped: 0.007 + (0.01 - 0.03) * (0.5*0.4 - 0.1) = 0.005; both routes and all three edges cited with their evidence; point in time; the three refusals). Mutation: ignoring the mechanism's sign failed the hand-computed total."
     ],
-    "gap": "No function exists framed as 'observed outcome at Y, counterfactual value of X, explain the implied difference'; CausalGraph::propagate answers a forward what-if from a hypothetical shock but nothing computes or narrates the counterfactual against an actually observed outcome, and qip-twin's counterfactual engine answers a structurally different question (decision alternatives, not causal-graph variable values).",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -200,36 +191,33 @@
       "REASON-006"
     ],
     "blocked_by": "",
-    "verification": "No test exists for this specific framing. propagate()'s own tests (understanding.rs) prove the underlying mechanism but not a counterfactual-explanation API built on it.",
+    "verification": "cd backend && cargo test -p qip-world-model --test inference a_counterfactual_outcome_equals_the_hand_computed_value_and_cites_the_edges_it_used",
     "work_item": "E09",
     "tier": "T2",
     "size": "M",
-    "notes": "Cheapest path is likely a thin wrapper over CausalGraph::propagate/explanations rather than new machinery: feed the actual observed magnitude at the outcome and the graph's edges back through to compute what a different value at the named cause would imply, and cite the same path/evidence propagate already tracks."
+    "notes": "2026-10-05: Closed by CausalGraph::counterfactual. integrated=false: no composition root, kernel stage or cell calls it. The model is linear by construction — it is the graph's own transmission arithmetic — and qip-twin's CounterfactualEngine remains the separate engine for decision alternatives. | prior note: Cheapest path is likely a thin wrapper over CausalGraph::propagate/explanations rather than new machinery: feed the actual observed magnitude at the outcome and the graph's edges back through to compute what a different value at the named cause would imply, and cite the same path/evidence propagate already tracks."
   },
   {
     "id": "REASON-009",
-    "status": "PARTIAL",
-    "current": "Bitemporal ordering is structural throughout qip_world_model: Fact::holds(valid_at, known_at) (backend/crates/services/qip-world-model/src/graph.rs:110-127) governs every point-in-time query, and CausalEdge::lag is a qip_core::time::Duration (unsigned), so CausalGraph::propagate's expected_at = current.expected_at.saturating_add(edge.lag) can never place an effect before its cause (causal.rs:1522). No effect-before-cause ordering test failure is reachable through the causal path.",
+    "status": "COMPLETE",
+    "current": "qip_reasoning_engine::temporal::Timeline answers the ordering question as a capability: order(a, b, as_of) returns Before, After, Concurrent, Same or Undecided. One event precedes another when it occurred strictly earlier or a chain of causal links leads from it to the other; Timeline::link refuses a link whose effect is already ordered before its cause (by time or through links held), which is what makes the relation a strict partial order. Every query reads only events and links knowable at as_of, and an event not yet knowable answers Undecided exactly as one never recorded does. The structural guarantees the row already cited (bitemporal Fact::holds, unsigned causal lag) are unchanged.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/graph.rs:85-142",
-      "backend/crates/services/qip-world-model/src/causal.rs:1466-1558 (lag as unsigned Duration, expected_at is monotonic forward)",
-      "test: backend/crates/services/qip-world-model/tests/understanding.rs::a_fact_is_invisible_before_it_was_known_even_if_it_was_already_true (line 35)",
-      "test: backend/crates/services/qip-world-model/tests/understanding.rs::retrieval_from_the_world_model_respects_the_point_in_time_cutoff (line 1597)",
-      "test: backend/crates/services/qip-world-model/tests/understanding.rs::effects_are_timed_by_the_accumulated_lag (line 373)"
+      "backend/crates/services/qip-reasoning-engine/src/temporal.rs (Event, Order, Timeline::record / link / order)",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs :: event_ordering_is_a_strict_partial_order_that_never_puts_an_effect_before_its_cause_and_reads_only_what_was_knowable (80 generated event sets with frequent equal timestamps and random causal links; irreflexive, asymmetric and transitive as of every instant; every held link orders cause before effect and every refusal is for the stated reason; as of each instant the answers equal those of a timeline only ever told what was knowable by then; every arm asserted to occur). Mutations: accepting a link whose effect precedes its cause failed (After against Before); reading links not yet knowable failed the as-of comparison (After against Concurrent)."
     ],
-    "gap": "There is no dedicated 'temporal/event logic' component answering generic before/after or causal-ordering queries as its own capability — ordering is enforced implicitly by Timestamp comparison and the type of Duration, not by a queryable reasoner, and no property test proves the ordering relation is a strict partial order (irreflexive, transitive) across arbitrary events as the requirement's verification method asks.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-world-model --test understanding retrieval_from_the_world_model_respects_the_point_in_time_cutoff effects_are_timed_by_the_accumulated_lag",
+    "verification": "cd backend && cargo test -p qip-reasoning-engine --test reasoners event_ordering_is_a_strict_partial_order_that_never_puts_an_effect_before_its_cause_and_reads_only_what_was_knowable",
     "work_item": "E09",
     "tier": "T1",
     "size": "M",
-    "notes": "The guarantee holds structurally (unsigned Duration, bitemporal Timestamp comparisons) but is not exposed or tested as a general-purpose temporal-ordering query; closing this is mostly a formalisation/testing task rather than new mechanism."
+    "notes": "2026-10-05: Closed by temporal.rs. integrated=false: no composition root, kernel stage or cell calls it yet; the earlier integrated=true on this row described the narrower mechanism named in the prior notes, which is still reached.  | prior note: The guarantee holds structurally (unsigned Duration, bitemporal Timestamp comparisons) but is not exposed or tested as a general-purpose temporal-ordering query; closing this is mostly a formalisation/testing task rather than new mechanism."
   },
   {
     "id": "REASON-010",
@@ -255,55 +243,49 @@
   },
   {
     "id": "REASON-011",
-    "status": "PARTIAL",
-    "current": "qip_execution_engine::order::OrderState::transition (backend/crates/services/qip-execution-engine/src/order.rs:308-359) is a hard-coded, exhaustive-match state machine for orders (Created -> RiskApproved -> Working -> PartiallyFilled/Filled/Cancelled/Rejected/Expired) that refuses any move not in its table and names the illegal move in the error. It is reached from production via qip_execution_engine::oms (oms.rs:784,800,871) inside the ACT stage. qip_lifecycle::LifecycleLedger (backend/crates/services/qip-lifecycle/src/ledger.rs) separately governs strategy promotion/demotion rungs with its own transition discipline.",
+    "status": "COMPLETE",
+    "current": "qip_reasoning_engine::lifecycle::Lifecycle is a lifecycle definition as data — a name, a version, the states a sequence may open in and the permitted moves — and Lifecycle::judge decides a whole observed or proposed sequence against it, returning an Admissibility that cites the lifecycle and version and, when inadmissible, the first break: its index, the state it was entered from (none when the opening state is not an initial one) and the state that could not be entered. An empty sequence is refused rather than reported admissible. The hand-written order and strategy-rung machines the row cited are unchanged and are not expressed through it.",
     "evidence": [
-      "backend/crates/services/qip-execution-engine/src/order.rs:101-121,303-359",
-      "backend/crates/services/qip-execution-engine/src/oms.rs:784,800,871",
-      "backend/crates/services/qip-lifecycle/src/ledger.rs:154-189",
-      "test: backend/crates/services/qip-execution-engine/tests/execution.rs::an_order_cannot_start_working_without_a_risk_approval (line 936)",
-      "test: backend/crates/services/qip-execution-engine/tests/execution.rs::a_cancelled_order_cannot_be_filled_by_a_late_report (line 900)"
+      "backend/crates/services/qip-reasoning-engine/src/lifecycle.rs (Lifecycle, Break, Admissibility, Lifecycle::judge)",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs :: the_fabric_admits_exactly_the_sequences_a_lifecycle_allows_and_names_the_first_break (a contract lifecycle; 4,000 generated sequences including an undeclared state, each judged against a reference walk over a separately written table; the prefix before every break re-judged admissible; both verdicts and late breaks asserted to occur). Mutations: reporting the last break instead of the first failed ((4, suspended, void) against (1, draft, suspended)); accepting any opening state failed."
     ],
-    "gap": "Both implementations are fixed, hand-written Rust state machines for one specific lifecycle each (orders; strategy rungs), not a generic reasoner that takes an arbitrary lifecycle definition as data and decides admissibility over it — the requirement asks for a capability that works for 'orders, contracts and positions' generically, tied to the ontology (REASON-005), which does not exist. There is no 'first inadmissible transition in a sequence' reporting either; transition() refuses one move at a time.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [
       "REASON-005"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-execution-engine --test execution an_order_cannot_start_working_without_a_risk_approval a_cancelled_order_cannot_be_filled_by_a_late_report",
+    "verification": "cd backend && cargo test -p qip-reasoning-engine --test reasoners the_fabric_admits_exactly_the_sequences_a_lifecycle_allows_and_names_the_first_break",
     "work_item": "E09",
     "tier": "T2",
     "size": "M",
-    "notes": "The order-lifecycle slice is hardened and production-reached, which is real evidence the *behaviour* the requirement wants (illegal transitions refused, named) is achievable; what is missing is generalising it into a data-driven lifecycle reasoner rather than one hard-coded machine per domain."
+    "notes": "2026-10-05: Closed by lifecycle.rs. integrated=false: no composition root, kernel stage or cell calls it yet; the earlier integrated=true on this row described the narrower mechanism named in the prior notes, which is still reached. Not tied to an ontology: REASON-005's ontology does not exist, and the requirement's statement does not ask for it. | prior note: The order-lifecycle slice is hardened and production-reached, which is real evidence the *behaviour* the requirement wants (illegal transitions refused, named) is achievable; what is missing is generalising it into a data-driven lifecycle reasoner rather than one hard-coded machine per domain."
   },
   {
     "id": "REASON-012",
-    "status": "PARTIAL",
-    "current": "qip_reasoning_engine::bayes (backend/crates/services/qip-reasoning-engine/src/bayes.rs) implements log-odds Bayesian belief update (bayes::update, BeliefUpdate, EvidenceStrength) with per-origin factor weighting; every conclusion the REASON stage produces carries Hypothesis::effective_confidence() as a probability, never a bare verdict. Reached every cycle via qip_reasoning_engine::engine::ReasoningEngine::reason, called from qip-kernel/src/platform.rs stage_reason (line 10794).",
+    "status": "COMPLETE",
+    "current": "qip_reasoning_engine::network::Network is a Bayesian network over discrete variables: each Node holds its states, its parents and one distribution per combination of parent states, and Network::posterior(query, evidence) returns the whole distribution over the queried node's states by exact enumeration, so every answer is a probability and the answers over an exhaustive set sum to one. Node::uncertain_rule is the two-row case — the conclusion holds with one probability when the premise does and another when it does not. Refused: a node declared before a parent (which rules out a cycle), a row that is not a distribution, a joint above MAX_JOINT (65,536) assignments, and evidence the network gives probability zero. The single-hypothesis log-odds update in bayes.rs, which the REASON stage runs, is unchanged.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/bayes.rs:20-225",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:176-177,4519,10794,12282-12285",
-      "test: backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::log_odds_round_trips (line 140)",
-      "test: backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::no_finite_evidence_drives_a_belief_to_certainty (line 148)",
-      "test: backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::a_poorly_calibrated_dissenter_is_not_discounted_so_a_factor_never_raises_a_posterior (line 483)"
+      "backend/crates/services/qip-reasoning-engine/src/network.rs (Node, Node::uncertain_rule, Network::new / posterior, MAX_JOINT, TOLERANCE)",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs :: posteriors_are_probabilities_that_sum_to_one_and_favourable_evidence_never_lowers_a_hypothesis (the sprinkler network against a hand-computed 0.16038/0.44838; an uncertain rule against 0.048 and 0.03/0.048; 400 generated networks with two to four hypotheses and chained evidence nodes — every posterior in [0,1], sums within 1e-9, and on star networks evidence with a likelihood ratio above 1, read from the table alone, never lowers the hypothesis; both directions asserted to occur). Mutations: not normalising and ignoring evidence each failed the hand-computed case; mis-normalising only sets wider than a pair failed the sum; conditioning generated evidence on the wrong state failed the likelihood-ratio assertion."
     ],
-    "gap": "This is single-hypothesis log-odds updating, not the 'Bayesian structures' (multi-hypothesis Bayesian networks with posteriors over an exhaustive, mutually-exclusive hypothesis set summing to 1) the requirement's verification method specifically tests; there is no general Bayesian-network evaluator, and 'uncertain rules' (probabilistic rule evaluation, distinct from probabilistic evidence weighing) is not implemented at all.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-reasoning-engine --test reasoning log_odds_round_trips no_finite_evidence_drives_a_belief_to_certainty",
+    "verification": "cd backend && cargo test -p qip-reasoning-engine --test reasoners posteriors_are_probabilities_that_sum_to_one_and_favourable_evidence_never_lowers_a_hypothesis",
     "work_item": "E09",
     "tier": "T2",
     "size": "M",
-    "notes": "The single-hypothesis half is hardened and reached every cycle; extending to a general Bayesian-network evaluator over multiple mutually-exclusive hypotheses (posteriors summing to 1) and uncertain-rule evaluation is the remaining scope."
+    "notes": "2026-10-05: Closed by network.rs. integrated=false: no composition root, kernel stage or cell calls it yet; the earlier integrated=true on this row described the narrower mechanism named in the prior notes, which is still reached. Inference is by enumeration and so bounded; nothing approximates past the bound. | prior note: The single-hypothesis half is hardened and reached every cycle; extending to a general Bayesian-network evaluator over multiple mutually-exclusive hypotheses (posteriors summing to 1) and uncertain-rule evaluation is the remaining scope."
   },
   {
     "id": "REASON-013",
@@ -351,26 +333,25 @@
   },
   {
     "id": "REASON-015",
-    "status": "MISSING",
-    "current": "nothing, in-tree or otherwise. No SAT, SMT or CSP solver (Z3 or any in-tree equivalent) exists anywhere in the workspace; grep for SAT/SMT/CSP and for z3 both return zero relevant hits (the only SAT/SMT/CSP matches are unrelated false positives — e.g. 'SATURDAY', 'FORECAST', field names containing those letters).",
+    "status": "COMPLETE",
+    "current": "qip_reasoning_engine::constraint::Problem is a constraint-satisfaction problem over declared finite domains, with constraints in two forms: a boolean Cond in the rule packs' own language (a SAT instance when the domains are boolean and the conditions clauses) and a linear comparison over integer variables. Problem::solve returns Answer::Satisfied with an assignment, or Answer::Unsatisfiable with a conflicting subset found by deletion — itself unsatisfiable, and satisfiable again if any one member is removed. A malformed problem (duplicate name, empty domain, undeclared variable) and a search space above MAX_ASSIGNMENTS (2^20) are refused, not reported unsatisfiable. This is an in-tree backtracking search, not Z3 (refused under ADR 0099 C5); it has no SMT theories beyond bounded linear integer arithmetic.",
     "evidence": [
-      "grep -rn \"\\\\bSAT\\\\b|\\\\bSMT\\\\b|\\\\bCSP\\\\b\" backend/crates: only unrelated matches (financial ladders, observability, auth)",
-      "grep -rn \"\\\\bz3\\\\b\" backend/crates: no matches",
-      "REASON-015's own requirement record carries policy_flags [\"NON_RUST\", \"NEW_DEPENDENCY\"] and names Z3 as the blueprint's intended vehicle (G p9, G p11)"
+      "backend/crates/services/qip-reasoning-engine/src/constraint.rs (Variable, Form, Constraint, Problem::solve, Answer, MAX_ASSIGNMENTS)",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs :: a_constraint_problem_yields_a_satisfying_assignment_or_a_conflicting_subset_that_is_itself_unsatisfiable (600 generated problems mixing clauses and linear constraints; every assignment checked against each constraint's meaning written a second time over raw integers; every 'unsatisfiable' confirmed by that brute force, the conflict confirmed unsatisfiable and minimal; both verdicts and strict-subset conflicts asserted to occur; a CNF instance whose conflict is the four clauses and not the fifth). Mutations: skipping the minimisation failed the minimality assertion; not testing constraints during the search returned an assignment that violated one. Both re-run after the search was generalised for REASON-017, and both still fail."
     ],
-    "gap": "No CSP/SAT/SMT capability of any kind. The blueprint's named vehicle, Z3, is refused under ADR 0099 C5, but the behaviour the requirement states — a satisfying assignment, or 'unsatisfiable' with a conflicting subset that is itself unsatisfiable — needs no refused crate: a backtracking CSP or DPLL/CDCL SAT solver with deletion-based conflict-subset minimisation is plain in-tree Rust over serde types, the same kind of hand-built solver the workspace already carries (qip_numerics::lp simplex, qp ADMM, anneal::solve_exact enumeration). The gap is unbuilt work, not an owner decision.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. The requirement's own method (every assignment satisfies every constraint; every 'unsat' confirmed by brute force on small instances; the reported conflicting subset is itself unsat) is directly testable against an in-tree solver.",
+    "verification": "cd backend && cargo test -p qip-reasoning-engine --test reasoners a_constraint_problem_yields_a_satisfying_assignment_or_a_conflicting_subset_that_is_itself_unsatisfiable",
     "work_item": "E09",
     "tier": "T4",
     "size": "XL",
-    "notes": "verify: reclassified BLOCKED (C5) -> MISSING. C5 refuses Z3 as a vehicle; it does not refuse the behaviour, which can be built in-tree without any new crate or non-Rust runtime (the rule given to the assessor: semantics buildable in-tree are PARTIAL/MISSING with a note, not BLOCKED). Flags stay false — nothing implements it. Choosing an in-tree solver over Z3 is worth recording in the C5 research-runtime ADR, but that is a design record, not a blocker. work_item moved E99 -> E09. | prior note: Genuinely blocked as the blueprint specifies it (Z3, C5). An in-tree Rust CSP/SAT solver built from scratch would sidestep the dependency conflict but is a substantial standalone engineering effort the blueprint does not describe and would need its own ADR to authorise as the chosen path."
+    "notes": "2026-10-05: Closed by constraint.rs, on the terms the gap note set out: plain in-tree Rust, no refused crate. integrated=false: no composition root, kernel stage or cell calls it. Scope: CSP and SAT formulations over enumerable domains; the requirement's 'or SMT' is met only as bounded linear integer arithmetic, and a problem past the bound is refused. | prior note: verify: reclassified BLOCKED (C5) -> MISSING. C5 refuses Z3 as a vehicle; it does not refuse the behaviour, which can be built in-tree without any new crate or non-Rust runtime (the rule given to the assessor: semantics buildable in-tree are PARTIAL/MISSING with a note, not BLOCKED). Flags stay false — nothing implements it. Choosing an in-tree solver over Z3 is worth recording in the C5 research-runtime ADR, but that is a design record, not a blocker. work_item moved E99 -> E09. | prior note: Genuinely blocked as the blueprint specifies it (Z3, C5). An in-tree Rust CSP/SAT solver built from scratch would sidestep the dependency conflict but is a substantial standalone engineering effort the blueprint does not describe and would need its own ADR to authorise as the chosen path."
   },
   {
     "id": "REASON-016",
@@ -406,20 +387,14 @@
   },
   {
     "id": "REASON-017",
-    "status": "PARTIAL",
-    "current": "qip_optimization_engine::problem::PortfolioProblem::to_qubo (backend/crates/services/qip-optimization-engine/src/problem.rs:379-394) encodes a cardinality-constrained mean-variance/tracking portfolio problem as a Qubo, and qip_optimization_engine::router::ComputeRouter::solve (router.rs:196-290) always computes the classical solution first (exact enumeration of the same QUBO up to 22 variables, else annealing, router.rs:400-431), tries the quantum path only where structure justifies it, and accepts the quantum answer only if it beats classical by a stated margin (ADR 0006, tie goes classical). qip_numerics::anneal provides Ising/QUBO conversion, annealing and solve_exact. The QUBO path is NOT reached in any deployed process: to_qubo runs only when PortfolioProblem::is_discrete (problem.rs:219-221, i.e. a cardinality is set), PortfolioConstructor sets one only from Mandate::maximum_holdings (construction.rs:354-356), Mandate::default() leaves it None (construction.rs:91), and no composition root in backend/crates/apps sets it — so the kernel's PortfolioConstructor always routes to the continuous QP.",
+    "status": "COMPLETE",
+    "current": "qip_reasoning_engine::constraint::Problem::to_qubo(objective) expresses a constraint problem as a qip_numerics::anneal::Qubo where the problem admits it: every variable takes 0 or 1 and every constraint is a linear equality. Each equality becomes penalty * (sum - bound)^2 with a penalty above the objective's whole range, so on feasible assignments the energy is the objective. Problem::decode reads a bit vector back and refuses one that breaks a constraint, so neither a sampler's non-minimum nor the minimum of an unsatisfiable problem comes back as a solution. Problem::minimise is the classical baseline (ADR 0006), an exhaustive search on the problem as posed rather than on the encoding. A non-binary variable and a constraint that is not a linear equality are refused by name. The Qubo is the type qip_quantum::solver::QuboSolver takes, so the formulation can be handed to the quantum path's port. The portfolio-specific encoding in qip-optimization-engine is unchanged.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/problem.rs:219-221 (is_discrete), :379-394 (to_qubo)",
-      "backend/crates/services/qip-optimization-engine/src/router.rs:96,131,196,204,219,290,400-431",
-      "backend/crates/services/qip-portfolio-engine/src/construction.rs:91 (maximum_holdings: None), :354-356 (cardinality only from the mandate), :366",
-      "grep -rn \"maximum_holdings\\|with_cardinality\" backend/crates/apps backend/crates/runtime: no setter outside tests",
-      "test: backend/crates/libs/qip-numerics/tests/optimisation.rs::qubo_delta_matches_a_full_re_evaluation (line 303)",
-      "test: backend/crates/libs/qip-numerics/tests/optimisation.rs::ising_conversion_preserves_energy (line 329)",
-      "test: backend/crates/libs/qip-numerics/tests/optimisation.rs::annealing_finds_the_exact_optimum_on_small_instances (line 275)",
-      "test: backend/crates/services/qip-optimization-engine/tests/optimization.rs::a_qubo_encoding_records_what_the_reduction_dropped (line 104)",
-      "test: backend/crates/services/qip-optimization-engine/tests/optimization.rs::the_cardinality_penalty_makes_the_right_count_optimal (line 118)"
+      "backend/crates/services/qip-reasoning-engine/src/constraint.rs (Problem::to_qubo / decode / minimise, Optimum)",
+      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs :: a_constraint_problem_as_a_qubo_decodes_to_the_classical_optimum_of_the_problem_as_posed (600 generated problems; the QUBO minimum brute-forced with qip_numerics::anneal::solve_exact and decoded; the decoded assignment satisfies the constraints as judged on raw integers and attains the optimum of an enumeration written in the test, which minimise also returns; unsatisfiable instances are refused on decode; solved, unsatisfiable and penalty-binding cases asserted to occur). Mutations: no penalty, a penalty of one half, dropping the squared constraint's cross terms, minimise keeping the costliest, and decode accepting anything each failed.",
+      "backend/crates/tests/qip-acceptance/tests/cognition.rs :: a_constraint_problem_the_fabric_poses_as_a_qubo_is_answered_through_the_quantum_paths_solver_port (the seam neither crate can see: the QUBO handed to qip_quantum's QuboSolver trait and its candidate decoded to the baseline). Mutation: no penalty failed it at the decode."
     ],
-    "gap": "The QUBO encoding is specific to the portfolio-optimisation problem shape (mean-variance/tracking), not a general facility that can take an arbitrary constraint problem and express it as a QUBO; the requirement's verification method (brute-force the QUBO minimum on generated small constraint problems and compare to the classical solver's optimum) is not tested in that general form — only the portfolio-specific encoding and the annealing/Ising primitives are tested. In addition the portfolio QUBO itself never runs in a deployed process (no composition root sets a cardinality), and the 'classical optimum' it is compared to is exhaustive enumeration of the same QUBO, so the comparison cannot detect an encoding that decodes to an infeasible or suboptimal answer for the original constrained problem.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -430,11 +405,11 @@
       "REASON-016"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-numerics --test optimisation — 'test result: ok. 32 passed' and cargo test -p qip-optimization-engine --test optimization — 'test result: ok. 24 passed' (run 2026-09-25). These cover the QUBO primitives and the portfolio encoding on fixtures, not generated constraint problems.",
+    "verification": "cd backend && cargo test -p qip-reasoning-engine --test reasoners a_constraint_problem_as_a_qubo_decodes_to_the_classical_optimum_of_the_problem_as_posed && cargo test -p qip-acceptance --test cognition a_constraint_problem_the_fabric_poses_as_a_qubo_is_answered_through_the_quantum_paths_solver_port",
     "work_item": "E10",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status stays PARTIAL; integrated and deployable set true -> false. The assessor said the QUBO path is reached from production via PortfolioConstructor::size; it is reachable only when a mandate sets maximum_holdings, Mandate::default() does not, and no app sets it, so every deployed cycle solves the continuous QP and to_qubo is exercised only by tests. | prior note: Not blocked (policy_flags were deliberately removed from this requirement per its own notes: building a QUBO matrix is arithmetic and the platform already reaches Qiskit Runtime). The gap is generality — today's QUBO path only ever encodes a portfolio problem."
+    "notes": "2026-10-05: Closed by to_qubo/decode/minimise. integrated=false: no composition root, kernel stage or cell calls it, and the acceptance test offers the QUBO to the port's classical entrant, the only one available without a hosted backend — nothing was sent to quantum hardware. Admits only 0/1 variables under linear equalities; an inequality needs slack bits this encoder does not add and is refused. The prior gap's other half still stands and is not this row's to close: the portfolio QUBO runs in no deployed process because no composition root sets a cardinality. | prior note: verify: status stays PARTIAL; integrated and deployable set true -> false. The assessor said the QUBO path is reached from production via PortfolioConstructor::size; it is reachable only when a mandate sets maximum_holdings, Mandate::default() does not, and no app sets it, so every deployed cycle solves the continuous QP and to_qubo is exercised only by tests. | prior note: Not blocked (policy_flags were deliberately removed from this requirement per its own notes: building a QUBO matrix is arithmetic and the platform already reaches Qiskit Runtime). The gap is generality — today's QUBO path only ever encodes a portfolio problem."
   },
   {
     "id": "REASON-018",
@@ -463,54 +438,50 @@
   },
   {
     "id": "REASON-019",
-    "status": "PARTIAL",
-    "current": "qip_world_model::causal::CausalGraph::explanations(target, known_at) (backend/crates/services/qip-world-model/src/causal.rs:1560-1573) returns incoming causal edges into a target ranked by transmission strength, the module doc explicitly framing it as 'the inverse question to propagation, and the one the reasoning engine asks when something moved and nobody knows why.' Reached from production via qip_kernel::platform::causal_context (platform.rs:11288-11308), which records the ranked candidates as CausalContextEdge (cause, mechanism, transmission, established) into an episode.",
+    "status": "COMPLETE",
+    "current": "qip_world_model::inference::CausalGraph::abduce(surprise, moves, known_at) takes a Surprise — a target, what was expected and what was observed — and what each possible cause was seen to do, and returns an Abduction: every incoming claim as a Candidate, best first. A candidate is scored by confidence in its edge times its fit, 1 / (1 + miss), where miss is the share of the surprise its cause's move, passed along the edge, fails to account for; a cause nobody observed accounts for none of it yet. Each candidate carries the edge's EdgeCitation with its evidence ids, the move that would explain the whole surprise, and its assumptions: that the recorded transmission held, or that the cause moved by a stated unobserved amount; that each suspected confounder did not move both; that an unevidenced or decayed claim still holds. Abduction::best names the best current explanation. CausalGraph::explanations, which ranks on transmission alone and which Platform::causal_context calls, is unchanged.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/causal.rs:1560-1573",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:11288-11308",
-      "test: backend/crates/services/qip-world-model/tests/understanding.rs::explanations_rank_the_most_likely_cause_first (line 934)"
+      "backend/crates/services/qip-world-model/src/inference.rs (Surprise, Candidate, Abduction, CausalGraph::abduce, MAX_CANDIDATES)",
+      "backend/crates/services/qip-world-model/tests/inference.rs :: abduction_ranks_the_planted_cause_of_a_surprise_first_with_its_evidence_and_assumptions (three claims into one instrument where the strongest link's cause did not move; the premise asserts explanations() ranks the planted cause second; abduce ranks it first with its evidence, score 0.9/1.1 and implied move by hand; the same question twice and with the claims recorded in reverse order gives the same ranking and scores). Mutation: ranking on transmission alone put the planted cause second and failed."
     ],
-    "gap": "explanations() ranks by transmission strength alone, not by how well each candidate explains the specific surprising magnitude observed; each candidate exposes is_evidenced() but not a stated set of assumptions; there is no framing of 'surprising observation -> abduction' anywhere — the function is queried generically for causal context, not triggered by a surprise signal; and the requirement's reproducibility-across-runs property for multiple ranked candidates is untested (the one existing test covers a single-candidate case).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [
       "REASON-006"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-world-model --test understanding explanations_rank_the_most_likely_cause_first",
+    "verification": "cd backend && cargo test -p qip-world-model --test inference abduction_ranks_the_planted_cause_of_a_surprise_first_with_its_evidence_and_assumptions",
     "work_item": "E09",
     "tier": "T2",
     "size": "M",
-    "notes": "The building block (ranked candidate causes with evidence status) exists and is reached; what is missing is the abductive framing itself (triggered by surprise, stating assumptions per candidate, tested with multiple ranked candidates)."
+    "notes": "2026-10-05: Closed by CausalGraph::abduce. integrated=false: no composition root, kernel stage or cell calls it yet; the earlier integrated=true on this row described the narrower mechanism named in the prior notes, which is still reached. So nothing in a running process is yet triggered by a surprise: the kernel's anomalies carry expected and observed values and are the natural trigger, and Platform::causal_context still records explanations(). | prior note: The building block (ranked candidate causes with evidence status) exists and is reached; what is missing is the abductive framing itself (triggered by surprise, stating assumptions per candidate, tested with multiple ranked candidates)."
   },
   {
     "id": "REASON-020",
-    "status": "PARTIAL",
-    "current": "Non-best candidates are retained, partially, which the assessor missed: Platform::causal_context (qip-kernel/src/platform.rs:11298-11312) records up to CAUSAL_CONTEXT_LIMIT = 5 (platform.rs:2173) of CausalGraph::explanations' ranked candidates — not only the best — as qip_ai::memory::episode::CausalContextEdge {cause, mechanism, transmission (the ranking score), established} (backend/crates/libs/qip-ai/src/memory/episode.rs:283-298) on every episode query and episode the cycle writes (platform.rs:11360,11494), held in bounded episodic memory. What is not kept is each candidate's evidence (CausalEdge::evidence is not copied), and nothing reads the retained candidates back to promote one when new evidence arrives: explanations() is re-derived from the live graph on every call. The reasoning engine's Hypothesis::leading_alternative is a hard-coded sentence (platform.rs:12349-12351), not a scored, retained candidate.",
+    "status": "COMPLETE",
+    "current": "qip_world_model::inference::Abduction is the retained record of one abduction: every candidate — not only the best — with its score, the EdgeCitation and evidence ids of the claim it rests on, and its assumptions, bounded at MAX_CANDIDATES (32) with the number dropped counted. Abduction::favour(edge, evidence, likelihood_ratio) weighs later evidence for one retained candidate, records the evidence id beside it and re-ranks; it takes no graph, so a candidate is promoted from the record as it was retained and nothing is derived again. The record serialises (serde). The episodic causal_context the row cited, which keeps a score but no evidence, is unchanged.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:2173 (CAUSAL_CONTEXT_LIMIT = 5), :11298-11312 (causal_context keeps the top five ranked candidates), :11360,11494 (written on episode queries and episodes), :12349-12351 (leading_alternative is a literal)",
-      "backend/crates/libs/qip-ai/src/memory/episode.rs:283-298 (CausalContextEdge: cause, mechanism, transmission, established — no evidence)",
-      "backend/crates/services/qip-world-model/src/causal.rs:1564-1573 (explanations is stateless)",
-      "test: backend/crates/runtime/qip-kernel/tests/episodic.rs::an_episode_records_the_causal_edges_the_graph_held_into_its_instrument_when_it_was_reasoned (line 626; holds exactly one candidate)",
-      "grep -rn \"AlternativeExplanation|RetainedHypothesis|abduct\" backend/crates: no retained-alternatives store (ChallengeKind::AlternativeExplanation is a red-team challenge, not a store)"
+      "backend/crates/services/qip-world-model/src/inference.rs (Abduction::best / favour, Candidate::later_evidence)",
+      "backend/crates/services/qip-world-model/tests/inference.rs :: the_alternatives_are_kept_with_scores_and_evidence_and_later_evidence_promotes_one_from_the_record (three candidates recorded with scores and evidence; the graph is dropped; evidence favouring the second-ranked promotes it with the same citation and assumptions, its retained score times the ratio and the new evidence id; the former best is second and untouched; evidence for a non-candidate and a non-positive ratio are refused). Mutation: recording the evidence without re-ranking left the old best in place and failed."
     ],
-    "gap": "Retention exists only as episodic recall context: candidates keep a score but not their evidence, and no code path promotes a retained candidate when later evidence favours it — every question is re-derived from the graph, which is exactly what the requirement forbids. The only test that reads causal_context holds a single candidate, so retention of non-best alternatives is never demonstrated.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": true,
+    "tested": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [
       "REASON-019"
     ],
     "blocked_by": "",
-    "verification": "No test demonstrates retention of more than one candidate or promotion from the retained record. The nearest, qip-kernel/tests/episodic.rs (line 626), proves one recorded edge matches the graph.",
+    "verification": "cd backend && cargo test -p qip-world-model --test inference the_alternatives_are_kept_with_scores_and_evidence_and_later_evidence_promotes_one_from_the_record",
     "work_item": "E09",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: upgraded MISSING -> PARTIAL. The assessor wrote that 'nothing persists the non-best candidates'; Platform::causal_context persists up to five ranked candidates with their transmission score into every episode (platform.rs:11298-11312,11360,11494; episode.rs:283-298), reached every cycle from qip-api's run_cycle. Evidence per candidate and promotion from the record are both absent, and no test shows more than one candidate retained, so tested stays false. | prior note: Bounded retention (the house rule) applies directly here: a small, capped per-target ranked-alternatives store keyed the same way qip_world_model already bounds working sets elsewhere (e.g. CAUSAL_SUPPORT_RETAINED=512, MAX_CONFOUNDERS=8) is the natural shape for closing this."
+    "notes": "2026-10-05: Closed by the Abduction record. integrated=false: no composition root, kernel stage or cell calls it yet; the earlier integrated=true on this row described the narrower mechanism named in the prior notes, which is still reached. Nothing persists an Abduction yet: it is a value its caller holds, and the bounded episodic store keeps causal_context, not this. | prior note: verify: upgraded MISSING -> PARTIAL. The assessor wrote that 'nothing persists the non-best candidates'; Platform::causal_context persists up to five ranked candidates with their transmission score into every episode (platform.rs:11298-11312,11360,11494; episode.rs:283-298), reached every cycle from qip-api's run_cycle. Evidence per candidate and promotion from the record are both absent, and no test shows more than one candidate retained, so tested stays false. | prior note: Bounded retention (the house rule) applies directly here: a small, capped per-target ranked-alternatives store keyed the same way qip_world_model already bounds working sets elsewhere (e.g. CAUSAL_SUPPORT_RETAINED=512, MAX_CONFOUNDERS=8) is the natural shape for closing this."
   }
 ]
