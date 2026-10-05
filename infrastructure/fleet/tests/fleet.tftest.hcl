@@ -20,7 +20,7 @@ mock_provider "google" {}
 
 variables {
   project_id = "algorik-platform-dev"
-  image      = "us-docker.pkg.dev/algorik-platform-dev/fleet/worker@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  image      = "us-east4-docker.pkg.dev/algorik-platform-dev/fleet/worker@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 }
 
 run "parallelism_over_forty_is_refused" {
@@ -85,7 +85,7 @@ run "an_image_pinned_by_tag_is_refused" {
   command = plan
 
   variables {
-    image = "us-docker.pkg.dev/algorik-platform-dev/fleet/worker:latest"
+    image = "us-east4-docker.pkg.dev/algorik-platform-dev/fleet/worker:latest"
   }
 
   expect_failures = [var.image]
@@ -149,8 +149,48 @@ run "everything_is_labelled" {
   assert {
     condition = alltrue([
       for k in ["env", "service", "owner", "cost-center"] :
-      contains(keys(google_storage_bucket.fleet.labels), k) && contains(keys(google_cloud_run_v2_job.fleet.labels), k)
+      contains(keys(google_storage_bucket.fleet.labels), k) && contains(keys(google_cloud_run_v2_job.fleet[0].labels), k) && contains(keys(google_artifact_registry_repository.fleet.labels), k)
     ])
-    error_message = "the bucket and the Job must carry env, service, owner and cost-center"
+    error_message = "the bucket, the Job and the image repository must carry env, service, owner and cost-center"
+  }
+}
+
+# The first apply happens before any image exists: it has to create the
+# repository the image is pushed to. Without this the root could only ever be
+# applied by somebody who already had an image, which nobody can have.
+run "without_an_image_there_is_no_job_and_the_rest_still_plans" {
+  command = plan
+
+  variables {
+    image = null
+  }
+
+  assert {
+    condition     = length(google_cloud_run_v2_job.fleet) == 0
+    error_message = "with no image the Job must not be planned: it would name an image that does not exist"
+  }
+
+  assert {
+    condition     = output.job_name == null
+    error_message = "job_name must be null while there is no Job"
+  }
+
+  assert {
+    condition     = google_artifact_registry_repository.fleet.format == "DOCKER"
+    error_message = "the image repository must still be planned without an image, or nothing can ever be pushed"
+  }
+
+  assert {
+    condition     = toset(output.worker_roles) == toset(["roles/aiplatform.user", "roles/storage.objectUser"])
+    error_message = "the worker's fence must be the same with and without a Job"
+  }
+}
+
+run "with_an_image_there_is_exactly_one_job" {
+  command = plan
+
+  assert {
+    condition     = length(google_cloud_run_v2_job.fleet) == 1
+    error_message = "a digest-pinned image must produce the one Job"
   }
 }
