@@ -246,6 +246,219 @@ fn a_news_item_lands_in_the_evidence_index_rather_than_vanishing() -> Result<()>
     Ok(())
 }
 
+fn acme_news(item_id: &str, headline: String) -> Result<NewsItem> {
+    let published_at = start().saturating_sub(Duration::from_hours(2));
+    Ok(NewsItem {
+        item_id: item_id.to_string(),
+        headline,
+        manifest: SourceManifest::of(
+            "test-newswire",
+            format!("http://vendor.test/docs#{item_id}"),
+            start(),
+            b"Acme Corporation raised full-year revenue guidance.",
+        )?,
+        source: NewsSource::CompanyAnnouncement,
+        published_at,
+        entities: vec![EntityMention {
+            text: "Acme Corporation".to_string(),
+            entity_id: Some("ent-acme".to_string()),
+            confidence: 0.9,
+            is_primary: true,
+            sentiment: None,
+        }],
+        sentiment: Sentiment {
+            polarity: 0.8,
+            confidence: 0.9,
+            novelty: 0.7,
+        },
+        topics: vec!["guidance".to_string()],
+        provenance: Provenance::new("test-newswire", published_at, start()),
+        quality: DataQuality::clean(),
+    })
+}
+
+#[test]
+fn a_news_item_carrying_a_body_where_a_headline_goes_is_refused_whole_and_reported_at_learn()
+-> Result<()> {
+    // WORLD-057 on the production path. The failure this guards: the graph
+    // stored whatever string arrived as a headline, so a connector that put
+    // the article there would have made the knowledge graph (and the evidence
+    // index beside it) a copy of a document. The world model now refuses the
+    // item whole, and the cycle says so rather than dropping it in silence.
+    let mut platform = platform()?;
+    let documents = |platform: &Platform| {
+        platform
+            .world()
+            .statistics()
+            .get("documents")
+            .copied()
+            .unwrap_or(0)
+    };
+
+    // Premise: the same item with a headline is absorbed, so the refusal
+    // below is about the body and not about the fixture.
+    let headline = "Acme Corporation guides revenue sharply higher".to_string();
+    let absorbed = platform.observe(vec![SensedRecord::News(Box::new(acme_news(
+        "news-ok", headline,
+    )?))]);
+    assert_eq!(absorbed, 1, "premise: a headline is absorbed");
+    assert_eq!(documents(&platform), 1);
+    let events = platform.market_events().len();
+    let nodes = platform.world().graph().node_count();
+    assert!(events > 0, "premise: an absorbed story raises an event");
+
+    let body = "Acme Corporation raised full-year revenue guidance on demand. ".repeat(40);
+    assert!(
+        body.chars().count() > qip_world_model::EXCERPT_LIMIT,
+        "premise: the fixture is longer than the excerpt limit"
+    );
+    let absorbed = platform.observe(vec![SensedRecord::News(Box::new(acme_news(
+        "news-body",
+        body.clone(),
+    )?))]);
+    assert_eq!(absorbed, 0, "a body was absorbed as a headline");
+    assert_eq!(documents(&platform), 1, "the index took the body");
+    assert_eq!(
+        platform.world().graph().node_count(),
+        nodes,
+        "the graph took a node for the refused item"
+    );
+    assert!(
+        platform
+            .world()
+            .graph()
+            .nodes()
+            .all(|node| node.label != body),
+        "the body is a node label"
+    );
+    assert_eq!(
+        platform.market_events().len(),
+        events,
+        "a refused item still raised an event"
+    );
+
+    // Reported, not swallowed: LEARN names the refusal and the limit.
+    let report = platform.run_cycle(start());
+    let learn = report.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn
+            .problems
+            .iter()
+            .any(|problem| problem.contains("a news item was refused")
+                && problem.contains("excerpt limit")),
+        "the refusal was not reported at LEARN: {:?}",
+        learn.problems
+    );
+    Ok(())
+}
+
+#[test]
+fn an_absorbed_story_is_an_event_dated_when_it_was_published_about_an_entity_typed_as_a_company()
+-> Result<()> {
+    // WORLD-003 on the production path. The failure this guards: the event
+    // node carried only the instant the platform recorded it, so a story
+    // published two hours ago read as having happened now, and the entity it
+    // concerned was typed by a string attribute nothing read.
+    let mut platform = platform()?;
+    let published_at = start().saturating_sub(Duration::from_hours(2));
+    let item = acme_news(
+        "news-dated",
+        "Acme Corporation guides revenue sharply higher".to_string(),
+    )?;
+    assert_eq!(item.published_at, published_at, "premise: the fixture");
+    assert_eq!(
+        platform.observe(vec![SensedRecord::News(Box::new(item))]),
+        1
+    );
+
+    let world = platform.world();
+    let graph = world.graph();
+    // The event applies to its publication instant and was learned at
+    // absorption: two different instants, both on the node.
+    let events = graph.events_at(start(), start());
+    assert_eq!(events.len(), 1, "the story is not an event in the graph");
+    assert_eq!(events[0].occurred_at, Some(published_at));
+    assert_eq!(events[0].recorded_at, start());
+    assert!(
+        graph
+            .events_at(
+                published_at.saturating_sub(Duration::from_hours(1)),
+                start()
+            )
+            .is_empty(),
+        "the story is in the state of the world an hour before it was published"
+    );
+    // And the company it concerns is a company by type.
+    let companies = graph.entities_of_kind(qip_world_model::graph::EntityKind::Company);
+    assert_eq!(
+        companies.len(),
+        1,
+        "the mention is not a typed company node"
+    );
+    assert_eq!(companies[0].label, "Acme Corporation");
+    Ok(())
+}
+
+#[test]
+fn two_feeds_contradicting_each_other_about_one_story_are_reported_by_the_understand_stage()
+-> Result<()> {
+    // WORLD-009 on the production path. The failure this guards: two sources
+    // disagreeing about one fact were stored as two edges under one key and
+    // the stage reported a relationship count that reads the same whether
+    // they agree or not, so the conflict was held and never stated.
+    let mut platform = platform()?;
+    let headline = "Acme Corporation guides revenue sharply higher".to_string();
+    let as_carried_by = |feed: &str, confidence: f64| -> Result<NewsItem> {
+        let mut item = acme_news("story-1", headline.clone())?;
+        item.provenance = Provenance::new(feed, item.published_at, start());
+        item.entities[0].confidence = confidence;
+        Ok(item)
+    };
+
+    // Premise: one feed's statement is no contradiction, and the stage says
+    // nothing about one.
+    platform.observe(vec![SensedRecord::News(Box::new(as_carried_by(
+        "wire-a", 0.95,
+    )?))]);
+    let before = platform.run_cycle(start());
+    let understand = before.stage(Stage::Understand).expect("understand ran");
+    assert!(
+        !understand.detail.contains("contradiction"),
+        "premise: a single source already reads as a conflict: {}",
+        understand.detail
+    );
+
+    // A second feed carries the same story and says it barely concerns Acme.
+    platform.observe(vec![SensedRecord::News(Box::new(as_carried_by(
+        "wire-b", 0.40,
+    )?))]);
+    let after = platform.run_cycle(start());
+    let understand = after.stage(Stage::Understand).expect("understand ran");
+    assert!(
+        understand
+            .detail
+            .contains("1 contradiction(s) between sources recorded, both sides kept"),
+        "the conflict between the two feeds was not reported: {}",
+        understand.detail
+    );
+
+    // The record links both, and both beliefs are still in the graph.
+    let world = platform.world();
+    let recorded = world.graph().contradictions_at(start());
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].held.source, "wire-a");
+    assert_eq!(recorded[0].arrived.source, "wire-b");
+    let sources: Vec<&str> = world
+        .graph()
+        .facts_at(start(), start())
+        .into_iter()
+        .filter(|fact| fact.relationship.key() == recorded[0].key)
+        .map(|fact| fact.relationship.source.as_str())
+        .collect();
+    assert_eq!(sources, vec!["wire-a", "wire-b"], "a belief was dropped");
+    Ok(())
+}
+
 // --- depth ------------------------------------------------------------------
 
 #[test]

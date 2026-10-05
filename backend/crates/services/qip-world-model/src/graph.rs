@@ -6,10 +6,51 @@
 
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
+pub use qip_entity_resolution::entity::EntityKind;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::relationship::{Relationship, RelationshipKind};
+
+/// The longest run of text any one field of a graph record may hold, in
+/// characters (WORLD-057).
+///
+/// The graph holds distilled knowledge and the reference a source can be
+/// fetched from again; it never holds the source. Until this limit existed
+/// that rested entirely on the upstream types happening to have no body
+/// field, and on headlines happening to be short: `add_node` took any string
+/// as a label or an attribute, so the first caller to put an article where a
+/// headline goes would have made the graph a copy of a document nobody
+/// licensed it to keep. 280 characters holds any name, identifier, locator
+/// or headline and is far too short for a body, so a verbatim span of a
+/// source longer than this cannot be written at all.
+pub const EXCERPT_LIMIT: usize = 280;
+
+/// Refuse text too long to be a name, a reference or a headline.
+///
+/// One function for every string a graph record carries, called at the two
+/// write seams ([`KnowledgeGraph::add_node`] and [`Fact::new`]) and by the
+/// ingestion path before it writes anything, because a limit stated in two
+/// places is two limits. Refused, never truncated: a truncated body is still
+/// a copied excerpt nobody chose, and the caller's bug survives it.
+pub fn refuse_a_body(record: &str, field: &str, text: &str) -> Result<()> {
+    let length = text.chars().count();
+    if length > EXCERPT_LIMIT {
+        return Err(Error::invalid(format!(
+            "{record} carries {length} characters in its {field}, over the \
+             {EXCERPT_LIMIT}-character excerpt limit -- the knowledge graph holds distilled \
+             knowledge and the reference to fetch a source again, never a copy of it; write \
+             the locator and a content hash and leave the text where it was fetched from"
+        )));
+    }
+    Ok(())
+}
+
+/// The first few characters of `text`, for naming a refused record in its own
+/// refusal without quoting the body the refusal is about.
+fn excerpt_of(text: &str) -> String {
+    text.chars().take(40).collect()
+}
 
 /// What a node represents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -38,6 +79,21 @@ pub struct Node {
     pub attributes: BTreeMap<String, String>,
     /// When the platform first recorded the node.
     pub recorded_at: Timestamp,
+    /// What an entity node is, as a type (WORLD-003). Set by
+    /// [`Node::entity`] and required of every [`NodeKind::Entity`] node at
+    /// the write seam; `None` on every other kind. This was a string
+    /// attribute called `kind` that nothing read, so "which nodes are
+    /// supply chains" was a string comparison somebody had to spell right.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_kind: Option<EntityKind>,
+    /// The instant an event node applies to: when the thing happened, as
+    /// distinct from `recorded_at`, when the platform learned of it
+    /// (WORLD-003). Set by [`Node::event`] and required of every
+    /// [`NodeKind::Event`] node at the write seam; `None` on every other
+    /// kind. Without it an event's own time lived only on whichever fact
+    /// happened to point at it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<Timestamp>,
 }
 
 impl Node {
@@ -53,7 +109,36 @@ impl Node {
             label: label.into(),
             attributes: BTreeMap::new(),
             recorded_at,
+            entity_kind: None,
+            occurred_at: None,
         }
+    }
+
+    /// An entity, with the kind of thing it is.
+    pub fn entity(
+        id: impl Into<String>,
+        entity_kind: EntityKind,
+        label: impl Into<String>,
+        recorded_at: Timestamp,
+    ) -> Self {
+        let mut node = Self::new(id, NodeKind::Entity, label, recorded_at);
+        node.entity_kind = Some(entity_kind);
+        node
+    }
+
+    /// An event, with the instant it applies to and the instant the platform
+    /// learned of it. Two parameters of one type in a fixed order, because
+    /// they are the two time dimensions and an event that happened on Monday
+    /// and was learned on Tuesday is not the reverse.
+    pub fn event(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        occurred_at: Timestamp,
+        recorded_at: Timestamp,
+    ) -> Self {
+        let mut node = Self::new(id, NodeKind::Event, label, recorded_at);
+        node.occurred_at = Some(occurred_at);
+        node
     }
 
     pub fn with_attribute(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
@@ -122,6 +207,15 @@ impl Fact {
                 relationship.key()
             )));
         }
+        // WORLD-057: a source is a reference and the two ends are node ids;
+        // a body in any of them is a document stored under another name.
+        for (field, text) in [
+            ("source", &relationship.source),
+            ("from end", &relationship.from),
+            ("to end", &relationship.to),
+        ] {
+            refuse_a_body("a fact", field, text)?;
+        }
         Ok(Self {
             relationship,
             valid_from,
@@ -163,6 +257,65 @@ impl Fact {
     }
 }
 
+/// Weight gap at or over which two sources' statements of one relationship
+/// cannot both be right.
+///
+/// A relationship's weight is a fraction of something (a revenue share, a
+/// supply share, how strongly an item concerns an entity). Sources differ in
+/// the second decimal all the time and that is noise; a quarter of the whole
+/// scale apart, they are describing different worlds.
+pub const CONTRADICTION_GAP: f64 = 0.25;
+
+/// How many contradiction records the graph holds before the oldest leaves.
+/// The facts themselves are never evicted, so a record that aged out can be
+/// re-derived from them; this bounds the working set, not the knowledge.
+pub const CONTRADICTION_HISTORY: usize = 1_024;
+
+/// One side of a contradiction: enough to find the belief again among the
+/// versions held under the relationship's key.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Belief {
+    pub source: String,
+    pub weight: f64,
+    pub confidence: f64,
+    pub recorded_at: Timestamp,
+}
+
+impl Belief {
+    fn of(fact: &Fact) -> Self {
+        Self {
+            source: fact.relationship.source.clone(),
+            weight: fact.relationship.weight,
+            confidence: fact.confidence,
+            recorded_at: fact.recorded_at,
+        }
+    }
+}
+
+/// Two beliefs about one relationship that cannot both be right, linked
+/// (WORLD-009).
+///
+/// The graph already kept both: a second statement under a key is another
+/// version, never an overwrite. What it did not keep was the fact *that they
+/// disagree*. A reader walking `facts_at` saw two edges and multiplied
+/// through whichever came first, and "the sources conflict about this" was
+/// knowledge the platform held and could not state. A retraction is not this
+/// record: it says one side stopped being believed, and names no other side.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Contradiction {
+    /// The relationship both beliefs are about.
+    pub key: String,
+    /// The belief the graph already held.
+    pub held: Belief,
+    /// The belief whose arrival exposed the conflict.
+    pub arrived: Belief,
+    /// How far apart the two weights are.
+    pub gap: f64,
+    /// The first instant the platform held both, which is when the conflict
+    /// became knowable. Reads are filtered on this.
+    pub detected_at: Timestamp,
+}
+
 /// A path through the graph.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Path {
@@ -189,6 +342,9 @@ pub struct KnowledgeGraph {
     outgoing: BTreeMap<String, BTreeSet<String>>,
     /// Incoming adjacency.
     incoming: BTreeMap<String, BTreeSet<String>>,
+    /// Conflicts between sources, oldest first, bounded by
+    /// [`CONTRADICTION_HISTORY`].
+    contradictions: VecDeque<Contradiction>,
 }
 
 impl KnowledgeGraph {
@@ -209,8 +365,41 @@ impl KnowledgeGraph {
         self.nodes.is_empty()
     }
 
-    pub fn add_node(&mut self, node: Node) {
+    /// Write a node, refusing one that carries a body (WORLD-057).
+    ///
+    /// The id, the label and every attribute are held to [`EXCERPT_LIMIT`],
+    /// and a refused node leaves the graph exactly as it was. This returned
+    /// nothing and accepted any string until the limit existed, so "the
+    /// graph stores no documents" was a property of today's callers and not
+    /// of the graph.
+    ///
+    /// Also refused: an entity node that does not say what kind of thing it
+    /// is, and an event node that does not say when it happened (WORLD-003).
+    /// Both were writable until the typed fields existed, and an untyped
+    /// entity or an undated event is a node every typed or as-of query then
+    /// silently leaves out.
+    pub fn add_node(&mut self, node: Node) -> Result<()> {
+        let record = format!("node `{}`", excerpt_of(&node.id));
+        if node.kind == NodeKind::Entity && node.entity_kind.is_none() {
+            return Err(Error::invalid(format!(
+                "{record} is an entity with no entity kind -- build it with `Node::entity`, \
+                 naming what kind of thing it is"
+            )));
+        }
+        if node.kind == NodeKind::Event && node.occurred_at.is_none() {
+            return Err(Error::invalid(format!(
+                "{record} is an event with no instant it applies to -- build it with \
+                 `Node::event`, giving when it happened as well as when it was learned"
+            )));
+        }
+        refuse_a_body(&record, "id", &node.id)?;
+        refuse_a_body(&record, "label", &node.label)?;
+        for (key, value) in &node.attributes {
+            refuse_a_body(&record, "attribute name", key)?;
+            refuse_a_body(&record, &format!("`{key}` attribute"), value)?;
+        }
         self.nodes.insert(node.id.clone(), node);
+        Ok(())
     }
 
     pub fn node(&self, id: &str) -> Option<&Node> {
@@ -225,8 +414,40 @@ impl KnowledgeGraph {
         self.nodes.values().filter(|n| n.kind == kind).collect()
     }
 
+    /// Every entity of one kind, by the type and not by a label.
+    pub fn entities_of_kind(&self, kind: EntityKind) -> Vec<&Node> {
+        self.nodes
+            .values()
+            .filter(|n| n.entity_kind == Some(kind))
+            .collect()
+    }
+
+    /// The events that had happened by `valid_at` and were known by
+    /// `known_at`: the node-side counterpart of [`Self::facts_at`], with the
+    /// same two questions asked and for the same reason.
+    pub fn events_at(&self, valid_at: Timestamp, known_at: Timestamp) -> Vec<&Node> {
+        self.nodes
+            .values()
+            .filter(|n| n.kind == NodeKind::Event && n.recorded_at <= known_at)
+            .filter(|n| n.occurred_at.is_some_and(|at| at <= valid_at))
+            .collect()
+    }
+
     /// Record a fact, and its inverse where the relationship implies one.
+    ///
+    /// Where another source already holds a materially different statement
+    /// of the same relationship, the conflict is recorded as a
+    /// [`Contradiction`] linking the two, and both stay in the graph
+    /// (WORLD-009). Checked against the stated direction only: the inverse
+    /// is the same claim read backwards, and recording it twice would count
+    /// one disagreement as two.
     pub fn assert_fact(&mut self, fact: Fact) {
+        for contradiction in self.contradictions_with(&fact) {
+            if self.contradictions.len() == CONTRADICTION_HISTORY {
+                self.contradictions.pop_front();
+            }
+            self.contradictions.push_back(contradiction);
+        }
         if let Some(inverse) = fact.relationship.inverted() {
             let inverse_fact = Fact {
                 relationship: inverse,
@@ -235,6 +456,51 @@ impl KnowledgeGraph {
             self.insert_fact(inverse_fact);
         }
         self.insert_fact(fact);
+    }
+
+    /// The beliefs already held that `fact` cannot be true alongside.
+    ///
+    /// A different source, the same relationship, validity that overlaps,
+    /// not retracted by the time `fact` was learned, and weights at least
+    /// [`CONTRADICTION_GAP`] apart. The same source restating its own figure
+    /// is a revision, not a contradiction: nobody is disagreeing with it.
+    fn contradictions_with(&self, fact: &Fact) -> Vec<Contradiction> {
+        let key = fact.relationship.key();
+        let Some(versions) = self.facts.get(&key) else {
+            return Vec::new();
+        };
+        versions
+            .iter()
+            .filter(|held| held.relationship.source != fact.relationship.source)
+            .filter(|held| held.retracted_at.is_none_or(|at| at > fact.recorded_at))
+            .filter(|held| {
+                let both_from = held.valid_from.max(fact.valid_from);
+                held.valid_to.is_none_or(|end| end > both_from)
+                    && fact.valid_to.is_none_or(|end| end > both_from)
+            })
+            .filter_map(|held| {
+                let gap = (held.relationship.weight - fact.relationship.weight).abs();
+                (gap >= CONTRADICTION_GAP).then(|| Contradiction {
+                    key: key.clone(),
+                    held: Belief::of(held),
+                    arrived: Belief::of(fact),
+                    gap,
+                    detected_at: held.recorded_at.max(fact.recorded_at),
+                })
+            })
+            .collect()
+    }
+
+    /// Every contradiction knowable by `known_at`, oldest first.
+    ///
+    /// Filtered on the instant the platform first held both sides, so a
+    /// replay of Monday does not see a conflict a source only created on
+    /// Tuesday.
+    pub fn contradictions_at(&self, known_at: Timestamp) -> Vec<&Contradiction> {
+        self.contradictions
+            .iter()
+            .filter(|c| c.detected_at <= known_at)
+            .collect()
     }
 
     fn insert_fact(&mut self, fact: Fact) {

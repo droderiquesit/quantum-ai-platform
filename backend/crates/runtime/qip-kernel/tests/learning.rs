@@ -520,6 +520,48 @@ fn a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate
 }
 
 #[test]
+fn a_declined_actions_counterfactual_record_names_the_method_that_estimated_it_and_never_joins_the_observed_outcomes()
+-> Result<()> {
+    // WORLD-039. The failure this guards: a declined path's score said it was
+    // simulated (the `Simulated` type) and did not say by what. The pricer
+    // was implicit in the code path, so a record read back later could not
+    // be told from one a different pricer produced, and a regret series
+    // mixing two methods would have looked like one.
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 90));
+    let order_id = refuse_one(&mut platform, "prop-refused", start())?;
+    platform.observe(bars_after("AAA", start(), 5));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+    // Premise: the cycle priced exactly the action that was declined.
+    let scores = platform.declined_scores();
+    assert_eq!(scores.len(), 1, "no declined path was priced");
+    assert_eq!(scores[0].order_id, order_id);
+    assert!(
+        scores[0].alternatives > 1,
+        "the twin priced nothing, so there is no estimate to attribute"
+    );
+
+    // The record names its method, on the value and in the journalled form.
+    assert_eq!(
+        scores[0].method.as_str(),
+        "bar_open_replay",
+        "the counterfactual record does not name the method that priced it"
+    );
+    let journalled = serde_json::to_value(&scores[0]).expect("a score serialises");
+    assert_eq!(journalled["method"], "bar_open_replay");
+
+    // And it is an estimate that never joins what was observed: the declined
+    // order has no taken outcome, and nothing reached the realised line.
+    assert!(
+        platform.outcomes().taken().is_empty(),
+        "a declined action was counted among the observed outcomes"
+    );
+    assert_eq!(platform.outcomes().realised_pnl(), Decimal::ZERO);
+    Ok(())
+}
+
+#[test]
 fn declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle()
 -> Result<()> {
     // The cap is eight per cycle. Nine refusals due at once must produce

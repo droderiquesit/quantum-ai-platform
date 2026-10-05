@@ -204,6 +204,7 @@ use qip_twin::asof::TwinMarket;
 use qip_twin::capture::{Action, Decision, OutcomeCapture, RealisedOutcome};
 use qip_twin::counterfactual::{
     ActualTrade, AlternativeMenu, Counterfactual, CounterfactualEngine, CounterfactualSet,
+    EstimationMethod,
 };
 use qip_twin::value::Simulated;
 use qip_world_model::WorldModel;
@@ -2846,6 +2847,15 @@ pub struct DeclinedScore {
     /// reads back as attributed to no venue rather than refusing to load.
     #[serde(default)]
     pub venue: Option<String>,
+    /// How `would_have_earned` was estimated (WORLD-039): the method the
+    /// twin's own `trade` alternative carries, read off that record and
+    /// never named here a second time. `Simulated` says the figure is an
+    /// estimate; this says whose, so two regret figures can be told apart
+    /// the day a second pricer exists. Defaulted so a score journalled
+    /// before the field existed reads back as `unrecorded` rather than as
+    /// priced by a method it never named.
+    #[serde(default)]
+    pub method: EstimationMethod,
 }
 
 /// One order a venue filled, kept until the twin can price the sizes that
@@ -8867,12 +8877,25 @@ impl Platform {
                     // records sentiment at the item's published instant; the
                     // context supplies only entity-resolution bookkeeping,
                     // never a knowability stamp.
+                    //
+                    // An item the world model refuses — a body where a
+                    // headline goes, which the graph will not store
+                    // (WORLD-057) — is refused whole: not absorbed, no
+                    // event, and reported, for the reason a refused
+                    // alternative-data reading is. An item quietly dropped
+                    // looks exactly like a feed that never published.
                     let context = &self.context;
-                    self.world.update(|world| world.absorb_news(&item, context));
-                    for event in MarketEvent::from_news(&item) {
-                        self.push_market_event(event);
+                    match self.world.update(|world| world.absorb_news(&item, context)) {
+                        Ok(_) => {
+                            for event in MarketEvent::from_news(&item) {
+                                self.push_market_event(event);
+                            }
+                            absorbed += 1;
+                        }
+                        Err(error) => self
+                            .capture_problems
+                            .push(format!("a news item was refused: {}", error.message())),
                     }
-                    absorbed += 1;
                 }
                 SensedRecord::Fundamental(update) => {
                     self.define_fundamental_features(&update.metric, &update.provenance.source);
@@ -9015,17 +9038,28 @@ impl Platform {
     /// platform first hear of this instrument" and re-observing it must not
     /// rewrite that. `recorded_at` is the record's own knowable instant, never
     /// the wall clock.
+    ///
+    /// The graph refuses a node whose id is long enough to be a document
+    /// (WORLD-057). No instrument id is, so a refusal here is an upstream
+    /// bug, and it is reported at LEARN rather than swallowed.
     fn ensure_world_object(&mut self, object_id: &str, recorded_at: Timestamp) {
-        self.world.update(|world| {
-            if world.graph().node(object_id).is_none() {
-                world.graph_mut().add_node(Node::new(
-                    object_id,
-                    NodeKind::FinancialObject,
-                    object_id,
-                    recorded_at,
-                ));
+        let written = self.world.update(|world| {
+            if world.graph().node(object_id).is_some() {
+                return Ok(());
             }
+            world.graph_mut().add_node(Node::new(
+                object_id,
+                NodeKind::FinancialObject,
+                object_id,
+                recorded_at,
+            ))
         });
+        if let Err(error) = written {
+            self.capture_problems.push(format!(
+                "an instrument was not recorded in the world model: {}",
+                error.message()
+            ));
+        }
     }
 
     /// Hold the desk's bar series to the platform's own bound by rebuilding
@@ -9927,6 +9961,18 @@ impl Platform {
             let world = self.world.read();
             (world.state_at(now, now), world.index().len())
         };
+        // WORLD-009: conflicts between sources, as knowable now. Said on the
+        // stage because the relationship count beside it reads the same
+        // whether the sources agree or not, and a contradiction recorded and
+        // shown to nobody is the same as one never detected.
+        let contradiction_detail = if state.contradiction_count == 0 {
+            String::new()
+        } else {
+            format!(
+                "; {} contradiction(s) between sources recorded, both sides kept",
+                state.contradiction_count
+            )
+        };
         let liquidity = if self.liquidity.observation_count() == 0 {
             String::new()
         } else {
@@ -10103,7 +10149,7 @@ impl Platform {
             format!(
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
-                  {liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
+                  {contradiction_detail}{liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
                  {second_order_detail}{statistics_detail}",
                 state.object_count,
                 state.entity_count,
@@ -16625,6 +16671,12 @@ impl Platform {
                     let would_have_earned = trade.map_or(Simulated::ZERO, |entry| {
                         entry.counterfactual_outcome.simulated_pnl()
                     });
+                    // The method is the priced record's own, so the score
+                    // cannot name a pricer the figure did not come from; a
+                    // set with no `trade` entry priced nothing and says so.
+                    let method = trade.map_or(EstimationMethod::Unrecorded, |entry| {
+                        entry.counterfactual_outcome.method()
+                    });
                     self.telemetry.metrics.count(
                         names::COUNTERFACTUALS_SCORED,
                         labels([("gate", gate.as_str())]),
@@ -16649,6 +16701,7 @@ impl Platform {
                         rules,
                         readings,
                         venue,
+                        method,
                     });
                     if self.declined_scores.len() > DECLINED_HISTORY {
                         let excess = self.declined_scores.len() - DECLINED_HISTORY;
@@ -23533,6 +23586,7 @@ mod counterfactual_sizing_tests {
             rules: Vec::new(),
             readings: Vec::new(),
             venue: None,
+            method: EstimationMethod::default(),
         }
     }
 
@@ -23812,6 +23866,7 @@ mod rule_review_tests {
                 bound: 250_000.0,
             }],
             venue: None,
+            method: EstimationMethod::default(),
         }
     }
 
@@ -24798,6 +24853,7 @@ mod counterfactual_trial_seam_tests {
                 bound: 250_000.0,
             }],
             venue: None,
+            method: EstimationMethod::default(),
         }
     }
 
@@ -26212,20 +26268,26 @@ mod second_order_exposure_tests {
     fn write_the_supply_chain(platform: &mut Platform) {
         platform.world.update(|world| {
             for entity in ["KESTREL", "NORTHWIND", "HOLLOWAY"] {
-                world.graph_mut().add_node(Node::new(
-                    entity,
-                    NodeKind::Entity,
-                    entity,
-                    known_from(),
-                ));
+                world
+                    .graph_mut()
+                    .add_node(Node::entity(
+                        entity,
+                        qip_world_model::graph::EntityKind::Company,
+                        entity,
+                        known_from(),
+                    ))
+                    .unwrap();
             }
             for instrument in ["obj-NWD", "obj-HWY"] {
-                world.graph_mut().add_node(Node::new(
-                    instrument,
-                    NodeKind::FinancialObject,
-                    instrument,
-                    known_from(),
-                ));
+                world
+                    .graph_mut()
+                    .add_node(Node::new(
+                        instrument,
+                        NodeKind::FinancialObject,
+                        instrument,
+                        known_from(),
+                    ))
+                    .unwrap();
             }
             for (from, to, kind) in [
                 ("KESTREL", "NORTHWIND", RelationshipKind::Supplies),

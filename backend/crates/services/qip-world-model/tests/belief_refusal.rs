@@ -137,17 +137,21 @@ fn a_news_mention_is_stored_at_its_own_confidence_and_one_with_no_valid_confiden
     assert!(
         model
             .absorb_news(&news_mentioning_northwind(f64::NAN), &context)
+            .unwrap()
             .is_empty(),
         "a refused mention resolves nothing"
     );
     assert!(
         model
             .absorb_news(&news_mentioning_northwind(7.0), &context)
+            .unwrap()
             .is_empty()
     );
     assert!(concerns(&model).is_empty(), "and writes no fact");
 
-    let kept = model.absorb_news(&news_mentioning_northwind(0.94), &context);
+    let kept = model
+        .absorb_news(&news_mentioning_northwind(0.94), &context)
+        .unwrap();
     assert_eq!(
         kept.len(),
         1,

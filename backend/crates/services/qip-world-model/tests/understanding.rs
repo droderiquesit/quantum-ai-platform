@@ -12,7 +12,7 @@ use qip_financial::quality::{DataQuality, Provenance};
 use qip_market::bar::{Bar, Interval};
 use qip_world_model::causal::{CausalEdge, CausalGraph, Mechanism, SupportingClaim};
 use qip_world_model::features::{Feature, FeatureStore, FeatureValue};
-use qip_world_model::graph::{Fact, KnowledgeGraph, Node, NodeKind};
+use qip_world_model::graph::{EntityKind, Fact, KnowledgeGraph, Node, NodeKind};
 use qip_world_model::relationship::{Relationship, RelationshipKind};
 use qip_world_model::state::ChangeKind;
 use qip_world_model::world::{MATERIAL_FUNDAMENTAL_SURPRISE, WorldModel, seed_demo_world};
@@ -77,8 +77,12 @@ fn a_fact_outside_its_validity_window_does_not_hold() {
 fn a_retracted_fact_is_hidden_going_forward_but_not_rewritten_backwards() {
     // A decision made while the fact was believed must remain explicable.
     let mut graph = KnowledgeGraph::new();
-    graph.add_node(Node::new("a", NodeKind::Entity, "A", days_ago(100)));
-    graph.add_node(Node::new("b", NodeKind::Entity, "B", days_ago(100)));
+    graph
+        .add_node(Node::entity("a", EntityKind::Company, "A", days_ago(100)))
+        .unwrap();
+    graph
+        .add_node(Node::entity("b", EntityKind::Company, "B", days_ago(100)))
+        .unwrap();
     let relationship = Relationship::new("a", "b", RelationshipKind::Supplies, 0.5, "filings");
     let key = relationship.key();
     graph.assert_fact(Fact::new(relationship, days_ago(100), days_ago(100), 1.0).unwrap());
@@ -142,7 +146,9 @@ fn an_inverse_edge_is_asserted_automatically() {
 fn chain_graph() -> KnowledgeGraph {
     let mut graph = KnowledgeGraph::new();
     for id in ["kestrel", "northwind", "vantage", "meridian"] {
-        graph.add_node(Node::new(id, NodeKind::Entity, id, days_ago(400)));
+        graph
+            .add_node(Node::entity(id, EntityKind::Company, id, days_ago(400)))
+            .unwrap();
     }
     graph.assert_fact(
         Fact::new(
@@ -1316,7 +1322,7 @@ fn an_absorbed_news_item_becomes_an_occurrence_carrying_its_source_and_both_inst
         quality: DataQuality::clean(),
     };
 
-    let resolved = model.absorb_news(&item, &context);
+    let resolved = model.absorb_news(&item, &context).unwrap();
     assert_eq!(
         resolved,
         vec!["ent-northwind".to_string()],
@@ -1430,7 +1436,7 @@ fn absorbing_news_resolves_entities_and_indexes_the_document() {
         quality: DataQuality::clean(),
     };
 
-    let resolved = model.absorb_news(&item, &context);
+    let resolved = model.absorb_news(&item, &context).unwrap();
     assert_eq!(
         resolved,
         vec!["ent-northwind".to_string()],
@@ -1602,7 +1608,7 @@ fn the_diff_reports_what_changed_between_two_instants() {
         provenance: Provenance::synthetic("news", before.saturating_add(Duration::from_hours(1))),
         quality: DataQuality::clean(),
     };
-    model.absorb_news(&item, &context);
+    model.absorb_news(&item, &context).unwrap();
 
     let diff = model.diff(before, before.saturating_add(Duration::from_hours(2)));
     assert!(!diff.is_empty(), "the news should register as a change");
@@ -1638,7 +1644,7 @@ fn retrieval_from_the_world_model_respects_the_point_in_time_cutoff() {
             provenance: Provenance::synthetic("news", when),
             quality: DataQuality::clean(),
         };
-        model.absorb_news(&item, &context);
+        model.absorb_news(&item, &context).unwrap();
     }
 
     let all = model.retrieve("guidance update", 5, now());
@@ -2036,11 +2042,11 @@ fn sentiment_from_a_news_item_the_vendor_filled_in_is_recorded_as_imputed() {
     // Premise: both resolve onto the same entity, so both write the same
     // feature series and the reads below compare like with like.
     assert_eq!(
-        model.absorb_news(&observed_item, &context),
+        model.absorb_news(&observed_item, &context).unwrap(),
         vec!["ent-northwind".to_string()]
     );
     assert_eq!(
-        model.absorb_news(&filled_item, &context),
+        model.absorb_news(&filled_item, &context).unwrap(),
         vec!["ent-northwind".to_string()]
     );
 

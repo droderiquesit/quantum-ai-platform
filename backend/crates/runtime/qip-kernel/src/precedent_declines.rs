@@ -218,6 +218,7 @@ mod tests {
             rules: Vec::new(),
             readings: Vec::new(),
             venue: None,
+            method: qip_twin::counterfactual::EstimationMethod::default(),
         }
     }
 

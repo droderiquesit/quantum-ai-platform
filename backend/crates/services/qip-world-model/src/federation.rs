@@ -31,6 +31,11 @@ pub const ABSTAIN_UNCERTAINTY: f64 = 0.8;
 /// Composite-score lead the best view needs over the runner-up for the
 /// weighted resolution to be preferred to keeping both branches live.
 pub const CLEAR_LEADER_MARGIN: f64 = 0.1;
+/// Spread at or over which a disagreement is material: worth a research task
+/// rather than only a journal line (WORLD-061). Four times
+/// [`AGREEMENT_SPREAD`], so the band between the two is disagreement that is
+/// recorded and not yet worth anyone's attention.
+pub const MATERIAL_DISAGREEMENT_SPREAD: f64 = 0.2;
 
 /// What a model is for, beyond what it is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -267,6 +272,26 @@ pub struct Arbitration {
     pub arbitrated_probability: Option<f64>,
     /// Models left out because their expiry had passed.
     pub expired: Vec<String>,
+    /// The research task this arbitration raised, when the disagreement was
+    /// material and no task on the proposition was already open.
+    pub research: Option<ResearchTask>,
+}
+
+/// A question the models' disagreement put to research (WORLD-061).
+///
+/// A recorded disagreement nobody is asked to resolve is a journal line. The
+/// task is what turns "the models are far apart on this" into work, and it
+/// cites the record it came from rather than restating it, so a reader of
+/// the task reads the same views arbitration saw.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResearchTask {
+    /// Position in the journal of the [`Event::Decided`] record cited.
+    pub cites: usize,
+    pub proposition: String,
+    pub spread: f64,
+    /// Every model whose view is in the cited record.
+    pub models: Vec<String>,
+    pub raised_at: Timestamp,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -298,11 +323,15 @@ pub enum Event {
         at: Timestamp,
         score: f64,
     },
+    /// One arbitration, with the disagreement it found: the disagreement
+    /// record a [`ResearchTask`] cites.
     Decided {
         proposition: String,
         at: Timestamp,
         reason: String,
+        disagreement: Disagreement,
     },
+    ResearchRaised(ResearchTask),
 }
 
 /// The distinct values the live population takes on each axis.
@@ -320,6 +349,11 @@ pub struct Spanned {
 pub struct Federation {
     nodes: BTreeMap<String, Node>,
     journal: Vec<Event>,
+    /// Propositions with a research task outstanding. One task per open
+    /// question: a disagreement that persists is arbitrated every cycle, and
+    /// raising it every cycle would bury the task under copies of itself.
+    /// Cleared when reality answers the proposition.
+    open_research: BTreeSet<String>,
 }
 
 fn unit(name: &str, v: f64) -> Result<()> {
@@ -339,6 +373,17 @@ impl Federation {
 
     pub fn journal(&self) -> &[Event] {
         &self.journal
+    }
+
+    /// Every research task raised, oldest first, read from the journal.
+    pub fn research_tasks(&self) -> Vec<&ResearchTask> {
+        self.journal
+            .iter()
+            .filter_map(|e| match e {
+                Event::ResearchRaised(task) => Some(task),
+                _ => None,
+            })
+            .collect()
     }
 
     fn node(&self, id: &str) -> Result<&Node> {
@@ -506,6 +551,9 @@ impl Federation {
     /// scored; a live branch whose forecast was on the wrong side is closed
     /// with that score recorded, never deleted. Returns the ids closed.
     pub fn resolve(&mut self, proposition: &str, outcome: bool, at: Timestamp) -> Vec<String> {
+        // Answered, so the question research was asked is closed; a later
+        // disagreement on a proposition of the same name is a new question.
+        self.open_research.remove(proposition);
         let truth = if outcome { 1.0 } else { 0.0 };
         let mut closed = Vec::new();
         for (id, node) in &mut self.nodes {
@@ -623,19 +671,40 @@ impl Federation {
             });
         let spread = if views.is_empty() { 0.0 } else { hi - lo };
         let (decision, reason, arbitrated) = decide(proposition, &views, spread);
+        let disagreement = Disagreement { views, spread };
+        let record = self.journal.len();
         self.journal.push(Event::Decided {
             proposition: proposition.to_string(),
             at: now,
             reason: reason.clone(),
+            disagreement: disagreement.clone(),
         });
+        // A material disagreement becomes a research task citing the record
+        // just written, once per open proposition (WORLD-061). Raised on the
+        // spread alone, whatever arbitration decided to do about it: a merge
+        // behind a clear leader still left two models far apart, and that
+        // is the thing worth looking into.
+        let research = (spread >= MATERIAL_DISAGREEMENT_SPREAD
+            && self.open_research.insert(proposition.to_string()))
+        .then(|| ResearchTask {
+            cites: record,
+            proposition: proposition.to_string(),
+            spread,
+            models: disagreement.views.iter().map(|v| v.model.clone()).collect(),
+            raised_at: now,
+        });
+        if let Some(task) = &research {
+            self.journal.push(Event::ResearchRaised(task.clone()));
+        }
         Ok(Arbitration {
             proposition: proposition.to_string(),
             at: now,
             decision,
             reason,
-            disagreement: Disagreement { views, spread },
+            disagreement,
             arbitrated_probability: arbitrated,
             expired,
+            research,
         })
     }
 }

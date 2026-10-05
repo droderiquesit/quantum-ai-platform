@@ -197,3 +197,132 @@ fn no_fast_lane_crate_depends_on_a_slower_lane_crate() {
         "a faster lane depends on a slower one: {offences:?}"
     );
 }
+
+/// WORLD-027: world models, their competing branches, arbitration, the
+/// reasoner, the planner and the specialist agents run in Lane 3, the
+/// cognitive slow lane, and nothing faster can link one.
+///
+/// The failure this prevents: the three tests above hold the *reflex* lanes.
+/// None of them holds the cognitive crates to Lane 3. Editing one cell of the
+/// register re-places the world model in Lane 2 with this whole suite green,
+/// and a Lane 2 crate taking a dependency on the reasoner passes too, because
+/// `no_fast_lane_crate_depends_on_a_slower_lane_crate` examines Lanes 0 and 1
+/// only. Either one is a minutes-to-days computation placed where a cycle
+/// budget is promised.
+///
+/// No symbolic reasoner and no ambient world model exists as a component to
+/// place (the ambient vocabulary is types in `qip-contracts`, fenced from the
+/// order path by the `ambient_attention` suite); when one is built it joins
+/// the table below.
+#[test]
+fn every_world_model_arbitration_reasoner_planner_and_specialist_agent_crate_runs_in_the_cognitive_slow_lane()
+ {
+    const COGNITIVE_SLOW: u8 = 3;
+    let register = register();
+    let graph = workspace();
+
+    // Each component the requirement names, the crate it lives in, and a line
+    // of source proving it lives there. Without the proof this is a list of
+    // crate names, and a component moved to a new crate would leave the old
+    // name passing while the component itself sat wherever it landed.
+    let components = [
+        (
+            "the world model",
+            "qip-world-model",
+            "services/qip-world-model/src/world.rs",
+            "pub struct WorldModel {",
+        ),
+        (
+            "competing hypothesis branches",
+            "qip-world-model",
+            "services/qip-world-model/src/federation.rs",
+            "pub fn branch(",
+        ),
+        (
+            "model arbitration",
+            "qip-world-model",
+            "services/qip-world-model/src/federation.rs",
+            "pub fn arbitrate(",
+        ),
+        (
+            "the reasoner",
+            "qip-reasoning-engine",
+            "services/qip-reasoning-engine/src/engine.rs",
+            "pub struct ReasoningEngine {",
+        ),
+        (
+            "the generalist planner",
+            "qip-agency",
+            "services/qip-agency/src/plan.rs",
+            "pub struct InterventionPlan {",
+        ),
+        (
+            "the specialist agent contract",
+            "qip-agents",
+            "libs/qip-agents/src/manifest.rs",
+            "pub struct AgentManifest {",
+        ),
+        (
+            "the specialist agents",
+            "qip-investment-agents",
+            "agents/qip-investment-agents/src/chief.rs",
+            "pub struct Organisation {",
+        ),
+    ];
+    for (component, crate_name, file, marker) in components {
+        let source = qip_acceptance::read(&format!("backend/crates/{file}"));
+        assert!(
+            source.contains(marker),
+            "{component} is no longer at {file} (`{marker}` not found): find the crate it moved \
+             to and place that crate here, or this test is asserting about an empty name"
+        );
+        let (lane, _) = register
+            .get(crate_name)
+            .unwrap_or_else(|| panic!("{crate_name} has no row in the lane register"));
+        assert_eq!(
+            *lane, COGNITIVE_SLOW,
+            "{component} ({crate_name}) is registered to lane {lane}; world models, arbitration, \
+             reasoners, planners and specialist agents run in Lane 3, the cognitive slow lane"
+        );
+    }
+
+    // And none can run in a faster lane by being linked into one: every crate
+    // whose normal-dependency closure reaches a cognitive crate is itself
+    // registered at Lane 3 or slower.
+    let cognitive: BTreeSet<&str> = components.iter().map(|c| c.1).collect();
+    let mut hosts = Vec::new();
+    for (name, (lane, _)) in &register {
+        let reached: Vec<String> = closure(name, &graph)
+            .into_iter()
+            .filter(|linked| linked != name && cognitive.contains(linked.as_str()))
+            .collect();
+        if reached.is_empty() {
+            continue;
+        }
+        hosts.push(name.clone());
+        assert!(
+            *lane >= COGNITIVE_SLOW,
+            "{name} is registered to lane {lane} and links {reached:?}: a world model, reasoner \
+             or specialist agent would run in a lane faster than the cognitive slow lane"
+        );
+    }
+    // Premise: the walk saw the hosts. The kernel composes all of them and
+    // three central binaries compose the kernel; a walk that found fewer is
+    // not reading the graph, and the loop above proved nothing.
+    for host in ["qip-kernel", "qip-deepbrain", "qip-fastbrain", "qip-api"] {
+        assert!(
+            hosts.iter().any(|found| found == host),
+            "{host} does not appear to link a cognitive crate; hosts found: {hosts:?}"
+        );
+    }
+
+    // The reflex node, by name: none of them is in what it links.
+    let reflex = closure("qip-edge-node", &graph);
+    assert!(reflex.contains("qip-edge"), "closure is {reflex:?}");
+    for crate_name in &cognitive {
+        assert!(
+            !reflex.contains(*crate_name),
+            "qip-edge-node links {crate_name}: cognition is on the reflex path"
+        );
+    }
+}
