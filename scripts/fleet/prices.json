@@ -1,0 +1,23 @@
+{
+  "unit": "USD per 1,000,000 tokens, as decimal text",
+  "models": {
+    "google/gemini-2.5-flash-lite": {
+      "input_usd_per_mtok": "0.10",
+      "output_usd_per_mtok": "0.40",
+      "observed": "2026-10-04",
+      "source": "https://cloud.google.com/vertex-ai/generative-ai/pricing"
+    },
+    "qwen/qwen3-235b-a22b-instruct-2507-maas": {
+      "input_usd_per_mtok": "0.22",
+      "output_usd_per_mtok": "0.88",
+      "observed": "2026-10-04",
+      "source": "https://cloud.google.com/vertex-ai/generative-ai/pricing"
+    },
+    "qwen/qwen3-coder-480b-a35b-instruct-maas": {
+      "input_usd_per_mtok": "0.22",
+      "output_usd_per_mtok": "1.80",
+      "observed": "2026-10-04",
+      "source": "https://cloud.google.com/vertex-ai/generative-ai/pricing"
+    }
+  }
+}

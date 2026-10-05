@@ -127,13 +127,22 @@ fn every_source_file_in_the_backend_workspace_is_written_in_rust() {
 /// Sorted, repository-relative, and exactly what the walk reports, so that a
 /// diff to this array is a diff a reviewer can read against the failure
 /// message.
-const ACCEPTED_NON_RUST_TOOLING: [&str; 13] = [
+const ACCEPTED_NON_RUST_TOOLING: [&str; 17] = [
     ".claude/hooks/format-rust-after-edit.py",
     ".claude/hooks/guard-dangerous-command.py",
     ".claude/hooks/test_hooks.py",
     "scripts/audit-dead-code.py",
     "scripts/audit-register.py",
     "scripts/check-manifests.py",
+    // The ADR 0102 fleet: the worker runs as a Cloud Run Job task in a
+    // container holding a Node runtime and no Rust toolchain, and it calls
+    // the Node gateway below, so it is written in the gateway's language.
+    // The dispatcher stays on the desktop and reuses the worker's validator.
+    // Not on a workflow path.
+    "scripts/fleet/dispatch.mjs",
+    "scripts/fleet/dispatch.test.mjs",
+    "scripts/fleet/worker.mjs",
+    "scripts/fleet/worker.test.mjs",
     "scripts/model-gateway.mjs",
     "scripts/model-gateway.test.mjs",
     // Sends the owner a text through a carrier email gateway over SMTP with
