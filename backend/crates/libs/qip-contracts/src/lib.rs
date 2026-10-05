@@ -27,6 +27,7 @@
 //!   reached the decision at all — and refuses to report a net figure that its
 //!   parts do not sum to.
 
+pub mod action;
 pub mod ambient;
 pub mod capital;
 pub mod degradation;
