@@ -264,52 +264,6 @@ fn a_cycle_that_absorbed_reference_rates_reports_them_rather_than_calling_itself
     Ok(())
 }
 
-/// AMBIENT-010 where the cycle runs it: DISCOVER findings reach the Attention
-/// Router, which before this had no production caller and so could wake
-/// nothing. Each material finding must have exactly one routing decision
-/// naming it, and a finding below the materiality bar must have none.
-#[test]
-fn every_discover_finding_above_the_materiality_bar_is_routed_through_the_attention_router()
--> Result<()> {
-    let mut platform = platform(PlatformConfig::default())?;
-    platform.observe(bars("AAA", 120));
-    assert!(
-        platform.attention_events().is_empty(),
-        "premise: nothing is routed before a cycle runs"
-    );
-    platform.run_cycle(start());
-
-    let queued = platform.queue();
-    assert!(!queued.is_empty(), "premise: DISCOVER found something");
-    let events = platform.attention_events();
-    let material = queued
-        .iter()
-        .filter(|o| (o.rank.importance * 10_000.0).round() >= 2_500.0)
-        .count();
-    assert!(
-        material > 0,
-        "premise: at least one finding clears the bar, or this asserts nothing"
-    );
-    assert_eq!(
-        events.len(),
-        material,
-        "one routing decision per material finding, none for the immaterial"
-    );
-    for event in events {
-        assert!(
-            event.signal_id.starts_with("discover-"),
-            "an event names the DISCOVER signal that caused it: {}",
-            event.signal_id
-        );
-        assert_eq!(
-            event.pathway,
-            qip_contracts::ambient::Pathway::ResearchTask,
-            "an opportunity routes to research"
-        );
-    }
-    Ok(())
-}
-
 #[test]
 fn the_discover_stage_finds_something_in_a_series_with_a_jump() -> Result<()> {
     let mut platform = platform(PlatformConfig::default())?;

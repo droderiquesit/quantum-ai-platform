@@ -117,15 +117,6 @@ use qip_core::lineage::CorrelationId;
 use qip_core::lineage::{Lineage, TraceId};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, Hasher256, Money, PortfolioId};
-
-/// Attention policy for DISCOVER findings: the bar a finding's importance must
-/// clear, the activations per window, the window, and the hold queue.
-const ATTENTION_MATERIALITY_BP: u32 = 2_500;
-const ATTENTION_BUDGET: u32 = 8;
-const ATTENTION_WINDOW_SECS: i64 = 3_600;
-const ATTENTION_DEFER_CAPACITY: usize = 32;
-/// Working window of routing decisions kept; the event log is the record.
-const ATTENTION_HISTORY: usize = 256;
 use qip_cost_router::{
     ComputeLedger, Conditions, CostEngine, DataCostModel, DataReads, DecisionContext, Determinism,
     Horizon, IntelligenceTier, MarketRegime, Region as CostRegion, Router, Routing, TierCharge,
@@ -946,12 +937,6 @@ pub struct Platform {
     aggregates: RiskAggregates,
     /// Opportunities found and not yet worked through.
     queue: Vec<Opportunity>,
-    /// The ambient Attention Router (AMBIENT-010): every DISCOVER finding is
-    /// routed through it, so a storm of material findings spends a fixed
-    /// budget and the excess is recorded as deferred or shed, not silent.
-    attention: qip_contracts::ambient::AttentionRouter,
-    /// Routing decisions, newest last, capped at [`ATTENTION_HISTORY`].
-    attention_events: Vec<qip_contracts::ambient::AttentionEvent>,
     /// Recent proposals, most recent last, capped at [`PROPOSAL_HISTORY`].
     ///
     /// A working window, not the record: the record is the event log, which is
@@ -4628,15 +4613,6 @@ impl Platform {
             capital: TrackedCapital::new(initial_equity, now),
             aggregates: RiskAggregates::new(initial_equity, initial_equity)?,
             queue: Vec::new(),
-            attention: qip_contracts::ambient::AttentionRouter::new(
-                qip_contracts::ambient::RoutingPolicy::standard(
-                    ATTENTION_MATERIALITY_BP,
-                    ATTENTION_BUDGET,
-                    Duration::from_secs(ATTENTION_WINDOW_SECS),
-                    ATTENTION_DEFER_CAPACITY,
-                )?,
-            ),
-            attention_events: Vec::new(),
             proposals: Vec::new(),
             equity_history: Vec::new(),
             proposals_made: 0,
@@ -8436,10 +8412,6 @@ impl Platform {
         self.proposals_made
     }
 
-    pub fn attention_events(&self) -> &[qip_contracts::ambient::AttentionEvent] {
-        &self.attention_events
-    }
-
     pub fn queue(&self) -> &[Opportunity] {
         &self.queue
     }
@@ -10435,51 +10407,6 @@ impl Platform {
         report
     }
 
-    /// Routes each finding through the Attention Router as an ambient
-    /// Opportunity signal. Returns a problem naming what could not be routed:
-    /// a finding whose importance is not a number in `[0, 1]` is refused, not
-    /// clamped, and the rest are still routed.
-    fn route_attention(&mut self, found: &[Opportunity], now: Timestamp) -> Option<String> {
-        use qip_contracts::ambient::{AmbientSignal, MAX_SEVERITY_BP, SignalClass, Trigger};
-        let mut refused: Vec<String> = Vec::new();
-        for opportunity in found {
-            let importance = opportunity.rank.importance;
-            let routed = if (0.0..=1.0).contains(&importance) {
-                // f64 -> integer basis points, the crossing the contract asks for.
-                let bp = (importance * f64::from(MAX_SEVERITY_BP)).round() as u32;
-                AmbientSignal::new(
-                    format!("discover-{}", opportunity.opportunity_id),
-                    SignalClass::Opportunity,
-                    opportunity.headline.clone(),
-                    bp,
-                    Trigger::Schedule("discover-scan".to_string()),
-                    now,
-                )
-                .and_then(|signal| self.attention.route(&signal, now))
-            } else {
-                Err(Error::invalid(
-                    "importance outside [0, 1]; fix the detector, it is not clamped",
-                ))
-            };
-            match routed {
-                Ok(events) => self.attention_events.extend(events),
-                Err(e) => refused.push(format!("{}: {e}", opportunity.opportunity_id)),
-            }
-        }
-        let excess = self
-            .attention_events
-            .len()
-            .saturating_sub(ATTENTION_HISTORY);
-        self.attention_events.drain(..excess);
-        (!refused.is_empty()).then(|| {
-            format!(
-                "the attention router refused {} finding(s): {}",
-                refused.len(),
-                refused.join("; ")
-            )
-        })
-    }
-
     fn stage_discover(&mut self, now: Timestamp) -> StageOutcome {
         // Events past retention age out first, so the working set stays
         // bounded on a long-running process. Retention is far outside the
@@ -10613,7 +10540,6 @@ impl Platform {
         self.telemetry
             .metrics
             .increment(names::OPPORTUNITIES_DETECTED, labels([]), count as u64);
-        let attention_problem = self.route_attention(&found, now);
         self.queue.extend(found);
         // The queue is worked newest-highest-value first, and anything that
         // expired while waiting is dropped rather than silently worked late.
@@ -10629,9 +10555,6 @@ impl Platform {
                 self.queue.len()
             ),
         );
-        if let Some(problem) = attention_problem {
-            outcome = outcome.with_problem(problem);
-        }
         // Named individually, not counted. The refusal names every leaking
         // input because a feed fixed for one event and left broken for three
         // reads clean afterwards, and the event id is the only part of this an

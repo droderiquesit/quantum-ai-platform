@@ -227,10 +227,10 @@
       "backend/crates/libs/qip-contracts/src/ambient.rs",
       "backend/crates/libs/qip-contracts/tests/ambient.rs::a_deviation_below_materiality_wakes_nothing_and_a_material_one_takes_its_classes_pathway"
     ],
-    "gap": "Wired for one class only: Platform::stage_discover routes every DISCOVER finding through the AttentionRouter as an Opportunity signal (budget 8 per hour, importance bar 2500 bp). Surprise, Risk and Assumption detectors do not yet feed it, and the research/specialist/reflex lanes do not consume the resulting events (Platform::attention_events is read-only evidence).",
+    "gap": "The router is a pure library type. No running loop feeds it detector output yet (AMBIENT-001) and the specialist, research and reflex lanes do not consume its events, so it is not integrated into the cycle. The router must NOT be wired into qip-kernel: qip-kernel is on the order path and no_order_path_crate_names_an_ambient_type_and_an_advisory_cannot_be_unwrapped_but_by_promote forbids any ambient type there. A first attempt (2da9d809) did, and was reverted on 2026-10-05; the wiring has to sit outside the order path and cross only `promote`.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -241,7 +241,7 @@
       "AMBIENT-019"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ambient a_deviation_below_materiality_wakes_nothing_and_a_material_one_takes_its_classes_pathway (400 generated cases, premise asserts both sides of the bar were hit). Mutation-verified: <= on materiality and a swapped route each failed it. Wired: cargo test -p qip-kernel --test kernel every_discover_finding_above_the_materiality_bar_is_routed_through_the_attention_router; mutation (discard the routed events) failed it with left 0 / right 1, restored, passes.",
+    "verification": "cargo test -p qip-contracts --test ambient a_deviation_below_materiality_wakes_nothing_and_a_material_one_takes_its_classes_pathway (400 generated cases, premise asserts both sides of the bar were hit). Mutation-verified: <= on materiality and a swapped route each failed it.",
     "work_item": "E09-attention-router",
     "tier": "T3",
     "size": "L",
@@ -462,7 +462,7 @@
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs::an_ambient_signal_and_the_attention_event_it_caused_round_trip_through_the_event_log_unchanged",
       "backend/crates/libs/qip-contracts/tests/ambient.rs::a_signal_without_a_named_trigger_or_with_an_out_of_range_severity_is_refused"
     ],
-    "gap": "None for the contract. The test bodies borrow the existing SignalGenerated and AgentRunCompleted topics; dedicated ambient topics are not registered in qip-events and no producer emits these records yet (see AMBIENT-001). Platform now produces AmbientSignal ids and AttentionEvent records from DISCOVER (kept in a bounded in-memory window), but they are not yet appended to the event log.",
+    "gap": "None for the contract. The test bodies borrow the existing SignalGenerated and AgentRunCompleted topics; dedicated ambient topics are not registered in qip-events and no producer emits these records yet (see AMBIENT-001).",
     "implemented": true,
     "tested": true,
     "integrated": false,
