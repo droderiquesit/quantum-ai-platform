@@ -1,16 +1,19 @@
 [
   {
     "id": "EXEC-020",
-    "status": "MISSING",
-    "current": "nothing. No per-venue, per-mode legal/operational-support registry exists anywhere in the tree. The only mode-shaped gate in-tree is qip_edge::cell::Cell's GATE_LIVE_VENUE (backend/crates/edge/qip-edge/src/cell.rs:68, refused at cell.rs:2960 and cell.rs:3864), which refuses every order to a live-class venue outright (the paper-trading boundary) -- a coarse live-vs-paper class check, not a per-venue registry distinguishing which of EXEC-001/013-019's eight modes is enabled for that venue.",
+    "status": "PARTIAL",
+    "current": "qip_execution_engine::modes::ModeGate (nothing enabled by default; enable() needs recorded legal AND operational support for a named jurisdiction; admit() returns the ModeAdmission token) is now required by qip_edge::cell::Cell::send when installed via Cell::with_mode_gate: a netted strategy order is OrderTaking, an arbitrage leg is Routing, and a mode not enabled at the order's venue is refused under gate mode_disabled (GATE_MODE_DISABLED) before an order number is spent. qip-edge-node's assemble() installs a gate enabling only OrderTaking and Routing, only at the cell's own venues, jurisdiction 'paper'; the other six modes stay refused.",
     "evidence": [
       "backend/crates/services/qip-execution-engine/src/modes.rs",
-      "tests with_nothing_enabled_every_mode_is_refused_and_enabling_one_admits_only_that_one and a_mode_without_both_legal_and_operational_support_cannot_be_enabled; both mutation-verified"
+      "backend/crates/edge/qip-edge/src/cell.rs (GATE_MODE_DISABLED, Cell::with_mode_gate, Cell::send)",
+      "backend/crates/apps/qip-edge-node/src/lib.rs (assemble installs the gate)",
+      "test an_order_in_a_mode_not_enabled_at_its_venue_is_refused_before_an_order_number_is_spent (qip-edge tests/telemetry.rs), mutation-verified: disabling the admit check made it fail at 'work(..).is_err()'",
+      "test an_assembled_node_enables_order_taking_and_routing_at_its_venue_and_nothing_else (qip-edge-node tests/pass.rs), mutation-verified: enabling Derivatives in place of Routing failed it on 'Routing'"
     ],
-    "gap": "A fail-closed per-venue gate exists (qip_execution_engine::modes::ModeGate: nothing enabled by default, enable() requires recorded legal AND operational support for a named jurisdiction, admit() returns the only ModeAdmission token) and is tested, but no order path (OMS, edge cell, kernel) requires a ModeAdmission, so an order in a disabled mode is not yet refused in production.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "The edge cell refuses a disabled mode before an order exists, and the node wires it. Not closed: (1) qip-kernel's Platform::submit_order (central path) still demands no ModeAdmission; (2) a Cell built without with_mode_gate is ungated (opt-in, not fail-closed by construction); (3) the other six modes have no order path at all, so 'an order in each mode is refused' is demonstrated only for OrderTaking and Routing.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -24,11 +27,11 @@
       "EXEC-019"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-execution-engine --lib modes:: ; Missing: OrderManager::submit (or Cell) demanding a ModeAdmission, with an acceptance test that an order in each mode is refused before an order object exists.",
+    "verification": "cargo test -p qip-edge --test telemetry mode ; cargo test -p qip-edge-node --test pass an_assembled_node ; Missing: Platform::submit_order demanding a ModeAdmission.",
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": "Stays PARTIAL: wiring the gate as mandatory changes every existing submit caller and their fixtures, so it needs its own slice."
+    "notes": "Central-path gating needs a Platform builder and a composition-root decision on which broker names to enable; left for its own slice."
   },
   {
     "id": "EXEC-021",

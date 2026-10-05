@@ -2295,3 +2295,26 @@ fn a_cell_cut_off_from_the_centre_keeps_deciding_from_local_artifacts_within_the
     );
     Ok(())
 }
+
+#[test]
+fn an_assembled_node_enables_order_taking_and_routing_at_its_venue_and_nothing_else() -> Result<()>
+{
+    use qip_execution_engine::modes::ExecutionMode;
+
+    let (node, _gateway, _feed) = unfunded_node_with_feed(PricingPolicy::Marketable)?;
+    let gate = node
+        .cell
+        .mode_gate()
+        .ok_or_else(|| qip_core::error::Error::not_found("the mode gate on an assembled node"))?;
+    // Premise: the loop covers all eight modes.
+    assert_eq!(ExecutionMode::ALL.len(), 8);
+    for mode in ExecutionMode::ALL {
+        let enabled = matches!(mode, ExecutionMode::OrderTaking | ExecutionMode::Routing);
+        assert_eq!(
+            gate.admit(venue().as_str(), mode).is_ok(),
+            enabled,
+            "{mode:?}"
+        );
+    }
+    Ok(())
+}
