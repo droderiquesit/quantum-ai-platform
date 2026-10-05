@@ -14,6 +14,8 @@
 //! `DataFinder::assess`, whose legal and robots gates still apply to whatever
 //! a query eventually finds.
 
+use crate::coverage::SourceRegion;
+use crate::source::SourceCandidate;
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -181,4 +183,63 @@ pub fn queries_for(
         }
     }
     Ok(out)
+}
+
+/// Somewhere a query could be answered from: a catalogued candidate that
+/// declares the query's entity and serves its geography.
+///
+/// The four tags are the query's — what the location is proposed *for*, not
+/// what its publisher has been shown to hold. `DataFinder::assess` finds
+/// that out, under the same legal and robots gates as any other candidate.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateLocation {
+    pub entity: String,
+    pub geography: String,
+    pub domain: String,
+    pub language: String,
+    pub source_id: String,
+    pub locator: String,
+}
+
+/// The catalogued candidates that could answer `query`, in catalogue order.
+///
+/// A location is built only from a query and carries its tags, and a query
+/// missing any of the four is refused here — its fields are public, so one
+/// can be written by hand without [`queries_for`] — which is what leaves no
+/// way to an untagged location. A candidate qualifies when it declares the
+/// entity among its instruments and serves the geography: a declared region
+/// whose [`SourceRegion::as_str`] is the query's geography, or
+/// [`SourceRegion::Global`]. Nothing is invented: with no such candidate the
+/// answer is empty, which says the catalogue has nowhere to look and is the
+/// finding CRAWL (DATA-020) would act on.
+pub fn locations_for(
+    query: &DiscoveryQuery,
+    catalogue: &[SourceCandidate],
+) -> Result<Vec<CandidateLocation>> {
+    for (label, value) in [
+        ("entity", &query.entity),
+        ("geography", &query.geography),
+        ("domain", &query.domain),
+        ("language", &query.language),
+    ] {
+        nonempty(label, value)?;
+    }
+    Ok(catalogue
+        .iter()
+        .filter(|candidate| {
+            let coverage = candidate.declared_coverage();
+            coverage.instruments().contains(&query.entity)
+                && coverage.regions().iter().any(|region| {
+                    *region == SourceRegion::Global || region.as_str() == query.geography
+                })
+        })
+        .map(|candidate| CandidateLocation {
+            entity: query.entity.clone(),
+            geography: query.geography.clone(),
+            domain: query.domain.clone(),
+            language: query.language.clone(),
+            source_id: candidate.id().to_string(),
+            locator: candidate.endpoint().url(),
+        })
+        .collect())
 }

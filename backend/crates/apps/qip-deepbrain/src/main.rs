@@ -684,8 +684,9 @@ fn run() -> Result<()> {
             }
             if let Some(assessment) = &outcome.discovery {
                 println!(
-                    "  discovery: {} candidate(s) assessed, {} registered, {} catalogue \
-                     problem(s)",
+                    "  discovery: {} target(s) with no source, {} candidate(s) assessed, {} \
+                     registered, {} catalogue problem(s)",
+                    assessment.targets.len(),
                     assessment.decisions.len(),
                     assessment.registered(),
                     assessment.catalogue_problems.len()

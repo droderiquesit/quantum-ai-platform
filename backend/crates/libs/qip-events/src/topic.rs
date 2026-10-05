@@ -188,6 +188,13 @@ pub enum Topic {
     /// flags a backtest, and a flag the log may have evicted is a replay
     /// that re-derives nothing.
     SourceRevisionDetected,
+    /// Policy moved a registered source: promoted, throttled, quarantined or
+    /// retired (DATA-018). Filed beside the revision because it is the same
+    /// kind of fact — a finding about a source that this platform acted on —
+    /// and kept as long: "why did we stop reading that feed" is asked months
+    /// after the pass that stopped it, and the registry holds only the
+    /// present.
+    SourceLifecycleChanged,
     /// A research campaign closed and its manifest is on the record — what
     /// a fit used, retained for as long as the log is. Its own topic rather
     /// than `LearningCompleted`, whose every frame the kernel decodes as a
@@ -296,7 +303,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 85] = [
+    pub const ALL: [Self; 86] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -363,6 +370,7 @@ impl Topic {
         Self::LearningCompleted,
         Self::LessonRecorded,
         Self::SourceRevisionDetected,
+        Self::SourceLifecycleChanged,
         Self::ResearchCampaignClosed,
         Self::ResearchCampaignFlagged,
         Self::RiskRuleDefended,
@@ -454,6 +462,7 @@ impl Topic {
             Self::LearningCompleted => "learning.completed",
             Self::LessonRecorded => "lesson.recorded",
             Self::SourceRevisionDetected => "learning.source_revised",
+            Self::SourceLifecycleChanged => "learning.source_lifecycle",
             Self::ResearchCampaignClosed => "learning.campaign_closed",
             Self::ResearchCampaignFlagged => "learning.campaign_flagged",
             Self::RiskRuleDefended => "risk.rule_defended",
@@ -556,6 +565,7 @@ impl Topic {
             | Self::LearningCompleted
             | Self::LessonRecorded
             | Self::SourceRevisionDetected
+            | Self::SourceLifecycleChanged
             | Self::ResearchCampaignClosed
             | Self::ResearchCampaignFlagged
             | Self::RiskRuleDefended
@@ -695,6 +705,7 @@ impl Topic {
             | Self::LearningCompleted
             | Self::LessonRecorded
             | Self::SourceRevisionDetected
+            | Self::SourceLifecycleChanged
             | Self::ResearchCampaignClosed
             | Self::ResearchCampaignFlagged
             | Self::RiskRuleDefended

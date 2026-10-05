@@ -128,7 +128,7 @@ use qip_data_finder::registration::{
     RegistrationRecord, RegistrationRegistry, RegistrationStanding,
 };
 use qip_data_finder::source::SourceCandidate;
-use qip_data_finder::{RegisteredSource, RegistrationDecision};
+use qip_data_finder::{LifecycleAction, RegisteredSource, RegistrationDecision};
 use qip_events::log::EventLog;
 use qip_events::{EventBody, EventFilter, Topic};
 use qip_execution_engine::broker::{Broker, SimulatedBroker, SimulationSettings};
@@ -2339,6 +2339,11 @@ impl ChainAbsorption {
 /// What assessing a batch of candidate sources produced.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceAssessment {
+    /// What the pass set out to find a source for (DATA-031): uncovered
+    /// entities with a world-model gap or a forecast-error spike, as
+    /// [`Platform::discovery_targets`] read them before the first candidate
+    /// was assessed.
+    pub targets: Vec<qip_data_finder::discovery_targets::DiscoveryTarget>,
     /// One decision per candidate, in identifier order.
     pub decisions: Vec<RegistrationDecision>,
     /// Datasets that reached the mesh catalogue as a result.
@@ -16134,7 +16139,43 @@ impl Platform {
         probe: &mut dyn SourceProbe,
         now: Timestamp,
     ) -> Result<SourceAssessment> {
+        // Read before anything registers: a target is something no source
+        // covered when the pass began, and a candidate this call registers
+        // must not erase the reason it was assessed.
+        let targets = self.discovery_targets(now)?;
         let decisions = self.data_finder.assess(candidates, probe, now)?;
+        // Before the catalogue, and raised on failure: see
+        // `source_lifecycle` for why a move the log does not hold must not
+        // be reported as a pass.
+        self.journal_source_transitions(&decisions, now)?;
+        // A source policy stopped is a dataset the mesh must stop offering.
+        // The catalogue is the one answer to "may this be read", and a
+        // quarantine that reached the finder's registry and not the
+        // catalogue left that answer at "yes" for a feed whose publisher had
+        // said no. A retirement is stopped the same way — the catalogue has
+        // no removal, and a later pass that registers the source again
+        // replaces the entry.
+        for transition in decisions
+            .iter()
+            .filter_map(RegistrationDecision::transition)
+        {
+            let dataset = format!("source.{}", transition.source_id);
+            if matches!(
+                transition.action,
+                LifecycleAction::Quarantined | LifecycleAction::Retired
+            ) && self.catalog.get(&dataset).is_some()
+            {
+                self.catalog.quarantine(
+                    &dataset,
+                    format!(
+                        "source {}: {}",
+                        transition.action.as_str(),
+                        transition.reason
+                    ),
+                    now,
+                )?;
+            }
+        }
         let mut catalogued = Vec::new();
         let mut catalogue_problems = Vec::new();
         for decision in &decisions {
@@ -16155,6 +16196,7 @@ impl Platform {
             }
         }
         Ok(SourceAssessment {
+            targets,
             decisions,
             catalogued,
             catalogue_problems,

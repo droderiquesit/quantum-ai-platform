@@ -18,6 +18,8 @@ use crate::decision::{
 use crate::endpoint::AccessMechanism;
 use crate::health::{HealthObservation, SourceHealth};
 use crate::legal::{HostRules, LegalAssessment, Legality, RateLimit, SourcePolicy};
+use crate::lifecycle::{self, LifecycleAction, Reassessment};
+use crate::manipulation::ManipulationRisk;
 use crate::probe::{ProbeEvidence, SourceProbe};
 use crate::registration::{RegistrationRecord, RegistrationRegistry, RegistrationRequirement};
 use crate::replacement::{self, ReplacementOutcome};
@@ -332,9 +334,95 @@ impl DataFinder {
 
         let mut decisions = Vec::with_capacity(ordered.len());
         for candidate in ordered {
-            decisions.push(self.assess_one(candidate, probe, now)?);
+            decisions.push(self.assess_held(candidate, probe, now)?);
         }
         Ok(decisions)
+    }
+
+    /// Assess one candidate, then apply what the answer means for a
+    /// registration already standing under its identifier (DATA-018,
+    /// DATA-021).
+    ///
+    /// [`Self::assess_one`] decides about the candidate and, on a refusal,
+    /// writes nothing. For a source the registry already held that was the
+    /// defect: its publisher's terms were re-read every pass and a "no" left
+    /// the registration exactly as it was. Here the standing registration is
+    /// moved by [`lifecycle::policy`] and the move rides on the decision, so
+    /// the caller that journals decisions journals the transition with it.
+    ///
+    /// A quarantined source is answered without the probe. Quarantine means
+    /// stopped: a source whose terms forbid use is not fetched again to see
+    /// whether they still do, and a pass that re-registered it on a healthy
+    /// answer would lift a schema-drift quarantine nobody had reviewed. It
+    /// holds for the life of this registry; releasing one is a person's
+    /// decision and there is deliberately no method here that makes it.
+    fn assess_held(
+        &mut self,
+        candidate: SourceCandidate,
+        probe: &mut dyn SourceProbe,
+        now: Timestamp,
+    ) -> Result<RegistrationDecision> {
+        let id = candidate.id().to_string();
+        let Some(held) = self.registry.get(&id) else {
+            return self.assess_one(candidate, probe, now);
+        };
+        let held_class = held.routing().class();
+        if let Some(reason) = held.quarantine_reason() {
+            let reason = format!("quarantined: {reason}");
+            let mut reasoning = Reasoning::new();
+            reasoning.record(
+                LifecycleStage::Monitor,
+                format!("not probed: `{id}` is {reason}"),
+            );
+            return RegistrationDecision::new(
+                id,
+                DecisionOutcome::Rejected { reason },
+                reasoning,
+                now,
+            );
+        }
+
+        let decision = self.assess_one(candidate, probe, now)?;
+        let found = match decision.outcome() {
+            DecisionOutcome::Registered(registration) => {
+                Reassessment::Collected(registration.routing().class())
+            }
+            DecisionOutcome::Deferred { .. } => Reassessment::Unreached,
+            DecisionOutcome::Rejected { reason } | DecisionOutcome::Quarantined { reason, .. } => {
+                // Only one rejection is about worth rather than permission:
+                // use is permitted and the composite is under the floor.
+                // Every other refusal — terms, robots, host, personal data,
+                // manipulation, standing — is a reason to stop and keep the
+                // record, not to forget the source existed.
+                let on_score = decision
+                    .legality()
+                    .is_some_and(|legality| legality.overall().is_permitted())
+                    && decision
+                        .scores()
+                        .is_some_and(|scores| scores.composite() < Routing::COLD_THRESHOLD);
+                if on_score {
+                    Reassessment::BelowFloor { reason }
+                } else {
+                    Reassessment::Refused { reason }
+                }
+            }
+        };
+        let Some(transition) = lifecycle::policy(&id, held_class, found, now) else {
+            return Ok(decision);
+        };
+        match transition.action {
+            LifecycleAction::Quarantined => {
+                if let Some(entry) = self.registry.get_mut(&id) {
+                    entry.quarantine(transition.reason.clone());
+                }
+            }
+            LifecycleAction::Retired => {
+                self.registry.remove(&id);
+            }
+            // `assess_one` already replaced the entry with the new routing.
+            LifecycleAction::Promoted | LifecycleAction::Throttled => {}
+        }
+        Ok(decision.with_transition(transition))
     }
 
     fn assess_one(
@@ -567,6 +655,28 @@ impl DataFinder {
             reasoning.record(
                 LifecycleStage::Register,
                 format!("rejected on personal data: {reason}"),
+            );
+            return RegistrationDecision::new(
+                id,
+                DecisionOutcome::Rejected { reason },
+                reasoning,
+                now,
+            );
+        }
+
+        // The seventh inspection (DATA-016), on the same evidence and before
+        // the score for the reason the personal-data screen is: the freshness
+        // score rewards a payload dated in the future, and a source refused
+        // for forging its clock should not also be ranked.
+        // Recorded under the probe stage: it is a reading of what the probe
+        // saw, and the score stage's record is exactly the five scores.
+        let manipulation = ManipulationRisk::inspect(&source);
+        reasoning.record(LifecycleStage::Probe, manipulation.describe());
+        if !manipulation.permits_registration() {
+            let reason = manipulation.describe();
+            reasoning.record(
+                LifecycleStage::Register,
+                format!("rejected on manipulation risk: {reason}"),
             );
             return RegistrationDecision::new(
                 id,
@@ -1029,10 +1139,15 @@ impl DataFinder {
             None => 0.0,
         };
 
+        // Against every *other* registered source. A source re-assessed
+        // while registered overlaps its own registration completely, and
+        // counting that scored every standing source as wholly redundant on
+        // its second pass — a fifth of the composite gone for being itself.
         let uniqueness = 1.0
             - self
                 .registry
                 .values()
+                .filter(|registered| registered.id() != source.id())
                 .map(|registered| {
                     registered
                         .source()

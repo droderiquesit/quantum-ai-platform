@@ -1,6 +1,8 @@
 //! DATA-031 discovery starts from gaps and forecast errors; DATA-032 queries
 //! carry geography, entity, domain and language.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+
 use qip_data_finder::discovery_targets::{
     DiscoveryTarget, EntityProfile, ForecastError, KnowledgeGap, TargetReason, queries_for,
     targets_from,
@@ -128,4 +130,155 @@ fn a_profile_missing_any_dimension_produces_no_queries_at_all() {
         queries_for(&target, &other).is_err(),
         "profile for another entity"
     );
+}
+
+// --- candidate locations (DATA-032) -----------------------------------------
+
+mod common;
+
+use qip_contracts::governance::Usage;
+use qip_data_finder::coverage::{SourceCoverage, SourceRegion, UpdateFrequency};
+use qip_data_finder::discovery_targets::{CandidateLocation, DiscoveryQuery, locations_for};
+use qip_data_finder::quality::SourceCost;
+use qip_data_finder::source::{SourceCandidate, SourceIdentity};
+
+/// A catalogued candidate declaring `instrument` in `region`.
+fn catalogued(id: &str, instrument: &str, region: SourceRegion) -> SourceCandidate {
+    SourceCandidate::new(
+        SourceIdentity::new(id, format!("{id} feed"), "Example Data Ltd").expect("identity"),
+        common::endpoint(&format!("https://{id}.example/data")).expect("endpoint"),
+        SourceCoverage::new(
+            [qip_financial::asset_class::AssetClass::Equity],
+            [region],
+            [instrument.to_string()],
+            UpdateFrequency::Daily,
+        )
+        .expect("coverage"),
+        common::licensed_for(&[Usage::Derive]).expect("licence"),
+        SourceCost::free(qip_core::Currency::EUR),
+        region,
+        [qip_events::Topic::MarketQuote],
+        "a curated directory",
+        common::now(),
+    )
+    .expect("candidate")
+}
+
+fn tagged(location: &CandidateLocation) -> bool {
+    [
+        &location.entity,
+        &location.geography,
+        &location.domain,
+        &location.language,
+    ]
+    .iter()
+    .all(|dimension| !dimension.trim().is_empty())
+}
+
+#[test]
+fn every_query_and_candidate_location_from_a_gap_carries_all_four_dimensions() {
+    // The requirement's own check, from the gap forwards.
+    let gaps = [KnowledgeGap {
+        entity: "ent-northwind".into(),
+    }];
+    let targets = targets_from(&gaps, &[], &covered(&[]), 3.0).expect("targets");
+    assert_eq!(targets.len(), 1, "the premise: the gap is a target");
+    let profile = EntityProfile {
+        entity: "ent-northwind".into(),
+        geographies: vec!["europe".into(), "apac".into()],
+        domains: vec!["filings".into()],
+        languages: vec!["de".into(), "ja".into()],
+    };
+    let catalogue = [
+        catalogued("registry-eu", "ent-northwind", SourceRegion::Europe),
+        catalogued("wire-global", "ent-northwind", SourceRegion::Global),
+        // Declares the entity, serves a geography no query asks about.
+        catalogued("registry-us", "ent-northwind", SourceRegion::UsEast),
+        // Serves the geography, declares another entity.
+        catalogued("other-eu", "ent-elsewhere", SourceRegion::Europe),
+    ];
+
+    let queries = queries_for(&targets[0], &profile).expect("queries");
+    assert_eq!(queries.len(), 4, "2 geographies x 1 domain x 2 languages");
+    let mut found = Vec::new();
+    for query in &queries {
+        let locations = locations_for(query, &catalogue).expect("locations");
+        for location in &locations {
+            assert!(tagged(location), "an untagged location: {location:?}");
+            assert_eq!(
+                (
+                    &location.entity,
+                    &location.geography,
+                    &location.domain,
+                    &location.language
+                ),
+                (
+                    &query.entity,
+                    &query.geography,
+                    &query.domain,
+                    &query.language
+                ),
+                "a location carries tags its query does not"
+            );
+        }
+        found.push((
+            query.geography.clone(),
+            locations
+                .into_iter()
+                .map(|location| location.source_id)
+                .collect::<Vec<_>>(),
+        ));
+    }
+    // The premise that makes the loop above mean something: locations were
+    // produced, and exactly the candidates that declare the entity and serve
+    // the geography — the global wire everywhere, the registry only at home.
+    let europe: Vec<_> = found.iter().filter(|(g, _)| g == "europe").collect();
+    let apac: Vec<_> = found.iter().filter(|(g, _)| g == "apac").collect();
+    assert_eq!(europe.len(), 2);
+    assert_eq!(apac.len(), 2);
+    assert!(
+        europe
+            .iter()
+            .all(|(_, ids)| ids == &["registry-eu", "wire-global"])
+    );
+    assert!(apac.iter().all(|(_, ids)| ids == &["wire-global"]));
+}
+
+#[test]
+fn a_query_missing_any_dimension_yields_no_location_at_all() {
+    let catalogue = [catalogued(
+        "wire-global",
+        "ent-northwind",
+        SourceRegion::Global,
+    )];
+    let whole = DiscoveryQuery {
+        entity: "ent-northwind".into(),
+        geography: "europe".into(),
+        domain: "filings".into(),
+        language: "de".into(),
+        text: "ent-northwind filings europe lang:de".into(),
+    };
+    // The premise: the whole query has somewhere to look, so each refusal
+    // below is the missing dimension's doing.
+    assert_eq!(
+        locations_for(&whole, &catalogue).expect("locations").len(),
+        1
+    );
+
+    for missing in ["entity", "geography", "domain", "language"] {
+        let mut query = whole.clone();
+        match missing {
+            "entity" => query.entity = " ".into(),
+            "geography" => query.geography = String::new(),
+            "domain" => query.domain = String::new(),
+            _ => query.language = "\t".into(),
+        }
+        let error = locations_for(&query, &catalogue)
+            .expect_err("a query with a missing dimension produced locations");
+        assert!(
+            error.message().contains(missing),
+            "the refusal does not name the missing {missing}: {}",
+            error.message()
+        );
+    }
 }

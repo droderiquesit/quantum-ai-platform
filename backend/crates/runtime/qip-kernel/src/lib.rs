@@ -61,6 +61,8 @@ pub mod self_watch;
 pub mod session_replay;
 pub mod shared_cause;
 pub mod sizing_review;
+pub mod source_discovery;
+pub mod source_lifecycle;
 pub mod valuation;
 pub mod venue_admission;
 pub mod venue_measurement;

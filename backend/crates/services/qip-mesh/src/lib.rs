@@ -39,6 +39,7 @@
 
 pub mod adapters;
 pub mod backing;
+pub mod bigquery;
 pub mod catalog;
 pub mod delta;
 pub mod peer;

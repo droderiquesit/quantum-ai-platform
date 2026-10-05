@@ -82,6 +82,8 @@ pub mod health;
 pub mod ingestion;
 pub mod ledger;
 pub mod legal;
+pub mod lifecycle;
+pub mod manipulation;
 pub mod personal_data;
 pub mod probe;
 pub mod quality;
@@ -120,6 +122,8 @@ pub use ledger::{LedgerOutcome, ReferenceLedger, RevisionRecord, Unretrievable};
 pub use legal::{
     HostRules, LegalAssessment, Legality, LicensingPosture, RateLimit, SourceLicense, SourcePolicy,
 };
+pub use lifecycle::{LifecycleAction, LifecycleTransition};
+pub use manipulation::ManipulationRisk;
 pub use personal_data::{PersonalDataFinding, PersonalDataScreen, PersonalIdentifier};
 pub use probe::{
     HeadResponse, InMemoryProbe, NetworkProbe, PayloadSample, ProbeEvidence, RobotsFetch,

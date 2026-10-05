@@ -162,12 +162,31 @@ impl DiscoveryDesk {
         if self.config.every_cycles == 0 || !cycle.is_multiple_of(self.config.every_cycles) {
             return Ok(None);
         }
+        // Discovery starts from what the platform is blind to or wrong
+        // about and has no source for (DATA-031), read once, before any
+        // candidate registers. The entries that declare a targeted entity go
+        // first. That is the whole of what a target can do here: nothing in
+        // this workspace finds a source it was not told about (CRAWL,
+        // DATA-020), so a target no entry declares is reported on the pass
+        // and answered by nobody — which is the finding, not a failure.
+        let targets = platform.discovery_targets(now)?;
+        let mut order: Vec<&CandidateEntry> = self.entries.iter().collect();
+        order.sort_by_key(|entry| {
+            !targets.iter().any(|target| {
+                entry
+                    .candidate
+                    .declared_coverage()
+                    .instruments()
+                    .contains(&target.entity)
+            })
+        });
         let mut merged = SourceAssessment {
+            targets,
             decisions: Vec::new(),
             catalogued: Vec::new(),
             catalogue_problems: Vec::new(),
         };
-        for entry in &self.entries {
+        for entry in order {
             let candidates = vec![entry.candidate.clone()];
             let assessment = match self.probe.as_mut() {
                 Some(probe) => platform.assess_sources(candidates, probe.as_mut(), now)?,
@@ -238,10 +257,14 @@ mod tests {
     }
 
     fn entry(id: &str, route: &str) -> Result<CandidateEntry> {
+        entry_covering(id, route, "EU0001")
+    }
+
+    fn entry_covering(id: &str, route: &str, instrument: &str) -> Result<CandidateEntry> {
         let coverage = SourceCoverage::new(
             [AssetClass::Equity],
             [SourceRegion::Europe],
-            ["EU0001".to_string()],
+            [instrument.to_string()],
             UpdateFrequency::Minutely,
         )?
         .with_history_from(start().saturating_sub(Duration::from_days(3_650)));
@@ -339,6 +362,253 @@ mod tests {
             2,
             "two candidates went in; {} decision(s) came out",
             assessment.decisions.len()
+        );
+        Ok(())
+    }
+
+    /// A scripted probe the test keeps a handle on after the desk owns it,
+    /// so "was the publisher contacted again" is read off the probe's own
+    /// call log rather than inferred from the decision.
+    #[derive(Debug)]
+    struct Watched(std::sync::Arc<std::sync::Mutex<qip_data_finder::probe::InMemoryProbe>>);
+
+    impl Watched {
+        fn script(
+            &self,
+        ) -> Result<std::sync::MutexGuard<'_, qip_data_finder::probe::InMemoryProbe>> {
+            self.0
+                .lock()
+                .map_err(|_| Error::io("the scripted probe's lock was poisoned"))
+        }
+    }
+
+    impl SourceProbe for Watched {
+        fn robots(&mut self, host: &str, at: Timestamp) -> Result<RobotsFetch> {
+            self.script()?.robots(host, at)
+        }
+
+        fn head(&mut self, endpoint: &SourceEndpoint, at: Timestamp) -> Result<HeadResponse> {
+            self.script()?.head(endpoint, at)
+        }
+
+        fn sample(&mut self, endpoint: &SourceEndpoint, at: Timestamp) -> Result<PayloadSample> {
+            self.script()?.sample(endpoint, at)
+        }
+    }
+
+    #[test]
+    fn a_forecast_error_spike_on_an_uncovered_entity_is_the_pass_s_target_and_its_candidate_goes_first()
+    -> Result<()> {
+        // DATA-031, through the path a deployment runs. Before this the desk
+        // walked the operator's list in the order it was written and the
+        // platform's own scored theses — the cheapest evidence a source is
+        // missing — were read by nothing on the way.
+        use qip_kernel::source_discovery::{ThesisClaim, ThesisOutcome as Outcome};
+        let mut platform = platform();
+        let now = start().saturating_add(Duration::from_secs(120));
+        let scored = |id: &str, subject: &str, realised_bps: f64| {
+            (
+                ThesisClaim {
+                    hypothesis_id: id.to_string(),
+                    class: "momentum".to_string(),
+                    subject: subject.to_string(),
+                    formed_at: start(),
+                    resolves_at: start().saturating_add(Duration::from_secs(60)),
+                    direction: 1.0,
+                    expected_move_bps: 100.0,
+                    confidence: 0.6,
+                    falsifiers: vec![],
+                    contributors: vec![],
+                },
+                Outcome {
+                    hypothesis_id: id.to_string(),
+                    observed_at: start().saturating_add(Duration::from_secs(61)),
+                    realised_move_bps: realised_bps,
+                    realised_pnl: 0.0,
+                    falsifiers_triggered: vec![],
+                    mechanism_confirmed: None,
+                },
+            )
+        };
+        // Three theses 10bp off, and one 500bp off on an entity no source
+        // covers: 500 against a usual 10 is a spike by any multiple.
+        let (claims, outcomes): (Vec<_>, Vec<_>) = [
+            scored("h1", "ent-quiet-1", 110.0),
+            scored("h2", "ent-quiet-2", 110.0),
+            scored("h3", "ent-quiet-3", 110.0),
+            scored("h4", "ent-northwind", 600.0),
+        ]
+        .into_iter()
+        .unzip();
+        platform.learn_from(&claims, &outcomes, now)?;
+        // The premise: the fixture reached the window the LEARN stage fills,
+        // and nothing covers the entity it spiked on.
+        assert_eq!(platform.evaluations().len(), 4);
+        assert!(platform.sources_backing("ent-northwind").is_empty());
+        assert!(platform.registered_sources().is_empty());
+
+        // Catalogue order puts the unrelated candidate first. The probe is
+        // unscripted: it answers nothing, and records who was asked.
+        let script = std::sync::Arc::new(std::sync::Mutex::new(
+            qip_data_finder::probe::InMemoryProbe::new(),
+        ));
+        let watch = Watched(script.clone());
+        let mut desk = DiscoveryDesk::with_probe(
+            DiscoveryConfig { every_cycles: 1 },
+            vec![
+                entry("a-unrelated", "http://127.0.0.1:9")?,
+                entry_covering("z-northwind", "http://127.0.0.1:9", "ent-northwind")?,
+            ],
+            Box::new(Watched(script)),
+        );
+        let pass = desk
+            .maybe_run(&mut platform, 1, now)?
+            .ok_or_else(|| Error::not_found("a pass on its own cadence produced nothing"))?;
+
+        let named: Vec<&str> = pass
+            .targets
+            .iter()
+            .map(|target| target.entity.as_str())
+            .collect();
+        assert_eq!(
+            named,
+            ["ent-northwind"],
+            "the pass did not start from the entity the platform was wrong about"
+        );
+        let asked = watch.script()?.calls().to_vec();
+        assert_eq!(
+            asked.len(),
+            2,
+            "both candidates are still assessed: {asked:?}"
+        );
+        assert!(
+            asked[0].contains("z-northwind"),
+            "the candidate that could answer the target was not asked first: {asked:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_provider_whose_terms_turn_against_use_is_quarantined_within_one_cadence_and_never_fetched_again()
+    -> Result<()> {
+        // DATA-021, through the path a deployment runs: the desk on its
+        // cadence, the platform's finder, the journal. Before the lifecycle
+        // policy the desk re-read the publisher's robots.txt every pass and a
+        // "no" changed nothing: the candidate was rejected and the
+        // registration it already held stood.
+        const HOST: &str = "terms.example";
+        const URL: &str = "https://terms.example/quotes";
+        let robots = |body: &str| RobotsFetch::Served {
+            body: body.to_string(),
+            latency: Duration::from_millis(12),
+        };
+        let script = std::sync::Arc::new(std::sync::Mutex::new(
+            qip_data_finder::probe::InMemoryProbe::new()
+                .with_robots(HOST, robots("User-agent: *\nAllow: /\n"))
+                .with_robots(HOST, robots("User-agent: *\nDisallow: /\n"))
+                .with_head(
+                    URL,
+                    HeadResponse {
+                        status: 200,
+                        content_type: Some("application/json".to_string()),
+                        content_length: Some(64),
+                        last_modified: Some(start()),
+                        latency: Duration::from_millis(40),
+                    },
+                )
+                .with_sample(
+                    URL,
+                    PayloadSample {
+                        body: r#"{"symbol":"EU0001","bid":10.25,"ask":10.27}"#.to_string(),
+                        media_type: "application/json".to_string(),
+                        payload_at: Some(start()),
+                        latency: Duration::from_millis(55),
+                    },
+                ),
+        ));
+        let watch = Watched(script.clone());
+
+        // The platform's finder assesses for trading, so the licence grants it.
+        let mut terms = entry("terms", "http://127.0.0.1:9")?;
+        terms.candidate = SourceCandidate::new(
+            SourceIdentity::new("terms", "terms feed", "Example Data Ltd")?,
+            SourceEndpoint::parse(
+                URL,
+                AccessMechanism::Rest {
+                    auth: AuthRequirement::None,
+                    incremental_parameter: None,
+                    page_size: 100,
+                },
+            )?,
+            terms.candidate.declared_coverage().clone(),
+            LicensingPosture::declared(SourceLicense::new(
+                "qip-discovery-test-terms",
+                [Usage::Research, Usage::Derive, Usage::Trade],
+            )?),
+            SourceCost::free(Currency::USD),
+            SourceRegion::Europe,
+            [Topic::MarketQuote],
+            "test",
+            start(),
+        )?;
+
+        let mut platform = platform();
+        let mut desk = DiscoveryDesk::with_probe(
+            DiscoveryConfig { every_cycles: 2 },
+            vec![terms],
+            Box::new(Watched(script)),
+        );
+
+        // The premise: adopted while its terms permitted it.
+        let adopted = desk
+            .maybe_run(&mut platform, 2, start())?
+            .ok_or_else(|| Error::not_found("a pass on its own cadence produced nothing"))?;
+        assert!(
+            adopted.decisions[0].is_registered(),
+            "the source was never adopted: {:?}",
+            adopted.decisions[0].outcome()
+        );
+
+        // The publisher now forbids the path. The monitoring interval is the
+        // desk's cadence: nothing off it, and the very next pass on it stops
+        // the source.
+        assert!(desk.maybe_run(&mut platform, 3, start())?.is_none());
+        let monitored = desk
+            .maybe_run(&mut platform, 4, start())?
+            .ok_or_else(|| Error::not_found("the monitoring pass produced nothing"))?;
+        let transition = monitored.decisions[0]
+            .transition()
+            .ok_or_else(|| Error::not_found("forbidden terms moved nothing"))?;
+        assert_eq!(
+            transition.action,
+            qip_data_finder::LifecycleAction::Quarantined
+        );
+        assert!(
+            platform
+                .registered_sources()
+                .get("terms")
+                .is_some_and(|source| source.is_quarantined()),
+            "the registration still reads as collected"
+        );
+        assert_eq!(
+            platform
+                .event_log()
+                .by_topic(Topic::SourceLifecycleChanged)
+                .len(),
+            1,
+            "the quarantine is not on the event log"
+        );
+
+        // No further fetch: the next pass on the cadence asks the publisher
+        // nothing at all.
+        let contacted = watch.script()?.calls().len();
+        assert!(contacted > 0, "the premise: the publisher was contacted");
+        desk.maybe_run(&mut platform, 6, start())?
+            .ok_or_else(|| Error::not_found("a pass on its own cadence produced nothing"))?;
+        assert_eq!(
+            watch.script()?.calls().len(),
+            contacted,
+            "a quarantined source was contacted again"
         );
         Ok(())
     }

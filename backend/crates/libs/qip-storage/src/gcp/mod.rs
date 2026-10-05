@@ -1,8 +1,13 @@
 //! Adapters for two Google Cloud services, over their JSON REST APIs.
 //!
 //! [`CloudStorageBlobStore`] satisfies [`crate::BlobStore`] against a Cloud
-//! Storage bucket; [`BigQueryWarehouse`] streams rows into a BigQuery table and
-//! runs queries against it. Both speak plain HTTP/1.1 through
+//! Storage bucket; `qip_mesh::bigquery::BigQueryWarehouse` streams rows into
+//! a BigQuery table and runs queries against it. The warehouse client is not
+//! in this crate, and that is deliberate (DATA-058): this crate is linked by
+//! the reflex cell's deployable for its journal, and a BigQuery client the
+//! hot path could reach is one a later change could call. What stays here is
+//! what both adapters share — [`GcpAccess`], the token sources, the status
+//! and encoding rules. Both speak plain HTTP/1.1 through
 //! [`qip_transport::HttpClient`] — the platform's one HTTP client, with bounded
 //! bodies and explicit timeouts — and both refuse, opening no connection, when
 //! they are not configured.
@@ -62,14 +67,9 @@
 //! when the pod was rescheduled.
 
 pub mod auth;
-pub mod bigquery;
 pub mod storage;
 
 pub use auth::{AccessToken, MetadataServerTokens, StaticToken, TokenFile, TokenSource};
-pub use bigquery::{
-    BigQueryConfig, BigQueryWarehouse, InsertOutcome, InsertRow, QueryPage, QueryParameter,
-    QueryRequest, QueryRow, RowError,
-};
 pub use storage::{CloudStorageBlobStore, CloudStorageConfig};
 
 /// Environment variable naming the TLS-terminating proxy.
@@ -313,7 +313,10 @@ impl GcpAccess {
     /// is written to every access log on the path — the proxy's, Google's, and
     /// whatever is in between — and a credential in one is a credential in all
     /// of them, recoverable long after it should have been rotated.
-    fn request(&self, method: Method, path_and_query: &str) -> Result<HttpRequest> {
+    ///
+    /// Public because the warehouse client that shares this access lives in
+    /// `qip-mesh` (DATA-058).
+    pub fn request(&self, method: Method, path_and_query: &str) -> Result<HttpRequest> {
         let Some(base) = &self.base_url else {
             return Err(Error::unavailable(
                 "no endpoint is configured, so no connection will be opened: see \
@@ -340,7 +343,7 @@ impl GcpAccess {
 ///
 /// `service` names which adapter is speaking, so a message in a log says
 /// whether it was the bucket or the warehouse that refused.
-pub(crate) fn status_refusal(service: &str, status: u16, excerpt: &str) -> Error {
+pub fn status_refusal(service: &str, status: u16, excerpt: &str) -> Error {
     match status {
         400 => Error::invalid(format!(
             "{service} rejected the request as malformed (HTTP 400): {excerpt}"
@@ -389,7 +392,7 @@ pub(crate) fn status_refusal(service: &str, status: u16, excerpt: &str) -> Error
 /// arrive as `archive%2F2026%2Fday.json`. Sending the raw slashes addresses a
 /// resource that does not exist, and the 404 that comes back looks like a
 /// missing object rather than like an encoding bug.
-pub(crate) fn percent_encode(component: &str) -> String {
+pub fn percent_encode(component: &str) -> String {
     let mut out = String::with_capacity(component.len());
     for byte in component.as_bytes() {
         match byte {

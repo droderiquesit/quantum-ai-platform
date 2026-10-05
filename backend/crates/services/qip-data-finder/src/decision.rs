@@ -13,6 +13,7 @@
 
 use crate::category::SourceCategory;
 use crate::legal::{LegalAssessment, SourcePolicy};
+use crate::lifecycle::LifecycleTransition;
 use crate::schema::SchemaDrift;
 use crate::scoring::{Routing, RoutingClass, SourceScores};
 use crate::source::{Source, SourceLineage};
@@ -240,6 +241,11 @@ pub struct RegistrationDecision {
     lineage: Option<SourceLineage>,
     reasoning: Reasoning,
     decided_at: Timestamp,
+    /// What this decision did to a registration already standing, where it
+    /// moved one. Absent for a first assessment and for a pass that changed
+    /// nothing.
+    #[serde(default)]
+    transition: Option<LifecycleTransition>,
 }
 
 impl RegistrationDecision {
@@ -271,6 +277,7 @@ impl RegistrationDecision {
             lineage: None,
             reasoning,
             decided_at,
+            transition: None,
         })
     }
 
@@ -337,6 +344,17 @@ impl RegistrationDecision {
     pub fn with_lineage(mut self, lineage: SourceLineage) -> Self {
         self.lineage = Some(lineage);
         self
+    }
+
+    pub(crate) fn with_transition(mut self, transition: LifecycleTransition) -> Self {
+        self.transition = Some(transition);
+        self
+    }
+
+    /// The move this decision made to a standing registration, if it made
+    /// one (see [`crate::lifecycle`]).
+    pub fn transition(&self) -> Option<&LifecycleTransition> {
+        self.transition.as_ref()
     }
 
     pub fn source_id(&self) -> &str {

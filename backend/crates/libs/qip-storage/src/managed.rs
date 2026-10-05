@@ -39,7 +39,7 @@
 //! ahead of any caller rather than left as the one place a bare read
 //! survived.
 
-use crate::gcp::{BigQueryConfig, CloudStorageConfig, GcpAccess};
+use crate::gcp::{CloudStorageConfig, GcpAccess};
 use crate::provider::StorageTarget;
 use crate::redis::RedisConfig;
 use qip_core::error::{Error, Result};
@@ -217,12 +217,14 @@ impl ManagedSettings {
         Ok(CloudStorageConfig::new(bucket).with_access(self.gcp_access(clock)?))
     }
 
-    /// The BigQuery configuration.
+    /// The BigQuery project and dataset, in that order.
     ///
-    /// Neither the project nor the dataset has a default: the project is what
-    /// a query is billed to and the dataset is what it reads, and guessing
-    /// either produces a bill or an answer that belongs to somebody else.
-    pub fn big_query_config(&self, clock: Arc<dyn qip_core::Clock>) -> Result<BigQueryConfig> {
+    /// Neither has a default: the project is what a query is billed to and
+    /// the dataset is what it reads, and guessing either produces a bill or
+    /// an answer that belongs to somebody else. The warehouse client that
+    /// takes them is `qip_mesh::bigquery` (DATA-058), which pairs them with
+    /// [`Self::gcp_access`].
+    pub fn big_query_target(&self) -> Result<(String, String)> {
         let required = |value: &Option<String>, name: &str| -> Result<String> {
             value.clone().ok_or_else(|| {
                 Error::unavailable(format!(
@@ -233,7 +235,7 @@ impl ManagedSettings {
         };
         let project = required(&self.bigquery_project, crate::gcp::PROJECT_VARIABLE)?;
         let dataset = required(&self.bigquery_dataset, crate::gcp::DATASET_VARIABLE)?;
-        Ok(BigQueryConfig::new(project, dataset).with_access(self.gcp_access(clock)?))
+        Ok((project, dataset))
     }
 }
 

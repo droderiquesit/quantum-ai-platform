@@ -127,6 +127,14 @@ impl Verdict {
 pub struct Evaluation {
     pub hypothesis_id: String,
     pub class: String,
+    /// What the thesis was about, copied from the claim. Without it an
+    /// evaluation could be grouped by class and by agent and never by the
+    /// entity it was wrong about, so the cheapest evidence that a source is
+    /// missing — a forecast error on something nothing covers — had no
+    /// entity to name (DATA-031). Empty on a record written before the
+    /// field existed.
+    #[serde(default)]
+    pub subject: String,
     pub verdict: Verdict,
     pub expected_move_bps: f64,
     pub realised_move_bps: f64,
@@ -284,6 +292,7 @@ impl ThesisEvaluator {
         Ok(Evaluation {
             hypothesis_id: claim.hypothesis_id.clone(),
             class: claim.class.clone(),
+            subject: claim.subject.clone(),
             verdict,
             expected_move_bps: claim.expected_move_bps,
             realised_move_bps: outcome.realised_move_bps,
